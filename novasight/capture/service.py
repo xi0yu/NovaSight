@@ -9,7 +9,7 @@ from .caps import query_capabilities, run_v4l2_ctl
 from .pipeline import CaptureCandidate, select_open_source
 from .profile import select_capture_profile
 from .source import FrameSource, OpenCvFrameSource
-from .state import CaptureProfile, CaptureRuntimeState
+from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 
 def _open_default_source(profile: CaptureProfile) -> FrameSource:
@@ -40,15 +40,18 @@ class CaptureService:
         self.state = CaptureRuntimeState(device=config.device)
         self.source: FrameSource | None = None
 
+    def capabilities(self, device: str = "/dev/video0") -> CaptureCapabilities:
+        return query_capabilities(
+            device,
+            runner=self.capability_runner or run_v4l2_ctl,
+        )
+
     def configure(self, device: str | None = None) -> CaptureRuntimeState:
         selected_device = device or self.config.device
         if self.source is not None:
             self.source.close()
             self.source = None
-        caps = query_capabilities(
-            selected_device,
-            runner=self.capability_runner or run_v4l2_ctl,
-        )
+        caps = self.capabilities(selected_device)
         if not caps.available:
             self.state = CaptureRuntimeState(
                 available=False,

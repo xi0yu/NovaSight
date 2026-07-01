@@ -3,21 +3,25 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-
-from novasight.capture import query_capabilities
 
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 
 
 class CaptureSelectRequest(BaseModel):
-    device: str = "/dev/video0"
+    device: str
+    preference: str | None = None
+    pixel_format: str | None = None
+    width: int | None = None
+    height: int | None = None
+    fps: int | None = None
 
 
 @router.get("/capabilities")
-def capabilities(device: str = "/dev/video0") -> dict:
-    return asdict(query_capabilities(device))
+def capabilities(request: Request, device: str = "/dev/video0") -> dict:
+    return asdict(request.app.state.capture.capabilities(device))
 
 
 @router.get("/state")
@@ -26,6 +30,15 @@ def state(request: Request) -> dict:
 
 
 @router.post("/select")
-def select(request: Request, payload: CaptureSelectRequest) -> dict:
+def select(request: Request, payload: CaptureSelectRequest):
+    config = request.app.state.capture.config
+    for field in ("preference", "pixel_format", "width", "height", "fps"):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(config, field, value)
+
     state = request.app.state.capture.configure(payload.device)
-    return asdict(state)
+    body = asdict(state)
+    if state.available is False:
+        return JSONResponse(status_code=400, content=body)
+    return body
