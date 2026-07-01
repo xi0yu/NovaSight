@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   ActiveModel,
+  CaptureState,
   ExecutorStatus,
   HealthResponse,
   ModelProject,
@@ -430,6 +431,54 @@ function PluginGroup({ title, plugins }: { title: string; plugins: PluginInfo[] 
   );
 }
 
+function CapturePanel({ capture }: { capture: CaptureState | undefined }) {
+  if (!capture) {
+    return (
+      <Panel title="Capture" eyebrow="Camera diagnostics">
+        <EmptyState
+          title="No capture state"
+          detail="The backend did not return camera diagnostics."
+        />
+      </Panel>
+    );
+  }
+
+  const profile = capture.profile
+    ? `${capture.profile.pixel_format} ${capture.profile.width}x${capture.profile.height}@${capture.profile.fps}`
+    : "not configured";
+
+  return (
+    <Panel title="Capture" eyebrow="Camera diagnostics">
+      <dl className="metric-list">
+        <div>
+          <dt>Device</dt>
+          <dd>{capture.device}</dd>
+        </div>
+        <div>
+          <dt>Backend</dt>
+          <dd>{capture.backend ?? "not selected"}</dd>
+        </div>
+        <div>
+          <dt>Profile</dt>
+          <dd>{profile}</dd>
+        </div>
+        <div>
+          <dt>FPS</dt>
+          <dd>{capture.fps_capture.toFixed(1)}</dd>
+        </div>
+        <div>
+          <dt>Frame period</dt>
+          <dd>{capture.frame_period_ms.toFixed(2)} ms</dd>
+        </div>
+        <div>
+          <dt>Capture wait</dt>
+          <dd>{capture.capture_wait_ms.toFixed(2)} ms</dd>
+        </div>
+      </dl>
+    </Panel>
+  );
+}
+
 function SettingsView({ runtime }: { runtime: RuntimeState | null }) {
   return (
     <div className="view-grid settings-grid">
@@ -440,6 +489,7 @@ function SettingsView({ runtime }: { runtime: RuntimeState | null }) {
           <Field label="Model binding" value={runtime?.active_model ? "Published" : "Unset"} />
         </div>
       </Panel>
+      <CapturePanel capture={runtime?.capture} />
       <Panel title="Console Defaults" eyebrow="Read-only UI policy">
         <div className="field-grid">
           <Field label="Capture guard" value="Manual arm" />

@@ -35,11 +35,33 @@ export type ActiveModel = {
   artifact: ModelArtifact | null;
 };
 
+export type CaptureState = {
+  available: boolean;
+  device: string;
+  profile: null | {
+    pixel_format: string;
+    width: number;
+    height: number;
+    fps: number;
+    preference: string;
+    selection_reason: string;
+  };
+  backend: string | null;
+  fps_capture: number;
+  frame_period_ms: number;
+  capture_wait_ms: number;
+  frames_dropped: number;
+  recoveries: number;
+  last_error: string | null;
+};
+
 export type RuntimeState = {
   running: boolean;
   source: string;
   active_model: ActiveModel | null;
   executor: ExecutorStatus;
+  capture: CaptureState;
+  inference: Record<string, unknown>;
 };
 
 export type PluginKind = "vision" | "control" | string;

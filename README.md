@@ -37,5 +37,22 @@ pnpm --dir web typecheck
 pnpm --dir web build
 ```
 
+## Jetson Camera Diagnostics
+
+Inspect `/dev/video0` capabilities:
+
+```bash
+python3 -m novasight doctor camera --device /dev/video0
+```
+
+Run a short real capture smoke test:
+
+```bash
+python3 -m novasight capture-smoke --device /dev/video0 --seconds 5
+```
+
+The smoke test reports selected profile, backend label, observed FPS,
+frame period, capture wait, dropped frames, recoveries, and recent errors.
+
 The default runtime config path is `config/novasight.yaml`. Keep model assets
 and SQLite state under `data/`, which is ignored by git.
