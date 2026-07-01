@@ -45,6 +45,32 @@ class EmptySource:
         self.closed = True
 
 
+class ExplodingSource:
+    backend_label = "gst:broken"
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def read(self):
+        raise RuntimeError("camera disconnected")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class CloseExplodingSource(EmptySource):
+    backend_label = "gst:close-broken"
+
+    def close(self) -> None:
+        self.closed = True
+        raise RuntimeError("close failed")
+
+
+class ReadAndCloseExplodingSource(CloseExplodingSource):
+    def read(self):
+        raise RuntimeError("read failed")
+
+
 def test_capture_service_selects_profile_from_config() -> None:
     cfg = RuntimeConfig()
     service = CaptureService(
@@ -105,7 +131,7 @@ def test_capture_service_reconfigure_closes_previous_source() -> None:
     assert service.source is sources[1]
 
 
-def test_capture_service_failed_reconfigure_clears_previous_source() -> None:
+def test_capture_service_failed_reconfigure_keeps_previous_source() -> None:
     cfg = RuntimeConfig()
     source = FakeSource()
     service = CaptureService(
@@ -117,11 +143,12 @@ def test_capture_service_failed_reconfigure_clears_previous_source() -> None:
 
     state = service.configure("/dev/missing")
 
-    assert source.closed is True
-    assert service.source is None
-    assert state.available is False
-    with pytest.raises(RuntimeError, match="capture source is not configured"):
-        service.capture_frames(max_frames=1)
+    assert source.closed is False
+    assert service.source is source
+    assert state is service.state
+    assert state.available is True
+    assert state.device == "/dev/video0"
+    assert service.state.last_error is None
 
 
 def test_capture_service_blank_device_does_not_fallback_to_default() -> None:
@@ -148,7 +175,7 @@ def test_capture_service_blank_device_does_not_fallback_to_default() -> None:
     assert service.source is None
 
 
-def test_capture_service_blank_device_closes_existing_source() -> None:
+def test_capture_service_blank_device_keeps_existing_source() -> None:
     cfg = RuntimeConfig()
     sources: list[FakeSource] = []
 
@@ -167,11 +194,13 @@ def test_capture_service_blank_device_closes_existing_source() -> None:
     state = service.configure("")
 
     assert first_state.available is True
-    assert sources[0].closed is True
-    assert service.source is None
+    assert sources[0].closed is False
+    assert service.source is sources[0]
     assert state is service.state
-    assert state.available is False
-    assert "required" in str(state.last_error)
+    assert state.available is True
+    assert service.last_config_error is not None
+    assert service.last_config_error.available is False
+    assert "required" in str(service.last_config_error.last_error)
 
 
 def test_capture_service_source_factory_error_clears_state() -> None:
@@ -194,12 +223,12 @@ def test_capture_service_source_factory_error_clears_state() -> None:
     state = service.configure("/dev/video1")
 
     assert first_state.available is True
-    assert old_source.closed is True
-    assert service.source is None
+    assert old_source.closed is False
+    assert service.source is old_source
     assert state is service.state
-    assert state.available is False
-    assert state.device == "/dev/video1"
-    assert source_error in str(state.last_error)
+    assert state.available is True
+    assert state.device == "/dev/video0"
+    assert state.last_error is None
 
 
 def test_capture_service_empty_reads_back_off_and_terminate() -> None:
@@ -219,7 +248,7 @@ def test_capture_service_empty_reads_back_off_and_terminate() -> None:
     assert state.fps_capture == 0
 
 
-def test_capture_service_max_frames_only_stops_after_empty_read_limit() -> None:
+def test_capture_service_empty_read_limit_attempts_bounded_recovery() -> None:
     cfg = RuntimeConfig()
     service = CaptureService(
         config=cfg.capture,
@@ -231,7 +260,144 @@ def test_capture_service_max_frames_only_stops_after_empty_read_limit() -> None:
 
     state = service.capture_frames(max_frames=1, max_empty_reads=3)
 
-    assert state.frames_dropped == 3
+    assert state.frames_dropped == 6
+    assert state.recoveries == 1
+    assert state.available is False
+    assert service.source is None
+
+
+def test_capture_service_empty_read_recovery_failure_marks_unavailable() -> None:
+    cfg = RuntimeConfig()
+    sources: list[EmptySource] = []
+
+    def source_factory(profile):
+        source = EmptySource()
+        sources.append(source)
+        return source
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+        empty_read_sleep_s=0,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(max_frames=1, max_empty_reads=3, max_recoveries=1)
+
+    assert len(sources) == 2
+    assert all(source.closed for source in sources)
+    assert service.source is None
+    assert state.available is False
+    assert state.frames_dropped == 6
+    assert state.recoveries == 1
+    assert state.last_error == "capture produced 3 empty reads"
+
+
+def test_capture_service_recovery_handles_close_errors() -> None:
+    cfg = RuntimeConfig()
+    sources: list[EmptySource] = []
+
+    def source_factory(profile):
+        if not sources:
+            source = CloseExplodingSource()
+        else:
+            source = EmptySource()
+        sources.append(source)
+        return source
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+        empty_read_sleep_s=0,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(max_frames=1, max_empty_reads=1, max_recoveries=1)
+
+    assert len(sources) == 2
+    assert all(source.closed for source in sources)
+    assert service.source is None
+    assert state.available is False
+    assert "close failed" in str(state.last_error)
+
+
+def test_capture_service_read_exception_attempts_bounded_recovery() -> None:
+    cfg = RuntimeConfig()
+    sources: list[ExplodingSource] = []
+
+    def source_factory(profile):
+        source = ExplodingSource()
+        sources.append(source)
+        return source
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+        empty_read_sleep_s=0,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(max_frames=1, max_recoveries=1)
+
+    assert len(sources) == 2
+    assert all(source.closed for source in sources)
+    assert service.source is None
+    assert state.available is False
+    assert state.frames_dropped == 2
+    assert state.recoveries == 1
+    assert "camera disconnected" in str(state.last_error)
+
+
+def test_capture_service_mark_unavailable_handles_close_errors() -> None:
+    cfg = RuntimeConfig()
+    source = CloseExplodingSource()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: source,
+        empty_read_sleep_s=0,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(max_frames=1, max_empty_reads=1, max_recoveries=0)
+
+    assert source.closed is True
+    assert service.source is None
+    assert state.available is False
+    assert "close failed" in str(state.last_error)
+
+
+def test_capture_service_read_recovery_preserves_close_error() -> None:
+    cfg = RuntimeConfig()
+    sources: list[EmptySource] = []
+
+    def source_factory(profile):
+        if not sources:
+            source = ReadAndCloseExplodingSource()
+        else:
+            source = EmptySource()
+        sources.append(source)
+        return source
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+        empty_read_sleep_s=0,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(max_frames=1, max_recoveries=1)
+
+    assert len(sources) == 2
+    assert all(source.closed for source in sources)
+    assert service.source is None
+    assert state.available is False
+    assert "read failed" in str(state.last_error)
+    assert "close failed" in str(state.last_error)
 
 
 def test_incomplete_doctor_command_returns_nonzero_without_starting_server(

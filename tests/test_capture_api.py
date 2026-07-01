@@ -148,6 +148,45 @@ def test_capture_select_failure_does_not_mutate_config(tmp_path) -> None:
     assert service.config.fps == 30
 
 
+def test_capture_select_initial_failure_updates_state(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    service = CaptureService(
+        config=RuntimeConfig().capture,
+        capability_runner=lambda device: None,
+    )
+    app.state.capture = service
+    client = TestClient(app)
+
+    response = client.post("/api/capture/select", json={"device": "/dev/missing"})
+
+    assert response.status_code == 400
+    state = client.get("/api/capture/state").json()
+    assert state["available"] is False
+    assert state["device"] == "/dev/missing"
+    assert state["last_error"] is not None
+
+
+def test_capture_select_failure_keeps_previous_healthy_state(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None,
+        source_factory=lambda profile: FakeSource(),
+    )
+    service.configure("/dev/video0")
+    app.state.capture = service
+    client = TestClient(app)
+
+    response = client.post("/api/capture/select", json={"device": "/dev/missing"})
+
+    assert response.status_code == 400
+    state = client.get("/api/capture/state").json()
+    assert state["available"] is True
+    assert state["device"] == "/dev/video0"
+    assert state["last_error"] is None
+
+
 def test_capture_select_invalid_preference_does_not_mutate_config(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()

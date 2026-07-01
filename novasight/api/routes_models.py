@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -83,6 +84,35 @@ def _require_project(registry: ModelRegistry, project_id: int) -> None:
 def _require_version(registry: ModelRegistry, version_id: int) -> None:
     if registry.get_version(version_id) is None:
         raise RegistryNotFoundError(f"unknown version id: {version_id}")
+
+
+def _load_published_artifact(
+    request: Request,
+    registry: ModelRegistry,
+    artifact_id: int,
+) -> None:
+    artifact = registry.get_artifact(artifact_id)
+    if artifact is None:
+        return
+    if artifact.kind != "engine":
+        request.app.state.inference.disable(
+            f"published artifact is not TensorRT engine: {artifact.kind}"
+        )
+        return
+    version = registry.get_version(artifact.version_id)
+    if version is None:
+        raise RegistryNotFoundError(f"unknown version id: {artifact.version_id}")
+    project = registry.get_project(version.project_id)
+    if project is None:
+        raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
+    artifact_path = (
+        Path(registry.data_dir) / project.name / version.version / artifact.path
+    )
+    request.app.state.inference.load(
+        artifact_path,
+        list(version.classes),
+        version.input_shape,
+    )
 
 
 @router.get("/projects")
@@ -237,6 +267,7 @@ def publish(
             project_id=project_id,
             artifact_id=payload.artifact_id,
         )
+        _load_published_artifact(request, registry, payload.artifact_id)
     except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(deployment)

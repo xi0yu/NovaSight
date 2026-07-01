@@ -154,6 +154,91 @@ def test_runtime_probes_engine_once_and_preserves_first_unavailable_reason() -> 
     assert runtime.status()["reason"] == "first unavailable reason"
 
 
+def test_runtime_load_failure_preserves_stable_unavailable_status() -> None:
+    class FailingLoadEngine:
+        engine_id = "fake"
+
+        def available(self) -> bool:
+            return True
+
+        def last_reason(self) -> str:
+            return ""
+
+        def status(self) -> dict:
+            return {"selected": self.engine_id, "available": True}
+
+        def load(
+            self,
+            artifact_path: Path,
+            classes: list[str],
+            input_shape: str,
+        ) -> None:
+            raise RuntimeError("engine load failed")
+
+        def infer(self, frame: CapturedFrame) -> InferenceResult:
+            raise AssertionError("not used")
+
+    runtime = InferenceRuntime(FailingLoadEngine())
+
+    runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
+
+    assert runtime.status() == {
+        "selected": "fake",
+        "available": False,
+        "loaded": False,
+        "reason": "engine load failed",
+    }
+
+
+def test_runtime_can_recover_after_load_failure() -> None:
+    class FlakyLoadEngine:
+        engine_id = "fake"
+
+        def __init__(self) -> None:
+            self.fail = True
+            self.loaded = False
+
+        def available(self) -> bool:
+            return True
+
+        def last_reason(self) -> str:
+            return ""
+
+        def status(self) -> dict:
+            return {
+                "selected": self.engine_id,
+                "available": True,
+                "loaded": self.loaded,
+                "reason": "",
+            }
+
+        def load(
+            self,
+            artifact_path: Path,
+            classes: list[str],
+            input_shape: str,
+        ) -> None:
+            if self.fail:
+                raise RuntimeError("engine load failed")
+            self.loaded = True
+
+        def infer(self, frame: CapturedFrame) -> InferenceResult:
+            return InferenceResult(available=self.loaded)
+
+    engine = FlakyLoadEngine()
+    runtime = InferenceRuntime(engine)
+
+    runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
+    assert runtime.status()["available"] is False
+    engine.fail = False
+    runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
+
+    status = runtime.status()
+    assert status["available"] is True
+    assert status["loaded"] is True
+    assert status["reason"] == ""
+
+
 def test_missing_tensorrt_does_not_break_import_or_runtime_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

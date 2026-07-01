@@ -40,6 +40,10 @@ class TensorRtInferenceEngine:
     def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
         if not artifact_path.suffix == ".engine":
             raise ValueError(f"TensorRT artifact must be .engine: {artifact_path}")
+        if not classes:
+            raise ValueError("TensorRT classes must not be empty")
+        if not input_shape.strip():
+            raise ValueError("TensorRT input shape must not be empty")
         if not self.available():
             raise RuntimeError(self._reason)
         self._loaded = True

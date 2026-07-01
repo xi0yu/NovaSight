@@ -49,12 +49,13 @@ def _artifact(
     version_id: int,
     *,
     path: str = "model.onnx",
+    kind: str = "onnx",
     status: str = "ready",
 ) -> dict:
     response = client.post(
         f"/api/models/versions/{version_id}/artifacts",
         json={
-            "kind": "onnx",
+            "kind": kind,
             "path": path,
             "checksum": f"sha256:{version_id}:{status}",
             "status": status,
@@ -97,6 +98,83 @@ def test_model_project_version_artifact_publish_flow(tmp_path: Path) -> None:
     assert published.status_code == 200
     assert published.json()["artifact_id"] == artifact["id"]
     assert artifact["path"] == "model.onnx"
+
+
+def test_publish_engine_loads_inference_runtime(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    loaded: dict = {}
+
+    class RecordingInference:
+        def status(self) -> dict:
+            return {"selected": "recording", "available": True, "loaded": False}
+
+        def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
+            loaded["artifact_path"] = artifact_path
+            loaded["classes"] = classes
+            loaded["input_shape"] = input_shape
+
+    client.app.state.inference = RecordingInference()
+    project = _project(client)
+    version = _version(client, project["id"])
+    artifact = _artifact(
+        client,
+        version["id"],
+        path="model.engine",
+        kind="engine",
+    )
+
+    published = client.post(
+        f"/api/models/projects/{project['id']}/publish",
+        json={"artifact_id": artifact["id"]},
+    )
+
+    assert published.status_code == 200
+    assert loaded == {
+        "artifact_path": tmp_path
+        / "data"
+        / "models"
+        / project["name"]
+        / version["version"]
+        / "model.engine",
+        "classes": ["target"],
+        "input_shape": "1x3x640x640",
+    }
+
+
+def test_publish_non_engine_disables_previous_inference_runtime(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    events: list[tuple] = []
+
+    class RecordingInference:
+        def status(self) -> dict:
+            return {"selected": "recording", "available": True, "loaded": True}
+
+        def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
+            events.append(("load", artifact_path.name, tuple(classes), input_shape))
+
+        def disable(self, reason: str) -> None:
+            events.append(("disable", reason))
+
+    client.app.state.inference = RecordingInference()
+    project = _project(client)
+    v1 = _version(client, project["id"], version="v1")
+    engine = _artifact(client, v1["id"], path="model.engine", kind="engine")
+    v2 = _version(client, project["id"], version="v2")
+    onnx = _artifact(client, v2["id"], path="model.onnx", kind="onnx")
+
+    assert client.post(
+        f"/api/models/projects/{project['id']}/publish",
+        json={"artifact_id": engine["id"]},
+    ).status_code == 200
+    assert client.post(
+        f"/api/models/projects/{project['id']}/publish",
+        json={"artifact_id": onnx["id"]},
+    ).status_code == 200
+
+    assert events == [
+        ("load", "model.engine", ("target",), "1x3x640x640"),
+        ("disable", "published artifact is not TensorRT engine: onnx"),
+    ]
 
 
 def test_artifact_create_rejects_absolute_path_outside_version_assets(

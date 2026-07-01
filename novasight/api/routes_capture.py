@@ -39,7 +39,8 @@ def state(request: Request) -> dict:
 
 @router.post("/select")
 def select(request: Request, payload: CaptureSelectRequest):
-    state = request.app.state.capture.configure(
+    capture = request.app.state.capture
+    state = capture.configure(
         payload.device,
         preference=payload.preference,
         pixel_format=payload.pixel_format,
@@ -47,6 +48,12 @@ def select(request: Request, payload: CaptureSelectRequest):
         height=payload.height,
         fps=payload.fps,
     )
+    config_error = getattr(capture, "last_config_error", None)
+    if config_error is not None:
+        return JSONResponse(
+            status_code=400,
+            content=asdict(config_error),
+        )
     body = asdict(state)
     if state.available is False:
         return JSONResponse(status_code=400, content=body)
