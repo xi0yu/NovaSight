@@ -16,7 +16,7 @@ class TrackStatsPlugin:
     def process(self, context: FrameContext) -> PluginResult:
         return PluginResult(
             plugin_id=self.plugin_id,
-            kind="track_stats",
+            kind=self.kind,
             payload={
                 "detections": len(context.detections),
                 "tracks": len(context.tracks),

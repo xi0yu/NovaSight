@@ -90,7 +90,7 @@ def test_builtin_plugins_report_stats_and_center_intent_from_top_left_boxes() ->
         if item.plugin_id == "vision.track_stats"
     ]
     assert len(stats) == 1
-    assert stats[0].kind == "track_stats"
+    assert stats[0].kind == "vision"
     assert stats[0].payload == {"detections": 1, "tracks": 1}
 
     intents = [
