@@ -62,6 +62,19 @@ def test_contract_dataclasses_expose_planned_public_fields() -> None:
     ]
 
 
+def test_builtin_plugin_metadata_is_introspectable_from_runtime() -> None:
+    plugins = PluginRuntime.with_builtin_plugins()
+
+    assert [
+        (plugin.plugin_id, plugin.kind)
+        for plugin in plugins.vision_plugins
+    ] == [("vision.track_stats", "vision")]
+    assert [
+        (plugin.plugin_id, plugin.kind)
+        for plugin in plugins.control_plugins
+    ] == [("control.center_target", "control")]
+
+
 def test_builtin_plugins_report_stats_and_center_intent_from_top_left_boxes() -> None:
     plugins = PluginRuntime.with_builtin_plugins()
     context = _context(

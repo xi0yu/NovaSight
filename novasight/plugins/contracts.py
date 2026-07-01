@@ -76,6 +76,7 @@ class PluginBatchResult:
 
 class VisionPlugin(Protocol):
     plugin_id: str
+    kind: str
 
     def process(self, context: FrameContext) -> PluginResult:
         ...
@@ -83,6 +84,7 @@ class VisionPlugin(Protocol):
 
 class ControlPlugin(Protocol):
     plugin_id: str
+    kind: str
 
     def process(self, context: FrameContext) -> ControlIntent | None:
         ...

@@ -11,6 +11,7 @@ from novasight.plugins.contracts import (
 
 class TrackStatsPlugin:
     plugin_id = "vision.track_stats"
+    kind = "vision"
 
     def process(self, context: FrameContext) -> PluginResult:
         return PluginResult(
@@ -25,6 +26,7 @@ class TrackStatsPlugin:
 
 class CenterTargetControlPlugin:
     plugin_id = "control.center_target"
+    kind = "control"
 
     def process(self, context: FrameContext) -> ControlIntent | None:
         target = self._select_target(context)
