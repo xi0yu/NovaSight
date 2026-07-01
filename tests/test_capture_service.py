@@ -1,5 +1,10 @@
+import pytest
+
 from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig
+
+
+CAPS_TEXT = "[0]: 'MJPG' (Motion-JPEG)\n    Size: Discrete 1920x1080\n        Interval: Discrete 0.007s (144.000 fps)\n"
 
 
 class FakeSource:
@@ -7,6 +12,7 @@ class FakeSource:
 
     def __init__(self) -> None:
         self.count = 0
+        self.closed = False
 
     def read(self):
         from novasight.capture.source import CapturedFrame
@@ -23,14 +29,27 @@ class FakeSource:
         )
 
     def close(self) -> None:
-        pass
+        self.closed = True
+
+
+class EmptySource:
+    backend_label = "gst:empty"
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def read(self):
+        return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_capture_service_selects_profile_from_config() -> None:
     cfg = RuntimeConfig()
     service = CaptureService(
         config=cfg.capture,
-        capability_runner=lambda device: "[0]: 'MJPG' (Motion-JPEG)\n    Size: Discrete 1920x1080\n        Interval: Discrete 0.007s (144.000 fps)\n",
+        capability_runner=lambda device: CAPS_TEXT,
         source_factory=lambda profile: FakeSource(),
     )
 
@@ -58,3 +77,95 @@ def test_capture_service_smoke_updates_timing() -> None:
     assert state.capture_wait_ms == 6.5
     assert state.frame_period_ms > 0
     assert state.last_error is None
+
+
+def test_capture_service_reconfigure_closes_previous_source() -> None:
+    cfg = RuntimeConfig()
+    sources: list[FakeSource] = []
+
+    def source_factory(profile):
+        source = FakeSource()
+        sources.append(source)
+        return source
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+    )
+
+    first_state = service.configure("/dev/video0")
+    second_state = service.configure("/dev/video1")
+
+    assert first_state.available is True
+    assert second_state.available is True
+    assert len(sources) == 2
+    assert sources[0].closed is True
+    assert sources[1].closed is False
+    assert service.source is sources[1]
+
+
+def test_capture_service_failed_reconfigure_clears_previous_source() -> None:
+    cfg = RuntimeConfig()
+    source = FakeSource()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None,
+        source_factory=lambda profile: source,
+    )
+    service.configure("/dev/video0")
+
+    state = service.configure("/dev/missing")
+
+    assert source.closed is True
+    assert service.source is None
+    assert state.available is False
+    with pytest.raises(RuntimeError, match="capture source is not configured"):
+        service.capture_frames(max_frames=1)
+
+
+def test_capture_service_empty_reads_back_off_and_terminate() -> None:
+    cfg = RuntimeConfig()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: EmptySource(),
+        empty_read_sleep_s=0.001,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(seconds=0.01)
+
+    assert state.frames_dropped > 0
+    assert state.frames_dropped < 100
+    assert state.fps_capture == 0
+
+
+def test_capture_service_max_frames_only_stops_after_empty_read_limit() -> None:
+    cfg = RuntimeConfig()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: EmptySource(),
+        empty_read_sleep_s=0,
+    )
+    service.configure("/dev/video0")
+
+    state = service.capture_frames(max_frames=1, max_empty_reads=3)
+
+    assert state.frames_dropped == 3
+
+
+def test_incomplete_doctor_command_returns_nonzero_without_starting_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novasight import main as novasight_main
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("uvicorn.run should not be called")
+
+    monkeypatch.setattr(novasight_main.uvicorn, "run", fail_run)
+
+    result = novasight_main.main(["doctor"])
+
+    assert result != 0

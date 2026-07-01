@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -34,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg.web.host = args.host
     if args.port is not None:
         cfg.web.port = args.port
+    if args.command == "doctor" and args.doctor_command is None:
+        print("error: doctor requires a subcommand: camera", file=sys.stderr)
+        return 2
     if args.command == "doctor" and args.doctor_command == "camera":
         from novasight.capture import query_capabilities
         from novasight.capture.profile import select_capture_profile

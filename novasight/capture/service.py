@@ -31,15 +31,20 @@ class CaptureService:
         *,
         capability_runner: Callable[[str], str | None] | None = None,
         source_factory: Callable[[CaptureProfile], FrameSource] | None = None,
+        empty_read_sleep_s: float = 0.001,
     ) -> None:
         self.config = config
         self.capability_runner = capability_runner
         self.source_factory = source_factory or _open_default_source
+        self.empty_read_sleep_s = empty_read_sleep_s
         self.state = CaptureRuntimeState(device=config.device)
         self.source: FrameSource | None = None
 
     def configure(self, device: str | None = None) -> CaptureRuntimeState:
         selected_device = device or self.config.device
+        if self.source is not None:
+            self.source.close()
+            self.source = None
         caps = query_capabilities(
             selected_device,
             runner=self.capability_runner or run_v4l2_ctl,
@@ -76,12 +81,17 @@ class CaptureService:
         *,
         seconds: float | None = None,
         max_frames: int | None = None,
+        max_empty_reads: int | None = None,
     ) -> CaptureRuntimeState:
         if self.source is None:
             raise RuntimeError("capture source is not configured")
         start = time.monotonic()
         previous_ts: int | None = None
         count = 0
+        empty_reads = 0
+        empty_read_limit = max_empty_reads
+        if empty_read_limit is None and seconds is None and max_frames is not None:
+            empty_read_limit = 100
         while True:
             if max_frames is not None and count >= max_frames:
                 break
@@ -90,7 +100,13 @@ class CaptureService:
             frame = self.source.read()
             if frame is None:
                 self.state.frames_dropped += 1
+                empty_reads += 1
+                if empty_read_limit is not None and empty_reads >= empty_read_limit:
+                    break
+                if self.empty_read_sleep_s > 0:
+                    time.sleep(self.empty_read_sleep_s)
                 continue
+            empty_reads = 0
             count += 1
             self.state.capture_wait_ms = frame.capture_wait_ms
             if previous_ts is not None:
