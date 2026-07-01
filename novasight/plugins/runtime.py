@@ -28,7 +28,7 @@ class PluginRuntime:
         )
 
     def process(self, context: FrameContext) -> PluginBatchResult:
-        vision_results = [
+        plugin_results = [
             plugin.process(context)
             for plugin in self.vision_plugins
         ]
@@ -38,6 +38,6 @@ class PluginRuntime:
             if (intent := plugin.process(context)) is not None
         ]
         return PluginBatchResult(
-            vision_results=vision_results,
+            plugin_results=plugin_results,
             control_intents=control_intents,
         )

@@ -54,22 +54,23 @@ class FrameContext:
 @dataclass(frozen=True)
 class PluginResult:
     plugin_id: str
-    data: dict[str, Any] = field(default_factory=dict)
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ControlIntent:
-    plugin_id: str
     dx: float
     dy: float
-    target_id: int | None = None
-    target_cls: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    action: str | None
+    confidence: float
+    reason: str
+    plugin_id: str
 
 
 @dataclass(frozen=True)
 class PluginBatchResult:
-    vision_results: list[PluginResult] = field(default_factory=list)
+    plugin_results: list[PluginResult] = field(default_factory=list)
     control_intents: list[ControlIntent] = field(default_factory=list)
 
 

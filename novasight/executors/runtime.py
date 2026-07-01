@@ -34,7 +34,7 @@ class ExecutorRegistry:
         return {
             "selected": self.selected,
             "executors": {
-                executor_id: {"available": executor.available}
+                executor_id: {"available": executor.available()}
                 for executor_id, executor in self.executors.items()
             },
         }

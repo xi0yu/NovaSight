@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from types import ModuleType
+from typing import Any
 
 from novasight.executors.contracts import ExecutionResult
 from novasight.plugins import ControlIntent
@@ -12,12 +12,11 @@ class KmNetExecutor:
     def __init__(self) -> None:
         try:
             import kmNet
-        except ImportError:
-            self._driver: ModuleType | None = None
+        except Exception:
+            self._driver: Any | None = None
         else:
             self._driver = kmNet
 
-    @property
     def available(self) -> bool:
         return self._driver is not None
 

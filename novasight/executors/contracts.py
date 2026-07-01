@@ -17,7 +17,6 @@ class ExecutionResult:
 class Executor(Protocol):
     executor_id: str
 
-    @property
     def available(self) -> bool:
         ...
 

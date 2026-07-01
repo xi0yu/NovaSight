@@ -15,7 +15,8 @@ class TrackStatsPlugin:
     def process(self, context: FrameContext) -> PluginResult:
         return PluginResult(
             plugin_id=self.plugin_id,
-            data={
+            kind="track_stats",
+            payload={
                 "detections": len(context.detections),
                 "tracks": len(context.tracks),
             },
@@ -31,12 +32,12 @@ class CenterTargetControlPlugin:
             return None
 
         return ControlIntent(
-            plugin_id=self.plugin_id,
             dx=target.cx - context.width / 2,
             dy=context.height / 2 - target.cy,
-            target_id=getattr(target, "track_id", None),
-            target_cls=target.cls,
-            metadata={"score": target.score},
+            action="move",
+            confidence=target.score,
+            reason=self._reason(target),
+            plugin_id=self.plugin_id,
         )
 
     def _select_target(self, context: FrameContext) -> Track | Detection | None:
@@ -45,3 +46,8 @@ class CenterTargetControlPlugin:
         if context.detections:
             return max(context.detections, key=lambda item: item.score)
         return None
+
+    def _reason(self, target: Track | Detection) -> str:
+        if isinstance(target, Track):
+            return f"center highest-score track {target.track_id}"
+        return "center highest-score detection"

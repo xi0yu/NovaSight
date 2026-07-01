@@ -10,7 +10,6 @@ class DryRunExecutor:
     def __init__(self) -> None:
         self.history: list[ControlIntent] = []
 
-    @property
     def available(self) -> bool:
         return True
 
