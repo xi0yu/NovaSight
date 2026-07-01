@@ -35,3 +35,30 @@ def test_runtime_config_rejects_falsey_non_mapping_yaml(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="runtime config must be a mapping"):
         load_runtime_config(path)
+
+
+def test_runtime_config_rejects_nested_non_mapping_section(tmp_path: Path) -> None:
+    path = tmp_path / "novasight.yaml"
+    path.write_text("web: false\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="web.*must be a mapping"):
+        load_runtime_config(path)
+
+
+@pytest.mark.parametrize("unknown_key", ["model_registry", "weeb"])
+def test_runtime_config_rejects_unknown_top_level_key(
+    tmp_path: Path, unknown_key: str
+) -> None:
+    path = tmp_path / "novasight.yaml"
+    path.write_text(f"{unknown_key}: {{}}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"unknown config key.*{unknown_key}"):
+        load_runtime_config(path)
+
+
+def test_runtime_config_rejects_unknown_nested_key(tmp_path: Path) -> None:
+    path = tmp_path / "novasight.yaml"
+    path.write_text("web:\n  prt: 5174\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown config key.*web.prt"):
+        load_runtime_config(path)

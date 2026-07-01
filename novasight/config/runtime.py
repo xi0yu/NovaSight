@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from dataclasses import MISSING, Field, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -47,15 +47,35 @@ class RuntimeConfig:
 T = TypeVar("T")
 
 
-def _build_dataclass(cls: type[T], raw: dict[str, Any]) -> T:
+def _field_default(item: Field[Any]) -> Any:
+    if item.default_factory is not MISSING:
+        return item.default_factory()
+    if item.default is not MISSING:
+        return item.default
+    return None
+
+
+def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
+    items = {item.name: item for item in fields(cls)}
+    unknown_keys = sorted(set(raw) - set(items), key=str)
+    if unknown_keys:
+        key_names = ", ".join(
+            f"{section}.{key}" if section else str(key) for key in unknown_keys
+        )
+        raise ValueError(f"unknown config key(s): {key_names}")
+
     values: dict[str, Any] = {}
-    for item in fields(cls):
+    for item in items.values():
         if item.name not in raw:
             continue
-        current = getattr(cls(), item.name) if callable(cls) else None
         value = raw[item.name]
+        current = _field_default(item)
         if is_dataclass(current) and isinstance(value, dict):
-            values[item.name] = _build_dataclass(type(current), value)
+            key_name = f"{section}.{item.name}" if section else item.name
+            values[item.name] = _build_dataclass(type(current), value, key_name)
+        elif is_dataclass(current):
+            key_name = f"{section}.{item.name}" if section else item.name
+            raise ValueError(f"runtime config section '{key_name}' must be a mapping")
         else:
             values[item.name] = value
     return cls(**values)
