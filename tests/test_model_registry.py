@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -577,3 +578,49 @@ def test_finish_conversion_job_rejects_invalid_status(tmp_path: Path) -> None:
         registry.finish_conversion_job(job.id, status="faild", log="typo")
 
     assert registry.get_conversion_job(job.id) == job
+
+
+@pytest.mark.parametrize(
+    "classes_json",
+    ["not json", '{"class": "person"}', '["ok", 7]'],
+)
+def test_list_versions_rejects_invalid_classes_json(
+    tmp_path: Path, classes_json: str
+) -> None:
+    db_path = tmp_path / "novasight.db"
+    registry = ModelRegistry(db_path=db_path, data_dir=tmp_path / "models")
+    project = registry.create_project("demo", "")
+    _create_version(registry, project.id)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE model_versions SET classes_json = ?",
+            (classes_json,),
+        )
+
+    with pytest.raises(ValueError, match="classes_json"):
+        registry.list_versions(project.id)
+
+
+@pytest.mark.parametrize(
+    "command_json",
+    ["not json", '{"cmd": "convert"}', '["ok", 7]'],
+)
+def test_conversion_job_reads_reject_invalid_command_json(
+    tmp_path: Path, command_json: str
+) -> None:
+    db_path = tmp_path / "novasight.db"
+    registry = ModelRegistry(db_path=db_path, data_dir=tmp_path / "models")
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+    job = registry.create_conversion_job(version.id, "engine", ["convert"])
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE conversion_jobs SET command_json = ? WHERE id = ?",
+            (command_json, job.id),
+        )
+
+    with pytest.raises(ValueError, match="command_json"):
+        registry.get_conversion_job(job.id)
+
+    with pytest.raises(ValueError, match="command_json"):
+        registry.list_conversion_jobs()

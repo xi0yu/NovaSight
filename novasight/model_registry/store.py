@@ -46,6 +46,14 @@ def _validate_string_list(value: object, label: str) -> list[str]:
     return list(value)
 
 
+def _load_string_list_json(value: str, field_name: str) -> list[str]:
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must contain a JSON list of strings") from exc
+    return _validate_string_list(decoded, field_name)
+
+
 class ModelRegistry:
     def __init__(self, db_path: Path, data_dir: Path) -> None:
         self.db_path = Path(db_path)
@@ -441,7 +449,7 @@ class ModelRegistry:
             str(row["version"]),
             str(row["source_kind"]),
             str(row["source_path"]),
-            json.loads(str(row["classes_json"])),
+            _load_string_list_json(str(row["classes_json"]), "classes_json"),
             str(row["input_shape"]),
         )
 
@@ -460,7 +468,7 @@ class ModelRegistry:
             int(row["id"]),
             int(row["version_id"]),
             str(row["target_kind"]),
-            json.loads(str(row["command_json"])),
+            _load_string_list_json(str(row["command_json"]), "command_json"),
             str(row["status"]),
             str(row["log"]),
         )
