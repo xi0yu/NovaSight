@@ -67,7 +67,7 @@ def _registry(request: Request) -> ModelRegistry:
     return request.app.state.models
 
 
-def _as_http_error(exc: RegistryError | ValueError) -> HTTPException:
+def _as_http_error(exc: RegistryError) -> HTTPException:
     if isinstance(exc, RegistryNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, (RegistryConflictError, RegistryValidationError)):
@@ -100,7 +100,7 @@ def create_project(
             name=payload.name,
             description=payload.description,
         )
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(project)
 
@@ -110,7 +110,7 @@ def list_versions(request: Request, project_id: int) -> list[dict[str, Any]]:
     registry = _registry(request)
     try:
         _require_project(registry, project_id)
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return [asdict(version) for version in registry.list_versions(project_id)]
 
@@ -130,7 +130,7 @@ def create_version(
             classes=payload.classes,
             input_shape=payload.input_shape,
         )
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(version)
 
@@ -140,7 +140,7 @@ def list_artifacts(request: Request, version_id: int) -> list[dict[str, Any]]:
     registry = _registry(request)
     try:
         _require_version(registry, version_id)
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return [asdict(artifact) for artifact in registry.list_artifacts(version_id)]
 
@@ -160,7 +160,7 @@ def create_artifact(
             checksum=payload.checksum,
             status=payload.status,
         )
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(artifact)
 
@@ -174,7 +174,7 @@ def list_conversion_jobs(
     if version_id is not None:
         try:
             _require_version(registry, version_id)
-        except ValueError as exc:
+        except RegistryError as exc:
             raise _as_http_error(exc) from exc
     return [asdict(job) for job in registry.list_conversion_jobs(version_id=version_id)]
 
@@ -191,7 +191,7 @@ def create_conversion_job(
             target_kind=payload.target_kind,
             command=payload.command,
         )
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(job)
 
@@ -219,7 +219,7 @@ def finish_conversion_job(
             status=payload.status,
             log=payload.log,
         )
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return {"ok": True}
 
@@ -237,7 +237,7 @@ def publish(
             project_id=project_id,
             artifact_id=payload.artifact_id,
         )
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(deployment)
 
@@ -248,6 +248,6 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
     try:
         _require_project(registry, project_id)
         deployment = registry.rollback(project_id=project_id)
-    except ValueError as exc:
+    except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return asdict(deployment)

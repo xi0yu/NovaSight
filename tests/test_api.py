@@ -7,7 +7,12 @@ from novasight.api import create_app
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(create_app(data_dir=tmp_path / "data"))
+    return TestClient(
+        create_app(
+            data_dir=tmp_path / "data",
+            config_path=tmp_path / "missing.yaml",
+        )
+    )
 
 
 def _project(
@@ -155,6 +160,7 @@ def test_plugin_and_executor_endpoints(tmp_path: Path) -> None:
 
     plugins = client.get("/api/plugins").json()
     assert "control.center_target" in {item["plugin_id"] for item in plugins}
+    assert all(item["enabled"] is True for item in plugins)
 
     executors = client.get("/api/executors").json()
     assert executors["selected"] == "dry_run"

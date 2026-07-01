@@ -15,6 +15,7 @@ def list_plugins(request: Request) -> list[dict[str, Any]]:
         {
             "plugin_id": plugin.plugin_id,
             "kind": plugin.kind,
+            "enabled": True,
         }
         for plugin in plugins
     ]

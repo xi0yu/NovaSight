@@ -179,16 +179,18 @@ class ModelRegistry:
             )
 
     def _next_deployment_sequence(self, conn: sqlite3.Connection) -> int:
-        cursor = conn.execute(
+        conn.execute(
             """
             UPDATE registry_sequence
             SET value = value + 1
             WHERE name = ?
-            RETURNING value
             """,
             ("deployment",),
         )
-        row = cursor.fetchone()
+        row = conn.execute(
+            "SELECT value FROM registry_sequence WHERE name = ?",
+            ("deployment",),
+        ).fetchone()
         if row is None:
             raise RuntimeError("deployment sequence is not initialized")
         return int(row["value"])
@@ -424,16 +426,18 @@ class ModelRegistry:
 
             if int(deployment["artifact_id"]) == artifact_id:
                 updated_seq = self._next_deployment_sequence(conn)
-                cursor = conn.execute(
+                conn.execute(
                     """
                     UPDATE deployments
                     SET updated_seq = ?
                     WHERE project_id = ?
-                    RETURNING *
                     """,
                     (updated_seq, project_id),
                 )
-                updated = cursor.fetchone()
+                updated = conn.execute(
+                    "SELECT * FROM deployments WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()
                 return self._deployment_from_row(updated)
 
             previous_artifact_id = int(deployment["artifact_id"])
