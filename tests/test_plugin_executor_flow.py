@@ -42,6 +42,18 @@ def _intent(dx: float = -40.4, dy: float = 60.6) -> ControlIntent:
     )
 
 
+def _force_kmnet_import_failure(monkeypatch) -> None:
+    original_import = builtins.__import__
+
+    def fail_kmnet_import(name, *args, **kwargs):
+        if name == "kmNet":
+            raise RuntimeError("native load failed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_kmnet_import)
+    monkeypatch.delitem(sys.modules, "kmNet", raising=False)
+
+
 def test_contract_dataclasses_expose_planned_public_fields() -> None:
     assert [item.name for item in fields(PluginResult)] == [
         "plugin_id",
@@ -170,7 +182,8 @@ def test_dry_run_records_intent_history() -> None:
     assert executor.available() is True
 
 
-def test_registry_status_uses_callable_availability() -> None:
+def test_registry_status_uses_callable_availability(monkeypatch) -> None:
+    _force_kmnet_import_failure(monkeypatch)
     executors = ExecutorRegistry.with_builtin_executors(default="kmnet")
 
     status = executors.status()
@@ -181,15 +194,7 @@ def test_registry_status_uses_callable_availability() -> None:
 
 
 def test_kmnet_executor_unavailable_execute_returns_unsent(monkeypatch) -> None:
-    original_import = builtins.__import__
-
-    def fail_kmnet_import(name, *args, **kwargs):
-        if name == "kmNet":
-            raise RuntimeError("native load failed")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fail_kmnet_import)
-    monkeypatch.delitem(sys.modules, "kmNet", raising=False)
+    _force_kmnet_import_failure(monkeypatch)
     executor = KmNetExecutor()
 
     execution = executor.execute(_intent())
