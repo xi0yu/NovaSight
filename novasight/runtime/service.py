@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.executors import ExecutorRegistry
 from novasight.model_registry import ModelRegistry
-from novasight.plugins import FrameContext, PluginRuntime
+from novasight.plugins import Detection, FrameContext, PluginRuntime
 
 from .state import RuntimeFrameResult, RuntimeState
 
@@ -55,6 +56,38 @@ class RuntimeService:
             plugin_batch=plugin_batch,
             execution_results=execution_results,
         )
+
+    def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
+        if self.inference is None:
+            return self.process_frame(
+                FrameContext(frame.frame_id, frame.width, frame.height)
+            )
+
+        inference_result = self.inference.engine.infer(frame)
+        if not inference_result.available:
+            return self.process_frame(
+                FrameContext(frame.frame_id, frame.width, frame.height)
+            )
+
+        detections = [
+            Detection(
+                cls=item.cls,
+                score=item.score,
+                x=item.x,
+                y=item.y,
+                w=item.w,
+                h=item.h,
+            )
+            for item in inference_result.detections
+        ]
+        context = FrameContext(
+            frame_id=frame.frame_id,
+            width=frame.width,
+            height=frame.height,
+            detections=detections,
+            classes=inference_result.classes,
+        )
+        return self.process_frame(context)
 
     def _active_model(self) -> dict | None:
         deployment = self.models.get_active_deployment()

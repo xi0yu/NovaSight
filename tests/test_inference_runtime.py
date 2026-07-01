@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from novasight.capture.source import CapturedFrame
+from novasight.config import RuntimeConfig
+from novasight.executors import ExecutorRegistry
+from novasight.executors.dry_run import DryRunExecutor
 from novasight.inference import (
     InferenceDetection,
     InferenceRuntime,
@@ -12,6 +15,9 @@ from novasight.inference import (
     TensorRtInferenceEngine,
     UnavailableInferenceEngine,
 )
+from novasight.model_registry import ModelRegistry
+from novasight.plugins import PluginRuntime
+from novasight.runtime import RuntimeService
 
 
 def test_unavailable_engine_reports_reason_and_returns_empty_result() -> None:
@@ -167,3 +173,37 @@ def test_missing_tensorrt_does_not_break_import_or_runtime_status(
     assert status["available"] is False
     assert status["loaded"] is False
     assert "TensorRT unavailable" in status["reason"]
+
+
+class FakeInferenceRuntime:
+    def status(self) -> dict:
+        return {"selected": "fake", "available": True}
+
+    @property
+    def engine(self):
+        return self
+
+    def infer(self, frame):
+        return InferenceResult(
+            available=True,
+            detections=[InferenceDetection(0, 0.9, 10, 20, 30, 40)],
+            classes=["target"],
+        )
+
+
+def test_runtime_process_captured_frame_converts_inference_to_context(
+    tmp_path,
+) -> None:
+    service = RuntimeService(
+        config=RuntimeConfig(),
+        models=ModelRegistry(tmp_path / "db.sqlite", tmp_path / "models"),
+        plugins=PluginRuntime.with_builtin_plugins(),
+        executors=ExecutorRegistry([DryRunExecutor()]),
+        inference=FakeInferenceRuntime(),
+    )
+
+    frame = CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    result = service.process_captured_frame(frame)
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents
