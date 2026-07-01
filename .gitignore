@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+data/
+config/novasight.yaml
+web/node_modules/
+web/dist/
+web/.vite/
