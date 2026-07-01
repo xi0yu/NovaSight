@@ -440,7 +440,7 @@ function SettingsView({ runtime }: { runtime: RuntimeState | null }) {
           <Field label="Model binding" value={runtime?.active_model ? "Published" : "Unset"} />
         </div>
       </Panel>
-      <Panel title="Operations" eyebrow="Local console">
+      <Panel title="Console Defaults" eyebrow="Read-only UI policy">
         <div className="field-grid">
           <Field label="Capture guard" value="Manual arm" />
           <Field label="Telemetry interval" value="1 s" />

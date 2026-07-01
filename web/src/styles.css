@@ -416,8 +416,7 @@ th {
 }
 
 .project-list,
-.plugin-list,
-.settings-list {
+.plugin-list {
   display: grid;
   gap: 10px;
 }
@@ -527,36 +526,6 @@ th {
   );
 }
 
-.settings-list label {
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0;
-  border-top: 1px solid var(--line-soft);
-}
-
-select {
-  min-height: 34px;
-  max-width: 180px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  padding: 0 10px;
-}
-
-.check-row {
-  justify-content: flex-start;
-}
-
-input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--green);
-}
-
 @media (max-width: 980px) {
   .dashboard-grid,
   .models-grid,
@@ -604,7 +573,6 @@ input[type="checkbox"] {
   .panel-header,
   .project-row,
   .plugin-row,
-  .settings-list label,
   .video-status {
     align-items: flex-start;
     flex-direction: column;
