@@ -40,7 +40,7 @@ class ControlConfig:
     max_abs_dx: int = 120
     max_abs_dy: int = 120
     min_confidence: float = 0.0
-    output_mode: str = "silent"
+    output_mode: str = ""
 
 
 @dataclass

@@ -43,9 +43,7 @@ class ExecutorRegistry:
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
-        default = config.control.output_mode
-        if default == "silent" and config.executor.default != "dry_run":
-            default = config.executor.default
+        default = config.control.output_mode or config.executor.default
         return cls.with_builtin_executors(
             default=default,
             policy=ControlOutputPolicy(

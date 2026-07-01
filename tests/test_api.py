@@ -74,7 +74,7 @@ def test_health_and_runtime_state(tmp_path: Path) -> None:
     state = client.get("/api/runtime/state")
     assert state.status_code == 200
     body = state.json()
-    assert body["executor"]["selected"] == "silent"
+    assert body["executor"]["selected"] == "dry_run"
     assert body["active_model"] is None
     assert body["inference"]["selected"] == "unavailable"
     assert body["inference"]["available"] is False
@@ -186,7 +186,7 @@ def test_plugin_and_executor_endpoints(tmp_path: Path) -> None:
     assert all(item["enabled"] is True for item in plugins)
 
     executors = client.get("/api/executors").json()
-    assert executors["selected"] == "silent"
+    assert executors["selected"] == "dry_run"
     assert executors["executors"]["silent"]["available"] is True
     assert executors["executors"]["console"]["available"] is True
     assert executors["executors"]["dry_run"]["available"] is True

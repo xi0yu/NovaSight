@@ -26,6 +26,10 @@ class ControlOutputPolicy:
         max_abs_dy: int = 120,
         min_confidence: float = 0.0,
     ) -> None:
+        if max_abs_dx < 0:
+            raise ValueError("max_abs_dx must be >= 0")
+        if max_abs_dy < 0:
+            raise ValueError("max_abs_dy must be >= 0")
         self.max_abs_dx = max_abs_dx
         self.max_abs_dy = max_abs_dy
         self.min_confidence = min_confidence

@@ -303,6 +303,12 @@ def test_registry_from_config_honors_legacy_executor_default() -> None:
     assert executors.status()["selected"] == "kmnet"
 
 
+def test_registry_from_config_default_runtime_config_selects_dry_run() -> None:
+    executors = ExecutorRegistry.from_config(RuntimeConfig())
+
+    assert executors.status()["selected"] == "dry_run"
+
+
 def test_registry_from_config_prefers_control_output_mode() -> None:
     config = RuntimeConfig()
     config.executor.default = "kmnet"
@@ -311,6 +317,16 @@ def test_registry_from_config_prefers_control_output_mode() -> None:
     executors = ExecutorRegistry.from_config(config)
 
     assert executors.status()["selected"] == "console"
+
+
+def test_registry_from_config_explicit_silent_overrides_legacy_default() -> None:
+    config = RuntimeConfig()
+    config.executor.default = "kmnet"
+    config.control.output_mode = "silent"
+
+    executors = ExecutorRegistry.from_config(config)
+
+    assert executors.status()["selected"] == "silent"
 
 
 def test_kmnet_executor_unavailable_execute_returns_unsent(monkeypatch) -> None:

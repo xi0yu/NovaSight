@@ -18,7 +18,8 @@ control:
   max_abs_dx: 120
   max_abs_dy: 120
   min_confidence: 0
-  # Overrides executor.default when set to console, dry_run, or kmnet.
+  # Set to silent, console, dry_run, or kmnet to override executor.default.
+  # Leave empty or omit to use executor.default.
   output_mode: silent
 executor:
   default: dry_run
