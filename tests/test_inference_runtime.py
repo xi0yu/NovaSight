@@ -6,6 +6,7 @@ import pytest
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
+from novasight.control import ControlOutput
 from novasight.executors import ExecutorRegistry
 from novasight.executors.dry_run import DryRunExecutor
 from novasight.inference import (
@@ -213,8 +214,18 @@ def test_runtime_process_captured_frame_converts_inference_to_context(
     assert intent.dx == -295
     assert intent.dy == 200
     assert intent.confidence == 0.9
-    assert [execution.intent for execution in result.execution_results] == [intent]
-    assert dry_run.history == [intent]
+    output = ControlOutput(
+        dx=-120,
+        dy=120,
+        action="move",
+        confidence=0.9,
+        plugin_id="control.center_target",
+        accepted=True,
+        clipped=True,
+        reason="clamped to configured limits",
+    )
+    assert [execution.intent for execution in result.execution_results] == [output]
+    assert dry_run.history == [output]
 
 
 def test_runtime_process_captured_frame_without_inference_uses_empty_context(

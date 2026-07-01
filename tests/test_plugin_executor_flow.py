@@ -4,7 +4,9 @@ from dataclasses import fields
 from types import SimpleNamespace
 
 from novasight.config import RuntimeConfig
+from novasight.control import ControlOutput, ControlOutputPolicy
 from novasight.executors import ExecutorRegistry
+from novasight.executors.dry_run import ConsoleExecutor, SilentExecutor
 from novasight.executors.dry_run import DryRunExecutor
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.model_registry import ModelRegistry
@@ -42,6 +44,23 @@ def _intent(dx: float = -40.4, dy: float = 60.6) -> ControlIntent:
         confidence=0.91,
         reason="test intent",
         plugin_id="control.test",
+    )
+
+
+def _output(
+    dx: int = -40,
+    dy: int = 61,
+    accepted: bool = True,
+) -> ControlOutput:
+    return ControlOutput(
+        dx=dx,
+        dy=dy,
+        action="move",
+        confidence=0.91,
+        plugin_id="control.test",
+        accepted=accepted,
+        clipped=False,
+        reason="test intent",
     )
 
 
@@ -200,22 +219,50 @@ def test_runtime_service_process_frame_executes_plugin_control_intents(
 
     result = service.process_frame(_context())
 
+    output = _output()
     assert result.plugin_batch.control_intents == [intent]
-    assert [execution.intent for execution in result.execution_results] == [intent]
-    assert dry_run.history == [intent]
+    assert [execution.intent for execution in result.execution_results] == [output]
+    assert dry_run.history == [output]
 
 
-def test_dry_run_records_intent_history() -> None:
+def test_dry_run_records_output_history() -> None:
     executor = DryRunExecutor()
-    intent = _intent()
+    output = _output()
 
-    execution = executor.execute(intent)
+    execution = executor.execute(output)
 
     assert execution.executor_id == "dry_run"
     assert execution.sent is False
-    assert execution.intent == intent
-    assert executor.history == [intent]
+    assert execution.intent == output
+    assert executor.history == [output]
     assert executor.available() is True
+
+
+def test_silent_executor_swallows_output() -> None:
+    executor = SilentExecutor()
+    output = _output()
+
+    execution = executor.execute(output)
+
+    assert execution.executor_id == "silent"
+    assert execution.sent is False
+    assert execution.intent == output
+    assert execution.message == "swallowed"
+    assert executor.history == [output]
+
+
+def test_console_executor_prints_output(capsys) -> None:
+    executor = ConsoleExecutor()
+    output = _output(dx=12, dy=-4)
+
+    execution = executor.execute(output)
+
+    assert execution.executor_id == "console"
+    assert execution.sent is False
+    assert capsys.readouterr().out == (
+        "control dx=12 dy=-4 action=move confidence=0.91 "
+        "plugin=control.test accepted=True\n"
+    )
 
 
 def test_registry_status_uses_callable_availability(monkeypatch) -> None:
@@ -225,15 +272,33 @@ def test_registry_status_uses_callable_availability(monkeypatch) -> None:
     status = executors.status()
 
     assert status["selected"] == "kmnet"
+    assert status["executors"]["silent"]["available"] is True
+    assert status["executors"]["console"]["available"] is True
     assert status["executors"]["dry_run"]["available"] is True
     assert status["executors"]["kmnet"]["available"] is False
+
+
+def test_registry_applies_policy_before_execution() -> None:
+    dry_run = DryRunExecutor()
+    executors = ExecutorRegistry(
+        executors=[dry_run],
+        default="dry_run",
+        policy=ControlOutputPolicy(max_abs_dx=10, max_abs_dy=20),
+    )
+
+    execution = executors.execute(_intent(dx=42.2, dy=-99.9))
+
+    assert execution.intent.dx == 10
+    assert execution.intent.dy == -20
+    assert execution.intent.clipped is True
+    assert dry_run.history == [execution.intent]
 
 
 def test_kmnet_executor_unavailable_execute_returns_unsent(monkeypatch) -> None:
     _force_kmnet_import_failure(monkeypatch)
     executor = KmNetExecutor()
 
-    execution = executor.execute(_intent())
+    execution = executor.execute(_output())
 
     assert executor.available() is False
     assert execution.executor_id == "kmnet"
@@ -247,8 +312,21 @@ def test_kmnet_executor_sends_rounded_move_to_available_driver(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "kmNet", fake_kmnet)
     executor = KmNetExecutor()
 
-    execution = executor.execute(_intent(dx=10.4, dy=-20.6))
+    execution = executor.execute(_output(dx=10, dy=-21))
 
     assert executor.available() is True
     assert moves == [(10, 21)]
     assert execution.sent is True
+
+
+def test_kmnet_executor_skips_rejected_output(monkeypatch) -> None:
+    moves: list[tuple[int, int]] = []
+    fake_kmnet = SimpleNamespace(move=lambda dx, dy: moves.append((dx, dy)))
+    monkeypatch.setitem(sys.modules, "kmNet", fake_kmnet)
+    executor = KmNetExecutor()
+
+    execution = executor.execute(_output(accepted=False))
+
+    assert moves == []
+    assert execution.sent is False
+    assert execution.message == "control output rejected"

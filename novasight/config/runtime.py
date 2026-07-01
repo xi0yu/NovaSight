@@ -39,7 +39,7 @@ class CaptureConfig:
 class ControlConfig:
     max_abs_dx: int = 120
     max_abs_dy: int = 120
-    min_confidence: int = 0
+    min_confidence: float = 0.0
     output_mode: str = "silent"
 
 
@@ -79,6 +79,9 @@ def _validate_leaf_value(key_name: str, value: Any, expected_type: type[Any]) ->
     if expected_type is int:
         if not isinstance(value, int) or isinstance(value, bool):
             raise ValueError(f"runtime config key '{key_name}' must be an int")
+    elif expected_type is float:
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            raise ValueError(f"runtime config key '{key_name}' must be a number")
     elif expected_type is str:
         if not isinstance(value, str):
             raise ValueError(f"runtime config key '{key_name}' must be a string")

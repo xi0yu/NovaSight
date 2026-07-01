@@ -32,9 +32,7 @@ def create_app(
         data_dir=data_path / "models",
     )
     plugins = PluginRuntime.with_builtin_plugins()
-    executors = ExecutorRegistry.with_builtin_executors(
-        default=config.executor.default
-    )
+    executors = ExecutorRegistry.from_config(config)
     capture = CaptureService(config.capture)
     inference = InferenceRuntime()
     runtime = RuntimeService(

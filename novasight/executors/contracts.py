@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from novasight.plugins import ControlIntent
+from novasight.control import ControlOutput
 
 
 @dataclass(frozen=True)
 class ExecutionResult:
     executor_id: str
     sent: bool
-    intent: ControlIntent
+    intent: ControlOutput
     message: str = ""
 
 
@@ -20,5 +20,5 @@ class Executor(Protocol):
     def available(self) -> bool:
         ...
 
-    def execute(self, intent: ControlIntent) -> ExecutionResult:
+    def execute(self, output: ControlOutput) -> ExecutionResult:
         ...

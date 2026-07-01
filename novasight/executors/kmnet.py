@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from novasight.control import ControlOutput
 from novasight.executors.contracts import ExecutionResult
-from novasight.plugins import ControlIntent
 
 
 class KmNetExecutor:
@@ -20,19 +20,26 @@ class KmNetExecutor:
     def available(self) -> bool:
         return self._driver is not None
 
-    def execute(self, intent: ControlIntent) -> ExecutionResult:
+    def execute(self, output: ControlOutput) -> ExecutionResult:
+        if not output.accepted:
+            return ExecutionResult(
+                executor_id=self.executor_id,
+                sent=False,
+                intent=output,
+                message="control output rejected",
+            )
         if self._driver is None:
             return ExecutionResult(
                 executor_id=self.executor_id,
                 sent=False,
-                intent=intent,
+                intent=output,
                 message="kmNet driver unavailable",
             )
 
-        self._driver.move(int(round(intent.dx)), int(round(-intent.dy)))
+        self._driver.move(output.dx, -output.dy)
         return ExecutionResult(
             executor_id=self.executor_id,
             sent=True,
-            intent=intent,
-            message="sent intent to kmNet driver",
+            intent=output,
+            message="sent output to kmNet driver",
         )
