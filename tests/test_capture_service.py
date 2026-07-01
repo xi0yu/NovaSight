@@ -124,6 +124,34 @@ def test_capture_service_failed_reconfigure_clears_previous_source() -> None:
         service.capture_frames(max_frames=1)
 
 
+def test_capture_service_source_factory_error_clears_state() -> None:
+    cfg = RuntimeConfig()
+    old_source = FakeSource()
+    source_error = "backend failed to open"
+
+    def source_factory(profile):
+        if profile.device == "/dev/video0":
+            return old_source
+        raise RuntimeError(source_error)
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+    )
+    first_state = service.configure("/dev/video0")
+
+    state = service.configure("/dev/video1")
+
+    assert first_state.available is True
+    assert old_source.closed is True
+    assert service.source is None
+    assert state is service.state
+    assert state.available is False
+    assert state.device == "/dev/video1"
+    assert source_error in str(state.last_error)
+
+
 def test_capture_service_empty_reads_back_off_and_terminate() -> None:
     cfg = RuntimeConfig()
     service = CaptureService(

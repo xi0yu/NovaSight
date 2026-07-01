@@ -56,16 +56,25 @@ class CaptureService:
                 last_error=caps.reason,
             )
             return self.state
-        profile = select_capture_profile(
-            selected_device,
-            caps.capabilities,
-            self.config.preference,  # type: ignore[arg-type]
-            pixel_format=self.config.pixel_format or None,
-            width=self.config.width or None,
-            height=self.config.height or None,
-            fps=self.config.fps or None,
-        )
-        source = self.source_factory(profile)
+        try:
+            profile = select_capture_profile(
+                selected_device,
+                caps.capabilities,
+                self.config.preference,  # type: ignore[arg-type]
+                pixel_format=self.config.pixel_format or None,
+                width=self.config.width or None,
+                height=self.config.height or None,
+                fps=self.config.fps or None,
+            )
+            source = self.source_factory(profile)
+        except Exception as exc:
+            self.source = None
+            self.state = CaptureRuntimeState(
+                available=False,
+                device=selected_device,
+                last_error=str(exc),
+            )
+            return self.state
         self.source = source
         self.state = CaptureRuntimeState(
             available=True,
