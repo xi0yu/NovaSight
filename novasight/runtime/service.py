@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import Any
 
 from novasight.config import RuntimeConfig
 from novasight.executors import ExecutorRegistry
@@ -17,19 +18,31 @@ class RuntimeService:
         models: ModelRegistry,
         plugins: PluginRuntime,
         executors: ExecutorRegistry,
+        capture: Any | None = None,
+        inference: Any | None = None,
     ) -> None:
         self.config = config
         self.models = models
         self.plugins = plugins
         self.executors = executors
+        self.capture = capture
+        self.inference = inference
         self.running = False
 
     def state(self) -> RuntimeState:
+        capture_state = getattr(self, "capture", None)
+        inference_state = getattr(self, "inference", None)
         return RuntimeState(
             running=self.running,
             source=self.config.source.default,
             active_model=self._active_model(),
             executor=self.executors.status(),
+            capture=asdict(capture_state.state) if capture_state is not None else {},
+            inference=(
+                inference_state.status()
+                if inference_state is not None
+                else {"available": False}
+            ),
         )
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:

@@ -12,6 +12,8 @@ class RuntimeState:
     source: str
     active_model: dict | None
     executor: dict
+    capture: dict
+    inference: dict
 
 
 @dataclass(frozen=True)

@@ -4,12 +4,14 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig, load_runtime_config
 from novasight.executors import ExecutorRegistry
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import PluginRuntime
 from novasight.runtime import RuntimeService
 
+from .routes_capture import router as capture_router
 from .routes_executors import router as executors_router
 from .routes_health import router as health_router
 from .routes_models import router as models_router
@@ -32,20 +34,24 @@ def create_app(
     executors = ExecutorRegistry.with_builtin_executors(
         default=config.executor.default
     )
+    capture = CaptureService(config.capture)
     runtime = RuntimeService(
         config=config,
         models=models,
         plugins=plugins,
         executors=executors,
+        capture=capture,
     )
 
     app.state.config = config
     app.state.models = models
     app.state.plugins = plugins
     app.state.executors = executors
+    app.state.capture = capture
     app.state.runtime = runtime
 
     app.include_router(health_router)
+    app.include_router(capture_router)
     app.include_router(models_router)
     app.include_router(plugins_router)
     app.include_router(executors_router)
