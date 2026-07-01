@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from novasight.config import load_runtime_config
+from novasight.config import RuntimeConfig, load_runtime_config
 from novasight.executors import ExecutorRegistry
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import PluginRuntime
@@ -19,10 +19,11 @@ from .routes_plugins import router as plugins_router
 def create_app(
     data_dir: Path | str = "data",
     config_path: Path | str = "config/novasight.yaml",
+    config: RuntimeConfig | None = None,
 ) -> FastAPI:
     app = FastAPI(title="NovaSight")
     data_path = Path(data_dir)
-    config = load_runtime_config(config_path)
+    config = config or load_runtime_config(config_path)
     models = ModelRegistry(
         db_path=data_path / "novasight.db",
         data_dir=data_path / "models",

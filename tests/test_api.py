@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import novasight.main as main_module
 from novasight.api import create_app
 
 
@@ -42,7 +43,7 @@ def _artifact(
     client: TestClient,
     version_id: int,
     *,
-    path: str = "/tmp/demo.onnx",
+    path: str = "model.onnx",
     status: str = "ready",
 ) -> dict:
     response = client.post(
@@ -87,18 +88,40 @@ def test_model_project_version_artifact_publish_flow(tmp_path: Path) -> None:
     assert published.status_code == 200
     assert published.json()["artifact_id"] == artifact["id"]
     artifact_path = Path(artifact["path"])
-    assert artifact_path != Path("/tmp/demo.onnx")
-    assert artifact_path.is_relative_to(tmp_path / "data" / "models" / "demo" / "v1")
+    assert artifact_path == (
+        tmp_path / "data" / "models" / "demo" / "v1" / "model.onnx"
+    ).resolve()
+
+
+def test_artifact_create_rejects_absolute_path_outside_version_assets(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    version = _version(client, project["id"])
+
+    response = client.post(
+        f"/api/models/versions/{version['id']}/artifacts",
+        json={
+            "kind": "onnx",
+            "path": "/tmp/demo.onnx",
+            "checksum": "sha256:absolute",
+            "status": "ready",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "artifact path" in response.json()["detail"]
 
 
 def test_runtime_state_reports_latest_published_deployment(tmp_path: Path) -> None:
     client = _client(tmp_path)
     first_project = _project(client, name="demo-a")
     first_version = _version(client, first_project["id"])
-    first_artifact = _artifact(client, first_version["id"], path="/tmp/demo-a.onnx")
+    first_artifact = _artifact(client, first_version["id"], path="demo-a.onnx")
     second_project = _project(client, name="demo-b")
     second_version = _version(client, second_project["id"])
-    second_artifact = _artifact(client, second_version["id"], path="/tmp/demo-b.onnx")
+    second_artifact = _artifact(client, second_version["id"], path="demo-b.onnx")
 
     assert client.post(
         f"/api/models/projects/{first_project['id']}/publish",
@@ -179,9 +202,9 @@ def test_publish_and_rollback_restores_previous_artifact(tmp_path: Path) -> None
     client = _client(tmp_path)
     project = _project(client)
     v1 = _version(client, project["id"], version="v1")
-    artifact1 = _artifact(client, v1["id"], path="/tmp/v1.onnx")
+    artifact1 = _artifact(client, v1["id"], path="v1.onnx")
     v2 = _version(client, project["id"], version="v2")
-    artifact2 = _artifact(client, v2["id"], path="/tmp/v2.onnx")
+    artifact2 = _artifact(client, v2["id"], path="v2.onnx")
 
     assert client.post(
         f"/api/models/projects/{project['id']}/publish",
@@ -267,6 +290,20 @@ def test_unknown_ids_return_404_and_invalid_state_returns_400(
     assert invalid_kind.status_code == 400
 
 
+def test_rollback_unknown_project_is_404_but_missing_deployment_is_400(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+
+    unknown_project = client.post("/api/models/projects/999/rollback")
+    assert unknown_project.status_code == 404
+
+    no_deployment = client.post(f"/api/models/projects/{project['id']}/rollback")
+    assert no_deployment.status_code == 400
+    assert "no deployment" in no_deployment.json()["detail"]
+
+
 def test_duplicate_project_and_version_return_controlled_400(tmp_path: Path) -> None:
     client = _client(tmp_path)
     project = _project(client)
@@ -316,3 +353,36 @@ def test_malformed_payloads_return_422_without_string_coercion(
         json={"name": None, "description": "Demo model"},
     )
     assert bad_project.status_code == 422
+
+
+def test_cli_overrides_are_visible_to_uvicorn_and_app_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_run(app, host: str, port: int) -> None:
+        captured["app"] = app
+        captured["host"] = host
+        captured["port"] = port
+
+    monkeypatch.setattr(main_module.uvicorn, "run", fake_run)
+
+    result = main_module.main(
+        [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "6001",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--config",
+            str(tmp_path / "missing.yaml"),
+        ]
+    )
+
+    assert result == 0
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 6001
+    assert captured["app"].state.config.web.host == "127.0.0.1"
+    assert captured["app"].state.config.web.port == 6001

@@ -21,8 +21,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cfg = load_runtime_config(args.config)
-    host = args.host or cfg.web.host
-    port = args.port or cfg.web.port
-    app = create_app(data_dir=Path(args.data_dir), config_path=Path(args.config))
-    uvicorn.run(app, host=host, port=port)
+    if args.host is not None:
+        cfg.web.host = args.host
+    if args.port is not None:
+        cfg.web.port = args.port
+    app = create_app(
+        data_dir=Path(args.data_dir),
+        config_path=Path(args.config),
+        config=cfg,
+    )
+    uvicorn.run(app, host=cfg.web.host, port=cfg.web.port)
     return 0

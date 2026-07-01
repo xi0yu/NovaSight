@@ -375,15 +375,17 @@ class ModelRegistry:
 
             if int(deployment["artifact_id"]) == artifact_id:
                 updated_seq = self._next_deployment_sequence(conn)
-                conn.execute(
+                cursor = conn.execute(
                     """
                     UPDATE deployments
                     SET updated_seq = ?
                     WHERE project_id = ?
+                    RETURNING *
                     """,
                     (updated_seq, project_id),
                 )
-                return self._deployment_from_row(deployment)
+                updated = cursor.fetchone()
+                return self._deployment_from_row(updated)
 
             previous_artifact_id = int(deployment["artifact_id"])
             updated_seq = self._next_deployment_sequence(conn)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -64,7 +63,7 @@ def _registry(request: Request) -> ModelRegistry:
 
 def _as_http_error(exc: ValueError) -> HTTPException:
     message = str(exc)
-    if message.startswith("unknown ") or message.startswith("no deployment for "):
+    if message.startswith("unknown "):
         return HTTPException(status_code=404, detail=message)
     return HTTPException(status_code=400, detail=message)
 
@@ -77,23 +76,6 @@ def _require_project(registry: ModelRegistry, project_id: int) -> None:
 def _require_version(registry: ModelRegistry, version_id: int) -> None:
     if registry.get_version(version_id) is None:
         raise ValueError(f"unknown version id: {version_id}")
-
-
-def _version_asset_dir(registry: ModelRegistry, version_id: int) -> Path:
-    version = registry.get_version(version_id)
-    if version is None:
-        raise ValueError(f"unknown version id: {version_id}")
-    project = registry.get_project(version.project_id)
-    if project is None:
-        raise ValueError(f"unknown project id: {version.project_id}")
-    return registry.data_dir / project.name / version.version
-
-
-def _route_artifact_path(registry: ModelRegistry, version_id: int, path: str) -> str:
-    raw_path = Path(path)
-    if not raw_path.is_absolute():
-        return path
-    return str(_version_asset_dir(registry, version_id) / raw_path.name)
 
 
 @router.get("/projects")
@@ -164,11 +146,10 @@ def create_artifact(
 ) -> dict[str, Any]:
     registry = _registry(request)
     try:
-        path = _route_artifact_path(registry, version_id, payload.path)
         artifact = registry.create_artifact(
             version_id=version_id,
             kind=payload.kind,
-            path=path,
+            path=payload.path,
             checksum=payload.checksum,
             status=payload.status,
         )
@@ -256,8 +237,10 @@ def publish(
 
 @router.post("/projects/{project_id}/rollback")
 def rollback(request: Request, project_id: int) -> dict[str, Any]:
+    registry = _registry(request)
     try:
-        deployment = _registry(request).rollback(project_id=project_id)
+        _require_project(registry, project_id)
+        deployment = registry.rollback(project_id=project_id)
     except ValueError as exc:
         raise _as_http_error(exc) from exc
     return asdict(deployment)
