@@ -10,7 +10,7 @@ class InferenceRuntime:
         self.engine = engine or TensorRtInferenceEngine()
         if not self.engine.available():
             self.engine = UnavailableInferenceEngine(
-                self.engine.status().get("reason", "TensorRT unavailable")
+                self.engine.last_reason() or "TensorRT unavailable"
             )
 
     def status(self) -> dict:

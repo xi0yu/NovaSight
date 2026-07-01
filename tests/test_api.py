@@ -76,6 +76,10 @@ def test_health_and_runtime_state(tmp_path: Path) -> None:
     body = state.json()
     assert body["executor"]["selected"] == "dry_run"
     assert body["active_model"] is None
+    assert body["inference"]["selected"] == "unavailable"
+    assert body["inference"]["available"] is False
+    assert body["inference"]["loaded"] is False
+    assert "TensorRT unavailable" in body["inference"]["reason"]
 
 
 def test_model_project_version_artifact_publish_flow(tmp_path: Path) -> None:

@@ -16,8 +16,16 @@ class UnavailableInferenceEngine:
     def available(self) -> bool:
         return False
 
+    def last_reason(self) -> str:
+        return self.reason
+
     def status(self) -> dict:
-        return {"selected": self.engine_id, "available": False, "reason": self.reason}
+        return {
+            "selected": self.engine_id,
+            "available": False,
+            "loaded": False,
+            "reason": self.reason,
+        }
 
     def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
         raise RuntimeError(self.reason)
