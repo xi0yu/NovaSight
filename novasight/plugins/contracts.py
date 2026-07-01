@@ -15,11 +15,11 @@ class Detection:
 
     @property
     def cx(self) -> float:
-        return self.x
+        return self.x + self.w / 2
 
     @property
     def cy(self) -> float:
-        return self.y
+        return self.y + self.h / 2
 
 
 @dataclass(frozen=True)
@@ -34,11 +34,11 @@ class Track:
 
     @property
     def cx(self) -> float:
-        return self.x
+        return self.x + self.w / 2
 
     @property
     def cy(self) -> float:
-        return self.y
+        return self.y + self.h / 2
 
 
 @dataclass(frozen=True)

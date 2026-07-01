@@ -9,8 +9,8 @@ def test_builtin_control_plugin_outputs_intent_and_dry_run_records_it() -> None:
         frame_id=42,
         width=1280,
         height=720,
-        detections=[Detection(cls=0, score=0.91, x=600, y=300, w=80, h=120)],
-        tracks=[Track(track_id=7, cls=0, score=0.91, x=600, y=300, w=80, h=120)],
+        detections=[Detection(cls=0, score=0.91, x=560, y=240, w=80, h=120)],
+        tracks=[Track(track_id=7, cls=0, score=0.91, x=560, y=240, w=80, h=120)],
         classes=["target"],
     )
 
