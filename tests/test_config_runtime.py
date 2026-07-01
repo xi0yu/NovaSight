@@ -29,6 +29,41 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     assert loaded.executor.default == "dry_run"
 
 
+def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
+    loaded = load_runtime_config(tmp_path / "missing.yaml")
+
+    assert loaded == RuntimeConfig()
+
+
+def test_runtime_config_empty_file_returns_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "novasight.yaml"
+    path.write_text("", encoding="utf-8")
+
+    loaded = load_runtime_config(path)
+
+    assert loaded == RuntimeConfig()
+
+
+def test_runtime_config_partial_nested_config_preserves_defaults(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "novasight.yaml"
+    path.write_text("web:\n  port: 6000\n", encoding="utf-8")
+
+    loaded = load_runtime_config(path)
+
+    assert loaded.web.port == 6000
+    assert loaded.web.host == "0.0.0.0"
+
+
+def test_save_runtime_config_creates_parent_directories(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "config" / "novasight.yaml"
+
+    save_runtime_config(RuntimeConfig(), path)
+
+    assert path.exists()
+
+
 def test_runtime_config_rejects_falsey_non_mapping_yaml(tmp_path: Path) -> None:
     path = tmp_path / "novasight.yaml"
     path.write_text("false\n", encoding="utf-8")
@@ -61,4 +96,22 @@ def test_runtime_config_rejects_unknown_nested_key(tmp_path: Path) -> None:
     path.write_text("web:\n  prt: 5174\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="unknown config key.*web.prt"):
+        load_runtime_config(path)
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "key_path"),
+    [
+        ("web:\n  port: nope\n", "web.port"),
+        ("source:\n  target_fps: []\n", "source.target_fps"),
+        ("source:\n  default: null\n", "source.default"),
+    ],
+)
+def test_runtime_config_rejects_invalid_leaf_types(
+    tmp_path: Path, yaml_text: str, key_path: str
+) -> None:
+    path = tmp_path / "novasight.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=key_path):
         load_runtime_config(path)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import MISSING, Field, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, get_type_hints
 
 import yaml
 
@@ -55,8 +55,18 @@ def _field_default(item: Field[Any]) -> Any:
     return None
 
 
+def _validate_leaf_value(key_name: str, value: Any, expected_type: type[Any]) -> None:
+    if expected_type is int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"runtime config key '{key_name}' must be an int")
+    elif expected_type is str:
+        if not isinstance(value, str):
+            raise ValueError(f"runtime config key '{key_name}' must be a string")
+
+
 def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
     items = {item.name: item for item in fields(cls)}
+    type_hints = get_type_hints(cls)
     unknown_keys = sorted(set(raw) - set(items), key=str)
     if unknown_keys:
         key_names = ", ".join(
@@ -77,6 +87,8 @@ def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
             key_name = f"{section}.{item.name}" if section else item.name
             raise ValueError(f"runtime config section '{key_name}' must be a mapping")
         else:
+            key_name = f"{section}.{item.name}" if section else item.name
+            _validate_leaf_value(key_name, value, type_hints[item.name])
             values[item.name] = value
     return cls(**values)
 
