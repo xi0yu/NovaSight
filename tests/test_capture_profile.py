@@ -65,3 +65,8 @@ def test_manual_rejects_unsupported_profile() -> None:
             height=1080,
             fps=144,
         )
+
+
+def test_unknown_preference_raises_clear_error() -> None:
+    with pytest.raises(ValueError, match="unknown capture preference"):
+        select_capture_profile("/dev/video0", CAPS, "auto_fast")

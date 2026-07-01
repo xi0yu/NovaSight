@@ -3,6 +3,14 @@ from __future__ import annotations
 from .state import CaptureCapability, CapturePreference, CaptureProfile
 
 
+_VALID_PREFERENCES = {
+    "auto_high_fps",
+    "auto_low_latency",
+    "auto_balanced",
+    "manual",
+}
+
+
 def _expanded(caps: list[CaptureCapability]) -> list[tuple[str, int, int, int]]:
     return [
         (cap.pixel_format.upper(), cap.width, cap.height, fps)
@@ -37,6 +45,9 @@ def select_capture_profile(
     height: int | None = None,
     fps: int | None = None,
 ) -> CaptureProfile:
+    if preference not in _VALID_PREFERENCES:
+        raise ValueError(f"unknown capture preference: {preference}")
+
     choices = _expanded(capabilities)
     if not choices:
         raise ValueError(f"no capture capabilities available for {device}")
