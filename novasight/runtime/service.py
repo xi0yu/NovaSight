@@ -33,11 +33,10 @@ class RuntimeService:
         )
 
     def _active_model(self) -> dict | None:
-        deployments = self.models.list_deployments()
-        if not deployments:
+        deployment = self.models.get_active_deployment()
+        if deployment is None:
             return None
 
-        deployment = deployments[0]
         project = self.models.get_project(deployment.project_id)
         artifact = self.models.get_artifact(deployment.artifact_id)
         return {

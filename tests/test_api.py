@@ -9,10 +9,15 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(data_dir=tmp_path / "data"))
 
 
-def _project(client: TestClient) -> dict:
+def _project(
+    client: TestClient,
+    *,
+    name: str = "demo",
+    description: str = "Demo model",
+) -> dict:
     response = client.post(
         "/api/models/projects",
-        json={"name": "demo", "description": "Demo model"},
+        json={"name": name, "description": description},
     )
     assert response.status_code == 200
     return response.json()
@@ -84,6 +89,42 @@ def test_model_project_version_artifact_publish_flow(tmp_path: Path) -> None:
     artifact_path = Path(artifact["path"])
     assert artifact_path != Path("/tmp/demo.onnx")
     assert artifact_path.is_relative_to(tmp_path / "data" / "models" / "demo" / "v1")
+
+
+def test_runtime_state_reports_latest_published_deployment(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    first_project = _project(client, name="demo-a")
+    first_version = _version(client, first_project["id"])
+    first_artifact = _artifact(client, first_version["id"], path="/tmp/demo-a.onnx")
+    second_project = _project(client, name="demo-b")
+    second_version = _version(client, second_project["id"])
+    second_artifact = _artifact(client, second_version["id"], path="/tmp/demo-b.onnx")
+
+    assert client.post(
+        f"/api/models/projects/{first_project['id']}/publish",
+        json={"artifact_id": first_artifact["id"]},
+    ).status_code == 200
+    assert client.post(
+        f"/api/models/projects/{second_project['id']}/publish",
+        json={"artifact_id": second_artifact["id"]},
+    ).status_code == 200
+
+    state = client.get("/api/runtime/state")
+    assert state.status_code == 200
+    active_model = state.json()["active_model"]
+    assert active_model["project"]["id"] == second_project["id"]
+    assert active_model["artifact"]["id"] == second_artifact["id"]
+
+    assert client.post(
+        f"/api/models/projects/{first_project['id']}/publish",
+        json={"artifact_id": first_artifact["id"]},
+    ).status_code == 200
+
+    updated_state = client.get("/api/runtime/state")
+    assert updated_state.status_code == 200
+    updated_active_model = updated_state.json()["active_model"]
+    assert updated_active_model["project"]["id"] == first_project["id"]
+    assert updated_active_model["artifact"]["id"] == first_artifact["id"]
 
 
 def test_plugin_and_executor_endpoints(tmp_path: Path) -> None:
@@ -224,6 +265,32 @@ def test_unknown_ids_return_404_and_invalid_state_returns_400(
         },
     )
     assert invalid_kind.status_code == 400
+
+
+def test_duplicate_project_and_version_return_controlled_400(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    _version(client, project["id"])
+
+    duplicate_project = client.post(
+        "/api/models/projects",
+        json={"name": "demo", "description": "Duplicate"},
+    )
+    assert duplicate_project.status_code == 400
+    assert "already exists" in duplicate_project.json()["detail"]
+
+    duplicate_version = client.post(
+        f"/api/models/projects/{project['id']}/versions",
+        json={
+            "version": "v1",
+            "source_kind": "onnx",
+            "source_path": "/tmp/duplicate.onnx",
+            "classes": ["target"],
+            "input_shape": "1x3x640x640",
+        },
+    )
+    assert duplicate_version.status_code == 400
+    assert "already exists" in duplicate_version.json()["detail"]
 
 
 def test_malformed_payloads_return_422_without_string_coercion(

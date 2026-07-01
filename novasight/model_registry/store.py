@@ -127,18 +127,45 @@ class ModelRegistry:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER NOT NULL UNIQUE REFERENCES model_projects(id),
                     artifact_id INTEGER NOT NULL REFERENCES model_artifacts(id),
-                    previous_artifact_id INTEGER REFERENCES model_artifacts(id)
+                    previous_artifact_id INTEGER REFERENCES model_artifacts(id),
+                    updated_seq INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
+            self._ensure_deployment_columns(conn)
+
+    def _ensure_deployment_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(deployments)").fetchall()
+        }
+        if "updated_seq" not in columns:
+            conn.execute(
+                "ALTER TABLE deployments ADD COLUMN updated_seq INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute("UPDATE deployments SET updated_seq = id WHERE updated_seq = 0")
+
+    def _next_deployment_sequence(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(updated_seq), 0) + 1 AS seq FROM deployments"
+        ).fetchone()
+        return int(row["seq"])
 
     def create_project(self, name: str, description: str) -> ModelProject:
         _validate_path_component(name, "project name")
         with self._connect() as conn:
-            cursor = conn.execute(
-                "INSERT INTO model_projects (name, description) VALUES (?, ?)",
-                (name, description),
-            )
+            existing = conn.execute(
+                "SELECT 1 FROM model_projects WHERE name = ?", (name,)
+            ).fetchone()
+            if existing is not None:
+                raise ValueError(f"project already exists: {name}")
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO model_projects (name, description) VALUES (?, ?)",
+                    (name, description),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"project already exists: {name}") from exc
             project = ModelProject(int(cursor.lastrowid), name, description)
             (self.data_dir / name).mkdir(parents=True, exist_ok=True)
             return project
@@ -161,27 +188,39 @@ class ModelRegistry:
             ).fetchone()
             if project is None:
                 raise ValueError(f"unknown project id: {project_id}")
-            cursor = conn.execute(
+            existing = conn.execute(
                 """
-                INSERT INTO model_versions (
-                    project_id,
-                    version,
-                    source_kind,
-                    source_path,
-                    classes_json,
-                    input_shape
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
+                SELECT 1 FROM model_versions
+                WHERE project_id = ? AND version = ?
                 """,
-                (
-                    project_id,
-                    version,
-                    source_kind,
-                    source_path,
-                    json.dumps(classes),
-                    input_shape,
-                ),
-            )
+                (project_id, version),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError(f"model version already exists: {version}")
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO model_versions (
+                        project_id,
+                        version,
+                        source_kind,
+                        source_path,
+                        classes_json,
+                        input_shape
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        version,
+                        source_kind,
+                        source_path,
+                        json.dumps(classes),
+                        input_shape,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"model version already exists: {version}") from exc
             model_version = ModelVersion(
                 int(cursor.lastrowid),
                 project_id,
@@ -319,30 +358,42 @@ class ModelRegistry:
                 "SELECT * FROM deployments WHERE project_id = ?", (project_id,)
             ).fetchone()
             if deployment is None:
+                updated_seq = self._next_deployment_sequence(conn)
                 cursor = conn.execute(
                     """
                     INSERT INTO deployments (
                         project_id,
                         artifact_id,
-                        previous_artifact_id
+                        previous_artifact_id,
+                        updated_seq
                     )
-                    VALUES (?, ?, NULL)
+                    VALUES (?, ?, NULL, ?)
                     """,
-                    (project_id, artifact_id),
+                    (project_id, artifact_id, updated_seq),
                 )
                 return Deployment(int(cursor.lastrowid), project_id, artifact_id, None)
 
             if int(deployment["artifact_id"]) == artifact_id:
+                updated_seq = self._next_deployment_sequence(conn)
+                conn.execute(
+                    """
+                    UPDATE deployments
+                    SET updated_seq = ?
+                    WHERE project_id = ?
+                    """,
+                    (updated_seq, project_id),
+                )
                 return self._deployment_from_row(deployment)
 
             previous_artifact_id = int(deployment["artifact_id"])
+            updated_seq = self._next_deployment_sequence(conn)
             conn.execute(
                 """
                 UPDATE deployments
-                SET artifact_id = ?, previous_artifact_id = ?
+                SET artifact_id = ?, previous_artifact_id = ?, updated_seq = ?
                 WHERE project_id = ?
                 """,
-                (artifact_id, previous_artifact_id, project_id),
+                (artifact_id, previous_artifact_id, updated_seq, project_id),
             )
             return Deployment(
                 int(deployment["id"]), project_id, artifact_id, previous_artifact_id
@@ -361,13 +412,14 @@ class ModelRegistry:
 
             artifact_id = int(deployment["artifact_id"])
             rollback_artifact_id = int(previous_artifact_id)
+            updated_seq = self._next_deployment_sequence(conn)
             conn.execute(
                 """
                 UPDATE deployments
-                SET artifact_id = ?, previous_artifact_id = ?
+                SET artifact_id = ?, previous_artifact_id = ?, updated_seq = ?
                 WHERE project_id = ?
                 """,
-                (rollback_artifact_id, artifact_id, project_id),
+                (rollback_artifact_id, artifact_id, updated_seq, project_id),
             )
             return Deployment(
                 int(deployment["id"]), project_id, rollback_artifact_id, artifact_id
@@ -384,6 +436,17 @@ class ModelRegistry:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM deployments ORDER BY id").fetchall()
         return [self._deployment_from_row(row) for row in rows]
+
+    def get_active_deployment(self) -> Deployment | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM deployments
+                ORDER BY updated_seq DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return self._deployment_from_row(row) if row is not None else None
 
     def get_project(self, project_id: int) -> ModelProject | None:
         with self._connect() as conn:
