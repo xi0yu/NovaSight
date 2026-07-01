@@ -83,11 +83,17 @@ def test_builtin_plugin_metadata_is_introspectable_from_runtime() -> None:
     assert [
         (plugin.plugin_id, plugin.kind)
         for plugin in plugins.vision_plugins
-    ] == [("vision.track_stats", "vision")]
+    ] == [
+        ("vision.track_stats", "vision"),
+        ("vision.experimental_target", "vision"),
+    ]
     assert [
         (plugin.plugin_id, plugin.kind)
         for plugin in plugins.control_plugins
-    ] == [("control.center_target", "control")]
+    ] == [
+        ("control.center_target", "control"),
+        ("control.experimental_center", "control"),
+    ]
 
 
 def test_builtin_plugins_report_stats_and_center_intent_from_top_left_boxes() -> None:

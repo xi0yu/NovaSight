@@ -24,6 +24,38 @@ class TrackStatsPlugin:
         )
 
 
+class ExperimentalTargetPlugin:
+    plugin_id = "vision.experimental_target"
+    kind = "vision"
+
+    def process(self, context: FrameContext) -> PluginResult:
+        target = max(context.detections, key=lambda item: item.score, default=None)
+        if target is None:
+            return PluginResult(self.plugin_id, self.kind, {"target": None})
+
+        cx = target.cx
+        cy = target.cy
+        class_name = (
+            context.classes[target.cls]
+            if 0 <= target.cls < len(context.classes)
+            else str(target.cls)
+        )
+        return PluginResult(
+            plugin_id=self.plugin_id,
+            kind=self.kind,
+            payload={
+                "class_name": class_name,
+                "score": target.score,
+                "center": {"x": cx, "y": cy},
+                "normalized_offset": {
+                    "x": round((cx - context.width / 2) / (context.width / 2), 6),
+                    "y": round((context.height / 2 - cy) / (context.height / 2), 6),
+                },
+                "reason": "highest-score detection",
+            },
+        )
+
+
 class CenterTargetControlPlugin:
     plugin_id = "control.center_target"
     kind = "control"
@@ -53,3 +85,22 @@ class CenterTargetControlPlugin:
         if isinstance(target, Track):
             return f"center highest-score track {target.track_id}"
         return "center highest-score detection"
+
+
+class ExperimentalCenterControlPlugin:
+    plugin_id = "control.experimental_center"
+    kind = "control"
+
+    def process(self, context: FrameContext) -> ControlIntent | None:
+        target = max(context.detections, key=lambda item: item.score, default=None)
+        if target is None:
+            return None
+
+        return ControlIntent(
+            dx=target.cx - context.width / 2,
+            dy=context.height / 2 - target.cy,
+            action="move",
+            confidence=target.score,
+            reason="experimental center target",
+            plugin_id=self.plugin_id,
+        )
