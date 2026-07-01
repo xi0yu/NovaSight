@@ -63,18 +63,25 @@ export class ApiError extends Error {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("Accept", "application/json");
+
   const response = await fetch(path, {
+    ...init,
     headers: {
-      Accept: "application/json",
-      ...init?.headers
-    },
-    ...init
+      ...Object.fromEntries(headers.entries())
+    }
   });
 
   const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
+  let body: unknown = null;
+  try {
+    body = contentType.includes("application/json")
+      ? await response.json()
+      : await response.text();
+  } catch {
+    body = "";
+  }
 
   if (!response.ok) {
     const detail =

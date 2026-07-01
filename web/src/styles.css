@@ -355,6 +355,22 @@ th {
   overflow-wrap: anywhere;
 }
 
+.inline-error {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #8f4a41;
+  border-radius: 6px;
+  background: rgba(60, 31, 29, 0.72);
+  color: #ffd6d1;
+}
+
+.inline-error span {
+  color: #f2aaa1;
+  overflow-wrap: anywhere;
+}
+
 .compact-button {
   min-height: 30px;
 }
@@ -396,6 +412,7 @@ th {
 
 .empty-state strong {
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .project-list,
@@ -427,9 +444,15 @@ th {
 }
 
 .project-row span,
+.plugin-row span,
+.project-row strong,
+.plugin-row strong {
+  overflow-wrap: anywhere;
+}
+
+.project-row span,
 .plugin-row span {
   color: var(--muted);
-  overflow-wrap: anywhere;
 }
 
 .video-shell {

@@ -18,7 +18,7 @@ type TabId = "dashboard" | "live" | "models" | "plugins" | "settings";
 
 type LoadState = {
   loading: boolean;
-  error: string | null;
+  errors: Partial<Record<"health" | "runtime" | "plugins" | "projects", string>>;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   plugins: PluginInfo[];
@@ -36,7 +36,7 @@ const tabs: Array<{ id: TabId; label: string }> = [
 
 const initialState: LoadState = {
   loading: true,
-  error: null,
+  errors: {},
   health: null,
   runtime: null,
   plugins: [],
@@ -83,6 +83,18 @@ function StatusPill({
   children: React.ReactNode;
 }) {
   return <span className={`status-pill ${tone}`}>{children}</span>;
+}
+
+function InlineError({ message }: { message: string | undefined }) {
+  if (!message) {
+    return null;
+  }
+  return (
+    <div className="inline-error" role="status">
+      <strong>Request failed</strong>
+      <span>{message}</span>
+    </div>
+  );
 }
 
 function Field({
@@ -149,11 +161,13 @@ function DashboardView({
   health,
   runtime,
   loading,
+  errors,
   onRefresh
 }: {
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   loading: boolean;
+  errors: Pick<LoadState["errors"], "health" | "runtime">;
   onRefresh: () => void;
 }) {
   const executor = runtime?.executor;
@@ -174,6 +188,7 @@ function DashboardView({
           </button>
         }
       >
+        <InlineError message={errors.health ?? errors.runtime} />
         <div className="metric-grid">
           <div className="metric">
             <span>Backend</span>
@@ -217,6 +232,7 @@ function DashboardView({
       </Panel>
 
       <Panel title="Executor Matrix" eyebrow="Selection and readiness">
+        <InlineError message={errors.runtime} />
         <ExecutorTable executor={executor} />
       </Panel>
     </div>
@@ -293,10 +309,12 @@ function LiveView({ runtime }: { runtime: RuntimeState | null }) {
 
 function ModelsView({
   projects,
-  activeModel
+  activeModel,
+  error
 }: {
   projects: ModelProject[];
   activeModel: ActiveModel | null;
+  error: string | undefined;
 }) {
   return (
     <div className="view-grid models-grid">
@@ -321,6 +339,7 @@ function ModelsView({
         )}
       </Panel>
       <Panel title="Projects" eyebrow="Registry">
+        <InlineError message={error} />
         {projects.length > 0 ? (
           <div className="project-list">
             {projects.map((project) => (
@@ -345,7 +364,13 @@ function ModelsView({
   );
 }
 
-function PluginsView({ plugins }: { plugins: PluginInfo[] }) {
+function PluginsView({
+  plugins,
+  error
+}: {
+  plugins: PluginInfo[];
+  error: string | undefined;
+}) {
   const groups = useMemo(
     () => ({
       vision: plugins.filter((plugin) => plugin.kind === "vision"),
@@ -358,6 +383,7 @@ function PluginsView({ plugins }: { plugins: PluginInfo[] }) {
   if (plugins.length === 0) {
     return (
       <Panel title="Plugins" eyebrow="Runtime chain">
+        <InlineError message={error} />
         <EmptyState
           title="No plugins loaded"
           detail="The runtime returned an empty plugin chain."
@@ -368,6 +394,11 @@ function PluginsView({ plugins }: { plugins: PluginInfo[] }) {
 
   return (
     <div className="view-grid plugins-grid">
+      {error ? (
+        <Panel title="Plugin Request" eyebrow="Data quality">
+          <InlineError message={error} />
+        </Panel>
+      ) : null}
       <PluginGroup title="Vision" plugins={groups.vision} />
       <PluginGroup title="Control" plugins={groups.control} />
       {groups.other.length > 0 ? <PluginGroup title="Other" plugins={groups.other} /> : null}
@@ -410,26 +441,10 @@ function SettingsView({ runtime }: { runtime: RuntimeState | null }) {
         </div>
       </Panel>
       <Panel title="Operations" eyebrow="Local console">
-        <div className="settings-list">
-          <label>
-            <span>Capture guard</span>
-            <select defaultValue="manual">
-              <option value="manual">Manual arm</option>
-              <option value="boot">Arm on boot</option>
-            </select>
-          </label>
-          <label>
-            <span>Telemetry interval</span>
-            <select defaultValue="1s">
-              <option value="500ms">500 ms</option>
-              <option value="1s">1 s</option>
-              <option value="5s">5 s</option>
-            </select>
-          </label>
-          <label className="check-row">
-            <input type="checkbox" defaultChecked />
-            <span>Show unavailable executors</span>
-          </label>
+        <div className="field-grid">
+          <Field label="Capture guard" value="Manual arm" />
+          <Field label="Telemetry interval" value="1 s" />
+          <Field label="Unavailable executors" value="Shown" />
         </div>
       </Panel>
     </div>
@@ -441,31 +456,37 @@ export default function App() {
   const [state, setState] = useState<LoadState>(initialState);
 
   const load = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true, error: null }));
-    try {
-      const [health, runtime, plugins, projects] = await Promise.all([
-        getHealth(),
-        getRuntimeState(),
-        getPlugins(),
-        getModelProjects()
-      ]);
-      setState({
+    setState((current) => ({ ...current, loading: true, errors: {} }));
+    const [health, runtime, plugins, projects] = await Promise.allSettled([
+      getHealth(),
+      getRuntimeState(),
+      getPlugins(),
+      getModelProjects()
+    ]);
+    setState((current) => {
+      const errors: LoadState["errors"] = {};
+      if (health.status === "rejected") {
+        errors.health = getErrorMessage(health.reason);
+      }
+      if (runtime.status === "rejected") {
+        errors.runtime = getErrorMessage(runtime.reason);
+      }
+      if (plugins.status === "rejected") {
+        errors.plugins = getErrorMessage(plugins.reason);
+      }
+      if (projects.status === "rejected") {
+        errors.projects = getErrorMessage(projects.reason);
+      }
+      return {
         loading: false,
-        error: null,
-        health,
-        runtime,
-        plugins,
-        projects,
+        errors,
+        health: health.status === "fulfilled" ? health.value : current.health,
+        runtime: runtime.status === "fulfilled" ? runtime.value : current.runtime,
+        plugins: plugins.status === "fulfilled" ? plugins.value : current.plugins,
+        projects: projects.status === "fulfilled" ? projects.value : current.projects,
         lastUpdated: new Date()
-      });
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        loading: false,
-        error: getErrorMessage(error),
-        lastUpdated: new Date()
-      }));
-    }
+      };
+    });
   }, []);
 
   useEffect(() => {
@@ -473,6 +494,7 @@ export default function App() {
   }, [load]);
 
   const activeModel = state.runtime?.active_model ?? null;
+  const hasErrors = Object.keys(state.errors).length > 0;
 
   return (
     <main className="app-shell">
@@ -485,8 +507,8 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-status">
-          <StatusPill tone={state.error ? "bad" : state.health?.ok ? "good" : "warn"}>
-            {state.error ? "API fault" : state.health?.ok ? "Connected" : "Connecting"}
+          <StatusPill tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
+            {hasErrors ? "Partial fault" : state.health?.ok ? "Connected" : "Connecting"}
           </StatusPill>
           <span className="last-updated">Updated {formatTime(state.lastUpdated)}</span>
         </div>
@@ -506,10 +528,10 @@ export default function App() {
         ))}
       </nav>
 
-      {state.error ? (
+      {hasErrors ? (
         <div className="alert" role="alert">
-          <strong>Backend request failed</strong>
-          <span>{state.error}</span>
+          <strong>Backend request degraded</strong>
+          <span>{Object.values(state.errors).join(" / ")}</span>
           <button className="button compact-button" type="button" onClick={load}>
             Retry
           </button>
@@ -530,14 +552,21 @@ export default function App() {
             health={state.health}
             loading={state.loading}
             runtime={state.runtime}
+            errors={state.errors}
             onRefresh={load}
           />
         ) : null}
         {activeTab === "live" ? <LiveView runtime={state.runtime} /> : null}
         {activeTab === "models" ? (
-          <ModelsView projects={state.projects} activeModel={activeModel} />
+          <ModelsView
+            projects={state.projects}
+            activeModel={activeModel}
+            error={state.errors.projects}
+          />
         ) : null}
-        {activeTab === "plugins" ? <PluginsView plugins={state.plugins} /> : null}
+        {activeTab === "plugins" ? (
+          <PluginsView plugins={state.plugins} error={state.errors.plugins} />
+        ) : null}
         {activeTab === "settings" ? <SettingsView runtime={state.runtime} /> : null}
       </div>
     </main>
