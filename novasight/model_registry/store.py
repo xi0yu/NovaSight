@@ -38,6 +38,14 @@ def _validate_choice(value: str, allowed: tuple[str, ...], label: str) -> None:
         raise ValueError(f"{label} must be one of: {choices}")
 
 
+def _validate_string_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise ValueError(f"{label} must be a list of strings")
+    return list(value)
+
+
 class ModelRegistry:
     def __init__(self, db_path: Path, data_dir: Path) -> None:
         self.db_path = Path(db_path)
@@ -75,7 +83,8 @@ class ModelRegistry:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER NOT NULL REFERENCES model_projects(id),
                     version TEXT NOT NULL,
-                    source_kind TEXT NOT NULL,
+                    source_kind TEXT NOT NULL
+                        CHECK (source_kind IN ('pt', 'onnx')),
                     source_path TEXT NOT NULL,
                     classes_json TEXT NOT NULL,
                     input_shape TEXT NOT NULL,
@@ -85,18 +94,24 @@ class ModelRegistry:
                 CREATE TABLE IF NOT EXISTS model_artifacts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     version_id INTEGER NOT NULL REFERENCES model_versions(id),
-                    kind TEXT NOT NULL,
+                    kind TEXT NOT NULL
+                        CHECK (kind IN ('pt', 'onnx', 'engine')),
                     path TEXT NOT NULL,
                     checksum TEXT NOT NULL,
                     status TEXT NOT NULL
+                        CHECK (status IN ('pending', 'running', 'ready', 'failed'))
                 );
 
                 CREATE TABLE IF NOT EXISTS conversion_jobs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     version_id INTEGER NOT NULL REFERENCES model_versions(id),
-                    target_kind TEXT NOT NULL,
+                    target_kind TEXT NOT NULL
+                        CHECK (target_kind IN ('onnx', 'engine')),
                     command_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
+                    status TEXT NOT NULL
+                        CHECK (
+                            status IN ('pending', 'running', 'failed', 'succeeded')
+                        ),
                     log TEXT NOT NULL
                 );
 
@@ -131,6 +146,7 @@ class ModelRegistry:
     ) -> ModelVersion:
         _validate_path_component(version, "version")
         _validate_choice(source_kind, get_args(SourceKind), "source kind")
+        classes = _validate_string_list(classes, "classes")
         with self._connect() as conn:
             project = conn.execute(
                 "SELECT name FROM model_projects WHERE id = ?", (project_id,)
@@ -208,7 +224,9 @@ class ModelRegistry:
         _validate_choice(
             target_kind, get_args(ConversionTargetKind), "conversion target kind"
         )
+        command = _validate_string_list(command, "command")
         with self._connect() as conn:
+            self._preflight_version_id(conn, version_id)
             cursor = conn.execute(
                 """
                 INSERT INTO conversion_jobs (
@@ -391,6 +409,15 @@ class ModelRegistry:
         if row is None:
             raise ValueError(f"unknown version id: {version_id}")
         return self.data_dir / str(row["project_name"]) / str(row["version"])
+
+    def _preflight_version_id(
+        self, conn: sqlite3.Connection, version_id: int
+    ) -> None:
+        row = conn.execute(
+            "SELECT 1 FROM model_versions WHERE id = ?", (version_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown version id: {version_id}")
 
     def _normalize_artifact_path(self, path: str, asset_dir: Path) -> str:
         raw_path = Path(path)

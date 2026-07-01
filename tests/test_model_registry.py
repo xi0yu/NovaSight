@@ -471,6 +471,29 @@ def test_create_version_rejects_invalid_source_kind(tmp_path: Path) -> None:
     assert registry.list_versions(project.id) == []
 
 
+@pytest.mark.parametrize("classes", ["person", ["person", 7], [object()]])
+def test_create_version_rejects_invalid_classes(
+    tmp_path: Path, classes
+) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db",
+        data_dir=tmp_path / "models",
+    )
+    project = registry.create_project("demo", "")
+
+    with pytest.raises(ValueError, match="classes"):
+        registry.create_version(
+            project_id=project.id,
+            version="v1",
+            source_kind="onnx",
+            source_path="/tmp/model.onnx",
+            classes=classes,
+            input_shape="dynamic",
+        )
+
+    assert registry.list_versions(project.id) == []
+
+
 @pytest.mark.parametrize(
     ("kind", "status", "match"),
     [
@@ -508,6 +531,35 @@ def test_create_conversion_job_rejects_invalid_target_kind(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="conversion target kind"):
         registry.create_conversion_job(version.id, "bogus", ["convert"])
+
+    assert registry.list_conversion_jobs() == []
+
+
+def test_create_conversion_job_rejects_unknown_version_id(tmp_path: Path) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db",
+        data_dir=tmp_path / "models",
+    )
+
+    with pytest.raises(ValueError, match="unknown version id: 42"):
+        registry.create_conversion_job(42, "engine", ["convert"])
+
+    assert registry.list_conversion_jobs() == []
+
+
+@pytest.mark.parametrize("command", ["convert", ["convert", 7], [object()]])
+def test_create_conversion_job_rejects_invalid_command(
+    tmp_path: Path, command
+) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db",
+        data_dir=tmp_path / "models",
+    )
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+
+    with pytest.raises(ValueError, match="command"):
+        registry.create_conversion_job(version.id, "engine", command)
 
     assert registry.list_conversion_jobs() == []
 
