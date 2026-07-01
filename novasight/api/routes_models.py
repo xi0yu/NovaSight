@@ -5,10 +5,57 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 from novasight.model_registry import ModelRegistry
 
 router = APIRouter(prefix="/api/models")
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: StrictStr
+    description: StrictStr = ""
+
+
+class VersionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: StrictStr
+    source_kind: StrictStr
+    source_path: StrictStr
+    classes: list[StrictStr]
+    input_shape: StrictStr
+
+
+class ArtifactCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: StrictStr
+    path: StrictStr
+    checksum: StrictStr
+    status: StrictStr
+
+
+class ConversionJobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_kind: StrictStr
+    command: list[StrictStr]
+
+
+class ConversionJobFinishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: StrictStr
+    log: StrictStr = ""
+
+
+class PublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: StrictInt
 
 
 def _registry(request: Request) -> ModelRegistry:
@@ -16,15 +63,30 @@ def _registry(request: Request) -> ModelRegistry:
 
 
 def _as_http_error(exc: ValueError) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
+    message = str(exc)
+    if message.startswith("unknown ") or message.startswith("no deployment for "):
+        return HTTPException(status_code=404, detail=message)
+    return HTTPException(status_code=400, detail=message)
+
+
+def _require_project(registry: ModelRegistry, project_id: int) -> None:
+    if registry.get_project(project_id) is None:
+        raise ValueError(f"unknown project id: {project_id}")
+
+
+def _require_version(registry: ModelRegistry, version_id: int) -> None:
+    if registry.get_version(version_id) is None:
+        raise ValueError(f"unknown version id: {version_id}")
 
 
 def _version_asset_dir(registry: ModelRegistry, version_id: int) -> Path:
-    for project in registry.list_projects():
-        for version in registry.list_versions(project.id):
-            if version.id == version_id:
-                return registry.data_dir / project.name / version.version
-    raise ValueError(f"unknown version id: {version_id}")
+    version = registry.get_version(version_id)
+    if version is None:
+        raise ValueError(f"unknown version id: {version_id}")
+    project = registry.get_project(version.project_id)
+    if project is None:
+        raise ValueError(f"unknown project id: {version.project_id}")
+    return registry.data_dir / project.name / version.version
 
 
 def _route_artifact_path(registry: ModelRegistry, version_id: int, path: str) -> str:
@@ -42,66 +104,76 @@ def list_projects(request: Request) -> list[dict[str, Any]]:
 @router.post("/projects")
 def create_project(
     request: Request,
-    payload: dict[str, Any],
+    payload: ProjectCreateRequest,
 ) -> dict[str, Any]:
     try:
         project = _registry(request).create_project(
-            name=str(payload["name"]),
-            description=str(payload.get("description", "")),
+            name=payload.name,
+            description=payload.description,
         )
-    except (KeyError, ValueError) as exc:
-        raise _as_http_error(ValueError(str(exc))) from exc
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
     return asdict(project)
 
 
 @router.get("/projects/{project_id}/versions")
 def list_versions(request: Request, project_id: int) -> list[dict[str, Any]]:
-    return [asdict(version) for version in _registry(request).list_versions(project_id)]
+    registry = _registry(request)
+    try:
+        _require_project(registry, project_id)
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+    return [asdict(version) for version in registry.list_versions(project_id)]
 
 
 @router.post("/projects/{project_id}/versions")
 def create_version(
     request: Request,
     project_id: int,
-    payload: dict[str, Any],
+    payload: VersionCreateRequest,
 ) -> dict[str, Any]:
     try:
         version = _registry(request).create_version(
             project_id=project_id,
-            version=str(payload["version"]),
-            source_kind=str(payload["source_kind"]),
-            source_path=str(payload["source_path"]),
-            classes=list(payload["classes"]),
-            input_shape=str(payload["input_shape"]),
+            version=payload.version,
+            source_kind=payload.source_kind,
+            source_path=payload.source_path,
+            classes=payload.classes,
+            input_shape=payload.input_shape,
         )
-    except (KeyError, ValueError) as exc:
-        raise _as_http_error(ValueError(str(exc))) from exc
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
     return asdict(version)
 
 
 @router.get("/versions/{version_id}/artifacts")
 def list_artifacts(request: Request, version_id: int) -> list[dict[str, Any]]:
-    return [asdict(artifact) for artifact in _registry(request).list_artifacts(version_id)]
+    registry = _registry(request)
+    try:
+        _require_version(registry, version_id)
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
+    return [asdict(artifact) for artifact in registry.list_artifacts(version_id)]
 
 
 @router.post("/versions/{version_id}/artifacts")
 def create_artifact(
     request: Request,
     version_id: int,
-    payload: dict[str, Any],
+    payload: ArtifactCreateRequest,
 ) -> dict[str, Any]:
     registry = _registry(request)
     try:
-        path = _route_artifact_path(registry, version_id, str(payload["path"]))
+        path = _route_artifact_path(registry, version_id, payload.path)
         artifact = registry.create_artifact(
             version_id=version_id,
-            kind=str(payload["kind"]),
+            kind=payload.kind,
             path=path,
-            checksum=str(payload["checksum"]),
-            status=str(payload["status"]),
+            checksum=payload.checksum,
+            status=payload.status,
         )
-    except (KeyError, ValueError) as exc:
-        raise _as_http_error(ValueError(str(exc))) from exc
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
     return asdict(artifact)
 
 
@@ -110,26 +182,29 @@ def list_conversion_jobs(
     request: Request,
     version_id: int | None = None,
 ) -> list[dict[str, Any]]:
-    return [
-        asdict(job)
-        for job in _registry(request).list_conversion_jobs(version_id=version_id)
-    ]
+    registry = _registry(request)
+    if version_id is not None:
+        try:
+            _require_version(registry, version_id)
+        except ValueError as exc:
+            raise _as_http_error(exc) from exc
+    return [asdict(job) for job in registry.list_conversion_jobs(version_id=version_id)]
 
 
 @router.post("/versions/{version_id}/jobs")
 def create_conversion_job(
     request: Request,
     version_id: int,
-    payload: dict[str, Any],
+    payload: ConversionJobCreateRequest,
 ) -> dict[str, Any]:
     try:
         job = _registry(request).create_conversion_job(
             version_id=version_id,
-            target_kind=str(payload["target_kind"]),
-            command=list(payload["command"]),
+            target_kind=payload.target_kind,
+            command=payload.command,
         )
-    except (KeyError, ValueError) as exc:
-        raise _as_http_error(ValueError(str(exc))) from exc
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
     return asdict(job)
 
 
@@ -137,7 +212,10 @@ def create_conversion_job(
 def get_conversion_job(request: Request, job_id: int) -> dict[str, Any]:
     job = _registry(request).get_conversion_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"unknown conversion job id: {job_id}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown conversion job id: {job_id}",
+        )
     return asdict(job)
 
 
@@ -145,16 +223,16 @@ def get_conversion_job(request: Request, job_id: int) -> dict[str, Any]:
 def finish_conversion_job(
     request: Request,
     job_id: int,
-    payload: dict[str, Any],
+    payload: ConversionJobFinishRequest,
 ) -> dict[str, bool]:
     try:
         _registry(request).finish_conversion_job(
             job_id=job_id,
-            status=str(payload["status"]),
-            log=str(payload.get("log", "")),
+            status=payload.status,
+            log=payload.log,
         )
-    except (KeyError, ValueError) as exc:
-        raise _as_http_error(ValueError(str(exc))) from exc
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
     return {"ok": True}
 
 
@@ -162,15 +240,17 @@ def finish_conversion_job(
 def publish(
     request: Request,
     project_id: int,
-    payload: dict[str, Any],
+    payload: PublishRequest,
 ) -> dict[str, Any]:
+    registry = _registry(request)
     try:
-        deployment = _registry(request).publish(
+        _require_project(registry, project_id)
+        deployment = registry.publish(
             project_id=project_id,
-            artifact_id=int(payload["artifact_id"]),
+            artifact_id=payload.artifact_id,
         )
-    except (KeyError, ValueError) as exc:
-        raise _as_http_error(ValueError(str(exc))) from exc
+    except ValueError as exc:
+        raise _as_http_error(exc) from exc
     return asdict(deployment)
 
 

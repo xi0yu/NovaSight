@@ -380,10 +380,29 @@ class ModelRegistry:
             ).fetchone()
         return self._deployment_from_row(row) if row is not None else None
 
+    def list_deployments(self) -> list[Deployment]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM deployments ORDER BY id").fetchall()
+        return [self._deployment_from_row(row) for row in rows]
+
+    def get_project(self, project_id: int) -> ModelProject | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        return self._project_from_row(row) if row is not None else None
+
     def list_projects(self) -> list[ModelProject]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM model_projects ORDER BY id").fetchall()
         return [self._project_from_row(row) for row in rows]
+
+    def get_version(self, version_id: int) -> ModelVersion | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+        return self._version_from_row(row) if row is not None else None
 
     def list_versions(self, project_id: int) -> list[ModelVersion]:
         with self._connect() as conn:
@@ -392,6 +411,13 @@ class ModelRegistry:
                 (project_id,),
             ).fetchall()
         return [self._version_from_row(row) for row in rows]
+
+    def get_artifact(self, artifact_id: int) -> ModelArtifact | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+        return self._artifact_from_row(row) if row is not None else None
 
     def list_artifacts(self, version_id: int) -> list[ModelArtifact]:
         with self._connect() as conn:

@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 from novasight.config import RuntimeConfig
 from novasight.executors import ExecutorRegistry
-from novasight.model_registry import ModelArtifact, ModelRegistry
+from novasight.model_registry import ModelRegistry
 from novasight.plugins import PluginRuntime
 
 from .state import RuntimeState
@@ -33,22 +33,15 @@ class RuntimeService:
         )
 
     def _active_model(self) -> dict | None:
-        for project in self.models.list_projects():
-            deployment = self.models.get_deployment(project.id)
-            if deployment is None:
-                continue
-            artifact = self._find_artifact(deployment.artifact_id)
-            return {
-                "project": asdict(project),
-                "deployment": asdict(deployment),
-                "artifact": asdict(artifact) if artifact is not None else None,
-            }
-        return None
+        deployments = self.models.list_deployments()
+        if not deployments:
+            return None
 
-    def _find_artifact(self, artifact_id: int) -> ModelArtifact | None:
-        for project in self.models.list_projects():
-            for version in self.models.list_versions(project.id):
-                for artifact in self.models.list_artifacts(version.id):
-                    if artifact.id == artifact_id:
-                        return artifact
-        return None
+        deployment = deployments[0]
+        project = self.models.get_project(deployment.project_id)
+        artifact = self.models.get_artifact(deployment.artifact_id)
+        return {
+            "project": asdict(project) if project is not None else None,
+            "deployment": asdict(deployment),
+            "artifact": asdict(artifact) if artifact is not None else None,
+        }
