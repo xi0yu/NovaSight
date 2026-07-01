@@ -31,7 +31,11 @@ class ControlOutputPolicy:
         self.min_confidence = min_confidence
 
     def apply(self, intent: ControlIntent) -> ControlOutput:
-        if not math.isfinite(intent.dx) or not math.isfinite(intent.dy):
+        if (
+            not math.isfinite(intent.dx)
+            or not math.isfinite(intent.dy)
+            or not math.isfinite(intent.confidence)
+        ):
             return ControlOutput(
                 0,
                 0,
@@ -40,7 +44,7 @@ class ControlOutputPolicy:
                 intent.plugin_id,
                 False,
                 False,
-                "non-finite control delta",
+                "non-finite control value",
             )
         if intent.confidence < self.min_confidence:
             return ControlOutput(

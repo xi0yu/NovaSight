@@ -294,6 +294,25 @@ def test_registry_applies_policy_before_execution() -> None:
     assert dry_run.history == [execution.intent]
 
 
+def test_registry_from_config_honors_legacy_executor_default() -> None:
+    config = RuntimeConfig()
+    config.executor.default = "kmnet"
+
+    executors = ExecutorRegistry.from_config(config)
+
+    assert executors.status()["selected"] == "kmnet"
+
+
+def test_registry_from_config_prefers_control_output_mode() -> None:
+    config = RuntimeConfig()
+    config.executor.default = "kmnet"
+    config.control.output_mode = "console"
+
+    executors = ExecutorRegistry.from_config(config)
+
+    assert executors.status()["selected"] == "console"
+
+
 def test_kmnet_executor_unavailable_execute_returns_unsent(monkeypatch) -> None:
     _force_kmnet_import_failure(monkeypatch)
     executor = KmNetExecutor()
