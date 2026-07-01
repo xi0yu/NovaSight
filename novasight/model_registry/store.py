@@ -15,6 +15,17 @@ from .schema import (
 )
 
 
+def _validate_path_component(value: str, label: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{label} must not be empty")
+    if Path(value).is_absolute():
+        raise ValueError(f"{label} must not be an absolute path")
+    if "/" in value or "\\" in value:
+        raise ValueError(f"{label} must not contain path separators")
+    if value in {".", ".."}:
+        raise ValueError(f"{label} must be a single safe path component")
+
+
 class ModelRegistry:
     def __init__(self, db_path: Path, data_dir: Path) -> None:
         self.db_path = Path(db_path)
@@ -83,6 +94,7 @@ class ModelRegistry:
             )
 
     def create_project(self, name: str, description: str) -> ModelProject:
+        _validate_path_component(name, "project name")
         with self._connect() as conn:
             cursor = conn.execute(
                 "INSERT INTO model_projects (name, description) VALUES (?, ?)",
@@ -101,6 +113,7 @@ class ModelRegistry:
         classes: list[str],
         input_shape: str,
     ) -> ModelVersion:
+        _validate_path_component(version, "version")
         with self._connect() as conn:
             project = conn.execute(
                 "SELECT name FROM model_projects WHERE id = ?", (project_id,)
@@ -203,6 +216,25 @@ class ModelRegistry:
             ).fetchone()
         return self._conversion_job_from_row(row) if row is not None else None
 
+    def list_conversion_jobs(
+        self, version_id: int | None = None
+    ) -> list[ConversionJob]:
+        with self._connect() as conn:
+            if version_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM conversion_jobs ORDER BY id"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM conversion_jobs
+                    WHERE version_id = ?
+                    ORDER BY id
+                    """,
+                    (version_id,),
+                ).fetchall()
+        return [self._conversion_job_from_row(row) for row in rows]
+
     def publish(self, project_id: int, artifact_id: int) -> Deployment:
         with self._connect() as conn:
             artifact = conn.execute(
@@ -262,7 +294,7 @@ class ModelRegistry:
                 raise ValueError(f"no deployment for project id: {project_id}")
             previous_artifact_id = deployment["previous_artifact_id"]
             if previous_artifact_id is None:
-                raise ValueError("no previous artifact to roll back to")
+                return self._deployment_from_row(deployment)
 
             artifact_id = int(deployment["artifact_id"])
             rollback_artifact_id = int(previous_artifact_id)
