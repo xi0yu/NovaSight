@@ -41,6 +41,10 @@ class ModelRegistry:
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        else:
             conn.commit()
         finally:
             conn.close()
@@ -101,8 +105,8 @@ class ModelRegistry:
                 (name, description),
             )
             project = ModelProject(int(cursor.lastrowid), name, description)
-        (self.data_dir / name).mkdir(parents=True, exist_ok=True)
-        return project
+            (self.data_dir / name).mkdir(parents=True, exist_ok=True)
+            return project
 
     def create_version(
         self,
@@ -151,8 +155,10 @@ class ModelRegistry:
                 input_shape,
             )
             project_name = str(project["name"])
-        (self.data_dir / project_name / version).mkdir(parents=True, exist_ok=True)
-        return model_version
+            (self.data_dir / project_name / version).mkdir(
+                parents=True, exist_ok=True
+            )
+            return model_version
 
     def create_artifact(
         self,
@@ -163,6 +169,8 @@ class ModelRegistry:
         status: str,
     ) -> ModelArtifact:
         with self._connect() as conn:
+            asset_dir = self._version_asset_dir(conn, version_id)
+            self._validate_artifact_path(path, asset_dir)
             cursor = conn.execute(
                 """
                 INSERT INTO model_artifacts (version_id, kind, path, checksum, status)
@@ -272,6 +280,9 @@ class ModelRegistry:
                 )
                 return Deployment(int(cursor.lastrowid), project_id, artifact_id, None)
 
+            if int(deployment["artifact_id"]) == artifact_id:
+                return self._deployment_from_row(deployment)
+
             previous_artifact_id = int(deployment["artifact_id"])
             conn.execute(
                 """
@@ -340,6 +351,30 @@ class ModelRegistry:
 
     def _project_from_row(self, row: sqlite3.Row) -> ModelProject:
         return ModelProject(int(row["id"]), str(row["name"]), str(row["description"]))
+
+    def _version_asset_dir(self, conn: sqlite3.Connection, version_id: int) -> Path:
+        row = conn.execute(
+            """
+            SELECT model_projects.name AS project_name, model_versions.version
+            FROM model_versions
+            JOIN model_projects ON model_projects.id = model_versions.project_id
+            WHERE model_versions.id = ?
+            """,
+            (version_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown version id: {version_id}")
+        return self.data_dir / str(row["project_name"]) / str(row["version"])
+
+    def _validate_artifact_path(self, path: str, asset_dir: Path) -> None:
+        artifact_path = Path(path).resolve(strict=False)
+        asset_dir_path = asset_dir.resolve(strict=False)
+        try:
+            artifact_path.relative_to(asset_dir_path)
+        except ValueError as exc:
+            raise ValueError(
+                "artifact path must be inside version asset directory"
+            ) from exc
 
     def _version_from_row(self, row: sqlite3.Row) -> ModelVersion:
         return ModelVersion(
