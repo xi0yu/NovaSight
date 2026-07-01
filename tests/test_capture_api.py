@@ -109,7 +109,7 @@ def test_capture_select_rejects_blank_device_without_configuring(tmp_path) -> No
 
     response = client.post("/api/capture/select", json={"device": "  "})
 
-    assert response.status_code in {400, 422}
+    assert response.status_code == 422
     assert service.configure_calls == []
 
 

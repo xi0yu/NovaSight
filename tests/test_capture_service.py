@@ -148,6 +148,32 @@ def test_capture_service_blank_device_does_not_fallback_to_default() -> None:
     assert service.source is None
 
 
+def test_capture_service_blank_device_closes_existing_source() -> None:
+    cfg = RuntimeConfig()
+    sources: list[FakeSource] = []
+
+    def source_factory(profile):
+        source = FakeSource()
+        sources.append(source)
+        return source
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=source_factory,
+    )
+    first_state = service.configure("/dev/video0")
+
+    state = service.configure("")
+
+    assert first_state.available is True
+    assert sources[0].closed is True
+    assert service.source is None
+    assert state is service.state
+    assert state.available is False
+    assert "required" in str(state.last_error)
+
+
 def test_capture_service_source_factory_error_clears_state() -> None:
     cfg = RuntimeConfig()
     old_source = FakeSource()

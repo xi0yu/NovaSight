@@ -57,6 +57,9 @@ class CaptureService:
         fps: int | None = None,
     ) -> CaptureRuntimeState:
         selected_device = self.config.device if device is None else device
+        if self.source is not None:
+            self.source.close()
+            self.source = None
         if not selected_device.strip():
             self.state = CaptureRuntimeState(
                 available=False,
@@ -71,9 +74,6 @@ class CaptureService:
         selected_width = width if width is not None else self.config.width
         selected_height = height if height is not None else self.config.height
         selected_fps = fps if fps is not None else self.config.fps
-        if self.source is not None:
-            self.source.close()
-            self.source = None
         caps = self.capabilities(selected_device)
         if not caps.available:
             self.state = CaptureRuntimeState(
