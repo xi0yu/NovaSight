@@ -59,15 +59,19 @@ class RuntimeService:
 
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
         if self.inference is None:
-            return self.process_frame(
-                FrameContext(frame.frame_id, frame.width, frame.height)
-            )
+            return self.process_frame(self._empty_frame_context(frame))
 
-        inference_result = self.inference.engine.infer(frame)
+        infer = getattr(self.inference, "infer", None)
+        if not callable(infer):
+            return self.process_frame(self._empty_frame_context(frame))
+
+        try:
+            inference_result = infer(frame)
+        except Exception:
+            return self.process_frame(self._empty_frame_context(frame))
+
         if not inference_result.available:
-            return self.process_frame(
-                FrameContext(frame.frame_id, frame.width, frame.height)
-            )
+            return self.process_frame(self._empty_frame_context(frame))
 
         detections = [
             Detection(
@@ -88,6 +92,13 @@ class RuntimeService:
             classes=inference_result.classes,
         )
         return self.process_frame(context)
+
+    def _empty_frame_context(self, frame: CapturedFrame) -> FrameContext:
+        return FrameContext(
+            frame_id=frame.frame_id,
+            width=frame.width,
+            height=frame.height,
+        )
 
     def _active_model(self) -> dict | None:
         deployment = self.models.get_active_deployment()

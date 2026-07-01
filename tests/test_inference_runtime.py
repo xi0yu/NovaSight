@@ -179,11 +179,7 @@ class FakeInferenceRuntime:
     def status(self) -> dict:
         return {"selected": "fake", "available": True}
 
-    @property
-    def engine(self):
-        return self
-
-    def infer(self, frame):
+    def infer(self, frame: CapturedFrame) -> InferenceResult:
         return InferenceResult(
             available=True,
             detections=[InferenceDetection(0, 0.9, 10, 20, 30, 40)],
@@ -191,19 +187,132 @@ class FakeInferenceRuntime:
         )
 
 
-def test_runtime_process_captured_frame_converts_inference_to_context(
-    tmp_path,
-) -> None:
+def _runtime_service(tmp_path, inference) -> tuple[RuntimeService, DryRunExecutor]:
+    dry_run = DryRunExecutor()
     service = RuntimeService(
         config=RuntimeConfig(),
         models=ModelRegistry(tmp_path / "db.sqlite", tmp_path / "models"),
         plugins=PluginRuntime.with_builtin_plugins(),
-        executors=ExecutorRegistry([DryRunExecutor()]),
-        inference=FakeInferenceRuntime(),
+        executors=ExecutorRegistry([dry_run]),
+        inference=inference,
     )
+    return service, dry_run
+
+
+def test_runtime_process_captured_frame_converts_inference_to_context(
+    tmp_path,
+) -> None:
+    service, dry_run = _runtime_service(tmp_path, FakeInferenceRuntime())
 
     frame = CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
     result = service.process_captured_frame(frame)
 
     assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents
+    assert len(result.plugin_batch.control_intents) == 1
+    intent = result.plugin_batch.control_intents[0]
+    assert intent.dx == -295
+    assert intent.dy == 200
+    assert intent.confidence == 0.9
+    assert [execution.intent for execution in result.execution_results] == [intent]
+    assert dry_run.history == [intent]
+
+
+def test_runtime_process_captured_frame_without_inference_uses_empty_context(
+    tmp_path,
+) -> None:
+    service, dry_run = _runtime_service(tmp_path, None)
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
+def test_runtime_process_captured_frame_unavailable_inference_uses_empty_context(
+    tmp_path,
+) -> None:
+    class UnavailableRuntime:
+        def infer(self, frame: CapturedFrame) -> InferenceResult:
+            return InferenceResult(available=False, reason="not loaded")
+
+    service, dry_run = _runtime_service(tmp_path, UnavailableRuntime())
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
+def test_runtime_process_captured_frame_missing_infer_uses_empty_context(
+    tmp_path,
+) -> None:
+    service, dry_run = _runtime_service(tmp_path, object())
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
+def test_runtime_process_captured_frame_inference_exception_uses_empty_context(
+    tmp_path,
+) -> None:
+    class BrokenRuntime:
+        def infer(self, frame: CapturedFrame) -> InferenceResult:
+            raise RuntimeError("inference failed")
+
+    service, dry_run = _runtime_service(tmp_path, BrokenRuntime())
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
+def test_inference_runtime_infer_returns_unavailable_result_on_engine_exception() -> None:
+    class BrokenEngine:
+        engine_id = "broken"
+
+        def available(self) -> bool:
+            return True
+
+        def last_reason(self) -> str:
+            return ""
+
+        def status(self) -> dict:
+            return {"selected": self.engine_id, "available": True}
+
+        def load(
+            self,
+            artifact_path: Path,
+            classes: list[str],
+            input_shape: str,
+        ) -> None:
+            raise AssertionError("not used")
+
+        def infer(self, frame: CapturedFrame) -> InferenceResult:
+            raise RuntimeError("engine exploded")
+
+    runtime = InferenceRuntime(BrokenEngine())
+
+    result = runtime.infer(CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None))
+
+    assert result.available is False
+    assert result.detections == []
+    assert result.reason == "engine exploded"

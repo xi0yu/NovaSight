@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from novasight.capture.source import CapturedFrame
+
 from .contracts import InferenceEngine
+from .contracts import InferenceResult
 from .tensorrt import TensorRtInferenceEngine
 from .unavailable import UnavailableInferenceEngine
 
@@ -15,3 +18,9 @@ class InferenceRuntime:
 
     def status(self) -> dict:
         return self.engine.status()
+
+    def infer(self, frame: CapturedFrame) -> InferenceResult:
+        try:
+            return self.engine.infer(frame)
+        except Exception as exc:
+            return InferenceResult(available=False, reason=str(exc))
