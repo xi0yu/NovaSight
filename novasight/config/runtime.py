@@ -26,6 +26,24 @@ class RuntimeLimitsConfig:
 
 
 @dataclass
+class CaptureConfig:
+    device: str = "/dev/video0"
+    preference: str = "auto_high_fps"
+    pixel_format: str = ""
+    width: int = 0
+    height: int = 0
+    fps: int = 0
+
+
+@dataclass
+class ControlConfig:
+    max_abs_dx: int = 120
+    max_abs_dy: int = 120
+    min_confidence: int = 0
+    output_mode: str = "silent"
+
+
+@dataclass
 class ExecutorConfig:
     default: str = "dry_run"
 
@@ -40,6 +58,8 @@ class RuntimeConfig:
     web: WebConfig = field(default_factory=WebConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
+    control: ControlConfig = field(default_factory=ControlConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 

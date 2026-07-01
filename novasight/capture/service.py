@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+
+from novasight.config.runtime import CaptureConfig
+
+from .caps import query_capabilities, run_v4l2_ctl
+from .pipeline import CaptureCandidate, select_open_source
+from .profile import select_capture_profile
+from .source import FrameSource, OpenCvFrameSource
+from .state import CaptureProfile, CaptureRuntimeState
+
+
+def _open_default_source(profile: CaptureProfile) -> FrameSource:
+    selected = select_open_source(
+        profile,
+        lambda candidate: OpenCvFrameSource.probe(profile, candidate),
+    )
+    selected_candidate = CaptureCandidate(
+        label=selected.label,
+        pipeline=selected.pipeline,
+    )
+    return OpenCvFrameSource(profile, selected_candidate)
+
+
+class CaptureService:
+    def __init__(
+        self,
+        config: CaptureConfig,
+        *,
+        capability_runner: Callable[[str], str | None] | None = None,
+        source_factory: Callable[[CaptureProfile], FrameSource] | None = None,
+    ) -> None:
+        self.config = config
+        self.capability_runner = capability_runner
+        self.source_factory = source_factory or _open_default_source
+        self.state = CaptureRuntimeState(device=config.device)
+        self.source: FrameSource | None = None
+
+    def configure(self, device: str | None = None) -> CaptureRuntimeState:
+        selected_device = device or self.config.device
+        caps = query_capabilities(
+            selected_device,
+            runner=self.capability_runner or run_v4l2_ctl,
+        )
+        if not caps.available:
+            self.state = CaptureRuntimeState(
+                available=False,
+                device=selected_device,
+                last_error=caps.reason,
+            )
+            return self.state
+        profile = select_capture_profile(
+            selected_device,
+            caps.capabilities,
+            self.config.preference,  # type: ignore[arg-type]
+            pixel_format=self.config.pixel_format or None,
+            width=self.config.width or None,
+            height=self.config.height or None,
+            fps=self.config.fps or None,
+        )
+        source = self.source_factory(profile)
+        self.source = source
+        self.state = CaptureRuntimeState(
+            available=True,
+            device=selected_device,
+            profile=profile,
+            backend=source.backend_label,
+            last_error=None,
+        )
+        return self.state
+
+    def capture_frames(
+        self,
+        *,
+        seconds: float | None = None,
+        max_frames: int | None = None,
+    ) -> CaptureRuntimeState:
+        if self.source is None:
+            raise RuntimeError("capture source is not configured")
+        start = time.monotonic()
+        previous_ts: int | None = None
+        count = 0
+        while True:
+            if max_frames is not None and count >= max_frames:
+                break
+            if seconds is not None and time.monotonic() - start >= seconds:
+                break
+            frame = self.source.read()
+            if frame is None:
+                self.state.frames_dropped += 1
+                continue
+            count += 1
+            self.state.capture_wait_ms = frame.capture_wait_ms
+            if previous_ts is not None:
+                self.state.frame_period_ms = (frame.ts_ns - previous_ts) / 1e6
+            previous_ts = frame.ts_ns
+        elapsed = max(time.monotonic() - start, 0.000001)
+        self.state.fps_capture = count / elapsed
+        return self.state

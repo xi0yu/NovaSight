@@ -6,6 +6,7 @@ from .pipeline import (
     select_open_source,
 )
 from .profile import select_capture_profile
+from .service import CaptureService
 from .source import CapturedFrame, FrameSource, OpenCvFrameSource
 from .state import (
     CaptureCapabilities,
@@ -25,6 +26,7 @@ __all__ = [
     "CapturePreference",
     "CaptureProfile",
     "CaptureRuntimeState",
+    "CaptureService",
     "SelectedCaptureBackend",
     "build_pipeline_candidates",
     "parse_v4l2_formats",
