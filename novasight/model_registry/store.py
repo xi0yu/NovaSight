@@ -5,13 +5,19 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import get_args
 
 from .schema import (
+    ArtifactKind,
+    ArtifactStatus,
     ConversionJob,
+    ConversionJobStatus,
+    ConversionTargetKind,
     Deployment,
     ModelArtifact,
     ModelProject,
     ModelVersion,
+    SourceKind,
 )
 
 
@@ -24,6 +30,12 @@ def _validate_path_component(value: str, label: str) -> None:
         raise ValueError(f"{label} must not contain path separators")
     if value in {".", ".."}:
         raise ValueError(f"{label} must be a single safe path component")
+
+
+def _validate_choice(value: str, allowed: tuple[str, ...], label: str) -> None:
+    if value not in allowed:
+        choices = ", ".join(allowed)
+        raise ValueError(f"{label} must be one of: {choices}")
 
 
 class ModelRegistry:
@@ -118,6 +130,7 @@ class ModelRegistry:
         input_shape: str,
     ) -> ModelVersion:
         _validate_path_component(version, "version")
+        _validate_choice(source_kind, get_args(SourceKind), "source kind")
         with self._connect() as conn:
             project = conn.execute(
                 "SELECT name FROM model_projects WHERE id = ?", (project_id,)
@@ -168,23 +181,33 @@ class ModelRegistry:
         checksum: str,
         status: str,
     ) -> ModelArtifact:
+        _validate_choice(kind, get_args(ArtifactKind), "artifact kind")
+        _validate_choice(status, get_args(ArtifactStatus), "artifact status")
         with self._connect() as conn:
             asset_dir = self._version_asset_dir(conn, version_id)
-            self._validate_artifact_path(path, asset_dir)
+            normalized_path = self._normalize_artifact_path(path, asset_dir)
             cursor = conn.execute(
                 """
                 INSERT INTO model_artifacts (version_id, kind, path, checksum, status)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (version_id, kind, path, checksum, status),
+                (version_id, kind, normalized_path, checksum, status),
             )
             return ModelArtifact(
-                int(cursor.lastrowid), version_id, kind, path, checksum, status
+                int(cursor.lastrowid),
+                version_id,
+                kind,
+                normalized_path,
+                checksum,
+                status,
             )
 
     def create_conversion_job(
         self, version_id: int, target_kind: str, command: list[str]
     ) -> ConversionJob:
+        _validate_choice(
+            target_kind, get_args(ConversionTargetKind), "conversion target kind"
+        )
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -209,6 +232,9 @@ class ModelRegistry:
             )
 
     def finish_conversion_job(self, job_id: int, status: str, log: str) -> None:
+        _validate_choice(
+            status, get_args(ConversionJobStatus), "conversion job status"
+        )
         with self._connect() as conn:
             cursor = conn.execute(
                 "UPDATE conversion_jobs SET status = ?, log = ? WHERE id = ?",
@@ -366,8 +392,12 @@ class ModelRegistry:
             raise ValueError(f"unknown version id: {version_id}")
         return self.data_dir / str(row["project_name"]) / str(row["version"])
 
-    def _validate_artifact_path(self, path: str, asset_dir: Path) -> None:
-        artifact_path = Path(path).resolve(strict=False)
+    def _normalize_artifact_path(self, path: str, asset_dir: Path) -> str:
+        raw_path = Path(path)
+        if raw_path.is_absolute():
+            artifact_path = raw_path.resolve(strict=False)
+        else:
+            artifact_path = (asset_dir / raw_path).resolve(strict=False)
         asset_dir_path = asset_dir.resolve(strict=False)
         try:
             artifact_path.relative_to(asset_dir_path)
@@ -375,6 +405,7 @@ class ModelRegistry:
             raise ValueError(
                 "artifact path must be inside version asset directory"
             ) from exc
+        return str(artifact_path)
 
     def _version_from_row(self, row: sqlite3.Row) -> ModelVersion:
         return ModelVersion(

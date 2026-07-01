@@ -314,6 +314,53 @@ def test_create_artifact_requires_path_inside_version_directory(tmp_path: Path) 
     assert artifact.path == str(inside_path)
 
 
+def test_create_artifact_stores_normalized_contained_path(tmp_path: Path) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+    raw_path = data_dir / "demo" / "v1" / "nested" / ".." / "model.engine"
+    normalized_path = str((data_dir / "demo" / "v1" / "model.engine").resolve())
+
+    artifact = registry.create_artifact(
+        version_id=version.id,
+        kind="engine",
+        path=str(raw_path),
+        checksum="sha256:model",
+        status="ready",
+    )
+
+    assert artifact.path == normalized_path
+    assert registry.list_artifacts(version.id)[0].path == normalized_path
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "expected_parts"),
+    [
+        ("model.engine", ("model.engine",)),
+        ("nested/model.engine", ("nested", "model.engine")),
+    ],
+)
+def test_create_artifact_accepts_asset_relative_paths(
+    tmp_path: Path, raw_path: str, expected_parts: tuple[str, ...]
+) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+    expected_path = str((data_dir / "demo" / "v1" / Path(*expected_parts)).resolve())
+
+    artifact = registry.create_artifact(
+        version_id=version.id,
+        kind="engine",
+        path=raw_path,
+        checksum="sha256:model",
+        status="ready",
+    )
+
+    assert artifact.path == expected_path
+
+
 @pytest.mark.parametrize(
     "path_factory",
     [
@@ -368,6 +415,31 @@ def test_create_version_does_not_commit_row_when_directory_creation_fails(
     assert registry.list_versions(project.id) == []
 
 
+def test_create_project_does_not_commit_row_when_directory_creation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    original_mkdir = Path.mkdir
+
+    def fail_project_dir(
+        self,
+        mode=0o777,
+        parents=False,
+        exist_ok=False,
+    ):
+        if self == data_dir / "demo":
+            raise OSError("cannot create project dir")
+        return original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", fail_project_dir)
+
+    with pytest.raises(OSError, match="cannot create project dir"):
+        registry.create_project("demo", "")
+
+    assert registry.list_projects() == []
+
+
 def test_rollback_without_deployment_raises_clear_error(tmp_path: Path) -> None:
     registry = ModelRegistry(
         db_path=tmp_path / "novasight.db",
@@ -377,3 +449,79 @@ def test_rollback_without_deployment_raises_clear_error(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="no deployment"):
         registry.rollback(project.id)
+
+
+def test_create_version_rejects_invalid_source_kind(tmp_path: Path) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db",
+        data_dir=tmp_path / "models",
+    )
+    project = registry.create_project("demo", "")
+
+    with pytest.raises(ValueError, match="source kind"):
+        registry.create_version(
+            project_id=project.id,
+            version="v1",
+            source_kind="bogus",
+            source_path="/tmp/model.bogus",
+            classes=["person"],
+            input_shape="dynamic",
+        )
+
+    assert registry.list_versions(project.id) == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "match"),
+    [
+        ("bogus", "ready", "artifact kind"),
+        ("engine", "redy", "artifact status"),
+    ],
+)
+def test_create_artifact_rejects_invalid_kind_or_status(
+    tmp_path: Path, kind: str, status: str, match: str
+) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+
+    with pytest.raises(ValueError, match=match):
+        registry.create_artifact(
+            version_id=version.id,
+            kind=kind,
+            path="model.engine",
+            checksum="sha256:model",
+            status=status,
+        )
+
+    assert registry.list_artifacts(version.id) == []
+
+
+def test_create_conversion_job_rejects_invalid_target_kind(tmp_path: Path) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db",
+        data_dir=tmp_path / "models",
+    )
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+
+    with pytest.raises(ValueError, match="conversion target kind"):
+        registry.create_conversion_job(version.id, "bogus", ["convert"])
+
+    assert registry.list_conversion_jobs() == []
+
+
+def test_finish_conversion_job_rejects_invalid_status(tmp_path: Path) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db",
+        data_dir=tmp_path / "models",
+    )
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+    job = registry.create_conversion_job(version.id, "engine", ["convert"])
+
+    with pytest.raises(ValueError, match="conversion job status"):
+        registry.finish_conversion_job(job.id, status="faild", log="typo")
+
+    assert registry.get_conversion_job(job.id) == job
