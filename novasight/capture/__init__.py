@@ -1,4 +1,5 @@
 from .caps import parse_v4l2_formats, query_capabilities, run_v4l2_ctl
+from .profile import select_capture_profile
 from .state import (
     CaptureCapabilities,
     CaptureCapability,
@@ -16,4 +17,5 @@ __all__ = [
     "parse_v4l2_formats",
     "query_capabilities",
     "run_v4l2_ctl",
+    "select_capture_profile",
 ]
