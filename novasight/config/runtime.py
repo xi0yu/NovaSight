@@ -65,7 +65,9 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
     cfg_path = Path(path)
     if not cfg_path.exists():
         return RuntimeConfig()
-    raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    if raw is None:
+        raw = {}
     if not isinstance(raw, dict):
         raise ValueError(f"runtime config must be a mapping: {cfg_path}")
     return _build_dataclass(RuntimeConfig, raw)
