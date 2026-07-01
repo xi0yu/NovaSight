@@ -27,6 +27,14 @@ class FrameSource(Protocol):
 
 
 class OpenCvFrameSource:
+    @classmethod
+    def probe(cls, profile: CaptureProfile, candidate: CaptureCandidate) -> bool:
+        source = cls(profile, candidate)
+        try:
+            return source.opened_and_readable()
+        finally:
+            source.close()
+
     def __init__(self, profile: CaptureProfile, candidate: CaptureCandidate) -> None:
         import cv2
 
@@ -41,6 +49,7 @@ class OpenCvFrameSource:
         else:
             self._cap = cv2.VideoCapture(candidate.pipeline, cv2.CAP_GSTREAMER)
         self._frame_id = 0
+        self._closed = False
 
     def opened_and_readable(self) -> bool:
         if not self._cap.isOpened():
@@ -70,4 +79,7 @@ class OpenCvFrameSource:
         )
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._cap.release()
+        self._closed = True

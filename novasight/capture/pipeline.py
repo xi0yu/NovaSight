@@ -106,7 +106,12 @@ def select_open_source(
 ) -> SelectedCaptureBackend:
     failures: list[str] = []
     for candidate in build_pipeline_candidates(profile):
-        if opener(candidate):
+        try:
+            opened = opener(candidate)
+        except Exception as exc:
+            failures.append(f"{candidate.label}: {exc}")
+            continue
+        if opened:
             return SelectedCaptureBackend(
                 label=candidate.label,
                 pipeline=candidate.pipeline,
