@@ -29,6 +29,13 @@ class ExperimentalTargetPlugin:
     kind = "vision"
 
     def process(self, context: FrameContext) -> PluginResult:
+        if context.width <= 0 or context.height <= 0:
+            return PluginResult(
+                self.plugin_id,
+                self.kind,
+                {"target": None, "reason": "invalid frame size"},
+            )
+
         target = max(context.detections, key=lambda item: item.score, default=None)
         if target is None:
             return PluginResult(self.plugin_id, self.kind, {"target": None})
@@ -92,6 +99,9 @@ class ExperimentalCenterControlPlugin:
     kind = "control"
 
     def process(self, context: FrameContext) -> ControlIntent | None:
+        if context.width <= 0 or context.height <= 0:
+            return None
+
         target = max(context.detections, key=lambda item: item.score, default=None)
         if target is None:
             return None

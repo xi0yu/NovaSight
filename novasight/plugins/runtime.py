@@ -4,7 +4,6 @@ from collections.abc import Iterable
 
 from novasight.plugins.builtin import (
     CenterTargetControlPlugin,
-    ExperimentalCenterControlPlugin,
     ExperimentalTargetPlugin,
     TrackStatsPlugin,
 )
@@ -29,10 +28,7 @@ class PluginRuntime:
     def with_builtin_plugins(cls) -> PluginRuntime:
         return cls(
             vision_plugins=[TrackStatsPlugin(), ExperimentalTargetPlugin()],
-            control_plugins=[
-                CenterTargetControlPlugin(),
-                ExperimentalCenterControlPlugin(),
-            ],
+            control_plugins=[CenterTargetControlPlugin()],
         )
 
     def process(self, context: FrameContext) -> PluginBatchResult:
