@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig, load_runtime_config
 from novasight.executors import ExecutorRegistry
+from novasight.inference import InferenceRuntime
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import PluginRuntime
 from novasight.runtime import RuntimeService
@@ -35,12 +36,14 @@ def create_app(
         default=config.executor.default
     )
     capture = CaptureService(config.capture)
+    inference = InferenceRuntime()
     runtime = RuntimeService(
         config=config,
         models=models,
         plugins=plugins,
         executors=executors,
         capture=capture,
+        inference=inference,
     )
 
     app.state.config = config
@@ -48,6 +51,7 @@ def create_app(
     app.state.plugins = plugins
     app.state.executors = executors
     app.state.capture = capture
+    app.state.inference = inference
     app.state.runtime = runtime
 
     app.include_router(health_router)
