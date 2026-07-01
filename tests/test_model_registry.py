@@ -460,7 +460,6 @@ def test_create_artifact_stores_normalized_contained_path(tmp_path: Path) -> Non
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
     raw_path = Path("nested") / ".." / "model.engine"
-    normalized_path = str((data_dir / "demo" / "v1" / "model.engine").resolve())
 
     artifact = registry.create_artifact(
         version_id=version.id,
@@ -470,8 +469,8 @@ def test_create_artifact_stores_normalized_contained_path(tmp_path: Path) -> Non
         status="ready",
     )
 
-    assert artifact.path == normalized_path
-    assert registry.list_artifacts(version.id)[0].path == normalized_path
+    assert artifact.path == "model.engine"
+    assert registry.list_artifacts(version.id)[0].path == "model.engine"
 
 
 @pytest.mark.parametrize(
@@ -488,7 +487,7 @@ def test_create_artifact_accepts_asset_relative_paths(
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
-    expected_path = str((data_dir / "demo" / "v1" / Path(*expected_parts)).resolve())
+    expected_path = Path(*expected_parts).as_posix()
 
     artifact = registry.create_artifact(
         version_id=version.id,
@@ -499,6 +498,27 @@ def test_create_artifact_accepts_asset_relative_paths(
     )
 
     assert artifact.path == expected_path
+
+
+@pytest.mark.parametrize("raw_path", ["", "  ", ".", "nested/.."])
+def test_create_artifact_rejects_empty_or_directory_paths(
+    tmp_path: Path, raw_path: str
+) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+
+    with pytest.raises(RegistryValidationError, match="artifact path"):
+        registry.create_artifact(
+            version_id=version.id,
+            kind="engine",
+            path=raw_path,
+            checksum="sha256:model",
+            status="ready",
+        )
+
+    assert registry.list_artifacts(version.id) == []
 
 
 @pytest.mark.parametrize(

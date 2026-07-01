@@ -585,18 +585,22 @@ class ModelRegistry:
             raise RegistryNotFoundError(f"unknown version id: {version_id}")
 
     def _normalize_artifact_path(self, path: str, asset_dir: Path) -> str:
+        if not path.strip():
+            raise RegistryValidationError("artifact path must not be empty")
         raw_path = Path(path)
         if raw_path.is_absolute():
             raise RegistryValidationError("artifact path must be relative")
         artifact_path = (asset_dir / raw_path).resolve(strict=False)
         asset_dir_path = asset_dir.resolve(strict=False)
         try:
-            artifact_path.relative_to(asset_dir_path)
+            normalized_path = artifact_path.relative_to(asset_dir_path)
         except ValueError as exc:
             raise RegistryValidationError(
                 "artifact path must be inside version asset directory"
             ) from exc
-        return str(artifact_path)
+        if normalized_path == Path("."):
+            raise RegistryValidationError("artifact path must not resolve to directory")
+        return normalized_path.as_posix()
 
     def _version_from_row(self, row: sqlite3.Row) -> ModelVersion:
         return ModelVersion(

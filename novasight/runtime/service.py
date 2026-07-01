@@ -5,9 +5,9 @@ from dataclasses import asdict
 from novasight.config import RuntimeConfig
 from novasight.executors import ExecutorRegistry
 from novasight.model_registry import ModelRegistry
-from novasight.plugins import PluginRuntime
+from novasight.plugins import FrameContext, PluginRuntime
 
-from .state import RuntimeState
+from .state import RuntimeFrameResult, RuntimeState
 
 
 class RuntimeService:
@@ -30,6 +30,17 @@ class RuntimeService:
             source=self.config.source.default,
             active_model=self._active_model(),
             executor=self.executors.status(),
+        )
+
+    def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
+        plugin_batch = self.plugins.process(context)
+        execution_results = [
+            self.executors.execute(intent)
+            for intent in plugin_batch.control_intents
+        ]
+        return RuntimeFrameResult(
+            plugin_batch=plugin_batch,
+            execution_results=execution_results,
         )
 
     def _active_model(self) -> dict | None:

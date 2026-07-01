@@ -92,10 +92,7 @@ def test_model_project_version_artifact_publish_flow(tmp_path: Path) -> None:
 
     assert published.status_code == 200
     assert published.json()["artifact_id"] == artifact["id"]
-    artifact_path = Path(artifact["path"])
-    assert artifact_path == (
-        tmp_path / "data" / "models" / "demo" / "v1" / "model.onnx"
-    ).resolve()
+    assert artifact["path"] == "model.onnx"
 
 
 def test_artifact_create_rejects_absolute_path_outside_version_assets(

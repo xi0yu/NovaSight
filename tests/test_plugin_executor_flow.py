@@ -3,9 +3,11 @@ import sys
 from dataclasses import fields
 from types import SimpleNamespace
 
+from novasight.config import RuntimeConfig
 from novasight.executors import ExecutorRegistry
 from novasight.executors.dry_run import DryRunExecutor
 from novasight.executors.kmnet import KmNetExecutor
+from novasight.model_registry import ModelRegistry
 from novasight.plugins import (
     ControlIntent,
     Detection,
@@ -15,6 +17,7 @@ from novasight.plugins import (
     PluginRuntime,
     Track,
 )
+from novasight.runtime import RuntimeService
 
 
 def _context(
@@ -167,6 +170,36 @@ def test_plugin_runtime_drops_none_control_intents() -> None:
     results = runtime.process(_context())
 
     assert results.control_intents == []
+
+
+def test_runtime_service_process_frame_executes_plugin_control_intents(
+    tmp_path,
+) -> None:
+    intent = _intent()
+
+    class FakeControlPlugin:
+        plugin_id = "control.fake"
+        kind = "control"
+
+        def process(self, context: FrameContext) -> ControlIntent:
+            return intent
+
+    dry_run = DryRunExecutor()
+    service = RuntimeService(
+        config=RuntimeConfig(),
+        models=ModelRegistry(
+            db_path=tmp_path / "novasight.db",
+            data_dir=tmp_path / "models",
+        ),
+        plugins=PluginRuntime(control_plugins=[FakeControlPlugin()]),
+        executors=ExecutorRegistry(executors=[dry_run], default="dry_run"),
+    )
+
+    result = service.process_frame(_context())
+
+    assert result.plugin_batch.control_intents == [intent]
+    assert [execution.intent for execution in result.execution_results] == [intent]
+    assert dry_run.history == [intent]
 
 
 def test_dry_run_records_intent_history() -> None:
