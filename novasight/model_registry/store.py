@@ -7,6 +7,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import get_args
 
+from .errors import (
+    RegistryConflictError,
+    RegistryNotFoundError,
+    RegistryValidationError,
+)
 from .schema import (
     ArtifactKind,
     ArtifactStatus,
@@ -23,26 +28,26 @@ from .schema import (
 
 def _validate_path_component(value: str, label: str) -> None:
     if not value.strip():
-        raise ValueError(f"{label} must not be empty")
+        raise RegistryValidationError(f"{label} must not be empty")
     if Path(value).is_absolute():
-        raise ValueError(f"{label} must not be an absolute path")
+        raise RegistryValidationError(f"{label} must not be an absolute path")
     if "/" in value or "\\" in value:
-        raise ValueError(f"{label} must not contain path separators")
+        raise RegistryValidationError(f"{label} must not contain path separators")
     if value in {".", ".."}:
-        raise ValueError(f"{label} must be a single safe path component")
+        raise RegistryValidationError(f"{label} must be a single safe path component")
 
 
 def _validate_choice(value: str, allowed: tuple[str, ...], label: str) -> None:
     if value not in allowed:
         choices = ", ".join(allowed)
-        raise ValueError(f"{label} must be one of: {choices}")
+        raise RegistryValidationError(f"{label} must be one of: {choices}")
 
 
 def _validate_string_list(value: object, label: str) -> list[str]:
     if not isinstance(value, list) or not all(
         isinstance(item, str) for item in value
     ):
-        raise ValueError(f"{label} must be a list of strings")
+        raise RegistryValidationError(f"{label} must be a list of strings")
     return list(value)
 
 
@@ -50,7 +55,9 @@ def _load_string_list_json(value: str, field_name: str) -> list[str]:
     try:
         decoded = json.loads(value)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{field_name} must contain a JSON list of strings") from exc
+        raise RegistryValidationError(
+            f"{field_name} must contain a JSON list of strings"
+        ) from exc
     return _validate_string_list(decoded, field_name)
 
 
@@ -130,9 +137,15 @@ class ModelRegistry:
                     previous_artifact_id INTEGER REFERENCES model_artifacts(id),
                     updated_seq INTEGER NOT NULL DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS registry_sequence (
+                    name TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL
+                );
                 """
             )
             self._ensure_deployment_columns(conn)
+            self._ensure_registry_sequence(conn)
 
     def _ensure_deployment_columns(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -145,11 +158,40 @@ class ModelRegistry:
             )
             conn.execute("UPDATE deployments SET updated_seq = id WHERE updated_seq = 0")
 
-    def _next_deployment_sequence(self, conn: sqlite3.Connection) -> int:
+    def _ensure_registry_sequence(self, conn: sqlite3.Connection) -> None:
         row = conn.execute(
-            "SELECT COALESCE(MAX(updated_seq), 0) + 1 AS seq FROM deployments"
+            "SELECT COALESCE(MAX(updated_seq), 0) AS value FROM deployments"
         ).fetchone()
-        return int(row["seq"])
+        deployment_value = int(row["value"])
+        existing = conn.execute(
+            "SELECT value FROM registry_sequence WHERE name = ?",
+            ("deployment",),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO registry_sequence (name, value) VALUES (?, ?)",
+                ("deployment", deployment_value),
+            )
+        elif int(existing["value"]) < deployment_value:
+            conn.execute(
+                "UPDATE registry_sequence SET value = ? WHERE name = ?",
+                (deployment_value, "deployment"),
+            )
+
+    def _next_deployment_sequence(self, conn: sqlite3.Connection) -> int:
+        cursor = conn.execute(
+            """
+            UPDATE registry_sequence
+            SET value = value + 1
+            WHERE name = ?
+            RETURNING value
+            """,
+            ("deployment",),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("deployment sequence is not initialized")
+        return int(row["value"])
 
     def create_project(self, name: str, description: str) -> ModelProject:
         _validate_path_component(name, "project name")
@@ -158,14 +200,14 @@ class ModelRegistry:
                 "SELECT 1 FROM model_projects WHERE name = ?", (name,)
             ).fetchone()
             if existing is not None:
-                raise ValueError(f"project already exists: {name}")
+                raise RegistryConflictError(f"project already exists: {name}")
             try:
                 cursor = conn.execute(
                     "INSERT INTO model_projects (name, description) VALUES (?, ?)",
                     (name, description),
                 )
             except sqlite3.IntegrityError as exc:
-                raise ValueError(f"project already exists: {name}") from exc
+                raise RegistryConflictError(f"project already exists: {name}") from exc
             project = ModelProject(int(cursor.lastrowid), name, description)
             (self.data_dir / name).mkdir(parents=True, exist_ok=True)
             return project
@@ -187,7 +229,7 @@ class ModelRegistry:
                 "SELECT name FROM model_projects WHERE id = ?", (project_id,)
             ).fetchone()
             if project is None:
-                raise ValueError(f"unknown project id: {project_id}")
+                raise RegistryNotFoundError(f"unknown project id: {project_id}")
             existing = conn.execute(
                 """
                 SELECT 1 FROM model_versions
@@ -196,7 +238,7 @@ class ModelRegistry:
                 (project_id, version),
             ).fetchone()
             if existing is not None:
-                raise ValueError(f"model version already exists: {version}")
+                raise RegistryConflictError(f"model version already exists: {version}")
             try:
                 cursor = conn.execute(
                     """
@@ -220,7 +262,9 @@ class ModelRegistry:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                raise ValueError(f"model version already exists: {version}") from exc
+                raise RegistryConflictError(
+                    f"model version already exists: {version}"
+                ) from exc
             model_version = ModelVersion(
                 int(cursor.lastrowid),
                 project_id,
@@ -306,7 +350,7 @@ class ModelRegistry:
                 (status, log, job_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError(f"unknown conversion job id: {job_id}")
+                raise RegistryNotFoundError(f"unknown conversion job id: {job_id}")
 
     def get_conversion_job(self, job_id: int) -> ConversionJob | None:
         with self._connect() as conn:
@@ -336,6 +380,11 @@ class ModelRegistry:
 
     def publish(self, project_id: int, artifact_id: int) -> Deployment:
         with self._connect() as conn:
+            project = conn.execute(
+                "SELECT 1 FROM model_projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if project is None:
+                raise RegistryNotFoundError(f"unknown project id: {project_id}")
             artifact = conn.execute(
                 """
                 SELECT
@@ -348,11 +397,11 @@ class ModelRegistry:
                 (artifact_id,),
             ).fetchone()
             if artifact is None:
-                raise ValueError(f"unknown artifact id: {artifact_id}")
+                raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
             if int(artifact["artifact_project_id"]) != project_id:
-                raise ValueError("artifact does not belong to project")
+                raise RegistryValidationError("artifact does not belong to project")
             if artifact["status"] != "ready":
-                raise ValueError("only ready artifacts can be published")
+                raise RegistryValidationError("only ready artifacts can be published")
 
             deployment = conn.execute(
                 "SELECT * FROM deployments WHERE project_id = ?", (project_id,)
@@ -407,7 +456,9 @@ class ModelRegistry:
                 "SELECT * FROM deployments WHERE project_id = ?", (project_id,)
             ).fetchone()
             if deployment is None:
-                raise ValueError(f"no deployment for project id: {project_id}")
+                raise RegistryValidationError(
+                    f"no deployment for project id: {project_id}"
+                )
             previous_artifact_id = deployment["previous_artifact_id"]
             if previous_artifact_id is None:
                 return self._deployment_from_row(deployment)
@@ -506,7 +557,7 @@ class ModelRegistry:
             (version_id,),
         ).fetchone()
         if row is None:
-            raise ValueError(f"unknown version id: {version_id}")
+            raise RegistryNotFoundError(f"unknown version id: {version_id}")
         return self.data_dir / str(row["project_name"]) / str(row["version"])
 
     def _preflight_version_id(
@@ -516,7 +567,7 @@ class ModelRegistry:
             "SELECT 1 FROM model_versions WHERE id = ?", (version_id,)
         ).fetchone()
         if row is None:
-            raise ValueError(f"unknown version id: {version_id}")
+            raise RegistryNotFoundError(f"unknown version id: {version_id}")
 
     def _normalize_artifact_path(self, path: str, asset_dir: Path) -> str:
         raw_path = Path(path)
@@ -528,7 +579,7 @@ class ModelRegistry:
         try:
             artifact_path.relative_to(asset_dir_path)
         except ValueError as exc:
-            raise ValueError(
+            raise RegistryValidationError(
                 "artifact path must be inside version asset directory"
             ) from exc
         return str(artifact_path)

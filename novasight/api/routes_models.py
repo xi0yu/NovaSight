@@ -6,7 +6,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
-from novasight.model_registry import ModelRegistry
+from novasight.model_registry import (
+    ModelRegistry,
+    RegistryConflictError,
+    RegistryError,
+    RegistryNotFoundError,
+    RegistryValidationError,
+)
 
 router = APIRouter(prefix="/api/models")
 
@@ -61,21 +67,22 @@ def _registry(request: Request) -> ModelRegistry:
     return request.app.state.models
 
 
-def _as_http_error(exc: ValueError) -> HTTPException:
-    message = str(exc)
-    if message.startswith("unknown "):
-        return HTTPException(status_code=404, detail=message)
-    return HTTPException(status_code=400, detail=message)
+def _as_http_error(exc: RegistryError | ValueError) -> HTTPException:
+    if isinstance(exc, RegistryNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, (RegistryConflictError, RegistryValidationError)):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
 
 
 def _require_project(registry: ModelRegistry, project_id: int) -> None:
     if registry.get_project(project_id) is None:
-        raise ValueError(f"unknown project id: {project_id}")
+        raise RegistryNotFoundError(f"unknown project id: {project_id}")
 
 
 def _require_version(registry: ModelRegistry, version_id: int) -> None:
     if registry.get_version(version_id) is None:
-        raise ValueError(f"unknown version id: {version_id}")
+        raise RegistryNotFoundError(f"unknown version id: {version_id}")
 
 
 @router.get("/projects")

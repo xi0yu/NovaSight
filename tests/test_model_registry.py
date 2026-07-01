@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from novasight.model_registry import ModelRegistry
+from novasight.model_registry import ModelRegistry, RegistryNotFoundError
 
 
 def _create_version(registry: ModelRegistry, project_id: int, version: str = "v1"):
@@ -19,6 +19,16 @@ def _create_version(registry: ModelRegistry, project_id: int, version: str = "v1
 
 def _artifact_path(data_dir: Path, project: str = "demo", version: str = "v1") -> str:
     return str(data_dir / project / version / "model.engine")
+
+
+def _deployment_seq(db_path: Path, project_id: int) -> int:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT updated_seq FROM deployments WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def test_model_registry_publish_and_rollback(tmp_path: Path) -> None:
@@ -295,6 +305,88 @@ def test_duplicate_publish_preserves_previous_artifact_for_rollback(
 
     assert duplicate_publish == deployed_v2
     assert rolled_back.artifact_id == artifact1.id
+
+
+def test_deployment_sequence_tracks_publish_duplicate_publish_and_rollback(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "novasight.db"
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=db_path, data_dir=data_dir)
+    project_a = registry.create_project("demo-a", "")
+    a_v1 = _create_version(registry, project_a.id, version="v1")
+    a_v2 = _create_version(registry, project_a.id, version="v2")
+    artifact_a1 = registry.create_artifact(
+        version_id=a_v1.id,
+        kind="engine",
+        path=_artifact_path(data_dir, project="demo-a", version="v1"),
+        checksum="sha256:a1",
+        status="ready",
+    )
+    artifact_a2 = registry.create_artifact(
+        version_id=a_v2.id,
+        kind="engine",
+        path=_artifact_path(data_dir, project="demo-a", version="v2"),
+        checksum="sha256:a2",
+        status="ready",
+    )
+    project_b = registry.create_project("demo-b", "")
+    b_v1 = _create_version(registry, project_b.id, version="v1")
+    artifact_b1 = registry.create_artifact(
+        version_id=b_v1.id,
+        kind="engine",
+        path=_artifact_path(data_dir, project="demo-b", version="v1"),
+        checksum="sha256:b1",
+        status="ready",
+    )
+
+    registry.publish(project_a.id, artifact_a1.id)
+    first_seq = _deployment_seq(db_path, project_a.id)
+    registry.publish(project_b.id, artifact_b1.id)
+    second_seq = _deployment_seq(db_path, project_b.id)
+    assert registry.get_active_deployment().project_id == project_b.id
+
+    registry.publish(project_a.id, artifact_a1.id)
+    duplicate_seq = _deployment_seq(db_path, project_a.id)
+    assert registry.get_active_deployment().project_id == project_a.id
+
+    registry.publish(project_a.id, artifact_a2.id)
+    update_seq = _deployment_seq(db_path, project_a.id)
+    registry.rollback(project_a.id)
+    rollback_seq = _deployment_seq(db_path, project_a.id)
+
+    assert [first_seq, second_seq, duplicate_seq, update_seq, rollback_seq] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    active = registry.get_active_deployment()
+    assert active is not None
+    assert active.project_id == project_a.id
+    assert active.artifact_id == artifact_a1.id
+
+
+def test_publish_rejects_unknown_project_before_artifact_ownership(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    project = registry.create_project("demo", "")
+    version = _create_version(registry, project.id)
+    artifact = registry.create_artifact(
+        version_id=version.id,
+        kind="engine",
+        path=_artifact_path(data_dir),
+        checksum="sha256:model",
+        status="ready",
+    )
+
+    with pytest.raises(RegistryNotFoundError, match="unknown project id: 999"):
+        registry.publish(999, artifact.id)
+
+    assert registry.get_deployment(project.id) is None
 
 
 def test_create_artifact_requires_path_inside_version_directory(tmp_path: Path) -> None:

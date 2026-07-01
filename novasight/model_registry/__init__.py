@@ -1,3 +1,9 @@
+from .errors import (
+    RegistryConflictError,
+    RegistryError,
+    RegistryNotFoundError,
+    RegistryValidationError,
+)
 from .schema import (
     ArtifactKind,
     ArtifactStatus,
@@ -13,6 +19,10 @@ from .schema import (
 from .store import ModelRegistry
 
 __all__ = [
+    "RegistryConflictError",
+    "RegistryError",
+    "RegistryNotFoundError",
+    "RegistryValidationError",
     "ConversionJob",
     "ConversionJobStatus",
     "ConversionTargetKind",
