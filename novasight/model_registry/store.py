@@ -179,6 +179,17 @@ class ModelRegistry:
             )
 
     def _next_deployment_sequence(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(updated_seq), 0) AS value FROM deployments"
+        ).fetchone()
+        deployment_value = int(row["value"])
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO registry_sequence (name, value)
+            VALUES (?, ?)
+            """,
+            ("deployment", deployment_value),
+        )
         conn.execute(
             """
             UPDATE registry_sequence
@@ -192,7 +203,7 @@ class ModelRegistry:
             ("deployment",),
         ).fetchone()
         if row is None:
-            raise RuntimeError("deployment sequence is not initialized")
+            raise RegistryValidationError("deployment sequence is not initialized")
         return int(row["value"])
 
     def create_project(self, name: str, description: str) -> ModelProject:
@@ -576,9 +587,8 @@ class ModelRegistry:
     def _normalize_artifact_path(self, path: str, asset_dir: Path) -> str:
         raw_path = Path(path)
         if raw_path.is_absolute():
-            artifact_path = raw_path.resolve(strict=False)
-        else:
-            artifact_path = (asset_dir / raw_path).resolve(strict=False)
+            raise RegistryValidationError("artifact path must be relative")
+        artifact_path = (asset_dir / raw_path).resolve(strict=False)
         asset_dir_path = asset_dir.resolve(strict=False)
         try:
             artifact_path.relative_to(asset_dir_path)

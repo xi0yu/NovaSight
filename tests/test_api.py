@@ -119,6 +119,28 @@ def test_artifact_create_rejects_absolute_path_outside_version_assets(
     assert "artifact path" in response.json()["detail"]
 
 
+def test_artifact_create_rejects_absolute_path_inside_version_assets(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    project = _project(client)
+    version = _version(client, project["id"])
+    inside_path = tmp_path / "data" / "models" / "demo" / "v1" / "model.onnx"
+
+    response = client.post(
+        f"/api/models/versions/{version['id']}/artifacts",
+        json={
+            "kind": "onnx",
+            "path": str(inside_path),
+            "checksum": "sha256:absolute-inside",
+            "status": "ready",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "relative" in response.json()["detail"]
+
+
 def test_runtime_state_reports_latest_published_deployment(tmp_path: Path) -> None:
     client = _client(tmp_path)
     first_project = _project(client, name="demo-a")

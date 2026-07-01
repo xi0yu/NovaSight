@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from novasight.model_registry import ModelRegistry, RegistryNotFoundError
+from novasight.model_registry import (
+    ModelRegistry,
+    RegistryNotFoundError,
+    RegistryValidationError,
+)
 
 
 def _create_version(registry: ModelRegistry, project_id: int, version: str = "v1"):
@@ -18,7 +22,7 @@ def _create_version(registry: ModelRegistry, project_id: int, version: str = "v1
 
 
 def _artifact_path(data_dir: Path, project: str = "demo", version: str = "v1") -> str:
-    return str(data_dir / project / version / "model.engine")
+    return "model.engine"
 
 
 def _deployment_seq(db_path: Path, project_id: int) -> int:
@@ -48,7 +52,7 @@ def test_model_registry_publish_and_rollback(tmp_path: Path) -> None:
     artifact1 = registry.create_artifact(
         version_id=v1.id,
         kind="onnx",
-        path=str(data_dir / "person-detector" / "v1" / "model.onnx"),
+        path="model.onnx",
         checksum="sha256:v1",
         status="ready",
     )
@@ -69,7 +73,7 @@ def test_model_registry_publish_and_rollback(tmp_path: Path) -> None:
     artifact2 = registry.create_artifact(
         version_id=v2.id,
         kind="engine",
-        path=str(data_dir / "person-detector" / "v2" / "model.engine"),
+        path="model.engine",
         checksum="sha256:v2",
         status="ready",
     )
@@ -368,6 +372,46 @@ def test_deployment_sequence_tracks_publish_duplicate_publish_and_rollback(
     assert active.artifact_id == artifact_a1.id
 
 
+def test_deployment_sequence_missing_row_self_heals_on_publish_and_rollback(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "novasight.db"
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=db_path, data_dir=data_dir)
+    project = registry.create_project("demo", "")
+    v1 = _create_version(registry, project.id, version="v1")
+    v2 = _create_version(registry, project.id, version="v2")
+    artifact1 = registry.create_artifact(
+        version_id=v1.id,
+        kind="engine",
+        path="v1.engine",
+        checksum="sha256:v1",
+        status="ready",
+    )
+    artifact2 = registry.create_artifact(
+        version_id=v2.id,
+        kind="engine",
+        path="v2.engine",
+        checksum="sha256:v2",
+        status="ready",
+    )
+    registry.publish(project.id, artifact1.id)
+    assert _deployment_seq(db_path, project.id) == 1
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM registry_sequence WHERE name = ?", ("deployment",))
+
+    registry.publish(project.id, artifact2.id)
+    assert _deployment_seq(db_path, project.id) == 2
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM registry_sequence WHERE name = ?", ("deployment",))
+
+    registry.rollback(project.id)
+    assert _deployment_seq(db_path, project.id) == 3
+    assert registry.get_deployment(project.id).artifact_id == artifact1.id
+
+
 def test_publish_rejects_unknown_project_before_artifact_ownership(
     tmp_path: Path,
 ) -> None:
@@ -389,22 +433,25 @@ def test_publish_rejects_unknown_project_before_artifact_ownership(
     assert registry.get_deployment(project.id) is None
 
 
-def test_create_artifact_requires_path_inside_version_directory(tmp_path: Path) -> None:
+def test_create_artifact_rejects_absolute_path_inside_version_directory(
+    tmp_path: Path,
+) -> None:
     data_dir = tmp_path / "models"
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
-    inside_path = data_dir / "demo" / "v1" / "nested" / "model.engine"
+    inside_path = data_dir / "demo" / "v1" / "model.engine"
 
-    artifact = registry.create_artifact(
-        version_id=version.id,
-        kind="engine",
-        path=str(inside_path),
-        checksum="sha256:model",
-        status="ready",
-    )
+    with pytest.raises(RegistryValidationError, match="relative"):
+        registry.create_artifact(
+            version_id=version.id,
+            kind="engine",
+            path=str(inside_path),
+            checksum="sha256:model",
+            status="ready",
+        )
 
-    assert artifact.path == str(inside_path)
+    assert registry.list_artifacts(version.id) == []
 
 
 def test_create_artifact_stores_normalized_contained_path(tmp_path: Path) -> None:
@@ -412,7 +459,7 @@ def test_create_artifact_stores_normalized_contained_path(tmp_path: Path) -> Non
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
-    raw_path = data_dir / "demo" / "v1" / "nested" / ".." / "model.engine"
+    raw_path = Path("nested") / ".." / "model.engine"
     normalized_path = str((data_dir / "demo" / "v1" / "model.engine").resolve())
 
     artifact = registry.create_artifact(
