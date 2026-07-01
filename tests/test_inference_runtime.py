@@ -285,6 +285,63 @@ def test_runtime_process_captured_frame_inference_exception_uses_empty_context(
     assert dry_run.history == []
 
 
+def test_runtime_process_captured_frame_none_result_uses_empty_context(
+    tmp_path,
+) -> None:
+    class NoneRuntime:
+        def infer(self, frame: CapturedFrame) -> None:
+            return None
+
+    service, dry_run = _runtime_service(tmp_path, NoneRuntime())
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
+def test_runtime_process_captured_frame_result_without_available_uses_empty_context(
+    tmp_path,
+) -> None:
+    class InvalidResultRuntime:
+        def infer(self, frame: CapturedFrame) -> object:
+            return object()
+
+    service, dry_run = _runtime_service(tmp_path, InvalidResultRuntime())
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
+def test_runtime_process_captured_frame_malformed_detection_uses_empty_context(
+    tmp_path,
+) -> None:
+    class MalformedDetectionRuntime:
+        def infer(self, frame: CapturedFrame) -> InferenceResult:
+            return InferenceResult(available=True, detections=[object()])
+
+    service, dry_run = _runtime_service(tmp_path, MalformedDetectionRuntime())
+
+    result = service.process_captured_frame(
+        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+    )
+
+    assert result.plugin_batch.plugin_results
+    assert result.plugin_batch.control_intents == []
+    assert result.execution_results == []
+    assert dry_run.history == []
+
+
 def test_inference_runtime_infer_returns_unavailable_result_on_engine_exception() -> None:
     class BrokenEngine:
         engine_id = "broken"
@@ -316,3 +373,36 @@ def test_inference_runtime_infer_returns_unavailable_result_on_engine_exception(
     assert result.available is False
     assert result.detections == []
     assert result.reason == "engine exploded"
+
+
+def test_inference_runtime_infer_normalizes_none_engine_result() -> None:
+    class NoneEngine:
+        engine_id = "none"
+
+        def available(self) -> bool:
+            return True
+
+        def last_reason(self) -> str:
+            return ""
+
+        def status(self) -> dict:
+            return {"selected": self.engine_id, "available": True}
+
+        def load(
+            self,
+            artifact_path: Path,
+            classes: list[str],
+            input_shape: str,
+        ) -> None:
+            raise AssertionError("not used")
+
+        def infer(self, frame: CapturedFrame) -> None:
+            return None
+
+    runtime = InferenceRuntime(NoneEngine())
+
+    result = runtime.infer(CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None))
+
+    assert result.available is False
+    assert result.detections == []
+    assert result.reason == "invalid inference result"

@@ -21,6 +21,9 @@ class InferenceRuntime:
 
     def infer(self, frame: CapturedFrame) -> InferenceResult:
         try:
-            return self.engine.infer(frame)
+            result = self.engine.infer(frame)
         except Exception as exc:
             return InferenceResult(available=False, reason=str(exc))
+        if not isinstance(result, InferenceResult):
+            return InferenceResult(available=False, reason="invalid inference result")
+        return result

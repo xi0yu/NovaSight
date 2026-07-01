@@ -6,6 +6,7 @@ from typing import Any
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.executors import ExecutorRegistry
+from novasight.inference import InferenceResult
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import Detection, FrameContext, PluginRuntime
 
@@ -70,26 +71,34 @@ class RuntimeService:
         except Exception:
             return self.process_frame(self._empty_frame_context(frame))
 
+        if not isinstance(inference_result, InferenceResult):
+            return self.process_frame(self._empty_frame_context(frame))
+
         if not inference_result.available:
             return self.process_frame(self._empty_frame_context(frame))
 
-        detections = [
-            Detection(
-                cls=item.cls,
-                score=item.score,
-                x=item.x,
-                y=item.y,
-                w=item.w,
-                h=item.h,
-            )
-            for item in inference_result.detections
-        ]
+        try:
+            detections = [
+                Detection(
+                    cls=item.cls,
+                    score=item.score,
+                    x=item.x,
+                    y=item.y,
+                    w=item.w,
+                    h=item.h,
+                )
+                for item in inference_result.detections
+            ]
+            classes = list(inference_result.classes)
+        except Exception:
+            return self.process_frame(self._empty_frame_context(frame))
+
         context = FrameContext(
             frame_id=frame.frame_id,
             width=frame.width,
             height=frame.height,
             detections=detections,
-            classes=inference_result.classes,
+            classes=classes,
         )
         return self.process_frame(context)
 
