@@ -46,8 +46,31 @@ class CaptureService:
             runner=self.capability_runner or run_v4l2_ctl,
         )
 
-    def configure(self, device: str | None = None) -> CaptureRuntimeState:
-        selected_device = device or self.config.device
+    def configure(
+        self,
+        device: str | None = None,
+        *,
+        preference: str | None = None,
+        pixel_format: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: int | None = None,
+    ) -> CaptureRuntimeState:
+        selected_device = self.config.device if device is None else device
+        if not selected_device.strip():
+            self.state = CaptureRuntimeState(
+                available=False,
+                device=selected_device,
+                last_error="capture device is required",
+            )
+            return self.state
+        selected_preference = preference if preference is not None else self.config.preference
+        selected_pixel_format = (
+            pixel_format if pixel_format is not None else self.config.pixel_format
+        )
+        selected_width = width if width is not None else self.config.width
+        selected_height = height if height is not None else self.config.height
+        selected_fps = fps if fps is not None else self.config.fps
         if self.source is not None:
             self.source.close()
             self.source = None
@@ -63,11 +86,11 @@ class CaptureService:
             profile = select_capture_profile(
                 selected_device,
                 caps.capabilities,
-                self.config.preference,  # type: ignore[arg-type]
-                pixel_format=self.config.pixel_format or None,
-                width=self.config.width or None,
-                height=self.config.height or None,
-                fps=self.config.fps or None,
+                selected_preference,  # type: ignore[arg-type]
+                pixel_format=selected_pixel_format or None,
+                width=selected_width or None,
+                height=selected_height or None,
+                fps=selected_fps or None,
             )
             source = self.source_factory(profile)
         except Exception as exc:
@@ -79,6 +102,11 @@ class CaptureService:
             )
             return self.state
         self.source = source
+        self.config.preference = selected_preference
+        self.config.pixel_format = selected_pixel_format
+        self.config.width = selected_width
+        self.config.height = selected_height
+        self.config.fps = selected_fps
         self.state = CaptureRuntimeState(
             available=True,
             device=selected_device,

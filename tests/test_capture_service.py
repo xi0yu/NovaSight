@@ -124,6 +124,30 @@ def test_capture_service_failed_reconfigure_clears_previous_source() -> None:
         service.capture_frames(max_frames=1)
 
 
+def test_capture_service_blank_device_does_not_fallback_to_default() -> None:
+    cfg = RuntimeConfig()
+    cfg.capture.device = "/dev/video0"
+    queried_devices: list[str] = []
+
+    def capability_runner(device: str) -> str | None:
+        queried_devices.append(device)
+        return None
+
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=capability_runner,
+        source_factory=lambda profile: FakeSource(),
+    )
+
+    state = service.configure("")
+
+    assert queried_devices == []
+    assert state.available is False
+    assert state.device == ""
+    assert state.last_error == "capture device is required"
+    assert service.source is None
+
+
 def test_capture_service_source_factory_error_clears_state() -> None:
     cfg = RuntimeConfig()
     old_source = FakeSource()

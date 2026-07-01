@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
@@ -17,6 +17,14 @@ class CaptureSelectRequest(BaseModel):
     width: int | None = None
     height: int | None = None
     fps: int | None = None
+
+    @field_validator("device")
+    @classmethod
+    def device_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("device must not be blank")
+        return stripped
 
 
 @router.get("/capabilities")
@@ -31,13 +39,14 @@ def state(request: Request) -> dict:
 
 @router.post("/select")
 def select(request: Request, payload: CaptureSelectRequest):
-    config = request.app.state.capture.config
-    for field in ("preference", "pixel_format", "width", "height", "fps"):
-        value = getattr(payload, field)
-        if value is not None:
-            setattr(config, field, value)
-
-    state = request.app.state.capture.configure(payload.device)
+    state = request.app.state.capture.configure(
+        payload.device,
+        preference=payload.preference,
+        pixel_format=payload.pixel_format,
+        width=payload.width,
+        height=payload.height,
+        fps=payload.fps,
+    )
     body = asdict(state)
     if state.available is False:
         return JSONResponse(status_code=400, content=body)

@@ -17,9 +17,16 @@ class FakeCaptureService:
     config: object
     configure_calls: list[str]
 
-    def configure(self, device: str) -> CaptureRuntimeState:
+    def configure(self, device: str, **kwargs) -> CaptureRuntimeState:
         self.configure_calls.append(device)
         return self.state
+
+
+class FakeSource:
+    backend_label = "gst:test"
+
+    def close(self) -> None:
+        pass
 
 
 def test_capture_state_is_in_runtime_state(tmp_path) -> None:
@@ -90,21 +97,108 @@ def test_capture_select_requires_device_without_configuring(tmp_path) -> None:
     assert service.configure_calls == []
 
 
-def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
+def test_capture_select_rejects_blank_device_without_configuring(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     service = FakeCaptureService(
-        state=CaptureRuntimeState(available=True, device="/dev/video0"),
+        state=CaptureRuntimeState(device="/dev/video0"),
         config=RuntimeConfig().capture,
         configure_calls=[],
     )
     app.state.capture = service
     client = TestClient(app)
 
+    response = client.post("/api/capture/select", json={"device": "  "})
+
+    assert response.status_code in {400, 422}
+    assert service.configure_calls == []
+
+
+def test_capture_select_failure_does_not_mutate_config(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    cfg.capture.preference = "auto_balanced"
+    cfg.capture.pixel_format = "NV12"
+    cfg.capture.width = 640
+    cfg.capture.height = 480
+    cfg.capture.fps = 30
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: None,
+    )
+    app.state.capture = service
+    client = TestClient(app)
+
     response = client.post(
         "/api/capture/select",
-        json={"device": "/dev/video0", "preference": "manual"},
+        json={
+            "device": "/dev/missing",
+            "preference": "manual",
+            "pixel_format": "MJPG",
+            "width": 1920,
+            "height": 1080,
+            "fps": 144,
+        },
+    )
+
+    assert response.status_code == 400
+    assert service.config.preference == "auto_balanced"
+    assert service.config.pixel_format == "NV12"
+    assert service.config.width == 640
+    assert service.config.height == 480
+    assert service.config.fps == 30
+
+
+def test_capture_select_invalid_preference_does_not_mutate_config(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    cfg.capture.preference = "auto_balanced"
+    cfg.capture.pixel_format = "NV12"
+    cfg.capture.width = 640
+    cfg.capture.height = 480
+    cfg.capture.fps = 30
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: FakeSource(),
+    )
+    app.state.capture = service
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/capture/select",
+        json={
+            "device": "/dev/video0",
+            "preference": "invalid",
+            "pixel_format": "MJPG",
+            "width": 1280,
+            "height": 720,
+            "fps": 60,
+        },
+    )
+
+    assert response.status_code == 400
+    assert service.config.preference == "auto_balanced"
+    assert service.config.pixel_format == "NV12"
+    assert service.config.width == 640
+    assert service.config.height == 480
+    assert service.config.fps == 30
+
+
+def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: FakeSource(),
+    )
+    app.state.capture = service
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/capture/select",
+        json={"device": "/dev/video0", "preference": "auto_low_latency"},
     )
 
     assert response.status_code == 200
-    assert service.config.preference == "manual"
-    assert service.configure_calls == ["/dev/video0"]
+    assert service.config.preference == "auto_low_latency"
