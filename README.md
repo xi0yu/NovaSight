@@ -42,6 +42,9 @@ pnpm --dir web build
 The backend exposes runtime control endpoints for the dual-thread pipeline:
 
 ```bash
+curl -X POST http://127.0.0.1:5174/api/license/activate \
+  -H "Content-Type: application/json" \
+  -d '{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}'
 curl http://127.0.0.1:5174/api/config
 curl -X POST http://127.0.0.1:5174/api/runtime/start
 curl -X POST http://127.0.0.1:5174/api/runtime/stop
@@ -83,10 +86,16 @@ Local license-key management is available through:
 
 ```bash
 curl http://127.0.0.1:5174/api/license
+curl -X POST http://127.0.0.1:5174/api/license/activate \
+  -H "Content-Type: application/json" \
+  -d '{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}'
 ```
 
-Saving a key stores only a SHA-256 hash and short fingerprint under `data/`;
-the plaintext key is never returned by the API.
+Operational APIs are blocked until a valid license is activated. The built-in
+test key grants `test_max` permissions for Jetson bring-up. Production licenses
+use signed `NS1.<payload>.<signature>` tokens with created time, activation time,
+duration, tier, and feature permissions; plaintext keys are never returned by the
+API.
 
 ## Jetson Camera Diagnostics
 
@@ -116,6 +125,9 @@ python3 -m novasight --host 0.0.0.0 --port 5174
 Verify the capture API from the Jetson shell:
 
 ```bash
+curl -X POST http://127.0.0.1:5174/api/license/activate \
+  -H "Content-Type: application/json" \
+  -d '{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}'
 curl http://127.0.0.1:5174/api/capture/state
 curl "http://127.0.0.1:5174/api/capture/capabilities?device=/dev/video0"
 curl -I http://127.0.0.1:5174/api/capture/stream.mjpg

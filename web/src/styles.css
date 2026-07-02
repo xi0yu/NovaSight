@@ -72,6 +72,24 @@ input {
   padding: 18px;
 }
 
+.license-shell {
+  min-height: 100vh;
+  display: grid;
+  align-items: center;
+}
+
+.license-gate {
+  width: min(760px, 100%);
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+  border: 1px solid rgba(215, 224, 230, 0.92);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+  border-radius: 8px;
+  padding: 22px;
+}
+
 .topbar {
   min-height: 72px;
   display: flex;
@@ -717,6 +735,60 @@ th {
   gap: 12px;
 }
 
+.license-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.license-features span {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 5px 8px;
+  font-size: 0.78rem;
+}
+
+.capability-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.capability-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.capability-group summary {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.capability-group summary strong {
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.capability-group[open] summary {
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+
+.capability-table {
+  border: 0;
+  border-radius: 0;
+}
+
 @media (max-width: 980px) {
   .dashboard-grid,
   .models-grid,
@@ -791,5 +863,11 @@ th {
 
   .video-shell {
     min-height: 280px;
+  }
+
+  .capability-group summary {
+    grid-template-columns: 1fr;
+    align-items: start;
+    padding: 10px 12px;
   }
 }

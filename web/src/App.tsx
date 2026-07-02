@@ -16,6 +16,7 @@ import {
   PluginInfo,
   RuntimeConfig,
   RuntimeState,
+  TEST_MAX_LICENSE_KEY,
   clearLicenseKey,
   getCaptureCapabilities,
   getConfigSchema,
@@ -51,7 +52,14 @@ type CapabilityChoice = {
   fps: number;
 };
 
+type CapabilityGroup = {
+  pixel_format: string;
+  choices: CapabilityChoice[];
+};
+
 type ConfigValue = string | number | boolean | null | ConfigValue[] | { [key: string]: ConfigValue };
+
+const LICENSE_CACHE_KEY = "novasight.license.valid";
 
 const tabs: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "总览" },
@@ -90,6 +98,19 @@ function formatTime(date: Date | null): string {
     minute: "2-digit",
     second: "2-digit"
   }).format(date);
+}
+
+function formatEpoch(seconds: number | null | undefined): string {
+  if (!seconds) {
+    return "无";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(seconds * 1000));
 }
 
 function statusTone(value: boolean | undefined): "good" | "warn" | "bad" {
@@ -327,7 +348,7 @@ function CaptureWorkbench({
     setCaptureError(error);
   }, [error]);
 
-  const rows = useMemo(() => expandCapabilities(capabilities?.capabilities ?? []), [capabilities]);
+  const groups = useMemo(() => groupCapabilities(capabilities?.capabilities ?? []), [capabilities]);
 
   const refreshCapabilities = useCallback(async () => {
     setLoadingCaps(true);
@@ -418,7 +439,7 @@ function CaptureWorkbench({
         </div>
         <CapabilityTable
           applying={applying}
-          rows={rows}
+          groups={groups}
           onApply={(row) =>
             applySelection(
               {
@@ -458,27 +479,46 @@ function CaptureWorkbench({
   );
 }
 
-function expandCapabilities(caps: CaptureCapability[]): CapabilityChoice[] {
-  return caps.flatMap((cap) =>
-    cap.fps_list.map((fps) => ({
-      pixel_format: cap.pixel_format,
-      width: cap.width,
-      height: cap.height,
-      fps
+function groupCapabilities(caps: CaptureCapability[]): CapabilityGroup[] {
+  const grouped = new Map<string, CapabilityChoice[]>();
+  caps.forEach((cap) => {
+    const pixelFormat = cap.pixel_format.toUpperCase();
+    const choices = grouped.get(pixelFormat) ?? [];
+    cap.fps_list.forEach((fps) => {
+      choices.push({
+        pixel_format: pixelFormat,
+        width: cap.width,
+        height: cap.height,
+        fps
+      });
+    });
+    grouped.set(pixelFormat, choices);
+  });
+  const order = ["MJPG", "NV12", "YUYV", "BGR3"];
+  return Array.from(grouped.entries())
+    .map(([pixel_format, choices]) => ({
+      pixel_format,
+      choices: choices.sort((left, right) =>
+        right.fps - left.fps || right.width * right.height - left.width * left.height
+      )
     }))
-  );
+    .sort((left, right) => {
+      const leftRank = order.includes(left.pixel_format) ? order.indexOf(left.pixel_format) : 99;
+      const rightRank = order.includes(right.pixel_format) ? order.indexOf(right.pixel_format) : 99;
+      return leftRank - rightRank || left.pixel_format.localeCompare(right.pixel_format);
+    });
 }
 
 function CapabilityTable({
-  rows,
+  groups,
   applying,
   onApply
 }: {
-  rows: CapabilityChoice[];
+  groups: CapabilityGroup[];
   applying: string | null;
   onApply: (row: CapabilityChoice) => void;
 }) {
-  if (rows.length === 0) {
+  if (groups.length === 0) {
     return (
       <EmptyState
         title="尚未读取采集能力"
@@ -489,45 +529,61 @@ function CapabilityTable({
   }
 
   return (
-    <div className="table-wrap capability-table">
-      <table>
-        <thead>
-          <tr>
-            <th>像素格式</th>
-            <th>分辨率</th>
-            <th>帧率</th>
-            <th>建议</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
-            return (
-              <tr key={id}>
-                <td className="mono">{row.pixel_format}</td>
-                <td className="mono">
-                  {row.width}x{row.height}
-                </td>
-                <td className="mono">{row.fps}</td>
-                <td>{getCapabilityHint(row)}</td>
-                <td>
-                  <button
-                    className="button compact-button"
-                    disabled={applying !== null}
-                    onClick={() => onApply(row)}
-                    type="button"
-                  >
-                    {applying === id ? "应用中" : "应用"}
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="capability-groups">
+      {groups.map((group, index) => (
+        <details className="capability-group" key={group.pixel_format} open={index < 2}>
+          <summary>
+            <span className="mono">{group.pixel_format}</span>
+            <span>{group.choices.length} 组配置</span>
+            <strong>{getFormatSummary(group)}</strong>
+          </summary>
+          <div className="table-wrap capability-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>分辨率</th>
+                  <th>帧率</th>
+                  <th>建议</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.choices.map((row) => {
+                  const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
+                  return (
+                    <tr key={id}>
+                      <td className="mono">
+                        {row.width}x{row.height}
+                      </td>
+                      <td className="mono">{row.fps}</td>
+                      <td>{getCapabilityHint(row)}</td>
+                      <td>
+                        <button
+                          className="button compact-button"
+                          disabled={applying !== null}
+                          onClick={() => onApply(row)}
+                          type="button"
+                        >
+                          {applying === id ? "应用中" : "应用"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ))}
     </div>
   );
+}
+
+function getFormatSummary(group: CapabilityGroup): string {
+  const maxFps = Math.max(...group.choices.map((choice) => choice.fps));
+  const maxPixels = Math.max(...group.choices.map((choice) => choice.width * choice.height));
+  const maxChoice = group.choices.find((choice) => choice.width * choice.height === maxPixels);
+  return `${maxChoice?.width ?? 0}x${maxChoice?.height ?? 0} / ${maxFps}fps`;
 }
 
 function getCapabilityHint(row: CapabilityChoice): string {
@@ -740,24 +796,151 @@ function setConfigValue(
   return next;
 }
 
-function SettingsView({ runtime, onRuntimeRefresh }: { runtime: RuntimeState | null; onRuntimeRefresh: () => Promise<void> }) {
+function LicensePanel({
+  license,
+  onLicenseChange
+}: {
+  license: LicenseStatus | null;
+  onLicenseChange: (license: LicenseStatus) => void;
+}) {
+  const [licenseInput, setLicenseInput] = useState("");
+  const [message, setMessage] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  const saveLicense = useCallback(async () => {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      const status = await saveLicenseKey(licenseInput);
+      localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
+      onLicenseChange(status);
+      setLicenseInput("");
+      setMessage("卡密已激活，界面不回显明文。");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, [licenseInput, onLicenseChange]);
+
+  const clearLicense = useCallback(async () => {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      const status = await clearLicenseKey();
+      localStorage.removeItem(LICENSE_CACHE_KEY);
+      onLicenseChange(status);
+      setMessage("卡密已清除。");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, [onLicenseChange]);
+
+  return (
+    <div className="license-panel">
+      <InlineError message={error} />
+      {message ? <div className="inline-note">{message}</div> : null}
+      <StatusPill tone={license?.valid ? "good" : "idle"}>
+        {license?.valid ? "授权有效" : "未授权"}
+      </StatusPill>
+      <div className="field-grid">
+        <Field label="授权等级" value={license?.tier || "无"} mono />
+        <Field label="指纹" value={license?.fingerprint || "无"} mono />
+        <Field label="创建时间" value={formatEpoch(license?.created_at)} />
+        <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
+        <Field label="到期时间" value={formatEpoch(license?.expires_at)} />
+        <Field
+          label="期限"
+          value={
+            license?.duration_value
+              ? `${license.duration_value} ${license.duration_unit}`
+              : "无"
+          }
+        />
+      </div>
+      <label className="config-field">
+        <span>卡密</span>
+        <input
+          type="password"
+          value={licenseInput}
+          placeholder="输入授权码，激活后不回显"
+          onChange={(event) => setLicenseInput(event.target.value)}
+        />
+      </label>
+      <div className="preference-actions">
+        <button className="button" type="button" onClick={saveLicense} disabled={!licenseInput.trim()}>
+          激活卡密
+        </button>
+        <button className="button" type="button" onClick={() => setLicenseInput(TEST_MAX_LICENSE_KEY)}>
+          填入测试卡密
+        </button>
+        <button className="button" type="button" onClick={clearLicense}>
+          清除
+        </button>
+      </div>
+      <div className="license-features">
+        {(license?.features ?? []).map((feature) => (
+          <span key={feature}>{feature}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LicenseGate({
+  license,
+  loading,
+  error,
+  onRefresh,
+  onLicenseChange
+}: {
+  license: LicenseStatus | null;
+  loading: boolean;
+  error: string | undefined;
+  onRefresh: () => void;
+  onLicenseChange: (license: LicenseStatus) => void;
+}) {
+  return (
+    <main className="app-shell license-shell">
+      <section className="license-gate">
+        <div className="brand-block">
+          <span className="brand-mark">NS</span>
+          <div>
+            <h1>NovaSight</h1>
+            <p>请输入卡密后进入 Jetson 实时视觉工作台</p>
+          </div>
+        </div>
+        <InlineError message={error} />
+        {loading ? <div className="inline-note">正在校验本机授权状态。</div> : null}
+        <LicensePanel license={license} onLicenseChange={onLicenseChange} />
+        <button className="button compact-button" type="button" onClick={onRefresh}>
+          重新校验
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function SettingsView({
+  runtime,
+  license,
+  onRuntimeRefresh,
+  onLicenseChange
+}: {
+  runtime: RuntimeState | null;
+  license: LicenseStatus | null;
+  onRuntimeRefresh: () => Promise<void>;
+  onLicenseChange: (license: LicenseStatus) => void;
+}) {
   const [schema, setSchema] = useState<ConfigSchemaResponse | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
-  const [license, setLicense] = useState<LicenseStatus | null>(null);
-  const [licenseInput, setLicenseInput] = useState("");
   const [message, setMessage] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
   const loadSettings = useCallback(async () => {
     setError(undefined);
     try {
-      const [nextSchema, nextLicense] = await Promise.all([
-        getConfigSchema(),
-        getLicenseStatus()
-      ]);
+      const nextSchema = await getConfigSchema();
       setSchema(nextSchema);
       setConfig(nextSchema.values);
-      setLicense(nextLicense);
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -783,30 +966,6 @@ function SettingsView({ runtime, onRuntimeRefresh }: { runtime: RuntimeState | n
       setError(getErrorMessage(err));
     }
   }, [config, onRuntimeRefresh]);
-
-  const saveLicense = useCallback(async () => {
-    setError(undefined);
-    setMessage(undefined);
-    try {
-      const status = await saveLicenseKey(licenseInput);
-      setLicense(status);
-      setLicenseInput("");
-      setMessage("卡密已保存，界面不回显明文。");
-    } catch (err) {
-      setError(getErrorMessage(err));
-    }
-  }, [licenseInput]);
-
-  const clearLicense = useCallback(async () => {
-    setError(undefined);
-    setMessage(undefined);
-    try {
-      setLicense(await clearLicenseKey());
-      setMessage("卡密已清除。");
-    } catch (err) {
-      setError(getErrorMessage(err));
-    }
-  }, []);
 
   return (
     <div className="settings-workbench">
@@ -873,29 +1032,7 @@ function SettingsView({ runtime, onRuntimeRefresh }: { runtime: RuntimeState | n
       </Panel>
 
       <Panel title="卡密管理" eyebrow="本机授权">
-        <div className="license-panel">
-          <StatusPill tone={license?.configured ? "good" : "idle"}>
-            {license?.configured ? "已配置" : "未配置"}
-          </StatusPill>
-          <Field label="指纹" value={license?.fingerprint || "无"} mono />
-          <label className="config-field">
-            <span>卡密</span>
-            <input
-              type="password"
-              value={licenseInput}
-              placeholder="输入授权码，保存后不回显"
-              onChange={(event) => setLicenseInput(event.target.value)}
-            />
-          </label>
-          <div className="preference-actions">
-            <button className="button" type="button" onClick={saveLicense} disabled={!licenseInput.trim()}>
-              保存卡密
-            </button>
-            <button className="button" type="button" onClick={clearLicense}>
-              清除
-            </button>
-          </div>
-        </div>
+        <LicensePanel license={license} onLicenseChange={onLicenseChange} />
       </Panel>
 
       <Panel title="运行态对照" eyebrow="实时状态">
@@ -913,6 +1050,42 @@ function SettingsView({ runtime, onRuntimeRefresh }: { runtime: RuntimeState | n
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("capture");
   const [state, setState] = useState<LoadState>(initialState);
+  const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [licenseLoading, setLicenseLoading] = useState(
+    localStorage.getItem(LICENSE_CACHE_KEY) === "1"
+  );
+  const [licenseError, setLicenseError] = useState<string | undefined>();
+
+  const loadLicense = useCallback(async () => {
+    setLicenseLoading(true);
+    setLicenseError(undefined);
+    try {
+      const status = await getLicenseStatus();
+      setLicense(status);
+      if (status.valid) {
+        localStorage.setItem(LICENSE_CACHE_KEY, "1");
+      } else {
+        localStorage.removeItem(LICENSE_CACHE_KEY);
+      }
+      return status;
+    } catch (err) {
+      setLicenseError(getErrorMessage(err));
+      localStorage.removeItem(LICENSE_CACHE_KEY);
+      return null;
+    } finally {
+      setLicenseLoading(false);
+    }
+  }, []);
+
+  const handleLicenseChange = useCallback((status: LicenseStatus) => {
+    setLicense(status);
+    if (status.valid) {
+      localStorage.setItem(LICENSE_CACHE_KEY, "1");
+    } else {
+      localStorage.removeItem(LICENSE_CACHE_KEY);
+      setState(initialState);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, errors: {} }));
@@ -949,10 +1122,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadLicense();
+  }, [loadLicense]);
 
   useEffect(() => {
+    if (license?.valid) {
+      void load();
+    }
+  }, [license?.valid, load]);
+
+  useEffect(() => {
+    if (!license?.valid) {
+      return undefined;
+    }
     const socket = new WebSocket(statusWebSocketUrl());
     socket.onmessage = (event) => {
       try {
@@ -967,7 +1149,19 @@ export default function App() {
       }
     };
     return () => socket.close();
-  }, []);
+  }, [license?.valid]);
+
+  if (!license?.valid) {
+    return (
+      <LicenseGate
+        license={license}
+        loading={licenseLoading}
+        error={licenseError}
+        onRefresh={() => void loadLicense()}
+        onLicenseChange={handleLicenseChange}
+      />
+    );
+  }
 
   const activeModel = state.runtime?.active_model ?? null;
   const hasErrors = Object.keys(state.errors).length > 0;
@@ -1050,7 +1244,12 @@ export default function App() {
           <PluginsView plugins={state.plugins} error={state.errors.plugins} />
         ) : null}
         {activeTab === "settings" ? (
-          <SettingsView runtime={state.runtime} onRuntimeRefresh={load} />
+          <SettingsView
+            runtime={state.runtime}
+            license={license}
+            onRuntimeRefresh={load}
+            onLicenseChange={handleLicenseChange}
+          />
         ) : null}
       </div>
     </main>

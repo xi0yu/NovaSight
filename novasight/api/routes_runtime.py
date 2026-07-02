@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict
 from typing import Any
 
@@ -15,6 +16,7 @@ from novasight.runtime.status import StatusHub
 
 
 router = APIRouter(tags=["runtime"])
+logger = logging.getLogger("novasight.api.runtime")
 
 
 @router.get("/api/config")
@@ -34,7 +36,9 @@ async def put_config(request: Request) -> dict[str, Any]:
         config = parse_runtime_config(payload)
         _apply_config(request, config)
     except ValueError as exc:
+        logger.warning("runtime config update rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("runtime config updated restart_required=%s", bool(request.app.state.runtime.running))
     return {
         "config": asdict(config),
         "schema": runtime_config_schema(config),
@@ -47,18 +51,31 @@ def get_license(request: Request) -> dict[str, Any]:
     return request.app.state.license.asdict()
 
 
+@router.post("/api/license/activate")
+async def activate_license(request: Request) -> dict[str, Any]:
+    return await put_license(request)
+
+
 @router.put("/api/license")
 async def put_license(request: Request) -> dict[str, Any]:
     payload = await request.json()
     try:
         status = request.app.state.license.save(str(payload.get("key", "")))
     except ValueError as exc:
+        logger.warning("license activation rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info(
+        "license activated tier=%s fingerprint=%s expires_at=%s",
+        status.tier,
+        status.fingerprint,
+        status.expires_at,
+    )
     return asdict(status)
 
 
 @router.delete("/api/license")
 def delete_license(request: Request) -> dict[str, Any]:
+    logger.info("license cleared")
     return asdict(request.app.state.license.clear())
 
 
@@ -71,6 +88,7 @@ def start_runtime(request: Request) -> dict[str, Any]:
             runtime=runtime,
         )
     runtime.pipeline.start()
+    logger.info("runtime pipeline started")
     return runtime.pipeline.status()
 
 
@@ -79,13 +97,19 @@ def stop_runtime(request: Request) -> dict[str, Any]:
     runtime = request.app.state.runtime
     if runtime.pipeline is not None:
         runtime.pipeline.stop()
+        logger.info("runtime pipeline stopped")
         return runtime.pipeline.status()
     runtime.running = False
+    logger.info("runtime pipeline stop requested while idle")
     return {"running": False}
 
 
 @router.websocket("/ws/status")
 async def websocket_status(websocket: WebSocket) -> None:
+    status = websocket.app.state.license.status()
+    if not status.configured or not status.valid:
+        await websocket.close(code=4401, reason="license required")
+        return
     await websocket.accept()
     hub = StatusHub(websocket.app.state.runtime)
     queue = await hub.subscribe()

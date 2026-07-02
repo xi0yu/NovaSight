@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import asdict
 from typing import Iterator
@@ -12,6 +13,7 @@ from novasight.capture.preview import render_preview_frame
 
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
+logger = logging.getLogger("novasight.api.capture")
 
 
 class CaptureSelectRequest(BaseModel):
@@ -60,6 +62,15 @@ def stream(request: Request):
 @router.post("/select")
 def select(request: Request, payload: CaptureSelectRequest):
     capture = request.app.state.capture
+    logger.info(
+        "capture select requested device=%s preference=%s pixel_format=%s size=%sx%s fps=%s",
+        payload.device,
+        payload.preference,
+        payload.pixel_format,
+        payload.width,
+        payload.height,
+        payload.fps,
+    )
     state = capture.configure(
         payload.device,
         preference=payload.preference,
@@ -70,13 +81,29 @@ def select(request: Request, payload: CaptureSelectRequest):
     )
     config_error = getattr(capture, "last_config_error", None)
     if config_error is not None:
+        logger.warning(
+            "capture select rejected device=%s error=%s",
+            payload.device,
+            config_error.last_error,
+        )
         return JSONResponse(
             status_code=400,
             content=asdict(config_error),
         )
     body = asdict(state)
     if state.available is False:
+        logger.warning(
+            "capture select unavailable device=%s error=%s",
+            payload.device,
+            state.last_error,
+        )
         return JSONResponse(status_code=400, content=body)
+    logger.info(
+        "capture select applied device=%s backend=%s profile=%s",
+        state.device,
+        state.backend,
+        asdict(state.profile) if state.profile else None,
+    )
     return body
 
 

@@ -7,9 +7,17 @@ from novasight.api import create_app
 from novasight.capture.service import CaptureService
 from novasight.capture.state import CaptureRuntimeState
 from novasight.config import RuntimeConfig
+from novasight.license import TEST_MAX_LICENSE_KEY
 
 
 CAPS_TEXT = "[0]: 'MJPG' (Motion-JPEG)\n    Size: Discrete 1280x720\n        Interval: Discrete 0.017s (60.000 fps)\n"
+
+
+def _client(app) -> TestClient:
+    client = TestClient(app)
+    response = client.post("/api/license/activate", json={"key": TEST_MAX_LICENSE_KEY})
+    assert response.status_code == 200
+    return client
 
 
 @dataclass
@@ -58,9 +66,8 @@ class StreamingSource:
 
 
 def test_capture_state_is_in_runtime_state(tmp_path) -> None:
-    client = TestClient(
-        create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    )
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    client = _client(app)
 
     response = client.get("/api/runtime/state")
 
@@ -76,7 +83,7 @@ def test_capture_capabilities_endpoint_uses_service(tmp_path) -> None:
         config=cfg.capture,
         capability_runner=lambda device: CAPS_TEXT if device == "/dev/fake" else None,
     )
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.get("/api/capture/capabilities?device=/dev/fake")
 
@@ -98,7 +105,7 @@ def test_capture_select_rejects_unavailable_device(tmp_path) -> None:
         config=RuntimeConfig().capture,
         configure_calls=[],
     )
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post("/api/capture/select", json={"device": "/dev/missing"})
 
@@ -117,7 +124,7 @@ def test_capture_select_requires_device_without_configuring(tmp_path) -> None:
         configure_calls=[],
     )
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post("/api/capture/select", json={})
 
@@ -133,7 +140,7 @@ def test_capture_select_rejects_blank_device_without_configuring(tmp_path) -> No
         configure_calls=[],
     )
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post("/api/capture/select", json={"device": "  "})
 
@@ -154,7 +161,7 @@ def test_capture_select_failure_does_not_mutate_config(tmp_path) -> None:
         capability_runner=lambda device: None,
     )
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post(
         "/api/capture/select",
@@ -183,7 +190,7 @@ def test_capture_select_initial_failure_updates_state(tmp_path) -> None:
         capability_runner=lambda device: None,
     )
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post("/api/capture/select", json={"device": "/dev/missing"})
 
@@ -204,7 +211,7 @@ def test_capture_select_failure_keeps_previous_healthy_state(tmp_path) -> None:
     )
     service.configure("/dev/video0")
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post("/api/capture/select", json={"device": "/dev/missing"})
 
@@ -229,7 +236,7 @@ def test_capture_select_invalid_preference_does_not_mutate_config(tmp_path) -> N
         source_factory=lambda profile: FakeSource(),
     )
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post(
         "/api/capture/select",
@@ -260,7 +267,7 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
         source_factory=lambda profile: FakeSource(),
     )
     app.state.capture = service
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.post(
         "/api/capture/select",
@@ -296,7 +303,7 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path, monkeypat
             )
         ),
     )
-    client = TestClient(app)
+    client = _client(app)
 
     response = client.get("/api/capture/stream.mjpg")
 

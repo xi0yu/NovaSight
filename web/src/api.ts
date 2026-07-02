@@ -130,8 +130,18 @@ export type ConfigUpdateResponse = {
 
 export type LicenseStatus = {
   configured: boolean;
+  valid: boolean;
   fingerprint: string;
+  tier: string;
+  features: string[];
+  license_id: string;
+  created_at: number | null;
+  activated_at: number | null;
+  expires_at: number | null;
+  duration_value: number | null;
+  duration_unit: string;
   updated_at: number | null;
+  message: string;
 };
 
 export type PluginKind = "vision" | "control" | string;
@@ -165,10 +175,12 @@ export const API_PATHS = {
   plugins: "/api/plugins",
   modelProjects: "/api/models/projects",
   license: "/api/license",
+  licenseActivate: "/api/license/activate",
   statusWs: "/ws/status"
 } as const;
 
 const apiBase = (import.meta.env.VITE_NOVASIGHT_API_BASE ?? "").replace(/\/$/, "");
+export const TEST_MAX_LICENSE_KEY = "NOVASIGHT-TEST-MAX-ACCESS-2026";
 
 export function apiUrl(path: string): string {
   return `${apiBase}${path}`;
@@ -212,10 +224,16 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    const objectBody =
+      typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
     const detail =
-      typeof body === "object" && body !== null && "detail" in body
-        ? String((body as { detail: unknown }).detail)
-        : response.statusText;
+      objectBody && typeof objectBody.last_error === "string"
+        ? objectBody.last_error
+        : objectBody && typeof objectBody.reason === "string"
+          ? objectBody.reason
+          : objectBody && typeof objectBody.detail === "string"
+            ? objectBody.detail
+            : response.statusText;
     throw new ApiError(detail || "请求失败", response.status, body);
   }
 
@@ -279,8 +297,8 @@ export function getLicenseStatus(): Promise<LicenseStatus> {
 }
 
 export function saveLicenseKey(key: string): Promise<LicenseStatus> {
-  return requestJson<LicenseStatus>(API_PATHS.license, {
-    method: "PUT",
+  return requestJson<LicenseStatus>(API_PATHS.licenseActivate, {
+    method: "POST",
     headers: {
       "Content-Type": "application/json"
     },

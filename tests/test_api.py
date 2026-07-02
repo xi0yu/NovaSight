@@ -4,15 +4,19 @@ from fastapi.testclient import TestClient
 
 import novasight.main as main_module
 from novasight.api import create_app
+from novasight.license import TEST_MAX_LICENSE_KEY
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(
+    client = TestClient(
         create_app(
             data_dir=tmp_path / "data",
             config_path=tmp_path / "missing.yaml",
         )
     )
+    response = client.post("/api/license/activate", json={"key": TEST_MAX_LICENSE_KEY})
+    assert response.status_code == 200
+    return client
 
 
 def _project(

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig, load_runtime_config
@@ -20,6 +21,20 @@ from .routes_health import router as health_router
 from .routes_models import router as models_router
 from .routes_plugins import router as plugins_router
 from .routes_runtime import router as runtime_router
+
+
+OPEN_API_PATHS = {
+    "/healthz",
+    "/api/license",
+    "/api/license/activate",
+    "/api/config/schema",
+}
+
+
+def _is_open_path(path: str) -> bool:
+    if path in OPEN_API_PATHS:
+        return True
+    return not path.startswith("/api/")
 
 
 def create_app(
@@ -57,6 +72,21 @@ def create_app(
     app.state.capture = capture
     app.state.inference = inference
     app.state.runtime = runtime
+
+    @app.middleware("http")
+    async def require_license(request: Request, call_next):
+        if request.method == "OPTIONS" or _is_open_path(request.url.path):
+            return await call_next(request)
+        status = request.app.state.license.status()
+        if not status.configured or not status.valid:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "license required",
+                    "license": app.state.license.asdict(),
+                },
+            )
+        return await call_next(request)
 
     app.include_router(health_router)
     app.include_router(capture_router)
