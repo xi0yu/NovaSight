@@ -3,6 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { StudioShell } from "./app/StudioShell";
 import { type StudioViewId } from "./app/navigation";
 import {
+  EmptyState,
+  InlineError,
+  LoadingSkeleton,
+  Panel,
+  StatusIndicator
+} from "./components/ui";
+import {
   ActiveModel,
   ApiError,
   ConfigFieldSchema,
@@ -135,33 +142,6 @@ function formatProfile(capture: CaptureState | undefined): string {
   return `${capture.profile.pixel_format} ${capture.profile.width}x${capture.profile.height} @ ${capture.profile.fps}`;
 }
 
-function StatusPill({
-  tone,
-  children
-}: {
-  tone: "good" | "warn" | "bad" | "idle";
-  children: React.ReactNode;
-}) {
-  return (
-    <span className={`status-pill ${tone}`}>
-      <span className="status-dot" />
-      {children}
-    </span>
-  );
-}
-
-function InlineError({ message }: { message: string | undefined }) {
-  if (!message) {
-    return null;
-  }
-  return (
-    <div className="inline-error" role="status">
-      <strong>请求失败</strong>
-      <span>{message}</span>
-    </div>
-  );
-}
-
 function Field({
   label,
   value,
@@ -175,49 +155,6 @@ function Field({
     <div className="field">
       <span className="field-label">{label}</span>
       <span className={mono ? "field-value mono" : "field-value"}>{value}</span>
-    </div>
-  );
-}
-
-function Panel({
-  title,
-  eyebrow,
-  children,
-  action
-}: {
-  title: string;
-  eyebrow?: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}) {
-  return (
-    <section className="panel">
-      <div className="panel-header">
-        <div>
-          {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
-          <h2>{title}</h2>
-        </div>
-        {action ? <div className="panel-action">{action}</div> : null}
-      </div>
-      <div className="panel-body">{children}</div>
-    </section>
-  );
-}
-
-function EmptyState({
-  title,
-  detail,
-  command
-}: {
-  title: string;
-  detail: string;
-  command?: string;
-}) {
-  return (
-    <div className="empty-state">
-      <strong>{title}</strong>
-      <span>{detail}</span>
-      {command ? <code>{command}</code> : null}
     </div>
   );
 }
@@ -267,15 +204,15 @@ function OverviewView({
         <div className="metric-grid">
           <div className="metric">
             <span>后端</span>
-            <StatusPill tone={statusTone(health?.ok)}>
+            <StatusIndicator tone={statusTone(health?.ok)}>
               {loading ? "检查中" : health?.ok ? "已连接" : "离线"}
-            </StatusPill>
+            </StatusIndicator>
           </div>
           <div className="metric">
             <span>运行态</span>
-            <StatusPill tone={runtime?.running ? "good" : "idle"}>
+            <StatusIndicator tone={runtime?.running ? "good" : "idle"}>
               {runtime?.running ? "运行中" : "待机"}
-            </StatusPill>
+            </StatusIndicator>
           </div>
           <div className="metric">
             <span>采集配置</span>
@@ -283,9 +220,9 @@ function OverviewView({
           </div>
           <div className="metric">
             <span>控制输出</span>
-            <StatusPill tone={statusTone(selectedAvailability)}>
+            <StatusIndicator tone={statusTone(selectedAvailability)}>
               {selectedExecutor ?? "未选择"}
-            </StatusPill>
+            </StatusIndicator>
           </div>
         </div>
         <div className="field-grid">
@@ -331,9 +268,9 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
               <td className="mono">{id}</td>
               <td>{executor?.selected === id ? "是" : "否"}</td>
               <td>
-                <StatusPill tone={state.available ? "good" : "bad"}>
+                <StatusIndicator tone={state.available ? "good" : "bad"}>
                   {state.available ? "可用" : "不可用"}
-                </StatusPill>
+                </StatusIndicator>
               </td>
             </tr>
           ))}
@@ -535,9 +472,9 @@ function CaptureWorkbench({
           <div className="corner-frame corner-frame-bl" />
           <div className="corner-frame corner-frame-br" />
           <div className="video-status">
-            <StatusPill tone={capture?.available ? "good" : "idle"}>
+            <StatusIndicator tone={capture?.available ? "good" : "idle"}>
               {capture?.available ? "采集中" : "未打开"}
-            </StatusPill>
+            </StatusIndicator>
             <span className="mono">{formatProfile(capture)}</span>
           </div>
           <div className="preview-caption">预览限速输出，采集与推理控制不依赖浏览器帧率</div>
@@ -876,9 +813,9 @@ function PluginGroup({ title, plugins }: { title: string; plugins: PluginInfo[] 
                 <strong className="mono">{plugin.plugin_id}</strong>
                 <span>{plugin.kind}</span>
               </div>
-              <StatusPill tone={plugin.enabled ? "good" : "idle"}>
+              <StatusIndicator tone={plugin.enabled ? "good" : "idle"}>
                 {plugin.enabled ? "启用" : "停用"}
-              </StatusPill>
+              </StatusIndicator>
             </article>
           ))}
         </div>
@@ -969,9 +906,9 @@ function LicensePanel({
     <div className="license-panel">
       <InlineError message={error} />
       {message ? <div className="inline-note">{message}</div> : null}
-      <StatusPill tone={license?.valid ? "good" : "idle"}>
+      <StatusIndicator tone={license?.valid ? "good" : "idle"}>
         {license?.valid ? "授权有效" : "未授权"}
-      </StatusPill>
+      </StatusIndicator>
       <div className="field-grid">
         <Field label="授权等级" value={license?.tier || "无"} mono />
         <Field label="指纹" value={license?.fingerprint || "无"} mono />
@@ -1367,9 +1304,9 @@ export default function App() {
   };
   const shellStatus = (
     <>
-      <StatusPill tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
+      <StatusIndicator tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
         {hasErrors ? "部分异常" : state.health?.ok ? "已连接" : "连接中"}
-      </StatusPill>
+      </StatusIndicator>
       <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
     </>
   );
@@ -1393,11 +1330,7 @@ export default function App() {
       ) : null}
 
       {state.loading && !state.runtime ? (
-        <div className="loading-grid" aria-label="正在加载控制台数据">
-          <div />
-          <div />
-          <div />
-        </div>
+        <LoadingSkeleton />
       ) : null}
 
       <div className="view-stack">
