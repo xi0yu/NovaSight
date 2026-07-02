@@ -1,4 +1,5 @@
 import sys
+from types import ModuleType
 from types import SimpleNamespace
 
 import numpy as np
@@ -49,25 +50,24 @@ def test_nv12_candidates_start_with_nvmm_nv12() -> None:
 def test_appsink_candidates_do_not_use_opencv_labels() -> None:
     candidates = build_appsink_candidates(_profile("MJPG"))
 
-    assert candidates[0].label == "gst-appsink:nvmm-mjpg-iomode2"
+    assert candidates[0].label == "gst-appsink:cpu-bgr-mjpg-iomode2"
     assert "appsink name=sink" in candidates[0].pipeline
-    assert (
-        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
-        in candidates[0].pipeline
-    )
+    assert "video/x-raw,format=BGRx" in candidates[0].pipeline
     assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
+    assert any(
+        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
+        in candidate.pipeline
+        for candidate in candidates
+    )
     assert all(not candidate.label.startswith("opencv:") for candidate in candidates)
 
 
 def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
     candidates = build_appsink_candidates(_profile("YUYV"))
 
-    assert candidates[0].label == "gst-appsink:nvmm-yuyv-iomode2"
+    assert candidates[0].label == "gst-appsink:cpu-bgr-yuyv-iomode2"
     assert "video/x-raw,format=YUY2,width=1920,height=1080" in candidates[0].pipeline
-    assert (
-        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
-        in candidates[0].pipeline
-    )
+    assert "video/x-raw,format=BGRx" in candidates[0].pipeline
 
 
 def test_select_open_source_returns_first_candidate_that_reads() -> None:
@@ -253,6 +253,88 @@ def test_gstreamer_appsink_close_waits_for_null_state() -> None:
     source.close()
 
     assert calls == [
+        ("set_state", "NULL"),
+        ("get_state", 2_000_000_000),
+    ]
+
+
+def test_gstreamer_appsink_constructor_closes_pipeline_when_first_frame_fails(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object | None]] = []
+
+    class FakeStructure:
+        def get_int(self, name: str):
+            return True, 2
+
+        def get_string(self, name: str):
+            return "NVMM"
+
+    class FakeCaps:
+        def get_size(self) -> int:
+            return 1
+
+        def get_structure(self, index: int):
+            return FakeStructure()
+
+    class FakeBuffer:
+        def map(self, flags):
+            return True, SimpleNamespace(data=bytes([0, 0, 0, 0]))
+
+        def unmap(self, info) -> None:
+            pass
+
+    class FakeSample:
+        def get_caps(self):
+            return FakeCaps()
+
+        def get_buffer(self):
+            return FakeBuffer()
+
+    class FakeAppSink:
+        def try_pull_sample(self, timeout):
+            return FakeSample()
+
+    class FakePipeline:
+        def get_by_name(self, name: str):
+            return FakeAppSink()
+
+        def set_state(self, state) -> str:
+            calls.append(("set_state", state))
+            return "SUCCESS"
+
+        def get_state(self, timeout) -> None:
+            calls.append(("get_state", timeout))
+
+    fake_gst = SimpleNamespace(
+        SECOND=1_000_000_000,
+        MapFlags=SimpleNamespace(READ=1),
+        State=SimpleNamespace(PLAYING="PLAYING", NULL="NULL"),
+        StateChangeReturn=SimpleNamespace(FAILURE="FAILURE"),
+        is_initialized=lambda: True,
+        init=lambda args: None,
+        parse_launch=lambda pipeline: FakePipeline(),
+    )
+    gi = ModuleType("gi")
+    gi.require_version = lambda *args: None
+    repository = ModuleType("gi.repository")
+    repository.Gst = fake_gst
+    repository.GstApp = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repository)
+
+    try:
+        GstAppSinkFrameSource(
+            _profile(),
+            CaptureCandidate(label="gst-appsink:test", pipeline="pipeline"),
+        )
+    except RuntimeError as exc:
+        assert "unsupported GStreamer sample format" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert calls == [
+        ("set_state", "PLAYING"),
         ("set_state", "NULL"),
         ("get_state", 2_000_000_000),
     ]

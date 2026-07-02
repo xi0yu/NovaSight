@@ -121,10 +121,13 @@ class GstAppSinkFrameSource:
         if ret == Gst.StateChangeReturn.FAILURE:
             self._stop_pipeline()
             raise RuntimeError("GStreamer pipeline set_state PLAYING failed")
-        first = self._pull_frame(timeout_ns=2 * Gst.SECOND)
-        if first is None:
+        try:
+            first = self._pull_frame(timeout_ns=2 * Gst.SECOND)
+            if first is None:
+                raise RuntimeError("GStreamer appsink first frame timeout")
+        except Exception:
             self._stop_pipeline()
-            raise RuntimeError("GStreamer appsink first frame timeout")
+            raise
         self._first_frame = first
 
     def opened_and_readable(self) -> bool:

@@ -121,7 +121,7 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
             self.backend_label = candidate.label
 
         def opened_and_readable(self) -> bool:
-            return self.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
+            return self.backend_label == "gst-appsink:cpu-bgr-mjpg-iomode2"
 
         def read(self):
             return None
@@ -142,8 +142,8 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
         service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
     ))
 
-    assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
-    assert attempts[0] == "gst-appsink:nvmm-mjpg-iomode2"
+    assert source.backend_label == "gst-appsink:cpu-bgr-mjpg-iomode2"
+    assert attempts[0] == "gst-appsink:cpu-bgr-mjpg-iomode2"
 
 
 def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) -> None:
@@ -182,8 +182,8 @@ def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) ->
         service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
     ))
 
-    assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
-    assert opened == ["gst-appsink:nvmm-mjpg-iomode2"]
+    assert source.backend_label == "gst-appsink:cpu-bgr-mjpg-iomode2"
+    assert opened == ["gst-appsink:cpu-bgr-mjpg-iomode2"]
 
 
 def test_read_frame_updates_stream_diagnostics() -> None:
