@@ -7,7 +7,9 @@ from fastapi import FastAPI
 from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig, load_runtime_config
 from novasight.executors import ExecutorRegistry
+from novasight.hardware import create_hardware_box
 from novasight.inference import InferenceRuntime
+from novasight.license import LicenseStore
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import PluginRuntime
 from novasight.runtime import RuntimeService
@@ -17,6 +19,7 @@ from .routes_executors import router as executors_router
 from .routes_health import router as health_router
 from .routes_models import router as models_router
 from .routes_plugins import router as plugins_router
+from .routes_runtime import router as runtime_router
 
 
 def create_app(
@@ -33,6 +36,7 @@ def create_app(
     )
     plugins = PluginRuntime.with_builtin_plugins()
     executors = ExecutorRegistry.from_config(config)
+    hardware = create_hardware_box(config)
     capture = CaptureService(config.capture)
     inference = InferenceRuntime()
     runtime = RuntimeService(
@@ -48,12 +52,15 @@ def create_app(
     app.state.models = models
     app.state.plugins = plugins
     app.state.executors = executors
+    app.state.hardware = hardware
+    app.state.license = LicenseStore(data_path / "license.json")
     app.state.capture = capture
     app.state.inference = inference
     app.state.runtime = runtime
 
     app.include_router(health_router)
     app.include_router(capture_router)
+    app.include_router(runtime_router)
     app.include_router(models_router)
     app.include_router(plugins_router)
     app.include_router(executors_router)

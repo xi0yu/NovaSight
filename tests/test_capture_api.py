@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +28,33 @@ class FakeSource:
 
     def close(self) -> None:
         pass
+
+
+class StreamingSource:
+    backend_label = "gst:stream"
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.closed = False
+
+    def read(self):
+        from novasight.capture.source import CapturedFrame
+
+        self.count += 1
+        if self.count > 1:
+            raise RuntimeError("stream complete")
+        return CapturedFrame(
+            frame_id=self.count,
+            width=2,
+            height=2,
+            pixel_format="BGR",
+            ts_ns=1_000_000_000,
+            capture_wait_ms=1.0,
+            image=object(),
+        )
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_capture_state_is_in_runtime_state(tmp_path) -> None:
@@ -241,3 +269,40 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
 
     assert response.status_code == 200
     assert service.config.preference == "auto_low_latency"
+
+
+def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path, monkeypatch) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: StreamingSource(),
+    )
+    app.state.capture = service
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "cv2",
+        SimpleNamespace(
+            FONT_HERSHEY_SIMPLEX=0,
+            LINE_AA=16,
+            circle=lambda *args, **kwargs: None,
+            line=lambda *args, **kwargs: None,
+            putText=lambda *args, **kwargs: None,
+            rectangle=lambda *args, **kwargs: None,
+            imencode=lambda ext, image: (
+                ext == ".jpg",
+                SimpleNamespace(tobytes=lambda: b"jpeg-bytes"),
+            )
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/capture/stream.mjpg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("multipart/x-mixed-replace")
+    assert b"Content-Type: image/jpeg" in response.content
+    assert b"jpeg-bytes" in response.content
+    assert service.state.available is False
+    assert "stream complete" in str(service.state.last_error)

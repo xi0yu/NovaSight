@@ -105,6 +105,27 @@ def test_capture_service_smoke_updates_timing() -> None:
     assert state.last_error is None
 
 
+def test_capture_service_read_frame_updates_stream_diagnostics() -> None:
+    cfg = RuntimeConfig()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: FakeSource(),
+    )
+    service.configure("/dev/video0")
+
+    first = service.read_frame()
+    second = service.read_frame()
+
+    assert first is not None
+    assert second is not None
+    assert service.state.available is True
+    assert service.state.capture_wait_ms == 6.5
+    assert service.state.frame_period_ms > 0
+    assert service.state.fps_capture > 0
+    assert service.state.last_error is None
+
+
 def test_capture_service_reconfigure_closes_previous_source() -> None:
     cfg = RuntimeConfig()
     sources: list[FakeSource] = []

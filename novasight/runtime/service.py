@@ -10,6 +10,7 @@ from novasight.inference import InferenceResult
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import Detection, FrameContext, PluginRuntime
 
+from .config_store import RuntimeConfigStore
 from .state import RuntimeFrameResult, RuntimeState
 
 
@@ -30,6 +31,9 @@ class RuntimeService:
         self.capture = capture
         self.inference = inference
         self.running = False
+        self.config_store = RuntimeConfigStore(config)
+        self.pipeline = None
+        self.fatal_error: dict | None = None
 
     def state(self) -> RuntimeState:
         capture_state = getattr(self, "capture", None)
@@ -45,7 +49,22 @@ class RuntimeService:
                 if inference_state is not None
                 else {"available": False}
             ),
+            config=self.config_store.status(),
+            pipeline=self.pipeline.status() if self.pipeline is not None else {},
+            fatal_error=self.fatal_error,
         )
+
+    def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
+        self.config = config
+        return self.config_store.replace(config)
+
+    def record_fatal_error(self, thread_name: str, exc: BaseException, path) -> None:
+        self.fatal_error = {
+            "type": "FATAL_ERROR",
+            "thread": thread_name,
+            "message": str(exc),
+            "crash_log": str(path),
+        }
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
         plugin_batch = self.plugins.process(context)

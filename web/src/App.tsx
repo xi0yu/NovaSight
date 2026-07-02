@@ -1,25 +1,42 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
-  ApiError,
   ActiveModel,
+  ApiError,
+  ConfigFieldSchema,
+  ConfigSchemaResponse,
+  CaptureCapabilitiesResponse,
+  CaptureCapability,
+  CaptureSelectPayload,
   CaptureState,
   ExecutorStatus,
   HealthResponse,
+  LicenseStatus,
   ModelProject,
   PluginInfo,
+  RuntimeConfig,
   RuntimeState,
+  clearLicenseKey,
+  getCaptureCapabilities,
+  getConfigSchema,
   getHealth,
+  getLicenseStatus,
   getModelProjects,
   getPlugins,
-  getRuntimeState
+  getRuntimeState,
+  saveLicenseKey,
+  selectCaptureProfile,
+  statusWebSocketUrl,
+  streamUrl,
+  updateRuntimeConfig
 } from "./api";
 
-type TabId = "dashboard" | "live" | "models" | "plugins" | "settings";
+type TabId = "overview" | "capture" | "models" | "plugins" | "settings";
+type ErrorKey = "health" | "runtime" | "plugins" | "projects" | "capture";
 
 type LoadState = {
   loading: boolean;
-  errors: Partial<Record<"health" | "runtime" | "plugins" | "projects", string>>;
+  errors: Partial<Record<ErrorKey, string>>;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   plugins: PluginInfo[];
@@ -27,12 +44,21 @@ type LoadState = {
   lastUpdated: Date | null;
 };
 
+type CapabilityChoice = {
+  pixel_format: string;
+  width: number;
+  height: number;
+  fps: number;
+};
+
+type ConfigValue = string | number | boolean | null | ConfigValue[] | { [key: string]: ConfigValue };
+
 const tabs: Array<{ id: TabId; label: string }> = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "live", label: "Live View" },
-  { id: "models", label: "Models" },
-  { id: "plugins", label: "Plugins" },
-  { id: "settings", label: "Settings" }
+  { id: "overview", label: "总览" },
+  { id: "capture", label: "采集" },
+  { id: "models", label: "模型" },
+  { id: "plugins", label: "插件" },
+  { id: "settings", label: "设置" }
 ];
 
 const initialState: LoadState = {
@@ -52,14 +78,14 @@ function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Unable to reach NovaSight backend";
+  return "无法连接 NovaSight 后端";
 }
 
 function formatTime(date: Date | null): string {
   if (!date) {
-    return "Never";
+    return "从未更新";
   }
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit"
@@ -74,6 +100,13 @@ function statusTone(value: boolean | undefined): "good" | "warn" | "bad" {
     return "bad";
   }
   return "warn";
+}
+
+function formatProfile(capture: CaptureState | undefined): string {
+  if (!capture?.profile) {
+    return "未配置";
+  }
+  return `${capture.profile.pixel_format} ${capture.profile.width}x${capture.profile.height} @ ${capture.profile.fps}`;
 }
 
 function StatusPill({
@@ -92,7 +125,7 @@ function InlineError({ message }: { message: string | undefined }) {
   }
   return (
     <div className="inline-error" role="status">
-      <strong>Request failed</strong>
+      <strong>请求失败</strong>
       <span>{message}</span>
     </div>
   );
@@ -158,7 +191,7 @@ function EmptyState({
   );
 }
 
-function DashboardView({
+function OverviewView({
   health,
   runtime,
   loading,
@@ -176,63 +209,56 @@ function DashboardView({
   const selectedAvailability = selectedExecutor
     ? executor?.executors[selectedExecutor]?.available
     : undefined;
-  const activeModel = runtime?.active_model;
 
   return (
     <div className="view-grid dashboard-grid">
       <Panel
-        title="Runtime"
-        eyebrow="Core state"
+        title="运行总览"
+        eyebrow="核心状态"
         action={
           <button className="button" type="button" onClick={onRefresh}>
-            Refresh
+            刷新
           </button>
         }
       >
         <InlineError message={errors.health ?? errors.runtime} />
         <div className="metric-grid">
           <div className="metric">
-            <span>Backend</span>
+            <span>后端</span>
             <StatusPill tone={statusTone(health?.ok)}>
-              {loading ? "Checking" : health?.ok ? "Healthy" : "Offline"}
+              {loading ? "检查中" : health?.ok ? "已连接" : "离线"}
             </StatusPill>
           </div>
           <div className="metric">
-            <span>Runtime</span>
+            <span>运行态</span>
             <StatusPill tone={runtime?.running ? "good" : "idle"}>
-              {runtime?.running ? "Running" : "Standby"}
+              {runtime?.running ? "运行中" : "待机"}
             </StatusPill>
           </div>
           <div className="metric">
-            <span>Executor</span>
-            <strong>{selectedExecutor ?? "Unresolved"}</strong>
+            <span>采集配置</span>
+            <strong>{formatProfile(runtime?.capture)}</strong>
           </div>
           <div className="metric">
-            <span>Availability</span>
+            <span>控制输出</span>
             <StatusPill tone={statusTone(selectedAvailability)}>
-              {selectedAvailability === undefined
-                ? "Unknown"
-                : selectedAvailability
-                  ? "Available"
-                  : "Unavailable"}
+              {selectedExecutor ?? "未选择"}
             </StatusPill>
           </div>
         </div>
         <div className="field-grid">
-          <Field label="Source" value={runtime?.source ?? "No source configured"} mono />
+          <Field label="采集设备" value={runtime?.capture?.device ?? "/dev/video0"} mono />
+          <Field label="采集后端" value={runtime?.capture?.backend ?? "未打开"} mono />
+          <Field label="当前模型" value={runtime?.active_model?.project?.name ?? "未发布模型"} />
           <Field
-            label="Active model"
-            value={activeModel?.project?.name ?? "No published model"}
-          />
-          <Field
-            label="Artifact"
-            value={activeModel?.artifact ? activeModel.artifact.path : "No artifact bound"}
+            label="模型文件"
+            value={runtime?.active_model?.artifact?.path ?? "未绑定"}
             mono
           />
         </div>
       </Panel>
 
-      <Panel title="Executor Matrix" eyebrow="Selection and readiness">
+      <Panel title="输出执行器" eyebrow="可用性">
         <InlineError message={errors.runtime} />
         <ExecutorTable executor={executor} />
       </Panel>
@@ -244,12 +270,7 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
   const entries = Object.entries(executor?.executors ?? {});
 
   if (entries.length === 0) {
-    return (
-      <EmptyState
-        title="No executors reported"
-        detail="The backend did not return executor status."
-      />
-    );
+    return <EmptyState title="没有执行器状态" detail="后端没有返回控制输出执行器。" />;
   }
 
   return (
@@ -257,19 +278,19 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
       <table>
         <thead>
           <tr>
-            <th>Executor</th>
-            <th>Selected</th>
-            <th>Available</th>
+            <th>执行器</th>
+            <th>当前选择</th>
+            <th>可用</th>
           </tr>
         </thead>
         <tbody>
           {entries.map(([id, state]) => (
             <tr key={id}>
               <td className="mono">{id}</td>
-              <td>{executor?.selected === id ? "Yes" : "No"}</td>
+              <td>{executor?.selected === id ? "是" : "否"}</td>
               <td>
                 <StatusPill tone={state.available ? "good" : "bad"}>
-                  {state.available ? "Available" : "Unavailable"}
+                  {state.available ? "可用" : "不可用"}
                 </StatusPill>
               </td>
             </tr>
@@ -280,31 +301,292 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
   );
 }
 
-function LiveView({ runtime }: { runtime: RuntimeState | null }) {
+function CaptureWorkbench({
+  runtime,
+  error,
+  onRuntimeRefresh
+}: {
+  runtime: RuntimeState | null;
+  error: string | undefined;
+  onRuntimeRefresh: () => Promise<void>;
+}) {
+  const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
+  const [capabilities, setCapabilities] = useState<CaptureCapabilitiesResponse | null>(null);
+  const [captureError, setCaptureError] = useState<string | undefined>(error);
+  const [loadingCaps, setLoadingCaps] = useState(false);
+  const [applying, setApplying] = useState<string | null>(null);
+  const [streamKey, setStreamKey] = useState(Date.now());
+
+  useEffect(() => {
+    if (runtime?.capture?.device) {
+      setDevice(runtime.capture.device);
+    }
+  }, [runtime?.capture?.device]);
+
+  useEffect(() => {
+    setCaptureError(error);
+  }, [error]);
+
+  const rows = useMemo(() => expandCapabilities(capabilities?.capabilities ?? []), [capabilities]);
+
+  const refreshCapabilities = useCallback(async () => {
+    setLoadingCaps(true);
+    setCaptureError(undefined);
+    try {
+      const result = await getCaptureCapabilities(device);
+      setCapabilities(result);
+      if (!result.available) {
+        setCaptureError(result.reason || "设备不可用");
+      }
+    } catch (err) {
+      setCaptureError(getErrorMessage(err));
+    } finally {
+      setLoadingCaps(false);
+    }
+  }, [device]);
+
+  useEffect(() => {
+    void refreshCapabilities();
+  }, [refreshCapabilities]);
+
+  const applySelection = useCallback(
+    async (payload: CaptureSelectPayload, label: string) => {
+      setApplying(label);
+      setCaptureError(undefined);
+      try {
+        await selectCaptureProfile(payload);
+        setStreamKey(Date.now());
+        await onRuntimeRefresh();
+      } catch (err) {
+        setCaptureError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
+        await onRuntimeRefresh();
+      } finally {
+        setApplying(null);
+      }
+    },
+    [onRuntimeRefresh]
+  );
+
+  const applyPreference = (preference: CaptureSelectPayload["preference"], label: string) =>
+    applySelection({ device, preference }, label);
+
+  const capture = runtime?.capture;
+
   return (
-    <div className="view-grid live-grid">
-      <Panel title="Frame Monitor" eyebrow="Source feed">
-        <div className="video-shell">
+    <div className="capture-workbench">
+      <Panel
+        title="采集工作台"
+        eyebrow="设备能力与配置切换"
+        action={
+          <button className="button" type="button" onClick={refreshCapabilities}>
+            {loadingCaps ? "读取中" : "刷新能力"}
+          </button>
+        }
+      >
+        <InlineError message={captureError} />
+        <div className="capture-toolbar">
+          <label className="device-input">
+            <span>设备</span>
+            <input value={device} onChange={(event) => setDevice(event.target.value)} />
+          </label>
+          <div className="preference-actions" aria-label="推荐配置">
+            <button
+              className="button"
+              disabled={applying !== null}
+              onClick={() => applyPreference("auto_high_fps", "高帧率")}
+              type="button"
+            >
+              高帧率
+            </button>
+            <button
+              className="button"
+              disabled={applying !== null}
+              onClick={() => applyPreference("auto_low_latency", "低延迟")}
+              type="button"
+            >
+              低延迟
+            </button>
+            <button
+              className="button"
+              disabled={applying !== null}
+              onClick={() => applyPreference("auto_balanced", "均衡")}
+              type="button"
+            >
+              均衡
+            </button>
+          </div>
+        </div>
+        <CapabilityTable
+          applying={applying}
+          rows={rows}
+          onApply={(row) =>
+            applySelection(
+              {
+                device,
+                preference: "manual",
+                pixel_format: row.pixel_format,
+                width: row.width,
+                height: row.height,
+                fps: row.fps
+              },
+              `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
+            )
+          }
+        />
+      </Panel>
+
+      <Panel title="实时预览" eyebrow="MJPEG 采集流">
+        <div className="video-shell live-preview">
+          <img
+            alt="实时采集画面"
+            src={streamUrl(streamKey)}
+          />
           <div className="reticle" />
           <div className="video-status">
-            <StatusPill tone={runtime?.running ? "good" : "idle"}>
-              {runtime?.running ? "Streaming" : "Standby"}
+            <StatusPill tone={capture?.available ? "good" : "idle"}>
+              {capture?.available ? "采集中" : "未打开"}
             </StatusPill>
-            <span className="mono">{runtime?.source ?? "source:none"}</span>
+            <span className="mono">{formatProfile(capture)}</span>
           </div>
-          <div className="scan-lines" />
         </div>
       </Panel>
-      <Panel title="Frame Telemetry" eyebrow="Current sample">
-        <div className="field-grid compact">
-          <Field label="Input" value={runtime?.source ?? "No source"} mono />
-          <Field label="Frame rate" value="0 fps" />
-          <Field label="Inference latency" value="No sample" />
-          <Field label="Control intents" value="0 pending" />
-          <Field label="Capture state" value={runtime?.running ? "Armed" : "Paused"} />
-        </div>
+
+      <Panel title="当前配置" eyebrow="采集状态">
+        <CaptureDiagnostics capture={capture} />
       </Panel>
     </div>
+  );
+}
+
+function expandCapabilities(caps: CaptureCapability[]): CapabilityChoice[] {
+  return caps.flatMap((cap) =>
+    cap.fps_list.map((fps) => ({
+      pixel_format: cap.pixel_format,
+      width: cap.width,
+      height: cap.height,
+      fps
+    }))
+  );
+}
+
+function CapabilityTable({
+  rows,
+  applying,
+  onApply
+}: {
+  rows: CapabilityChoice[];
+  applying: string | null;
+  onApply: (row: CapabilityChoice) => void;
+}) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="尚未读取采集能力"
+        detail="点击刷新能力，读取 /dev/video0 支持的格式、分辨率和帧率。"
+        command="python3 -m novasight doctor camera --device /dev/video0"
+      />
+    );
+  }
+
+  return (
+    <div className="table-wrap capability-table">
+      <table>
+        <thead>
+          <tr>
+            <th>像素格式</th>
+            <th>分辨率</th>
+            <th>帧率</th>
+            <th>建议</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
+            return (
+              <tr key={id}>
+                <td className="mono">{row.pixel_format}</td>
+                <td className="mono">
+                  {row.width}x{row.height}
+                </td>
+                <td className="mono">{row.fps}</td>
+                <td>{getCapabilityHint(row)}</td>
+                <td>
+                  <button
+                    className="button compact-button"
+                    disabled={applying !== null}
+                    onClick={() => onApply(row)}
+                    type="button"
+                  >
+                    {applying === id ? "应用中" : "应用"}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function getCapabilityHint(row: CapabilityChoice): string {
+  if (row.pixel_format === "MJPG" && row.fps >= 120) {
+    return "高帧率";
+  }
+  if (row.pixel_format === "NV12" && row.fps >= 60) {
+    return "低延迟";
+  }
+  if (row.width === 1920 && row.height === 1080) {
+    return "均衡";
+  }
+  return "手动";
+}
+
+function CaptureDiagnostics({ capture }: { capture: CaptureState | undefined }) {
+  if (!capture) {
+    return <EmptyState title="没有采集状态" detail="后端没有返回摄像头诊断信息。" />;
+  }
+
+  return (
+    <dl className="metric-list">
+      <div>
+        <dt>设备</dt>
+        <dd className="mono">{capture.device}</dd>
+      </div>
+      <div>
+        <dt>后端</dt>
+        <dd className="mono">{capture.backend ?? "未选择"}</dd>
+      </div>
+      <div>
+        <dt>配置</dt>
+        <dd>{formatProfile(capture)}</dd>
+      </div>
+      <div>
+        <dt>采集帧率</dt>
+        <dd className="mono">{capture.fps_capture.toFixed(1)} fps</dd>
+      </div>
+      <div>
+        <dt>帧间隔</dt>
+        <dd className="mono">{capture.frame_period_ms.toFixed(2)} ms</dd>
+      </div>
+      <div>
+        <dt>读取等待</dt>
+        <dd className="mono">{capture.capture_wait_ms.toFixed(2)} ms</dd>
+      </div>
+      <div>
+        <dt>丢帧</dt>
+        <dd className="mono">{capture.frames_dropped}</dd>
+      </div>
+      <div>
+        <dt>恢复次数</dt>
+        <dd className="mono">{capture.recoveries}</dd>
+      </div>
+      <div>
+        <dt>最近错误</dt>
+        <dd>{capture.last_error ?? "无"}</dd>
+      </div>
+    </dl>
   );
 }
 
@@ -319,27 +601,23 @@ function ModelsView({
 }) {
   return (
     <div className="view-grid models-grid">
-      <Panel title="Active Model" eyebrow="Runtime deployment">
+      <Panel title="当前模型" eyebrow="运行绑定">
         {activeModel ? (
           <div className="field-grid">
-            <Field label="Project" value={activeModel.project?.name ?? "Unknown project"} />
-            <Field label="Deployment ID" value={activeModel.deployment.id} mono />
-            <Field
-              label="Artifact"
-              value={activeModel.artifact?.path ?? "Artifact missing"}
-              mono
-            />
-            <Field label="Artifact status" value={activeModel.artifact?.status ?? "Unknown"} />
+            <Field label="项目" value={activeModel.project?.name ?? "未知项目"} />
+            <Field label="部署编号" value={activeModel.deployment.id} mono />
+            <Field label="模型文件" value={activeModel.artifact?.path ?? "缺少文件"} mono />
+            <Field label="文件状态" value={activeModel.artifact?.status ?? "未知"} />
           </div>
         ) : (
           <EmptyState
-            title="No active model"
-            detail="Publish a ready artifact from the registry before arming runtime inference."
+            title="没有发布模型"
+            detail="发布可用模型后，推理运行时会在这里显示绑定状态。"
             command="POST /api/models/projects/{project_id}/publish"
           />
         )}
       </Panel>
-      <Panel title="Projects" eyebrow="Registry">
+      <Panel title="模型项目" eyebrow="注册表">
         <InlineError message={error} />
         {projects.length > 0 ? (
           <div className="project-list">
@@ -347,7 +625,7 @@ function ModelsView({
               <article className="project-row" key={project.id}>
                 <div>
                   <strong>{project.name}</strong>
-                  <span>{project.description || "No description"}</span>
+                  <span>{project.description || "没有描述"}</span>
                 </div>
                 <code>#{project.id}</code>
               </article>
@@ -355,9 +633,8 @@ function ModelsView({
           </div>
         ) : (
           <EmptyState
-            title="Registry is empty"
-            detail="Create a model project, add a version, convert an artifact, then publish it."
-            command="POST /api/models/projects"
+            title="模型注册表为空"
+            detail="创建模型项目、添加版本、转换产物并发布后，这里会展示项目。"
           />
         )}
       </Panel>
@@ -383,12 +660,9 @@ function PluginsView({
 
   if (plugins.length === 0) {
     return (
-      <Panel title="Plugins" eyebrow="Runtime chain">
+      <Panel title="插件" eyebrow="运行链路">
         <InlineError message={error} />
-        <EmptyState
-          title="No plugins loaded"
-          detail="The runtime returned an empty plugin chain."
-        />
+        <EmptyState title="没有加载插件" detail="后端返回的插件链为空。" />
       </Panel>
     );
   }
@@ -396,20 +670,20 @@ function PluginsView({
   return (
     <div className="view-grid plugins-grid">
       {error ? (
-        <Panel title="Plugin Request" eyebrow="Data quality">
+        <Panel title="插件请求" eyebrow="数据质量">
           <InlineError message={error} />
         </Panel>
       ) : null}
-      <PluginGroup title="Vision" plugins={groups.vision} />
-      <PluginGroup title="Control" plugins={groups.control} />
-      {groups.other.length > 0 ? <PluginGroup title="Other" plugins={groups.other} /> : null}
+      <PluginGroup title="视觉分析" plugins={groups.vision} />
+      <PluginGroup title="控制算法" plugins={groups.control} />
+      {groups.other.length > 0 ? <PluginGroup title="其他" plugins={groups.other} /> : null}
     </div>
   );
 }
 
 function PluginGroup({ title, plugins }: { title: string; plugins: PluginInfo[] }) {
   return (
-    <Panel title={`${title} Plugins`} eyebrow="Loaded modules">
+    <Panel title={`${title}插件`} eyebrow="已加载模块">
       {plugins.length > 0 ? (
         <div className="plugin-list">
           {plugins.map((plugin) => (
@@ -419,82 +693,217 @@ function PluginGroup({ title, plugins }: { title: string; plugins: PluginInfo[] 
                 <span>{plugin.kind}</span>
               </div>
               <StatusPill tone={plugin.enabled ? "good" : "idle"}>
-                {plugin.enabled ? "Enabled" : "Disabled"}
+                {plugin.enabled ? "启用" : "停用"}
               </StatusPill>
             </article>
           ))}
         </div>
       ) : (
-        <EmptyState title={`No ${title.toLowerCase()} plugins`} detail="No modules in this lane." />
+        <EmptyState title={`没有${title}插件`} detail="这个链路暂时没有模块。" />
       )}
     </Panel>
   );
 }
 
-function CapturePanel({ capture }: { capture: CaptureState | undefined }) {
-  if (!capture) {
-    return (
-      <Panel title="Capture" eyebrow="Camera diagnostics">
-        <EmptyState
-          title="No capture state"
-          detail="The backend did not return camera diagnostics."
-        />
-      </Panel>
-    );
-  }
-
-  const profile = capture.profile
-    ? `${capture.profile.pixel_format} ${capture.profile.width}x${capture.profile.height}@${capture.profile.fps}`
-    : "not configured";
-
-  return (
-    <Panel title="Capture" eyebrow="Camera diagnostics">
-      <dl className="metric-list">
-        <div>
-          <dt>Device</dt>
-          <dd>{capture.device}</dd>
-        </div>
-        <div>
-          <dt>Backend</dt>
-          <dd>{capture.backend ?? "not selected"}</dd>
-        </div>
-        <div>
-          <dt>Profile</dt>
-          <dd>{profile}</dd>
-        </div>
-        <div>
-          <dt>FPS</dt>
-          <dd>{capture.fps_capture.toFixed(1)}</dd>
-        </div>
-        <div>
-          <dt>Frame period</dt>
-          <dd>{capture.frame_period_ms.toFixed(2)} ms</dd>
-        </div>
-        <div>
-          <dt>Capture wait</dt>
-          <dd>{capture.capture_wait_ms.toFixed(2)} ms</dd>
-        </div>
-      </dl>
-    </Panel>
-  );
+function getConfigValue(config: RuntimeConfig, path: string): ConfigValue {
+  return path.split(".").reduce<ConfigValue>((current, part) => {
+    if (typeof current === "object" && current !== null && !Array.isArray(current)) {
+      return current[part] ?? "";
+    }
+    return "";
+  }, config);
 }
 
-function SettingsView({ runtime }: { runtime: RuntimeState | null }) {
+function setConfigValue(
+  config: RuntimeConfig,
+  path: string,
+  rawValue: string,
+  field: ConfigFieldSchema
+): RuntimeConfig {
+  const value =
+    field.type === "int"
+      ? Number.parseInt(rawValue || "0", 10)
+      : field.type === "float"
+        ? Number.parseFloat(rawValue || "0")
+        : rawValue;
+  const next = structuredClone(config);
+  const parts = path.split(".");
+  let cursor: Record<string, ConfigValue> = next;
+  for (const part of parts.slice(0, -1)) {
+    const child = cursor[part];
+    if (typeof child !== "object" || child === null || Array.isArray(child)) {
+      cursor[part] = {};
+    }
+    cursor = cursor[part] as Record<string, ConfigValue>;
+  }
+  cursor[parts[parts.length - 1]] = value;
+  return next;
+}
+
+function SettingsView({ runtime, onRuntimeRefresh }: { runtime: RuntimeState | null; onRuntimeRefresh: () => Promise<void> }) {
+  const [schema, setSchema] = useState<ConfigSchemaResponse | null>(null);
+  const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [licenseInput, setLicenseInput] = useState("");
+  const [message, setMessage] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  const loadSettings = useCallback(async () => {
+    setError(undefined);
+    try {
+      const [nextSchema, nextLicense] = await Promise.all([
+        getConfigSchema(),
+        getLicenseStatus()
+      ]);
+      setSchema(nextSchema);
+      setConfig(nextSchema.values);
+      setLicense(nextLicense);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
+
+  const saveConfig = useCallback(async () => {
+    if (!config) {
+      return;
+    }
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      const result = await updateRuntimeConfig(config);
+      setSchema(result.schema);
+      setConfig(result.config);
+      setMessage(result.restart_required ? "配置已保存，运行链路需要重启后完全生效。" : "配置已保存并同步到运行态。");
+      await onRuntimeRefresh();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, [config, onRuntimeRefresh]);
+
+  const saveLicense = useCallback(async () => {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      const status = await saveLicenseKey(licenseInput);
+      setLicense(status);
+      setLicenseInput("");
+      setMessage("卡密已保存，界面不回显明文。");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, [licenseInput]);
+
+  const clearLicense = useCallback(async () => {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      setLicense(await clearLicenseKey());
+      setMessage("卡密已清除。");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, []);
+
   return (
-    <div className="view-grid settings-grid">
-      <Panel title="Runtime Configuration" eyebrow="Loaded config">
-        <div className="field-grid">
-          <Field label="Source default" value={runtime?.source ?? "Not loaded"} mono />
-          <Field label="Executor default" value={runtime?.executor.selected ?? "Not loaded"} mono />
-          <Field label="Model binding" value={runtime?.active_model ? "Published" : "Unset"} />
+    <div className="settings-workbench">
+      <Panel
+        title="运行配置"
+        eyebrow="配置与运行同源"
+        action={
+          <button className="button" type="button" onClick={saveConfig} disabled={!config}>
+            保存配置
+          </button>
+        }
+      >
+        <InlineError message={error} />
+        {message ? <div className="inline-note">{message}</div> : null}
+        {schema && config ? (
+          <div className="config-sections">
+            {schema.sections.map((section) => (
+              <section className="config-section" key={section.id}>
+                <h3>{section.label}</h3>
+                <div className="config-grid">
+                  {section.fields.map((field) => {
+                    const value = getConfigValue(config, field.path);
+                    return (
+                      <label className="config-field" key={field.path}>
+                        <span>
+                          {field.label}
+                          {field.restart_required ? <em>需重启链路</em> : null}
+                        </span>
+                        {field.type === "select" ? (
+                          <select
+                            value={String(value ?? "")}
+                            onChange={(event) =>
+                              setConfig(setConfigValue(config, field.path, event.target.value, field))
+                            }
+                          >
+                            {(field.options ?? []).map((option) => (
+                              <option key={option} value={option}>
+                                {option || "跟随默认"}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type={field.type === "string" ? "text" : "number"}
+                            min={field.min}
+                            max={field.max}
+                            step={field.type === "float" ? "0.1" : "1"}
+                            value={String(value ?? "")}
+                            onChange={(event) =>
+                              setConfig(setConfigValue(config, field.path, event.target.value, field))
+                            }
+                          />
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="配置 schema 未加载" detail="后端会返回配置字段、类型、范围和枚举选项。" />
+        )}
+      </Panel>
+
+      <Panel title="卡密管理" eyebrow="本机授权">
+        <div className="license-panel">
+          <StatusPill tone={license?.configured ? "good" : "idle"}>
+            {license?.configured ? "已配置" : "未配置"}
+          </StatusPill>
+          <Field label="指纹" value={license?.fingerprint || "无"} mono />
+          <label className="config-field">
+            <span>卡密</span>
+            <input
+              type="password"
+              value={licenseInput}
+              placeholder="输入授权码，保存后不回显"
+              onChange={(event) => setLicenseInput(event.target.value)}
+            />
+          </label>
+          <div className="preference-actions">
+            <button className="button" type="button" onClick={saveLicense} disabled={!licenseInput.trim()}>
+              保存卡密
+            </button>
+            <button className="button" type="button" onClick={clearLicense}>
+              清除
+            </button>
+          </div>
         </div>
       </Panel>
-      <CapturePanel capture={runtime?.capture} />
-      <Panel title="Console Defaults" eyebrow="Read-only UI policy">
+
+      <Panel title="运行态对照" eyebrow="实时状态">
         <div className="field-grid">
-          <Field label="Capture guard" value="Manual arm" />
-          <Field label="Telemetry interval" value="1 s" />
-          <Field label="Unavailable executors" value="Shown" />
+          <Field label="运行中" value={runtime?.running ? "是" : "否"} />
+          <Field label="配置版本" value={String(runtime?.config?.version ?? 0)} mono />
+          <Field label="默认执行器" value={runtime?.executor.selected ?? "未加载"} mono />
+          <Field label="采集配置" value={formatProfile(runtime?.capture)} />
         </div>
       </Panel>
     </div>
@@ -502,7 +911,7 @@ function SettingsView({ runtime }: { runtime: RuntimeState | null }) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const [activeTab, setActiveTab] = useState<TabId>("capture");
   const [state, setState] = useState<LoadState>(initialState);
 
   const load = useCallback(async () => {
@@ -543,6 +952,23 @@ export default function App() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const socket = new WebSocket(statusWebSocketUrl());
+    socket.onmessage = (event) => {
+      try {
+        const runtime = JSON.parse(String(event.data)) as RuntimeState;
+        setState((current) => ({
+          ...current,
+          runtime,
+          lastUpdated: new Date()
+        }));
+      } catch {
+        // Ignore malformed status frames; REST refresh still provides recovery.
+      }
+    };
+    return () => socket.close();
+  }, []);
+
   const activeModel = state.runtime?.active_model ?? null;
   const hasErrors = Object.keys(state.errors).length > 0;
 
@@ -553,18 +979,18 @@ export default function App() {
           <span className="brand-mark">NS</span>
           <div>
             <h1>NovaSight</h1>
-            <p>Jetson realtime vision console</p>
+            <p>Jetson 实时视觉工作台</p>
           </div>
         </div>
         <div className="topbar-status">
           <StatusPill tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
-            {hasErrors ? "Partial fault" : state.health?.ok ? "Connected" : "Connecting"}
+            {hasErrors ? "部分异常" : state.health?.ok ? "已连接" : "连接中"}
           </StatusPill>
-          <span className="last-updated">Updated {formatTime(state.lastUpdated)}</span>
+          <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
         </div>
       </header>
 
-      <nav className="tabs" aria-label="Console views">
+      <nav className="tabs" aria-label="控制台视图">
         {tabs.map((tab) => (
           <button
             aria-current={activeTab === tab.id ? "page" : undefined}
@@ -580,16 +1006,16 @@ export default function App() {
 
       {hasErrors ? (
         <div className="alert" role="alert">
-          <strong>Backend request degraded</strong>
+          <strong>后端请求异常</strong>
           <span>{Object.values(state.errors).join(" / ")}</span>
           <button className="button compact-button" type="button" onClick={load}>
-            Retry
+            重试
           </button>
         </div>
       ) : null}
 
       {state.loading && !state.runtime ? (
-        <div className="loading-grid" aria-label="Loading console data">
+        <div className="loading-grid" aria-label="正在加载控制台数据">
           <div />
           <div />
           <div />
@@ -597,8 +1023,8 @@ export default function App() {
       ) : null}
 
       <div className="view-stack">
-        {activeTab === "dashboard" ? (
-          <DashboardView
+        {activeTab === "overview" ? (
+          <OverviewView
             health={state.health}
             loading={state.loading}
             runtime={state.runtime}
@@ -606,7 +1032,13 @@ export default function App() {
             onRefresh={load}
           />
         ) : null}
-        {activeTab === "live" ? <LiveView runtime={state.runtime} /> : null}
+        {activeTab === "capture" ? (
+          <CaptureWorkbench
+            runtime={state.runtime}
+            error={state.errors.capture}
+            onRuntimeRefresh={load}
+          />
+        ) : null}
         {activeTab === "models" ? (
           <ModelsView
             projects={state.projects}
@@ -617,7 +1049,9 @@ export default function App() {
         {activeTab === "plugins" ? (
           <PluginsView plugins={state.plugins} error={state.errors.plugins} />
         ) : null}
-        {activeTab === "settings" ? <SettingsView runtime={state.runtime} /> : null}
+        {activeTab === "settings" ? (
+          <SettingsView runtime={state.runtime} onRuntimeRefresh={load} />
+        ) : null}
       </div>
     </main>
   );

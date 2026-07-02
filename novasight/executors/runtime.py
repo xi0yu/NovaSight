@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from novasight.config import RuntimeConfig
-from novasight.control import ControlOutputPolicy
+from novasight.control import ControlCommandCoalescer, ControlOutputPolicy
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.dry_run import ConsoleExecutor, DryRunExecutor, SilentExecutor
 from novasight.executors.kmnet import KmNetExecutor
@@ -17,18 +17,21 @@ class ExecutorRegistry:
         executors: Iterable[Executor],
         default: str = "dry_run",
         policy: ControlOutputPolicy | None = None,
+        coalescer: ControlCommandCoalescer | None = None,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
         if default not in self.executors:
             raise ValueError(f"unknown executor: {default}")
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
+        self.coalescer = coalescer
 
     @classmethod
     def with_builtin_executors(
         cls,
         default: str = "dry_run",
         policy: ControlOutputPolicy | None = None,
+        coalescer: ControlCommandCoalescer | None = None,
     ) -> ExecutorRegistry:
         return cls(
             executors=[
@@ -39,6 +42,7 @@ class ExecutorRegistry:
             ],
             default=default,
             policy=policy,
+            coalescer=coalescer,
         )
 
     @classmethod
@@ -51,9 +55,23 @@ class ExecutorRegistry:
                 max_abs_dy=config.control.max_abs_dy,
                 min_confidence=config.control.min_confidence,
             ),
+            coalescer=ControlCommandCoalescer(
+                min_interval_s=max(0.0, config.control.command_interval_ms / 1000.0)
+            ),
         )
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
+        if self.coalescer is not None:
+            merged = self.coalescer.push(intent)
+            if merged is None:
+                bounded = self.policy.apply(intent)
+                return ExecutionResult(
+                    executor_id=self.selected,
+                    sent=False,
+                    intent=bounded,
+                    message="control command coalesced",
+                )
+            intent = merged
         bounded = self.policy.apply(intent)
         return self.executors[self.selected].execute(bounded)
 

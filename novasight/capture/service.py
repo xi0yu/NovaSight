@@ -8,7 +8,7 @@ from novasight.config.runtime import CaptureConfig
 from .caps import query_capabilities, run_v4l2_ctl
 from .pipeline import CaptureCandidate, select_open_source
 from .profile import select_capture_profile
-from .source import FrameSource, OpenCvFrameSource
+from .source import CapturedFrame, FrameSource, OpenCvFrameSource
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 
@@ -40,6 +40,7 @@ class CaptureService:
         self.state = CaptureRuntimeState(device=config.device)
         self.source: FrameSource | None = None
         self.last_config_error: CaptureRuntimeState | None = None
+        self._last_frame_ts_ns: int | None = None
 
     def capabilities(self, device: str = "/dev/video0") -> CaptureCapabilities:
         return query_capabilities(
@@ -128,7 +129,31 @@ class CaptureService:
             backend=source.backend_label,
             last_error=None,
         )
+        self._last_frame_ts_ns = None
         return self.state
+
+    def read_frame(self) -> CapturedFrame | None:
+        if self.source is None:
+            self.state.last_error = "capture source is not configured"
+            raise RuntimeError(self.state.last_error)
+        try:
+            frame = self.source.read()
+        except Exception as exc:
+            self.state.frames_dropped += 1
+            self._mark_unavailable(f"capture read failed: {exc}")
+            raise
+        if frame is None:
+            self.state.frames_dropped += 1
+            return None
+        self.state.available = True
+        self.state.capture_wait_ms = frame.capture_wait_ms
+        if self._last_frame_ts_ns is not None:
+            self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
+            if self.state.frame_period_ms > 0:
+                self.state.fps_capture = 1000.0 / self.state.frame_period_ms
+        self._last_frame_ts_ns = frame.ts_ns
+        self.state.last_error = None
+        return frame
 
     def capture_frames(
         self,
@@ -240,6 +265,10 @@ class CaptureService:
             reason = f"{reason}; {close_error}"
         self.state.available = False
         self.state.last_error = reason
+        self._last_frame_ts_ns = None
+
+    def mark_unavailable(self, reason: str) -> None:
+        self._mark_unavailable(reason)
 
     def _close_source(self, source: FrameSource | None) -> str:
         if source is None:

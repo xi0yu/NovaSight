@@ -21,7 +21,7 @@ class SourceConfig:
 
 @dataclass
 class RuntimeLimitsConfig:
-    max_frame_queue: int = 2
+    max_frame_queue: int = 1
     stream_fps: int = 30
 
 
@@ -41,6 +41,8 @@ class ControlConfig:
     max_abs_dy: int = 120
     min_confidence: float = 0.0
     output_mode: str = ""
+    strategy: str = "pid"
+    command_interval_ms: float = 1.0
 
 
 @dataclass
@@ -51,6 +53,16 @@ class ExecutorConfig:
 @dataclass
 class LoggingConfig:
     level: str = "INFO"
+    dir: str = "logs"
+
+
+@dataclass
+class HardwareConfig:
+    kind: str = "none"
+    host: str = "127.0.0.1"
+    port: int = 0
+    serial_port: str = ""
+    heartbeat_timeout_ms: float = 50.0
 
 
 @dataclass
@@ -62,6 +74,7 @@ class RuntimeConfig:
     control: ControlConfig = field(default_factory=ControlConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    hardware: HardwareConfig = field(default_factory=HardwareConfig)
 
 
 T = TypeVar("T")
@@ -125,6 +138,12 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         raw = {}
     if not isinstance(raw, dict):
         raise ValueError(f"runtime config must be a mapping: {cfg_path}")
+    return _build_dataclass(RuntimeConfig, raw)
+
+
+def parse_runtime_config(raw: dict[str, Any]) -> RuntimeConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("runtime config must be a mapping")
     return _build_dataclass(RuntimeConfig, raw)
 
 

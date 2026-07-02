@@ -55,6 +55,29 @@ export type CaptureState = {
   last_error: string | null;
 };
 
+export type CaptureCapability = {
+  pixel_format: string;
+  width: number;
+  height: number;
+  fps_list: number[];
+};
+
+export type CaptureCapabilitiesResponse = {
+  available: boolean;
+  device: string;
+  capabilities: CaptureCapability[];
+  reason: string;
+};
+
+export type CaptureSelectPayload = {
+  device: string;
+  preference?: "auto_high_fps" | "auto_low_latency" | "auto_balanced" | "manual";
+  pixel_format?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+};
+
 export type RuntimeState = {
   running: boolean;
   source: string;
@@ -62,6 +85,53 @@ export type RuntimeState = {
   executor: ExecutorStatus;
   capture: CaptureState;
   inference: Record<string, unknown>;
+  config: Record<string, unknown>;
+  pipeline: Record<string, unknown>;
+  fatal_error: Record<string, unknown> | null;
+};
+
+export type RuntimeConfigValue =
+  | string
+  | number
+  | boolean
+  | null
+  | RuntimeConfigValue[]
+  | { [key: string]: RuntimeConfigValue };
+
+export type RuntimeConfig = Record<string, RuntimeConfigValue>;
+
+export type ConfigFieldSchema = {
+  path: string;
+  label: string;
+  type: "string" | "int" | "float" | "select";
+  options?: string[];
+  min?: number;
+  max?: number;
+  restart_required: boolean;
+};
+
+export type ConfigSectionSchema = {
+  id: string;
+  label: string;
+  fields: ConfigFieldSchema[];
+};
+
+export type ConfigSchemaResponse = {
+  version: number;
+  values: RuntimeConfig;
+  sections: ConfigSectionSchema[];
+};
+
+export type ConfigUpdateResponse = {
+  config: RuntimeConfig;
+  schema: ConfigSchemaResponse;
+  restart_required: boolean;
+};
+
+export type LicenseStatus = {
+  configured: boolean;
+  fingerprint: string;
+  updated_at: number | null;
 };
 
 export type PluginKind = "vision" | "control" | string;
@@ -84,11 +154,47 @@ export class ApiError extends Error {
   }
 }
 
+export const API_PATHS = {
+  health: "/healthz",
+  runtimeState: "/api/runtime/state",
+  config: "/api/config",
+  configSchema: "/api/config/schema",
+  captureCapabilities: "/api/capture/capabilities",
+  captureSelect: "/api/capture/select",
+  captureStream: "/api/capture/stream.mjpg",
+  plugins: "/api/plugins",
+  modelProjects: "/api/models/projects",
+  license: "/api/license",
+  statusWs: "/ws/status"
+} as const;
+
+const apiBase = (import.meta.env.VITE_NOVASIGHT_API_BASE ?? "").replace(/\/$/, "");
+
+export function apiUrl(path: string): string {
+  return `${apiBase}${path}`;
+}
+
+export function streamUrl(cacheKey: number): string {
+  return apiUrl(`${API_PATHS.captureStream}?ts=${cacheKey}`);
+}
+
+export function statusWebSocketUrl(): string {
+  const explicit = import.meta.env.VITE_NOVASIGHT_WS_BASE;
+  if (explicit) {
+    return `${explicit.replace(/\/$/, "")}${API_PATHS.statusWs}`;
+  }
+  if (apiBase.startsWith("http")) {
+    return `${apiBase.replace(/^http/, "ws")}${API_PATHS.statusWs}`;
+  }
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
 
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers: {
       ...Object.fromEntries(headers.entries())
@@ -110,24 +216,80 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       typeof body === "object" && body !== null && "detail" in body
         ? String((body as { detail: unknown }).detail)
         : response.statusText;
-    throw new ApiError(detail || "Request failed", response.status, body);
+    throw new ApiError(detail || "请求失败", response.status, body);
   }
 
   return body as T;
 }
 
 export function getHealth(): Promise<HealthResponse> {
-  return requestJson<HealthResponse>("/healthz");
+  return requestJson<HealthResponse>(API_PATHS.health);
 }
 
 export function getRuntimeState(): Promise<RuntimeState> {
-  return requestJson<RuntimeState>("/api/runtime/state");
+  return requestJson<RuntimeState>(API_PATHS.runtimeState);
+}
+
+export function getRuntimeConfig(): Promise<RuntimeConfig> {
+  return requestJson<RuntimeConfig>(API_PATHS.config);
+}
+
+export function getConfigSchema(): Promise<ConfigSchemaResponse> {
+  return requestJson<ConfigSchemaResponse>(API_PATHS.configSchema);
+}
+
+export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdateResponse> {
+  return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(config)
+  });
+}
+
+export function getCaptureCapabilities(
+  device: string
+): Promise<CaptureCapabilitiesResponse> {
+  return requestJson<CaptureCapabilitiesResponse>(
+    `${API_PATHS.captureCapabilities}?device=${encodeURIComponent(device)}`
+  );
+}
+
+export function selectCaptureProfile(payload: CaptureSelectPayload): Promise<CaptureState> {
+  return requestJson<CaptureState>(API_PATHS.captureSelect, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
 }
 
 export function getPlugins(): Promise<PluginInfo[]> {
-  return requestJson<PluginInfo[]>("/api/plugins");
+  return requestJson<PluginInfo[]>(API_PATHS.plugins);
 }
 
 export function getModelProjects(): Promise<ModelProject[]> {
-  return requestJson<ModelProject[]>("/api/models/projects");
+  return requestJson<ModelProject[]>(API_PATHS.modelProjects);
+}
+
+export function getLicenseStatus(): Promise<LicenseStatus> {
+  return requestJson<LicenseStatus>(API_PATHS.license);
+}
+
+export function saveLicenseKey(key: string): Promise<LicenseStatus> {
+  return requestJson<LicenseStatus>(API_PATHS.license, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ key })
+  });
+}
+
+export function clearLicenseKey(): Promise<LicenseStatus> {
+  return requestJson<LicenseStatus>(API_PATHS.license, {
+    method: "DELETE"
+  });
 }

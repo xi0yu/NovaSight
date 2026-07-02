@@ -5,7 +5,7 @@ source:
   default: "null"
   target_fps: 60
 limits:
-  max_frame_queue: 2
+  max_frame_queue: 1
   stream_fps: 30
 capture:
   device: /dev/video0
@@ -18,6 +18,8 @@ control:
   max_abs_dx: 120
   max_abs_dy: 120
   min_confidence: 0
+  strategy: pid
+  command_interval_ms: 1
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.
   output_mode: silent
@@ -25,3 +27,10 @@ executor:
   default: dry_run
 logging:
   level: INFO
+  dir: logs
+hardware:
+  kind: none
+  host: 127.0.0.1
+  port: 0
+  serial_port: ""
+  heartbeat_timeout_ms: 50

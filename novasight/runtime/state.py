@@ -14,6 +14,9 @@ class RuntimeState:
     executor: dict
     capture: dict
     inference: dict
+    config: dict
+    pipeline: dict
+    fatal_error: dict | None
 
 
 @dataclass(frozen=True)

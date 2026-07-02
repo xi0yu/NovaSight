@@ -14,6 +14,7 @@ class TensorRtInferenceEngine:
         self._reason = ""
         self._available = False
         self._loaded = False
+        self._warmed = False
 
     def available(self) -> bool:
         try:
@@ -34,6 +35,7 @@ class TensorRtInferenceEngine:
             "selected": self.engine_id,
             "available": self._available,
             "loaded": self._loaded,
+            "warmed": self._warmed,
             "reason": self._reason,
         }
 
@@ -47,8 +49,12 @@ class TensorRtInferenceEngine:
         if not self.available():
             raise RuntimeError(self._reason)
         self._loaded = True
+        self._warmup()
 
     def infer(self, frame: CapturedFrame) -> InferenceResult:
         if not self._loaded:
             return InferenceResult(available=False, reason="TensorRT engine not loaded")
         return InferenceResult(available=True, detections=[], classes=[])
+
+    def _warmup(self) -> None:
+        self._warmed = True

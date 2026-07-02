@@ -8,6 +8,7 @@ import uvicorn
 
 from .api import create_app
 from .config import load_runtime_config
+from .runtime import configure_logging
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.web.host = args.host
     if args.port is not None:
         cfg.web.port = args.port
+    configure_logging(cfg)
     if args.command == "doctor" and args.doctor_command is None:
         print("error: doctor requires a subcommand: camera", file=sys.stderr)
         return 2
