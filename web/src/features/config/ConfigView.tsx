@@ -95,7 +95,7 @@ export function ConfigView({
       const nextSchema = await getConfigSchema();
       setSchema(nextSchema);
       setConfig(nextSchema.values);
-      setInitialConfig(nextSchema.values);
+      setInitialConfig(structuredClone(nextSchema.values));
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -120,7 +120,7 @@ export function ConfigView({
     config && initialConfig ? JSON.stringify(initialConfig) !== JSON.stringify(config) : false;
 
   const saveConfig = useCallback(async () => {
-    if (!config) {
+    if (!config || !isDirty) {
       return;
     }
     setError(undefined);
@@ -151,13 +151,13 @@ export function ConfigView({
       const result = await updateRuntimeConfig(config);
       setSchema(result.schema);
       setConfig(result.config);
-      setInitialConfig(result.config);
+      setInitialConfig(structuredClone(result.config));
       setMessage(result.restart_required ? "配置已保存，推理控制需要重启后完全生效。" : "配置已保存并同步到运行态。");
       await onRuntimeRefresh();
     } catch (err) {
       setError(getErrorMessage(err));
     }
-  }, [changedFields, changedPaths, config, onRuntimeRefresh]);
+  }, [changedFields, changedPaths, config, isDirty, onRuntimeRefresh]);
 
   return (
     <div className="settings-workbench">
@@ -171,7 +171,7 @@ export function ConfigView({
               className={`button ${!isDirty ? "config-save-button is-clean" : ""}`.trim()}
               type="button"
               onClick={saveConfig}
-              disabled={!config}
+              disabled={!config || !isDirty}
             >
               保存配置
             </button>
