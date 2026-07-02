@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getConversionJobs,
@@ -59,6 +59,7 @@ export function ModelsView({
   const [publishingArtifactId, setPublishingArtifactId] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
   const [registryRefreshKey, setRegistryRefreshKey] = useState(0);
+  const previousProjectId = useRef<number | null>(null);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -91,17 +92,22 @@ export function ModelsView({
 
   useEffect(() => {
     if (selectedProjectId === null) {
+      previousProjectId.current = null;
       setVersions([]);
       setSelectedVersionId(null);
       setVersionsError(undefined);
       return;
     }
 
+    const projectChanged = previousProjectId.current !== selectedProjectId;
+    previousProjectId.current = selectedProjectId;
     let cancelled = false;
     setLoadingVersions(true);
     setVersionsError(undefined);
-    setVersions([]);
-    setSelectedVersionId(null);
+    if (projectChanged) {
+      setVersions([]);
+      setSelectedVersionId(null);
+    }
 
     getModelVersions(selectedProjectId)
       .then((nextVersions) => {
