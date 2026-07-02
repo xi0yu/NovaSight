@@ -11,7 +11,8 @@ import {
   stopCapture,
   streamUrl
 } from "../../api";
-import { EmptyState, InlineError, Panel, StatusIndicator } from "../../components/ui";
+import { VideoPanel } from "../../components/studio";
+import { EmptyState, InlineError, Panel } from "../../components/ui";
 import { formatProfile, getErrorMessage } from "../shared/format";
 import { InferenceControl } from "../shared/InferenceControl";
 
@@ -411,25 +412,14 @@ export function DevicesView({
       </Panel>
 
       <Panel title="实时预览" eyebrow="MJPEG 采集流">
-        <div className="video-shell live-preview">
-          <img
-            alt="实时采集画面"
-            src={streamUrl(streamKey)}
-          />
-          <div className="scan-lines" />
-          <div className="reticle" />
-          <div className="corner-frame corner-frame-tl" />
-          <div className="corner-frame corner-frame-tr" />
-          <div className="corner-frame corner-frame-bl" />
-          <div className="corner-frame corner-frame-br" />
-          <div className="video-status">
-            <StatusIndicator tone={capture?.available ? "good" : "idle"}>
-              {capture?.available ? "采集中" : "未打开"}
-            </StatusIndicator>
-            <span className="mono">{formatProfile(capture)}</span>
-          </div>
-          <div className="preview-caption">预览限速输出，采集与推理控制不依赖浏览器帧率</div>
-        </div>
+        <VideoPanel
+          available={Boolean(capture?.available)}
+          caption="预览限速输出，采集与推理控制不依赖浏览器帧率"
+          className="live-preview"
+          profile={formatProfile(capture)}
+          running={runtimeRunning}
+          src={capture?.available ? streamUrl(streamKey) : undefined}
+        />
       </Panel>
 
       <Panel title="当前配置" eyebrow="采集状态">

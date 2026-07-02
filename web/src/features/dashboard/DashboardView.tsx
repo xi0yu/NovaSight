@@ -1,4 +1,5 @@
 import { EmptyState, InlineError, Panel, StatusIndicator } from "../../components/ui";
+import { MetricCard } from "../../components/studio";
 import {
   type ExecutorStatus,
   type HealthResponse,
@@ -56,28 +57,42 @@ function OverviewView({
       >
         <InlineError message={errors.health ?? errors.runtime} />
         <div className="metric-grid">
-          <div className="metric">
-            <span>后端</span>
-            <StatusIndicator tone={statusTone(health?.ok)}>
-              {loading ? "检查中" : health?.ok ? "已连接" : "离线"}
-            </StatusIndicator>
-          </div>
-          <div className="metric">
-            <span>运行态</span>
-            <StatusIndicator tone={runtime?.running ? "good" : "idle"}>
-              {runtime?.running ? "运行中" : "待机"}
-            </StatusIndicator>
-          </div>
-          <div className="metric">
-            <span>采集配置</span>
-            <strong>{formatProfile(runtime?.capture)}</strong>
-          </div>
-          <div className="metric">
-            <span>控制输出</span>
-            <StatusIndicator tone={statusTone(selectedAvailability)}>
-              {selectedExecutor ?? "未选择"}
-            </StatusIndicator>
-          </div>
+          <MetricCard
+            label="后端"
+            value={
+              <StatusIndicator tone={statusTone(health?.ok)}>
+                {loading ? "检查中" : health?.ok ? "已连接" : "离线"}
+              </StatusIndicator>
+            }
+            detail="HTTP healthz"
+            tone={statusTone(health?.ok)}
+          />
+          <MetricCard
+            label="运行态"
+            value={
+              <StatusIndicator tone={runtime?.running ? "good" : "idle"}>
+                {runtime?.running ? "运行中" : "待机"}
+              </StatusIndicator>
+            }
+            detail={runtime?.source ?? "runtime state"}
+            tone={runtime?.running ? "good" : "idle"}
+          />
+          <MetricCard
+            label="采集配置"
+            value={formatProfile(runtime?.capture)}
+            detail={runtime?.capture?.backend ?? "尚未打开采集"}
+            tone={runtime?.capture?.available ? "good" : "warn"}
+          />
+          <MetricCard
+            label="控制输出"
+            value={
+              <StatusIndicator tone={statusTone(selectedAvailability)}>
+                {selectedExecutor ?? "未选择"}
+              </StatusIndicator>
+            }
+            detail={selectedAvailability ? "可用" : "等待后端确认"}
+            tone={statusTone(selectedAvailability)}
+          />
         </div>
         <div className="field-grid">
           <Field label="采集设备" value={runtime?.capture?.device ?? "/dev/video0"} mono />

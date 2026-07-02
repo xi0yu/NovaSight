@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { StudioShell } from "./app/StudioShell";
 import { type StudioViewId } from "./app/navigation";
+import { PermissionGuard } from "./components/studio";
 import { LoadingSkeleton, StatusIndicator } from "./components/ui";
 import {
   HealthResponse,
@@ -28,6 +29,7 @@ import { PluginsView } from "./features/plugins/PluginsView";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 
 type ErrorKey = "health" | "runtime" | "plugins" | "projects" | "capture";
+type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 
 type LoadState = {
   loading: boolean;
@@ -58,11 +60,41 @@ function withoutError(
   return next;
 }
 
+function realtimeTone(status: RealtimeStatus): "good" | "warn" | "bad" | "idle" {
+  switch (status) {
+    case "connected":
+      return "good";
+    case "stale":
+    case "connecting":
+      return "warn";
+    case "disconnected":
+      return "bad";
+    default:
+      return "idle";
+  }
+}
+
+function realtimeLabel(status: RealtimeStatus): string {
+  switch (status) {
+    case "connected":
+      return "实时 已连接";
+    case "stale":
+      return "实时 数据陈旧";
+    case "connecting":
+      return "实时 连接中";
+    case "disconnected":
+    default:
+      return "实时 已断开";
+  }
+}
+
 export default function App() {
   const [activeView, setActiveView] = useState<StudioViewId>("devices");
   const [state, setState] = useState<LoadState>(initialState);
   const [runtimeCommandBusy, setRuntimeCommandBusy] = useState(false);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
+  const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
@@ -96,6 +128,8 @@ export default function App() {
     } else {
       localStorage.removeItem(LICENSE_CACHE_KEY);
       setState(initialState);
+      setRealtimeStatus("disconnected");
+      setLastWsMessageAt(null);
     }
   }, []);
 
@@ -145,23 +179,61 @@ export default function App() {
 
   useEffect(() => {
     if (!license?.valid) {
+      setRealtimeStatus("disconnected");
+      setLastWsMessageAt(null);
       return undefined;
     }
+
+    setRealtimeStatus("connecting");
+
+    let active = true;
     const socket = new WebSocket(statusWebSocketUrl());
+    socket.onerror = () => {
+      if (active) {
+        setRealtimeStatus("disconnected");
+      }
+    };
+    socket.onclose = () => {
+      if (active) {
+        setRealtimeStatus("disconnected");
+      }
+    };
     socket.onmessage = (event) => {
       try {
         const runtime = JSON.parse(String(event.data)) as RuntimeState;
+        const receivedAt = Date.now();
         setState((current) => ({
           ...current,
           runtime,
           lastUpdated: new Date()
         }));
+        if (active) {
+          setLastWsMessageAt(receivedAt);
+          setRealtimeStatus("connected");
+        }
       } catch {
         // Ignore malformed status frames; REST refresh still provides recovery.
       }
     };
-    return () => socket.close();
+    return () => {
+      active = false;
+      socket.close();
+    };
   }, [license?.valid]);
+
+  useEffect(() => {
+    if (realtimeStatus !== "connected" || lastWsMessageAt === null) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (Date.now() - lastWsMessageAt > 2000) {
+        setRealtimeStatus("stale");
+      }
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [lastWsMessageAt, realtimeStatus]);
 
   const handleInferenceControlCommand = useCallback(
     async (action: "start" | "stop") => {
@@ -232,7 +304,10 @@ export default function App() {
   const shellStatus = (
     <>
       <StatusIndicator tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
-        {hasErrors ? "部分异常" : state.health?.ok ? "已连接" : "连接中"}
+        {hasErrors ? "后端 部分异常" : state.health?.ok ? "后端 已连接" : "后端 检查中"}
+      </StatusIndicator>
+      <StatusIndicator tone={realtimeTone(realtimeStatus)}>
+        {realtimeLabel(realtimeStatus)}
       </StatusIndicator>
       <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
     </>
@@ -273,31 +348,39 @@ export default function App() {
           />
         ) : null}
         {activeView === "devices" ? (
-          <DevicesView
-            runtime={state.runtime}
-            error={state.errors.capture}
-            onRuntimeRefresh={load}
-            onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
-            runtimeCommandBusy={runtimeCommandBusy}
-          />
+          <PermissionGuard feature="capture" license={license}>
+            <DevicesView
+              runtime={state.runtime}
+              error={state.errors.capture}
+              onRuntimeRefresh={load}
+              onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
+              runtimeCommandBusy={runtimeCommandBusy}
+            />
+          </PermissionGuard>
         ) : null}
         {activeView === "models" ? (
-          <ModelsView
-            projects={state.projects}
-            activeModel={activeModel}
-            error={state.errors.projects}
-          />
+          <PermissionGuard feature="models" license={license}>
+            <ModelsView
+              projects={state.projects}
+              activeModel={activeModel}
+              error={state.errors.projects}
+            />
+          </PermissionGuard>
         ) : null}
         {activeView === "plugins" ? (
-          <PluginsView plugins={state.plugins} error={state.errors.plugins} />
+          <PermissionGuard feature="plugins" license={license}>
+            <PluginsView plugins={state.plugins} error={state.errors.plugins} />
+          </PermissionGuard>
         ) : null}
         {activeView === "config" ? (
-          <ConfigView
-            runtime={state.runtime}
-            license={license}
-            onRuntimeRefresh={load}
-            onLicenseChange={handleLicenseChange}
-          />
+          <PermissionGuard feature="config_read" license={license}>
+            <ConfigView
+              runtime={state.runtime}
+              license={license}
+              onRuntimeRefresh={load}
+              onLicenseChange={handleLicenseChange}
+            />
+          </PermissionGuard>
         ) : null}
         {activeView === "license" ? (
           <LicenseView

@@ -635,7 +635,8 @@ h1 {
   margin-bottom: 16px;
 }
 
-.metric {
+.metric,
+.metric-card {
   min-height: 92px;
   display: flex;
   flex-direction: column;
@@ -654,7 +655,12 @@ h1 {
   min-width: 0;
 }
 
+.metric-card {
+  position: relative;
+}
+
 .metric span:first-child,
+.metric-card-label,
 .field-label,
 .device-input span,
 .metric-list dt,
@@ -665,9 +671,48 @@ h1 {
 }
 
 .metric strong,
+.metric-card-value,
 .field-value {
   color: var(--ink);
   overflow-wrap: anywhere;
+}
+
+.metric-card-detail {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.metric-card.tone-good {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--success) 14%, var(--surface-2)), var(--surface-3));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--success) 18%, var(--border-subtle)),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset;
+}
+
+.metric-card.tone-warn {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--warning) 13%, var(--surface-2)), var(--surface-3));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--warning) 18%, var(--border-subtle)),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset;
+}
+
+.metric-card.tone-bad {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--danger) 12%, var(--surface-2)), var(--surface-3));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--danger) 18%, var(--border-subtle)),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset;
+}
+
+.metric-card.tone-idle {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 12%, var(--surface-2)), var(--surface-3));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary) 16%, var(--border-subtle)),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset;
 }
 
 .capture-toolbar {
@@ -994,7 +1039,8 @@ tbody tr:hover {
   min-height: 430px;
 }
 
-.live-preview img {
+.live-preview img,
+.video-panel-placeholder {
   width: 100%;
   height: 100%;
   min-height: 430px;
@@ -1003,6 +1049,12 @@ tbody tr:hover {
   background: #060808;
   outline: 1px solid rgba(255, 255, 255, 0.1);
   outline-offset: -1px;
+}
+
+.video-panel-placeholder {
+  background:
+    radial-gradient(circle at 50% 40%, rgba(51, 199, 214, 0.12), transparent 30%),
+    linear-gradient(135deg, rgba(9, 14, 16, 0.92), rgba(19, 28, 30, 0.9));
 }
 
 .scan-lines {
@@ -1079,6 +1131,59 @@ tbody tr:hover {
   bottom: 18px;
   border-right: 1px solid;
   border-bottom: 1px solid;
+}
+
+.video-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  pointer-events: none;
+}
+
+.video-panel-state {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: var(--radius-inner);
+  background: rgba(9, 14, 16, 0.82);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 24px 52px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+}
+
+.video-panel-state span:last-child {
+  color: rgba(237, 241, 239, 0.88);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.video-panel-state.tone-good {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--success) 30%, rgba(255, 255, 255, 0.14)),
+    0 24px 52px rgba(0, 0, 0, 0.28);
+}
+
+.video-panel-state.tone-warn {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--warning) 30%, rgba(255, 255, 255, 0.14)),
+    0 24px 52px rgba(0, 0, 0, 0.28);
+}
+
+.video-panel-state.tone-bad {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--danger) 30%, rgba(255, 255, 255, 0.14)),
+    0 24px 52px rgba(0, 0, 0, 0.28);
+}
+
+.video-panel-state.tone-idle {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary) 30%, rgba(255, 255, 255, 0.14)),
+    0 24px 52px rgba(0, 0, 0, 0.28);
 }
 
 .video-status {

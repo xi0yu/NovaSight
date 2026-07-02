@@ -133,12 +133,22 @@ export type ConfigUpdateResponse = {
   restart_required: boolean;
 };
 
+export type LicenseFeature =
+  | "capture"
+  | "runtime"
+  | "models"
+  | "plugins"
+  | "tensorrt"
+  | "hardware_control"
+  | "config_read"
+  | "config_write";
+
 export type LicenseStatus = {
   configured: boolean;
   valid: boolean;
   fingerprint: string;
   tier: string;
-  features: string[];
+  features: LicenseFeature[];
   license_id: string;
   created_at: number | null;
   activated_at: number | null;
