@@ -9,10 +9,10 @@ from typing import Any
 from novasight.config.runtime import CaptureConfig
 
 from .caps import query_capabilities, run_v4l2_ctl
-from .pipeline import CaptureCandidate, build_appsink_candidates, build_pipeline_candidates
+from .pipeline import CaptureCandidate, build_appsink_candidates
 from .profile import select_capture_profile
 from .session import CaptureSession
-from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, OpenCvFrameSource
+from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 logger = logging.getLogger("novasight.capture.service")
@@ -64,25 +64,11 @@ def _open_first_readable_source(
 
 
 def _open_default_source(profile: CaptureProfile) -> FrameSource:
-    appsink_failures: list[str] = []
-    try:
-        return _open_first_readable_source(
-            profile,
-            candidates=build_appsink_candidates(profile),
-            source_cls=GstAppSinkFrameSource,
-        )
-    except Exception as exc:
-        appsink_failures.append(str(exc))
-
-    try:
-        return _open_first_readable_source(
-            profile,
-            candidates=build_pipeline_candidates(profile),
-            source_cls=OpenCvFrameSource,
-        )
-    except Exception as exc:
-        details = "; ".join(appsink_failures + [str(exc)])
-        raise RuntimeError(details) from exc
+    return _open_first_readable_source(
+        profile,
+        candidates=build_appsink_candidates(profile),
+        source_cls=GstAppSinkFrameSource,
+    )
 
 
 class CaptureService:

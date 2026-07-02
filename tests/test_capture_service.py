@@ -189,13 +189,7 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
         def close(self) -> None:
             pass
 
-    class FailingOpenCvSource:
-        @classmethod
-        def probe(cls, profile, candidate):
-            raise AssertionError("opencv fallback should not run when appsink opens")
-
     monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FakeAppSinkSource)
-    monkeypatch.setattr(service_module, "OpenCvFrameSource", FailingOpenCvSource)
 
     source = service_module._open_default_source(service_module.select_capture_profile(
         "/dev/video0",
@@ -235,12 +229,7 @@ def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) ->
         def close(self) -> None:
             self.closed = True
 
-    class FailingOpenCvSource:
-        def __init__(self, profile, candidate) -> None:
-            raise AssertionError("opencv fallback should not run when appsink opens")
-
     monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FakeAppSinkSource)
-    monkeypatch.setattr(service_module, "OpenCvFrameSource", FailingOpenCvSource)
 
     source = service_module._open_default_source(service_module.select_capture_profile(
         "/dev/video0",
@@ -249,6 +238,40 @@ def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) ->
 
     assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
     assert opened == ["gst-appsink:nvmm-mjpg-iomode2"]
+
+
+def test_default_source_factory_reports_appsink_failures_without_opencv(monkeypatch) -> None:
+    from novasight.capture import service as service_module
+
+    attempts: list[str] = []
+
+    class FailingAppSinkSource:
+        def __init__(self, profile, candidate) -> None:
+            del profile
+            attempts.append(candidate.label)
+            self.backend_label = candidate.label
+
+        def opened_and_readable(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FailingAppSinkSource)
+
+    profile = service_module.select_capture_profile(
+        "/dev/video0",
+        service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        service_module._open_default_source(profile)
+
+    message = str(exc.value)
+    assert "no capture backend opened for /dev/video0" in message
+    assert "gst-appsink:nvmm-mjpg-iomode2" in message
+    assert "opencv" not in message.lower()
+    assert all(label.startswith("gst-appsink:") for label in attempts)
 
 
 def test_wait_preview_frame_updates_stream_diagnostics() -> None:
