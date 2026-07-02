@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from novasight.api import create_app
 from novasight.api.routes_capture import _mjpeg_frames
 from novasight.capture.service import CaptureService
+from novasight.capture.source import CapturedFrame
 from novasight.capture.state import CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.license import TEST_MAX_LICENSE_KEY
@@ -32,10 +33,55 @@ class FakeCaptureService:
     state: CaptureRuntimeState
     config: object
     configure_calls: list[str]
+    source: object | None = None
+    stop_calls: list[str] | None = None
 
     def configure(self, device: str, **kwargs) -> CaptureRuntimeState:
         self.configure_calls.append(device)
         return self.state
+
+    def stop(self, reason: str | None = None) -> CaptureRuntimeState:
+        if self.stop_calls is not None:
+            self.stop_calls.append(reason or "")
+        return self.state
+
+
+class ReadFrameForbiddenCapture:
+    empty_read_sleep_s = 0
+
+    def __init__(self, frames: list[CapturedFrame | None]) -> None:
+        self.frames = frames
+        self.state = CaptureRuntimeState(available=True)
+        self.read_frame_calls = 0
+        self.preview_drops = 0
+        self.preview_outputs = 0
+        self.unavailable_reasons: list[str] = []
+
+    def wait_preview_frame(
+        self,
+        *,
+        after_frame_id: int | None = None,
+        timeout_s: float = 0.0,
+    ) -> CapturedFrame | None:
+        del after_frame_id, timeout_s
+        if not self.frames:
+            return None
+        return self.frames.pop(0)
+
+    def read_frame(self) -> CapturedFrame | None:
+        self.read_frame_calls += 1
+        raise AssertionError("stream must not call read_frame")
+
+    def record_preview_output(self, frame: CapturedFrame, *, target_fps: int) -> None:
+        del frame, target_fps
+        self.preview_outputs += 1
+
+    def record_preview_drop(self, *, target_fps: int) -> None:
+        del target_fps
+        self.preview_drops += 1
+
+    def mark_unavailable(self, reason: str) -> None:
+        self.unavailable_reasons.append(reason)
 
 
 class FakeSource:
@@ -98,6 +144,20 @@ class CachedPreviewSource:
 
     def close(self) -> None:
         pass
+
+
+def _preview_frame(frame_id: int = 1) -> CapturedFrame:
+    from PIL import Image
+
+    return CapturedFrame(
+        frame_id=frame_id,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=1_000_000_000 + frame_id,
+        capture_wait_ms=1.0,
+        image=Image.new("RGB", (2, 2), (0, 0, 0)),
+    )
 
 
 def test_capture_state_is_in_runtime_state(tmp_path) -> None:
@@ -244,7 +304,24 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
     assert service.config.preference == "auto_low_latency"
 
 
-def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path) -> None:
+def test_capture_stream_returns_503_when_capture_session_not_running(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    service = FakeCaptureService(
+        state=CaptureRuntimeState(available=False, device="/dev/video0"),
+        config=RuntimeConfig().capture,
+        configure_calls=[],
+    )
+    app.state.capture = service
+    client = _client(app)
+
+    response = client.get("/api/capture/stream.mjpg")
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "采集未启动，无法打开预览。"
+    assert service.configure_calls == []
+
+
+def test_capture_select_starts_session_for_preview(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
     service = CaptureService(
@@ -255,12 +332,19 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path) -> None:
     app.state.capture = service
     client = _client(app)
 
-    response = client.get("/api/capture/stream.mjpg")
+    try:
+        select_response = client.post("/api/capture/select", json={"device": "/dev/video0"})
+        source_started = service.source is not None
+        state_available = service.state.available
+        payload = next(_mjpeg_frames(service, preview_fps=30, max_frames=1))
+    finally:
+        service.stop("test complete")
 
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("multipart/x-mixed-replace")
-    assert b"Content-Type: image/jpeg" in response.content
-    assert b"\xff\xd8" in response.content
+    assert select_response.status_code == 200
+    assert source_started is True
+    assert state_available is True
+    assert b"Content-Type: image/jpeg" in payload
+    assert b"\xff\xd8" in payload
 
 
 def test_capture_stream_uses_preview_cache(tmp_path) -> None:
@@ -274,11 +358,59 @@ def test_capture_stream_uses_preview_cache(tmp_path) -> None:
     )
     service.configure("/dev/video0")
     service.read_frame()
+    read_frame_calls = 0
+
+    def forbidden_read_frame():
+        nonlocal read_frame_calls
+        read_frame_calls += 1
+        raise AssertionError("stream must not call read_frame")
+
+    service.read_frame = forbidden_read_frame
     app.state.capture = service
     app.state.config.limits.stream_fps = 30
 
-    payload = next(_mjpeg_frames(service, preview_fps=30, max_frames=1))
+    try:
+        payload = next(_mjpeg_frames(service, preview_fps=30, max_frames=1))
+    finally:
+        service.stop("test complete")
 
     assert b"Content-Type: image/jpeg" in payload
-    assert source.count >= 1
+    assert read_frame_calls == 0
     assert service.state.preview_output_frames >= 1
+
+
+def test_mjpeg_frames_waits_for_preview_without_direct_read() -> None:
+    capture = ReadFrameForbiddenCapture([_preview_frame()])
+
+    payload = next(_mjpeg_frames(capture, preview_fps=30, max_frames=1))
+
+    assert b"Content-Type: image/jpeg" in payload
+    assert capture.read_frame_calls == 0
+    assert capture.preview_outputs == 1
+
+
+def test_mjpeg_frames_timeout_records_preview_drop_only() -> None:
+    capture = ReadFrameForbiddenCapture([None])
+
+    assert list(_mjpeg_frames(capture, preview_fps=30, max_frames=1)) == []
+
+    assert capture.read_frame_calls == 0
+    assert capture.preview_drops == 1
+    assert capture.unavailable_reasons == []
+
+
+def test_capture_stop_delegates_to_service(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    service = FakeCaptureService(
+        state=CaptureRuntimeState(available=False, device="/dev/video0"),
+        config=RuntimeConfig().capture,
+        configure_calls=[],
+        stop_calls=[],
+    )
+    app.state.capture = service
+    client = _client(app)
+
+    response = client.post("/api/capture/stop")
+
+    assert response.status_code == 200
+    assert service.stop_calls == ["capture stopped by user"]

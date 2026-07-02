@@ -48,13 +48,12 @@ def state(request: Request) -> dict:
 @router.get("/stream.mjpg")
 def stream(request: Request):
     capture = request.app.state.capture
-    if capture.source is None:
-        state = capture.configure(capture.config.device)
-        config_error = getattr(capture, "last_config_error", None)
-        if config_error is not None:
-            return JSONResponse(status_code=503, content=asdict(config_error))
-        if state.available is False:
-            return JSONResponse(status_code=503, content=asdict(state))
+    session = getattr(capture, "session", None)
+    if capture.source is None or (session is not None and not session.running):
+        return JSONResponse(
+            status_code=503,
+            content={"message": "采集未启动，无法打开预览。"},
+        )
     preview_fps = _normalize_preview_fps(
         getattr(getattr(request.app.state, "config", None), "limits", None)
         and request.app.state.config.limits.stream_fps
@@ -118,14 +117,16 @@ def select(request: Request, payload: CaptureSelectRequest):
     return body
 
 
+@router.post("/stop")
+def stop(request: Request) -> dict:
+    state = request.app.state.capture.stop("capture stopped by user")
+    return asdict(state)
+
+
 def _normalize_preview_fps(value: int | None) -> int:
     if value in PREVIEW_FPS_CHOICES:
         return int(value)
     return 30
-
-
-def _runtime_is_running(runtime) -> bool:
-    return bool(getattr(runtime, "running", False))
 
 
 def _mjpeg_frames(
@@ -135,40 +136,23 @@ def _mjpeg_frames(
     preview_fps: int = 30,
     max_frames: int | None = None,
 ) -> Iterator[bytes]:
-    empty_reads = 0
-    max_empty_reads = 50
-    yielded = 0
+    attempts = 0
     last_frame_id = 0
     preview_fps = _normalize_preview_fps(preview_fps)
     interval_s = 1.0 / preview_fps
     capture.state.preview_target_fps = preview_fps
     while True:
-        if max_frames is not None and yielded >= max_frames:
+        if max_frames is not None and attempts >= max_frames:
             break
-        mainline_running = _runtime_is_running(runtime)
+        attempts += 1
         frame = capture.wait_preview_frame(
             after_frame_id=last_frame_id,
             timeout_s=interval_s,
         )
-        if frame is None and not mainline_running:
-            try:
-                frame = capture.read_frame()
-            except Exception:
-                break
         if frame is None:
-            if mainline_running:
-                capture.record_preview_drop(target_fps=preview_fps)
-                time.sleep(interval_s)
-                continue
-            empty_reads += 1
-            if empty_reads >= max_empty_reads:
-                capture.mark_unavailable(f"capture stream produced {max_empty_reads} empty reads")
-                break
             capture.record_preview_drop(target_fps=preview_fps)
-            if capture.empty_read_sleep_s > 0:
-                time.sleep(capture.empty_read_sleep_s)
+            time.sleep(interval_s)
             continue
-        empty_reads = 0
         last_frame_id = frame.frame_id
         preview = render_preview_frame(frame, runtime=runtime)
         payload = _encode_jpeg(preview)
@@ -177,7 +161,6 @@ def _mjpeg_frames(
             capture.state.last_error = "capture stream jpeg encode failed"
             continue
         capture.record_preview_output(frame, target_fps=preview_fps)
-        yielded += 1
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n"
