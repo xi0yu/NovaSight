@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import uvicorn
@@ -79,7 +80,16 @@ def main(argv: list[str] | None = None) -> int:
                 if state.last_error:
                     print(f"reason: {state.last_error}")
                 return 2
-            state = service.capture_frames(seconds=args.seconds)
+            start = time.monotonic()
+            last_frame_id = 0
+            while time.monotonic() - start < args.seconds:
+                frame = service.wait_preview_frame(
+                    after_frame_id=last_frame_id,
+                    timeout_s=max(service.empty_read_sleep_s, 0.001),
+                )
+                if frame is not None:
+                    last_frame_id = frame.frame_id
+            state = service.state
             print(f"fps_capture: {state.fps_capture:.2f}")
             print(f"capture_wait_ms: {state.capture_wait_ms:.2f}")
             print(f"frame_period_ms: {state.frame_period_ms:.2f}")
@@ -89,8 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"reason: {exc}")
             return 2
         finally:
-            if service.source is not None:
-                service.source.close()
+            service.stop("capture smoke complete")
     app = create_app(
         data_dir=Path(args.data_dir),
         config_path=Path(args.config),

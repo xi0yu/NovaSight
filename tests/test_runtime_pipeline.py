@@ -104,7 +104,6 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
 def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     frames = [_frame(1), _frame(2)]
     wait_calls: list[tuple[int | None, float]] = []
-    read_frame_calls = 0
     processed: list[int] = []
     processed_two = threading.Event()
 
@@ -113,11 +112,6 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
         for frame in frames:
             if after_frame_id is None or frame.frame_id > after_frame_id:
                 return frame
-        return None
-
-    def read_frame():
-        nonlocal read_frame_calls
-        read_frame_calls += 1
         return None
 
     def process_captured_frame(frame: CapturedFrame) -> None:
@@ -130,7 +124,6 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
         state=SimpleNamespace(available=True),
         session=SimpleNamespace(running=True),
         wait_preview_frame=wait_preview_frame,
-        read_frame=read_frame,
     )
     runtime = SimpleNamespace(running=False, process_captured_frame=process_captured_frame)
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
@@ -140,7 +133,6 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     pipeline.stop()
 
     assert processed == [1, 2]
-    assert read_frame_calls == 0
     assert wait_calls[:2] == [(0, 0.1), (1, 0.1)]
     status = pipeline.status()
     assert status["consumed_frames"] == 2

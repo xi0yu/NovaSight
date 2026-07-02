@@ -54,10 +54,8 @@ class ReadFrameForbiddenCapture:
     def __init__(self, frames: list[CapturedFrame | None]) -> None:
         self.frames = frames
         self.state = CaptureRuntimeState(available=True)
-        self.read_frame_calls = 0
         self.preview_drops = 0
         self.preview_outputs = 0
-        self.unavailable_reasons: list[str] = []
 
     def wait_preview_frame(
         self,
@@ -70,10 +68,6 @@ class ReadFrameForbiddenCapture:
             return None
         return self.frames.pop(0)
 
-    def read_frame(self) -> CapturedFrame | None:
-        self.read_frame_calls += 1
-        raise AssertionError("stream must not call read_frame")
-
     def record_preview_output(self, frame: CapturedFrame, *, target_fps: int) -> None:
         del frame, target_fps
         self.preview_outputs += 1
@@ -81,9 +75,6 @@ class ReadFrameForbiddenCapture:
     def record_preview_drop(self, *, target_fps: int) -> None:
         del target_fps
         self.preview_drops += 1
-
-    def mark_unavailable(self, reason: str) -> None:
-        self.unavailable_reasons.append(reason)
 
 
 class FakeSource:
@@ -386,14 +377,6 @@ def test_capture_stream_uses_preview_cache(tmp_path) -> None:
     )
     service.configure("/dev/video0")
     assert service.wait_preview_frame(after_frame_id=0, timeout_s=0.2) is not None
-    read_frame_calls = 0
-
-    def forbidden_read_frame():
-        nonlocal read_frame_calls
-        read_frame_calls += 1
-        raise AssertionError("stream must not call read_frame")
-
-    service.read_frame = forbidden_read_frame
     app.state.capture = service
     app.state.config.limits.stream_fps = 30
 
@@ -403,7 +386,6 @@ def test_capture_stream_uses_preview_cache(tmp_path) -> None:
         service.stop("test complete")
 
     assert b"Content-Type: image/jpeg" in payload
-    assert read_frame_calls == 0
     assert service.state.preview_output_frames >= 1
 
 
@@ -413,7 +395,6 @@ def test_mjpeg_frames_waits_for_preview_without_direct_read() -> None:
     payload = next(_mjpeg_frames(capture, preview_fps=30, max_frames=1))
 
     assert b"Content-Type: image/jpeg" in payload
-    assert capture.read_frame_calls == 0
     assert capture.preview_outputs == 1
 
 
@@ -422,9 +403,8 @@ def test_mjpeg_frames_timeout_records_preview_drop_only() -> None:
 
     assert list(_mjpeg_frames(capture, preview_fps=30, max_attempts=1)) == []
 
-    assert capture.read_frame_calls == 0
     assert capture.preview_drops == 1
-    assert capture.unavailable_reasons == []
+    assert capture.preview_outputs == 0
 
 
 def test_mjpeg_frames_max_frames_counts_emitted_frames() -> None:

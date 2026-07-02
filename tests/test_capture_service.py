@@ -1,9 +1,7 @@
-"""Tests for the capture service state machine.
+"""Tests for CaptureService orchestration around the capture session.
 
-Focuses on the recovery contract: bounded retries on empty reads and read
-exceptions, close-error handling, and the no-mutation guarantee on
-unsuccessful reconfigures. Mechanical details like every single empty-read
-backoff step are folded into one test.
+The service owns capability selection, configuration persistence, and session
+lifecycle coordination. Frame reads stay inside CaptureSession.
 """
 import threading
 import time
@@ -44,19 +42,6 @@ class FakeSource:
         self.closed = True
 
 
-class EmptySource:
-    backend_label = "gst:empty"
-
-    def __init__(self) -> None:
-        self.closed = False
-
-    def read(self):
-        return None
-
-    def close(self) -> None:
-        self.closed = True
-
-
 class ExplodingSource:
     backend_label = "gst:broken"
 
@@ -68,19 +53,6 @@ class ExplodingSource:
 
     def close(self) -> None:
         self.closed = True
-
-
-class CloseExplodingSource(EmptySource):
-    backend_label = "gst:close-broken"
-
-    def close(self) -> None:
-        self.closed = True
-        raise RuntimeError("close failed")
-
-
-class ReadAndCloseExplodingSource(CloseExplodingSource):
-    def read(self):
-        raise RuntimeError("read failed")
 
 
 class ControlledSource:
@@ -318,21 +290,6 @@ def test_wait_preview_frame_returns_only_newer_frame() -> None:
     assert service.wait_preview_frame(after_frame_id=first.frame_id, timeout_s=0) is None
 
 
-def test_read_frame_does_not_return_same_cached_frame_twice() -> None:
-    source = ControlledSource()
-    service = _service(source_factory=lambda profile: source)
-    service.configure("/dev/video0")
-    source.emit(1)
-    assert service.wait_preview_frame(after_frame_id=0, timeout_s=0.2) is not None
-
-    first = service.read_frame()
-    second = service.read_frame()
-
-    assert first is not None
-    assert first.frame_id == 1
-    assert second is None
-
-
 def test_state_reflects_async_session_failure_without_explicit_sync() -> None:
     service = _service(source_factory=lambda profile: ExplodingSource())
     service.configure("/dev/video0")
@@ -549,115 +506,6 @@ def test_same_device_reconfigure_failure_does_not_keep_closed_source() -> None:
     assert service.source is None
     assert state.available is False
     assert "backend failed to open" in str(state.last_error)
-
-
-def test_empty_reads_eventually_mark_source_unavailable() -> None:
-    sources: list[EmptySource] = []
-
-    def factory(profile):
-        source = EmptySource()
-        sources.append(source)
-        return source
-
-    service = _service(
-        source_factory=factory,
-        empty_read_sleep_s=0,
-    )
-    service.configure("/dev/video0")
-
-    state = service.capture_frames(max_frames=1, max_empty_reads=3, max_recoveries=1)
-
-    assert len(sources) == 1
-    assert all(source.closed for source in sources)
-    assert service.source is None
-    assert state.available is False
-    assert state.last_error == "capture produced 3 empty reads"
-    assert state.recoveries == 0
-
-
-def test_capture_frames_does_not_mutate_preview_frame_metrics() -> None:
-    source = ControlledSource()
-    service = _service(source_factory=lambda profile: source)
-    service.configure("/dev/video0")
-    source.emit(1)
-
-    state = service.capture_frames(max_frames=1)
-
-    assert state.preview_frames == 0
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "close_failed_then_succeed",
-        "read_then_close_failed",
-    ],
-)
-def test_close_errors_during_recovery_appear_in_last_error(scenario: str) -> None:
-    sources: list = []
-
-    def factory(profile):
-        if not sources:
-            source = (
-                CloseExplodingSource()
-                if scenario == "close_failed_then_succeed"
-                else ReadAndCloseExplodingSource()
-            )
-        else:
-            source = EmptySource()
-        sources.append(source)
-        return source
-
-    service = _service(source_factory=factory, empty_read_sleep_s=0)
-    service.configure("/dev/video0")
-
-    if scenario == "close_failed_then_succeed":
-        state = service.capture_frames(max_frames=1, max_empty_reads=1, max_recoveries=1)
-        assert "close failed" in str(state.last_error)
-    else:
-        state = service.capture_frames(max_frames=1, max_recoveries=1)
-        assert "read failed" in str(state.last_error)
-        assert "close failed" in str(state.last_error)
-
-    assert len(sources) == 1
-    assert all(source.closed for source in sources)
-    assert service.source is None
-    assert state.available is False
-
-
-def test_read_exception_marks_session_unavailable_without_service_recovery() -> None:
-    sources: list[ExplodingSource] = []
-
-    def factory(profile):
-        source = ExplodingSource()
-        sources.append(source)
-        return source
-
-    service = _service(source_factory=factory, empty_read_sleep_s=0)
-    service.configure("/dev/video0")
-
-    state = service.capture_frames(max_frames=1, max_recoveries=1)
-
-    assert len(sources) == 1
-    assert all(source.closed for source in sources)
-    assert service.source is None
-    assert state.available is False
-    assert state.frames_dropped == 0
-    assert state.recoveries == 0
-    assert "camera disconnected" in str(state.last_error)
-
-
-def test_mark_unavailable_handles_close_errors() -> None:
-    source = CloseExplodingSource()
-    service = _service(source_factory=lambda profile: source, empty_read_sleep_s=0)
-    service.configure("/dev/video0")
-
-    state = service.capture_frames(max_frames=1, max_empty_reads=1, max_recoveries=0)
-
-    assert source.closed is True
-    assert service.source is None
-    assert state.available is False
-    assert "close failed" in str(state.last_error)
 
 
 def test_incomplete_doctor_command_returns_nonzero_without_starting_server(
