@@ -50,4 +50,5 @@ export function LicenseView({ license, onLicenseChange }: LicenseProps) {
   );
 }
 
+export { LicensePanel };
 export { LICENSE_CACHE_KEY };

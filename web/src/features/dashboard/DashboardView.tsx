@@ -137,3 +137,5 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
 export function DashboardView(props: DashboardViewProps) {
   return <OverviewView {...props} />;
 }
+
+export { InferenceControl };
