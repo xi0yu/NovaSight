@@ -325,27 +325,27 @@ export default function App() {
   const shellCopy: Record<StudioViewId, { title: string; subtitle: string }> = {
     dashboard: {
       title: "Dashboard",
-      subtitle: "Track runtime health, pipeline readiness, and the current control path."
+      subtitle: "运行健康、链路状态和当前控制路径。"
     },
     devices: {
       title: "Devices",
-      subtitle: "Configure capture profiles, inspect camera capability sets, and monitor preview."
+      subtitle: "采集配置、设备能力和实时预览。"
     },
     models: {
       title: "Models",
-      subtitle: "Review active deployments and the registered project inventory."
+      subtitle: "模型部署、版本产物和转换任务。"
     },
     config: {
       title: "Config",
-      subtitle: "Adjust runtime configuration and compare the live state with saved settings."
+      subtitle: "运行参数、保存差异和硬件配置。"
     },
     plugins: {
       title: "Plugins",
-      subtitle: "Inspect loaded vision and control modules in the production chain."
+      subtitle: "视觉插件、控制插件和执行器状态。"
     },
     license: {
       title: "License",
-      subtitle: "Manage the local activation key and verify feature entitlement status."
+      subtitle: "本机授权、功能权益和到期状态。"
     }
   };
   const shellStatus = (

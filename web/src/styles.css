@@ -45,6 +45,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top, rgba(51, 199, 214, 0.1), transparent 28%),
     linear-gradient(180deg, var(--bg-subtle) 0%, var(--bg-app) 100%);
@@ -128,9 +129,12 @@ button:focus-visible {
 }
 
 .studio-shell {
+  width: 100%;
+  max-width: 100vw;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 272px minmax(0, 1fr);
+  overflow-x: hidden;
 }
 
 .studio-sidebar {
@@ -255,8 +259,10 @@ button:focus-visible {
 
 .studio-main {
   min-width: 0;
+  max-width: 100vw;
   display: grid;
   grid-template-rows: auto auto 1fr;
+  overflow-x: hidden;
 }
 
 .studio-topbar {
@@ -271,10 +277,12 @@ button:focus-visible {
   background: color-mix(in srgb, var(--bg-app) 88%, transparent);
   backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
 }
 
 .studio-topbar-copy {
   min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 6px;
 }
@@ -290,11 +298,16 @@ button:focus-visible {
 }
 
 .studio-subtitle {
+  width: 100%;
   max-width: 68ch;
   font-size: 0.92rem;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-wrap: wrap;
 }
 
 .studio-status {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -304,7 +317,9 @@ button:focus-visible {
 
 .studio-content {
   min-width: 0;
+  max-width: 100%;
   padding: 24px;
+  overflow-x: hidden;
 }
 
 .mobile-nav {
@@ -312,6 +327,9 @@ button:focus-visible {
   gap: 8px;
   padding: 0 24px 16px;
   overflow-x: auto;
+  max-width: 100%;
+  min-width: 0;
+  scrollbar-width: thin;
 }
 
 .mobile-nav-item {
@@ -1497,8 +1515,12 @@ tbody tr:hover {
   }
 
   .mobile-nav {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
+  }
+
+  .mobile-nav-item {
+    flex: 0 0 132px;
   }
 
   .dashboard-grid,
@@ -1552,15 +1574,27 @@ tbody tr:hover {
   .mobile-nav {
     padding-left: 14px;
     padding-right: 14px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-right: 0;
+  }
+
+  .mobile-nav-item {
+    flex-basis: min(158px, calc(50vw - 18px));
   }
 
   .studio-topbar {
     padding: 16px 14px 12px;
+    width: 100%;
+    max-width: 100vw;
+    overflow: hidden;
   }
 
   .studio-content {
     padding: 14px;
+  }
+
+  .table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   .panel,
