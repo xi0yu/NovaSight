@@ -29,6 +29,7 @@ type CapabilityGroup = {
 };
 
 type DevicesViewProps = {
+  canControlRuntime: boolean;
   runtime: RuntimeState | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
@@ -239,6 +240,7 @@ function CaptureDiagnostics({ capture }: { capture: CaptureState | undefined }) 
 }
 
 export function DevicesView({
+  canControlRuntime,
   runtime,
   error,
   onRuntimeRefresh,
@@ -331,11 +333,15 @@ export function DevicesView({
         eyebrow="设备能力与配置切换"
         action={
           <div className="panel-actions">
-            <InferenceControl
-              busy={runtimeCommandBusy}
-              running={runtimeRunning}
-              onCommand={onInferenceControlCommand}
-            />
+            {canControlRuntime ? (
+              <InferenceControl
+                busy={runtimeCommandBusy}
+                running={runtimeRunning}
+                onCommand={onInferenceControlCommand}
+              />
+            ) : (
+              <span className="panel-action-note">当前授权不包含 runtime 控制能力</span>
+            )}
             <button
               className="button"
               disabled={stoppingCapture || !capture?.available}

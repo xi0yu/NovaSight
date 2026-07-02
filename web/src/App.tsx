@@ -53,7 +53,6 @@ const initialState: LoadState = {
 };
 
 const viewFeatureMap: Partial<Record<GuardedViewId, LicenseStatus["features"][number]>> = {
-  dashboard: "runtime",
   devices: "capture",
   models: "models",
   config: "config_read",
@@ -124,7 +123,7 @@ function getFallbackView(license: LicenseStatus | null): StudioViewId {
 }
 
 export default function App() {
-  const [activeView, setActiveView] = useState<StudioViewId>("license");
+  const [activeView, setActiveView] = useState<StudioViewId>("dashboard");
   const [state, setState] = useState<LoadState>(initialState);
   const [runtimeCommandBusy, setRuntimeCommandBusy] = useState(false);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
@@ -134,6 +133,7 @@ export default function App() {
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
   const [licenseError, setLicenseError] = useState<string | undefined>();
+  const canControlRuntime = license?.features.includes("runtime") ?? false;
 
   const loadLicense = useCallback(async () => {
     setLicenseLoading(true);
@@ -384,21 +384,21 @@ export default function App() {
 
       <div className="view-stack">
         {activeView === "dashboard" ? (
-          <PermissionGuard feature="runtime" license={license}>
-            <DashboardView
-              health={state.health}
-              loading={state.loading}
-              runtime={state.runtime}
-              errors={state.errors}
-              onRefresh={load}
-              onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
-              runtimeCommandBusy={runtimeCommandBusy}
-            />
-          </PermissionGuard>
+          <DashboardView
+            canControlRuntime={canControlRuntime}
+            health={state.health}
+            loading={state.loading}
+            runtime={state.runtime}
+            errors={state.errors}
+            onRefresh={load}
+            onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
+            runtimeCommandBusy={runtimeCommandBusy}
+          />
         ) : null}
         {activeView === "devices" ? (
           <PermissionGuard feature="capture" license={license}>
             <DevicesView
+              canControlRuntime={canControlRuntime}
               runtime={state.runtime}
               error={state.errors.capture}
               onRuntimeRefresh={load}

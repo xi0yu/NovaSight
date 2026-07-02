@@ -10,6 +10,7 @@ import { formatProfile, statusTone } from "../shared/format";
 import { InferenceControl } from "../shared/InferenceControl";
 
 type DashboardViewProps = {
+  canControlRuntime: boolean;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   loading: boolean;
@@ -23,6 +24,7 @@ type DashboardViewProps = {
 };
 
 function OverviewView({
+  canControlRuntime,
   health,
   runtime,
   loading,
@@ -44,11 +46,15 @@ function OverviewView({
         eyebrow="核心状态"
         action={
           <div className="panel-actions">
-            <InferenceControl
-              busy={runtimeCommandBusy}
-              running={Boolean(runtime?.running)}
-              onCommand={onInferenceControlCommand}
-            />
+            {canControlRuntime ? (
+              <InferenceControl
+                busy={runtimeCommandBusy}
+                running={Boolean(runtime?.running)}
+                onCommand={onInferenceControlCommand}
+              />
+            ) : (
+              <span className="panel-action-note">当前授权不包含 runtime 控制能力</span>
+            )}
             <button className="button" type="button" onClick={onRefresh}>
               刷新
             </button>

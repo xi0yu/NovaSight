@@ -591,6 +591,13 @@ h1 {
   gap: 9px;
 }
 
+.panel-action-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-align: right;
+}
+
 .primary-button {
   color: #fbfaf6;
   background:
