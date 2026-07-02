@@ -27,7 +27,9 @@ import {
   getRuntimeState,
   saveLicenseKey,
   selectCaptureProfile,
+  startRuntime,
   statusWebSocketUrl,
+  stopRuntime,
   streamUrl,
   updateRuntimeConfig
 } from "./api";
@@ -95,6 +97,15 @@ function getErrorMessage(error: unknown): string {
     return error.message;
   }
   return "无法连接 NovaSight 后端";
+}
+
+function withoutError(
+  errors: LoadState["errors"],
+  key: ErrorKey
+): LoadState["errors"] {
+  const next = { ...errors };
+  delete next[key];
+  return next;
 }
 
 function formatTime(date: Date | null): string {
@@ -230,13 +241,17 @@ function OverviewView({
   runtime,
   loading,
   errors,
-  onRefresh
+  onRefresh,
+  onRuntimeCommand,
+  runtimeCommandBusy
 }: {
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   loading: boolean;
   errors: Pick<LoadState["errors"], "health" | "runtime">;
   onRefresh: () => void;
+  onRuntimeCommand: (action: "start" | "stop") => void;
+  runtimeCommandBusy: boolean;
 }) {
   const executor = runtime?.executor;
   const selectedExecutor = executor?.selected;
@@ -250,9 +265,16 @@ function OverviewView({
         title="运行总览"
         eyebrow="核心状态"
         action={
-          <button className="button" type="button" onClick={onRefresh}>
-            刷新
-          </button>
+          <div className="panel-actions">
+            <RuntimeControl
+              busy={runtimeCommandBusy}
+              running={Boolean(runtime?.running)}
+              onCommand={onRuntimeCommand}
+            />
+            <button className="button" type="button" onClick={onRefresh}>
+              刷新
+            </button>
+          </div>
         }
       >
         <InlineError message={errors.health ?? errors.runtime} />
@@ -338,11 +360,15 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
 function CaptureWorkbench({
   runtime,
   error,
-  onRuntimeRefresh
+  onRuntimeRefresh,
+  onRuntimeCommand,
+  runtimeCommandBusy
 }: {
   runtime: RuntimeState | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
+  onRuntimeCommand: (action: "start" | "stop") => void;
+  runtimeCommandBusy: boolean;
 }) {
   const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
   const [capabilities, setCapabilities] = useState<CaptureCapabilitiesResponse | null>(null);
@@ -405,6 +431,7 @@ function CaptureWorkbench({
     applySelection({ device, preference }, label);
 
   const capture = runtime?.capture;
+  const runtimeRunning = Boolean(runtime?.running);
 
   return (
     <div className="capture-workbench">
@@ -412,12 +439,28 @@ function CaptureWorkbench({
         title="采集工作台"
         eyebrow="设备能力与配置切换"
         action={
-          <button className="button" type="button" onClick={refreshCapabilities}>
-            {loadingCaps ? "读取中" : "刷新能力"}
-          </button>
+          <div className="panel-actions">
+            <RuntimeControl
+              busy={runtimeCommandBusy}
+              running={runtimeRunning}
+              onCommand={onRuntimeCommand}
+            />
+            <button className="button" type="button" onClick={refreshCapabilities}>
+              {loadingCaps ? "读取中" : "刷新能力"}
+            </button>
+          </div>
         }
       >
         <InlineError message={captureError} />
+        {runtimeRunning ? (
+          <div className="inline-note">
+            主线采集已启动，预览只消费最新帧缓存。切换采集参数前请先停止主线。
+          </div>
+        ) : (
+          <div className="inline-note">
+            当前是预览兜底模式，帧率不代表主线采集性能。启动主线后再观察采集帧率。
+          </div>
+        )}
         <div className="capture-toolbar">
           <label className="device-input">
             <span>设备</span>
@@ -426,7 +469,7 @@ function CaptureWorkbench({
           <div className="preference-actions" aria-label="推荐配置">
             <button
               className="button"
-              disabled={applying !== null}
+              disabled={applying !== null || runtimeRunning}
               onClick={() => applyPreference("auto_high_fps", "高帧率")}
               type="button"
             >
@@ -434,7 +477,7 @@ function CaptureWorkbench({
             </button>
             <button
               className="button"
-              disabled={applying !== null}
+              disabled={applying !== null || runtimeRunning}
               onClick={() => applyPreference("auto_low_latency", "低延迟")}
               type="button"
             >
@@ -442,7 +485,7 @@ function CaptureWorkbench({
             </button>
             <button
               className="button"
-              disabled={applying !== null}
+              disabled={applying !== null || runtimeRunning}
               onClick={() => applyPreference("auto_balanced", "均衡")}
               type="button"
             >
@@ -452,6 +495,7 @@ function CaptureWorkbench({
         </div>
         <CapabilityTable
           applying={applying}
+          disabled={runtimeRunning}
           groups={groups}
           onApply={(row) =>
             applySelection(
@@ -497,6 +541,27 @@ function CaptureWorkbench({
   );
 }
 
+function RuntimeControl({
+  running,
+  busy,
+  onCommand
+}: {
+  running: boolean;
+  busy: boolean;
+  onCommand: (action: "start" | "stop") => void;
+}) {
+  return (
+    <button
+      className={running ? "button danger-button" : "button primary-button"}
+      disabled={busy}
+      onClick={() => onCommand(running ? "stop" : "start")}
+      type="button"
+    >
+      {busy ? "处理中" : running ? "停止主线" : "启动主线"}
+    </button>
+  );
+}
+
 function groupCapabilities(caps: CaptureCapability[]): CapabilityGroup[] {
   const grouped = new Map<string, CapabilityChoice[]>();
   caps.forEach((cap) => {
@@ -530,10 +595,12 @@ function groupCapabilities(caps: CaptureCapability[]): CapabilityGroup[] {
 function CapabilityTable({
   groups,
   applying,
+  disabled,
   onApply
 }: {
   groups: CapabilityGroup[];
   applying: string | null;
+  disabled?: boolean;
   onApply: (row: CapabilityChoice) => void;
 }) {
   if (groups.length === 0) {
@@ -582,7 +649,7 @@ function CapabilityTable({
                       <td>
                         <button
                           className="button compact-button"
-                          disabled={applying !== null}
+                          disabled={applying !== null || disabled}
                           onClick={() => onApply(row)}
                           type="button"
                         >
@@ -1104,6 +1171,7 @@ function SettingsView({
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("capture");
   const [state, setState] = useState<LoadState>(initialState);
+  const [runtimeCommandBusy, setRuntimeCommandBusy] = useState(false);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
@@ -1205,6 +1273,32 @@ export default function App() {
     return () => socket.close();
   }, [license?.valid]);
 
+  const handleRuntimeCommand = useCallback(
+    async (action: "start" | "stop") => {
+      setRuntimeCommandBusy(true);
+      setState((current) => ({
+        ...current,
+        errors: withoutError(current.errors, "runtime")
+      }));
+      try {
+        if (action === "start") {
+          await startRuntime();
+        } else {
+          await stopRuntime();
+        }
+        await load();
+      } catch (err) {
+        setState((current) => ({
+          ...current,
+          errors: { ...current.errors, runtime: getErrorMessage(err) }
+        }));
+      } finally {
+        setRuntimeCommandBusy(false);
+      }
+    },
+    [load]
+  );
+
   if (!license?.valid) {
     return (
       <LicenseGate
@@ -1279,6 +1373,8 @@ export default function App() {
             runtime={state.runtime}
             errors={state.errors}
             onRefresh={load}
+            onRuntimeCommand={(action) => void handleRuntimeCommand(action)}
+            runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}
         {activeTab === "capture" ? (
@@ -1286,6 +1382,8 @@ export default function App() {
             runtime={state.runtime}
             error={state.errors.capture}
             onRuntimeRefresh={load}
+            onRuntimeCommand={(action) => void handleRuntimeCommand(action)}
+            runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}
         {activeTab === "models" ? (

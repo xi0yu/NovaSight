@@ -403,6 +403,26 @@ h1 {
   flex: 0 0 auto;
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.primary-button {
+  color: #fbfaf6;
+  background:
+    linear-gradient(145deg, rgba(26, 85, 76, 0.96), rgba(43, 129, 103, 0.92));
+}
+
+.danger-button {
+  color: #fbfaf6;
+  background:
+    linear-gradient(145deg, rgba(111, 42, 42, 0.96), rgba(158, 74, 59, 0.9));
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
