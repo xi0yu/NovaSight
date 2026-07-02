@@ -129,6 +129,11 @@ def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
     return cls(**values)
 
 
+def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
+    if cfg.limits.stream_fps not in {15, 30, 60}:
+        raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
+
+
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     cfg_path = Path(path)
     if not cfg_path.exists():
@@ -138,13 +143,17 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         raw = {}
     if not isinstance(raw, dict):
         raise ValueError(f"runtime config must be a mapping: {cfg_path}")
-    return _build_dataclass(RuntimeConfig, raw)
+    cfg = _build_dataclass(RuntimeConfig, raw)
+    _validate_runtime_rules(cfg)
+    return cfg
 
 
 def parse_runtime_config(raw: dict[str, Any]) -> RuntimeConfig:
     if not isinstance(raw, dict):
         raise ValueError("runtime config must be a mapping")
-    return _build_dataclass(RuntimeConfig, raw)
+    cfg = _build_dataclass(RuntimeConfig, raw)
+    _validate_runtime_rules(cfg)
+    return cfg
 
 
 def save_runtime_config(cfg: RuntimeConfig, path: str | Path) -> None:

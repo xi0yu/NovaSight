@@ -49,5 +49,10 @@ class CaptureRuntimeState:
     frame_period_ms: float = 0.0
     capture_wait_ms: float = 0.0
     frames_dropped: int = 0
+    preview_target_fps: int = 30
+    preview_fps: float = 0.0
+    preview_frames: int = 0
+    preview_output_frames: int = 0
+    preview_dropped: int = 0
     recoveries: int = 0
     last_error: str | None = None

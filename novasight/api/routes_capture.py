@@ -15,6 +15,7 @@ from novasight.capture.preview import render_preview_frame
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 logger = logging.getLogger("novasight.api.capture")
+PREVIEW_FPS_CHOICES = (15, 30, 60)
 
 
 class CaptureSelectRequest(BaseModel):
@@ -54,8 +55,17 @@ def stream(request: Request):
             return JSONResponse(status_code=503, content=asdict(config_error))
         if state.available is False:
             return JSONResponse(status_code=503, content=asdict(state))
+    preview_fps = _normalize_preview_fps(
+        getattr(getattr(request.app.state, "config", None), "limits", None)
+        and request.app.state.config.limits.stream_fps
+    )
+    capture.state.preview_target_fps = preview_fps
     return StreamingResponse(
-        _mjpeg_frames(capture, runtime=getattr(request.app.state, "runtime", None)),
+        _mjpeg_frames(
+            capture,
+            runtime=getattr(request.app.state, "runtime", None),
+            preview_fps=preview_fps,
+        ),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -108,29 +118,66 @@ def select(request: Request, payload: CaptureSelectRequest):
     return body
 
 
-def _mjpeg_frames(capture, *, runtime=None) -> Iterator[bytes]:
+def _normalize_preview_fps(value: int | None) -> int:
+    if value in PREVIEW_FPS_CHOICES:
+        return int(value)
+    return 30
+
+
+def _runtime_is_running(runtime) -> bool:
+    return bool(getattr(runtime, "running", False))
+
+
+def _mjpeg_frames(
+    capture,
+    *,
+    runtime=None,
+    preview_fps: int = 30,
+    max_frames: int | None = None,
+) -> Iterator[bytes]:
     empty_reads = 0
     max_empty_reads = 50
+    yielded = 0
+    last_frame_id = 0
+    preview_fps = _normalize_preview_fps(preview_fps)
+    interval_s = 1.0 / preview_fps
+    capture.state.preview_target_fps = preview_fps
     while True:
-        try:
-            frame = capture.read_frame()
-        except Exception:
+        if max_frames is not None and yielded >= max_frames:
             break
+        mainline_running = _runtime_is_running(runtime)
+        frame = capture.wait_preview_frame(
+            after_frame_id=last_frame_id,
+            timeout_s=interval_s,
+        )
+        if frame is None and not mainline_running:
+            try:
+                frame = capture.read_frame()
+            except Exception:
+                break
         if frame is None:
+            if mainline_running:
+                capture.record_preview_drop(target_fps=preview_fps)
+                time.sleep(interval_s)
+                continue
             empty_reads += 1
             if empty_reads >= max_empty_reads:
                 capture.mark_unavailable(f"capture stream produced {max_empty_reads} empty reads")
                 break
+            capture.record_preview_drop(target_fps=preview_fps)
             if capture.empty_read_sleep_s > 0:
                 time.sleep(capture.empty_read_sleep_s)
             continue
         empty_reads = 0
+        last_frame_id = frame.frame_id
         preview = render_preview_frame(frame, runtime=runtime)
         payload = _encode_jpeg(preview)
         if payload is None:
-            capture.state.frames_dropped += 1
+            capture.record_preview_drop(target_fps=preview_fps)
             capture.state.last_error = "capture stream jpeg encode failed"
             continue
+        capture.record_preview_output(frame, target_fps=preview_fps)
+        yielded += 1
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n"
@@ -138,6 +185,7 @@ def _mjpeg_frames(capture, *, runtime=None) -> Iterator[bytes]:
             + payload
             + b"\r\n"
         )
+        time.sleep(interval_s)
 
 
 def _encode_jpeg(image) -> bytes | None:

@@ -202,6 +202,27 @@ def test_read_frame_updates_stream_diagnostics() -> None:
     assert service.state.last_error is None
 
 
+def test_read_frame_publishes_latest_preview_without_extra_source_reads() -> None:
+    service = _service()
+    service.configure("/dev/video0")
+
+    frame = service.read_frame()
+    preview = service.get_latest_preview_frame()
+
+    assert preview is frame
+    assert service.source.count == 1
+    assert service.state.preview_frames == 1
+
+
+def test_wait_preview_frame_returns_only_newer_frame() -> None:
+    service = _service()
+    service.configure("/dev/video0")
+    first = service.read_frame()
+
+    assert service.wait_preview_frame(after_frame_id=0, timeout_s=0) is first
+    assert service.wait_preview_frame(after_frame_id=first.frame_id, timeout_s=0) is None
+
+
 def test_reconfigure_closes_previous_source() -> None:
     sources: list[FakeSource] = []
 

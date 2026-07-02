@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from novasight.config import RuntimeConfig, load_runtime_config, save_runtime_config
+from novasight.config import (
+    RuntimeConfig,
+    load_runtime_config,
+    parse_runtime_config,
+    save_runtime_config,
+)
 
 
 def test_runtime_config_defaults_are_stable() -> None:
@@ -124,3 +129,12 @@ def test_runtime_config_rejects_invalid_leaf_types(
 
     with pytest.raises(ValueError, match=key_path):
         load_runtime_config(path)
+
+
+def test_runtime_config_restricts_preview_fps_to_supported_values() -> None:
+    for fps in (15, 30, 60):
+        cfg = parse_runtime_config({"limits": {"stream_fps": fps}})
+        assert cfg.limits.stream_fps == fps
+
+    with pytest.raises(ValueError, match="limits.stream_fps.*15, 30, 60"):
+        parse_runtime_config({"limits": {"stream_fps": 120}})

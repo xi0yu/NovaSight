@@ -113,7 +113,10 @@ class CaptureService:
         self.source: FrameSource | None = None
         self.last_config_error: CaptureRuntimeState | None = None
         self._last_frame_ts_ns: int | None = None
+        self._last_preview_output_ts_ns: int | None = None
+        self._latest_preview_frame: CapturedFrame | None = None
         self._source_lock = threading.RLock()
+        self._preview_condition = threading.Condition(self._source_lock)
 
     def capabilities(self, device: str = "/dev/video0") -> CaptureCapabilities:
         return query_capabilities(
@@ -264,6 +267,9 @@ class CaptureService:
             last_error=None,
         )
         self._last_frame_ts_ns = None
+        self._last_preview_output_ts_ns = None
+        self._latest_preview_frame = None
+        self._preview_condition.notify_all()
         return self.state
 
     def read_frame(self) -> CapturedFrame | None:
@@ -288,7 +294,53 @@ class CaptureService:
                     self.state.fps_capture = 1000.0 / self.state.frame_period_ms
             self._last_frame_ts_ns = frame.ts_ns
             self.state.last_error = None
+            self._publish_preview_frame(frame)
             return frame
+
+    def _publish_preview_frame(self, frame: CapturedFrame) -> None:
+        self._latest_preview_frame = frame
+        self.state.preview_frames += 1
+        self._preview_condition.notify_all()
+
+    def get_latest_preview_frame(self) -> CapturedFrame | None:
+        with self._source_lock:
+            return self._latest_preview_frame
+
+    def wait_preview_frame(
+        self,
+        *,
+        after_frame_id: int | None = None,
+        timeout_s: float = 0.0,
+    ) -> CapturedFrame | None:
+        deadline = time.monotonic() + max(timeout_s, 0.0)
+        with self._preview_condition:
+            while True:
+                frame = self._latest_preview_frame
+                if frame is not None and (
+                    after_frame_id is None or frame.frame_id > after_frame_id
+                ):
+                    return frame
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._preview_condition.wait(remaining)
+
+    def record_preview_output(self, frame: CapturedFrame, *, target_fps: int) -> None:
+        del frame
+        with self._source_lock:
+            now_ns = time.monotonic_ns()
+            self.state.preview_target_fps = target_fps
+            self.state.preview_output_frames += 1
+            if self._last_preview_output_ts_ns is not None:
+                period_ms = (now_ns - self._last_preview_output_ts_ns) / 1e6
+                if period_ms > 0:
+                    self.state.preview_fps = 1000.0 / period_ms
+            self._last_preview_output_ts_ns = now_ns
+
+    def record_preview_drop(self, *, target_fps: int) -> None:
+        with self._source_lock:
+            self.state.preview_target_fps = target_fps
+            self.state.preview_dropped += 1
 
     def capture_frames(
         self,
@@ -362,6 +414,8 @@ class CaptureService:
             if previous_ts is not None:
                 self.state.frame_period_ms = (frame.ts_ns - previous_ts) / 1e6
             previous_ts = frame.ts_ns
+            with self._source_lock:
+                self._publish_preview_frame(frame)
         elapsed = max(time.monotonic() - start, 0.000001)
         self.state.fps_capture = count / elapsed
         return self.state
@@ -399,6 +453,8 @@ class CaptureService:
             self.state.available = False
             self.state.last_error = reason
             self._last_frame_ts_ns = None
+            self._latest_preview_frame = None
+            self._preview_condition.notify_all()
 
     def mark_unavailable(self, reason: str) -> None:
         self._mark_unavailable(reason)

@@ -658,6 +658,14 @@ function CaptureDiagnostics({ capture }: { capture: CaptureState | undefined }) 
         <dd className="mono">{capture.fps_capture.toFixed(1)} fps</dd>
       </div>
       <div>
+        <dt>预览目标</dt>
+        <dd className="mono">{capture.preview_target_fps} fps</dd>
+      </div>
+      <div>
+        <dt>预览输出</dt>
+        <dd className="mono">{capture.preview_fps.toFixed(1)} fps</dd>
+      </div>
+      <div>
         <dt>帧间隔</dt>
         <dd className="mono">{capture.frame_period_ms.toFixed(2)} ms</dd>
       </div>
@@ -668,6 +676,14 @@ function CaptureDiagnostics({ capture }: { capture: CaptureState | undefined }) 
       <div>
         <dt>丢帧</dt>
         <dd className="mono">{capture.frames_dropped}</dd>
+      </div>
+      <div>
+        <dt>预览帧</dt>
+        <dd className="mono">{capture.preview_output_frames}</dd>
+      </div>
+      <div>
+        <dt>预览丢帧</dt>
+        <dd className="mono">{capture.preview_dropped}</dd>
       </div>
       <div>
         <dt>恢复次数</dt>
@@ -811,12 +827,15 @@ function setConfigValue(
   rawValue: string,
   field: ConfigFieldSchema
 ): RuntimeConfig {
+  const current = getConfigValue(config, path);
   const value =
     field.type === "int"
       ? Number.parseInt(rawValue || "0", 10)
       : field.type === "float"
         ? Number.parseFloat(rawValue || "0")
-        : rawValue;
+        : field.type === "select" && typeof current === "number"
+          ? Number.parseInt(rawValue || "0", 10)
+          : rawValue;
   const next = structuredClone(config);
   const parts = path.split(".");
   let cursor: Record<string, ConfigValue> = next;

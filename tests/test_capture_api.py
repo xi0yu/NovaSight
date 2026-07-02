@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from novasight.api import create_app
+from novasight.api.routes_capture import _mjpeg_frames
 from novasight.capture.service import CaptureService
 from novasight.capture.state import CaptureRuntimeState
 from novasight.config import RuntimeConfig
@@ -71,6 +72,32 @@ class StreamingSource:
 
     def close(self) -> None:
         self.closed = True
+
+
+class CachedPreviewSource:
+    backend_label = "gst:cached-preview"
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def read(self):
+        from PIL import Image
+
+        from novasight.capture.source import CapturedFrame
+
+        self.count += 1
+        return CapturedFrame(
+            frame_id=self.count,
+            width=2,
+            height=2,
+            pixel_format="BGR",
+            ts_ns=1_000_000_000 + self.count,
+            capture_wait_ms=1.0,
+            image=Image.new("RGB", (2, 2), (0, 0, 0)),
+        )
+
+    def close(self) -> None:
+        pass
 
 
 def test_capture_state_is_in_runtime_state(tmp_path) -> None:
@@ -236,3 +263,24 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path) -> None:
     assert b"\xff\xd8" in response.content
     assert service.state.available is False
     assert "stream complete" in str(service.state.last_error)
+
+
+def test_capture_stream_uses_preview_cache_without_reading_source_again(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    source = CachedPreviewSource()
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: source,
+    )
+    service.configure("/dev/video0")
+    service.read_frame()
+    app.state.capture = service
+    app.state.config.limits.stream_fps = 30
+
+    payload = next(_mjpeg_frames(service, preview_fps=30, max_frames=1))
+
+    assert b"Content-Type: image/jpeg" in payload
+    assert source.count == 1
+    assert service.state.preview_output_frames >= 1

@@ -51,6 +51,11 @@ export type CaptureState = {
   frame_period_ms: number;
   capture_wait_ms: number;
   frames_dropped: number;
+  preview_target_fps: number;
+  preview_fps: number;
+  preview_frames: number;
+  preview_output_frames: number;
+  preview_dropped: number;
   recoveries: number;
   last_error: string | null;
 };

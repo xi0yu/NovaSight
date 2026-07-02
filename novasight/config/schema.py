@@ -43,7 +43,13 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 "label": "运行队列",
                 "fields": [
                     {"path": "limits.max_frame_queue", "label": "队列容量", "type": "int", "min": 1, "max": 1, "restart_required": True},
-                    {"path": "limits.stream_fps", "label": "预览帧率", "type": "int", "min": 1, "max": 240, "restart_required": False},
+                    {
+                        "path": "limits.stream_fps",
+                        "label": "预览帧率",
+                        "type": "select",
+                        "options": ["15", "30", "60"],
+                        "restart_required": False,
+                    },
                 ],
             },
             {
