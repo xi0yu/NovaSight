@@ -23,6 +23,8 @@ class PipelineStats:
 
 
 class RuntimePipeline:
+    CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法启动推理控制。"
+
     def __init__(
         self,
         *,
@@ -44,21 +46,13 @@ class RuntimePipeline:
     def start(self) -> None:
         if self.running:
             return
-        if self.capture.source is None:
-            state = self.capture.configure(self.capture.config.device)
-            if not state.available:
-                raise RuntimeError(state.last_error or "capture source failed to open")
+        self._require_running_capture()
         self._stop.clear()
         self.frame_queue = LatestFrameQueue[CapturedFrame]()
         self.stats.started_at = time.time()
         self.stats.stopped_at = None
         self.runtime.running = True
         self._threads = [
-            threading.Thread(
-                target=lambda: self.failfast.run("capture", self._capture_loop),
-                name="novasight-capture",
-                daemon=True,
-            ),
             threading.Thread(
                 target=lambda: self.failfast.run("inference_control", self._runtime_loop),
                 name="novasight-inference-control",
@@ -88,20 +82,27 @@ class RuntimePipeline:
             "running": self.running,
         }
 
-    def _capture_loop(self) -> None:
-        while not self._stop.is_set():
-            frame = self.capture.read_frame()
-            if frame is None:
-                continue
-            self.stats.capture_frames += 1
-            self.stats.last_frame_id = frame.frame_id
-            self.frame_queue.put(frame)
+    def _require_running_capture(self) -> None:
+        state = getattr(self.capture, "state", None)
+        session = getattr(self.capture, "session", None)
+        if (
+            getattr(self.capture, "source", None) is None
+            or getattr(state, "available", False) is not True
+            or (session is not None and getattr(session, "running", False) is not True)
+        ):
+            raise RuntimeError(self.CAPTURE_NOT_STARTED_ERROR)
 
     def _runtime_loop(self) -> None:
+        last_frame_id = self.stats.last_frame_id
+        wait_frame = getattr(self.capture, "wait_preview_frame", None)
+        if not callable(wait_frame):
+            wait_frame = getattr(self.capture, "latest_frame")
         while not self._stop.is_set():
-            frame = self.frame_queue.get(timeout=0.1)
+            frame = wait_frame(after_frame_id=last_frame_id, timeout_s=0.1)
             if frame is None:
                 continue
             self.runtime.process_captured_frame(frame)
+            self.stats.capture_frames += 1
             self.stats.processed_frames += 1
-            self.stats.last_frame_id = frame.frame_id
+            last_frame_id = frame.frame_id
+            self.stats.last_frame_id = last_frame_id

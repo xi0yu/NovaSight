@@ -78,6 +78,22 @@ def test_runtime_stop_endpoint_is_idempotent(tmp_path) -> None:
     assert response.json()["running"] is False
 
 
+def test_runtime_start_returns_400_when_capture_not_running(tmp_path) -> None:
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=RuntimeConfig(),
+    )
+    client = TestClient(app)
+    _activate(client)
+
+    response = client.post("/api/runtime/start")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "采集未启动，无法启动推理控制。"
+    assert app.state.runtime.running is False
+
+
 def test_license_api_stores_fingerprint_without_returning_plaintext(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     client = TestClient(app)

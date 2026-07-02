@@ -87,7 +87,10 @@ def start_runtime(request: Request) -> dict[str, Any]:
             capture=request.app.state.capture,
             runtime=runtime,
         )
-    runtime.pipeline.start()
+    try:
+        runtime.pipeline.start()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info("runtime pipeline started")
     return runtime.pipeline.status()
 
