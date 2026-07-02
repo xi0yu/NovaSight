@@ -79,6 +79,22 @@ def test_appsink_candidates_can_emit_center_roi() -> None:
     )
 
 
+def test_appsink_candidates_include_full_frame_fallback_when_roi_enabled() -> None:
+    candidates = build_appsink_candidates(_profile("MJPG"), roi_size=320)
+
+    roi_candidates = [candidate for candidate in candidates if "src-crop=" in candidate.pipeline]
+    fallback_candidates = [candidate for candidate in candidates if "src-crop=" not in candidate.pipeline]
+
+    assert roi_candidates
+    assert fallback_candidates
+    assert all(candidate.roi_size is not None for candidate in roi_candidates)
+    assert all(candidate.roi_size is None for candidate in fallback_candidates)
+    assert any(
+        "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidate.pipeline
+        for candidate in fallback_candidates
+    )
+
+
 def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
     candidates = build_appsink_candidates(_profile("YUYV"))
 

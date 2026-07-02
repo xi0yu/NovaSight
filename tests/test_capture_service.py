@@ -239,6 +239,43 @@ def test_default_source_factory_passes_roi_size_to_appsink_candidates(monkeypatc
     assert 'src-crop="800:380:320:320"' in pipelines[0]
 
 
+def test_default_source_factory_falls_back_when_roi_crop_property_is_unsupported(monkeypatch) -> None:
+    from novasight.capture import service as service_module
+
+    attempts: list[str] = []
+
+    class FakeAppSinkSource:
+        def __init__(self, profile, candidate) -> None:
+            del profile
+            attempts.append(candidate.pipeline)
+            self.backend_label = candidate.label
+            if "src-crop=" in candidate.pipeline:
+                raise RuntimeError('gst_parse_error: no property "src-crop"')
+
+        def opened_and_readable(self) -> bool:
+            return True
+
+        def read(self):
+            return None
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FakeAppSinkSource)
+
+    source = service_module._open_default_source(
+        service_module.select_capture_profile(
+            "/dev/video0",
+            service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
+        ),
+        roi_size=320,
+    )
+
+    assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
+    assert any("src-crop=" in attempt for attempt in attempts)
+    assert "src-crop=" not in attempts[-1]
+
+
 def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) -> None:
     from novasight.capture import service as service_module
 

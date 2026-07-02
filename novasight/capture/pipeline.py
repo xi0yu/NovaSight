@@ -111,6 +111,19 @@ def build_appsink_candidates(
     *,
     roi_size: int | None = None,
 ) -> list[CaptureCandidate]:
+    if roi_size is not None:
+        return _build_appsink_candidates(profile, roi_size=roi_size) + _build_appsink_candidates(
+            profile,
+            roi_size=None,
+        )
+    return _build_appsink_candidates(profile, roi_size=None)
+
+
+def _build_appsink_candidates(
+    profile: CaptureProfile,
+    *,
+    roi_size: int | None,
+) -> list[CaptureCandidate]:
     device = profile.device
     width = profile.width
     height = profile.height
