@@ -5,7 +5,6 @@ matter for the React workbench: device must be present, capability listing
 goes through the service, the service config is never mutated on failure.
 """
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,14 +52,21 @@ class StreamingSource:
         self.closed = False
 
     def read(self):
+        from PIL import Image
+
         from novasight.capture.source import CapturedFrame
 
         self.count += 1
         if self.count > 1:
             raise RuntimeError("stream complete")
         return CapturedFrame(
-            frame_id=self.count, width=2, height=2, pixel_format="BGR",
-            ts_ns=1_000_000_000, capture_wait_ms=1.0, image=object(),
+            frame_id=self.count,
+            width=2,
+            height=2,
+            pixel_format="BGR",
+            ts_ns=1_000_000_000,
+            capture_wait_ms=1.0,
+            image=Image.new("RGB", (2, 2), (0, 0, 0)),
         )
 
     def close(self) -> None:
@@ -211,7 +217,7 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
     assert service.config.preference == "auto_low_latency"
 
 
-def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path, monkeypatch) -> None:
+def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
     service = CaptureService(
@@ -220,22 +226,6 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path, monkeypat
         source_factory=lambda profile: StreamingSource(),
     )
     app.state.capture = service
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "cv2",
-        SimpleNamespace(
-            FONT_HERSHEY_SIMPLEX=0,
-            LINE_AA=16,
-            circle=lambda *args, **kwargs: None,
-            line=lambda *args, **kwargs: None,
-            putText=lambda *args, **kwargs: None,
-            rectangle=lambda *args, **kwargs: None,
-            imencode=lambda ext, image: (
-                ext == ".jpg",
-                SimpleNamespace(tobytes=lambda: b"jpeg-bytes"),
-            ),
-        ),
-    )
     client = _client(app)
 
     response = client.get("/api/capture/stream.mjpg")
@@ -243,6 +233,6 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path, monkeypat
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("multipart/x-mixed-replace")
     assert b"Content-Type: image/jpeg" in response.content
-    assert b"jpeg-bytes" in response.content
+    assert b"\xff\xd8" in response.content
     assert service.state.available is False
     assert "stream complete" in str(service.state.last_error)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from io import BytesIO
 from dataclasses import asdict
 from typing import Iterator
 
@@ -108,8 +109,6 @@ def select(request: Request, payload: CaptureSelectRequest):
 
 
 def _mjpeg_frames(capture, *, runtime=None) -> Iterator[bytes]:
-    import cv2
-
     empty_reads = 0
     max_empty_reads = 50
     while True:
@@ -127,12 +126,11 @@ def _mjpeg_frames(capture, *, runtime=None) -> Iterator[bytes]:
             continue
         empty_reads = 0
         preview = render_preview_frame(frame, runtime=runtime)
-        ok, encoded = cv2.imencode(".jpg", preview)
-        if not ok:
+        payload = _encode_jpeg(preview)
+        if payload is None:
             capture.state.frames_dropped += 1
             capture.state.last_error = "capture stream jpeg encode failed"
             continue
-        payload = encoded.tobytes()
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n"
@@ -140,3 +138,22 @@ def _mjpeg_frames(capture, *, runtime=None) -> Iterator[bytes]:
             + payload
             + b"\r\n"
         )
+
+
+def _encode_jpeg(image) -> bytes | None:
+    from PIL import Image
+
+    if isinstance(image, Image.Image):
+        rgb = image.convert("RGB")
+    elif hasattr(image, "shape"):
+        import numpy as np
+
+        arr = np.asarray(image)
+        if arr.ndim != 3 or arr.shape[2] < 3:
+            return None
+        rgb = Image.fromarray(np.ascontiguousarray(arr[:, :, :3][:, :, ::-1]), mode="RGB")
+    else:
+        return None
+    output = BytesIO()
+    rgb.save(output, format="JPEG", quality=80)
+    return output.getvalue()

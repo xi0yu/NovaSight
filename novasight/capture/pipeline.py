@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 
 from .state import CaptureProfile
 
+DEFAULT_APPSINK_OUTPUT_WIDTH = 320
+DEFAULT_APPSINK_OUTPUT_HEIGHT = 320
+
 
 @dataclass(frozen=True)
 class CaptureCandidate:
@@ -100,12 +103,117 @@ def build_pipeline_candidates(profile: CaptureProfile) -> list[CaptureCandidate]
     return ordered + [CaptureCandidate(label="opencv:v4l2", pipeline="")]
 
 
+def build_appsink_candidates(profile: CaptureProfile) -> list[CaptureCandidate]:
+    device = profile.device
+    width = profile.width
+    height = profile.height
+    fps = profile.fps
+    fmt = profile.pixel_format.upper()
+    output_width = DEFAULT_APPSINK_OUTPUT_WIDTH
+    output_height = DEFAULT_APPSINK_OUTPUT_HEIGHT
+    sink = "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+
+    mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
+    nv12_caps = f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
+    yuyv_caps = f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1"
+
+    def gst(label: str, body: str) -> CaptureCandidate:
+        return CaptureCandidate(label=f"gst-appsink:{label}", pipeline=body)
+
+    nvmm_caps = (
+        "video/x-raw(memory:NVMM),format=NV12,"
+        f"width={output_width},height={output_height}"
+    )
+    cpu_bgr_caps = "video/x-raw,format=BGRx"
+    mjpg_nvmm_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! {nvmm_caps} ! {sink}"
+    nv12_nvmm_tail = f"nvvidconv ! {nvmm_caps} ! {sink}"
+    yuyv_nvmm_tail = f"nvvidconv ! {nvmm_caps} ! {sink}"
+    mjpg_cpu_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! {cpu_bgr_caps} ! {sink}"
+    nv12_cpu_tail = f"nvvidconv ! {cpu_bgr_caps} ! {sink}"
+    yuyv_cpu_tail = f"nvvidconv ! {cpu_bgr_caps} ! {sink}"
+
+    mjpg = [
+        gst(
+            "nvmm-mjpg-iomode2",
+            f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! {mjpg_nvmm_tail}",
+        ),
+        gst(
+            "nvmm-mjpg-iomode4",
+            f"v4l2src device={device} io-mode=4 ! {mjpg_caps} ! {mjpg_nvmm_tail}",
+        ),
+        gst(
+            "nvmm-mjpg-ioauto",
+            f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_nvmm_tail}",
+        ),
+        gst(
+            "cpu-bgr-mjpg-iomode2",
+            f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! {mjpg_cpu_tail}",
+        ),
+        gst(
+            "cpu-bgr-mjpg-ioauto",
+            f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_cpu_tail}",
+        ),
+    ]
+    nv12 = [
+        gst(
+            "nvmm-nv12-iomode2",
+            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nv12_nvmm_tail}",
+        ),
+        gst(
+            "nvmm-nv12-iomode4",
+            f"v4l2src device={device} io-mode=4 ! {nv12_caps} ! {nv12_nvmm_tail}",
+        ),
+        gst(
+            "nvmm-nv12-ioauto",
+            f"v4l2src device={device} ! {nv12_caps} ! {nv12_nvmm_tail}",
+        ),
+        gst(
+            "cpu-bgr-nv12-iomode2",
+            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nv12_cpu_tail}",
+        ),
+        gst(
+            "cpu-bgr-nv12-ioauto",
+            f"v4l2src device={device} ! {nv12_caps} ! {nv12_cpu_tail}",
+        ),
+    ]
+    yuyv = [
+        gst(
+            "nvmm-yuyv-iomode2",
+            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {yuyv_nvmm_tail}",
+        ),
+        gst(
+            "nvmm-yuyv-iomode4",
+            f"v4l2src device={device} io-mode=4 ! {yuyv_caps} ! {yuyv_nvmm_tail}",
+        ),
+        gst(
+            "nvmm-yuyv-ioauto",
+            f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_nvmm_tail}",
+        ),
+        gst(
+            "cpu-bgr-yuyv-iomode2",
+            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {yuyv_cpu_tail}",
+        ),
+        gst(
+            "cpu-bgr-yuyv-ioauto",
+            f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_cpu_tail}",
+        ),
+    ]
+
+    ordered = mjpg + nv12 + yuyv
+    if fmt == "NV12":
+        ordered = nv12 + yuyv + mjpg
+    elif fmt == "YUYV":
+        ordered = yuyv + nv12 + mjpg
+    return ordered
+
+
 def select_open_source(
     profile: CaptureProfile,
     opener: Callable[[CaptureCandidate], bool],
+    candidates: list[CaptureCandidate] | None = None,
 ) -> SelectedCaptureBackend:
     failures: list[str] = []
-    for candidate in build_pipeline_candidates(profile):
+    for candidate in candidates or build_pipeline_candidates(profile):
         try:
             opened = opener(candidate)
         except Exception as exc:

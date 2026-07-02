@@ -5,6 +5,7 @@ from novasight.capture.profile import select_capture_profile
 
 
 CAPS = [
+    CaptureCapability("MJPG", 1920, 1080, [240, 120, 60]),
     CaptureCapability("MJPG", 1920, 1080, [144, 120, 60]),
     CaptureCapability("NV12", 1920, 1080, [60]),
     CaptureCapability("YUYV", 1280, 720, [60]),
@@ -12,14 +13,14 @@ CAPS = [
 ]
 
 
-def test_auto_high_fps_prefers_1080p_144_mjpg() -> None:
+def test_auto_high_fps_prefers_1080p_120_mjpg_for_jetson_nvmm_route() -> None:
     profile = select_capture_profile("/dev/video0", CAPS, "auto_high_fps")
 
     assert profile.pixel_format == "MJPG"
     assert profile.width == 1920
     assert profile.height == 1080
-    assert profile.fps == 144
-    assert "highest fps" in profile.selection_reason
+    assert profile.fps == 120
+    assert "jetson nvmm" in profile.selection_reason.lower()
 
 
 def test_auto_low_latency_prefers_nv12_when_fps_is_usable() -> None:

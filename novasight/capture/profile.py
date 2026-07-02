@@ -35,6 +35,30 @@ def _format_rank_low_latency(pixel_format: str) -> int:
     return {"NV12": 0, "YUYV": 1, "MJPG": 2}.get(pixel_format, 3)
 
 
+def _jetson_nvmm_rank(item: tuple[str, int, int, int]) -> tuple[int, int, int, int]:
+    pixel_format, width, height, fps = item
+    pixels = width * height
+    is_1080p = pixels == 1920 * 1080
+    if pixel_format == "MJPG" and is_1080p and fps == 120:
+        return (0, 0, 0, 0)
+    if pixel_format == "MJPG" and is_1080p and fps > 120:
+        return (1, fps - 120, 0, 0)
+    if pixel_format == "MJPG" and is_1080p and fps >= 60:
+        return (2, 120 - fps, 0, 0)
+    if pixel_format == "NV12" and is_1080p and fps >= 120:
+        return (3, fps - 120, 0, 0)
+    if pixel_format == "NV12" and is_1080p and fps >= 60:
+        return (4, 120 - fps, 0, 0)
+    if pixel_format == "YUYV" and is_1080p and fps >= 60:
+        return (5, 120 - fps, 0, 0)
+    return (
+        6,
+        _format_rank_high_fps(pixel_format, fps),
+        -fps,
+        -pixels,
+    )
+
+
 def select_capture_profile(
     device: str,
     capabilities: list[CaptureCapability],
@@ -90,13 +114,9 @@ def select_capture_profile(
     else:
         choice = sorted(
             choices,
-            key=lambda item: (
-                -item[3],
-                _format_rank_high_fps(item[0], item[3]),
-                -(item[1] * item[2]),
-            ),
+            key=_jetson_nvmm_rank,
         )[0]
-        reason = "auto_high_fps selected highest fps profile"
+        reason = "auto_high_fps selected jetson nvmm profile"
 
     return CaptureProfile(
         device=device,

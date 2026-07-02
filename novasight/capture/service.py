@@ -6,22 +6,39 @@ from collections.abc import Callable
 from novasight.config.runtime import CaptureConfig
 
 from .caps import query_capabilities, run_v4l2_ctl
-from .pipeline import CaptureCandidate, select_open_source
+from .pipeline import CaptureCandidate, build_appsink_candidates, select_open_source
 from .profile import select_capture_profile
-from .source import CapturedFrame, FrameSource, OpenCvFrameSource
+from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, OpenCvFrameSource
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 
 def _open_default_source(profile: CaptureProfile) -> FrameSource:
-    selected = select_open_source(
-        profile,
-        lambda candidate: OpenCvFrameSource.probe(profile, candidate),
-    )
-    selected_candidate = CaptureCandidate(
-        label=selected.label,
-        pipeline=selected.pipeline,
-    )
-    return OpenCvFrameSource(profile, selected_candidate)
+    appsink_failures: list[str] = []
+    try:
+        selected = select_open_source(
+            profile,
+            lambda candidate: GstAppSinkFrameSource.probe(profile, candidate),
+            candidates=build_appsink_candidates(profile),
+        )
+        return GstAppSinkFrameSource(
+            profile,
+            CaptureCandidate(label=selected.label, pipeline=selected.pipeline),
+        )
+    except Exception as exc:
+        appsink_failures.append(str(exc))
+
+    try:
+        selected = select_open_source(
+            profile,
+            lambda candidate: OpenCvFrameSource.probe(profile, candidate),
+        )
+        return OpenCvFrameSource(
+            profile,
+            CaptureCandidate(label=selected.label, pipeline=selected.pipeline),
+        )
+    except Exception as exc:
+        details = "; ".join(appsink_failures + [str(exc)])
+        raise RuntimeError(details) from exc
 
 
 class CaptureService:

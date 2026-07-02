@@ -99,11 +99,68 @@ API.
 
 ## Jetson Camera Diagnostics
 
+Jetson capture uses the system GStreamer stack through `GstAppSink`. Use the
+system Python environment and do not install pip OpenCV or pip `gi`:
+
+```bash
+cd ~/NovaSight
+/usr/bin/python3 -m venv .venv --system-site-packages
+source .venv/bin/activate
+python3 -m pip uninstall -y numpy opencv-python opencv-python-headless opencv-contrib-python
+python3 -m pip install -U pip setuptools wheel
+python3 -m pip install -e ".[dev]" --no-deps
+python3 -m pip install fastapi "uvicorn[standard]" onnxruntime pydantic pyserial \
+  websockets pyyaml python-multipart httpx pytest cryptography pillow
+```
+
+Verify the system-provided GStreamer bindings and NVIDIA elements:
+
+```bash
+python3 - <<'PY'
+import gi
+gi.require_version("Gst", "1.0")
+gi.require_version("GstApp", "1.0")
+from gi.repository import Gst, GstApp
+Gst.init(None)
+print("Gst/GstApp ok")
+PY
+
+gst-inspect-1.0 nvvidconv
+gst-inspect-1.0 nvv4l2decoder
+```
+
 Inspect `/dev/video0` capabilities:
 
 ```bash
 python3 -m novasight doctor camera --device /dev/video0
 ```
+
+For the tested HDMI capture card, NovaSight's automatic Jetson route prefers:
+
+```text
+MJPG 1920x1080 @ 120
+-> nvv4l2decoder
+-> nvvidconv
+-> video/x-raw(memory:NVMM),format=NV12,width=320,height=320
+-> appsink max-buffers=1 drop=true sync=false
+```
+
+The matching standalone GStreamer smoke command is:
+
+```bash
+gst-launch-1.0 -v \
+  v4l2src device=/dev/video0 io-mode=2 ! \
+  'image/jpeg,width=1920,height=1080,framerate=120/1' ! \
+  jpegparse ! \
+  nvv4l2decoder mjpeg=1 ! \
+  nvvidconv ! \
+  'video/x-raw(memory:NVMM),format=NV12,width=320,height=320' ! \
+  appsink sync=false max-buffers=1 drop=true
+```
+
+If NVMM buffers cannot be mapped by Python on a given Jetson image, NovaSight
+falls back to CPU `BGRx` AppSink candidates generated from the same V4L2 mode.
+It does not require pip OpenCV for the normal Jetson path.
 
 Run a short real capture smoke test:
 
@@ -141,7 +198,7 @@ pnpm --dir web dev --host 0.0.0.0
 ```
 
 Open `http://<jetson-ip>:5173`, switch to `采集`, click `刷新能力`, then apply
-one of the listed profiles such as `MJPG 1920x1080 @ 240`. The preview panel
+one of the listed profiles such as `MJPG 1920x1080 @ 120`. The preview panel
 uses `/api/capture/stream.mjpg` and reconnects after every successful profile
 switch. If a profile fails, the backend keeps the last healthy capture source
 when possible and reports the error through `/api/capture/state`.

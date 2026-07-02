@@ -1,13 +1,17 @@
 import sys
 from types import SimpleNamespace
 
+import numpy as np
+
 from novasight.capture import CaptureProfile
 from novasight.capture.pipeline import (
     CaptureCandidate,
+    build_appsink_candidates,
     build_pipeline_candidates,
     select_open_source,
 )
 from novasight.capture.source import OpenCvFrameSource
+from novasight.capture.source import _sample_to_bgr
 
 
 def _profile(fmt: str = "MJPG") -> CaptureProfile:
@@ -16,7 +20,7 @@ def _profile(fmt: str = "MJPG") -> CaptureProfile:
         pixel_format=fmt,
         width=1920,
         height=1080,
-        fps=144 if fmt == "MJPG" else 60,
+        fps=120 if fmt == "MJPG" else 60,
         preference="auto_high_fps",
         selection_reason="test",
     )
@@ -27,7 +31,7 @@ def test_mjpg_candidates_start_with_nvmm_decoder() -> None:
 
     assert candidates[0].label == "gst:nvmm-mjpg-iomode2"
     assert "v4l2src device=/dev/video0" in candidates[0].pipeline
-    assert "image/jpeg,width=1920,height=1080,framerate=144/1" in candidates[0].pipeline
+    assert "image/jpeg,width=1920,height=1080,framerate=120/1" in candidates[0].pipeline
     assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
     assert candidates[-1].label == "opencv:v4l2"
 
@@ -38,6 +42,30 @@ def test_nv12_candidates_start_with_nvmm_nv12() -> None:
     assert candidates[0].label == "gst:nvmm-nv12-iomode2"
     assert (
         "video/x-raw,format=NV12,width=1920,height=1080,framerate=60/1"
+        in candidates[0].pipeline
+    )
+
+
+def test_appsink_candidates_do_not_use_opencv_labels() -> None:
+    candidates = build_appsink_candidates(_profile("MJPG"))
+
+    assert candidates[0].label == "gst-appsink:nvmm-mjpg-iomode2"
+    assert "appsink name=sink" in candidates[0].pipeline
+    assert (
+        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
+        in candidates[0].pipeline
+    )
+    assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
+    assert all(not candidate.label.startswith("opencv:") for candidate in candidates)
+
+
+def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
+    candidates = build_appsink_candidates(_profile("YUYV"))
+
+    assert candidates[0].label == "gst-appsink:nvmm-yuyv-iomode2"
+    assert "video/x-raw,format=YUY2,width=1920,height=1080" in candidates[0].pipeline
+    assert (
+        "video/x-raw(memory:NVMM),format=NV12,width=320,height=320"
         in candidates[0].pipeline
     )
 
@@ -157,3 +185,50 @@ def test_opencv_probe_closes_source_when_first_read_fails(monkeypatch) -> None:
 
     assert opened is False
     assert released == [True]
+
+
+def test_gstreamer_sample_to_bgr_converts_nv12_buffer() -> None:
+    class FakeStructure:
+        def get_int(self, name: str):
+            return True, 2
+
+        def get_string(self, name: str):
+            return "NV12"
+
+    class FakeCaps:
+        def get_size(self) -> int:
+            return 1
+
+        def get_structure(self, index: int):
+            return FakeStructure()
+
+    class FakeBuffer:
+        def __init__(self) -> None:
+            self.unmapped = False
+
+        def map(self, flags):
+            return True, SimpleNamespace(data=bytes([16, 16, 16, 16, 128, 128]))
+
+        def unmap(self, info) -> None:
+            self.unmapped = True
+
+    class FakeSample:
+        def __init__(self) -> None:
+            self.buffer = FakeBuffer()
+
+        def get_caps(self):
+            return FakeCaps()
+
+        def get_buffer(self):
+            return self.buffer
+
+    sample = FakeSample()
+    image, width, height = _sample_to_bgr(
+        sample, SimpleNamespace(MapFlags=SimpleNamespace(READ=1))
+    )
+
+    assert (width, height) == (2, 2)
+    assert image.shape == (2, 2, 3)
+    assert image.dtype == np.uint8
+    assert int(image.max()) == 0
+    assert sample.buffer.unmapped is True

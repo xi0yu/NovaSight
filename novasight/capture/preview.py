@@ -44,28 +44,41 @@ def draw_overlay(
     detections: list[Detection],
     fov_ratio: float = 0.28,
 ) -> Any:
-    import cv2
+    from PIL import Image, ImageDraw
 
-    output = image.copy() if hasattr(image, "copy") else image
+    output = _to_pil_rgb(image)
+    if output is None:
+        return image
+    draw = ImageDraw.Draw(output)
     center = (width // 2, height // 2)
     radius = max(4, int(min(width, height) * fov_ratio))
-    cv2.circle(output, center, radius, (80, 220, 160), 2)
+    draw.ellipse(
+        (center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius),
+        outline=(80, 220, 160),
+        width=2,
+    )
     for detection in detections:
         x1 = int(detection.x)
         y1 = int(detection.y)
         x2 = int(detection.x + detection.w)
         y2 = int(detection.y + detection.h)
         target = (int(detection.cx), int(detection.cy))
-        cv2.rectangle(output, (x1, y1), (x2, y2), (80, 190, 255), 2)
-        cv2.line(output, center, target, (180, 220, 120), 1)
-        cv2.putText(
-            output,
-            f"{detection.cls}:{detection.score:.2f}",
-            (x1, max(16, y1 - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (230, 240, 210),
-            1,
-            cv2.LINE_AA,
-        )
+        draw.rectangle((x1, y1, x2, y2), outline=(80, 190, 255), width=2)
+        draw.line((center, target), fill=(180, 220, 120), width=1)
+        draw.text((x1, max(2, y1 - 14)), f"{detection.cls}:{detection.score:.2f}", fill=(230, 240, 210))
     return output
+
+
+def _to_pil_rgb(image: Any):
+    from PIL import Image
+
+    if isinstance(image, Image.Image):
+        return image.convert("RGB").copy()
+    if hasattr(image, "shape"):
+        import numpy as np
+
+        arr = np.asarray(image)
+        if arr.ndim == 3 and arr.shape[2] >= 3:
+            rgb = np.ascontiguousarray(arr[:, :, :3][:, :, ::-1])
+            return Image.fromarray(rgb, mode="RGB")
+    return None
