@@ -19,8 +19,6 @@ export function StudioShell({
   children,
   onNavigate
 }: StudioShellProps) {
-  const mobileItems = studioNavItems.slice(0, 5);
-
   return (
     <div className="studio-shell">
       <aside className="studio-sidebar">
@@ -70,7 +68,7 @@ export function StudioShell({
         </header>
 
         <nav className="mobile-nav" aria-label="Studio navigation mobile">
-          {mobileItems.map((item) => (
+          {studioNavItems.map((item) => (
             <button
               key={item.id}
               type="button"
