@@ -30,6 +30,7 @@ import { formatTime, getErrorMessage } from "./features/shared/format";
 
 type ErrorKey = "health" | "runtime" | "plugins" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
+type GuardedViewId = Exclude<StudioViewId, "license">;
 
 type LoadState = {
   loading: boolean;
@@ -49,6 +50,14 @@ const initialState: LoadState = {
   plugins: [],
   projects: [],
   lastUpdated: null
+};
+
+const viewFeatureMap: Partial<Record<GuardedViewId, LicenseStatus["features"][number]>> = {
+  dashboard: "runtime",
+  devices: "capture",
+  models: "models",
+  config: "config_read",
+  plugins: "plugins"
 };
 
 function withoutError(
@@ -88,8 +97,34 @@ function realtimeLabel(status: RealtimeStatus): string {
   }
 }
 
+function canAccessView(view: StudioViewId, license: LicenseStatus | null): boolean {
+  if (view === "license") {
+    return true;
+  }
+
+  const requiredFeature = viewFeatureMap[view];
+  if (!requiredFeature) {
+    return true;
+  }
+
+  return license?.features.includes(requiredFeature) ?? false;
+}
+
+function getFallbackView(license: LicenseStatus | null): StudioViewId {
+  const fallbackOrder: StudioViewId[] = [
+    "dashboard",
+    "devices",
+    "models",
+    "config",
+    "plugins",
+    "license"
+  ];
+
+  return fallbackOrder.find((view) => canAccessView(view, license)) ?? "license";
+}
+
 export default function App() {
-  const [activeView, setActiveView] = useState<StudioViewId>("devices");
+  const [activeView, setActiveView] = useState<StudioViewId>("license");
   const [state, setState] = useState<LoadState>(initialState);
   const [runtimeCommandBusy, setRuntimeCommandBusy] = useState(false);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
@@ -176,6 +211,18 @@ export default function App() {
       void load();
     }
   }, [license?.valid, load]);
+
+  useEffect(() => {
+    if (!license?.valid) {
+      return;
+    }
+
+    if (canAccessView(activeView, license)) {
+      return;
+    }
+
+    setActiveView(getFallbackView(license));
+  }, [activeView, license]);
 
   useEffect(() => {
     if (!license?.valid) {
@@ -337,15 +384,17 @@ export default function App() {
 
       <div className="view-stack">
         {activeView === "dashboard" ? (
-          <DashboardView
-            health={state.health}
-            loading={state.loading}
-            runtime={state.runtime}
-            errors={state.errors}
-            onRefresh={load}
-            onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
-            runtimeCommandBusy={runtimeCommandBusy}
-          />
+          <PermissionGuard feature="runtime" license={license}>
+            <DashboardView
+              health={state.health}
+              loading={state.loading}
+              runtime={state.runtime}
+              errors={state.errors}
+              onRefresh={load}
+              onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
+              runtimeCommandBusy={runtimeCommandBusy}
+            />
+          </PermissionGuard>
         ) : null}
         {activeView === "devices" ? (
           <PermissionGuard feature="capture" license={license}>
