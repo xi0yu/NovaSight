@@ -178,6 +178,7 @@ export const API_PATHS = {
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
   captureSelect: "/api/capture/select",
+  captureStop: "/api/capture/stop",
   captureStream: "/api/capture/stream.mjpg",
   plugins: "/api/plugins",
   modelProjects: "/api/models/projects",
@@ -255,13 +256,13 @@ export function getRuntimeState(): Promise<RuntimeState> {
   return requestJson<RuntimeState>(API_PATHS.runtimeState);
 }
 
-export function startRuntime(): Promise<Record<string, unknown>> {
+export function startInferenceControl(): Promise<Record<string, unknown>> {
   return requestJson<Record<string, unknown>>(API_PATHS.runtimeStart, {
     method: "POST"
   });
 }
 
-export function stopRuntime(): Promise<Record<string, unknown>> {
+export function stopInferenceControl(): Promise<Record<string, unknown>> {
   return requestJson<Record<string, unknown>>(API_PATHS.runtimeStop, {
     method: "POST"
   });
@@ -300,6 +301,16 @@ export function selectCaptureProfile(payload: CaptureSelectPayload): Promise<Cap
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
+  });
+}
+
+export function stopCapture(reason = "用户停止采集"): Promise<CaptureState> {
+  return requestJson<CaptureState>(API_PATHS.captureStop, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ reason })
   });
 }
 

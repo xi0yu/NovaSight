@@ -27,9 +27,10 @@ import {
   getRuntimeState,
   saveLicenseKey,
   selectCaptureProfile,
-  startRuntime,
+  startInferenceControl,
   statusWebSocketUrl,
-  stopRuntime,
+  stopCapture,
+  stopInferenceControl,
   streamUrl,
   updateRuntimeConfig
 } from "./api";
@@ -242,7 +243,7 @@ function OverviewView({
   loading,
   errors,
   onRefresh,
-  onRuntimeCommand,
+  onInferenceControlCommand,
   runtimeCommandBusy
 }: {
   health: HealthResponse | null;
@@ -250,7 +251,7 @@ function OverviewView({
   loading: boolean;
   errors: Pick<LoadState["errors"], "health" | "runtime">;
   onRefresh: () => void;
-  onRuntimeCommand: (action: "start" | "stop") => void;
+  onInferenceControlCommand: (action: "start" | "stop") => void;
   runtimeCommandBusy: boolean;
 }) {
   const executor = runtime?.executor;
@@ -266,10 +267,10 @@ function OverviewView({
         eyebrow="核心状态"
         action={
           <div className="panel-actions">
-            <RuntimeControl
+            <InferenceControl
               busy={runtimeCommandBusy}
               running={Boolean(runtime?.running)}
-              onCommand={onRuntimeCommand}
+              onCommand={onInferenceControlCommand}
             />
             <button className="button" type="button" onClick={onRefresh}>
               刷新
@@ -361,13 +362,13 @@ function CaptureWorkbench({
   runtime,
   error,
   onRuntimeRefresh,
-  onRuntimeCommand,
+  onInferenceControlCommand,
   runtimeCommandBusy
 }: {
   runtime: RuntimeState | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
-  onRuntimeCommand: (action: "start" | "stop") => void;
+  onInferenceControlCommand: (action: "start" | "stop") => void;
   runtimeCommandBusy: boolean;
 }) {
   const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
@@ -375,6 +376,7 @@ function CaptureWorkbench({
   const [captureError, setCaptureError] = useState<string | undefined>(error);
   const [loadingCaps, setLoadingCaps] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
+  const [stoppingCapture, setStoppingCapture] = useState(false);
   const [streamKey, setStreamKey] = useState(Date.now());
 
   useEffect(() => {
@@ -427,6 +429,21 @@ function CaptureWorkbench({
     [onRuntimeRefresh]
   );
 
+  const stopCaptureSession = useCallback(async () => {
+    setStoppingCapture(true);
+    setCaptureError(undefined);
+    try {
+      await stopCapture();
+      setStreamKey(Date.now());
+      await onRuntimeRefresh();
+    } catch (err) {
+      setCaptureError(getErrorMessage(err));
+      await onRuntimeRefresh();
+    } finally {
+      setStoppingCapture(false);
+    }
+  }, [onRuntimeRefresh]);
+
   const applyPreference = (preference: CaptureSelectPayload["preference"], label: string) =>
     applySelection({ device, preference }, label);
 
@@ -440,11 +457,19 @@ function CaptureWorkbench({
         eyebrow="设备能力与配置切换"
         action={
           <div className="panel-actions">
-            <RuntimeControl
+            <InferenceControl
               busy={runtimeCommandBusy}
               running={runtimeRunning}
-              onCommand={onRuntimeCommand}
+              onCommand={onInferenceControlCommand}
             />
+            <button
+              className="button"
+              disabled={stoppingCapture || !capture?.available}
+              onClick={() => void stopCaptureSession()}
+              type="button"
+            >
+              {stoppingCapture ? "停止中" : "停止采集"}
+            </button>
             <button className="button" type="button" onClick={refreshCapabilities}>
               {loadingCaps ? "读取中" : "刷新能力"}
             </button>
@@ -452,13 +477,13 @@ function CaptureWorkbench({
         }
       >
         <InlineError message={captureError} />
-        {runtimeRunning ? (
+        {capture?.available ? (
           <div className="inline-note">
-            主线采集已启动，预览只消费最新帧缓存。切换采集参数前请先停止主线。
+            采集会话已打开。浏览器预览按目标帧率取样，推理控制读取同一个最新帧队列。
           </div>
         ) : (
           <div className="inline-note">
-            当前是预览兜底模式，帧率不代表主线采集性能。启动主线后再观察采集帧率。
+            请选择格式并应用，后端会打开正式采集会话；预览不会单独占用采集卡。
           </div>
         )}
         <div className="capture-toolbar">
@@ -469,7 +494,7 @@ function CaptureWorkbench({
           <div className="preference-actions" aria-label="推荐配置">
             <button
               className="button"
-              disabled={applying !== null || runtimeRunning}
+              disabled={applying !== null}
               onClick={() => applyPreference("auto_high_fps", "高帧率")}
               type="button"
             >
@@ -477,7 +502,7 @@ function CaptureWorkbench({
             </button>
             <button
               className="button"
-              disabled={applying !== null || runtimeRunning}
+              disabled={applying !== null}
               onClick={() => applyPreference("auto_low_latency", "低延迟")}
               type="button"
             >
@@ -485,7 +510,7 @@ function CaptureWorkbench({
             </button>
             <button
               className="button"
-              disabled={applying !== null || runtimeRunning}
+              disabled={applying !== null}
               onClick={() => applyPreference("auto_balanced", "均衡")}
               type="button"
             >
@@ -495,7 +520,6 @@ function CaptureWorkbench({
         </div>
         <CapabilityTable
           applying={applying}
-          disabled={runtimeRunning}
           groups={groups}
           onApply={(row) =>
             applySelection(
@@ -531,6 +555,7 @@ function CaptureWorkbench({
             </StatusPill>
             <span className="mono">{formatProfile(capture)}</span>
           </div>
+          <div className="preview-caption">预览限速输出，采集与推理控制不依赖浏览器帧率</div>
         </div>
       </Panel>
 
@@ -541,7 +566,7 @@ function CaptureWorkbench({
   );
 }
 
-function RuntimeControl({
+function InferenceControl({
   running,
   busy,
   onCommand
@@ -557,7 +582,7 @@ function RuntimeControl({
       onClick={() => onCommand(running ? "stop" : "start")}
       type="button"
     >
-      {busy ? "处理中" : running ? "停止主线" : "启动主线"}
+      {busy ? "处理中" : running ? "停止推理控制" : "启动推理控制"}
     </button>
   );
 }
@@ -653,7 +678,7 @@ function CapabilityTable({
                           onClick={() => onApply(row)}
                           type="button"
                         >
-                          {applying === id ? "应用中" : "应用"}
+                          {applying === id ? "应用中" : "应用并启动"}
                         </button>
                       </td>
                     </tr>
@@ -834,7 +859,7 @@ function PluginsView({
 
   if (plugins.length === 0) {
     return (
-      <Panel title="插件" eyebrow="运行链路">
+      <Panel title="插件" eyebrow="算法链">
         <InlineError message={error} />
         <EmptyState title="没有加载插件" detail="后端返回的插件链为空。" />
       </Panel>
@@ -1081,7 +1106,7 @@ function SettingsView({
       const result = await updateRuntimeConfig(config);
       setSchema(result.schema);
       setConfig(result.config);
-      setMessage(result.restart_required ? "配置已保存，运行链路需要重启后完全生效。" : "配置已保存并同步到运行态。");
+      setMessage(result.restart_required ? "配置已保存，推理控制需要重启后完全生效。" : "配置已保存并同步到运行态。");
       await onRuntimeRefresh();
     } catch (err) {
       setError(getErrorMessage(err));
@@ -1273,7 +1298,7 @@ export default function App() {
     return () => socket.close();
   }, [license?.valid]);
 
-  const handleRuntimeCommand = useCallback(
+  const handleInferenceControlCommand = useCallback(
     async (action: "start" | "stop") => {
       setRuntimeCommandBusy(true);
       setState((current) => ({
@@ -1282,9 +1307,9 @@ export default function App() {
       }));
       try {
         if (action === "start") {
-          await startRuntime();
+          await startInferenceControl();
         } else {
-          await stopRuntime();
+          await stopInferenceControl();
         }
         await load();
       } catch (err) {
@@ -1373,7 +1398,7 @@ export default function App() {
             runtime={state.runtime}
             errors={state.errors}
             onRefresh={load}
-            onRuntimeCommand={(action) => void handleRuntimeCommand(action)}
+            onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
             runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}
@@ -1382,7 +1407,7 @@ export default function App() {
             runtime={state.runtime}
             error={state.errors.capture}
             onRuntimeRefresh={load}
-            onRuntimeCommand={(action) => void handleRuntimeCommand(action)}
+            onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
             runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}

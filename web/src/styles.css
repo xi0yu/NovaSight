@@ -863,6 +863,29 @@ tbody tr:hover {
   overflow-wrap: anywhere;
 }
 
+.preview-caption {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: var(--radius-inner);
+  color: rgba(251, 250, 246, 0.9);
+  background: rgba(10, 16, 18, 0.56);
+  box-shadow:
+    0 0 0 1px rgba(239, 226, 199, 0.14),
+    0 12px 34px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
+  font-size: 0.76rem;
+  font-weight: 720;
+  overflow-wrap: anywhere;
+}
+
 .capability-table table {
   min-width: 620px;
 }
