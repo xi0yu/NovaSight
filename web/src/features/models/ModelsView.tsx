@@ -31,11 +31,13 @@ type RollbackFeedback = {
 export function ModelsView({
   projects,
   activeModel,
-  error
+  error,
+  onRuntimeRefresh
 }: {
   projects: ModelProject[];
   activeModel: ActiveModel | null;
   error: string | undefined;
+  onRuntimeRefresh: () => Promise<void>;
 }) {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
@@ -56,6 +58,7 @@ export function ModelsView({
   const [rollbackFeedback, setRollbackFeedback] = useState<RollbackFeedback | null>(null);
   const [publishingArtifactId, setPublishingArtifactId] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
+  const [registryRefreshKey, setRegistryRefreshKey] = useState(0);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -124,7 +127,7 @@ export function ModelsView({
     return () => {
       cancelled = true;
     };
-  }, [selectedProjectId]);
+  }, [registryRefreshKey, selectedProjectId]);
 
   useEffect(() => {
     if (versions.length === 0) {
@@ -200,7 +203,7 @@ export function ModelsView({
     return () => {
       cancelled = true;
     };
-  }, [selectedVersionId]);
+  }, [registryRefreshKey, selectedVersionId]);
 
   async function handlePublish(artifact: ModelArtifact) {
     if (!selectedProject || selectedVersionId === null) {
@@ -231,6 +234,8 @@ export function ModelsView({
 
     try {
       const deployment = await publishModel(requestProjectId, artifact.id);
+      await onRuntimeRefresh();
+      setRegistryRefreshKey((current) => current + 1);
       setPublishFeedback({
         projectId: requestProjectId,
         versionId: requestVersionId,
@@ -268,6 +273,8 @@ export function ModelsView({
 
     try {
       const deployment = await rollbackModel(requestProjectId);
+      await onRuntimeRefresh();
+      setRegistryRefreshKey((current) => current + 1);
       setRollbackFeedback({
         projectId: requestProjectId,
         message: `已回滚 ${requestProjectName} (#${requestProjectId})，当前部署 #${deployment.id} 指向产物 #${deployment.artifact_id}。`

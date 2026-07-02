@@ -218,7 +218,6 @@ export const API_PATHS = {
 } as const;
 
 const apiBase = (import.meta.env.VITE_NOVASIGHT_API_BASE ?? "").replace(/\/$/, "");
-export const TEST_MAX_LICENSE_KEY = "NOVASIGHT-TEST-MAX-ACCESS-2026";
 
 export function apiUrl(path: string): string {
   return `${apiBase}${path}`;

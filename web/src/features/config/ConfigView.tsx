@@ -118,9 +118,10 @@ export function ConfigView({
   const changedPaths = changedFields.map((field) => field.path);
   const isDirty =
     config && initialConfig ? JSON.stringify(initialConfig) !== JSON.stringify(config) : false;
+  const canWriteConfig = Boolean(license?.features.includes("config_write"));
 
   const saveConfig = useCallback(async () => {
-    if (!config || !isDirty) {
+    if (!config || !isDirty || !canWriteConfig) {
       return;
     }
     setError(undefined);
@@ -157,7 +158,7 @@ export function ConfigView({
     } catch (err) {
       setError(getErrorMessage(err));
     }
-  }, [changedFields, changedPaths, config, isDirty, onRuntimeRefresh]);
+  }, [canWriteConfig, changedFields, changedPaths, config, isDirty, onRuntimeRefresh]);
 
   return (
     <div className="settings-workbench">
@@ -171,7 +172,7 @@ export function ConfigView({
               className={`button ${!isDirty ? "config-save-button is-clean" : ""}`.trim()}
               type="button"
               onClick={saveConfig}
-              disabled={!config || !isDirty}
+              disabled={!config || !isDirty || !canWriteConfig}
             >
               保存配置
             </button>
@@ -180,6 +181,11 @@ export function ConfigView({
       >
         <InlineError message={error} />
         {message ? <div className="inline-note">{message}</div> : null}
+        {!canWriteConfig ? (
+          <div className="inline-note">
+            当前授权仅允许读取配置。需要 config_write feature 才能修改并保存运行参数。
+          </div>
+        ) : null}
         {schema && config ? (
           <div className="config-sections">
             {schema.sections.map((section) => (
@@ -203,6 +209,7 @@ export function ConfigView({
                         {field.type === "select" ? (
                           <select
                             value={String(value ?? "")}
+                            disabled={!canWriteConfig}
                             onChange={(event) =>
                               setConfig(setConfigValue(config, field.path, event.target.value, field))
                             }
@@ -220,6 +227,7 @@ export function ConfigView({
                             max={field.max}
                             step={field.type === "float" ? "0.1" : "1"}
                             value={String(value ?? "")}
+                            disabled={!canWriteConfig}
                             onChange={(event) =>
                               setConfig(setConfigValue(config, field.path, event.target.value, field))
                             }

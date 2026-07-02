@@ -413,6 +413,7 @@ export default function App() {
               projects={state.projects}
               activeModel={activeModel}
               error={state.errors.projects}
+              onRuntimeRefresh={load}
             />
           </PermissionGuard>
         ) : null}

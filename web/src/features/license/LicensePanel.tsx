@@ -2,7 +2,6 @@ import { useCallback, useState } from "react";
 
 import {
   type LicenseStatus,
-  TEST_MAX_LICENSE_KEY,
   clearLicenseKey,
   saveLicenseKey
 } from "../../api";
@@ -83,9 +82,6 @@ export function LicensePanel({
       <div className="preference-actions">
         <button className="button" type="button" onClick={saveLicense} disabled={!licenseInput.trim()}>
           激活卡密
-        </button>
-        <button className="button" type="button" onClick={() => setLicenseInput(TEST_MAX_LICENSE_KEY)}>
-          填入测试卡密
         </button>
         <button className="button" type="button" onClick={clearLicense}>
           清除

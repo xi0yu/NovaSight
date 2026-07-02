@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   type CaptureCapabilitiesResponse,
@@ -254,6 +254,7 @@ export function DevicesView({
   const [applying, setApplying] = useState<string | null>(null);
   const [stoppingCapture, setStoppingCapture] = useState(false);
   const [streamKey, setStreamKey] = useState(Date.now());
+  const capabilityRequestId = useRef(0);
 
   useEffect(() => {
     if (runtime?.capture?.device) {
@@ -268,18 +269,29 @@ export function DevicesView({
   const groups = useMemo(() => groupCapabilities(capabilities?.capabilities ?? []), [capabilities]);
 
   const refreshCapabilities = useCallback(async () => {
+    const requestId = capabilityRequestId.current + 1;
+    capabilityRequestId.current = requestId;
+    const requestedDevice = device;
     setLoadingCaps(true);
     setCaptureError(undefined);
     try {
-      const result = await getCaptureCapabilities(device);
+      const result = await getCaptureCapabilities(requestedDevice);
+      if (capabilityRequestId.current !== requestId) {
+        return;
+      }
       setCapabilities(result);
       if (!result.available) {
         setCaptureError(result.reason || "设备不可用");
       }
     } catch (err) {
+      if (capabilityRequestId.current !== requestId) {
+        return;
+      }
       setCaptureError(getErrorMessage(err));
     } finally {
-      setLoadingCaps(false);
+      if (capabilityRequestId.current === requestId) {
+        setLoadingCaps(false);
+      }
     }
   }, [device]);
 
