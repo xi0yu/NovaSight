@@ -13,6 +13,16 @@ export type ModelProject = {
   description: string;
 };
 
+export type ModelVersion = {
+  id: number;
+  project_id: number;
+  version: string;
+  source_kind: string;
+  source_path: string;
+  classes: string[];
+  input_shape: string;
+};
+
 export type ModelArtifact = {
   id: number;
   version_id: number;
@@ -27,6 +37,15 @@ export type Deployment = {
   project_id: number;
   artifact_id: number;
   previous_artifact_id: number | null;
+};
+
+export type ConversionJob = {
+  id: number;
+  version_id: number;
+  target_kind: string;
+  command: string[];
+  status: string;
+  log: string;
 };
 
 export type ActiveModel = {
@@ -192,6 +211,7 @@ export const API_PATHS = {
   captureStream: "/api/capture/stream.mjpg",
   plugins: "/api/plugins",
   modelProjects: "/api/models/projects",
+  modelJobs: "/api/models/jobs",
   license: "/api/license",
   licenseActivate: "/api/license/activate",
   statusWs: "/ws/status"
@@ -330,6 +350,36 @@ export function getPlugins(): Promise<PluginInfo[]> {
 
 export function getModelProjects(): Promise<ModelProject[]> {
   return requestJson<ModelProject[]>(API_PATHS.modelProjects);
+}
+
+export function getModelVersions(projectId: number): Promise<ModelVersion[]> {
+  return requestJson<ModelVersion[]>(`${API_PATHS.modelProjects}/${projectId}/versions`);
+}
+
+export function getModelArtifacts(versionId: number): Promise<ModelArtifact[]> {
+  return requestJson<ModelArtifact[]>(`/api/models/versions/${versionId}/artifacts`);
+}
+
+export function getConversionJobs(versionId?: number): Promise<ConversionJob[]> {
+  const suffix =
+    typeof versionId === "number" ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  return requestJson<ConversionJob[]>(`${API_PATHS.modelJobs}${suffix}`);
+}
+
+export function publishModel(projectId: number, artifactId: number): Promise<Deployment> {
+  return requestJson<Deployment>(`${API_PATHS.modelProjects}/${projectId}/publish`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ artifact_id: artifactId })
+  });
+}
+
+export function rollbackModel(projectId: number): Promise<Deployment> {
+  return requestJson<Deployment>(`${API_PATHS.modelProjects}/${projectId}/rollback`, {
+    method: "POST"
+  });
 }
 
 export function getLicenseStatus(): Promise<LicenseStatus> {

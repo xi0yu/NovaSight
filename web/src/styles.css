@@ -502,6 +502,10 @@ h1 {
   gap: 14px;
 }
 
+.registry-grid {
+  align-items: start;
+}
+
 .dashboard-grid,
 .models-grid,
 .plugins-grid,
@@ -960,6 +964,15 @@ tbody tr:hover {
   overflow-wrap: anywhere;
 }
 
+.action-message {
+  margin-bottom: 13px;
+  padding: 12px;
+  border-radius: var(--radius-inner);
+  background: color-mix(in srgb, var(--success) 14%, var(--surface-2));
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1px rgba(31, 38, 41, 0.08);
+}
+
 .badge {
   width: fit-content;
   max-width: 100%;
@@ -1025,6 +1038,55 @@ tbody tr:hover {
 
 .project-row span,
 .plugin-row span {
+  color: var(--muted);
+}
+
+.model-panel-list {
+  display: grid;
+  gap: 10px;
+}
+
+.selectable-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-inner);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface-3));
+  box-shadow: 0 0 0 1px var(--border-subtle);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.selectable-row:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--surface-3) 92%, transparent);
+  box-shadow: 0 0 0 1px var(--border-strong), 0 16px 36px rgba(0, 0, 0, 0.18);
+}
+
+.selectable-row.selected {
+  border-color: color-mix(in srgb, var(--primary) 36%, var(--border-strong));
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface-2));
+}
+
+.selectable-row div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.selectable-row span,
+.selectable-row strong {
+  overflow-wrap: anywhere;
+}
+
+.selectable-row span {
   color: var(--muted);
 }
 
@@ -1491,6 +1553,7 @@ tbody tr:hover {
 
   .panel-header,
   .ui-panel-header,
+  .selectable-row,
   .project-row,
   .plugin-row,
   .video-status {
