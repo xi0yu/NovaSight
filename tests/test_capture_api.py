@@ -4,13 +4,15 @@ Cover the request validation, the success path, and the failure modes that
 matter for the React workbench: device must be present, capability listing
 goes through the service, the service config is never mutated on failure.
 """
+import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from novasight.api import create_app
-from novasight.api.routes_capture import _mjpeg_frames
+from novasight.api.routes_capture import _mjpeg_frames, stream
 from novasight.capture.service import CaptureService
 from novasight.capture.source import CapturedFrame
 from novasight.capture.state import CaptureRuntimeState
@@ -321,6 +323,31 @@ def test_capture_stream_returns_503_when_capture_session_not_running(tmp_path) -
     assert service.configure_calls == []
 
 
+def test_capture_stream_returns_503_when_capture_state_unavailable() -> None:
+    capture = FakeCaptureService(
+        state=CaptureRuntimeState(available=False, device="/dev/video0"),
+        config=RuntimeConfig().capture,
+        configure_calls=[],
+        source=object(),
+    )
+    capture.session = SimpleNamespace(running=True)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                capture=capture,
+                config=RuntimeConfig(),
+                runtime=None,
+            )
+        )
+    )
+
+    response = stream(request)
+
+    assert response.status_code == 503
+    assert json.loads(response.body)["message"] == "采集未启动，无法打开预览。"
+    assert capture.configure_calls == []
+
+
 def test_capture_select_starts_session_for_preview(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
@@ -336,6 +363,7 @@ def test_capture_select_starts_session_for_preview(tmp_path) -> None:
         select_response = client.post("/api/capture/select", json={"device": "/dev/video0"})
         source_started = service.source is not None
         state_available = service.state.available
+        assert service.wait_preview_frame(after_frame_id=0, timeout_s=0.2) is not None
         payload = next(_mjpeg_frames(service, preview_fps=30, max_frames=1))
     finally:
         service.stop("test complete")
@@ -357,7 +385,7 @@ def test_capture_stream_uses_preview_cache(tmp_path) -> None:
         source_factory=lambda profile: source,
     )
     service.configure("/dev/video0")
-    service.read_frame()
+    assert service.wait_preview_frame(after_frame_id=0, timeout_s=0.2) is not None
     read_frame_calls = 0
 
     def forbidden_read_frame():
@@ -392,11 +420,22 @@ def test_mjpeg_frames_waits_for_preview_without_direct_read() -> None:
 def test_mjpeg_frames_timeout_records_preview_drop_only() -> None:
     capture = ReadFrameForbiddenCapture([None])
 
-    assert list(_mjpeg_frames(capture, preview_fps=30, max_frames=1)) == []
+    assert list(_mjpeg_frames(capture, preview_fps=30, max_attempts=1)) == []
 
     assert capture.read_frame_calls == 0
     assert capture.preview_drops == 1
     assert capture.unavailable_reasons == []
+
+
+def test_mjpeg_frames_max_frames_counts_emitted_frames() -> None:
+    capture = ReadFrameForbiddenCapture([None, _preview_frame()])
+
+    payloads = list(_mjpeg_frames(capture, preview_fps=30, max_frames=1, max_attempts=2))
+
+    assert len(payloads) == 1
+    assert b"Content-Type: image/jpeg" in payloads[0]
+    assert capture.preview_drops == 1
+    assert capture.preview_outputs == 1
 
 
 def test_capture_stop_delegates_to_service(tmp_path) -> None:

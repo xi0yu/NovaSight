@@ -49,7 +49,11 @@ def state(request: Request) -> dict:
 def stream(request: Request):
     capture = request.app.state.capture
     session = getattr(capture, "session", None)
-    if capture.source is None or (session is not None and not session.running):
+    if (
+        capture.source is None
+        or capture.state.available is False
+        or (session is not None and not session.running)
+    ):
         return JSONResponse(
             status_code=503,
             content={"message": "采集未启动，无法打开预览。"},
@@ -135,14 +139,18 @@ def _mjpeg_frames(
     runtime=None,
     preview_fps: int = 30,
     max_frames: int | None = None,
+    max_attempts: int | None = None,
 ) -> Iterator[bytes]:
     attempts = 0
+    emitted = 0
     last_frame_id = 0
     preview_fps = _normalize_preview_fps(preview_fps)
     interval_s = 1.0 / preview_fps
     capture.state.preview_target_fps = preview_fps
     while True:
-        if max_frames is not None and attempts >= max_frames:
+        if max_frames is not None and emitted >= max_frames:
+            break
+        if max_attempts is not None and attempts >= max_attempts:
             break
         attempts += 1
         frame = capture.wait_preview_frame(
@@ -161,6 +169,7 @@ def _mjpeg_frames(
             capture.state.last_error = "capture stream jpeg encode failed"
             continue
         capture.record_preview_output(frame, target_fps=preview_fps)
+        emitted += 1
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n"
