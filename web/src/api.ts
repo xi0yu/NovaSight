@@ -223,8 +223,8 @@ export function apiUrl(path: string): string {
   return `${apiBase}${path}`;
 }
 
-export function streamUrl(cacheKey: number): string {
-  return apiUrl(`${API_PATHS.captureStream}?ts=${cacheKey}`);
+export function streamUrl(cacheKey: number, configVersion = 0): string {
+  return apiUrl(`${API_PATHS.captureStream}?ts=${cacheKey}&config=${configVersion}`);
 }
 
 export function statusWebSocketUrl(): string {

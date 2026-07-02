@@ -5,10 +5,6 @@ from dataclasses import dataclass, field
 
 from .state import CaptureProfile
 
-DEFAULT_APPSINK_OUTPUT_WIDTH = 320
-DEFAULT_APPSINK_OUTPUT_HEIGHT = 320
-
-
 @dataclass(frozen=True)
 class CaptureCandidate:
     label: str
@@ -109,8 +105,8 @@ def build_appsink_candidates(profile: CaptureProfile) -> list[CaptureCandidate]:
     height = profile.height
     fps = profile.fps
     fmt = profile.pixel_format.upper()
-    output_width = DEFAULT_APPSINK_OUTPUT_WIDTH
-    output_height = DEFAULT_APPSINK_OUTPUT_HEIGHT
+    output_width = width
+    output_height = height
     sink = "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
 
     mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"

@@ -24,4 +24,7 @@ class RuntimeConfigStore:
 
     def status(self) -> dict[str, int]:
         with self._lock:
-            return {"version": self.version}
+            return {
+                "version": self.version,
+                "roi_size": self._config.roi.size,
+            }

@@ -337,6 +337,10 @@ export function DevicesView({
 
   const capture = runtime?.capture;
   const runtimeRunning = Boolean(runtime?.running);
+  const configVersion =
+    typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
+  const roiSize =
+    typeof runtime?.config?.roi_size === "number" ? runtime.config.roi_size : 640;
 
   return (
     <div className="capture-workbench">
@@ -432,11 +436,11 @@ export function DevicesView({
       <Panel title="实时预览" eyebrow="MJPEG 采集流">
         <VideoPanel
           available={Boolean(capture?.available)}
-          caption="预览限速输出，采集与推理控制不依赖浏览器帧率"
+          caption={`中心 ROI ${roiSize}x${roiSize}，预览限速输出，采集与推理控制不依赖浏览器帧率`}
           className="live-preview"
           profile={formatProfile(capture)}
           running={runtimeRunning}
-          src={capture?.available ? streamUrl(streamKey) : undefined}
+          src={capture?.available ? streamUrl(streamKey, configVersion) : undefined}
         />
       </Panel>
 

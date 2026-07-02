@@ -49,6 +49,7 @@ def test_runtime_config_store_returns_isolated_snapshots() -> None:
 
     assert store.snapshot().capture.device == "/dev/video0"
     assert store.status()["version"] == 0
+    assert store.status()["roi_size"] == 640
 
 
 def test_failfast_writes_crash_log_before_exit(tmp_path) -> None:

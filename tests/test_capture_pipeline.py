@@ -52,10 +52,10 @@ def test_appsink_candidates_do_not_use_opencv_labels() -> None:
 
     assert candidates[0].label == "gst-appsink:nvmm-mjpg-iomode2"
     assert "appsink name=sink" in candidates[0].pipeline
-    assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in candidates[0].pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidates[0].pipeline
     assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
     assert any(
-        "video/x-raw,format=BGRx,width=320,height=320"
+        "video/x-raw,format=BGRx,width=1920,height=1080"
         in candidate.pipeline
         for candidate in candidates
     )
@@ -67,10 +67,10 @@ def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
 
     assert candidates[0].label == "gst-appsink:nvmm-yuyv-iomode2"
     assert "video/x-raw,format=YUY2,width=1920,height=1080" in candidates[0].pipeline
-    assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in candidates[0].pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidates[0].pipeline
 
 
-def test_appsink_cpu_fallbacks_resize_before_python() -> None:
+def test_appsink_cpu_fallbacks_preserve_capture_size_before_roi() -> None:
     candidates = build_appsink_candidates(_profile("MJPG"))
     cpu_candidates = [
         candidate for candidate in candidates if "cpu-bgr" in candidate.label
@@ -78,7 +78,7 @@ def test_appsink_cpu_fallbacks_resize_before_python() -> None:
 
     assert cpu_candidates
     assert all(
-        "video/x-raw,format=BGRx,width=320,height=320" in candidate.pipeline
+        "video/x-raw,format=BGRx,width=1920,height=1080" in candidate.pipeline
         for candidate in cpu_candidates
     )
 
