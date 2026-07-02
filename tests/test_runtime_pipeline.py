@@ -17,6 +17,18 @@ from novasight.runtime import (
 )
 
 
+def _frame(frame_id: int) -> CapturedFrame:
+    return CapturedFrame(
+        frame_id=frame_id,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=1_000_000_000 + frame_id * 1_000,
+        capture_wait_ms=1.0,
+        image=None,
+    )
+
+
 def test_latest_frame_queue_overwrites_old_frame() -> None:
     queue = LatestFrameQueue[int]()
 
@@ -90,26 +102,7 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
 
 
 def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
-    frames = [
-        CapturedFrame(
-            frame_id=1,
-            width=2,
-            height=2,
-            pixel_format="BGR",
-            ts_ns=1_000_000_000,
-            capture_wait_ms=1.0,
-            image=None,
-        ),
-        CapturedFrame(
-            frame_id=2,
-            width=2,
-            height=2,
-            pixel_format="BGR",
-            ts_ns=1_000_001_000,
-            capture_wait_ms=1.0,
-            image=None,
-        ),
-    ]
+    frames = [_frame(1), _frame(2)]
     wait_calls: list[tuple[int | None, float]] = []
     read_frame_calls = 0
     processed: list[int] = []
@@ -149,3 +142,45 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     assert processed == [1, 2]
     assert read_frame_calls == 0
     assert wait_calls[:2] == [(0, 0.1), (1, 0.1)]
+    status = pipeline.status()
+    assert status["consumed_frames"] == 2
+    assert "capture_frames" not in status
+
+
+def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
+    frames = [_frame(10)]
+    processed: list[int] = []
+    processed_one = threading.Event()
+
+    def wait_preview_frame(*, after_frame_id: int | None = None, timeout_s: float = 0.0):
+        del timeout_s
+        for frame in frames:
+            if after_frame_id is None or frame.frame_id > after_frame_id:
+                return frame
+        return None
+
+    def process_captured_frame(frame: CapturedFrame) -> None:
+        processed.append(frame.frame_id)
+        processed_one.set()
+
+    capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+        wait_preview_frame=wait_preview_frame,
+    )
+    runtime = SimpleNamespace(running=False, process_captured_frame=process_captured_frame)
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    pipeline.start()
+    assert processed_one.wait(1.0)
+    pipeline.stop()
+
+    frames[:] = [_frame(1)]
+    processed_one.clear()
+
+    pipeline.start()
+    assert processed_one.wait(1.0)
+    pipeline.stop()
+
+    assert processed == [10, 1]

@@ -13,7 +13,7 @@ from .queue import LatestFrameQueue
 
 @dataclass
 class PipelineStats:
-    capture_frames: int = 0
+    consumed_frames: int = 0
     processed_frames: int = 0
     last_frame_id: int = 0
     last_error: str | None = None
@@ -42,12 +42,14 @@ class RuntimePipeline:
         self.stats = PipelineStats()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._last_consumed_frame_id = 0
 
     def start(self) -> None:
         if self.running:
             return
         self._require_running_capture()
         self._stop.clear()
+        self._last_consumed_frame_id = 0
         self.frame_queue = LatestFrameQueue[CapturedFrame]()
         self.stats.started_at = time.time()
         self.stats.stopped_at = None
@@ -93,16 +95,18 @@ class RuntimePipeline:
             raise RuntimeError(self.CAPTURE_NOT_STARTED_ERROR)
 
     def _runtime_loop(self) -> None:
-        last_frame_id = self.stats.last_frame_id
         wait_frame = getattr(self.capture, "wait_preview_frame", None)
         if not callable(wait_frame):
             wait_frame = getattr(self.capture, "latest_frame")
         while not self._stop.is_set():
-            frame = wait_frame(after_frame_id=last_frame_id, timeout_s=0.1)
+            frame = wait_frame(
+                after_frame_id=self._last_consumed_frame_id,
+                timeout_s=0.1,
+            )
             if frame is None:
                 continue
             self.runtime.process_captured_frame(frame)
-            self.stats.capture_frames += 1
+            self.stats.consumed_frames += 1
             self.stats.processed_frames += 1
-            last_frame_id = frame.frame_id
-            self.stats.last_frame_id = last_frame_id
+            self._last_consumed_frame_id = frame.frame_id
+            self.stats.last_frame_id = self._last_consumed_frame_id
