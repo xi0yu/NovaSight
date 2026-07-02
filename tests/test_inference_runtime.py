@@ -8,6 +8,7 @@ once instead of repeating it across six near-identical tests.
 import builtins
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,7 @@ from novasight.inference import (
     TensorRtInferenceEngine,
     UnavailableInferenceEngine,
 )
+from novasight.inference.input import parse_tensor_input_shape, prepare_tensor_input
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import PluginRuntime
 from novasight.runtime import RuntimeService
@@ -60,6 +62,108 @@ def test_tensorrt_engine_reports_not_loaded_before_infer() -> None:
 
     assert result.available is False
     assert result.reason == "TensorRT engine not loaded"
+
+
+def test_tensor_input_shape_parser_accepts_nchw_shapes() -> None:
+    shape = parse_tensor_input_shape("1x3x640x640")
+
+    assert shape.batch == 1
+    assert shape.channels == 3
+    assert shape.height == 640
+    assert shape.width == 640
+
+
+def test_tensor_input_preparer_prefers_gpu_buffer() -> None:
+    frame = SimpleNamespace(
+        frame_id=7,
+        width=320,
+        height=320,
+        roi_size=320,
+        source_width=1920,
+        source_height=1080,
+        offset_x=800,
+        offset_y=380,
+        image=None,
+        gpu_buffer=object(),
+    )
+    shape = parse_tensor_input_shape("1x3x640x640")
+
+    prepared = prepare_tensor_input(frame, shape)
+
+    assert prepared.mode == "gpu_buffer"
+    assert prepared.width == 320
+    assert prepared.height == 320
+    assert prepared.needs_resize is True
+
+
+def test_tensor_input_preparer_uses_cpu_image_fallback() -> None:
+    frame = SimpleNamespace(
+        frame_id=7,
+        width=640,
+        height=640,
+        roi_size=640,
+        source_width=1920,
+        source_height=1080,
+        offset_x=640,
+        offset_y=220,
+        image=object(),
+        gpu_buffer=None,
+    )
+    shape = parse_tensor_input_shape("1x3x640x640")
+
+    prepared = prepare_tensor_input(frame, shape)
+
+    assert prepared.mode == "cpu_image"
+    assert prepared.needs_resize is False
+
+
+def test_tensorrt_engine_records_selected_input_mode(monkeypatch) -> None:
+    engine = TensorRtInferenceEngine()
+    monkeypatch.setattr(engine, "available", lambda: True)
+    frame = SimpleNamespace(
+        frame_id=8,
+        width=320,
+        height=320,
+        roi_size=320,
+        source_width=1920,
+        source_height=1080,
+        offset_x=800,
+        offset_y=380,
+        image=None,
+        gpu_buffer=object(),
+    )
+
+    engine.load(Path("model.engine"), classes=["target"], input_shape="1x3x640x640")
+    result = engine.infer(frame)
+
+    assert result.available is True
+    status = engine.status()
+    assert status["input_shape"] == "1x3x640x640"
+    assert status["last_input_mode"] == "gpu_buffer"
+    assert status["last_input_needs_resize"] is True
+
+
+def test_tensorrt_engine_rejects_empty_input_frame(monkeypatch) -> None:
+    engine = TensorRtInferenceEngine()
+    monkeypatch.setattr(engine, "available", lambda: True)
+    frame = SimpleNamespace(
+        frame_id=8,
+        width=320,
+        height=320,
+        roi_size=320,
+        source_width=1920,
+        source_height=1080,
+        offset_x=800,
+        offset_y=380,
+        image=None,
+        gpu_buffer=None,
+    )
+
+    engine.load(Path("model.engine"), classes=["target"], input_shape="1x3x640x640")
+    result = engine.infer(frame)
+
+    assert result.available is False
+    assert result.reason == "TensorRT input frame has no gpu_buffer or image"
 
 
 def test_runtime_falls_back_to_unavailable_engine() -> None:
