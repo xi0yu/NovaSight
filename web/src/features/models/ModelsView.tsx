@@ -277,25 +277,8 @@ export function ModelsView({
         )}
       </Panel>
 
-      <Panel
-        title="模型项目"
-        eyebrow="注册表"
-        action={
-          selectedProject ? (
-            <button
-              className="button compact-button"
-              type="button"
-              onClick={handleRollback}
-              disabled={rollingBack || publishingArtifactId !== null}
-            >
-              {rollingBack ? "回滚中..." : "回滚部署"}
-            </button>
-          ) : null
-        }
-      >
+      <Panel title="模型项目" eyebrow="注册表">
         <InlineError message={error} />
-        <InlineError message={projectActionError} />
-        {actionMessage ? <div className="action-message">{actionMessage}</div> : null}
         {projects.length > 0 ? (
           <div className="model-panel-list">
             {projects.map((project) => (
@@ -323,6 +306,37 @@ export function ModelsView({
           <EmptyState
             title="模型注册表为空"
             detail="创建模型项目、添加版本、转换产物并发布后，这里会展示项目。"
+          />
+        )}
+      </Panel>
+
+      <Panel
+        title="回滚部署"
+        eyebrow={selectedProject ? `${selectedProject.name} · #${selectedProject.id}` : "等待项目"}
+      >
+        <InlineError message={projectActionError} />
+        {actionMessage ? <div className="action-message">{actionMessage}</div> : null}
+        {selectedProject ? (
+          <>
+            <div className="field-grid compact">
+              <Field label="项目" value={selectedProject.name} />
+              <Field label="项目编号" value={selectedProject.id} mono />
+            </div>
+            <div className="panel-actions">
+              <button
+                className="button compact-button"
+                type="button"
+                onClick={handleRollback}
+                disabled={rollingBack || publishingArtifactId !== null}
+              >
+                {rollingBack ? "回滚中..." : "回滚部署"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            title="没有选中的项目"
+            detail="先在模型项目列表中选择一个项目，再执行部署回滚。"
           />
         )}
       </Panel>
