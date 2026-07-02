@@ -1411,6 +1411,23 @@ tbody tr:hover {
   gap: 8px;
 }
 
+.config-field-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-save-button.is-clean {
+  color: var(--text-secondary);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-2) 94%, transparent),
+    color-mix(in srgb, var(--surface-3) 90%, transparent)
+  );
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
 .config-field em {
   color: var(--amber);
   font-style: normal;

@@ -9,7 +9,7 @@ import {
   getConfigSchema,
   updateRuntimeConfig
 } from "../../api";
-import { EmptyState, InlineError, Panel } from "../../components/ui";
+import { Badge, EmptyState, InlineError, Panel } from "../../components/ui";
 import { LicensePanel } from "../license/LicensePanel";
 import { Field } from "../shared/Field";
 import { formatProfile, getErrorMessage } from "../shared/format";
@@ -21,6 +21,18 @@ export type ConfigValue =
   | null
   | ConfigValue[]
   | { [key: string]: ConfigValue };
+
+const DANGEROUS_CONFIG_PATHS = new Set([
+  "capture.device",
+  "capture.pixel_format",
+  "capture.width",
+  "capture.height",
+  "capture.fps",
+  "hardware.kind",
+  "hardware.host",
+  "hardware.port",
+  "hardware.serial_port"
+]);
 
 export function getConfigValue(config: RuntimeConfig, path: string): ConfigValue {
   return path.split(".").reduce<ConfigValue>((current, part) => {
@@ -73,6 +85,7 @@ export function ConfigView({
 }) {
   const [schema, setSchema] = useState<ConfigSchemaResponse | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const [initialConfig, setInitialConfig] = useState<RuntimeConfig | null>(null);
   const [message, setMessage] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
@@ -82,6 +95,7 @@ export function ConfigView({
       const nextSchema = await getConfigSchema();
       setSchema(nextSchema);
       setConfig(nextSchema.values);
+      setInitialConfig(nextSchema.values);
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -91,6 +105,20 @@ export function ConfigView({
     void loadSettings();
   }, [loadSettings]);
 
+  const changedFields =
+    schema && config && initialConfig
+      ? schema.sections
+          .flatMap((section) => section.fields)
+          .filter(
+            (field) =>
+              JSON.stringify(getConfigValue(initialConfig, field.path)) !==
+              JSON.stringify(getConfigValue(config, field.path))
+          )
+      : [];
+  const changedPaths = changedFields.map((field) => field.path);
+  const isDirty =
+    config && initialConfig ? JSON.stringify(initialConfig) !== JSON.stringify(config) : false;
+
   const saveConfig = useCallback(async () => {
     if (!config) {
       return;
@@ -98,15 +126,38 @@ export function ConfigView({
     setError(undefined);
     setMessage(undefined);
     try {
+      const restartImpactedPaths = changedFields
+        .filter((field) => field.restart_required)
+        .map((field) => field.path);
+      const dangerousPaths = changedFields
+        .filter((field) => DANGEROUS_CONFIG_PATHS.has(field.path))
+        .map((field) => field.path);
+
+      if (restartImpactedPaths.length > 0 || dangerousPaths.length > 0) {
+        const warningLines = ["以下配置项已修改：", ...changedPaths.map((path) => `- ${path}`)];
+        if (restartImpactedPaths.length > 0) {
+          warningLines.push("", `需要重启链路后完全生效：${restartImpactedPaths.join(", ")}`);
+        }
+        if (dangerousPaths.length > 0) {
+          warningLines.push("", `涉及采集或硬件关键项，请确认设备与连接状态：${dangerousPaths.join(", ")}`);
+        }
+        warningLines.push("", "确认继续保存？");
+
+        if (!window.confirm(warningLines.join("\n"))) {
+          return;
+        }
+      }
+
       const result = await updateRuntimeConfig(config);
       setSchema(result.schema);
       setConfig(result.config);
+      setInitialConfig(result.config);
       setMessage(result.restart_required ? "配置已保存，推理控制需要重启后完全生效。" : "配置已保存并同步到运行态。");
       await onRuntimeRefresh();
     } catch (err) {
       setError(getErrorMessage(err));
     }
-  }, [config, onRuntimeRefresh]);
+  }, [changedFields, changedPaths, config, onRuntimeRefresh]);
 
   return (
     <div className="settings-workbench">
@@ -114,9 +165,17 @@ export function ConfigView({
         title="运行配置"
         eyebrow="配置与运行同源"
         action={
-          <button className="button" type="button" onClick={saveConfig} disabled={!config}>
-            保存配置
-          </button>
+          <div className="panel-actions">
+            {!isDirty && config ? <div className="panel-action-note">无未保存修改</div> : null}
+            <button
+              className={`button ${!isDirty ? "config-save-button is-clean" : ""}`.trim()}
+              type="button"
+              onClick={saveConfig}
+              disabled={!config}
+            >
+              保存配置
+            </button>
+          </div>
         }
       >
         <InlineError message={error} />
@@ -129,10 +188,16 @@ export function ConfigView({
                 <div className="config-grid">
                   {section.fields.map((field) => {
                     const value = getConfigValue(config, field.path);
+                    const isFieldDirty =
+                      initialConfig &&
+                      JSON.stringify(getConfigValue(initialConfig, field.path)) !== JSON.stringify(value);
                     return (
                       <label className="config-field" key={field.path}>
                         <span>
-                          {field.label}
+                          <span className="config-field-label">
+                            <span>{field.label}</span>
+                            {isFieldDirty ? <Badge tone="idle">Changed</Badge> : null}
+                          </span>
                           {field.restart_required ? <em>需重启链路</em> : null}
                         </span>
                         {field.type === "select" ? (
