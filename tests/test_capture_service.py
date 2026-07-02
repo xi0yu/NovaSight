@@ -5,6 +5,9 @@ exceptions, close-error handling, and the no-mutation guarantee on
 unsuccessful reconfigures. Mechanical details like every single empty-read
 backoff step are folded into one test.
 """
+import threading
+import time
+
 import pytest
 
 from novasight.capture.service import CaptureService
@@ -80,6 +83,45 @@ class ReadAndCloseExplodingSource(CloseExplodingSource):
         raise RuntimeError("read failed")
 
 
+class ControlledSource:
+    backend_label = "gst:controlled"
+
+    def __init__(self) -> None:
+        self.closed = False
+        self._frames = []
+        self._condition = threading.Condition()
+
+    def emit(self, frame_id: int) -> None:
+        from novasight.capture.source import CapturedFrame
+
+        with self._condition:
+            self._frames.append(
+                CapturedFrame(
+                    frame_id=frame_id,
+                    width=1920,
+                    height=1080,
+                    pixel_format="BGR",
+                    ts_ns=1_000_000_000 + frame_id * 7_000_000,
+                    capture_wait_ms=6.5,
+                    image=None,
+                )
+            )
+            self._condition.notify_all()
+
+    def read(self):
+        with self._condition:
+            if not self._frames:
+                self._condition.wait(0.01)
+            if not self._frames:
+                return None
+            return self._frames.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+        with self._condition:
+            self._condition.notify_all()
+
+
 def _service(
     cfg: RuntimeConfig | None = None,
     *,
@@ -106,6 +148,15 @@ def _stop_services_after_test():
     while _SERVICES:
         service = _SERVICES.pop()
         service.stop("test cleanup")
+
+
+def _wait_until(predicate, timeout_s: float = 0.2) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
 
 
 def test_configure_selects_profile_from_caps() -> None:
@@ -256,13 +307,40 @@ def test_latest_preview_frame_proxies_session_latest_frame() -> None:
 
 
 def test_wait_preview_frame_returns_only_newer_frame() -> None:
-    service = _service()
+    source = ControlledSource()
+    service = _service(source_factory=lambda profile: source)
     service.configure("/dev/video0")
+    source.emit(1)
     first = service.wait_preview_frame(after_frame_id=0, timeout_s=0.2)
     assert first is not None
 
     assert service.wait_preview_frame(after_frame_id=0, timeout_s=0) is first
     assert service.wait_preview_frame(after_frame_id=first.frame_id, timeout_s=0) is None
+
+
+def test_read_frame_does_not_return_same_cached_frame_twice() -> None:
+    source = ControlledSource()
+    service = _service(source_factory=lambda profile: source)
+    service.configure("/dev/video0")
+    source.emit(1)
+    assert service.wait_preview_frame(after_frame_id=0, timeout_s=0.2) is not None
+
+    first = service.read_frame()
+    second = service.read_frame()
+
+    assert first is not None
+    assert first.frame_id == 1
+    assert second is None
+
+
+def test_state_reflects_async_session_failure_without_explicit_sync() -> None:
+    service = _service(source_factory=lambda profile: ExplodingSource())
+    service.configure("/dev/video0")
+
+    assert _wait_until(lambda: service.state.last_error is not None)
+    assert service.state.available is False
+    assert service.source is None
+    assert "camera disconnected" in str(service.state.last_error)
 
 
 def test_reconfigure_closes_previous_source() -> None:
@@ -495,6 +573,17 @@ def test_empty_reads_eventually_mark_source_unavailable() -> None:
     assert state.available is False
     assert state.last_error == "capture produced 3 empty reads"
     assert state.recoveries == 0
+
+
+def test_capture_frames_does_not_mutate_preview_frame_metrics() -> None:
+    source = ControlledSource()
+    service = _service(source_factory=lambda profile: source)
+    service.configure("/dev/video0")
+    source.emit(1)
+
+    state = service.capture_frames(max_frames=1)
+
+    assert state.preview_frames == 0
 
 
 @pytest.mark.parametrize(

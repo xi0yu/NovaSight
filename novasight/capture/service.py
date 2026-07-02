@@ -103,17 +103,24 @@ class CaptureService:
             empty_read_sleep_s=empty_read_sleep_s,
         )
         self.state = CaptureRuntimeState(device=config.device)
-        self.session.state = self.state
         self.last_config_error: CaptureRuntimeState | None = None
         self._last_preview_output_ts_ns: int | None = None
+        self._last_read_frame_id: int | None = None
         self._source_lock = threading.RLock()
+
+    @property
+    def state(self) -> CaptureRuntimeState:
+        return self.session.state
+
+    @state.setter
+    def state(self, value: CaptureRuntimeState) -> None:
+        self.session.state = value
 
     @property
     def source(self) -> FrameSource | None:
         return self.session.source
 
     def _sync_state(self) -> CaptureRuntimeState:
-        self.state = self.session.state
         return self.state
 
     def capabilities(self, device: str = "/dev/video0") -> CaptureCapabilities:
@@ -161,7 +168,6 @@ class CaptureService:
             )
             self.last_config_error = failure
             self.session.stop(failure.last_error)
-            self.session.state = failure
             self.state = failure
             return self.state
         selected_preference = preference if preference is not None else self.config.preference
@@ -180,7 +186,6 @@ class CaptureService:
             )
             self.last_config_error = failure
             self.session.stop(failure.last_error)
-            self.session.state = failure
             self.state = failure
             return self.state
         try:
@@ -207,7 +212,6 @@ class CaptureService:
             )
             self.last_config_error = failure
             self.session.stop(str(exc))
-            self.session.state = failure
             self.state = failure
             return self.state
         self.config.device = selected_device
@@ -218,18 +222,27 @@ class CaptureService:
         self.config.fps = selected_fps
         self.last_config_error = None
         self._last_preview_output_ts_ns = None
+        self._last_read_frame_id = None
         return self._sync_state()
 
     def stop(self, reason: str | None = None) -> CaptureRuntimeState:
         with self._source_lock:
             state = self.session.stop(reason)
+            self._last_read_frame_id = None
             return self._sync_state()
 
     def read_frame(self) -> CapturedFrame | None:
         if self.source is None:
-            self.state.last_error = "capture source is not configured"
+            if self.state.last_error is None:
+                self.state.last_error = "capture source is not configured"
             raise RuntimeError(self.state.last_error)
-        return self.session.latest_frame(timeout_s=0.0)
+        frame = self.session.latest_frame(
+            after_frame_id=self._last_read_frame_id,
+            timeout_s=0.0,
+        )
+        if frame is not None:
+            self._last_read_frame_id = frame.frame_id
+        return frame
 
     def get_latest_preview_frame(self) -> CapturedFrame | None:
         return self.session.latest_frame(timeout_s=0.0)
@@ -247,8 +260,7 @@ class CaptureService:
 
     def record_preview_output(self, frame: CapturedFrame, *, target_fps: int) -> None:
         del frame
-        with self._source_lock:
-            self._sync_state()
+        with self.session._condition:
             now_ns = time.monotonic_ns()
             self.state.preview_target_fps = target_fps
             self.state.preview_output_frames += 1
@@ -259,8 +271,7 @@ class CaptureService:
             self._last_preview_output_ts_ns = now_ns
 
     def record_preview_drop(self, *, target_fps: int) -> None:
-        with self._source_lock:
-            self._sync_state()
+        with self.session._condition:
             self.state.preview_target_fps = target_fps
             self.state.preview_dropped += 1
 
@@ -274,17 +285,17 @@ class CaptureService:
     ) -> CaptureRuntimeState:
         del max_recoveries
         if self.source is None:
-            self._sync_state()
             if self.state.last_error:
                 return self.state
             raise RuntimeError("capture source is not configured")
         start = time.monotonic()
         count = 0
+        empty_reads = 0
         empty_read_limit = max_empty_reads
         if empty_read_limit is None and seconds is None and max_frames is not None:
             empty_read_limit = 100
-        initial_drops = self.state.frames_dropped
         last_frame_id: int | None = None
+        wait_s = max(self.empty_read_sleep_s, 0.001)
         while True:
             if max_frames is not None and count >= max_frames:
                 break
@@ -292,24 +303,19 @@ class CaptureService:
                 break
             frame = self.session.latest_frame(
                 after_frame_id=last_frame_id,
-                timeout_s=self.empty_read_sleep_s,
+                timeout_s=wait_s,
             )
-            self._sync_state()
             if self.source is None:
                 break
-            if empty_read_limit is not None:
-                empty_reads = self.state.frames_dropped - initial_drops
-                if empty_reads >= empty_read_limit:
+            if frame is None:
+                empty_reads += 1
+                if empty_read_limit is not None and empty_reads >= empty_read_limit:
                     self.stop(f"capture produced {empty_read_limit} empty reads")
                     break
-            if frame is None:
                 continue
+            empty_reads = 0
             count += 1
             last_frame_id = frame.frame_id
-            self.state.preview_frames += 1
-        elapsed = max(time.monotonic() - start, 0.000001)
-        if count:
-            self.state.fps_capture = count / elapsed
         return self._sync_state()
 
     def _mark_unavailable(self, reason: str) -> None:

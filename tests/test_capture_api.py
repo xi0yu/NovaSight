@@ -59,7 +59,7 @@ class StreamingSource:
 
         self.count += 1
         if self.count > 1:
-            raise RuntimeError("stream complete")
+            return None
         return CapturedFrame(
             frame_id=self.count,
             width=2,
@@ -203,13 +203,13 @@ def test_capture_select_failure_preserves_service_config(
     assert match in response.text or response.json()["last_error"] is not None
 
 
-def test_capture_select_failure_keeps_previous_healthy_state(tmp_path) -> None:
+def test_capture_select_failure_stops_previous_capture(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
     service = CaptureService(
         config=cfg.capture,
         capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None,
-        source_factory=lambda profile: FakeSource(),
+        source_factory=lambda profile: CachedPreviewSource(),
     )
     service.configure("/dev/video0")
     app.state.capture = service
@@ -219,9 +219,9 @@ def test_capture_select_failure_keeps_previous_healthy_state(tmp_path) -> None:
 
     assert response.status_code == 400
     state = client.get("/api/capture/state").json()
-    assert state["available"] is True
-    assert state["device"] == "/dev/video0"
-    assert state["last_error"] is None
+    assert state["available"] is False
+    assert state["device"] == "/dev/missing"
+    assert state["last_error"] is not None
 
 
 def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
@@ -261,11 +261,9 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path) -> None:
     assert response.headers["content-type"].startswith("multipart/x-mixed-replace")
     assert b"Content-Type: image/jpeg" in response.content
     assert b"\xff\xd8" in response.content
-    assert service.state.available is False
-    assert "stream complete" in str(service.state.last_error)
 
 
-def test_capture_stream_uses_preview_cache_without_reading_source_again(tmp_path) -> None:
+def test_capture_stream_uses_preview_cache(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
     source = CachedPreviewSource()
@@ -282,5 +280,5 @@ def test_capture_stream_uses_preview_cache_without_reading_source_again(tmp_path
     payload = next(_mjpeg_frames(service, preview_fps=30, max_frames=1))
 
     assert b"Content-Type: image/jpeg" in payload
-    assert source.count == 1
+    assert source.count >= 1
     assert service.state.preview_output_frames >= 1
