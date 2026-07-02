@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from novasight.capture.source import CapturedFrame
 from novasight.plugins import Detection
 
 
@@ -39,7 +38,7 @@ def normalize_roi_size(value: int) -> int:
     return size
 
 
-def center_roi_frame(frame: CapturedFrame, *, requested_size: int) -> RoiFrame:
+def center_roi_frame(frame: Any, *, requested_size: int) -> RoiFrame:
     configured_size = normalize_roi_size(requested_size)
     roi_size = min(configured_size, int(frame.width), int(frame.height))
     offset_x = max(0, (int(frame.width) - roi_size) // 2)

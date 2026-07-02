@@ -7,6 +7,9 @@ source:
 limits:
   max_frame_queue: 1
   stream_fps: 30
+roi:
+  size: 640
+  mode: center
 capture:
   device: /dev/video0
   preference: auto_high_fps

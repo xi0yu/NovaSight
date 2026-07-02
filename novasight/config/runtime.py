@@ -6,6 +6,8 @@ from typing import Any, TypeVar, get_type_hints
 
 import yaml
 
+from novasight.roi import ROI_SIZE_CHOICES, normalize_roi_size
+
 
 @dataclass
 class WebConfig:
@@ -23,6 +25,12 @@ class SourceConfig:
 class RuntimeLimitsConfig:
     max_frame_queue: int = 1
     stream_fps: int = 30
+
+
+@dataclass
+class RoiConfig:
+    size: int = 640
+    mode: str = "center"
 
 
 @dataclass
@@ -70,6 +78,7 @@ class RuntimeConfig:
     web: WebConfig = field(default_factory=WebConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
+    roi: RoiConfig = field(default_factory=RoiConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
@@ -132,6 +141,13 @@ def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
 def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.limits.stream_fps not in {15, 30, 60}:
         raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
+    try:
+        cfg.roi.size = normalize_roi_size(cfg.roi.size)
+    except ValueError as exc:
+        allowed = ", ".join(str(size) for size in ROI_SIZE_CHOICES)
+        raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
+    if cfg.roi.mode != "center":
+        raise ValueError("unsupported ROI mode: only center is supported")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:

@@ -14,6 +14,7 @@ from novasight.config import (
     parse_runtime_config,
     save_runtime_config,
 )
+from novasight.config.schema import runtime_config_schema
 
 
 def test_runtime_config_defaults_are_stable() -> None:
@@ -21,6 +22,8 @@ def test_runtime_config_defaults_are_stable() -> None:
 
     assert cfg.web.port == 5174
     assert cfg.executor.default == "dry_run"
+    assert cfg.roi.size == 640
+    assert cfg.roi.mode == "center"
     # Old attributes that drove the first prototype must not have leaked back.
     assert not hasattr(cfg, "model_path")
     assert not hasattr(cfg, "plugin_settings")
@@ -138,3 +141,31 @@ def test_runtime_config_restricts_preview_fps_to_supported_values() -> None:
 
     with pytest.raises(ValueError, match="limits.stream_fps.*15, 30, 60"):
         parse_runtime_config({"limits": {"stream_fps": 120}})
+
+
+def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
+    for size in (640, 480, 320, 256):
+        cfg = parse_runtime_config({"roi": {"size": size}})
+        assert cfg.roi.size == size
+        assert cfg.roi.mode == "center"
+
+    with pytest.raises(ValueError, match="unsupported ROI size"):
+        parse_runtime_config({"roi": {"size": 512}})
+
+    with pytest.raises(ValueError, match="unsupported ROI mode"):
+        parse_runtime_config({"roi": {"mode": "manual"}})
+
+
+def test_runtime_config_schema_exposes_roi_size() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    roi_section = next(section for section in schema["sections"] if section["id"] == "roi")
+
+    assert roi_section["fields"] == [
+        {
+            "path": "roi.size",
+            "label": "中心 ROI",
+            "type": "select",
+            "options": ["640", "480", "320", "256"],
+            "restart_required": False,
+        }
+    ]

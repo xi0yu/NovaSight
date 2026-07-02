@@ -53,6 +53,19 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 ],
             },
             {
+                "id": "roi",
+                "label": "ROI",
+                "fields": [
+                    {
+                        "path": "roi.size",
+                        "label": "中心 ROI",
+                        "type": "select",
+                        "options": ["640", "480", "320", "256"],
+                        "restart_required": False,
+                    },
+                ],
+            },
+            {
                 "id": "control",
                 "label": "控制",
                 "fields": [
