@@ -14,6 +14,20 @@ import { Badge, EmptyState, InlineError, Panel, StatusIndicator } from "../../co
 import { getErrorMessage } from "../shared/format";
 import { Field } from "../shared/Field";
 
+type PublishFeedback = {
+  projectId: number;
+  versionId: number;
+  artifactId: number;
+  message?: string;
+  error?: string;
+};
+
+type RollbackFeedback = {
+  projectId: number;
+  message?: string;
+  error?: string;
+};
+
 export function ModelsView({
   projects,
   activeModel,
@@ -38,9 +52,8 @@ export function ModelsView({
   const [versionsError, setVersionsError] = useState<string>();
   const [artifactsError, setArtifactsError] = useState<string>();
   const [jobsError, setJobsError] = useState<string>();
-  const [projectActionError, setProjectActionError] = useState<string>();
-  const [artifactActionError, setArtifactActionError] = useState<string>();
-  const [actionMessage, setActionMessage] = useState<string>();
+  const [publishFeedback, setPublishFeedback] = useState<PublishFeedback | null>(null);
+  const [rollbackFeedback, setRollbackFeedback] = useState<RollbackFeedback | null>(null);
   const [publishingArtifactId, setPublishingArtifactId] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
 
@@ -52,6 +65,14 @@ export function ModelsView({
     () => versions.find((version) => version.id === selectedVersionId) ?? null,
     [versions, selectedVersionId]
   );
+  const visiblePublishFeedback =
+    publishFeedback &&
+    publishFeedback.projectId === selectedProjectId &&
+    publishFeedback.versionId === selectedVersionId
+      ? publishFeedback
+      : null;
+  const visibleRollbackFeedback =
+    rollbackFeedback && rollbackFeedback.projectId === selectedProjectId ? rollbackFeedback : null;
 
   useEffect(() => {
     if (projects.length === 0) {
@@ -64,12 +85,6 @@ export function ModelsView({
         : projects[0].id
     );
   }, [projects]);
-
-  useEffect(() => {
-    setProjectActionError(undefined);
-    setArtifactActionError(undefined);
-    setActionMessage(undefined);
-  }, [selectedProjectId]);
 
   useEffect(() => {
     if (selectedProjectId === null) {
@@ -122,10 +137,6 @@ export function ModelsView({
         : versions[0].id
     );
   }, [versions]);
-
-  useEffect(() => {
-    setArtifactActionError(undefined);
-  }, [selectedVersionId]);
 
   useEffect(() => {
     if (selectedVersionId === null) {
@@ -192,17 +203,20 @@ export function ModelsView({
   }, [selectedVersionId]);
 
   async function handlePublish(artifact: ModelArtifact) {
-    if (!selectedProject) {
+    if (!selectedProject || selectedVersionId === null) {
       return;
     }
 
+    const requestProjectId = selectedProject.id;
+    const requestProjectName = selectedProject.name;
+    const requestVersionId = selectedVersionId;
     const warning =
       artifact.kind !== "engine" ? "\n\n警告: 这个产物不是 engine，发布后推理可能不可用。" : "";
     const confirmed = window.confirm(
       [
         "确认发布模型？",
         "",
-        `项目: ${selectedProject.name} (#${selectedProject.id})`,
+        `项目: ${requestProjectName} (#${requestProjectId})`,
         `产物路径: ${artifact.path}`,
         `产物类型: ${artifact.kind}`,
         `产物状态: ${artifact.status}${warning}`
@@ -213,17 +227,23 @@ export function ModelsView({
     }
 
     setPublishingArtifactId(artifact.id);
-    setArtifactActionError(undefined);
-    setProjectActionError(undefined);
-    setActionMessage(undefined);
+    setPublishFeedback(null);
 
     try {
-      const deployment = await publishModel(selectedProject.id, artifact.id);
-      setActionMessage(
-        `已为 ${selectedProject.name} (#${selectedProject.id}) 发布 ${artifact.kind} 产物，部署 #${deployment.id}。`
-      );
+      const deployment = await publishModel(requestProjectId, artifact.id);
+      setPublishFeedback({
+        projectId: requestProjectId,
+        versionId: requestVersionId,
+        artifactId: artifact.id,
+        message: `已为 ${requestProjectName} (#${requestProjectId}) 发布 ${artifact.kind} 产物，部署 #${deployment.id}。`
+      });
     } catch (requestError) {
-      setArtifactActionError(getErrorMessage(requestError));
+      setPublishFeedback({
+        projectId: requestProjectId,
+        versionId: requestVersionId,
+        artifactId: artifact.id,
+        error: getErrorMessage(requestError)
+      });
     } finally {
       setPublishingArtifactId(null);
     }
@@ -234,25 +254,29 @@ export function ModelsView({
       return;
     }
 
+    const requestProjectId = selectedProject.id;
+    const requestProjectName = selectedProject.name;
     const confirmed = window.confirm(
-      `确认回滚 ${selectedProject.name} (#${selectedProject.id}) 到上一条部署记录？`
+      `确认回滚 ${requestProjectName} (#${requestProjectId}) 到上一条部署记录？`
     );
     if (!confirmed) {
       return;
     }
 
     setRollingBack(true);
-    setProjectActionError(undefined);
-    setArtifactActionError(undefined);
-    setActionMessage(undefined);
+    setRollbackFeedback(null);
 
     try {
-      const deployment = await rollbackModel(selectedProject.id);
-      setActionMessage(
-        `已回滚 ${selectedProject.name} (#${selectedProject.id})，当前部署 #${deployment.id} 指向产物 #${deployment.artifact_id}。`
-      );
+      const deployment = await rollbackModel(requestProjectId);
+      setRollbackFeedback({
+        projectId: requestProjectId,
+        message: `已回滚 ${requestProjectName} (#${requestProjectId})，当前部署 #${deployment.id} 指向产物 #${deployment.artifact_id}。`
+      });
     } catch (requestError) {
-      setProjectActionError(getErrorMessage(requestError));
+      setRollbackFeedback({
+        projectId: requestProjectId,
+        error: getErrorMessage(requestError)
+      });
     } finally {
       setRollingBack(false);
     }
@@ -314,8 +338,10 @@ export function ModelsView({
         title="回滚部署"
         eyebrow={selectedProject ? `${selectedProject.name} · #${selectedProject.id}` : "等待项目"}
       >
-        <InlineError message={projectActionError} />
-        {actionMessage ? <div className="action-message">{actionMessage}</div> : null}
+        <InlineError message={visibleRollbackFeedback?.error} />
+        {visibleRollbackFeedback?.message ? (
+          <div className="action-message">{visibleRollbackFeedback.message}</div>
+        ) : null}
         {selectedProject ? (
           <>
             <div className="field-grid compact">
@@ -388,8 +414,10 @@ export function ModelsView({
         title="转换产物"
         eyebrow={selectedVersion ? `${selectedVersion.version} · #${selectedVersion.id}` : "等待版本"}
       >
-        <InlineError message={artifactsError} />
-        <InlineError message={artifactActionError} />
+        <InlineError message={artifactsError ?? visiblePublishFeedback?.error} />
+        {visiblePublishFeedback?.message ? (
+          <div className="action-message">{visiblePublishFeedback.message}</div>
+        ) : null}
         {loadingArtifacts ? (
           <EmptyState title="正在加载产物" detail="读取转换结果、校验摘要和发布状态。" />
         ) : artifacts.length > 0 ? (

@@ -17,7 +17,7 @@ export type ModelVersion = {
   id: number;
   project_id: number;
   version: string;
-  source_kind: string;
+  source_kind: "pt" | "onnx" | (string & {});
   source_path: string;
   classes: string[];
   input_shape: string;
@@ -26,10 +26,10 @@ export type ModelVersion = {
 export type ModelArtifact = {
   id: number;
   version_id: number;
-  kind: string;
+  kind: "pt" | "onnx" | "engine" | (string & {});
   path: string;
   checksum: string;
-  status: string;
+  status: "pending" | "running" | "ready" | "failed" | (string & {});
 };
 
 export type Deployment = {
@@ -42,9 +42,9 @@ export type Deployment = {
 export type ConversionJob = {
   id: number;
   version_id: number;
-  target_kind: string;
+  target_kind: "onnx" | "engine" | (string & {});
   command: string[];
-  status: string;
+  status: "pending" | "running" | "failed" | "succeeded" | (string & {});
   log: string;
 };
 
