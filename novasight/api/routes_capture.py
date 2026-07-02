@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from novasight.capture.preview import render_preview_frame
+from novasight.roi import normalize_roi_size
 
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
@@ -62,12 +63,17 @@ def stream(request: Request):
         getattr(getattr(request.app.state, "config", None), "limits", None)
         and request.app.state.config.limits.stream_fps
     )
+    roi_size = _normalize_roi_size(
+        getattr(getattr(request.app.state, "config", None), "roi", None)
+        and request.app.state.config.roi.size
+    )
     capture.state.preview_target_fps = preview_fps
     return StreamingResponse(
         _mjpeg_frames(
             capture,
             runtime=getattr(request.app.state, "runtime", None),
             preview_fps=preview_fps,
+            roi_size=roi_size,
         ),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
@@ -133,11 +139,19 @@ def _normalize_preview_fps(value: int | None) -> int:
     return 30
 
 
+def _normalize_roi_size(value: int | None) -> int:
+    try:
+        return normalize_roi_size(value or 640)
+    except ValueError:
+        return 640
+
+
 def _mjpeg_frames(
     capture,
     *,
     runtime=None,
     preview_fps: int = 30,
+    roi_size: int = 640,
     max_frames: int | None = None,
     max_attempts: int | None = None,
 ) -> Iterator[bytes]:
@@ -145,6 +159,7 @@ def _mjpeg_frames(
     emitted = 0
     last_frame_id = 0
     preview_fps = _normalize_preview_fps(preview_fps)
+    roi_size = _normalize_roi_size(roi_size)
     interval_s = 1.0 / preview_fps
     capture.state.preview_target_fps = preview_fps
     while True:
@@ -162,7 +177,7 @@ def _mjpeg_frames(
             time.sleep(interval_s)
             continue
         last_frame_id = frame.frame_id
-        preview = render_preview_frame(frame, runtime=runtime)
+        preview = render_preview_frame(frame, runtime=runtime, roi_size=roi_size)
         payload = _encode_jpeg(preview)
         if payload is None:
             capture.record_preview_drop(target_fps=preview_fps)

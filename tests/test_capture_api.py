@@ -398,6 +398,26 @@ def test_mjpeg_frames_waits_for_preview_without_direct_read() -> None:
     assert capture.preview_outputs == 1
 
 
+def test_mjpeg_frames_passes_roi_size_to_preview_renderer(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def fake_render_preview_frame(frame, *, runtime=None, roi_size=640):
+        del runtime
+        calls.append(roi_size)
+        return frame.image
+
+    monkeypatch.setattr(
+        "novasight.api.routes_capture.render_preview_frame",
+        fake_render_preview_frame,
+    )
+    capture = ReadFrameForbiddenCapture([_preview_frame()])
+
+    payload = next(_mjpeg_frames(capture, preview_fps=30, roi_size=256, max_frames=1))
+
+    assert b"Content-Type: image/jpeg" in payload
+    assert calls == [256]
+
+
 def test_mjpeg_frames_timeout_records_preview_drop_only() -> None:
     capture = ReadFrameForbiddenCapture([None])
 

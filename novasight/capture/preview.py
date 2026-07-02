@@ -4,36 +4,29 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.plugins import Detection
+from novasight.roi import center_roi_frame
 
 
 def render_preview_frame(
     frame: CapturedFrame,
     *,
     runtime: Any | None = None,
+    roi_size: int = 640,
     fov_ratio: float = 0.28,
 ) -> Any:
-    image = frame.image
+    del runtime
+    roi = center_roi_frame(frame, requested_size=roi_size)
+    image = roi.image
     if image is None:
         return image
     detections: list[Detection] = []
-    try:
-        inference = getattr(runtime, "inference", None) if runtime is not None else None
-        if inference is not None and callable(getattr(inference, "infer", None)):
-            inference_result = inference.infer(frame)
-            detections = [
-                Detection(
-                    cls=item.cls,
-                    score=item.score,
-                    x=item.x,
-                    y=item.y,
-                    w=item.w,
-                    h=item.h,
-                )
-                for item in getattr(inference_result, "detections", [])
-            ]
-    except Exception:
-        detections = []
-    return draw_overlay(image, width=frame.width, height=frame.height, detections=detections, fov_ratio=fov_ratio)
+    return draw_overlay(
+        image,
+        width=roi.width,
+        height=roi.height,
+        detections=detections,
+        fov_ratio=fov_ratio,
+    )
 
 
 def draw_overlay(

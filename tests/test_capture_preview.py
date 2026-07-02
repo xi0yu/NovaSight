@@ -1,18 +1,30 @@
-from __future__ import annotations
+import numpy as np
 
-from novasight.capture.preview import draw_overlay
-from novasight.plugins import Detection
+from novasight.capture.preview import render_preview_frame
+from novasight.capture.source import CapturedFrame
 
 
-def test_preview_overlay_renders_without_opencv() -> None:
-    from PIL import Image
+class RuntimeThatMustNotInfer:
+    inference = object()
 
-    output = draw_overlay(
-        Image.new("RGB", (1920, 1080), (0, 0, 0)),
+
+def test_render_preview_frame_crops_center_roi_without_inference() -> None:
+    class ForbiddenInference:
+        def infer(self, frame):
+            raise AssertionError("preview must not call inference")
+
+    runtime = RuntimeThatMustNotInfer()
+    runtime.inference = ForbiddenInference()
+    frame = CapturedFrame(
+        frame_id=1,
         width=1920,
         height=1080,
-        detections=[Detection(cls=0, score=0.9, x=100, y=120, w=80, h=40)],
+        pixel_format="BGR",
+        ts_ns=123,
+        capture_wait_ms=1.0,
+        image=np.zeros((1080, 1920, 3), dtype=np.uint8),
     )
 
-    assert output.size == (1920, 1080)
-    assert output.getpixel((100, 120)) == (80, 190, 255)
+    preview = render_preview_frame(frame, runtime=runtime, roi_size=320)
+
+    assert preview.size == (320, 320)
