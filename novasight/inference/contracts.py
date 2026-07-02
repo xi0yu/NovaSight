@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
-
-from novasight.capture.source import CapturedFrame
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -37,4 +35,4 @@ class InferenceEngine(Protocol):
         classes: list[str],
         input_shape: str,
     ) -> None: ...
-    def infer(self, frame: CapturedFrame) -> InferenceResult: ...
+    def infer(self, frame: Any) -> InferenceResult: ...

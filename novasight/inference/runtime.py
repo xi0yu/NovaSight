@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from novasight.capture.source import CapturedFrame
+from typing import Any
 
 from .contracts import InferenceEngine
 from .contracts import InferenceResult
@@ -43,7 +42,7 @@ class InferenceRuntime:
             return
         self._load_error = ""
 
-    def infer(self, frame: CapturedFrame) -> InferenceResult:
+    def infer(self, frame: Any) -> InferenceResult:
         if self._load_error:
             return InferenceResult(available=False, reason=self._load_error)
         try:

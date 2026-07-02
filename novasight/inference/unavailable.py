@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from novasight.capture.source import CapturedFrame
+from typing import Any
 
 from .contracts import InferenceResult
 
@@ -30,5 +29,5 @@ class UnavailableInferenceEngine:
     def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
         raise RuntimeError(self.reason)
 
-    def infer(self, frame: CapturedFrame) -> InferenceResult:
+    def infer(self, frame: Any) -> InferenceResult:
         return InferenceResult(available=False, reason=self.reason)

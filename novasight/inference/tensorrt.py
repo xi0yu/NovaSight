@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from novasight.capture.source import CapturedFrame
+from typing import Any
 
 from .contracts import InferenceResult
 
@@ -51,7 +50,7 @@ class TensorRtInferenceEngine:
         self._loaded = True
         self._warmup()
 
-    def infer(self, frame: CapturedFrame) -> InferenceResult:
+    def infer(self, frame: Any) -> InferenceResult:
         if not self._loaded:
             return InferenceResult(available=False, reason="TensorRT engine not loaded")
         return InferenceResult(available=True, detections=[], classes=[])

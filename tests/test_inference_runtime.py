@@ -257,7 +257,7 @@ def test_runtime_service_converts_inference_to_context_and_control(tmp_path) -> 
     assert result.plugin_batch.plugin_results
     assert len(result.plugin_batch.control_intents) == 1
     intent = result.plugin_batch.control_intents[0]
-    assert intent.dx == -295
+    assert intent.dx == -215
     assert intent.dy == 200
     assert intent.confidence == 0.9
     assert [execution.intent for execution in result.execution_results] == [

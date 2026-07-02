@@ -9,6 +9,7 @@ from novasight.executors import ExecutorRegistry
 from novasight.inference import InferenceResult
 from novasight.model_registry import ModelRegistry
 from novasight.plugins import Detection, FrameContext, PluginRuntime
+from novasight.roi import center_roi_frame, map_detection_to_source
 
 from .config_store import RuntimeConfigStore
 from .state import RuntimeFrameResult, RuntimeState
@@ -86,7 +87,8 @@ class RuntimeService:
             return self.process_frame(self._empty_frame_context(frame))
 
         try:
-            inference_result = infer(frame)
+            roi_frame = center_roi_frame(frame, requested_size=self.config.roi.size)
+            inference_result = infer(roi_frame)
         except Exception:
             return self.process_frame(self._empty_frame_context(frame))
 
@@ -97,17 +99,22 @@ class RuntimeService:
             return self.process_frame(self._empty_frame_context(frame))
 
         try:
-            detections = [
-                Detection(
-                    cls=item.cls,
-                    score=item.score,
-                    x=item.x,
-                    y=item.y,
-                    w=item.w,
-                    h=item.h,
+            detections = []
+            for item in inference_result.detections:
+                detections.append(
+                    map_detection_to_source(
+                        Detection(
+                            cls=item.cls,
+                            score=item.score,
+                            x=item.x,
+                            y=item.y,
+                            w=item.w,
+                            h=item.h,
+                        ),
+                        offset_x=roi_frame.offset_x,
+                        offset_y=roi_frame.offset_y,
+                    )
                 )
-                for item in inference_result.detections
-            ]
             classes = list(inference_result.classes)
         except Exception:
             return self.process_frame(self._empty_frame_context(frame))
