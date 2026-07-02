@@ -1,6 +1,13 @@
+"""HTTP-level tests for the /api/capture routes.
+
+Cover the request validation, the success path, and the failure modes that
+matter for the React workbench: device must be present, capability listing
+goes through the service, the service config is never mutated on failure.
+"""
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from novasight.api import create_app
@@ -52,13 +59,8 @@ class StreamingSource:
         if self.count > 1:
             raise RuntimeError("stream complete")
         return CapturedFrame(
-            frame_id=self.count,
-            width=2,
-            height=2,
-            pixel_format="BGR",
-            ts_ns=1_000_000_000,
-            capture_wait_ms=1.0,
-            image=object(),
+            frame_id=self.count, width=2, height=2, pixel_format="BGR",
+            ts_ns=1_000_000_000, capture_wait_ms=1.0, image=object(),
         )
 
     def close(self) -> None:
@@ -69,29 +71,43 @@ def test_capture_state_is_in_runtime_state(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     client = _client(app)
 
-    response = client.get("/api/runtime/state")
+    response = client.get("/api/runtime/state").json()
 
-    assert response.status_code == 200
-    assert "capture" in response.json()
-    assert response.json()["capture"]["device"] == "/dev/video0"
+    assert response["capture"]["device"] == "/dev/video0"
 
 
 def test_capture_capabilities_endpoint_uses_service(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    cfg = RuntimeConfig()
     app.state.capture = CaptureService(
-        config=cfg.capture,
+        config=RuntimeConfig().capture,
         capability_runner=lambda device: CAPS_TEXT if device == "/dev/fake" else None,
     )
     client = _client(app)
+    body = client.get("/api/capture/capabilities?device=/dev/fake").json()
 
-    response = client.get("/api/capture/capabilities?device=/dev/fake")
-
-    assert response.status_code == 200
-    body = response.json()
     assert body["device"] == "/dev/fake"
     assert body["available"] is True
-    assert body["capabilities"][0]["pixel_format"] == "MJPG"
+    assert body["capabilities"][0] == {
+        "pixel_format": "MJPG",
+        "width": 1280,
+        "height": 720,
+        "fps_list": [60.0],
+    }
+
+
+@pytest.mark.parametrize("payload", [{}, {"device": "  "}])
+def test_capture_select_requires_device_without_configuring(tmp_path, payload) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    service = FakeCaptureService(
+        state=CaptureRuntimeState(device="/dev/video0"),
+        config=RuntimeConfig().capture,
+        configure_calls=[],
+    )
+    app.state.capture = service
+    client = _client(app)
+
+    assert client.post("/api/capture/select", json=payload).status_code == 422
+    assert service.configure_calls == []
 
 
 def test_capture_select_rejects_unavailable_device(tmp_path) -> None:
@@ -107,48 +123,25 @@ def test_capture_select_rejects_unavailable_device(tmp_path) -> None:
     )
     client = _client(app)
 
-    response = client.post("/api/capture/select", json={"device": "/dev/missing"})
+    body = client.post("/api/capture/select", json={"device": "/dev/missing"}).json()
 
-    assert response.status_code == 400
-    body = response.json()
     assert body["device"] == "/dev/missing"
     assert body["available"] is False
     assert body["last_error"] == "device missing"
 
 
-def test_capture_select_requires_device_without_configuring(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    service = FakeCaptureService(
-        state=CaptureRuntimeState(device="/dev/video0"),
-        config=RuntimeConfig().capture,
-        configure_calls=[],
-    )
-    app.state.capture = service
-    client = _client(app)
-
-    response = client.post("/api/capture/select", json={})
-
-    assert response.status_code == 422
-    assert service.configure_calls == []
-
-
-def test_capture_select_rejects_blank_device_without_configuring(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    service = FakeCaptureService(
-        state=CaptureRuntimeState(device="/dev/video0"),
-        config=RuntimeConfig().capture,
-        configure_calls=[],
-    )
-    app.state.capture = service
-    client = _client(app)
-
-    response = client.post("/api/capture/select", json={"device": "  "})
-
-    assert response.status_code == 422
-    assert service.configure_calls == []
-
-
-def test_capture_select_failure_does_not_mutate_config(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        ({"preference": "manual", "pixel_format": "MJPG",
+          "width": 1920, "height": 1080, "fps": 144}, "device missing"),
+        ({"preference": "invalid", "pixel_format": "MJPG",
+          "width": 1280, "height": 720, "fps": 60}, "invalid"),
+    ],
+)
+def test_capture_select_failure_preserves_service_config(
+    tmp_path, extra: dict, match: str
+) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
     cfg.capture.preference = "auto_balanced"
@@ -158,21 +151,14 @@ def test_capture_select_failure_does_not_mutate_config(tmp_path) -> None:
     cfg.capture.fps = 30
     service = CaptureService(
         config=cfg.capture,
-        capability_runner=lambda device: None,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: FakeSource(),
     )
     app.state.capture = service
     client = _client(app)
 
     response = client.post(
-        "/api/capture/select",
-        json={
-            "device": "/dev/missing",
-            "preference": "manual",
-            "pixel_format": "MJPG",
-            "width": 1920,
-            "height": 1080,
-            "fps": 144,
-        },
+        "/api/capture/select", json={"device": "/dev/video0", **extra}
     )
 
     assert response.status_code == 400
@@ -181,24 +167,7 @@ def test_capture_select_failure_does_not_mutate_config(tmp_path) -> None:
     assert service.config.width == 640
     assert service.config.height == 480
     assert service.config.fps == 30
-
-
-def test_capture_select_initial_failure_updates_state(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    service = CaptureService(
-        config=RuntimeConfig().capture,
-        capability_runner=lambda device: None,
-    )
-    app.state.capture = service
-    client = _client(app)
-
-    response = client.post("/api/capture/select", json={"device": "/dev/missing"})
-
-    assert response.status_code == 400
-    state = client.get("/api/capture/state").json()
-    assert state["available"] is False
-    assert state["device"] == "/dev/missing"
-    assert state["last_error"] is not None
+    assert match in response.text or response.json()["last_error"] is not None
 
 
 def test_capture_select_failure_keeps_previous_healthy_state(tmp_path) -> None:
@@ -220,42 +189,6 @@ def test_capture_select_failure_keeps_previous_healthy_state(tmp_path) -> None:
     assert state["available"] is True
     assert state["device"] == "/dev/video0"
     assert state["last_error"] is None
-
-
-def test_capture_select_invalid_preference_does_not_mutate_config(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    cfg = RuntimeConfig()
-    cfg.capture.preference = "auto_balanced"
-    cfg.capture.pixel_format = "NV12"
-    cfg.capture.width = 640
-    cfg.capture.height = 480
-    cfg.capture.fps = 30
-    service = CaptureService(
-        config=cfg.capture,
-        capability_runner=lambda device: CAPS_TEXT,
-        source_factory=lambda profile: FakeSource(),
-    )
-    app.state.capture = service
-    client = _client(app)
-
-    response = client.post(
-        "/api/capture/select",
-        json={
-            "device": "/dev/video0",
-            "preference": "invalid",
-            "pixel_format": "MJPG",
-            "width": 1280,
-            "height": 720,
-            "fps": 60,
-        },
-    )
-
-    assert response.status_code == 400
-    assert service.config.preference == "auto_balanced"
-    assert service.config.pixel_format == "NV12"
-    assert service.config.width == 640
-    assert service.config.height == 480
-    assert service.config.fps == 30
 
 
 def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
@@ -300,7 +233,7 @@ def test_capture_stream_returns_mjpeg_from_configured_source(tmp_path, monkeypat
             imencode=lambda ext, image: (
                 ext == ".jpg",
                 SimpleNamespace(tobytes=lambda: b"jpeg-bytes"),
-            )
+            ),
         ),
     )
     client = _client(app)

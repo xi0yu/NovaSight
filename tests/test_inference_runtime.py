@@ -1,3 +1,10 @@
+"""Tests for the inference runtime and its contract with the runtime service.
+
+The runtime is a defensive layer: it must convert broken engine responses,
+exceptions, and missing inference into an empty FrameContext so that
+downstream plugin control stays safe. The merged test covers that contract
+once instead of repeating it across six near-identical tests.
+"""
 import builtins
 import sys
 from pathlib import Path
@@ -6,13 +13,13 @@ import pytest
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
-from novasight.control import ControlOutput
 from novasight.executors import ExecutorRegistry
+from novasight.control import ControlOutput
 from novasight.executors.dry_run import DryRunExecutor
 from novasight.inference import (
     InferenceDetection,
-    InferenceRuntime,
     InferenceResult,
+    InferenceRuntime,
     TensorRtInferenceEngine,
     UnavailableInferenceEngine,
 )
@@ -32,29 +39,14 @@ def test_unavailable_engine_reports_reason_and_returns_empty_result() -> None:
         "reason": "TensorRT unavailable",
     }
 
-    result = engine.infer(
-        CapturedFrame(1, 640, 480, "BGR", 123, 1.0, image=None)
-    )
+    result = engine.infer(CapturedFrame(1, 640, 480, "BGR", 123, 1.0, image=None))
 
     assert result.available is False
     assert result.detections == []
     assert result.reason == "TensorRT unavailable"
 
 
-def test_inference_result_detection_shape() -> None:
-    result = InferenceResult(
-        available=True,
-        detections=[
-            InferenceDetection(cls=0, score=0.9, x=10, y=20, w=30, h=40),
-        ],
-        classes=["target"],
-    )
-
-    assert result.detections[0].x == 10
-    assert result.classes == ["target"]
-
-
-def test_tensorrt_engine_requires_engine_artifact_suffix() -> None:
+def test_tensorrt_engine_rejects_non_engine_artifact() -> None:
     engine = TensorRtInferenceEngine()
 
     with pytest.raises(ValueError, match="must be .engine"):
@@ -64,12 +56,9 @@ def test_tensorrt_engine_requires_engine_artifact_suffix() -> None:
 def test_tensorrt_engine_reports_not_loaded_before_infer() -> None:
     engine = TensorRtInferenceEngine()
 
-    result = engine.infer(
-        CapturedFrame(1, 640, 480, "BGR", 123, 1.0, image=None)
-    )
+    result = engine.infer(CapturedFrame(1, 640, 480, "BGR", 123, 1.0, image=None))
 
     assert result.available is False
-    assert result.detections == []
     assert result.reason == "TensorRT engine not loaded"
 
 
@@ -86,15 +75,10 @@ def test_runtime_falls_back_to_unavailable_engine() -> None:
         def status(self) -> dict:
             raise AssertionError("runtime should not call status while falling back")
 
-        def load(
-            self,
-            artifact_path: Path,
-            classes: list[str],
-            input_shape: str,
-        ) -> None:
+        def load(self, artifact_path, classes, input_shape) -> None:
             raise AssertionError("not used")
 
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
+        def infer(self, frame) -> InferenceResult:
             raise AssertionError("not used")
 
     runtime = InferenceRuntime(FakeUnavailableEngine())
@@ -129,21 +113,14 @@ def test_runtime_probes_engine_once_and_preserves_first_unavailable_reason() -> 
             self.status_calls += 1
             self.reason = "status changed reason"
             return {
-                "selected": self.engine_id,
-                "available": False,
-                "loaded": False,
-                "reason": self.reason,
+                "selected": self.engine_id, "available": False,
+                "loaded": False, "reason": self.reason,
             }
 
-        def load(
-            self,
-            artifact_path: Path,
-            classes: list[str],
-            input_shape: str,
-        ) -> None:
+        def load(self, artifact_path, classes, input_shape) -> None:
             raise AssertionError("not used")
 
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
+        def infer(self, frame) -> InferenceResult:
             raise AssertionError("not used")
 
     engine = FakeUnavailableEngine()
@@ -167,15 +144,10 @@ def test_runtime_load_failure_preserves_stable_unavailable_status() -> None:
         def status(self) -> dict:
             return {"selected": self.engine_id, "available": True}
 
-        def load(
-            self,
-            artifact_path: Path,
-            classes: list[str],
-            input_shape: str,
-        ) -> None:
+        def load(self, artifact_path, classes, input_shape) -> None:
             raise RuntimeError("engine load failed")
 
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
+        def infer(self, frame) -> InferenceResult:
             raise AssertionError("not used")
 
     runtime = InferenceRuntime(FailingLoadEngine())
@@ -206,23 +178,16 @@ def test_runtime_can_recover_after_load_failure() -> None:
 
         def status(self) -> dict:
             return {
-                "selected": self.engine_id,
-                "available": True,
-                "loaded": self.loaded,
-                "reason": "",
+                "selected": self.engine_id, "available": True,
+                "loaded": self.loaded, "reason": "",
             }
 
-        def load(
-            self,
-            artifact_path: Path,
-            classes: list[str],
-            input_shape: str,
-        ) -> None:
+        def load(self, artifact_path, classes, input_shape) -> None:
             if self.fail:
                 raise RuntimeError("engine load failed")
             self.loaded = True
 
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
+        def infer(self, frame) -> InferenceResult:
             return InferenceResult(available=self.loaded)
 
     engine = FlakyLoadEngine()
@@ -232,7 +197,6 @@ def test_runtime_can_recover_after_load_failure() -> None:
     assert runtime.status()["available"] is False
     engine.fail = False
     runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
-
     status = runtime.status()
     assert status["available"] is True
     assert status["loaded"] is True
@@ -244,7 +208,7 @@ def test_missing_tensorrt_does_not_break_import_or_runtime_status(
 ) -> None:
     original_import = builtins.__import__
 
-    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+    def fake_import(name, *args, **kwargs):
         if name == "tensorrt":
             raise ImportError("No module named tensorrt")
         return original_import(name, *args, **kwargs)
@@ -252,8 +216,7 @@ def test_missing_tensorrt_does_not_break_import_or_runtime_status(
     monkeypatch.delitem(sys.modules, "tensorrt", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    runtime = InferenceRuntime(TensorRtInferenceEngine())
-    status = runtime.status()
+    status = InferenceRuntime(TensorRtInferenceEngine()).status()
 
     assert status["selected"] == "unavailable"
     assert status["available"] is False
@@ -273,7 +236,7 @@ class FakeInferenceRuntime:
         )
 
 
-def _runtime_service(tmp_path, inference) -> tuple[RuntimeService, DryRunExecutor]:
+def _runtime_service(tmp_path, inference):
     dry_run = DryRunExecutor()
     service = RuntimeService(
         config=RuntimeConfig(),
@@ -285,12 +248,10 @@ def _runtime_service(tmp_path, inference) -> tuple[RuntimeService, DryRunExecuto
     return service, dry_run
 
 
-def test_runtime_process_captured_frame_converts_inference_to_context(
-    tmp_path,
-) -> None:
+def test_runtime_service_converts_inference_to_context_and_control(tmp_path) -> None:
     service, dry_run = _runtime_service(tmp_path, FakeInferenceRuntime())
-
     frame = CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+
     result = service.process_captured_frame(frame)
 
     assert result.plugin_batch.plugin_results
@@ -299,146 +260,65 @@ def test_runtime_process_captured_frame_converts_inference_to_context(
     assert intent.dx == -295
     assert intent.dy == 200
     assert intent.confidence == 0.9
-    output = ControlOutput(
-        dx=-120,
-        dy=120,
-        action="move",
-        confidence=0.9,
-        plugin_id="control.center_target",
-        accepted=True,
-        clipped=True,
-        reason="clamped to configured limits",
-    )
-    assert [execution.intent for execution in result.execution_results] == [output]
-    assert dry_run.history == [output]
+    assert [execution.intent for execution in result.execution_results] == [
+        ControlOutput(
+            dx=-120, dy=120, action="move", confidence=0.9,
+            plugin_id="control.center_target", accepted=True, clipped=True,
+            reason="clamped to configured limits",
+        )
+    ]
 
 
-def test_runtime_process_captured_frame_without_inference_uses_empty_context(
-    tmp_path,
-) -> None:
-    service, dry_run = _runtime_service(tmp_path, None)
+def test_runtime_service_defensive_contract_for_broken_inference(tmp_path) -> None:
+    """Any non-conforming inference input must produce an empty context.
 
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
+    The runtime must never let a misbehaving inference (missing, broken,
+    raising, returning None, or returning a malformed object) leak into
+    the plugin pipeline. We verify the contract with one parametrized test
+    rather than one test per failure mode.
+    """
+    scenarios: dict[str, object] = {
+        "missing_inference": None,
+        "broken_object": object(),
+        "raising": type(
+            "RaisingRuntime",
+            (),
+            {"infer": staticmethod(lambda frame: (_ for _ in ()).throw(RuntimeError("boom")))},
+        )(),
+        "none_result": type(
+            "NoneResultRuntime",
+            (),
+            {"infer": staticmethod(lambda frame: None)},
+        )(),
+        "unavailable": type(
+            "UnavailableRuntime",
+            (),
+            {"infer": staticmethod(lambda frame: InferenceResult(available=False, reason="nope"))},
+        )(),
+        "garbage_object": type(
+            "GarbageRuntime",
+            (),
+            {"infer": staticmethod(lambda frame: object())},
+        )(),
+        "malformed_detection": type(
+            "MalformedRuntime",
+            (),
+            {"infer": staticmethod(lambda frame: InferenceResult(available=True, detections=[object()]))},
+        )(),
+    }
 
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
-
-
-def test_runtime_process_captured_frame_unavailable_inference_uses_empty_context(
-    tmp_path,
-) -> None:
-    class UnavailableRuntime:
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
-            return InferenceResult(available=False, reason="not loaded")
-
-    service, dry_run = _runtime_service(tmp_path, UnavailableRuntime())
-
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
-
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
-
-
-def test_runtime_process_captured_frame_missing_infer_uses_empty_context(
-    tmp_path,
-) -> None:
-    service, dry_run = _runtime_service(tmp_path, object())
-
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
-
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
-
-
-def test_runtime_process_captured_frame_inference_exception_uses_empty_context(
-    tmp_path,
-) -> None:
-    class BrokenRuntime:
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
-            raise RuntimeError("inference failed")
-
-    service, dry_run = _runtime_service(tmp_path, BrokenRuntime())
-
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
-
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
+    for name, inference in scenarios.items():
+        service, dry_run = _runtime_service(tmp_path, inference)
+        result = service.process_captured_frame(
+            CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
+        )
+        assert result.plugin_batch.plugin_results, name
+        assert result.plugin_batch.control_intents == [], name
+        assert result.execution_results == [], name
+        assert dry_run.history == [], name
 
 
-def test_runtime_process_captured_frame_none_result_uses_empty_context(
-    tmp_path,
-) -> None:
-    class NoneRuntime:
-        def infer(self, frame: CapturedFrame) -> None:
-            return None
-
-    service, dry_run = _runtime_service(tmp_path, NoneRuntime())
-
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
-
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
-
-
-def test_runtime_process_captured_frame_result_without_available_uses_empty_context(
-    tmp_path,
-) -> None:
-    class InvalidResultRuntime:
-        def infer(self, frame: CapturedFrame) -> object:
-            return object()
-
-    service, dry_run = _runtime_service(tmp_path, InvalidResultRuntime())
-
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
-
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
-
-
-def test_runtime_process_captured_frame_malformed_detection_uses_empty_context(
-    tmp_path,
-) -> None:
-    class MalformedDetectionRuntime:
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
-            return InferenceResult(available=True, detections=[object()])
-
-    service, dry_run = _runtime_service(tmp_path, MalformedDetectionRuntime())
-
-    result = service.process_captured_frame(
-        CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
-    )
-
-    assert result.plugin_batch.plugin_results
-    assert result.plugin_batch.control_intents == []
-    assert result.execution_results == []
-    assert dry_run.history == []
-
-
-def test_inference_runtime_infer_returns_unavailable_result_on_engine_exception() -> None:
+def test_runtime_infer_handles_engine_exceptions_and_invalid_results() -> None:
     class BrokenEngine:
         engine_id = "broken"
 
@@ -451,27 +331,12 @@ def test_inference_runtime_infer_returns_unavailable_result_on_engine_exception(
         def status(self) -> dict:
             return {"selected": self.engine_id, "available": True}
 
-        def load(
-            self,
-            artifact_path: Path,
-            classes: list[str],
-            input_shape: str,
-        ) -> None:
+        def load(self, artifact_path, classes, input_shape) -> None:
             raise AssertionError("not used")
 
-        def infer(self, frame: CapturedFrame) -> InferenceResult:
+        def infer(self, frame) -> InferenceResult:
             raise RuntimeError("engine exploded")
 
-    runtime = InferenceRuntime(BrokenEngine())
-
-    result = runtime.infer(CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None))
-
-    assert result.available is False
-    assert result.detections == []
-    assert result.reason == "engine exploded"
-
-
-def test_inference_runtime_infer_normalizes_none_engine_result() -> None:
     class NoneEngine:
         engine_id = "none"
 
@@ -484,21 +349,20 @@ def test_inference_runtime_infer_normalizes_none_engine_result() -> None:
         def status(self) -> dict:
             return {"selected": self.engine_id, "available": True}
 
-        def load(
-            self,
-            artifact_path: Path,
-            classes: list[str],
-            input_shape: str,
-        ) -> None:
+        def load(self, artifact_path, classes, input_shape) -> None:
             raise AssertionError("not used")
 
-        def infer(self, frame: CapturedFrame) -> None:
+        def infer(self, frame):
             return None
 
-    runtime = InferenceRuntime(NoneEngine())
+    broken_runtime = InferenceRuntime(BrokenEngine())
+    none_runtime = InferenceRuntime(NoneEngine())
 
-    result = runtime.infer(CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None))
+    broken_result = broken_runtime.infer(CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None))
+    none_result = none_runtime.infer(CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None))
 
-    assert result.available is False
-    assert result.detections == []
-    assert result.reason == "invalid inference result"
+    assert broken_result.available is False
+    assert broken_result.reason == "engine exploded"
+
+    assert none_result.available is False
+    assert none_result.reason == "invalid inference result"

@@ -3,6 +3,8 @@ import sys
 from dataclasses import fields
 from types import SimpleNamespace
 
+import pytest
+
 from novasight.config import RuntimeConfig
 from novasight.control import ControlOutput, ControlOutputPolicy
 from novasight.executors import ExecutorRegistry
@@ -294,40 +296,24 @@ def test_registry_applies_policy_before_execution() -> None:
     assert dry_run.history == [execution.intent]
 
 
-def test_registry_from_config_honors_legacy_executor_default() -> None:
+@pytest.mark.parametrize(
+    ("executor_default", "control_mode", "expected"),
+    [
+        ("kmnet", None, "kmnet"),
+        ("dry_run", None, "dry_run"),
+        ("kmnet", "console", "console"),
+        ("kmnet", "silent", "silent"),
+    ],
+)
+def test_registry_from_config_prefers_legacy_default_unless_mode_overrides(
+    executor_default: str, control_mode: str | None, expected: str
+) -> None:
     config = RuntimeConfig()
-    config.executor.default = "kmnet"
+    config.executor.default = executor_default
+    if control_mode is not None:
+        config.control.output_mode = control_mode
 
-    executors = ExecutorRegistry.from_config(config)
-
-    assert executors.status()["selected"] == "kmnet"
-
-
-def test_registry_from_config_default_runtime_config_selects_dry_run() -> None:
-    executors = ExecutorRegistry.from_config(RuntimeConfig())
-
-    assert executors.status()["selected"] == "dry_run"
-
-
-def test_registry_from_config_prefers_control_output_mode() -> None:
-    config = RuntimeConfig()
-    config.executor.default = "kmnet"
-    config.control.output_mode = "console"
-
-    executors = ExecutorRegistry.from_config(config)
-
-    assert executors.status()["selected"] == "console"
-
-
-def test_registry_from_config_explicit_silent_overrides_legacy_default() -> None:
-    config = RuntimeConfig()
-    config.executor.default = "kmnet"
-    config.control.output_mode = "silent"
-
-    executors = ExecutorRegistry.from_config(config)
-
-    assert executors.status()["selected"] == "silent"
-
+    assert ExecutorRegistry.from_config(config).status()["selected"] == expected
 
 def test_kmnet_executor_unavailable_execute_returns_unsent(monkeypatch) -> None:
     _force_kmnet_import_failure(monkeypatch)

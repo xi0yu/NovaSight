@@ -1,3 +1,9 @@
+"""Tests for runtime configuration loading and validation.
+
+Covers the schema-enforced contract: round-trip, missing/empty inputs,
+unknown keys, and type errors. Defaults are exercised in one test, and
+unknown-key rejection is parametrized.
+"""
 from pathlib import Path
 
 import pytest
@@ -5,11 +11,12 @@ import pytest
 from novasight.config import RuntimeConfig, load_runtime_config, save_runtime_config
 
 
-def test_runtime_config_defaults_do_not_contain_model_truth() -> None:
+def test_runtime_config_defaults_are_stable() -> None:
     cfg = RuntimeConfig()
 
     assert cfg.web.port == 5174
     assert cfg.executor.default == "dry_run"
+    # Old attributes that drove the first prototype must not have leaked back.
     assert not hasattr(cfg, "model_path")
     assert not hasattr(cfg, "plugin_settings")
 
@@ -29,19 +36,21 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     assert loaded.executor.default == "dry_run"
 
 
-def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
-    loaded = load_runtime_config(tmp_path / "missing.yaml")
-
-    assert loaded == RuntimeConfig()
-
-
-def test_runtime_config_empty_file_returns_defaults(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "yaml_text",
+    ["", "null\n", "   \n"],
+)
+def test_runtime_config_returns_defaults_for_blank_or_empty_inputs(
+    tmp_path: Path, yaml_text: str
+) -> None:
     path = tmp_path / "novasight.yaml"
-    path.write_text("", encoding="utf-8")
+    path.write_text(yaml_text, encoding="utf-8")
 
-    loaded = load_runtime_config(path)
+    assert load_runtime_config(path) == RuntimeConfig()
 
-    assert loaded == RuntimeConfig()
+
+def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
+    assert load_runtime_config(tmp_path / "missing.yaml") == RuntimeConfig()
 
 
 def test_runtime_config_partial_nested_config_preserves_defaults(
@@ -64,7 +73,7 @@ def test_save_runtime_config_creates_parent_directories(tmp_path: Path) -> None:
     assert path.exists()
 
 
-def test_runtime_config_rejects_falsey_non_mapping_yaml(tmp_path: Path) -> None:
+def test_runtime_config_rejects_non_mapping_yaml(tmp_path: Path) -> None:
     path = tmp_path / "novasight.yaml"
     path.write_text("false\n", encoding="utf-8")
 

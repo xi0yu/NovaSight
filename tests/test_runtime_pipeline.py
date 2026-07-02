@@ -1,5 +1,6 @@
-from __future__ import annotations
-
+"""Tests for the core runtime primitives: latest-frame queue, config
+snapshots, the fail-fast crash handler, and logging setup.
+"""
 import pytest
 
 from novasight.config import RuntimeConfig
@@ -55,7 +56,7 @@ def test_failfast_writes_crash_log_before_exit(tmp_path) -> None:
     assert "boom" in (tmp_path / "crash_capture.log").read_text(encoding="utf-8")
 
 
-def test_configure_logging_creates_rotating_log_file(tmp_path) -> None:
+def test_configure_logging_writes_to_configured_directory(tmp_path) -> None:
     cfg = RuntimeConfig()
     cfg.logging.dir = str(tmp_path)
 

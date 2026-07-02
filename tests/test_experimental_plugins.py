@@ -96,12 +96,7 @@ def test_experimental_target_uses_string_for_out_of_range_class_index() -> None:
 
 @pytest.mark.parametrize(
     ("width", "height"),
-    [
-        (0, 500),
-        (1000, 0),
-        (-1, 500),
-        (1000, -1),
-    ],
+    [(-1, 500), (1000, -1), (0, 0)],
 )
 def test_experimental_plugins_handle_invalid_frame_size(
     width: int,

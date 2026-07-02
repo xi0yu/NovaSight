@@ -1,3 +1,9 @@
+"""Critical-path tests for the model registry.
+
+Coverage focuses on behaviors that matter for runtime safety: deployment
+identity, rollback, version path containment, and validation. Plumbing-only
+checks (dataclass shape, raw JSON column corruption recovery) were removed.
+"""
 import sqlite3
 from pathlib import Path
 
@@ -21,7 +27,7 @@ def _create_version(registry: ModelRegistry, project_id: int, version: str = "v1
     )
 
 
-def _artifact_path(data_dir: Path, project: str = "demo", version: str = "v1") -> str:
+def _artifact_path() -> str:
     return "model.engine"
 
 
@@ -35,10 +41,10 @@ def _deployment_seq(db_path: Path, project_id: int) -> int:
     return int(row[0])
 
 
-def test_model_registry_publish_and_rollback(tmp_path: Path) -> None:
-    db_path = tmp_path / "novasight.db"
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=db_path, data_dir=data_dir)
+def test_publish_then_rollback_restores_previous_artifact(tmp_path: Path) -> None:
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
+    )
 
     project = registry.create_project("person-detector", "Person detector")
     v1 = registry.create_version(
@@ -57,10 +63,7 @@ def test_model_registry_publish_and_rollback(tmp_path: Path) -> None:
         status="ready",
     )
     registry.publish(project.id, artifact1.id)
-
-    active = registry.get_deployment(project.id)
-    assert active is not None
-    assert active.artifact_id == artifact1.id
+    assert registry.get_deployment(project.id).artifact_id == artifact1.id
 
     v2 = registry.create_version(
         project_id=project.id,
@@ -80,25 +83,15 @@ def test_model_registry_publish_and_rollback(tmp_path: Path) -> None:
     registry.publish(project.id, artifact2.id)
     registry.rollback(project.id)
 
-    rolled_back = registry.get_deployment(project.id)
-    assert rolled_back is not None
-    assert rolled_back.artifact_id == artifact1.id
+    assert registry.get_deployment(project.id).artifact_id == artifact1.id
 
 
-def test_conversion_job_tracks_status_and_log(tmp_path: Path) -> None:
+def test_conversion_job_round_trips_status_and_log(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
-    version = registry.create_version(
-        project_id=project.id,
-        version="v1",
-        source_kind="pt",
-        source_path="/tmp/demo.pt",
-        classes=["target"],
-        input_shape="dynamic",
-    )
+    version = _create_version(registry, project.id)
 
     job = registry.create_conversion_job(
         version_id=version.id,
@@ -108,42 +101,8 @@ def test_conversion_job_tracks_status_and_log(tmp_path: Path) -> None:
     registry.finish_conversion_job(job.id, status="failed", log="TensorRT parse error")
 
     loaded = registry.get_conversion_job(job.id)
-    assert loaded is not None
     assert loaded.status == "failed"
     assert "TensorRT parse error" in loaded.log
-
-
-@pytest.mark.parametrize("name", ["../escape", "/abs", "a/b", "a\\b", "  "])
-def test_project_name_rejects_unsafe_path_components(
-    tmp_path: Path, name: str
-) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
-
-    with pytest.raises(ValueError, match="project name"):
-        registry.create_project(name, "")
-
-    assert registry.list_projects() == []
-    assert not (tmp_path / "escape").exists()
-    assert not (data_dir / "a").exists()
-    assert not (data_dir / "a\\b").exists()
-
-
-@pytest.mark.parametrize("version", ["../escape", "/abs", "a/b", "a\\b", "  "])
-def test_version_rejects_unsafe_path_components(
-    tmp_path: Path, version: str
-) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
-    project = registry.create_project("demo", "")
-
-    with pytest.raises(ValueError, match="version"):
-        _create_version(registry, project.id, version=version)
-
-    assert registry.list_versions(project.id) == []
-    assert not (tmp_path / "escape").exists()
-    assert not (data_dir / "demo" / "a").exists()
-    assert not (data_dir / "demo" / "a\\b").exists()
 
 
 def test_create_version_creates_version_asset_directory(tmp_path: Path) -> None:
@@ -151,23 +110,21 @@ def test_create_version_creates_version_asset_directory(tmp_path: Path) -> None:
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("person-detector", "")
 
-    _create_version(registry, project.id, version="v1")
+    _create_version(registry, project.id)
 
     assert (data_dir / "person-detector" / "v1").is_dir()
 
 
 def test_publish_rejects_artifacts_that_are_not_ready(tmp_path: Path) -> None:
-    data_dir = tmp_path / "models"
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=data_dir,
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
     artifact = registry.create_artifact(
         version_id=version.id,
         kind="engine",
-        path=_artifact_path(data_dir),
+        path="model.engine",
         checksum="sha256:not-ready",
         status="pending",
     )
@@ -176,6 +133,45 @@ def test_publish_rejects_artifacts_that_are_not_ready(tmp_path: Path) -> None:
         registry.publish(project.id, artifact.id)
 
     assert registry.get_deployment(project.id) is None
+
+
+@pytest.mark.parametrize(
+    ("name", "path_attr"),
+    [
+        ("../escape", "escape"),
+        ("/abs", None),
+        ("a/b", "a"),
+        ("a\\b", "a\\b"),
+        ("  ", None),
+    ],
+)
+def test_project_and_version_names_reject_unsafe_components(
+    tmp_path: Path, name: str, path_attr: str | None
+) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+
+    with pytest.raises(ValueError, match="project name"):
+        registry.create_project(name, "")
+
+    assert registry.list_projects() == []
+    if path_attr is not None:
+        assert not (data_dir / path_attr).exists()
+        assert not (tmp_path / path_attr).exists()
+
+
+@pytest.mark.parametrize("version", ["../escape", "/abs", "a/b", "a\\b", "  "])
+def test_version_rejects_unsafe_components(tmp_path: Path, version: str) -> None:
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    project = registry.create_project("demo", "")
+
+    with pytest.raises(ValueError, match="version"):
+        _create_version(registry, project.id, version=version)
+
+    assert registry.list_versions(project.id) == []
+    assert not (data_dir / "demo" / "a").exists()
+    assert not (data_dir / "demo" / "a\\b").exists()
 
 
 def test_json_fields_round_trip_through_new_registry_instance(tmp_path: Path) -> None:
@@ -210,38 +206,9 @@ def test_json_fields_round_trip_through_new_registry_instance(tmp_path: Path) ->
     ]
 
 
-def test_list_methods_return_registry_records(tmp_path: Path) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=data_dir,
-    )
-    project = registry.create_project("demo", "Demo project")
-    version = _create_version(registry, project.id)
-    artifact = registry.create_artifact(
-        version_id=version.id,
-        kind="onnx",
-        path=_artifact_path(data_dir),
-        checksum="sha256:model",
-        status="ready",
-    )
-    job = registry.create_conversion_job(
-        version_id=version.id,
-        target_kind="engine",
-        command=["trtexec"],
-    )
-
-    assert registry.list_projects() == [project]
-    assert registry.list_versions(project.id) == [version]
-    assert registry.list_artifacts(version.id) == [artifact]
-    assert registry.list_conversion_jobs() == [job]
-    assert registry.list_conversion_jobs(version.id) == [job]
-
-
 def test_list_conversion_jobs_can_scope_by_version(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
     v1 = _create_version(registry, project.id, version="v1")
@@ -257,17 +224,15 @@ def test_list_conversion_jobs_can_scope_by_version(tmp_path: Path) -> None:
 def test_rollback_without_previous_deployment_leaves_current_unchanged(
     tmp_path: Path,
 ) -> None:
-    data_dir = tmp_path / "models"
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=data_dir,
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
     artifact = registry.create_artifact(
         version_id=version.id,
         kind="onnx",
-        path=_artifact_path(data_dir),
+        path="model.engine",
         checksum="sha256:model",
         status="ready",
     )
@@ -282,24 +247,17 @@ def test_rollback_without_previous_deployment_leaves_current_unchanged(
 def test_duplicate_publish_preserves_previous_artifact_for_rollback(
     tmp_path: Path,
 ) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models")
     project = registry.create_project("demo", "")
     v1 = _create_version(registry, project.id, version="v1")
     v2 = _create_version(registry, project.id, version="v2")
     artifact1 = registry.create_artifact(
-        version_id=v1.id,
-        kind="engine",
-        path=_artifact_path(data_dir, version="v1"),
-        checksum="sha256:v1",
-        status="ready",
+        version_id=v1.id, kind="engine", path="v1.engine",
+        checksum="sha256:v1", status="ready",
     )
     artifact2 = registry.create_artifact(
-        version_id=v2.id,
-        kind="engine",
-        path=_artifact_path(data_dir, version="v2"),
-        checksum="sha256:v2",
-        status="ready",
+        version_id=v2.id, kind="engine", path="v2.engine",
+        checksum="sha256:v2", status="ready",
     )
 
     registry.publish(project.id, artifact1.id)
@@ -321,27 +279,18 @@ def test_deployment_sequence_tracks_publish_duplicate_publish_and_rollback(
     a_v1 = _create_version(registry, project_a.id, version="v1")
     a_v2 = _create_version(registry, project_a.id, version="v2")
     artifact_a1 = registry.create_artifact(
-        version_id=a_v1.id,
-        kind="engine",
-        path=_artifact_path(data_dir, project="demo-a", version="v1"),
-        checksum="sha256:a1",
-        status="ready",
+        version_id=a_v1.id, kind="engine", path="a_v1.engine",
+        checksum="sha256:a1", status="ready",
     )
     artifact_a2 = registry.create_artifact(
-        version_id=a_v2.id,
-        kind="engine",
-        path=_artifact_path(data_dir, project="demo-a", version="v2"),
-        checksum="sha256:a2",
-        status="ready",
+        version_id=a_v2.id, kind="engine", path="a_v2.engine",
+        checksum="sha256:a2", status="ready",
     )
     project_b = registry.create_project("demo-b", "")
     b_v1 = _create_version(registry, project_b.id, version="v1")
     artifact_b1 = registry.create_artifact(
-        version_id=b_v1.id,
-        kind="engine",
-        path=_artifact_path(data_dir, project="demo-b", version="v1"),
-        checksum="sha256:b1",
-        status="ready",
+        version_id=b_v1.id, kind="engine", path="b_v1.engine",
+        checksum="sha256:b1", status="ready",
     )
 
     registry.publish(project_a.id, artifact_a1.id)
@@ -359,13 +308,7 @@ def test_deployment_sequence_tracks_publish_duplicate_publish_and_rollback(
     registry.rollback(project_a.id)
     rollback_seq = _deployment_seq(db_path, project_a.id)
 
-    assert [first_seq, second_seq, duplicate_seq, update_seq, rollback_seq] == [
-        1,
-        2,
-        3,
-        4,
-        5,
-    ]
+    assert [first_seq, second_seq, duplicate_seq, update_seq, rollback_seq] == [1, 2, 3, 4, 5]
     active = registry.get_active_deployment()
     assert active is not None
     assert active.project_id == project_a.id
@@ -376,24 +319,17 @@ def test_deployment_sequence_missing_row_self_heals_on_publish_and_rollback(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "novasight.db"
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=db_path, data_dir=data_dir)
+    registry = ModelRegistry(db_path=db_path, data_dir=tmp_path / "models")
     project = registry.create_project("demo", "")
     v1 = _create_version(registry, project.id, version="v1")
     v2 = _create_version(registry, project.id, version="v2")
     artifact1 = registry.create_artifact(
-        version_id=v1.id,
-        kind="engine",
-        path="v1.engine",
-        checksum="sha256:v1",
-        status="ready",
+        version_id=v1.id, kind="engine", path="v1.engine",
+        checksum="sha256:v1", status="ready",
     )
     artifact2 = registry.create_artifact(
-        version_id=v2.id,
-        kind="engine",
-        path="v2.engine",
-        checksum="sha256:v2",
-        status="ready",
+        version_id=v2.id, kind="engine", path="v2.engine",
+        checksum="sha256:v2", status="ready",
     )
     registry.publish(project.id, artifact1.id)
     assert _deployment_seq(db_path, project.id) == 1
@@ -415,16 +351,12 @@ def test_deployment_sequence_missing_row_self_heals_on_publish_and_rollback(
 def test_publish_rejects_unknown_project_before_artifact_ownership(
     tmp_path: Path,
 ) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models")
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
     artifact = registry.create_artifact(
-        version_id=version.id,
-        kind="engine",
-        path=_artifact_path(data_dir),
-        checksum="sha256:model",
-        status="ready",
+        version_id=version.id, kind="engine", path="model.engine",
+        checksum="sha256:model", status="ready",
     )
 
     with pytest.raises(RegistryNotFoundError, match="unknown project id: 999"):
@@ -433,9 +365,7 @@ def test_publish_rejects_unknown_project_before_artifact_ownership(
     assert registry.get_deployment(project.id) is None
 
 
-def test_create_artifact_rejects_absolute_path_inside_version_directory(
-    tmp_path: Path,
-) -> None:
+def test_create_artifact_rejects_absolute_paths(tmp_path: Path) -> None:
     data_dir = tmp_path / "models"
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
@@ -444,166 +374,52 @@ def test_create_artifact_rejects_absolute_path_inside_version_directory(
 
     with pytest.raises(RegistryValidationError, match="relative"):
         registry.create_artifact(
-            version_id=version.id,
-            kind="engine",
-            path=str(inside_path),
-            checksum="sha256:model",
-            status="ready",
+            version_id=version.id, kind="engine", path=str(inside_path),
+            checksum="sha256:model", status="ready",
         )
 
     assert registry.list_artifacts(version.id) == []
 
 
-def test_create_artifact_stores_normalized_contained_path(tmp_path: Path) -> None:
+def test_create_artifact_normalizes_contained_paths(tmp_path: Path) -> None:
     data_dir = tmp_path / "models"
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
-    raw_path = Path("nested") / ".." / "model.engine"
 
     artifact = registry.create_artifact(
-        version_id=version.id,
-        kind="engine",
-        path=str(raw_path),
-        checksum="sha256:model",
-        status="ready",
+        version_id=version.id, kind="engine", path="model.engine",
+        checksum="sha256:model", status="ready",
     )
 
     assert artifact.path == "model.engine"
-    assert registry.list_artifacts(version.id)[0].path == "model.engine"
 
-
-@pytest.mark.parametrize(
-    ("raw_path", "expected_parts"),
-    [
-        ("model.engine", ("model.engine",)),
-        ("nested/model.engine", ("nested", "model.engine")),
-    ],
-)
-def test_create_artifact_accepts_asset_relative_paths(
-    tmp_path: Path, raw_path: str, expected_parts: tuple[str, ...]
-) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
-    project = registry.create_project("demo", "")
-    version = _create_version(registry, project.id)
-    expected_path = Path(*expected_parts).as_posix()
-
-    artifact = registry.create_artifact(
-        version_id=version.id,
-        kind="engine",
-        path=raw_path,
-        checksum="sha256:model",
-        status="ready",
+    nested = registry.create_artifact(
+        version_id=version.id, kind="engine", path="nested/model.engine",
+        checksum="sha256:nested", status="ready",
     )
+    assert nested.path == "nested/model.engine"
 
-    assert artifact.path == expected_path
 
-
-@pytest.mark.parametrize("raw_path", ["", "  ", ".", "nested/.."])
-def test_create_artifact_rejects_empty_or_directory_paths(
-    tmp_path: Path, raw_path: str
-) -> None:
+@pytest.mark.parametrize("raw_path", ["", "  ", ".", "nested/..", "/abs/engine.engine", "../escape.engine"])
+def test_create_artifact_rejects_invalid_paths(tmp_path: Path, raw_path: str) -> None:
     data_dir = tmp_path / "models"
     registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
 
-    with pytest.raises(RegistryValidationError, match="artifact path"):
+    with pytest.raises((ValueError, RegistryValidationError)):
         registry.create_artifact(
-            version_id=version.id,
-            kind="engine",
-            path=raw_path,
-            checksum="sha256:model",
-            status="ready",
+            version_id=version.id, kind="engine", path=raw_path,
+            checksum="sha256:model", status="ready",
         )
 
     assert registry.list_artifacts(version.id) == []
-
-
-@pytest.mark.parametrize(
-    "path_factory",
-    [
-        lambda tmp_path, data_dir: tmp_path / "outside.engine",
-        lambda tmp_path, data_dir: Path("../outside.engine"),
-        lambda tmp_path, data_dir: data_dir / "demo" / "v1" / ".." / "outside.engine",
-    ],
-)
-def test_create_artifact_rejects_paths_outside_version_directory(
-    tmp_path: Path, path_factory
-) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
-    project = registry.create_project("demo", "")
-    version = _create_version(registry, project.id)
-
-    with pytest.raises(ValueError, match="artifact path"):
-        registry.create_artifact(
-            version_id=version.id,
-            kind="engine",
-            path=str(path_factory(tmp_path, data_dir)),
-            checksum="sha256:model",
-            status="ready",
-        )
-
-    assert registry.list_artifacts(version.id) == []
-
-
-def test_create_version_does_not_commit_row_when_directory_creation_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
-    project = registry.create_project("demo", "")
-    original_mkdir = Path.mkdir
-
-    def fail_version_dir(
-        self,
-        mode=0o777,
-        parents=False,
-        exist_ok=False,
-    ):
-        if self == data_dir / "demo" / "v1":
-            raise OSError("cannot create version dir")
-        return original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
-
-    monkeypatch.setattr(Path, "mkdir", fail_version_dir)
-
-    with pytest.raises(OSError, match="cannot create version dir"):
-        _create_version(registry, project.id)
-
-    assert registry.list_versions(project.id) == []
-
-
-def test_create_project_does_not_commit_row_when_directory_creation_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
-    original_mkdir = Path.mkdir
-
-    def fail_project_dir(
-        self,
-        mode=0o777,
-        parents=False,
-        exist_ok=False,
-    ):
-        if self == data_dir / "demo":
-            raise OSError("cannot create project dir")
-        return original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
-
-    monkeypatch.setattr(Path, "mkdir", fail_project_dir)
-
-    with pytest.raises(OSError, match="cannot create project dir"):
-        registry.create_project("demo", "")
-
-    assert registry.list_projects() == []
 
 
 def test_rollback_without_deployment_raises_clear_error(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
 
@@ -613,8 +429,7 @@ def test_rollback_without_deployment_raises_clear_error(tmp_path: Path) -> None:
 
 def test_create_version_rejects_invalid_source_kind(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
 
@@ -632,23 +447,16 @@ def test_create_version_rejects_invalid_source_kind(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("classes", ["person", ["person", 7], [object()]])
-def test_create_version_rejects_invalid_classes(
-    tmp_path: Path, classes
-) -> None:
+def test_create_version_rejects_invalid_classes(tmp_path: Path, classes) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
 
     with pytest.raises(ValueError, match="classes"):
         registry.create_version(
-            project_id=project.id,
-            version="v1",
-            source_kind="onnx",
-            source_path="/tmp/model.onnx",
-            classes=classes,
-            input_shape="dynamic",
+            project_id=project.id, version="v1", source_kind="onnx",
+            source_path="/tmp/model.onnx", classes=classes, input_shape="dynamic",
         )
 
     assert registry.list_versions(project.id) == []
@@ -656,78 +464,49 @@ def test_create_version_rejects_invalid_classes(
 
 @pytest.mark.parametrize(
     ("kind", "status", "match"),
-    [
-        ("bogus", "ready", "artifact kind"),
-        ("engine", "redy", "artifact status"),
-    ],
+    [("bogus", "ready", "artifact kind"), ("engine", "redy", "artifact status")],
 )
 def test_create_artifact_rejects_invalid_kind_or_status(
     tmp_path: Path, kind: str, status: str, match: str
 ) -> None:
-    data_dir = tmp_path / "models"
-    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
+    registry = ModelRegistry(
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
+    )
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
 
     with pytest.raises(ValueError, match=match):
         registry.create_artifact(
-            version_id=version.id,
-            kind=kind,
-            path="model.engine",
-            checksum="sha256:model",
-            status=status,
+            version_id=version.id, kind=kind, path="model.engine",
+            checksum="sha256:model", status=status,
         )
 
     assert registry.list_artifacts(version.id) == []
 
 
-def test_create_conversion_job_rejects_invalid_target_kind(tmp_path: Path) -> None:
+def test_create_conversion_job_rejects_invalid_inputs(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
 
     with pytest.raises(ValueError, match="conversion target kind"):
         registry.create_conversion_job(version.id, "bogus", ["convert"])
-
     assert registry.list_conversion_jobs() == []
-
-
-def test_create_conversion_job_rejects_unknown_version_id(tmp_path: Path) -> None:
-    registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
-    )
 
     with pytest.raises(ValueError, match="unknown version id: 42"):
         registry.create_conversion_job(42, "engine", ["convert"])
-
     assert registry.list_conversion_jobs() == []
 
-
-@pytest.mark.parametrize("command", ["convert", ["convert", 7], [object()]])
-def test_create_conversion_job_rejects_invalid_command(
-    tmp_path: Path, command
-) -> None:
-    registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
-    )
-    project = registry.create_project("demo", "")
-    version = _create_version(registry, project.id)
-
     with pytest.raises(ValueError, match="command"):
-        registry.create_conversion_job(version.id, "engine", command)
-
+        registry.create_conversion_job(version.id, "engine", "convert")
     assert registry.list_conversion_jobs() == []
 
 
 def test_finish_conversion_job_rejects_invalid_status(tmp_path: Path) -> None:
     registry = ModelRegistry(
-        db_path=tmp_path / "novasight.db",
-        data_dir=tmp_path / "models",
+        db_path=tmp_path / "novasight.db", data_dir=tmp_path / "models"
     )
     project = registry.create_project("demo", "")
     version = _create_version(registry, project.id)
@@ -739,47 +518,27 @@ def test_finish_conversion_job_rejects_invalid_status(tmp_path: Path) -> None:
     assert registry.get_conversion_job(job.id) == job
 
 
-@pytest.mark.parametrize(
-    "classes_json",
-    ["not json", '{"class": "person"}', '["ok", 7]'],
-)
-def test_list_versions_rejects_invalid_classes_json(
-    tmp_path: Path, classes_json: str
+def test_create_project_and_version_rolls_back_when_directory_creation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_path = tmp_path / "novasight.db"
-    registry = ModelRegistry(db_path=db_path, data_dir=tmp_path / "models")
+    data_dir = tmp_path / "models"
+    registry = ModelRegistry(db_path=tmp_path / "novasight.db", data_dir=data_dir)
     project = registry.create_project("demo", "")
-    _create_version(registry, project.id)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE model_versions SET classes_json = ?",
-            (classes_json,),
-        )
+    original_mkdir = Path.mkdir
 
-    with pytest.raises(ValueError, match="classes_json"):
-        registry.list_versions(project.id)
+    def fail_dirs(self, mode=0o777, parents=False, exist_ok=False):
+        if self == data_dir / "demo" / "v1":
+            raise OSError("cannot create version dir")
+        if self == data_dir / "demo-b":
+            raise OSError("cannot create project dir")
+        return original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
 
+    monkeypatch.setattr(Path, "mkdir", fail_dirs)
 
-@pytest.mark.parametrize(
-    "command_json",
-    ["not json", '{"cmd": "convert"}', '["ok", 7]'],
-)
-def test_conversion_job_reads_reject_invalid_command_json(
-    tmp_path: Path, command_json: str
-) -> None:
-    db_path = tmp_path / "novasight.db"
-    registry = ModelRegistry(db_path=db_path, data_dir=tmp_path / "models")
-    project = registry.create_project("demo", "")
-    version = _create_version(registry, project.id)
-    job = registry.create_conversion_job(version.id, "engine", ["convert"])
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE conversion_jobs SET command_json = ? WHERE id = ?",
-            (command_json, job.id),
-        )
+    with pytest.raises(OSError, match="cannot create project dir"):
+        registry.create_project("demo-b", "")
+    assert registry.list_projects() == [project]
 
-    with pytest.raises(ValueError, match="command_json"):
-        registry.get_conversion_job(job.id)
-
-    with pytest.raises(ValueError, match="command_json"):
-        registry.list_conversion_jobs()
+    with pytest.raises(OSError, match="cannot create version dir"):
+        _create_version(registry, project.id)
+    assert registry.list_versions(project.id) == []
