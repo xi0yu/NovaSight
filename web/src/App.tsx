@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { StudioShell } from "./app/StudioShell";
+import { type StudioViewId } from "./app/navigation";
 import {
   ActiveModel,
   ApiError,
@@ -35,7 +37,6 @@ import {
   updateRuntimeConfig
 } from "./api";
 
-type TabId = "overview" | "capture" | "models" | "plugins" | "settings";
 type ErrorKey = "health" | "runtime" | "plugins" | "projects" | "capture";
 
 type LoadState = {
@@ -63,22 +64,6 @@ type CapabilityGroup = {
 type ConfigValue = string | number | boolean | null | ConfigValue[] | { [key: string]: ConfigValue };
 
 const LICENSE_CACHE_KEY = "novasight.license.valid";
-
-const tabs: Array<{ id: TabId; label: string }> = [
-  { id: "overview", label: "总览" },
-  { id: "capture", label: "采集" },
-  { id: "models", label: "模型" },
-  { id: "plugins", label: "插件" },
-  { id: "settings", label: "设置" }
-];
-
-const tabHints: Record<TabId, string> = {
-  overview: "链路",
-  capture: "输入",
-  models: "模型",
-  plugins: "算法",
-  settings: "系统"
-};
 
 const initialState: LoadState = {
   loading: true,
@@ -1193,8 +1178,24 @@ function SettingsView({
   );
 }
 
+function LicenseView({
+  license,
+  onLicenseChange
+}: {
+  license: LicenseStatus | null;
+  onLicenseChange: (license: LicenseStatus) => void;
+}) {
+  return (
+    <div className="view-grid">
+      <Panel title="卡密管理" eyebrow="本机授权">
+        <LicensePanel license={license} onLicenseChange={onLicenseChange} />
+      </Panel>
+    </div>
+  );
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>("capture");
+  const [activeView, setActiveView] = useState<StudioViewId>("devices");
   const [state, setState] = useState<LoadState>(initialState);
   const [runtimeCommandBusy, setRuntimeCommandBusy] = useState(false);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
@@ -1338,40 +1339,49 @@ export default function App() {
 
   const activeModel = state.runtime?.active_model ?? null;
   const hasErrors = Object.keys(state.errors).length > 0;
+  const shellCopy: Record<StudioViewId, { title: string; subtitle: string }> = {
+    dashboard: {
+      title: "Dashboard",
+      subtitle: "Track runtime health, pipeline readiness, and the current control path."
+    },
+    devices: {
+      title: "Devices",
+      subtitle: "Configure capture profiles, inspect camera capability sets, and monitor preview."
+    },
+    models: {
+      title: "Models",
+      subtitle: "Review active deployments and the registered project inventory."
+    },
+    config: {
+      title: "Config",
+      subtitle: "Adjust runtime configuration and compare the live state with saved settings."
+    },
+    plugins: {
+      title: "Plugins",
+      subtitle: "Inspect loaded vision and control modules in the production chain."
+    },
+    license: {
+      title: "License",
+      subtitle: "Manage the local activation key and verify feature entitlement status."
+    }
+  };
+  const shellStatus = (
+    <>
+      <StatusPill tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
+        {hasErrors ? "部分异常" : state.health?.ok ? "已连接" : "连接中"}
+      </StatusPill>
+      <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
+    </>
+  );
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand-block">
-          <span className="brand-mark"><span>NS</span></span>
-          <div>
-            <h1>NovaSight</h1>
-            <p>Jetson 实时视觉工作台</p>
-          </div>
-        </div>
-        <div className="topbar-status">
-          <StatusPill tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
-            {hasErrors ? "部分异常" : state.health?.ok ? "已连接" : "连接中"}
-          </StatusPill>
-          <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
-        </div>
-      </header>
-
-      <nav className="tabs" aria-label="控制台视图">
-        {tabs.map((tab) => (
-          <button
-            aria-current={activeTab === tab.id ? "page" : undefined}
-            className={activeTab === tab.id ? "tab active" : "tab"}
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            type="button"
-          >
-            <span className="tab-label">{tab.label}</span>
-            <span className="tab-hint">{tabHints[tab.id]}</span>
-          </button>
-        ))}
-      </nav>
-
+    <StudioShell
+      activeView={activeView}
+      title={shellCopy[activeView].title}
+      subtitle={shellCopy[activeView].subtitle}
+      status={shellStatus}
+      onNavigate={setActiveView}
+    >
       {hasErrors ? (
         <div className="alert" role="alert">
           <strong>后端请求异常</strong>
@@ -1391,7 +1401,7 @@ export default function App() {
       ) : null}
 
       <div className="view-stack">
-        {activeTab === "overview" ? (
+        {activeView === "dashboard" ? (
           <OverviewView
             health={state.health}
             loading={state.loading}
@@ -1402,7 +1412,7 @@ export default function App() {
             runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}
-        {activeTab === "capture" ? (
+        {activeView === "devices" ? (
           <CaptureWorkbench
             runtime={state.runtime}
             error={state.errors.capture}
@@ -1411,17 +1421,17 @@ export default function App() {
             runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}
-        {activeTab === "models" ? (
+        {activeView === "models" ? (
           <ModelsView
             projects={state.projects}
             activeModel={activeModel}
             error={state.errors.projects}
           />
         ) : null}
-        {activeTab === "plugins" ? (
+        {activeView === "plugins" ? (
           <PluginsView plugins={state.plugins} error={state.errors.plugins} />
         ) : null}
-        {activeTab === "settings" ? (
+        {activeView === "config" ? (
           <SettingsView
             runtime={state.runtime}
             license={license}
@@ -1429,7 +1439,10 @@ export default function App() {
             onLicenseChange={handleLicenseChange}
           />
         ) : null}
+        {activeView === "license" ? (
+          <LicenseView license={license} onLicenseChange={handleLicenseChange} />
+        ) : null}
       </div>
-    </main>
+    </StudioShell>
   );
 }

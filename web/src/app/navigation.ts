@@ -1,0 +1,23 @@
+export type StudioViewId =
+  | "dashboard"
+  | "devices"
+  | "models"
+  | "config"
+  | "plugins"
+  | "license";
+
+export type StudioNavItem = {
+  id: StudioViewId;
+  label: string;
+  hint: string;
+  feature?: string;
+};
+
+export const studioNavItems: StudioNavItem[] = [
+  { id: "dashboard", label: "总览", hint: "运行状态与链路健康" },
+  { id: "devices", label: "设备", hint: "采集切换与实时预览" },
+  { id: "models", label: "模型", hint: "部署绑定与项目注册表" },
+  { id: "config", label: "配置", hint: "运行参数与系统设置" },
+  { id: "plugins", label: "插件", hint: "视觉与控制算法模块" },
+  { id: "license", label: "授权", hint: "卡密与本机许可状态" }
+];
