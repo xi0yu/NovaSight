@@ -12,6 +12,12 @@ from novasight.config import RuntimeConfig
 
 
 CAPS_TEXT = "[0]: 'MJPG' (Motion-JPEG)\n    Size: Discrete 1920x1080\n        Interval: Discrete 0.007s (144.000 fps)\n"
+MULTI_CAPS_TEXT = """
+[0]: 'MJPG' (Motion-JPEG)
+    Size: Discrete 1920x1080
+        Interval: Discrete 0.008s (120.000 fps)
+        Interval: Discrete 0.017s (60.000 fps)
+"""
 
 
 class FakeSource:
@@ -214,6 +220,78 @@ def test_reconfigure_closes_previous_source() -> None:
     assert service.source is sources[1]
 
 
+def test_reconfigure_same_device_closes_previous_source_before_opening_next() -> None:
+    sources: list[FakeSource] = []
+    second_open_saw_first_closed: list[bool] = []
+
+    def factory(profile):
+        if sources:
+            second_open_saw_first_closed.append(sources[0].closed)
+        source = FakeSource()
+        sources.append(source)
+        return source
+
+    service = _service(
+        capability_runner=lambda device: MULTI_CAPS_TEXT,
+        source_factory=factory,
+    )
+    service.configure(
+        "/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=60,
+    )
+
+    service.configure(
+        "/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=120,
+    )
+
+    assert second_open_saw_first_closed == [True]
+    assert sources[0].closed is True
+    assert sources[1].closed is False
+
+
+def test_configure_reuses_existing_source_when_profile_is_unchanged() -> None:
+    sources: list[FakeSource] = []
+
+    def factory(profile):
+        source = FakeSource()
+        sources.append(source)
+        return source
+
+    service = _service(
+        capability_runner=lambda device: MULTI_CAPS_TEXT,
+        source_factory=factory,
+    )
+    first = service.configure(
+        "/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=120,
+    )
+    second = service.configure(
+        "/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=120,
+    )
+
+    assert len(sources) == 1
+    assert sources[0].closed is False
+    assert second is first
+
+
 def test_failed_reconfigure_keeps_previous_source() -> None:
     service = _service(
         capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None
@@ -293,6 +371,44 @@ def test_source_factory_error_keeps_previous_source() -> None:
     assert state.last_error is None
 
 
+def test_same_device_reconfigure_failure_does_not_keep_closed_source() -> None:
+    sources: list[FakeSource] = []
+
+    def factory(profile):
+        if not sources:
+            source = FakeSource()
+            sources.append(source)
+            return source
+        raise RuntimeError("backend failed to open")
+
+    service = _service(
+        capability_runner=lambda device: MULTI_CAPS_TEXT,
+        source_factory=factory,
+    )
+    service.configure(
+        "/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=60,
+    )
+
+    state = service.configure(
+        "/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=120,
+    )
+
+    assert sources[0].closed is True
+    assert service.source is None
+    assert state.available is False
+    assert "backend failed to open" in str(state.last_error)
+
+
 def test_empty_reads_eventually_mark_source_unavailable() -> None:
     sources: list[EmptySource] = []
 
@@ -350,7 +466,7 @@ def test_close_errors_during_recovery_appear_in_last_error(scenario: str) -> Non
         assert "read failed" in str(state.last_error)
         assert "close failed" in str(state.last_error)
 
-    assert len(sources) == 2
+    assert len(sources) == 1
     assert all(source.closed for source in sources)
     assert service.source is None
     assert state.available is False

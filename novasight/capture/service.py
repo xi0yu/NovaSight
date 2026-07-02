@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -13,6 +14,8 @@ from .profile import select_capture_profile
 from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, OpenCvFrameSource
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
+logger = logging.getLogger("novasight.capture.service")
+
 
 def _open_first_readable_source(
     profile: CaptureProfile,
@@ -24,13 +27,29 @@ def _open_first_readable_source(
     for candidate in candidates:
         source: FrameSource | None = None
         try:
+            logger.info(
+                "capture opening candidate label=%s device=%s",
+                candidate.label,
+                profile.device,
+            )
             source = source_cls(profile, candidate)
             if source.opened_and_readable():
+                logger.info(
+                    "capture candidate opened label=%s device=%s",
+                    candidate.label,
+                    profile.device,
+                )
                 opened_source = source
                 source = None
                 return opened_source
             failures.append(candidate.label)
         except Exception as exc:
+            logger.warning(
+                "capture candidate failed label=%s device=%s error=%s",
+                candidate.label,
+                profile.device,
+                exc,
+            )
             failures.append(f"{candidate.label}: {exc}")
         finally:
             if source is not None:
@@ -65,6 +84,18 @@ def _open_default_source(profile: CaptureProfile) -> FrameSource:
         raise RuntimeError(details) from exc
 
 
+def _same_capture_mode(left: CaptureProfile | None, right: CaptureProfile) -> bool:
+    if left is None:
+        return False
+    return (
+        left.device == right.device
+        and left.pixel_format == right.pixel_format
+        and left.width == right.width
+        and left.height == right.height
+        and left.fps == right.fps
+    )
+
+
 class CaptureService:
     def __init__(
         self,
@@ -82,7 +113,7 @@ class CaptureService:
         self.source: FrameSource | None = None
         self.last_config_error: CaptureRuntimeState | None = None
         self._last_frame_ts_ns: int | None = None
-        self._configure_lock = threading.RLock()
+        self._source_lock = threading.RLock()
 
     def capabilities(self, device: str = "/dev/video0") -> CaptureCapabilities:
         return query_capabilities(
@@ -100,7 +131,7 @@ class CaptureService:
         height: int | None = None,
         fps: int | None = None,
     ) -> CaptureRuntimeState:
-        with self._configure_lock:
+        with self._source_lock:
             return self._configure_unlocked(
                 device,
                 preference=preference,
@@ -161,8 +192,50 @@ class CaptureService:
                 height=selected_height or None,
                 fps=selected_fps or None,
             )
+            if self.source is not None and _same_capture_mode(self.state.profile, profile):
+                logger.info(
+                    "capture configure reused source device=%s format=%s size=%sx%s fps=%s",
+                    profile.device,
+                    profile.pixel_format,
+                    profile.width,
+                    profile.height,
+                    profile.fps,
+                )
+                self.config.device = selected_device
+                self.config.preference = selected_preference
+                self.config.pixel_format = selected_pixel_format
+                self.config.width = selected_width
+                self.config.height = selected_height
+                self.config.fps = selected_fps
+                self.last_config_error = None
+                self.state.profile = profile
+                self.state.available = True
+                self.state.last_error = None
+                return self.state
+            old_source = self.source
+            close_before_open = (
+                old_source is not None
+                and self.state.profile is not None
+                and self.state.profile.device == profile.device
+            )
+            if close_before_open:
+                logger.info(
+                    "capture closing current source before same-device reconfigure "
+                    "device=%s backend=%s",
+                    self.state.profile.device,
+                    self.state.backend,
+                )
+                self.source = None
+                close_error = self._close_source(old_source)
+                if close_error:
+                    raise RuntimeError(close_error)
             source = self.source_factory(profile)
         except Exception as exc:
+            logger.warning(
+                "capture configure failed device=%s error=%s",
+                selected_device,
+                exc,
+            )
             failure = CaptureRuntimeState(
                 available=False,
                 device=selected_device,
@@ -173,9 +246,8 @@ class CaptureService:
                 self.state = failure
                 return self.state
             return self.state
-        old_source = self.source
         self.source = source
-        if old_source is not None:
+        if old_source is not None and not close_before_open:
             old_source.close()
         self.config.device = selected_device
         self.config.preference = selected_preference
@@ -195,27 +267,28 @@ class CaptureService:
         return self.state
 
     def read_frame(self) -> CapturedFrame | None:
-        if self.source is None:
-            self.state.last_error = "capture source is not configured"
-            raise RuntimeError(self.state.last_error)
-        try:
-            frame = self.source.read()
-        except Exception as exc:
-            self.state.frames_dropped += 1
-            self._mark_unavailable(f"capture read failed: {exc}")
-            raise
-        if frame is None:
-            self.state.frames_dropped += 1
-            return None
-        self.state.available = True
-        self.state.capture_wait_ms = frame.capture_wait_ms
-        if self._last_frame_ts_ns is not None:
-            self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
-            if self.state.frame_period_ms > 0:
-                self.state.fps_capture = 1000.0 / self.state.frame_period_ms
-        self._last_frame_ts_ns = frame.ts_ns
-        self.state.last_error = None
-        return frame
+        with self._source_lock:
+            if self.source is None:
+                self.state.last_error = "capture source is not configured"
+                raise RuntimeError(self.state.last_error)
+            try:
+                frame = self.source.read()
+            except Exception as exc:
+                self.state.frames_dropped += 1
+                self._mark_unavailable(f"capture read failed: {exc}")
+                raise
+            if frame is None:
+                self.state.frames_dropped += 1
+                return None
+            self.state.available = True
+            self.state.capture_wait_ms = frame.capture_wait_ms
+            if self._last_frame_ts_ns is not None:
+                self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
+                if self.state.frame_period_ms > 0:
+                    self.state.fps_capture = 1000.0 / self.state.frame_period_ms
+            self._last_frame_ts_ns = frame.ts_ns
+            self.state.last_error = None
+            return frame
 
     def capture_frames(
         self,
@@ -298,19 +371,16 @@ class CaptureService:
             return False
         old_source = self.source
         replacement: FrameSource | None = None
+        close_error = self._close_source(old_source)
+        if close_error:
+            self.source = None
+            self.state.last_error = f"capture recovery failed: {close_error}"
+            return False
+        self.source = None
         try:
             replacement = self.source_factory(self.state.profile)
         except Exception as exc:
             self.state.last_error = f"capture recovery failed: {exc}"
-        close_error = self._close_source(old_source)
-        if close_error:
-            if replacement is not None:
-                replacement_close_error = self._close_source(replacement)
-                if replacement_close_error:
-                    close_error = f"{close_error}; {replacement_close_error}"
-            self.source = None
-            self.state.last_error = f"capture recovery failed: {close_error}"
-            return False
         self.source = replacement
         if replacement is not None:
             self.state.available = True
@@ -320,14 +390,15 @@ class CaptureService:
         return False
 
     def _mark_unavailable(self, reason: str) -> None:
-        source = self.source
-        self.source = None
-        close_error = self._close_source(source)
-        if close_error:
-            reason = f"{reason}; {close_error}"
-        self.state.available = False
-        self.state.last_error = reason
-        self._last_frame_ts_ns = None
+        with self._source_lock:
+            source = self.source
+            self.source = None
+            close_error = self._close_source(source)
+            if close_error:
+                reason = f"{reason}; {close_error}"
+            self.state.available = False
+            self.state.last_error = reason
+            self._last_frame_ts_ns = None
 
     def mark_unavailable(self, reason: str) -> None:
         self._mark_unavailable(reason)
