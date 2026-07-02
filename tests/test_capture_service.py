@@ -205,6 +205,40 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
     ]
 
 
+def test_default_source_factory_passes_roi_size_to_appsink_candidates(monkeypatch) -> None:
+    from novasight.capture import service as service_module
+
+    pipelines: list[str] = []
+
+    class FakeAppSinkSource:
+        def __init__(self, profile, candidate) -> None:
+            del profile
+            pipelines.append(candidate.pipeline)
+            self.backend_label = candidate.label
+
+        def opened_and_readable(self) -> bool:
+            return True
+
+        def read(self):
+            return None
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FakeAppSinkSource)
+
+    service_module._open_default_source(
+        service_module.select_capture_profile(
+            "/dev/video0",
+            service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
+        ),
+        roi_size=320,
+    )
+
+    assert pipelines
+    assert 'src-crop="800:380:320:320"' in pipelines[0]
+
+
 def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) -> None:
     from novasight.capture import service as service_module
 

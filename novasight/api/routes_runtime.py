@@ -132,6 +132,7 @@ def _apply_config(request: Request, config) -> None:
     app = request.app
     app.state.config = config
     app.state.capture.config = config.capture
+    app.state.capture.roi_size = config.roi.size
     app.state.executors = ExecutorRegistry.from_config(config)
     app.state.hardware = create_hardware_box(config)
     app.state.runtime.executors = app.state.executors

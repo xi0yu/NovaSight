@@ -38,11 +38,54 @@ def normalize_roi_size(value: int) -> int:
     return size
 
 
+def center_roi_region(
+    *,
+    source_width: int,
+    source_height: int,
+    requested_size: int,
+) -> tuple[int, int, int]:
+    configured_size = normalize_roi_size(requested_size)
+    roi_size = min(configured_size, int(source_width), int(source_height))
+    offset_x = max(0, (int(source_width) - roi_size) // 2)
+    offset_y = max(0, (int(source_height) - roi_size) // 2)
+    return offset_x, offset_y, roi_size
+
+
 def center_roi_frame(frame: Any, *, requested_size: int) -> RoiFrame:
     configured_size = normalize_roi_size(requested_size)
-    roi_size = min(configured_size, int(frame.width), int(frame.height))
-    offset_x = max(0, (int(frame.width) - roi_size) // 2)
-    offset_y = max(0, (int(frame.height) - roi_size) // 2)
+    frame_roi_size = getattr(frame, "roi_size", None)
+    source_width = int(getattr(frame, "source_width", None) or frame.width)
+    source_height = int(getattr(frame, "source_height", None) or frame.height)
+    expected_offset_x, expected_offset_y, expected_roi_size = center_roi_region(
+        source_width=source_width,
+        source_height=source_height,
+        requested_size=configured_size,
+    )
+    if (
+        frame_roi_size == expected_roi_size
+        and int(frame.width) == expected_roi_size
+        and int(frame.height) == expected_roi_size
+        and int(getattr(frame, "roi_offset_x", 0)) == expected_offset_x
+        and int(getattr(frame, "roi_offset_y", 0)) == expected_offset_y
+    ):
+        return RoiFrame(
+            frame_id=frame.frame_id,
+            source_width=source_width,
+            source_height=source_height,
+            roi_size=expected_roi_size,
+            offset_x=expected_offset_x,
+            offset_y=expected_offset_y,
+            ts_ns=frame.ts_ns,
+            pixel_format=frame.pixel_format,
+            image=frame.image,
+            gpu_buffer=getattr(frame, "gpu_buffer", None),
+        )
+
+    offset_x, offset_y, roi_size = center_roi_region(
+        source_width=int(frame.width),
+        source_height=int(frame.height),
+        requested_size=configured_size,
+    )
     image = _crop_image(frame.image, offset_x=offset_x, offset_y=offset_y, size=roi_size)
     return RoiFrame(
         frame_id=frame.frame_id,

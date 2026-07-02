@@ -3,12 +3,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from novasight.roi import center_roi_region
+
 from .state import CaptureProfile
 
 @dataclass(frozen=True)
 class CaptureCandidate:
     label: str
     pipeline: str
+    source_width: int | None = None
+    source_height: int | None = None
+    roi_size: int | None = None
+    roi_offset_x: int = 0
+    roi_offset_y: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,14 +106,39 @@ def build_pipeline_candidates(profile: CaptureProfile) -> list[CaptureCandidate]
     return ordered + [CaptureCandidate(label="opencv:v4l2", pipeline="")]
 
 
-def build_appsink_candidates(profile: CaptureProfile) -> list[CaptureCandidate]:
+def build_appsink_candidates(
+    profile: CaptureProfile,
+    *,
+    roi_size: int | None = None,
+) -> list[CaptureCandidate]:
     device = profile.device
     width = profile.width
     height = profile.height
     fps = profile.fps
     fmt = profile.pixel_format.upper()
-    output_width = width
-    output_height = height
+    crop_property = ""
+    candidate_source_width: int | None = None
+    candidate_source_height: int | None = None
+    candidate_roi_size: int | None = None
+    candidate_roi_offset_x = 0
+    candidate_roi_offset_y = 0
+    if roi_size is not None:
+        crop_x, crop_y, crop_size = center_roi_region(
+            source_width=width,
+            source_height=height,
+            requested_size=roi_size,
+        )
+        output_width = crop_size
+        output_height = crop_size
+        crop_property = f' src-crop="{crop_x}:{crop_y}:{crop_size}:{crop_size}"'
+        candidate_source_width = width
+        candidate_source_height = height
+        candidate_roi_size = crop_size
+        candidate_roi_offset_x = crop_x
+        candidate_roi_offset_y = crop_y
+    else:
+        output_width = width
+        output_height = height
     sink = "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
 
     mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
@@ -114,19 +146,28 @@ def build_appsink_candidates(profile: CaptureProfile) -> list[CaptureCandidate]:
     yuyv_caps = f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1"
 
     def gst(label: str, body: str) -> CaptureCandidate:
-        return CaptureCandidate(label=f"gst-appsink:{label}", pipeline=body)
+        return CaptureCandidate(
+            label=f"gst-appsink:{label}",
+            pipeline=body,
+            source_width=candidate_source_width,
+            source_height=candidate_source_height,
+            roi_size=candidate_roi_size,
+            roi_offset_x=candidate_roi_offset_x,
+            roi_offset_y=candidate_roi_offset_y,
+        )
 
     nvmm_caps = (
         "video/x-raw(memory:NVMM),format=NV12,"
         f"width={output_width},height={output_height}"
     )
     cpu_bgr_caps = f"video/x-raw,format=BGRx,width={output_width},height={output_height}"
-    mjpg_nvmm_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! {nvmm_caps} ! {sink}"
-    nv12_nvmm_tail = f"nvvidconv ! {nvmm_caps} ! {sink}"
-    yuyv_nvmm_tail = f"nvvidconv ! {nvmm_caps} ! {sink}"
-    mjpg_cpu_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! {cpu_bgr_caps} ! {sink}"
-    nv12_cpu_tail = f"nvvidconv ! {cpu_bgr_caps} ! {sink}"
-    yuyv_cpu_tail = f"nvvidconv ! {cpu_bgr_caps} ! {sink}"
+    nvvidconv = f"nvvidconv{crop_property}"
+    mjpg_nvmm_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {nvmm_caps} ! {sink}"
+    nv12_nvmm_tail = f"{nvvidconv} ! {nvmm_caps} ! {sink}"
+    yuyv_nvmm_tail = f"{nvvidconv} ! {nvmm_caps} ! {sink}"
+    mjpg_cpu_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {cpu_bgr_caps} ! {sink}"
+    nv12_cpu_tail = f"{nvvidconv} ! {cpu_bgr_caps} ! {sink}"
+    yuyv_cpu_tail = f"{nvvidconv} ! {cpu_bgr_caps} ! {sink}"
 
     mjpg = [
         gst(

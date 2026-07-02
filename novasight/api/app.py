@@ -52,7 +52,7 @@ def create_app(
     plugins = PluginRuntime.with_builtin_plugins()
     executors = ExecutorRegistry.from_config(config)
     hardware = create_hardware_box(config)
-    capture = CaptureService(config.capture)
+    capture = CaptureService(config.capture, roi_size=config.roi.size)
     inference = InferenceRuntime()
     runtime = RuntimeService(
         config=config,

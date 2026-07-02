@@ -3,7 +3,12 @@ import pytest
 
 from novasight.capture.source import CapturedFrame
 from novasight.plugins import Detection
-from novasight.roi import ROI_SIZE_CHOICES, center_roi_frame, map_detection_to_source
+from novasight.roi import (
+    ROI_SIZE_CHOICES,
+    center_roi_frame,
+    center_roi_region,
+    map_detection_to_source,
+)
 
 
 def make_frame(width: int, height: int) -> CapturedFrame:
@@ -38,6 +43,66 @@ def test_center_roi_frame_crops_requested_square() -> None:
     assert roi.offset_y == 220
     assert roi.image.shape == (640, 640, 3)
     np.testing.assert_array_equal(roi.image, frame.image[220:860, 640:1280])
+
+
+def test_center_roi_region_returns_source_center_crop() -> None:
+    region = center_roi_region(source_width=1920, source_height=1080, requested_size=320)
+
+    assert region == (800, 380, 320)
+
+
+def test_center_roi_frame_reuses_pre_cropped_capture_roi() -> None:
+    image = np.zeros((320, 320, 3), dtype=np.uint8)
+    frame = CapturedFrame(
+        frame_id=9,
+        width=320,
+        height=320,
+        pixel_format="BGR",
+        ts_ns=456,
+        capture_wait_ms=0.8,
+        image=image,
+        source_width=1920,
+        source_height=1080,
+        roi_size=320,
+        roi_offset_x=800,
+        roi_offset_y=380,
+    )
+
+    roi = center_roi_frame(frame, requested_size=320)
+
+    assert roi.source_width == 1920
+    assert roi.source_height == 1080
+    assert roi.roi_size == 320
+    assert roi.offset_x == 800
+    assert roi.offset_y == 380
+    assert roi.image is image
+
+
+def test_center_roi_frame_reuses_pre_cropped_clamped_roi() -> None:
+    image = np.zeros((480, 480, 3), dtype=np.uint8)
+    frame = CapturedFrame(
+        frame_id=10,
+        width=480,
+        height=480,
+        pixel_format="BGR",
+        ts_ns=456,
+        capture_wait_ms=0.8,
+        image=image,
+        source_width=640,
+        source_height=480,
+        roi_size=480,
+        roi_offset_x=80,
+        roi_offset_y=0,
+    )
+
+    roi = center_roi_frame(frame, requested_size=640)
+
+    assert roi.source_width == 640
+    assert roi.source_height == 480
+    assert roi.roi_size == 480
+    assert roi.offset_x == 80
+    assert roi.offset_y == 0
+    assert roi.image is image
 
 
 def test_center_roi_frame_clamps_to_source_short_side() -> None:

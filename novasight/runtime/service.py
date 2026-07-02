@@ -121,8 +121,8 @@ class RuntimeService:
 
         context = FrameContext(
             frame_id=frame.frame_id,
-            width=frame.width,
-            height=frame.height,
+            width=self._source_width(frame),
+            height=self._source_height(frame),
             detections=detections,
             classes=classes,
         )
@@ -131,9 +131,15 @@ class RuntimeService:
     def _empty_frame_context(self, frame: CapturedFrame) -> FrameContext:
         return FrameContext(
             frame_id=frame.frame_id,
-            width=frame.width,
-            height=frame.height,
+            width=self._source_width(frame),
+            height=self._source_height(frame),
         )
+
+    def _source_width(self, frame: CapturedFrame) -> int:
+        return int(frame.source_width or frame.width)
+
+    def _source_height(self, frame: CapturedFrame) -> int:
+        return int(frame.source_height or frame.height)
 
     def _active_model(self) -> dict | None:
         deployment = self.models.get_active_deployment()

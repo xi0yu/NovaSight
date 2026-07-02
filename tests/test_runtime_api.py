@@ -52,12 +52,14 @@ def test_config_schema_matches_runtime_config_and_update_syncs_runtime_objects(t
     body = schema["values"]
     body["control"]["output_mode"] = "silent"
     body["capture"]["device"] = "/dev/video7"
+    body["roi"]["size"] = 320
 
     response = client.put("/api/config", json=body)
 
     assert response.status_code == 200
     assert response.json()["config"]["capture"]["device"] == "/dev/video7"
     assert app.state.capture.config.device == "/dev/video7"
+    assert app.state.capture.roi_size == 320
     assert app.state.runtime.config.capture.device == "/dev/video7"
     assert app.state.runtime.executors.selected == "silent"
     assert any(section["id"] == "hardware" for section in schema["sections"])

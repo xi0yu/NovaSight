@@ -17,6 +17,11 @@ class CapturedFrame:
     ts_ns: int
     capture_wait_ms: float
     image: Any
+    source_width: int | None = None
+    source_height: int | None = None
+    roi_size: int | None = None
+    roi_offset_x: int = 0
+    roi_offset_y: int = 0
 
 
 class FrameSource(Protocol):
@@ -39,6 +44,7 @@ class OpenCvFrameSource:
         import cv2
 
         self.profile = profile
+        self._candidate = candidate
         self.backend_label = candidate.label
         self._cv2 = cv2
         if candidate.label == "opencv:v4l2":
@@ -107,6 +113,7 @@ class GstAppSinkFrameSource:
         if not Gst.is_initialized():
             Gst.init(None)
         self.profile = profile
+        self._candidate = candidate
         self.backend_label = candidate.label
         self._Gst = Gst
         self._pipeline = Gst.parse_launch(candidate.pipeline)
@@ -166,6 +173,11 @@ class GstAppSinkFrameSource:
             ts_ns=t1,
             capture_wait_ms=(t1 - t0) / 1e6,
             image=image,
+            source_width=self._candidate.source_width,
+            source_height=self._candidate.source_height,
+            roi_size=self._candidate.roi_size,
+            roi_offset_x=self._candidate.roi_offset_x,
+            roi_offset_y=self._candidate.roi_offset_y,
         )
 
 

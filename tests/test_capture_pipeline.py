@@ -62,6 +62,23 @@ def test_appsink_candidates_do_not_use_opencv_labels() -> None:
     assert all(not candidate.label.startswith("opencv:") for candidate in candidates)
 
 
+def test_appsink_candidates_can_emit_center_roi() -> None:
+    candidates = build_appsink_candidates(_profile("MJPG"), roi_size=320)
+
+    assert candidates[0].label == "gst-appsink:nvmm-mjpg-iomode2"
+    assert candidates[0].source_width == 1920
+    assert candidates[0].source_height == 1080
+    assert candidates[0].roi_size == 320
+    assert candidates[0].roi_offset_x == 800
+    assert candidates[0].roi_offset_y == 380
+    assert "src-crop=\"800:380:320:320\"" in candidates[0].pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in candidates[0].pipeline
+    assert any(
+        "video/x-raw,format=BGRx,width=320,height=320" in candidate.pipeline
+        for candidate in candidates
+    )
+
+
 def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
     candidates = build_appsink_candidates(_profile("YUYV"))
 
@@ -245,6 +262,61 @@ def test_gstreamer_sample_to_bgr_converts_nv12_buffer() -> None:
     assert image.dtype == np.uint8
     assert int(image.max()) == 0
     assert sample.buffer.unmapped is True
+
+
+def test_gstreamer_appsink_frame_inherits_roi_candidate_metadata() -> None:
+    source = object.__new__(GstAppSinkFrameSource)
+    source._first_frame = None
+    source._frame_id = 0
+    source._Gst = SimpleNamespace(MSECOND=1, MapFlags=SimpleNamespace(READ=1))
+    source._candidate = CaptureCandidate(
+        label="gst-appsink:test",
+        pipeline="pipeline",
+        source_width=1920,
+        source_height=1080,
+        roi_size=320,
+        roi_offset_x=800,
+        roi_offset_y=380,
+    )
+
+    class FakeStructure:
+        def get_int(self, name: str):
+            return True, 2
+
+        def get_string(self, name: str):
+            return "BGR"
+
+    class FakeCaps:
+        def get_size(self) -> int:
+            return 1
+
+        def get_structure(self, index: int):
+            return FakeStructure()
+
+    class FakeBuffer:
+        def map(self, flags):
+            return True, SimpleNamespace(data=bytes([0] * 12))
+
+        def unmap(self, info) -> None:
+            pass
+
+    class FakeSample:
+        def get_caps(self):
+            return FakeCaps()
+
+        def get_buffer(self):
+            return FakeBuffer()
+
+    source._appsink = SimpleNamespace(try_pull_sample=lambda timeout_ns: FakeSample())
+
+    frame = source.read()
+
+    assert frame is not None
+    assert frame.source_width == 1920
+    assert frame.source_height == 1080
+    assert frame.roi_size == 320
+    assert frame.roi_offset_x == 800
+    assert frame.roi_offset_y == 380
 
 
 def test_gstreamer_appsink_close_waits_for_null_state() -> None:

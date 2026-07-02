@@ -63,10 +63,14 @@ def _open_first_readable_source(
     )
 
 
-def _open_default_source(profile: CaptureProfile) -> FrameSource:
+def _open_default_source(
+    profile: CaptureProfile,
+    *,
+    roi_size: int | None = None,
+) -> FrameSource:
     return _open_first_readable_source(
         profile,
-        candidates=build_appsink_candidates(profile),
+        candidates=build_appsink_candidates(profile, roi_size=roi_size),
         source_cls=GstAppSinkFrameSource,
     )
 
@@ -79,10 +83,12 @@ class CaptureService:
         capability_runner: Callable[[str], str | None] | None = None,
         source_factory: Callable[[CaptureProfile], FrameSource] | None = None,
         empty_read_sleep_s: float = 0.001,
+        roi_size: int | None = None,
     ) -> None:
         self.config = config
+        self.roi_size = roi_size
         self.capability_runner = capability_runner
-        self.source_factory = source_factory or _open_default_source
+        self.source_factory = source_factory or self._open_configured_source
         self.empty_read_sleep_s = empty_read_sleep_s
         self.session = CaptureSession(
             source_factory=self.source_factory,
@@ -92,6 +98,9 @@ class CaptureService:
         self.last_config_error: CaptureRuntimeState | None = None
         self._last_preview_output_ts_ns: int | None = None
         self._source_lock = threading.RLock()
+
+    def _open_configured_source(self, profile: CaptureProfile) -> FrameSource:
+        return _open_default_source(profile, roi_size=self.roi_size)
 
     @property
     def state(self) -> CaptureRuntimeState:
