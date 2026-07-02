@@ -6,6 +6,7 @@ import {
 } from "../../api";
 import { Field } from "../shared/Field";
 import { formatProfile, statusTone } from "../shared/format";
+import { InferenceControl } from "../shared/InferenceControl";
 
 type DashboardViewProps = {
   health: HealthResponse | null;
@@ -130,27 +131,6 @@ function ExecutorTable({ executor }: { executor: ExecutorStatus | undefined }) {
         </tbody>
       </table>
     </div>
-  );
-}
-
-export function InferenceControl({
-  running,
-  busy,
-  onCommand
-}: {
-  running: boolean;
-  busy: boolean;
-  onCommand: (action: "start" | "stop") => void;
-}) {
-  return (
-    <button
-      className={running ? "button danger-button" : "button primary-button"}
-      disabled={busy}
-      onClick={() => onCommand(running ? "stop" : "start")}
-      type="button"
-    >
-      {busy ? "处理中" : running ? "停止推理控制" : "启动推理控制"}
-    </button>
   );
 }
 

@@ -21,11 +21,8 @@ import {
 import { ConfigView } from "./features/config/ConfigView";
 import { DashboardView } from "./features/dashboard/DashboardView";
 import { DevicesView } from "./features/devices/DevicesView";
-import {
-  LICENSE_CACHE_KEY,
-  LicenseGate,
-  LicenseView
-} from "./features/license/LicenseView";
+import { LicenseGate, LicenseView } from "./features/license/LicenseView";
+import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { ModelsView } from "./features/models/ModelsView";
 import { PluginsView } from "./features/plugins/PluginsView";
 import { formatTime, getErrorMessage } from "./features/shared/format";

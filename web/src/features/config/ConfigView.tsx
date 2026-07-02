@@ -10,7 +10,7 @@ import {
   updateRuntimeConfig
 } from "../../api";
 import { EmptyState, InlineError, Panel } from "../../components/ui";
-import { LicensePanel } from "../license/LicenseView";
+import { LicensePanel } from "../license/LicensePanel";
 import { Field } from "../shared/Field";
 import { formatProfile, getErrorMessage } from "../shared/format";
 

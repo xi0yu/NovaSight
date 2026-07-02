@@ -12,8 +12,8 @@ import {
   streamUrl
 } from "../../api";
 import { EmptyState, InlineError, Panel, StatusIndicator } from "../../components/ui";
-import { InferenceControl } from "../dashboard/DashboardView";
 import { formatProfile, getErrorMessage } from "../shared/format";
+import { InferenceControl } from "../shared/InferenceControl";
 
 type CapabilityChoice = {
   pixel_format: string;
