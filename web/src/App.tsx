@@ -69,6 +69,14 @@ const tabs: Array<{ id: TabId; label: string }> = [
   { id: "settings", label: "设置" }
 ];
 
+const tabHints: Record<TabId, string> = {
+  overview: "链路",
+  capture: "输入",
+  models: "模型",
+  plugins: "算法",
+  settings: "系统"
+};
+
 const initialState: LoadState = {
   loading: true,
   errors: {},
@@ -137,7 +145,12 @@ function StatusPill({
   tone: "good" | "warn" | "bad" | "idle";
   children: React.ReactNode;
 }) {
-  return <span className={`status-pill ${tone}`}>{children}</span>;
+  return (
+    <span className={`status-pill ${tone}`}>
+      <span className="status-dot" />
+      {children}
+    </span>
+  );
 }
 
 function InlineError({ message }: { message: string | undefined }) {
@@ -189,7 +202,7 @@ function Panel({
         </div>
         {action ? <div className="panel-action">{action}</div> : null}
       </div>
-      {children}
+      <div className="panel-body">{children}</div>
     </section>
   );
 }
@@ -462,7 +475,12 @@ function CaptureWorkbench({
             alt="实时采集画面"
             src={streamUrl(streamKey)}
           />
+          <div className="scan-lines" />
           <div className="reticle" />
+          <div className="corner-frame corner-frame-tl" />
+          <div className="corner-frame corner-frame-tr" />
+          <div className="corner-frame corner-frame-bl" />
+          <div className="corner-frame corner-frame-br" />
           <div className="video-status">
             <StatusPill tone={capture?.available ? "good" : "idle"}>
               {capture?.available ? "采集中" : "未打开"}
@@ -556,7 +574,11 @@ function CapabilityTable({
                         {row.width}x{row.height}
                       </td>
                       <td className="mono">{row.fps}</td>
-                      <td>{getCapabilityHint(row)}</td>
+                      <td>
+                        <span className={`hint-chip ${getCapabilityTone(row)}`}>
+                          {getCapabilityHint(row)}
+                        </span>
+                      </td>
                       <td>
                         <button
                           className="button compact-button"
@@ -597,6 +619,19 @@ function getCapabilityHint(row: CapabilityChoice): string {
     return "均衡";
   }
   return "手动";
+}
+
+function getCapabilityTone(row: CapabilityChoice): string {
+  if (row.pixel_format === "MJPG" && row.fps >= 120) {
+    return "prime";
+  }
+  if (row.pixel_format === "NV12" && row.fps >= 60) {
+    return "cool";
+  }
+  if (row.width === 1920 && row.height === 1080) {
+    return "balanced";
+  }
+  return "plain";
 }
 
 function CaptureDiagnostics({ capture }: { capture: CaptureState | undefined }) {
@@ -902,7 +937,7 @@ function LicenseGate({
     <main className="app-shell license-shell">
       <section className="license-gate">
         <div className="brand-block">
-          <span className="brand-mark">NS</span>
+          <span className="brand-mark"><span>NS</span></span>
           <div>
             <h1>NovaSight</h1>
             <p>请输入卡密后进入 Jetson 实时视觉工作台</p>
@@ -1170,7 +1205,7 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <span className="brand-mark">NS</span>
+          <span className="brand-mark"><span>NS</span></span>
           <div>
             <h1>NovaSight</h1>
             <p>Jetson 实时视觉工作台</p>
@@ -1193,7 +1228,8 @@ export default function App() {
             onClick={() => setActiveTab(tab.id)}
             type="button"
           >
-            {tab.label}
+            <span className="tab-label">{tab.label}</span>
+            <span className="tab-hint">{tabHints[tab.id]}</span>
           </button>
         ))}
       </nav>
