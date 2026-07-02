@@ -181,7 +181,7 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
             self.backend_label = candidate.label
 
         def opened_and_readable(self) -> bool:
-            return self.backend_label == "gst-appsink:cpu-bgr-mjpg-iomode2"
+            return self.backend_label == "gst-appsink:nvmm-mjpg-ioauto"
 
         def read(self):
             return None
@@ -196,12 +196,11 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
         service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
     ))
 
-    assert source.backend_label == "gst-appsink:cpu-bgr-mjpg-iomode2"
-    assert attempts[:4] == [
+    assert source.backend_label == "gst-appsink:nvmm-mjpg-ioauto"
+    assert attempts[:3] == [
         "gst-appsink:nvmm-mjpg-iomode2",
         "gst-appsink:nvmm-mjpg-iomode4",
         "gst-appsink:nvmm-mjpg-ioauto",
-        "gst-appsink:cpu-bgr-mjpg-iomode2",
     ]
 
 
@@ -236,10 +235,11 @@ def test_default_source_factory_passes_roi_size_to_appsink_candidates(monkeypatc
     )
 
     assert pipelines
-    assert 'src-crop="800:380:320:320"' in pipelines[0]
+    assert "left=800 right=1120 top=380 bottom=700" in pipelines[0]
+    assert "src-crop" not in pipelines[0]
 
 
-def test_default_source_factory_falls_back_when_roi_crop_property_is_unsupported(monkeypatch) -> None:
+def test_default_source_factory_does_not_generate_cpu_or_full_frame_fallbacks(monkeypatch) -> None:
     from novasight.capture import service as service_module
 
     attempts: list[str] = []
@@ -249,11 +249,9 @@ def test_default_source_factory_falls_back_when_roi_crop_property_is_unsupported
             del profile
             attempts.append(candidate.pipeline)
             self.backend_label = candidate.label
-            if "src-crop=" in candidate.pipeline:
-                raise RuntimeError('gst_parse_error: no property "src-crop"')
 
         def opened_and_readable(self) -> bool:
-            return True
+            return False
 
         def read(self):
             return None
@@ -263,17 +261,23 @@ def test_default_source_factory_falls_back_when_roi_crop_property_is_unsupported
 
     monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FakeAppSinkSource)
 
-    source = service_module._open_default_source(
-        service_module.select_capture_profile(
-            "/dev/video0",
-            service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
-        ),
-        roi_size=320,
-    )
+    try:
+        service_module._open_default_source(
+            service_module.select_capture_profile(
+                "/dev/video0",
+                service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
+            ),
+            roi_size=320,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected all fake GPU candidates to fail")
 
-    assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
-    assert any("src-crop=" in attempt for attempt in attempts)
-    assert "src-crop=" not in attempts[-1]
+    assert attempts
+    assert all("left=800 right=1120 top=380 bottom=700" in attempt for attempt in attempts)
+    assert all("src-crop" not in attempt for attempt in attempts)
+    assert all("video/x-raw,format=BGRx" not in attempt for attempt in attempts)
 
 
 def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) -> None:

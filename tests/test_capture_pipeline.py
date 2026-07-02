@@ -34,7 +34,8 @@ def test_mjpg_candidates_start_with_nvmm_decoder() -> None:
     assert "v4l2src device=/dev/video0" in candidates[0].pipeline
     assert "image/jpeg,width=1920,height=1080,framerate=120/1" in candidates[0].pipeline
     assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
-    assert candidates[-1].label == "opencv:v4l2"
+    assert all(not candidate.label.startswith("opencv:") for candidate in candidates)
+    assert all("cpu-" not in candidate.label for candidate in candidates)
 
 
 def test_nv12_candidates_start_with_nvmm_nv12() -> None:
@@ -54,11 +55,7 @@ def test_appsink_candidates_do_not_use_opencv_labels() -> None:
     assert "appsink name=sink" in candidates[0].pipeline
     assert "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidates[0].pipeline
     assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
-    assert any(
-        "video/x-raw,format=BGRx,width=1920,height=1080"
-        in candidate.pipeline
-        for candidate in candidates
-    )
+    assert all("cpu-bgr" not in candidate.label for candidate in candidates)
     assert all(not candidate.label.startswith("opencv:") for candidate in candidates)
 
 
@@ -71,28 +68,20 @@ def test_appsink_candidates_can_emit_center_roi() -> None:
     assert candidates[0].roi_size == 320
     assert candidates[0].roi_offset_x == 800
     assert candidates[0].roi_offset_y == 380
-    assert "src-crop=\"800:380:320:320\"" in candidates[0].pipeline
+    assert "left=800 right=1120 top=380 bottom=700" in candidates[0].pipeline
     assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in candidates[0].pipeline
-    assert any(
-        "video/x-raw,format=BGRx,width=320,height=320" in candidate.pipeline
-        for candidate in candidates
-    )
+    assert all("src-crop" not in candidate.pipeline for candidate in candidates)
+    assert all("cpu-bgr" not in candidate.label for candidate in candidates)
 
 
-def test_appsink_candidates_include_full_frame_fallback_when_roi_enabled() -> None:
+def test_appsink_candidates_do_not_include_full_frame_fallback_when_roi_enabled() -> None:
     candidates = build_appsink_candidates(_profile("MJPG"), roi_size=320)
 
-    roi_candidates = [candidate for candidate in candidates if "src-crop=" in candidate.pipeline]
-    fallback_candidates = [candidate for candidate in candidates if "src-crop=" not in candidate.pipeline]
+    roi_candidates = [candidate for candidate in candidates if "left=800" in candidate.pipeline]
 
     assert roi_candidates
-    assert fallback_candidates
-    assert all(candidate.roi_size is not None for candidate in roi_candidates)
-    assert all(candidate.roi_size is None for candidate in fallback_candidates)
-    assert any(
-        "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidate.pipeline
-        for candidate in fallback_candidates
-    )
+    assert all(candidate.roi_size is not None for candidate in candidates)
+    assert all("width=1920,height=1080 ! appsink" not in candidate.pipeline for candidate in candidates)
 
 
 def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
@@ -103,17 +92,11 @@ def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
     assert "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidates[0].pipeline
 
 
-def test_appsink_cpu_fallbacks_preserve_capture_size_before_roi() -> None:
+def test_appsink_candidates_do_not_include_cpu_fallbacks() -> None:
     candidates = build_appsink_candidates(_profile("MJPG"))
-    cpu_candidates = [
-        candidate for candidate in candidates if "cpu-bgr" in candidate.label
-    ]
 
-    assert cpu_candidates
-    assert all(
-        "video/x-raw,format=BGRx,width=1920,height=1080" in candidate.pipeline
-        for candidate in cpu_candidates
-    )
+    assert all("cpu-bgr" not in candidate.label for candidate in candidates)
+    assert all("video/x-raw,format=BGRx" not in candidate.pipeline for candidate in candidates)
 
 
 def test_select_open_source_returns_first_candidate_that_reads() -> None:
@@ -121,18 +104,17 @@ def test_select_open_source_returns_first_candidate_that_reads() -> None:
 
     def opener(candidate):
         attempts.append(candidate.label)
-        return candidate.label == "gst:cpu-jpegdec-mjpg"
+        return candidate.label == "gst:nvmm-mjpg-ioauto"
 
     selected = select_open_source(_profile("MJPG"), opener=opener)
 
-    assert selected.label == "gst:cpu-jpegdec-mjpg"
-    assert attempts[:4] == [
+    assert selected.label == "gst:nvmm-mjpg-ioauto"
+    assert attempts[:3] == [
         "gst:nvmm-mjpg-iomode2",
         "gst:nvmm-mjpg-iomode4",
         "gst:nvmm-mjpg-ioauto",
-        "gst:cpu-jpegdec-mjpg",
     ]
-    assert selected.failures == attempts[:3]
+    assert selected.failures == attempts[:2]
 
 
 def test_select_open_source_raises_when_all_candidates_fail() -> None:
@@ -151,21 +133,19 @@ def test_select_open_source_records_opener_exception_and_continues() -> None:
         attempts.append(candidate.label)
         if candidate.label == "gst:nvmm-mjpg-iomode2":
             raise RuntimeError("decoder unavailable")
-        return candidate.label == "gst:cpu-jpegdec-mjpg"
+        return candidate.label == "gst:nvmm-mjpg-ioauto"
 
     selected = select_open_source(_profile("MJPG"), opener=opener)
 
-    assert selected.label == "gst:cpu-jpegdec-mjpg"
-    assert attempts[:4] == [
+    assert selected.label == "gst:nvmm-mjpg-ioauto"
+    assert attempts[:3] == [
         "gst:nvmm-mjpg-iomode2",
         "gst:nvmm-mjpg-iomode4",
         "gst:nvmm-mjpg-ioauto",
-        "gst:cpu-jpegdec-mjpg",
     ]
     assert selected.failures[0] == "gst:nvmm-mjpg-iomode2: decoder unavailable"
-    assert selected.failures[1:3] == [
+    assert selected.failures[1:] == [
         "gst:nvmm-mjpg-iomode4",
-        "gst:nvmm-mjpg-ioauto",
     ]
 
 

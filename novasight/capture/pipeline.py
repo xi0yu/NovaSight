@@ -40,61 +40,42 @@ def build_pipeline_candidates(profile: CaptureProfile) -> list[CaptureCandidate]
     def gst(label: str, body: str) -> CaptureCandidate:
         return CaptureCandidate(label=label, pipeline=body)
 
-    bgrx_to_sink = (
-        "nvvidconv ! video/x-raw,format=BGRx ! "
-        "videoconvert ! video/x-raw,format=BGR ! "
-        f"{sink}"
-    )
+    nvmm_to_sink = f"nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! {sink}"
     mjpg = [
         gst(
             "gst:nvmm-mjpg-iomode2",
             f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! "
-            f"jpegparse ! nvv4l2decoder mjpeg=1 ! {bgrx_to_sink}",
+            f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvmm_to_sink}",
         ),
         gst(
             "gst:nvmm-mjpg-iomode4",
             f"v4l2src device={device} io-mode=4 ! {mjpg_caps} ! "
-            f"jpegparse ! nvv4l2decoder mjpeg=1 ! {bgrx_to_sink}",
+            f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvmm_to_sink}",
         ),
         gst(
             "gst:nvmm-mjpg-ioauto",
             f"v4l2src device={device} ! {mjpg_caps} ! "
-            f"jpegparse ! nvv4l2decoder mjpeg=1 ! {bgrx_to_sink}",
-        ),
-        gst(
-            "gst:cpu-jpegdec-mjpg",
-            f"v4l2src device={device} ! {mjpg_caps} ! "
-            f"jpegdec ! videoconvert ! video/x-raw,format=BGR ! {sink}",
+            f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvmm_to_sink}",
         ),
     ]
     nv12 = [
         gst(
             "gst:nvmm-nv12-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {bgrx_to_sink}",
+            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nvmm_to_sink}",
         ),
         gst(
             "gst:nvmm-nv12-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {nv12_caps} ! {bgrx_to_sink}",
+            f"v4l2src device={device} io-mode=4 ! {nv12_caps} ! {nvmm_to_sink}",
         ),
         gst(
             "gst:nvmm-nv12-ioauto",
-            f"v4l2src device={device} ! {nv12_caps} ! {bgrx_to_sink}",
-        ),
-        gst(
-            "gst:cpu-nv12-videoconvert",
-            f"v4l2src device={device} ! {nv12_caps} ! "
-            f"videoconvert ! video/x-raw,format=BGR ! {sink}",
+            f"v4l2src device={device} ! {nv12_caps} ! {nvmm_to_sink}",
         ),
     ]
     yuyv = [
         gst(
             "gst:nvmm-yuyv-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {bgrx_to_sink}",
-        ),
-        gst(
-            "gst:cpu-yuyv-videoconvert",
-            f"v4l2src device={device} ! {yuyv_caps} ! "
-            f"videoconvert ! video/x-raw,format=BGR ! {sink}",
+            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {nvmm_to_sink}",
         ),
     ]
 
@@ -103,7 +84,7 @@ def build_pipeline_candidates(profile: CaptureProfile) -> list[CaptureCandidate]
         ordered = nv12 + yuyv + mjpg
     elif fmt == "YUYV":
         ordered = yuyv + nv12 + mjpg
-    return ordered + [CaptureCandidate(label="opencv:v4l2", pipeline="")]
+    return ordered
 
 
 def build_appsink_candidates(
@@ -111,25 +92,12 @@ def build_appsink_candidates(
     *,
     roi_size: int | None = None,
 ) -> list[CaptureCandidate]:
-    if roi_size is not None:
-        return _build_appsink_candidates(profile, roi_size=roi_size) + _build_appsink_candidates(
-            profile,
-            roi_size=None,
-        )
-    return _build_appsink_candidates(profile, roi_size=None)
-
-
-def _build_appsink_candidates(
-    profile: CaptureProfile,
-    *,
-    roi_size: int | None,
-) -> list[CaptureCandidate]:
     device = profile.device
     width = profile.width
     height = profile.height
     fps = profile.fps
     fmt = profile.pixel_format.upper()
-    crop_property = ""
+    crop_properties = ""
     candidate_source_width: int | None = None
     candidate_source_height: int | None = None
     candidate_roi_size: int | None = None
@@ -143,7 +111,11 @@ def _build_appsink_candidates(
         )
         output_width = crop_size
         output_height = crop_size
-        crop_property = f' src-crop="{crop_x}:{crop_y}:{crop_size}:{crop_size}"'
+        crop_right = crop_x + crop_size
+        crop_bottom = crop_y + crop_size
+        crop_properties = (
+            f" left={crop_x} right={crop_right} top={crop_y} bottom={crop_bottom}"
+        )
         candidate_source_width = width
         candidate_source_height = height
         candidate_roi_size = crop_size
@@ -173,14 +145,10 @@ def _build_appsink_candidates(
         "video/x-raw(memory:NVMM),format=NV12,"
         f"width={output_width},height={output_height}"
     )
-    cpu_bgr_caps = f"video/x-raw,format=BGRx,width={output_width},height={output_height}"
-    nvvidconv = f"nvvidconv{crop_property}"
+    nvvidconv = f"nvvidconv{crop_properties}"
     mjpg_nvmm_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {nvmm_caps} ! {sink}"
     nv12_nvmm_tail = f"{nvvidconv} ! {nvmm_caps} ! {sink}"
     yuyv_nvmm_tail = f"{nvvidconv} ! {nvmm_caps} ! {sink}"
-    mjpg_cpu_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {cpu_bgr_caps} ! {sink}"
-    nv12_cpu_tail = f"{nvvidconv} ! {cpu_bgr_caps} ! {sink}"
-    yuyv_cpu_tail = f"{nvvidconv} ! {cpu_bgr_caps} ! {sink}"
 
     mjpg = [
         gst(
@@ -194,14 +162,6 @@ def _build_appsink_candidates(
         gst(
             "nvmm-mjpg-ioauto",
             f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_nvmm_tail}",
-        ),
-        gst(
-            "cpu-bgr-mjpg-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! {mjpg_cpu_tail}",
-        ),
-        gst(
-            "cpu-bgr-mjpg-ioauto",
-            f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_cpu_tail}",
         ),
     ]
     nv12 = [
@@ -217,14 +177,6 @@ def _build_appsink_candidates(
             "nvmm-nv12-ioauto",
             f"v4l2src device={device} ! {nv12_caps} ! {nv12_nvmm_tail}",
         ),
-        gst(
-            "cpu-bgr-nv12-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nv12_cpu_tail}",
-        ),
-        gst(
-            "cpu-bgr-nv12-ioauto",
-            f"v4l2src device={device} ! {nv12_caps} ! {nv12_cpu_tail}",
-        ),
     ]
     yuyv = [
         gst(
@@ -238,14 +190,6 @@ def _build_appsink_candidates(
         gst(
             "nvmm-yuyv-ioauto",
             f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_nvmm_tail}",
-        ),
-        gst(
-            "cpu-bgr-yuyv-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {yuyv_cpu_tail}",
-        ),
-        gst(
-            "cpu-bgr-yuyv-ioauto",
-            f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_cpu_tail}",
         ),
     ]
 

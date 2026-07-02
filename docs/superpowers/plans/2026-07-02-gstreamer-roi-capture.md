@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an ROI-aware GStreamer appsink capture path that can deliver center-cropped ROI frames with source-coordinate metadata, while preserving the existing CPU ROI fallback.
+**Goal:** Add an ROI-aware GStreamer appsink capture path that can deliver center-cropped ROI frames with source-coordinate metadata using GPU/NVMM candidates only.
 
-**Architecture:** Capture candidates receive the runtime ROI size and build ROI-sized pipelines. `CapturedFrame` carries optional ROI metadata. `center_roi_frame()` reuses an already-cropped ROI frame when metadata matches the configured size, avoiding duplicate crop work before inference.
+**Architecture:** Capture candidates receive the runtime ROI size and build ROI-sized `nvvidconv left/right/top/bottom` pipelines. `CapturedFrame` carries optional ROI metadata. `center_roi_frame()` reuses an already-cropped ROI frame when metadata matches the configured size, avoiding duplicate crop work before inference.
 
 **Tech Stack:** Python dataclasses, GStreamer pipeline string generation, existing FastAPI runtime config application, pytest, TypeScript build verification.
 

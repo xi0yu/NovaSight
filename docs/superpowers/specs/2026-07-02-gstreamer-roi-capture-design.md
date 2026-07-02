@@ -14,7 +14,7 @@ Move ROI closer to the Jetson capture path without changing NovaSight's core run
 
 ## Recommended Approach
 
-Add an ROI-aware capture source path for GStreamer appsink while keeping CPU ROI fallback.
+Add an ROI-aware capture source path for GStreamer appsink using Jetson `nvvidconv` crop properties. Do not generate CPU fallback candidates for this capture path.
 
 The intended data flow is:
 
@@ -37,7 +37,9 @@ Implement in this phase:
 - Build ROI-sized GStreamer appsink candidates when an ROI size is configured.
 - Carry source-frame dimensions and ROI offset on `CapturedFrame`.
 - Make `center_roi_frame()` reuse an already-cropped matching ROI frame.
-- Keep CPU fallback behavior for full-frame sources and non-GStreamer paths.
+- Use `nvvidconv left=<x> right=<x+roi> top=<y> bottom=<y+roi>` for center ROI cropping.
+- Do not generate `src-crop` properties; this is not supported by the target `nvvidconv`.
+- Do not generate `cpu-bgr-*` fallback candidates for the appsink capture path.
 - Add tests proving no double crop and correct coordinate offsets.
 
 Do not implement in this phase:
@@ -52,11 +54,11 @@ Do not implement in this phase:
 - If a frame has ROI metadata and matches the requested ROI size, runtime must treat it as the canonical ROI frame.
 - If a frame has no ROI metadata, runtime must center-crop from the delivered image as it does today.
 - Detection mapping always uses `RoiFrame.offset_x` and `RoiFrame.offset_y`.
-- Browser preview can render from the delivered ROI or CPU fallback ROI; it must not invoke inference.
+- Browser preview can render from the delivered ROI. It must not invoke inference.
 
 ## Risks
 
-- GStreamer crop property support can vary by Jetson image and plugin version. Candidate fallback ordering must include CPU-compatible paths.
+- The target Jetson `nvvidconv` supports `left/right/top/bottom`, not `src-crop`.
 - If ROI config changes while capture is already running, the capture pipeline will not automatically rebuild. The runtime CPU ROI path preserves correctness, but GPU crop takes effect on the next capture reconfigure.
 - The current TensorRT engine is not a real inference implementation, so end-to-end GPU buffer validation remains future work.
 
