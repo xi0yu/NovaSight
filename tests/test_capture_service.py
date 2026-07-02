@@ -110,13 +110,12 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
     class FakeAppSinkSource:
         backend_label = "gst-appsink:test"
 
-        @classmethod
-        def probe(cls, profile, candidate):
-            attempts.append(candidate.label)
-            return candidate.label == "gst-appsink:nvmm-mjpg-iomode2"
-
         def __init__(self, profile, candidate) -> None:
+            attempts.append(candidate.label)
             self.backend_label = candidate.label
+
+        def opened_and_readable(self) -> bool:
+            return self.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
 
         def read(self):
             return None
@@ -139,6 +138,46 @@ def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
 
     assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
     assert attempts[0] == "gst-appsink:nvmm-mjpg-iomode2"
+
+
+def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) -> None:
+    from novasight.capture import service as service_module
+
+    opened: list[str] = []
+
+    class FakeAppSinkSource:
+        def __init__(self, profile, candidate) -> None:
+            opened.append(candidate.label)
+            self.backend_label = candidate.label
+            self.closed = False
+
+        @classmethod
+        def probe(cls, profile, candidate):
+            raise AssertionError("default source factory should not probe by double-opening")
+
+        def opened_and_readable(self) -> bool:
+            return True
+
+        def read(self):
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FailingOpenCvSource:
+        def __init__(self, profile, candidate) -> None:
+            raise AssertionError("opencv fallback should not run when appsink opens")
+
+    monkeypatch.setattr(service_module, "GstAppSinkFrameSource", FakeAppSinkSource)
+    monkeypatch.setattr(service_module, "OpenCvFrameSource", FailingOpenCvSource)
+
+    source = service_module._open_default_source(service_module.select_capture_profile(
+        "/dev/video0",
+        service_module.query_capabilities("/dev/video0", runner=lambda device: CAPS_TEXT).capabilities,
+    ))
+
+    assert source.backend_label == "gst-appsink:nvmm-mjpg-iomode2"
+    assert opened == ["gst-appsink:nvmm-mjpg-iomode2"]
 
 
 def test_read_frame_updates_stream_diagnostics() -> None:

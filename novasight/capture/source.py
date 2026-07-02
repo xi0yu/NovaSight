@@ -110,20 +110,20 @@ class GstAppSinkFrameSource:
         self.backend_label = candidate.label
         self._Gst = Gst
         self._pipeline = Gst.parse_launch(candidate.pipeline)
+        self._closed = False
         self._appsink = self._pipeline.get_by_name("sink")
         if self._appsink is None:
-            self._pipeline.set_state(Gst.State.NULL)
+            self._stop_pipeline()
             raise RuntimeError("appsink element not found")
         self._frame_id = 0
-        self._closed = False
         self._first_frame: CapturedFrame | None = None
         ret = self._pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
-            self._pipeline.set_state(Gst.State.NULL)
+            self._stop_pipeline()
             raise RuntimeError("GStreamer pipeline set_state PLAYING failed")
         first = self._pull_frame(timeout_ns=2 * Gst.SECOND)
         if first is None:
-            self._pipeline.set_state(Gst.State.NULL)
+            self._stop_pipeline()
             raise RuntimeError("GStreamer appsink first frame timeout")
         self._first_frame = first
 
@@ -140,7 +140,11 @@ class GstAppSinkFrameSource:
     def close(self) -> None:
         if self._closed:
             return
+        self._stop_pipeline()
+
+    def _stop_pipeline(self) -> None:
         self._pipeline.set_state(self._Gst.State.NULL)
+        self._pipeline.get_state(2 * self._Gst.SECOND)
         self._closed = True
 
     def _pull_frame(self, *, timeout_ns: int) -> CapturedFrame | None:

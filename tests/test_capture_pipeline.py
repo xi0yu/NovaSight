@@ -10,7 +10,7 @@ from novasight.capture.pipeline import (
     build_pipeline_candidates,
     select_open_source,
 )
-from novasight.capture.source import OpenCvFrameSource
+from novasight.capture.source import GstAppSinkFrameSource, OpenCvFrameSource
 from novasight.capture.source import _sample_to_bgr
 
 
@@ -232,3 +232,27 @@ def test_gstreamer_sample_to_bgr_converts_nv12_buffer() -> None:
     assert image.dtype == np.uint8
     assert int(image.max()) == 0
     assert sample.buffer.unmapped is True
+
+
+def test_gstreamer_appsink_close_waits_for_null_state() -> None:
+    calls: list[tuple[str, object | None]] = []
+
+    class FakePipeline:
+        def set_state(self, state) -> None:
+            calls.append(("set_state", state))
+
+        def get_state(self, timeout) -> None:
+            calls.append(("get_state", timeout))
+
+    fake_gst = SimpleNamespace(State=SimpleNamespace(NULL="NULL"), SECOND=1_000_000_000)
+    source = object.__new__(GstAppSinkFrameSource)
+    source._closed = False
+    source._pipeline = FakePipeline()
+    source._Gst = fake_gst
+
+    source.close()
+
+    assert calls == [
+        ("set_state", "NULL"),
+        ("get_state", 2_000_000_000),
+    ]

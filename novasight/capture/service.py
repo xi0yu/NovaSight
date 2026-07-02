@@ -1,40 +1,64 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 from novasight.config.runtime import CaptureConfig
 
 from .caps import query_capabilities, run_v4l2_ctl
-from .pipeline import CaptureCandidate, build_appsink_candidates, select_open_source
+from .pipeline import CaptureCandidate, build_appsink_candidates, build_pipeline_candidates
 from .profile import select_capture_profile
 from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, OpenCvFrameSource
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 
+def _open_first_readable_source(
+    profile: CaptureProfile,
+    *,
+    candidates: list[CaptureCandidate],
+    source_cls: Any,
+) -> FrameSource:
+    failures: list[str] = []
+    for candidate in candidates:
+        source: FrameSource | None = None
+        try:
+            source = source_cls(profile, candidate)
+            if source.opened_and_readable():
+                opened_source = source
+                source = None
+                return opened_source
+            failures.append(candidate.label)
+        except Exception as exc:
+            failures.append(f"{candidate.label}: {exc}")
+        finally:
+            if source is not None:
+                try:
+                    source.close()
+                except Exception as exc:
+                    failures.append(f"{candidate.label}: close failed: {exc}")
+    raise RuntimeError(
+        f"no capture backend opened for {profile.device}: {', '.join(failures)}"
+    )
+
+
 def _open_default_source(profile: CaptureProfile) -> FrameSource:
     appsink_failures: list[str] = []
     try:
-        selected = select_open_source(
+        return _open_first_readable_source(
             profile,
-            lambda candidate: GstAppSinkFrameSource.probe(profile, candidate),
             candidates=build_appsink_candidates(profile),
-        )
-        return GstAppSinkFrameSource(
-            profile,
-            CaptureCandidate(label=selected.label, pipeline=selected.pipeline),
+            source_cls=GstAppSinkFrameSource,
         )
     except Exception as exc:
         appsink_failures.append(str(exc))
 
     try:
-        selected = select_open_source(
+        return _open_first_readable_source(
             profile,
-            lambda candidate: OpenCvFrameSource.probe(profile, candidate),
-        )
-        return OpenCvFrameSource(
-            profile,
-            CaptureCandidate(label=selected.label, pipeline=selected.pipeline),
+            candidates=build_pipeline_candidates(profile),
+            source_cls=OpenCvFrameSource,
         )
     except Exception as exc:
         details = "; ".join(appsink_failures + [str(exc)])
@@ -58,6 +82,7 @@ class CaptureService:
         self.source: FrameSource | None = None
         self.last_config_error: CaptureRuntimeState | None = None
         self._last_frame_ts_ns: int | None = None
+        self._configure_lock = threading.RLock()
 
     def capabilities(self, device: str = "/dev/video0") -> CaptureCapabilities:
         return query_capabilities(
@@ -66,6 +91,26 @@ class CaptureService:
         )
 
     def configure(
+        self,
+        device: str | None = None,
+        *,
+        preference: str | None = None,
+        pixel_format: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: int | None = None,
+    ) -> CaptureRuntimeState:
+        with self._configure_lock:
+            return self._configure_unlocked(
+                device,
+                preference=preference,
+                pixel_format=pixel_format,
+                width=width,
+                height=height,
+                fps=fps,
+            )
+
+    def _configure_unlocked(
         self,
         device: str | None = None,
         *,
