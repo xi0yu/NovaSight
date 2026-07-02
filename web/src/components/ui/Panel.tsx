@@ -10,14 +10,14 @@ type PanelProps = {
 export function Panel({ title, eyebrow, action, children }: PanelProps) {
   return (
     <section className="ui-panel">
-      <div className="panel-header">
+      <div className="ui-panel-header">
         <div>
           {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
           <h2>{title}</h2>
         </div>
-        {action ? <div className="panel-action">{action}</div> : null}
+        {action ? <div className="ui-panel-action">{action}</div> : null}
       </div>
-      <div className="panel-body">{children}</div>
+      <div className="ui-panel-body">{children}</div>
     </section>
   );
 }
