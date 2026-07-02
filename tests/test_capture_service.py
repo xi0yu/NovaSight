@@ -18,6 +18,7 @@ MULTI_CAPS_TEXT = """
         Interval: Discrete 0.008s (120.000 fps)
         Interval: Discrete 0.017s (60.000 fps)
 """
+_SERVICES: list[CaptureService] = []
 
 
 class FakeSource:
@@ -94,7 +95,17 @@ def _service(
     }
     if empty_read_sleep_s is not None:
         kwargs["empty_read_sleep_s"] = empty_read_sleep_s
-    return CaptureService(**kwargs)
+    service = CaptureService(**kwargs)
+    _SERVICES.append(service)
+    return service
+
+
+@pytest.fixture(autouse=True)
+def _stop_services_after_test():
+    yield
+    while _SERVICES:
+        service = _SERVICES.pop()
+        service.stop("test cleanup")
 
 
 def test_configure_selects_profile_from_caps() -> None:
@@ -106,6 +117,32 @@ def test_configure_selects_profile_from_caps() -> None:
     assert state.profile.pixel_format == "MJPG"
     assert state.profile.fps == 144
     assert state.backend == "gst:test"
+
+
+def test_configure_starts_capture_session_and_publishes_frames() -> None:
+    source = FakeSource()
+    service = _service(source_factory=lambda profile: source)
+
+    state = service.configure("/dev/video0")
+    frame = service.wait_preview_frame(after_frame_id=0, timeout_s=0.2)
+    service.stop("test complete")
+
+    assert state.available is True
+    assert frame is not None
+    assert source.count >= 1
+    assert source.closed is True
+
+
+def test_service_exposes_session_running_state_after_configure() -> None:
+    service = _service()
+
+    state = service.configure("/dev/video0")
+
+    assert state.available is True
+    assert service.source is not None
+    assert service.session.running is True
+
+    service.stop("test complete")
 
 
 def test_default_source_factory_prefers_native_appsink(monkeypatch) -> None:
@@ -191,14 +228,14 @@ def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) ->
     assert opened == ["gst-appsink:nvmm-mjpg-iomode2"]
 
 
-def test_read_frame_updates_stream_diagnostics() -> None:
+def test_wait_preview_frame_updates_stream_diagnostics() -> None:
     service = _service()
     service.configure("/dev/video0")
 
-    first = service.read_frame()
-    second = service.read_frame()
-
+    first = service.wait_preview_frame(after_frame_id=0, timeout_s=0.2)
     assert first is not None
+    second = service.wait_preview_frame(after_frame_id=first.frame_id, timeout_s=0.2)
+
     assert second is not None
     assert service.state.available is True
     assert service.state.capture_wait_ms == 6.5
@@ -207,22 +244,22 @@ def test_read_frame_updates_stream_diagnostics() -> None:
     assert service.state.last_error is None
 
 
-def test_read_frame_publishes_latest_preview_without_extra_source_reads() -> None:
+def test_latest_preview_frame_proxies_session_latest_frame() -> None:
     service = _service()
     service.configure("/dev/video0")
 
-    frame = service.read_frame()
+    frame = service.wait_preview_frame(after_frame_id=0, timeout_s=0.2)
     preview = service.get_latest_preview_frame()
 
     assert preview is frame
-    assert service.source.count == 1
-    assert service.state.preview_frames == 1
+    assert service.source.count >= 1
 
 
 def test_wait_preview_frame_returns_only_newer_frame() -> None:
     service = _service()
     service.configure("/dev/video0")
-    first = service.read_frame()
+    first = service.wait_preview_frame(after_frame_id=0, timeout_s=0.2)
+    assert first is not None
 
     assert service.wait_preview_frame(after_frame_id=0, timeout_s=0) is first
     assert service.wait_preview_frame(after_frame_id=first.frame_id, timeout_s=0) is None
@@ -284,7 +321,7 @@ def test_reconfigure_same_device_closes_previous_source_before_opening_next() ->
     assert sources[1].closed is False
 
 
-def test_configure_reuses_existing_source_when_profile_is_unchanged() -> None:
+def test_configure_restarts_session_when_profile_is_unchanged() -> None:
     sources: list[FakeSource] = []
 
     def factory(profile):
@@ -313,12 +350,13 @@ def test_configure_reuses_existing_source_when_profile_is_unchanged() -> None:
         fps=120,
     )
 
-    assert len(sources) == 1
-    assert sources[0].closed is False
-    assert second is first
+    assert len(sources) == 2
+    assert sources[0].closed is True
+    assert sources[1].closed is False
+    assert second is not first
 
 
-def test_failed_reconfigure_keeps_previous_source() -> None:
+def test_failed_reconfigure_stops_previous_source_and_reports_unavailable() -> None:
     service = _service(
         capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None
     )
@@ -326,11 +364,11 @@ def test_failed_reconfigure_keeps_previous_source() -> None:
 
     state = service.configure("/dev/missing")
 
-    assert service.source is not None
+    assert service.source is None
     assert state is service.state
-    assert state.available is True
-    assert state.device == "/dev/video0"
-    assert service.state.last_error is None
+    assert state.available is False
+    assert state.device == "/dev/missing"
+    assert service.state.last_error is not None
 
 
 def test_blank_device_does_not_fallback_to_default() -> None:
@@ -353,7 +391,7 @@ def test_blank_device_does_not_fallback_to_default() -> None:
     assert service.source is None
 
 
-def test_blank_device_after_success_keeps_existing_source() -> None:
+def test_blank_device_after_success_stops_existing_source() -> None:
     sources: list[FakeSource] = []
 
     def factory(profile):
@@ -366,16 +404,16 @@ def test_blank_device_after_success_keeps_existing_source() -> None:
 
     state = service.configure("")
 
-    assert sources[0].closed is False
-    assert service.source is sources[0]
+    assert sources[0].closed is True
+    assert service.source is None
     assert state is service.state
-    assert state.available is True
+    assert state.available is False
     assert service.last_config_error is not None
     assert service.last_config_error.available is False
     assert "required" in str(service.last_config_error.last_error)
 
 
-def test_source_factory_error_keeps_previous_source() -> None:
+def test_source_factory_error_stops_previous_source() -> None:
     cfg = RuntimeConfig()
     old_source = FakeSource()
 
@@ -389,12 +427,12 @@ def test_source_factory_error_keeps_previous_source() -> None:
 
     state = service.configure("/dev/video1")
 
-    assert old_source.closed is False
-    assert service.source is old_source
+    assert old_source.closed is True
+    assert service.source is None
     assert state is service.state
-    assert state.available is True
-    assert state.device == "/dev/video0"
-    assert state.last_error is None
+    assert state.available is False
+    assert state.device == "/dev/video1"
+    assert state.last_error == "backend failed to open"
 
 
 def test_same_device_reconfigure_failure_does_not_keep_closed_source() -> None:
@@ -451,12 +489,12 @@ def test_empty_reads_eventually_mark_source_unavailable() -> None:
 
     state = service.capture_frames(max_frames=1, max_empty_reads=3, max_recoveries=1)
 
-    assert len(sources) == 2
+    assert len(sources) == 1
     assert all(source.closed for source in sources)
     assert service.source is None
     assert state.available is False
     assert state.last_error == "capture produced 3 empty reads"
-    assert state.recoveries == 1
+    assert state.recoveries == 0
 
 
 @pytest.mark.parametrize(
@@ -498,7 +536,7 @@ def test_close_errors_during_recovery_appear_in_last_error(scenario: str) -> Non
     assert state.available is False
 
 
-def test_read_exception_attempts_bounded_recovery() -> None:
+def test_read_exception_marks_session_unavailable_without_service_recovery() -> None:
     sources: list[ExplodingSource] = []
 
     def factory(profile):
@@ -511,12 +549,12 @@ def test_read_exception_attempts_bounded_recovery() -> None:
 
     state = service.capture_frames(max_frames=1, max_recoveries=1)
 
-    assert len(sources) == 2
+    assert len(sources) == 1
     assert all(source.closed for source in sources)
     assert service.source is None
     assert state.available is False
-    assert state.frames_dropped == 2
-    assert state.recoveries == 1
+    assert state.frames_dropped == 0
+    assert state.recoveries == 0
     assert "camera disconnected" in str(state.last_error)
 
 
