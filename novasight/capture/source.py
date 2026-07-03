@@ -126,12 +126,20 @@ class GstAppSinkFrameSource:
         self._first_frame: CapturedFrame | None = None
         ret = self._pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
+            diagnostics = _drain_bus_diagnostics(self._pipeline, Gst)
             self._stop_pipeline()
-            raise RuntimeError("GStreamer pipeline set_state PLAYING failed")
+            message = "GStreamer pipeline set_state PLAYING failed"
+            if diagnostics:
+                message = f"{message}; bus diagnostics: {'; '.join(diagnostics)}"
+            raise RuntimeError(message)
         try:
             first = self._pull_frame(timeout_ns=2 * Gst.SECOND)
             if first is None:
-                raise RuntimeError("GStreamer appsink first frame timeout")
+                diagnostics = _drain_bus_diagnostics(self._pipeline, Gst)
+                message = "GStreamer appsink first frame timeout"
+                if diagnostics:
+                    message = f"{message}; bus diagnostics: {'; '.join(diagnostics)}"
+                raise RuntimeError(message)
         except Exception:
             self._stop_pipeline()
             raise
@@ -179,6 +187,56 @@ class GstAppSinkFrameSource:
             roi_offset_x=self._candidate.roi_offset_x,
             roi_offset_y=self._candidate.roi_offset_y,
         )
+
+
+def _drain_bus_diagnostics(pipeline: Any, Gst: Any) -> list[str]:
+    try:
+        bus = pipeline.get_bus()
+    except Exception:
+        return []
+    if bus is None:
+        return []
+    message_type = getattr(Gst, "MessageType", None)
+    if message_type is None:
+        return []
+    mask = 0
+    for name in ("ERROR", "WARNING", "EOS"):
+        value = getattr(message_type, name, None)
+        if value is not None:
+            mask |= value
+    if mask == 0:
+        return []
+    diagnostics: list[str] = []
+    while True:
+        try:
+            message = bus.timed_pop_filtered(0, mask)
+        except Exception:
+            break
+        if message is None:
+            break
+        diagnostics.append(_format_bus_message(message))
+    return diagnostics
+
+
+def _format_bus_message(message: Any) -> str:
+    source = "unknown"
+    try:
+        source = message.src.get_name()
+    except Exception:
+        pass
+    for parser_name in ("parse_error", "parse_warning"):
+        parser = getattr(message, parser_name, None)
+        if parser is None:
+            continue
+        try:
+            error, debug = parser()
+        except Exception:
+            continue
+        text = getattr(error, "message", str(error))
+        if debug:
+            return f"{source}: {text} ({debug})"
+        return f"{source}: {text}"
+    return f"{source}: {message}"
 
 
 def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int]:

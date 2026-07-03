@@ -425,3 +425,81 @@ def test_gstreamer_appsink_constructor_closes_pipeline_when_first_frame_fails(
         ("set_state", "NULL"),
         ("get_state", 2_000_000_000),
     ]
+
+
+def test_gstreamer_appsink_first_frame_timeout_includes_bus_error(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object | None]] = []
+
+    class FakeError:
+        message = "not-negotiated"
+
+    class FakeMessage:
+        src = SimpleNamespace(get_name=lambda: "nvvidconv0")
+
+        def parse_error(self):
+            return FakeError(), "could not transform caps"
+
+    class FakeBus:
+        def __init__(self) -> None:
+            self._messages = [FakeMessage()]
+
+        def timed_pop_filtered(self, timeout, mask):
+            if self._messages:
+                return self._messages.pop(0)
+            return None
+
+    class FakeAppSink:
+        def try_pull_sample(self, timeout):
+            return None
+
+    class FakePipeline:
+        def get_by_name(self, name: str):
+            return FakeAppSink()
+
+        def get_bus(self):
+            return FakeBus()
+
+        def set_state(self, state) -> str:
+            calls.append(("set_state", state))
+            return "SUCCESS"
+
+        def get_state(self, timeout) -> None:
+            calls.append(("get_state", timeout))
+
+    fake_gst = SimpleNamespace(
+        SECOND=1_000_000_000,
+        State=SimpleNamespace(PLAYING="PLAYING", NULL="NULL"),
+        StateChangeReturn=SimpleNamespace(FAILURE="FAILURE"),
+        MessageType=SimpleNamespace(ERROR=1, WARNING=2, EOS=4),
+        is_initialized=lambda: True,
+        init=lambda args: None,
+        parse_launch=lambda pipeline: FakePipeline(),
+    )
+    gi = ModuleType("gi")
+    gi.require_version = lambda *args: None
+    repository = ModuleType("gi.repository")
+    repository.Gst = fake_gst
+    repository.GstApp = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repository)
+
+    try:
+        GstAppSinkFrameSource(
+            _profile(),
+            CaptureCandidate(label="gst-appsink:test", pipeline="pipeline"),
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "GStreamer appsink first frame timeout" in message
+        assert "nvvidconv0: not-negotiated" in message
+        assert "could not transform caps" in message
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert calls == [
+        ("set_state", "PLAYING"),
+        ("set_state", "NULL"),
+        ("get_state", 2_000_000_000),
+    ]
