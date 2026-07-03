@@ -1755,6 +1755,51 @@ button.home-chip {
   overflow-wrap: anywhere;
 }
 
+.readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.readiness-item {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.readiness-item.ready {
+  border-color: rgba(22, 163, 74, 0.18);
+  background: color-mix(in srgb, var(--green) 9%, var(--surface-2));
+}
+
+.readiness-item.warn {
+  border-color: rgba(217, 119, 6, 0.2);
+  background: color-mix(in srgb, var(--amber) 11%, var(--surface-2));
+}
+
+.readiness-item.blocked {
+  border-color: rgba(220, 38, 38, 0.16);
+  background: color-mix(in srgb, var(--red) 8%, var(--surface-2));
+}
+
+.readiness-item span {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 780;
+}
+
+.readiness-item strong {
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .settings-panel {
   display: grid;
   gap: 14px;
@@ -1788,6 +1833,13 @@ button.home-chip {
   color: var(--text-secondary);
   font-size: 0.76rem;
   font-weight: 740;
+}
+
+.commercial-field small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .settings-next-row {

@@ -82,6 +82,12 @@ class RuntimeService:
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
         self.config = config
         self.control_strategy = self._create_control_strategy(config)
+        configure = getattr(self.inference, "configure", None)
+        if callable(configure):
+            configure(
+                confidence_threshold=config.inference.confidence_threshold,
+                nms_threshold=config.inference.nms_threshold,
+            )
         return self.config_store.replace(config)
 
     def record_fatal_error(self, thread_name: str, exc: BaseException, path) -> None:
@@ -413,8 +419,10 @@ class RuntimeService:
 
         project = self.models.get_project(deployment.project_id)
         artifact = self.models.get_artifact(deployment.artifact_id)
+        version = self.models.get_version(artifact.version_id) if artifact is not None else None
         return {
             "project": asdict(project) if project is not None else None,
+            "version": asdict(version) if version is not None else None,
             "deployment": asdict(deployment),
             "artifact": asdict(artifact) if artifact is not None else None,
         }

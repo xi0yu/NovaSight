@@ -64,6 +64,7 @@ export type ConversionJob = {
 
 export type ActiveModel = {
   project: ModelProject | null;
+  version?: ModelVersion | null;
   deployment: Deployment;
   artifact: ModelArtifact | null;
 };

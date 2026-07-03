@@ -47,7 +47,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 "label": "消费者",
                 "fields": [
                     {"path": "consumers.preview", "label": "浏览器预览", "type": "bool", "restart_required": False},
-                    {"path": "consumers.inference", "label": "TensorRT 推理", "type": "bool", "restart_required": False},
+                    {"path": "consumers.inference", "label": "模型推理", "type": "bool", "restart_required": False},
                     {"path": "consumers.recording", "label": "录制回放", "type": "bool", "restart_required": False},
                 ],
             },

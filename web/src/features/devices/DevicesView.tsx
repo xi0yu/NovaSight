@@ -38,6 +38,7 @@ type DevicesViewProps = {
 
 type SettingsSection = "capture" | "inference" | "algorithm";
 type CaptureInputSource = "capture" | "image";
+type ReadinessTone = "ready" | "warn" | "blocked";
 
 const ROI_SIZE_CHOICES = [640, 480, 320, 256];
 
@@ -49,6 +50,20 @@ function getNestedRecord(value: unknown, key: string): Record<string, unknown> |
   return typeof child === "object" && child !== null && !Array.isArray(child)
     ? (child as Record<string, unknown>)
     : null;
+}
+
+function formatBackendLabel(value: string): string {
+  if (value === "tensorrt") {
+    return "TensorRT";
+  }
+  if (value === "onnxruntime") {
+    return "ONNX Runtime";
+  }
+  return value || "未选择";
+}
+
+function readinessClass(tone: ReadinessTone): string {
+  return `readiness-item ${tone}`;
 }
 
 function groupCapabilities(caps: CaptureCapability[]): CapabilityGroup[] {
@@ -433,8 +448,13 @@ export function DevicesView({
   const confidenceThreshold = readNumber(inferenceConfig, "confidence_threshold", 0.25);
   const nmsThreshold = readNumber(inferenceConfig, "nms_threshold", 0.45);
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
+  const activeVersion = runtime?.active_model?.version ?? null;
+  const activeInputShape = activeVersion?.input_shape ?? "";
+  const activeClasses = activeVersion?.classes ?? [];
+  const activeClassPreview = activeClasses.slice(0, 6).join(" / ");
   const activeArtifact = runtime?.active_model?.artifact?.kind ?? "未绑定";
   const activeArtifactPath = runtime?.active_model?.artifact?.path ?? "未绑定文件";
+  const runnableArtifact = activeArtifact === "onnx" || activeArtifact === "engine";
   const inferenceStatus = runtime?.inference ?? {};
   const inferenceLoaded = inferenceStatus.loaded === true;
   const inferenceSupportsExecution = inferenceStatus.supports_execution !== false;
@@ -443,6 +463,32 @@ export function DevicesView({
     activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
+  const inferenceStatusInputShape =
+    typeof inferenceStatus.input_shape === "string" ? inferenceStatus.input_shape : "";
+  const inferenceStatusOutputShape =
+    typeof inferenceStatus.output_shape === "string" ? inferenceStatus.output_shape : "";
+  const inferenceChecklist: { label: string; detail: string; tone: ReadinessTone }[] = [
+    {
+      label: "输入帧",
+      detail: capture?.available ? "RoiFrame 已可用" : "先启动采集卡或图片输入",
+      tone: capture?.available ? "ready" : "blocked"
+    },
+    {
+      label: "运行模型",
+      detail: runnableArtifact ? `${activeArtifactPath} 可推理` : "请选择 ONNX 或 Engine",
+      tone: runnableArtifact ? "ready" : "blocked"
+    },
+    {
+      label: "运行时加载",
+      detail: inferenceLoaded ? `${formatBackendLabel(inferenceSelected)} 已加载` : inferenceReason || "等待模型加载",
+      tone: inferenceLoaded ? "ready" : "warn"
+    },
+    {
+      label: "检测过滤",
+      detail: `置信度 ${formatThreshold(confidenceThreshold)} · NMS ${formatThreshold(nmsThreshold)}`,
+      tone: inferenceEnabled ? "ready" : "blocked"
+    }
+  ];
   const controlStrategy = readString(controlConfig, "strategy", "pid");
   const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
   const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
@@ -854,8 +900,12 @@ export function DevicesView({
                   <dd>{activeModelName}</dd>
                 </div>
                 <div>
-                  <dt>产物</dt>
-                  <dd>{activeArtifact}</dd>
+                  <dt>输入规格</dt>
+                  <dd>{activeInputShape || "未标注"}</dd>
+                </div>
+                <div>
+                  <dt>类别</dt>
+                  <dd>{activeClasses.length > 0 ? `${activeClasses.length} 类` : "未标注"}</dd>
                 </div>
                 <div>
                   <dt>阈值</dt>
@@ -876,13 +926,7 @@ export function DevicesView({
                 </div>
                 <div>
                   <span>自动后端</span>
-                  <strong>
-                    {inferenceSelected === "tensorrt"
-                      ? "TensorRT"
-                      : inferenceSelected === "onnxruntime"
-                        ? "ONNX Runtime"
-                        : inferenceSelected || "未选择"}
-                  </strong>
+                  <strong>{formatBackendLabel(inferenceSelected)}</strong>
                 </div>
                 <div>
                   <span>推理状态</span>
@@ -896,11 +940,20 @@ export function DevicesView({
                 </div>
               </div>
 
+              <div className="readiness-grid">
+                {inferenceChecklist.map((item) => (
+                  <div className={readinessClass(item.tone)} key={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.detail}</strong>
+                  </div>
+                ))}
+              </div>
+
               <div className="settings-panel">
                 <div className="settings-panel-head">
                   <div>
                     <h3>推理配置</h3>
-                    <p>推理默认跟随采集流启动；后端由模型文件后缀自动决定，这里只调整消费开关和检测过滤阈值。</p>
+                    <p>推理默认跟随采集流启动；当前阈值会同步到已加载模型运行时，用于过滤检测结果。</p>
                   </div>
                   <button
                     className={inferenceEnabled ? "config-toggle on" : "config-toggle"}
@@ -913,6 +966,23 @@ export function DevicesView({
                 </div>
 
                 <div className="commercial-grid">
+                  <div className="commercial-field span-2">
+                    <span>当前模型</span>
+                    <strong>{activeModelName}</strong>
+                  </div>
+                  <div className="commercial-field">
+                    <span>输入尺寸</span>
+                    <strong>{activeInputShape || inferenceStatusInputShape || "未标注"}</strong>
+                  </div>
+                  <div className="commercial-field">
+                    <span>输出尺寸</span>
+                    <strong>{inferenceStatusOutputShape || "等待推理运行时"}</strong>
+                  </div>
+                  <div className="commercial-field span-2">
+                    <span>类别</span>
+                    <strong>{activeClasses.length > 0 ? `${activeClasses.length} 类` : "未标注类别"}</strong>
+                    <small>{activeClassPreview || "模型元数据没有类别名，检测结果只能显示类别编号。"}</small>
+                  </div>
                   <div className="commercial-field span-2">
                     <span>自动后端</span>
                     <strong>
@@ -955,7 +1025,9 @@ export function DevicesView({
                     <span>模型仓库绑定</span>
                     <strong>{activeModelName}</strong>
                     <p>
-                      {!inferenceSupportsExecution
+                      {!runnableArtifact
+                        ? "当前没有可直接推理的 ONNX 或 Engine 模型。"
+                        : !inferenceSupportsExecution
                         ? `${activeArtifactPath} · TensorRT engine 当前只能加载/预处理，尚未接入真实执行绑定`
                         : inferenceReason
                           ? `${activeArtifactPath} · ${inferenceReason}`
@@ -967,7 +1039,7 @@ export function DevicesView({
                       {activeArtifact === "engine" ? "TensorRT 引擎" : activeArtifact === "onnx" ? "ONNX 模型" : activeArtifact}
                     </Badge>
                     <button className="button compact-button" type="button" onClick={onOpenModels}>
-                      去模型仓库选择
+                      {runnableArtifact ? "更换模型" : "去模型仓库选择"}
                     </button>
                   </div>
                 </div>
