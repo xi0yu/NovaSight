@@ -283,6 +283,14 @@ def _load_published_artifact(
     )
 
 
+def _inference_status(request: Request) -> dict[str, Any]:
+    inference = getattr(request.app.state, "inference", None)
+    status = getattr(inference, "status", None)
+    if not callable(status):
+        return {"available": False, "loaded": False, "reason": "inference runtime unavailable"}
+    return dict(status())
+
+
 @router.get("/projects")
 def list_projects(request: Request) -> list[dict[str, Any]]:
     registry = _registry(request)
@@ -546,7 +554,10 @@ def publish(
         _load_published_artifact(request, registry, payload.artifact_id)
     except RegistryError as exc:
         raise _as_http_error(exc) from exc
-    return asdict(deployment)
+    return {
+        "deployment": asdict(deployment),
+        "inference": _inference_status(request),
+    }
 
 
 @router.post("/projects/{project_id}/rollback")
@@ -555,6 +566,10 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
     try:
         _require_project(registry, project_id)
         deployment = registry.rollback(project_id=project_id)
+        _load_published_artifact(request, registry, deployment.artifact_id)
     except RegistryError as exc:
         raise _as_http_error(exc) from exc
-    return asdict(deployment)
+    return {
+        "deployment": asdict(deployment),
+        "inference": _inference_status(request),
+    }

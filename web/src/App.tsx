@@ -355,6 +355,7 @@ export default function App() {
             <ModelsView
               projects={state.projects}
               activeModel={activeModel}
+              runtimeInference={state.runtime?.inference}
               error={state.errors.projects}
               onRuntimeRefresh={load}
               onOpenInference={() => {

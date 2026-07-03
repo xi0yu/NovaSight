@@ -68,6 +68,11 @@ export type ActiveModel = {
   artifact: ModelArtifact | null;
 };
 
+export type ModelPublishResponse = {
+  deployment: Deployment;
+  inference: Record<string, unknown>;
+};
+
 export type CaptureState = {
   available: boolean;
   device: string;
@@ -383,8 +388,8 @@ export function getConversionJobs(versionId?: number): Promise<ConversionJob[]> 
   return requestJson<ConversionJob[]>(`${API_PATHS.modelJobs}${suffix}`);
 }
 
-export function publishModel(projectId: number, artifactId: number): Promise<Deployment> {
-  return requestJson<Deployment>(`${API_PATHS.modelProjects}/${projectId}/publish`, {
+export function publishModel(projectId: number, artifactId: number): Promise<ModelPublishResponse> {
+  return requestJson<ModelPublishResponse>(`${API_PATHS.modelProjects}/${projectId}/publish`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -393,8 +398,8 @@ export function publishModel(projectId: number, artifactId: number): Promise<Dep
   });
 }
 
-export function rollbackModel(projectId: number): Promise<Deployment> {
-  return requestJson<Deployment>(`${API_PATHS.modelProjects}/${projectId}/rollback`, {
+export function rollbackModel(projectId: number): Promise<ModelPublishResponse> {
+  return requestJson<ModelPublishResponse>(`${API_PATHS.modelProjects}/${projectId}/rollback`, {
     method: "POST"
   });
 }

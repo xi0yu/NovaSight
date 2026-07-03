@@ -565,6 +565,40 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.model-inference-binding {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border-radius: var(--radius-inner);
+  background: color-mix(in srgb, var(--surface-1) 72%, transparent);
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+.model-inference-binding.good {
+  background: color-mix(in srgb, var(--green) 10%, var(--surface-2));
+}
+
+.model-inference-binding.bad {
+  background: color-mix(in srgb, var(--red) 10%, var(--surface-2));
+}
+
+.model-inference-binding.idle {
+  background: color-mix(in srgb, var(--cyan) 8%, var(--surface-2));
+}
+
+.model-inference-binding strong {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.model-inference-binding span,
+.model-inference-binding p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .dashboard-grid,
 .models-grid,
 .settings-grid,

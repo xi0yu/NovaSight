@@ -31,15 +31,40 @@ type RollbackFeedback = {
   error?: string;
 };
 
+type InferenceFeedback = {
+  loaded: boolean;
+  available: boolean;
+  selected: string;
+  reason: string;
+  inputShape: string;
+  outputShape: string;
+};
+
+function readInferenceFeedback(value: Record<string, unknown> | undefined): InferenceFeedback | null {
+  if (!value) {
+    return null;
+  }
+  return {
+    loaded: value.loaded === true,
+    available: value.available === true,
+    selected: typeof value.selected === "string" ? value.selected : "",
+    reason: typeof value.reason === "string" ? value.reason : "",
+    inputShape: typeof value.input_shape === "string" ? value.input_shape : "",
+    outputShape: typeof value.output_shape === "string" ? value.output_shape : ""
+  };
+}
+
 export function ModelsView({
   projects,
   activeModel,
+  runtimeInference,
   error,
   onRuntimeRefresh,
   onOpenInference
 }: {
   projects: ModelProject[];
   activeModel: ActiveModel | null;
+  runtimeInference?: Record<string, unknown>;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
   onOpenInference: () => void;
@@ -68,6 +93,7 @@ export function ModelsView({
   const [scanningModels, setScanningModels] = useState(false);
   const [modelActionMessage, setModelActionMessage] = useState<string>();
   const [modelActionError, setModelActionError] = useState<string>();
+  const [inferenceFeedback, setInferenceFeedback] = useState<InferenceFeedback | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadProjectName, setUploadProjectName] = useState("custom_model");
   const [uploadVersion, setUploadVersion] = useState("v1");
@@ -257,14 +283,18 @@ export function ModelsView({
     setPublishFeedback(null);
 
     try {
-      const deployment = await publishModel(requestProjectId, artifact.id);
+      const result = await publishModel(requestProjectId, artifact.id);
+      const nextInferenceFeedback = readInferenceFeedback(result.inference);
+      setInferenceFeedback(nextInferenceFeedback);
       await onRuntimeRefresh();
       setRegistryRefreshKey((current) => current + 1);
       setPublishFeedback({
         projectId: requestProjectId,
         versionId: requestVersionId,
         artifactId: artifact.id,
-        message: `已为 ${requestProjectName} (#${requestProjectId}) 发布 ${artifact.kind} 产物，部署 #${deployment.id}。`
+        message: nextInferenceFeedback?.loaded
+          ? `已为 ${requestProjectName} (#${requestProjectId}) 绑定 ${artifact.kind}，推理运行时已加载。`
+          : `已发布 ${artifact.kind} 产物，但推理运行时未加载成功，请查看下方原因。`
       });
     } catch (requestError) {
       setPublishFeedback({
@@ -296,12 +326,16 @@ export function ModelsView({
     setRollbackFeedback(null);
 
     try {
-      const deployment = await rollbackModel(requestProjectId);
+      const result = await rollbackModel(requestProjectId);
+      const nextInferenceFeedback = readInferenceFeedback(result.inference);
+      setInferenceFeedback(nextInferenceFeedback);
       await onRuntimeRefresh();
       setRegistryRefreshKey((current) => current + 1);
       setRollbackFeedback({
         projectId: requestProjectId,
-        message: `已回滚 ${requestProjectName} (#${requestProjectId})，当前部署 #${deployment.id} 指向产物 #${deployment.artifact_id}。`
+        message: nextInferenceFeedback?.loaded
+          ? `已回滚 ${requestProjectName} (#${requestProjectId})，推理运行时已重新加载。`
+          : `已回滚 ${requestProjectName} (#${requestProjectId})，但推理运行时未加载成功。`
       });
     } catch (requestError) {
       setRollbackFeedback({
@@ -470,6 +504,7 @@ export function ModelsView({
               <strong>{activeModel.project?.name ?? "未知模型"}</strong>
               <p>{activeModel.artifact?.path ?? "当前部署缺少文件路径"}</p>
             </div>
+            <InferenceBindingCard feedback={inferenceFeedback} runtimeInference={runtimeInference} />
             <div className="field-grid compact">
               <Field label="部署编号" value={activeModel.deployment.id} mono />
               <Field label="模型类型" value={formatArtifactKind(activeModel.artifact?.kind ?? "")} />
@@ -625,6 +660,7 @@ export function ModelsView({
               <article className="project-row" key={artifact.id}>
                 <div>
                   <strong>{formatArtifactKind(artifact.kind)}</strong>
+                  <span>{artifactRuntimeHint(artifact)}</span>
                   <span className="mono">{artifact.path}</span>
                   <span className="mono">{artifact.checksum}</span>
                 </div>
@@ -636,9 +672,19 @@ export function ModelsView({
                     className="button compact-button"
                     type="button"
                     onClick={() => handlePublish(artifact)}
-                    disabled={rollingBack || publishingArtifactId !== null}
+                    disabled={
+                      rollingBack ||
+                      publishingArtifactId !== null ||
+                      artifact.status !== "ready" ||
+                      !isRunnableArtifact(artifact)
+                    }
+                    title={
+                      isRunnableArtifact(artifact)
+                        ? "根据后缀自动选择 ONNXRuntime 或 TensorRT"
+                        : "训练权重不能直接推理，需要先导出 ONNX 或 Engine"
+                    }
                   >
-                    {publishingArtifactId === artifact.id ? "应用中..." : "设为当前"}
+                    {publishingArtifactId === artifact.id ? "绑定中..." : "用于推理"}
                   </button>
                 </aside>
               </article>
@@ -707,6 +753,55 @@ function getStatusTone(status: string): "good" | "warn" | "bad" | "idle" {
     return "warn";
   }
   return "idle";
+}
+
+function isRunnableArtifact(artifact: ModelArtifact): boolean {
+  return artifact.kind === "onnx" || artifact.kind === "engine";
+}
+
+function artifactRuntimeHint(artifact: ModelArtifact): string {
+  if (artifact.kind === "engine") {
+    return "后缀 .engine，发布后自动使用 TensorRT。";
+  }
+  if (artifact.kind === "onnx") {
+    return "后缀 .onnx，发布后自动使用 ONNXRuntime。";
+  }
+  if (artifact.kind === "pt") {
+    return "训练权重不能直接推理，需要先导出 ONNX 或 TensorRT Engine。";
+  }
+  return "未知文件类型，不能确认推理后端。";
+}
+
+function InferenceBindingCard({
+  feedback,
+  runtimeInference
+}: {
+  feedback: InferenceFeedback | null;
+  runtimeInference?: Record<string, unknown>;
+}) {
+  const status = feedback ?? readInferenceFeedback(runtimeInference);
+  if (!status) {
+    return (
+      <div className="model-inference-binding idle">
+        <strong>推理绑定状态</strong>
+        <span>等待运行时状态。选择 ONNX 或 Engine 后，这里会显示加载结果。</span>
+      </div>
+    );
+  }
+  const ok = status.loaded && status.available;
+  return (
+    <div className={ok ? "model-inference-binding good" : "model-inference-binding bad"}>
+      <div>
+        <strong>{ok ? "推理运行时已绑定" : "推理运行时未就绪"}</strong>
+        <span>
+          {status.selected || "未知后端"}
+          {status.inputShape ? ` · 输入 ${status.inputShape}` : ""}
+          {status.outputShape ? ` · 输出 ${status.outputShape}` : ""}
+        </span>
+      </div>
+      {status.reason ? <p>{status.reason}</p> : null}
+    </div>
+  );
 }
 
 function formatArtifactKind(kind: string): string {
