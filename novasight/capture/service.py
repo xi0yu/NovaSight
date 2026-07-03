@@ -89,7 +89,8 @@ class CaptureService:
         self.config = config
         self.roi_size = roi_size
         self.capability_runner = capability_runner
-        self.source_factory = source_factory or self._open_configured_source
+        self._default_source_factory = source_factory or self._open_configured_source
+        self.source_factory = self._default_source_factory
         self.empty_read_sleep_s = empty_read_sleep_s
         self.session = CaptureSession(
             source_factory=self.source_factory,
@@ -155,6 +156,8 @@ class CaptureService:
         height: int | None = None,
         fps: int | None = None,
     ) -> CaptureRuntimeState:
+        self.source_factory = self._default_source_factory
+        self.session.source_factory = self._default_source_factory
         selected_device = self.config.device if device is None else device
         if not selected_device.strip():
             failure = CaptureRuntimeState(
@@ -243,6 +246,7 @@ class CaptureService:
                 self.session.reconfigure(profile)
             except Exception:
                 self.session.source_factory = previous_factory
+                self.source_factory = previous_factory
                 image_source.close()
                 raise
             self.source_factory = factory

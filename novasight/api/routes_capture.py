@@ -141,6 +141,9 @@ def select(request: Request, payload: CaptureSelectRequest):
     config = getattr(request.app.state, "config", None)
     if config is not None:
         config.source.default = "capture"
+        runtime = getattr(request.app.state, "runtime", None)
+        if runtime is not None:
+            runtime.update_config(config)
     _ensure_runtime_pipeline(request)
     return body
 
@@ -165,6 +168,9 @@ def image_source(request: Request, payload: ImageSourceRequest):
         config.source.default = "image"
         config.source.image_path = payload.path
         config.source.image_fps = fps
+        runtime = getattr(request.app.state, "runtime", None)
+        if runtime is not None:
+            runtime.update_config(config)
     body = asdict(state)
     if state.available is False:
         return JSONResponse(status_code=400, content=body)

@@ -198,6 +198,8 @@ def decode_nx6_detections(
     if array.size == 0:
         return []
     array = np.squeeze(array)
+    if array.ndim == 2 and array.shape[1] >= 16 and array.shape[0] > array.shape[1]:
+        array = array.T
     if array.ndim == 2 and array.shape[0] >= 6 and array.shape[1] != 6:
         return _decode_yolov8_scores(
             array,
