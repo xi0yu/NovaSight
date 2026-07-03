@@ -60,6 +60,16 @@ class ControlConfig:
     fov_ratio: float = 0.28
     output_mode: str = ""
     strategy: str = "pid"
+    pid_kp_x: float = 0.35
+    pid_kp_y: float = 0.35
+    pid_ki_x: float = 0.1
+    pid_ki_y: float = 0.1
+    pid_kd_x: float = 0.1
+    pid_kd_y: float = 0.1
+    pid_integral_limit_x: float = 250.0
+    pid_integral_limit_y: float = 250.0
+    pid_output_limit_x: float = 120.0
+    pid_output_limit_y: float = 120.0
     command_interval_ms: float = 1.0
 
 
@@ -168,6 +178,14 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("unsupported ROI mode: only center is supported")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
+    for key in (
+        "pid_integral_limit_x",
+        "pid_integral_limit_y",
+        "pid_output_limit_x",
+        "pid_output_limit_y",
+    ):
+        if getattr(cfg.control, key) < 0:
+            raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:

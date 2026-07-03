@@ -15,9 +15,7 @@ import {
   getModelProjects,
   getPlugins,
   getRuntimeState,
-  startInferenceControl,
   statusWebSocketUrl,
-  stopInferenceControl,
 } from "./api";
 import { ConfigView } from "./features/config/ConfigView";
 import { DashboardView } from "./features/dashboard/DashboardView";
@@ -58,15 +56,6 @@ const viewFeatureMap: Partial<Record<GuardedViewId, LicenseStatus["features"][nu
   config: "config_read",
   plugins: "plugins"
 };
-
-function withoutError(
-  errors: LoadState["errors"],
-  key: ErrorKey
-): LoadState["errors"] {
-  const next = { ...errors };
-  delete next[key];
-  return next;
-}
 
 function realtimeTone(status: RealtimeStatus): "good" | "warn" | "bad" | "idle" {
   switch (status) {
@@ -125,7 +114,6 @@ function getFallbackView(license: LicenseStatus | null): StudioViewId {
 export default function App() {
   const [activeView, setActiveView] = useState<StudioViewId>("dashboard");
   const [state, setState] = useState<LoadState>(initialState);
-  const [runtimeCommandBusy, setRuntimeCommandBusy] = useState(false);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
   const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
@@ -133,7 +121,6 @@ export default function App() {
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
   const [licenseError, setLicenseError] = useState<string | undefined>();
-  const canControlRuntime = license?.features.includes("runtime") ?? false;
 
   const loadLicense = useCallback(async () => {
     setLicenseLoading(true);
@@ -282,32 +269,6 @@ export default function App() {
     return () => window.clearInterval(intervalId);
   }, [lastWsMessageAt, realtimeStatus]);
 
-  const handleInferenceControlCommand = useCallback(
-    async (action: "start" | "stop") => {
-      setRuntimeCommandBusy(true);
-      setState((current) => ({
-        ...current,
-        errors: withoutError(current.errors, "runtime")
-      }));
-      try {
-        if (action === "start") {
-          await startInferenceControl();
-        } else {
-          await stopInferenceControl();
-        }
-        await load();
-      } catch (err) {
-        setState((current) => ({
-          ...current,
-          errors: { ...current.errors, runtime: getErrorMessage(err) }
-        }));
-      } finally {
-        setRuntimeCommandBusy(false);
-      }
-    },
-    [load]
-  );
-
   if (!license?.valid) {
     return (
       <LicenseGate
@@ -328,8 +289,8 @@ export default function App() {
       subtitle: "采集吞吐、链路延迟、推理状态和控制路径。"
     },
     devices: {
-      title: "推理设置",
-      subtitle: "推理输入、ROI、模型执行和检测参数。"
+      title: "基础设置",
+      subtitle: "采集设置、推理设置和算法参数统一管理。"
     },
     models: {
       title: "模型仓库",
@@ -385,25 +346,19 @@ export default function App() {
       <div className="view-stack">
         {activeView === "dashboard" ? (
           <DashboardView
-            canControlRuntime={canControlRuntime}
             health={state.health}
             loading={state.loading}
             runtime={state.runtime}
             errors={state.errors}
             onRefresh={load}
-            onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
-            runtimeCommandBusy={runtimeCommandBusy}
           />
         ) : null}
         {activeView === "devices" ? (
           <PermissionGuard feature="capture" license={license}>
             <DevicesView
-              canControlRuntime={canControlRuntime}
               runtime={state.runtime}
               error={state.errors.capture}
               onRuntimeRefresh={load}
-              onInferenceControlCommand={(action) => void handleInferenceControlCommand(action)}
-              runtimeCommandBusy={runtimeCommandBusy}
             />
           </PermissionGuard>
         ) : null}

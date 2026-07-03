@@ -6,16 +6,13 @@ import {
   type RuntimeConfig,
   type RuntimeState,
   type Statistics,
-  selectImageSource,
   streamUrl,
   updateRuntimeConfig
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
-import { formatProfile, statusTone } from "../shared/format";
-import { InferenceControl } from "../shared/InferenceControl";
+import { statusTone } from "../shared/format";
 
 type DashboardViewProps = {
-  canControlRuntime: boolean;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   loading: boolean;
@@ -24,8 +21,6 @@ type DashboardViewProps = {
     runtime?: string;
   };
   onRefresh: () => void | Promise<void>;
-  onInferenceControlCommand: (action: "start" | "stop") => void;
-  runtimeCommandBusy: boolean;
 };
 
 type Tone = "good" | "info" | "warn" | "bad";
@@ -158,18 +153,14 @@ function readNestedNumber(
 }
 
 export function DashboardView({
-  canControlRuntime,
   health,
   runtime,
   loading,
   errors,
-  onRefresh,
-  onInferenceControlCommand,
-  runtimeCommandBusy
+  onRefresh
 }: DashboardViewProps) {
   const displayTick = useDisplayTick();
   const capture = runtime?.capture;
-  const runtimeRunning = Boolean(runtime?.running);
   const stats = useMemo(() => readStatistics(runtime), [runtime, displayTick]);
   const targetFps = capture?.profile?.fps ?? 120;
   const roiSize = readNestedNumber(runtime?.config, "roi", "size", 640);
@@ -178,10 +169,6 @@ export function DashboardView({
   const modelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const e2eText = stats.e2e_latency > 0 ? `${formatNumber(stats.e2e_latency, 1)}ms` : "--";
   const [consumerBusy, setConsumerBusy] = useState<string | null>(null);
-  const [imagePath, setImagePath] = useState("");
-  const [imageFps, setImageFps] = useState(15);
-  const [imageBusy, setImageBusy] = useState(false);
-  const [imageError, setImageError] = useState<string>();
   const previewEnabled = readNestedBoolean(runtime?.config, "consumers", "preview", true);
   const inferenceEnabled = readNestedBoolean(runtime?.config, "consumers", "inference", true);
   const recordingEnabled = readNestedBoolean(runtime?.config, "consumers", "recording", false);
@@ -205,30 +192,14 @@ export function DashboardView({
     }
   }
 
-  async function applyImageSource() {
-    if (!imagePath.trim() || imageBusy) {
-      return;
-    }
-    setImageBusy(true);
-    setImageError(undefined);
-    try {
-      await selectImageSource(imagePath.trim(), imageFps);
-      await onRefresh();
-    } catch (requestError) {
-      setImageError(requestError instanceof Error ? requestError.message : "图片输入源切换失败");
-    } finally {
-      setImageBusy(false);
-    }
-  }
-
   return (
     <div className="home-workspace">
       <aside className="home-side">
         <section className="home-card">
           <div className="home-card-head">
             <div>
-              <div className="home-card-title">采集配置</div>
-              <div className="home-card-desc">这里只放最常用选择，高级能力在采集页展开。</div>
+              <div className="home-card-title">采集状态</div>
+              <div className="home-card-desc">性能页只展示当前链路状态，采集参数进入基础设置调整。</div>
             </div>
           </div>
 
@@ -236,29 +207,27 @@ export function DashboardView({
             <div className="home-field">
               <div className="home-field-label">
                 <span>采集源</span>
-                <span>已缓存</span>
+                <span>{capture?.available ? "运行中" : "未启动"}</span>
               </div>
-              <button className="home-selectbox" type="button" onClick={onRefresh}>
+              <div className="home-selectbox">
                 <span>{capture?.device ?? "/dev/video0"}</span>
-                <span>{loading ? "读取中" : "刷新"}</span>
-              </button>
-              <div className="home-tiny">启动时读取设备能力，手动刷新可重新扫描。</div>
+                <span>{capture?.backend ?? "未打开"}</span>
+              </div>
+              <div className="home-tiny">启动、停止、格式和分辨率选择统一在基础设置 / 采集设置。</div>
             </div>
 
             <div className="home-field">
               <div className="home-field-label">
-                <span>采集格式</span>
-                <span>主流</span>
+                <span>当前 Profile</span>
+                <span>{capture?.profile?.selection_reason ?? "等待采集"}</span>
               </div>
-              <div className="home-chips">
-                {["MJPG", "NV12", "YUYV", "More"].map((item) => (
-                  <span
-                    className={capture?.profile?.pixel_format === item ? "home-chip active" : "home-chip"}
-                    key={item}
-                  >
-                    {item}
-                  </span>
-                ))}
+              <div className="home-status-line">
+                <strong>{capture?.profile?.pixel_format ?? "--"}</strong>
+                <span>
+                  {capture?.profile
+                    ? `${capture.profile.width}x${capture.profile.height} @ ${capture.profile.fps}fps`
+                    : "未选择"}
+                </span>
               </div>
             </div>
 
@@ -277,40 +246,6 @@ export function DashboardView({
               <div className="home-tiny">
                 目标对象不是 CPU Mat，而是可被多路消费的 RoiFrame / GpuFrameView。
               </div>
-            </div>
-
-            <div className="home-field">
-              <div className="home-field-label">
-                <span>图片输入源</span>
-                <span>测试链路</span>
-              </div>
-              <input
-                className="home-inline-input"
-                placeholder="/home/nvidia/NovaSight/data/sample.jpg"
-                value={imagePath}
-                onChange={(event) => setImagePath(event.target.value)}
-              />
-              <div className="home-chips">
-                {[1, 5, 15, 30, 60].map((fps) => (
-                  <button
-                    className={imageFps === fps ? "home-chip active" : "home-chip"}
-                    key={fps}
-                    type="button"
-                    onClick={() => setImageFps(fps)}
-                  >
-                    {fps}fps
-                  </button>
-                ))}
-              </div>
-              <button
-                className="button compact-button"
-                type="button"
-                disabled={!imagePath.trim() || imageBusy}
-                onClick={applyImageSource}
-              >
-                {imageBusy ? "切换中..." : "切换到图片"}
-              </button>
-              {imageError ? <div className="home-tiny bad">{imageError}</div> : null}
             </div>
           </div>
         </section>
@@ -369,13 +304,9 @@ export function DashboardView({
               <StatusIndicator tone={statusTone(health?.ok)}>
                 {loading ? "后端检查中" : health?.ok ? "后端已连接" : "后端离线"}
               </StatusIndicator>
-              {canControlRuntime ? (
-                <InferenceControl
-                  busy={runtimeCommandBusy}
-                  running={runtimeRunning}
-                  onCommand={onInferenceControlCommand}
-                />
-              ) : null}
+              <button className="button compact-button" type="button" onClick={onRefresh}>
+                刷新状态
+              </button>
             </div>
           </div>
 
@@ -516,5 +447,3 @@ export function DashboardView({
     </div>
   );
 }
-
-export { InferenceControl };

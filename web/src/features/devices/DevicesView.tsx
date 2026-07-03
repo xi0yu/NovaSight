@@ -4,14 +4,16 @@ import {
   type CaptureCapabilitiesResponse,
   type CaptureCapability,
   type CaptureSelectPayload,
+  type RuntimeConfig,
   type RuntimeState,
   getCaptureCapabilities,
   selectCaptureProfile,
+  selectImageSource,
+  updateRuntimeConfig,
   stopCapture
 } from "../../api";
 import { EmptyState, InlineError } from "../../components/ui";
 import { formatProfile, getErrorMessage } from "../shared/format";
-import { InferenceControl } from "../shared/InferenceControl";
 
 type CapabilityChoice = {
   pixel_format: string;
@@ -26,13 +28,12 @@ type CapabilityGroup = {
 };
 
 type DevicesViewProps = {
-  canControlRuntime: boolean;
   runtime: RuntimeState | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
-  onInferenceControlCommand: (action: "start" | "stop") => void;
-  runtimeCommandBusy: boolean;
 };
+
+type SettingsSection = "capture" | "inference" | "algorithm";
 
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -74,7 +75,7 @@ function groupCapabilities(caps: CaptureCapability[]): CapabilityGroup[] {
     });
 }
 
-function CapabilityTable({
+function CapabilityCompactList({
   groups,
   applying,
   disabled,
@@ -96,7 +97,7 @@ function CapabilityTable({
   }
 
   return (
-    <div className="capability-groups">
+    <div className="capability-groups compact-capability-groups">
       {groups.map((group, index) => (
         <details className="capability-group" key={group.pixel_format} open={index < 2}>
           <summary>
@@ -104,45 +105,25 @@ function CapabilityTable({
             <span>{group.choices.length} 组配置</span>
             <strong>{getFormatSummary(group)}</strong>
           </summary>
-          <div className="table-wrap capability-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>分辨率</th>
-                  <th>帧率</th>
-                  <th>建议</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.choices.map((row) => {
-                  const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
-                  return (
-                    <tr key={id}>
-                      <td className="mono">
-                        {row.width}x{row.height}
-                      </td>
-                      <td className="mono">{row.fps}</td>
-                      <td>
-                        <span className={`hint-chip ${getCapabilityTone(row)}`}>
-                          {getCapabilityHint(row)}
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          className="button compact-button"
-                          disabled={applying !== null || disabled}
-                          onClick={() => onApply(row)}
-                          type="button"
-                        >
-                          {applying === id ? "应用中" : "应用并启动"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="compact-profile-list">
+            {group.choices.map((row) => {
+              const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
+              return (
+                <button
+                  className="compact-profile-row"
+                  disabled={applying !== null || disabled}
+                  key={id}
+                  onClick={() => onApply(row)}
+                  type="button"
+                >
+                  <strong>{row.fps}fps</strong>
+                  <span>{row.width}x{row.height}</span>
+                  <em className={`hint-chip ${getCapabilityTone(row)}`}>
+                    {applying === id ? "应用中" : getCapabilityHint(row)}
+                  </em>
+                </button>
+              );
+            })}
           </div>
         </details>
       ))}
@@ -221,16 +202,8 @@ function isMainstreamProfile(choice: CapabilityChoice): boolean {
 }
 
 function profilePriority(choice: CapabilityChoice): number {
-  const formatRank =
-    choice.pixel_format === "MJPG"
-      ? 0
-      : choice.pixel_format === "NV12"
-        ? 1
-        : choice.pixel_format === "YUYV"
-          ? 2
-          : 3;
   const sizeRank = choice.width === 1920 && choice.height === 1080 ? 0 : 1;
-  return formatRank * 100000000 - choice.fps * 100000 + sizeRank * 10000 - choice.width * choice.height;
+  return -choice.fps * 100000 + sizeRank * 10000 - choice.width * choice.height;
 }
 
 function getVisibleProfiles(groups: CapabilityGroup[], selectedFormat: string): CapabilityChoice[] {
@@ -264,12 +237,9 @@ function getProfileTag(choice: CapabilityChoice): string {
 }
 
 export function DevicesView({
-  canControlRuntime,
   runtime,
   error,
-  onRuntimeRefresh,
-  onInferenceControlCommand,
-  runtimeCommandBusy
+  onRuntimeRefresh
 }: DevicesViewProps) {
   const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
   const [capabilities, setCapabilities] = useState<CaptureCapabilitiesResponse | null>(null);
@@ -278,6 +248,10 @@ export function DevicesView({
   const [applying, setApplying] = useState<string | null>(null);
   const [stoppingCapture, setStoppingCapture] = useState(false);
   const [selectedFormat, setSelectedFormat] = useState("MJPG");
+  const [activeSection, setActiveSection] = useState<SettingsSection>("capture");
+  const [imagePath, setImagePath] = useState("");
+  const [imageFps, setImageFps] = useState(15);
+  const [configBusy, setConfigBusy] = useState<string | null>(null);
   const capabilityRequestId = useRef(0);
 
   useEffect(() => {
@@ -369,32 +343,75 @@ export function DevicesView({
     }
   }, [onRuntimeRefresh]);
 
+  const applyImageSource = useCallback(async () => {
+    if (!imagePath.trim()) {
+      return;
+    }
+    setApplying("image-source");
+    setCaptureError(undefined);
+    try {
+      await selectImageSource(imagePath.trim(), imageFps);
+      await onRuntimeRefresh();
+    } catch (err) {
+      setCaptureError(`图片输入源切换失败：${getErrorMessage(err)}`);
+      await onRuntimeRefresh();
+    } finally {
+      setApplying(null);
+    }
+  }, [imageFps, imagePath, onRuntimeRefresh]);
+
+  const updateRuntimeField = useCallback(
+    async (section: string, key: string, value: string | number) => {
+      if (!runtime?.config || configBusy) {
+        return;
+      }
+      setConfigBusy(`${section}.${key}`);
+      const nextConfig = structuredClone(runtime.config) as RuntimeConfig;
+      delete nextConfig.version;
+      const sectionValue =
+        typeof nextConfig[section] === "object" && nextConfig[section] !== null
+          ? { ...(nextConfig[section] as Record<string, unknown>) }
+          : {};
+      sectionValue[key] = value;
+      nextConfig[section] = sectionValue as RuntimeConfig[string];
+      try {
+        await updateRuntimeConfig(nextConfig);
+        await onRuntimeRefresh();
+      } catch (err) {
+        setCaptureError(`配置同步失败：${getErrorMessage(err)}`);
+      } finally {
+        setConfigBusy(null);
+      }
+    },
+    [configBusy, onRuntimeRefresh, runtime?.config]
+  );
+
   const applyPreference = (preference: CaptureSelectPayload["preference"], label: string) =>
     applySelection({ device, preference }, label);
 
   const capture = runtime?.capture;
-  const runtimeRunning = Boolean(runtime?.running);
   const roiConfig = getNestedRecord(runtime?.config, "roi");
+  const controlConfig = getNestedRecord(runtime?.config, "control");
   const roiSize = typeof roiConfig?.size === "number" ? roiConfig.size : 640;
+  const activeSource = String(getNestedRecord(runtime?.config, "source")?.default ?? runtime?.source ?? "null");
+  const readNumber = (section: Record<string, unknown> | null, key: string, fallback: number) => {
+    const value = section?.[key];
+    return typeof value === "number" ? value : fallback;
+  };
+  const readString = (section: Record<string, unknown> | null, key: string, fallback: string) => {
+    const value = section?.[key];
+    return typeof value === "string" ? value : fallback;
+  };
 
   return (
     <div className="capture-setup inference-setup">
       <main className="capture-setup-main">
         <div className="capture-setup-topbar">
           <div>
-            <h2>推理设置</h2>
-            <p>配置 ROI、输入尺寸、推理后端和检测阈值；实时画面统一放在性能指挥台。</p>
+            <h2>基础设置</h2>
+            <p>采集决定输入，推理消费 RoiFrame，算法参数决定控制输出。</p>
           </div>
           <div className="panel-actions">
-            {canControlRuntime ? (
-              <InferenceControl
-                busy={runtimeCommandBusy}
-                running={runtimeRunning}
-                onCommand={onInferenceControlCommand}
-              />
-            ) : (
-              <span className="panel-action-note">当前授权不包含运行控制能力</span>
-            )}
             <button
               className="button"
               disabled={stoppingCapture || !capture?.available}
@@ -411,9 +428,203 @@ export function DevicesView({
 
         <InlineError message={captureError} />
 
+        <div className="settings-tabs" role="tablist" aria-label="基础设置分类">
+          {[
+            ["capture", "采集设置", "设备 / 图片输入 / Profile"],
+            ["inference", "推理设置", "ROI / 检测阈值 / 后端"],
+            ["algorithm", "算法设置", "FOV / PID / 输出限幅"],
+          ].map(([id, label, desc]) => (
+            <button
+              className={activeSection === id ? "settings-tab active" : "settings-tab"}
+              key={id}
+              onClick={() => setActiveSection(id as SettingsSection)}
+              type="button"
+            >
+              <strong>{label}</strong>
+              <span>{desc}</span>
+            </button>
+          ))}
+        </div>
+
+        {activeSection === "capture" ? (
+          <>
+            <section className="setup-card">
+              <div className="section-title">1. 采集输入源</div>
+              <div className="hint">采集是唯一的启动入口；采集有输出后，推理默认消费最新 RoiFrame。</div>
+              <div className="source-mode-grid">
+                <div className={activeSource === "capture" ? "source-mode active" : "source-mode"}>
+                  <strong>采集卡</strong>
+                  <span>{capture?.available ? formatProfile(capture) : "未启动，选择 Profile 后启动"}</span>
+                </div>
+                <div className={activeSource === "image" || activeSource.startsWith("image:") ? "source-mode active" : "source-mode"}>
+                  <strong>图片输入</strong>
+                  <span>用于模型和 UI 链路测试，不占用采集卡。</span>
+                </div>
+              </div>
+            </section>
+
+            <section className="setup-card">
+              <div className="section-title">2. 采集卡能力</div>
+              <div className="hint">按像素格式分组，组内优先展示最高 FPS；完整能力折叠在 More。</div>
+              <div className="format-choice-grid">
+                {groups.map((group) => {
+                  const pill = getFormatPill(group.pixel_format);
+                  return (
+                    <button
+                      className={
+                        group.pixel_format === selectedFormat
+                          ? "format-choice active"
+                          : "format-choice"
+                      }
+                      key={group.pixel_format}
+                      onClick={() => setSelectedFormat(group.pixel_format)}
+                      type="button"
+                    >
+                      <span className="format-key">{group.pixel_format}</span>
+                      <span className="format-detail">{getFormatDescription(group.pixel_format)}</span>
+                      <span className={`pill ${pill.tone}`}>{pill.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="setup-card">
+              <div className="section-title">3. 分辨率 / 帧率</div>
+              <div className="hint">只展示当前格式里最有价值的组合，默认按 FPS 从高到低排序。</div>
+              {visibleProfiles.length > 0 ? (
+                <div className="profile-choice-grid">
+                  {visibleProfiles.map((row) => {
+                    const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
+                    const active =
+                      capture?.profile?.pixel_format?.toUpperCase() === row.pixel_format &&
+                      capture.profile.width === row.width &&
+                      capture.profile.height === row.height &&
+                      capture.profile.fps === row.fps;
+                    return (
+                      <button
+                        className={active ? "profile-choice active" : "profile-choice"}
+                        disabled={applying !== null}
+                        key={id}
+                        onClick={() =>
+                          applySelection(
+                            {
+                              device,
+                              preference: "manual",
+                              pixel_format: row.pixel_format,
+                              width: row.width,
+                              height: row.height,
+                              fps: row.fps
+                            },
+                            id
+                          )
+                        }
+                        type="button"
+                      >
+                        <span>
+                          <strong>{getProfileTitle(row)}</strong>
+                          <small>
+                            {row.width}x{row.height} {row.pixel_format}
+                          </small>
+                        </span>
+                        <em>{applying === id ? "应用中" : getProfileTag(row)}</em>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <EmptyState
+                  title="尚未读取采集能力"
+                  detail="点击刷新采集卡信息，读取 /dev/video0 支持的格式、分辨率和帧率。"
+                  command="python3 -m novasight doctor camera --device /dev/video0"
+                />
+              )}
+              <details className="advanced-capability-block">
+                <summary>More：显示全部格式内排序后的能力组合</summary>
+                <CapabilityCompactList
+                  applying={applying}
+                  groups={groups}
+                  onApply={(row) =>
+                    applySelection(
+                      {
+                        device,
+                        preference: "manual",
+                        pixel_format: row.pixel_format,
+                        width: row.width,
+                        height: row.height,
+                        fps: row.fps
+                      },
+                      `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
+                    )
+                  }
+                />
+              </details>
+            </section>
+
+            <section className="setup-card">
+              <div className="section-title">4. 图片输入源</div>
+              <div className="hint">用于离线验证模型、预览和配置链路；真机采集调试时可随时切回采集卡。</div>
+              <div className="image-source-row">
+                <input
+                  className="home-inline-input"
+                  placeholder="/home/nvidia/NovaSight/data/sample.jpg"
+                  value={imagePath}
+                  onChange={(event) => setImagePath(event.target.value)}
+                />
+                <div className="home-chips">
+                  {[1, 5, 15, 30, 60].map((fps) => (
+                    <button
+                      className={imageFps === fps ? "home-chip active" : "home-chip"}
+                      key={fps}
+                      type="button"
+                      onClick={() => setImageFps(fps)}
+                    >
+                      {fps}fps
+                    </button>
+                  ))}
+                </div>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={!imagePath.trim() || applying !== null}
+                  onClick={() => void applyImageSource()}
+                >
+                  {applying === "image-source" ? "切换中" : "切换到图片输入"}
+                </button>
+              </div>
+            </section>
+
+            <section className="advanced-summary">
+              <label className="device-input">
+                <span>设备</span>
+                <input value={device} onChange={(event) => setDevice(event.target.value)} />
+              </label>
+              <button
+                className="button"
+                disabled={applying !== null}
+                onClick={() => applyPreference("auto_high_fps", "高帧率")}
+                type="button"
+              >
+                自动高帧率
+              </button>
+              <button
+                className="button"
+                disabled={applying !== null}
+                onClick={() => applyPreference("auto_low_latency", "低延迟")}
+                type="button"
+              >
+                自动低延迟
+              </button>
+              <span>采集参数修改会重新打开采集源；性能指挥台只负责观察结果。</span>
+            </section>
+          </>
+        ) : null}
+
+        {activeSection === "inference" ? (
+          <>
         <section className="setup-card">
           <div className="section-title">1. 推理输入</div>
-          <div className="hint">推理输入来自性能指挥台中的 RoiFrame，当前页面只配置消费方式。</div>
+          <div className="hint">采集流存在时，推理默认消费最新 RoiFrame；推理状态由采集帧驱动。</div>
           <div className="inference-setting-grid">
             <div className="pipeline-step">
               <b>RoiFrame</b>
@@ -463,7 +674,7 @@ export function DevicesView({
             </div>
             <div className="pipeline-step">
               <b>执行</b>
-              <span>{runtimeRunning ? "运行中" : "待机"}</span>
+              <span>{capture?.available ? "等待采集帧驱动" : "采集未启动"}</span>
             </div>
             <div className="pipeline-step">
               <b>输出</b>
@@ -471,130 +682,158 @@ export function DevicesView({
             </div>
           </div>
         </section>
+          </>
+        ) : null}
 
-        <section className="setup-card">
-          <div className="section-title">高级：采集输入源</div>
-          <div className="hint">保留采集卡配置入口，但运行画面和指标只在性能指挥台展示。</div>
-          <div className="format-choice-grid">
-            {groups.map((group) => {
-              const pill = getFormatPill(group.pixel_format);
-              return (
-                <button
-                  className={
-                    group.pixel_format === selectedFormat
-                      ? "format-choice active"
-                      : "format-choice"
-                  }
-                  key={group.pixel_format}
-                  onClick={() => setSelectedFormat(group.pixel_format)}
-                  type="button"
-                >
-                  <span className="format-key">{group.pixel_format}</span>
-                  <span className="format-detail">{getFormatDescription(group.pixel_format)}</span>
-                  <span className={`pill ${pill.tone}`}>{pill.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="setup-card">
-          <div className="section-title">高级：分辨率 / 帧率</div>
-          <div className="hint">这里不展示所有枚举，只展示对项目有意义的主流 Profile。</div>
-          {visibleProfiles.length > 0 ? (
-            <div className="profile-choice-grid">
-              {visibleProfiles.map((row) => {
-                const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
-                const active =
-                  capture?.profile?.pixel_format?.toUpperCase() === row.pixel_format &&
-                  capture.profile.width === row.width &&
-                  capture.profile.height === row.height &&
-                  capture.profile.fps === row.fps;
-                return (
+        {activeSection === "algorithm" ? (
+          <>
+            <section className="setup-card">
+              <div className="section-title">1. 算法选择</div>
+              <div className="hint">控制算法参数实时同步到运行配置，FOV 会影响预览层绘制。</div>
+              <div className="algorithm-choice-row">
+                {["pid", "predictive"].map((strategy) => (
                   <button
-                    className={active ? "profile-choice active" : "profile-choice"}
-                    disabled={applying !== null}
-                    key={id}
-                    onClick={() =>
-                      applySelection(
-                        {
-                          device,
-                          preference: "manual",
-                          pixel_format: row.pixel_format,
-                          width: row.width,
-                          height: row.height,
-                          fps: row.fps
-                        },
-                        id
-                      )
+                    className={
+                      readString(controlConfig, "strategy", "pid") === strategy
+                        ? "algorithm-choice active"
+                        : "algorithm-choice"
                     }
+                    key={strategy}
                     type="button"
+                    onClick={() => void updateRuntimeField("control", "strategy", strategy)}
                   >
-                    <span>
-                      <strong>{getProfileTitle(row)}</strong>
-                      <small>
-                        {row.width}x{row.height} {row.pixel_format}
-                      </small>
-                    </span>
-                    <em>{applying === id ? "应用中" : getProfileTag(row)}</em>
+                    <strong>{strategy === "pid" ? "PID 平滑追踪" : "预测追踪"}</strong>
+                    <span>{strategy === "pid" ? "支持 X/Y 分轴参数" : "基于目标位移提前量"}</span>
                   </button>
-                );
-              })}
-            </div>
-          ) : (
-            <EmptyState
-              title="尚未读取采集能力"
-              detail="点击刷新采集卡信息，读取 /dev/video0 支持的格式、分辨率和帧率。"
-              command="python3 -m novasight doctor camera --device /dev/video0"
-            />
-          )}
-          <details className="advanced-capability-block">
-            <summary>More：显示非主流分辨率和完整 v4l2 能力枚举</summary>
-            <CapabilityTable
-              applying={applying}
-              groups={groups}
-              onApply={(row) =>
-                applySelection(
-                  {
-                    device,
-                    preference: "manual",
-                    pixel_format: row.pixel_format,
-                    width: row.width,
-                    height: row.height,
-                    fps: row.fps
-                  },
-                  `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
-                )
-              }
-            />
-          </details>
-        </section>
+                ))}
+              </div>
+            </section>
 
-        <section className="advanced-summary">
-          <label className="device-input">
-            <span>设备</span>
-            <input value={device} onChange={(event) => setDevice(event.target.value)} />
-          </label>
-          <button
-            className="button"
-            disabled={applying !== null}
-            onClick={() => applyPreference("auto_high_fps", "高帧率")}
-            type="button"
-          >
-            自动高帧率
-          </button>
-          <button
-            className="button"
-            disabled={applying !== null}
-            onClick={() => applyPreference("auto_low_latency", "低延迟")}
-            type="button"
-          >
-            自动低延迟
-          </button>
-          <span>原始能力列表已折叠，运行状态和最近错误统一在性能指挥台展示。</span>
-        </section>
+            <section className="setup-card">
+              <div className="section-title">2. FOV 与输出限制</div>
+              <div className="settings-form-grid">
+                <NumberField
+                  label="FOV 比例"
+                  value={readNumber(controlConfig, "fov_ratio", 0.28)}
+                  busy={configBusy === "control.fov_ratio"}
+                  min={0.01}
+                  max={1}
+                  step={0.01}
+                  onCommit={(value) => void updateRuntimeField("control", "fov_ratio", value)}
+                />
+                <NumberField
+                  label="X 限幅"
+                  value={readNumber(controlConfig, "max_abs_dx", 120)}
+                  busy={configBusy === "control.max_abs_dx"}
+                  min={0}
+                  step={1}
+                  onCommit={(value) => void updateRuntimeField("control", "max_abs_dx", value)}
+                />
+                <NumberField
+                  label="Y 限幅"
+                  value={readNumber(controlConfig, "max_abs_dy", 120)}
+                  busy={configBusy === "control.max_abs_dy"}
+                  min={0}
+                  step={1}
+                  onCommit={(value) => void updateRuntimeField("control", "max_abs_dy", value)}
+                />
+                <NumberField
+                  label="最低置信度"
+                  value={readNumber(controlConfig, "min_confidence", 0)}
+                  busy={configBusy === "control.min_confidence"}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onCommit={(value) => void updateRuntimeField("control", "min_confidence", value)}
+                />
+              </div>
+            </section>
+
+            <section className="setup-card">
+              <div className="section-title">3. PID 分轴参数</div>
+              <div className="settings-form-grid dense">
+                {[
+                  ["pid_kp_x", "Kp X", 0.35],
+                  ["pid_kp_y", "Kp Y", 0.35],
+                  ["pid_ki_x", "Ki X", 0.1],
+                  ["pid_ki_y", "Ki Y", 0.1],
+                  ["pid_kd_x", "Kd X", 0.1],
+                  ["pid_kd_y", "Kd Y", 0.1],
+                  ["pid_integral_limit_x", "积分上限 X", 250],
+                  ["pid_integral_limit_y", "积分上限 Y", 250],
+                  ["pid_output_limit_x", "输出上限 X", 120],
+                  ["pid_output_limit_y", "输出上限 Y", 120],
+                ].map(([key, label, fallback]) => (
+                  <NumberField
+                    key={key}
+                    label={String(label)}
+                    value={readNumber(controlConfig, String(key), Number(fallback))}
+                    busy={configBusy === `control.${key}`}
+                    min={0}
+                    step={0.01}
+                    onCommit={(value) => void updateRuntimeField("control", String(key), value)}
+                  />
+                ))}
+              </div>
+            </section>
+          </>
+        ) : null}
       </main>
 
     </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  busy,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  busy?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const next = Number(draft);
+    if (!Number.isFinite(next)) {
+      setDraft(String(value));
+      return;
+    }
+    onCommit(next);
+  };
+
+  return (
+    <label className="settings-number-field">
+      <span>{label}</span>
+      <input
+        disabled={busy}
+        max={max}
+        min={min}
+        step={step}
+        type="number"
+        value={draft}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    </label>
   );
 }

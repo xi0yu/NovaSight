@@ -157,7 +157,7 @@ export function ConfigView({
       setConfig(result.config);
       setInitialConfig(structuredClone(result.config));
       setLastSyncedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-      setMessage(result.restart_required ? "配置已保存，推理控制需要重启后完全生效。" : "配置已保存并同步到运行态。");
+      setMessage(result.restart_required ? "配置已保存，相关运行模块重启后完全生效。" : "配置已保存并同步到运行态。");
       await onRuntimeRefresh();
     } catch (err) {
       setError(getErrorMessage(err));
@@ -291,7 +291,7 @@ export function ConfigView({
           <Field label="运行中" value={runtime?.running ? "是" : "否"} />
           <Field label="配置版本" value={String(runtime?.config?.version ?? 0)} mono />
           <Field label="默认执行器" value={runtime?.executor.selected ?? "未加载"} mono />
-          <Field label="采集配置" value={formatProfile(runtime?.capture)} />
+          <Field label="采集状态" value={formatProfile(runtime?.capture)} />
         </div>
       </Panel>
     </div>

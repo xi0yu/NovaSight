@@ -126,7 +126,7 @@ def test_runtime_start_returns_400_when_capture_not_running(tmp_path) -> None:
     response = client.post("/api/runtime/start")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "采集未启动，无法启动推理控制。"
+    assert response.json()["detail"] == "采集未启动，无法运行推理链路。"
     assert app.state.runtime.running is False
 
 

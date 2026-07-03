@@ -23,7 +23,7 @@ class PipelineStats:
 
 
 class RuntimePipeline:
-    CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法启动推理控制。"
+    CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法运行推理链路。"
 
     def __init__(
         self,

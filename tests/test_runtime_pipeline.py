@@ -95,7 +95,7 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
     runtime = SimpleNamespace(running=False, process_captured_frame=lambda frame: None)
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
-    with pytest.raises(RuntimeError, match="采集未启动，无法启动推理控制。"):
+    with pytest.raises(RuntimeError, match="采集未启动，无法运行推理链路。"):
         pipeline.start()
 
     assert runtime.running is False

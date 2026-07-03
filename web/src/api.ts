@@ -227,8 +227,6 @@ export class ApiError extends Error {
 export const API_PATHS = {
   health: "/healthz",
   runtimeState: "/api/runtime/state",
-  runtimeStart: "/api/runtime/start",
-  runtimeStop: "/api/runtime/stop",
   config: "/api/config",
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
@@ -310,18 +308,6 @@ export function getHealth(): Promise<HealthResponse> {
 
 export function getRuntimeState(): Promise<RuntimeState> {
   return requestJson<RuntimeState>(API_PATHS.runtimeState);
-}
-
-export function startInferenceControl(): Promise<Record<string, unknown>> {
-  return requestJson<Record<string, unknown>>(API_PATHS.runtimeStart, {
-    method: "POST"
-  });
-}
-
-export function stopInferenceControl(): Promise<Record<string, unknown>> {
-  return requestJson<Record<string, unknown>>(API_PATHS.runtimeStop, {
-    method: "POST"
-  });
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {

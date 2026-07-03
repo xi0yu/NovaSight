@@ -29,6 +29,21 @@ def test_runtime_config_defaults_are_stable() -> None:
     assert not hasattr(cfg, "plugin_settings")
 
 
+def test_runtime_config_defaults_include_axis_pid_settings() -> None:
+    cfg = RuntimeConfig()
+
+    assert cfg.control.pid_kp_x == 0.35
+    assert cfg.control.pid_kp_y == 0.35
+    assert cfg.control.pid_ki_x == 0.1
+    assert cfg.control.pid_ki_y == 0.1
+    assert cfg.control.pid_kd_x == 0.1
+    assert cfg.control.pid_kd_y == 0.1
+    assert cfg.control.pid_integral_limit_x == 250.0
+    assert cfg.control.pid_integral_limit_y == 250.0
+    assert cfg.control.pid_output_limit_x == 120.0
+    assert cfg.control.pid_output_limit_y == 120.0
+
+
 def test_runtime_config_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "novasight.yaml"
     cfg = RuntimeConfig()
@@ -169,3 +184,22 @@ def test_runtime_config_schema_exposes_roi_size() -> None:
             "restart_required": False,
         }
     ]
+
+
+def test_runtime_config_schema_exposes_axis_pid_fields() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    control_section = next(section for section in schema["sections"] if section["id"] == "control")
+    paths = {field["path"] for field in control_section["fields"]}
+
+    assert {
+        "control.pid_kp_x",
+        "control.pid_kp_y",
+        "control.pid_ki_x",
+        "control.pid_ki_y",
+        "control.pid_kd_x",
+        "control.pid_kd_y",
+        "control.pid_integral_limit_x",
+        "control.pid_integral_limit_y",
+        "control.pid_output_limit_x",
+        "control.pid_output_limit_y",
+    }.issubset(paths)

@@ -31,6 +31,24 @@ def test_pid_strategy_requires_hardware_trigger_and_limits_integral() -> None:
     assert active.confidence == 0.9
 
 
+def test_pid_strategy_supports_axis_specific_gains_and_output_limits() -> None:
+    strategy = PIDStrategy(
+        kp_x=2.0,
+        kp_y=0.5,
+        ki_x=0.0,
+        ki_y=0.0,
+        kd_x=0.0,
+        kd_y=0.0,
+        output_limit_x=30,
+        output_limit_y=10,
+    )
+
+    command = strategy.calculate(_target(100, 90), (50, 50), BoxInputState(left=True))
+
+    assert command.dx == 30
+    assert command.dy == 10
+
+
 def test_predictive_strategy_leads_moving_target() -> None:
     strategy = PredictiveStrategy(lead_factor=1.0)
     trigger = BoxInputState(left=True)
