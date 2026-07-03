@@ -16,6 +16,10 @@ class ControlOutput:
     accepted: bool
     clipped: bool
     reason: str
+    move_kind: str = "raw"
+    move_ms: int = 0
+    trace_ms: int = 0
+    bezier_ctrl: tuple[int, int, int, int] | None = None
 
 
 class ControlOutputPolicy:
@@ -49,6 +53,10 @@ class ControlOutputPolicy:
                 False,
                 False,
                 "non-finite control value",
+                intent.move_kind,
+                intent.move_ms,
+                intent.trace_ms,
+                intent.bezier_ctrl,
             )
         if intent.confidence < self.min_confidence:
             return ControlOutput(
@@ -60,6 +68,10 @@ class ControlOutputPolicy:
                 False,
                 False,
                 "confidence below threshold",
+                intent.move_kind,
+                intent.move_ms,
+                intent.trace_ms,
+                intent.bezier_ctrl,
             )
         requested_dx = int(round(intent.dx))
         requested_dy = int(round(intent.dy))
@@ -76,4 +88,8 @@ class ControlOutputPolicy:
             True,
             clipped,
             reason,
+            intent.move_kind,
+            intent.move_ms,
+            intent.trace_ms,
+            intent.bezier_ctrl,
         )

@@ -76,6 +76,17 @@ class ControlConfig:
     pid_integral_limit: float = 250.0
     pid_move_limit: float = 120.0
     command_interval_ms: float = 1.0
+    move_kind: str = "raw"
+    move_ms: int = 12
+    trace_ms: int = 0
+    deadzone_counts: int = 1
+    near_px: float = 24.0
+    near_speed: float = 0.16
+    far_speed: float = 0.42
+    ema_alpha: float = 0.45
+    counts_per_revolution_x: float = 4096.0
+    counts_per_revolution_y: float = 4096.0
+    bezier_curvature: float = 0.18
 
 
 @dataclass
@@ -94,6 +105,9 @@ class HardwareConfig:
     kind: str = "none"
     host: str = "127.0.0.1"
     port: int = 0
+    uuid: str = ""
+    monitor_port: int = 0
+    flip_dy: bool = True
     serial_port: str = ""
     heartbeat_timeout_ms: float = 50.0
 
@@ -190,14 +204,30 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'inference.nms_threshold' must be >= 0 and <= 1")
     if cfg.inference.input_source != "source.default":
         raise ValueError("runtime config key 'inference.input_source' must be source.default")
+    if cfg.control.strategy not in {"pid", "proportional", "predictive"}:
+        raise ValueError("runtime config key 'control.strategy' must be pid, proportional, or predictive")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
+    if cfg.control.move_kind not in {"raw", "auto", "bezier"}:
+        raise ValueError("runtime config key 'control.move_kind' must be raw, auto, or bezier")
     for key in (
         "pid_integral_limit",
         "pid_move_limit",
+        "move_ms",
+        "trace_ms",
+        "deadzone_counts",
+        "near_px",
+        "near_speed",
+        "far_speed",
+        "ema_alpha",
+        "counts_per_revolution_x",
+        "counts_per_revolution_y",
+        "bezier_curvature",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
+    if cfg.control.ema_alpha > 1:
+        raise ValueError("runtime config key 'control.ema_alpha' must be <= 1")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:

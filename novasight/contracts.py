@@ -58,3 +58,7 @@ class ControlIntent:
     confidence: float
     reason: str
     source_id: str
+    move_kind: str = "raw"
+    move_ms: int = 0
+    trace_ms: int = 0
+    bezier_ctrl: tuple[int, int, int, int] | None = None

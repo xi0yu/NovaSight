@@ -5,7 +5,7 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
-from novasight.control import PIDStrategy, PredictiveStrategy
+from novasight.control import PIDStrategy, PredictiveStrategy, ProportionalStrategy
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
@@ -264,8 +264,8 @@ class RuntimeService:
             return None
 
         center = (context.width / 2, context.height / 2)
-        diagnostic_state = BoxInputState(left=True)
-        command = self.control_strategy.calculate(target, center, diagnostic_state)
+        box_input = self._box_input_state()
+        command = self.control_strategy.calculate(target, center, box_input)
         intent = ControlIntent(
             dx=command.dx,
             dy=command.dy,
@@ -273,8 +273,11 @@ class RuntimeService:
             confidence=command.confidence,
             reason=command.reason,
             source_id="runtime.control",
+            move_kind=command.move_kind,
+            move_ms=command.move_ms,
+            trace_ms=command.trace_ms,
+            bezier_ctrl=command.bezier_ctrl,
         )
-        box_input = self._box_input_state()
         can_emit = box_input.active or getattr(getattr(self.config, "hardware", None), "kind", "none") == "none"
         self.last_target = self._target_payload(target, context)
         self.last_control = {
@@ -314,6 +317,8 @@ class RuntimeService:
         )
 
     def _box_input_state(self) -> BoxInputState:
+        if getattr(getattr(self.config, "hardware", None), "kind", "none") in {"", "none", "silent"}:
+            return BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
         getter = getattr(self.hardware, "get_input_state", None)
         if not callable(getter):
             return BoxInputState()
@@ -327,6 +332,21 @@ class RuntimeService:
         strategy = getattr(config.control, "strategy", "pid")
         if strategy == "predictive":
             return PredictiveStrategy()
+        if strategy == "proportional":
+            return ProportionalStrategy(
+                fov_ratio=config.control.fov_ratio,
+                near_px=config.control.near_px,
+                near_speed=config.control.near_speed,
+                far_speed=config.control.far_speed,
+                ema_alpha=config.control.ema_alpha,
+                deadzone_counts=config.control.deadzone_counts,
+                counts_per_revolution_x=config.control.counts_per_revolution_x,
+                counts_per_revolution_y=config.control.counts_per_revolution_y,
+                move_kind=config.control.move_kind,
+                move_ms=config.control.move_ms,
+                trace_ms=config.control.trace_ms,
+                bezier_curvature=config.control.bezier_curvature,
+            )
         return PIDStrategy(
             kp_x=config.control.pid_kp_x,
             kp_y=config.control.pid_kp_y,

@@ -5,6 +5,7 @@ from novasight.control.strategy import (
     MoveCommand,
     PIDStrategy,
     PredictiveStrategy,
+    ProportionalStrategy,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "MoveCommand",
     "PIDStrategy",
     "PredictiveStrategy",
+    "ProportionalStrategy",
 ]

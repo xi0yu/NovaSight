@@ -29,16 +29,18 @@ class ExecutorRegistry:
     @classmethod
     def with_builtin_executors(
         cls,
+        config: RuntimeConfig | None = None,
         default: str = "dry_run",
         policy: ControlOutputPolicy | None = None,
         coalescer: ControlCommandCoalescer | None = None,
     ) -> ExecutorRegistry:
+        kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
         return cls(
             executors=[
                 SilentExecutor(),
                 ConsoleExecutor(),
                 DryRunExecutor(),
-                KmNetExecutor(),
+                kmnet,
             ],
             default=default,
             policy=policy,
@@ -49,6 +51,7 @@ class ExecutorRegistry:
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
         default = config.control.output_mode or config.executor.default
         return cls.with_builtin_executors(
+            config=config,
             default=default,
             policy=ControlOutputPolicy(
                 max_abs_dx=config.control.max_abs_dx,
@@ -79,7 +82,11 @@ class ExecutorRegistry:
         return {
             "selected": self.selected,
             "executors": {
-                executor_id: {"available": executor.available()}
+                executor_id: (
+                    executor.status()
+                    if hasattr(executor, "status") and callable(getattr(executor, "status"))
+                    else {"available": executor.available()}
+                )
                 for executor_id, executor in self.executors.items()
             },
         }

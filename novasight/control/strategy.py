@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -17,6 +18,10 @@ class MoveCommand:
     dy: float
     confidence: float
     reason: str
+    move_kind: str = "raw"
+    move_ms: int = 0
+    trace_ms: int = 0
+    bezier_ctrl: tuple[int, int, int, int] | None = None
 
 
 class IControlStrategy(Protocol):
@@ -118,6 +123,106 @@ class PredictiveStrategy:
             confidence=target.score,
             reason="predictive strategy",
         )
+
+
+class ProportionalStrategy:
+    def __init__(
+        self,
+        *,
+        fov_ratio: float = 0.28,
+        near_px: float = 24.0,
+        near_speed: float = 0.16,
+        far_speed: float = 0.42,
+        ema_alpha: float = 0.45,
+        deadzone_counts: int = 1,
+        counts_per_revolution_x: float = 4096.0,
+        counts_per_revolution_y: float = 4096.0,
+        move_kind: str = "raw",
+        move_ms: int = 12,
+        trace_ms: int = 0,
+        bezier_curvature: float = 0.18,
+    ) -> None:
+        self.fov_ratio = max(0.0, min(1.0, fov_ratio))
+        self.near_px = max(0.0, near_px)
+        self.near_speed = max(0.0, near_speed)
+        self.far_speed = max(0.0, far_speed)
+        self.ema_alpha = max(0.0, min(1.0, ema_alpha))
+        self.deadzone_counts = max(0, int(deadzone_counts))
+        self.counts_per_revolution_x = max(1.0, counts_per_revolution_x)
+        self.counts_per_revolution_y = max(1.0, counts_per_revolution_y)
+        self.move_kind = move_kind if move_kind in {"raw", "auto", "bezier"} else "raw"
+        self.move_ms = max(0, int(move_ms))
+        self.trace_ms = max(0, int(trace_ms))
+        self.bezier_curvature = max(0.0, bezier_curvature)
+        self._ema_x = 0.0
+        self._ema_y = 0.0
+
+    def calculate(
+        self,
+        target: Target,
+        current_pos: tuple[float, float],
+        box_input: BoxInputState,
+    ) -> MoveCommand:
+        if not box_input.active:
+            self._ema_x = 0.0
+            self._ema_y = 0.0
+            return MoveCommand(0, 0, 0, "hardware trigger inactive")
+
+        ex = target.cx - current_pos[0]
+        ey = target.cy - current_pos[1]
+        err = math.hypot(ex, ey)
+        radius = min(current_pos[0], current_pos[1]) * 2 * self.fov_ratio
+        if radius > 0 and err > radius:
+            self._ema_x = 0.0
+            self._ema_y = 0.0
+            return MoveCommand(0, 0, target.score, "target outside proportional fov")
+
+        speed = self._speed_for(err, radius)
+        rx = self.counts_per_revolution_x / (2 * math.pi)
+        ry = self.counts_per_revolution_y / (2 * math.pi)
+        counts_x = rx * math.atan((ex * speed) / rx)
+        counts_y = ry * math.atan((ey * speed) / ry)
+        self._ema_x = self.ema_alpha * counts_x + (1 - self.ema_alpha) * self._ema_x
+        self._ema_y = self.ema_alpha * counts_y + (1 - self.ema_alpha) * self._ema_y
+        dx = int(round(self._ema_x))
+        dy = int(round(self._ema_y))
+        if abs(dx) < self.deadzone_counts and abs(dy) < self.deadzone_counts:
+            return MoveCommand(0, 0, target.score, "proportional deadzone")
+
+        bezier_ctrl = _bezier_ctrl(dx, dy, self.bezier_curvature) if self.move_kind == "bezier" else None
+        return MoveCommand(
+            dx=dx,
+            dy=dy,
+            confidence=target.score,
+            reason="proportional strategy",
+            move_kind=self.move_kind,
+            move_ms=self.move_ms,
+            trace_ms=self.trace_ms,
+            bezier_ctrl=bezier_ctrl,
+        )
+
+    def _speed_for(self, err_px: float, fov_radius: float) -> float:
+        if err_px <= self.near_px:
+            return self.near_speed
+        ref = fov_radius if fov_radius > 0 else max(self.near_px * 5.0, self.near_px + 1.0)
+        span = max(1.0, ref - self.near_px)
+        ratio = min(1.0, (err_px - self.near_px) / span)
+        return self.near_speed + (self.far_speed - self.near_speed) * ratio
+
+
+def _bezier_ctrl(dx: int, dy: int, curvature: float) -> tuple[int, int, int, int]:
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        return (0, 0, 0, 0)
+    nx = -dy / dist
+    ny = dx / dist
+    bow = curvature * dist
+    return (
+        int(round(dx / 3.0 + nx * bow)),
+        int(round(dy / 3.0 + ny * bow)),
+        int(round(dx * 2.0 / 3.0 + nx * bow)),
+        int(round(dy * 2.0 / 3.0 + ny * bow)),
+    )
 
 
 class ControlCommandCoalescer:
