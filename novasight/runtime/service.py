@@ -248,6 +248,8 @@ class RuntimeService:
             "classes": list(classes or []),
             "input_width": int(getattr(roi_frame, "width", frame.width)),
             "input_height": int(getattr(roi_frame, "height", frame.height)),
+            "input_image_width": self._image_width(getattr(roi_frame, "image", frame.image)),
+            "input_image_height": self._image_height(getattr(roi_frame, "image", frame.image)),
             "input_pixel_format": str(getattr(roi_frame, "pixel_format", frame.pixel_format)),
             "source_width": self._source_width(frame),
             "source_height": self._source_height(frame),
@@ -431,6 +433,26 @@ class RuntimeService:
 
     def _source_height(self, frame: CapturedFrame) -> int:
         return int(frame.source_height or frame.height)
+
+    def _image_width(self, image: Any | None) -> int | None:
+        if image is None:
+            return None
+        if hasattr(image, "shape"):
+            try:
+                return int(image.shape[1])
+            except Exception:
+                return None
+        return int(getattr(image, "width")) if getattr(image, "width", None) is not None else None
+
+    def _image_height(self, image: Any | None) -> int | None:
+        if image is None:
+            return None
+        if hasattr(image, "shape"):
+            try:
+                return int(image.shape[0])
+            except Exception:
+                return None
+        return int(getattr(image, "height")) if getattr(image, "height", None) is not None else None
 
     def _active_model(self) -> dict | None:
         deployment = self.models.get_active_deployment()

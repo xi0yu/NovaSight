@@ -295,6 +295,8 @@ export function DashboardView({
   const mappedDetections = readNumberRecord(inferenceTrace, "mapped_detections");
   const inputWidth = readNumberRecord(inferenceTrace, "input_width");
   const inputHeight = readNumberRecord(inferenceTrace, "input_height");
+  const inputImageWidth = readNumberRecord(inferenceTrace, "input_image_width");
+  const inputImageHeight = readNumberRecord(inferenceTrace, "input_image_height");
   const inputFormat =
     typeof inferenceTrace.input_pixel_format === "string" ? inferenceTrace.input_pixel_format : "--";
   const inferenceTraceReason =
@@ -571,6 +573,7 @@ export function DashboardView({
             {inferenceFrameId !== null ? ` · 帧 #${inferenceFrameId}` : ""}
             <br />
             输入：{inputWidth !== null && inputHeight !== null ? `${inputWidth}x${inputHeight}` : "--"} · {inputFormat}
+            {inputImageWidth !== null && inputImageHeight !== null ? ` · 缓冲区 ${inputImageWidth}x${inputImageHeight}` : ""}
             <br />
             检测：raw {rawDetections ?? 0} · mapped {mappedDetections ?? 0}
             {inferenceTraceReason ? <><br />原因：{inferenceTraceReason}</> : null}

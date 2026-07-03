@@ -56,25 +56,101 @@ def center_roi_frame(frame: Any, *, requested_size: int) -> RoiFrame:
     frame_roi_size = getattr(frame, "roi_size", None)
     source_width = int(getattr(frame, "source_width", None) or frame.width)
     source_height = int(getattr(frame, "source_height", None) or frame.height)
-    expected_offset_x, expected_offset_y, expected_roi_size = center_roi_region(
+    desired_offset_x, desired_offset_y, desired_roi_size = center_roi_region(
         source_width=source_width,
         source_height=source_height,
         requested_size=configured_size,
     )
+    image_width, image_height = _image_size(getattr(frame, "image", None))
+
+    existing_offset_x = int(getattr(frame, "roi_offset_x", 0))
+    existing_offset_y = int(getattr(frame, "roi_offset_y", 0))
+    existing_roi_size = (
+        int(frame_roi_size)
+        if frame_roi_size is not None
+        else int(frame.width) if int(frame.width) == int(frame.height) else None
+    )
+    frame_is_roi_view = (
+        frame_roi_size is not None
+        and existing_roi_size is not None
+        and int(frame.width) == existing_roi_size
+        and int(frame.height) == existing_roi_size
+        and (image_width is None or image_width == existing_roi_size)
+        and (image_height is None or image_height == existing_roi_size)
+    )
+
+    if frame_is_roi_view:
+        if (
+            existing_roi_size == desired_roi_size
+            and existing_offset_x == desired_offset_x
+            and existing_offset_y == desired_offset_y
+        ):
+            return RoiFrame(
+                frame_id=frame.frame_id,
+                source_width=source_width,
+                source_height=source_height,
+                roi_size=desired_roi_size,
+                offset_x=desired_offset_x,
+                offset_y=desired_offset_y,
+                ts_ns=frame.ts_ns,
+                pixel_format=frame.pixel_format,
+                image=frame.image,
+                gpu_buffer=getattr(frame, "gpu_buffer", None),
+            )
+
+        inner_x = desired_offset_x - existing_offset_x
+        inner_y = desired_offset_y - existing_offset_y
+        if (
+            inner_x >= 0
+            and inner_y >= 0
+            and inner_x + desired_roi_size <= existing_roi_size
+            and inner_y + desired_roi_size <= existing_roi_size
+        ):
+            return RoiFrame(
+                frame_id=frame.frame_id,
+                source_width=source_width,
+                source_height=source_height,
+                roi_size=desired_roi_size,
+                offset_x=desired_offset_x,
+                offset_y=desired_offset_y,
+                ts_ns=frame.ts_ns,
+                pixel_format=frame.pixel_format,
+                image=_crop_image(
+                    frame.image,
+                    offset_x=inner_x,
+                    offset_y=inner_y,
+                    size=desired_roi_size,
+                ),
+                gpu_buffer=None,
+            )
+
+        return RoiFrame(
+            frame_id=frame.frame_id,
+            source_width=source_width,
+            source_height=source_height,
+            roi_size=existing_roi_size,
+            offset_x=existing_offset_x,
+            offset_y=existing_offset_y,
+            ts_ns=frame.ts_ns,
+            pixel_format=frame.pixel_format,
+            image=frame.image,
+            gpu_buffer=getattr(frame, "gpu_buffer", None),
+        )
+
     if (
-        frame_roi_size == expected_roi_size
-        and int(frame.width) == expected_roi_size
-        and int(frame.height) == expected_roi_size
-        and int(getattr(frame, "roi_offset_x", 0)) == expected_offset_x
-        and int(getattr(frame, "roi_offset_y", 0)) == expected_offset_y
+        frame_roi_size == desired_roi_size
+        and int(frame.width) == desired_roi_size
+        and int(frame.height) == desired_roi_size
+        and int(getattr(frame, "roi_offset_x", 0)) == desired_offset_x
+        and int(getattr(frame, "roi_offset_y", 0)) == desired_offset_y
     ):
         return RoiFrame(
             frame_id=frame.frame_id,
             source_width=source_width,
             source_height=source_height,
-            roi_size=expected_roi_size,
-            offset_x=expected_offset_x,
-            offset_y=expected_offset_y,
+            roi_size=desired_roi_size,
+            offset_x=desired_offset_x,
+            offset_y=desired_offset_y,
             ts_ns=frame.ts_ns,
             pixel_format=frame.pixel_format,
             image=frame.image,
@@ -133,3 +209,21 @@ def _crop_image(image: Any, *, offset_x: int, offset_y: int, size: int) -> Any |
     except Exception:
         return None
     return None
+
+
+def _image_size(image: Any) -> tuple[int | None, int | None]:
+    if image is None:
+        return None, None
+    if hasattr(image, "shape"):
+        try:
+            return int(image.shape[1]), int(image.shape[0])
+        except Exception:
+            return None, None
+    try:
+        from PIL import Image
+
+        if isinstance(image, Image.Image):
+            return int(image.width), int(image.height)
+    except Exception:
+        return None, None
+    return None, None
