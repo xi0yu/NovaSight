@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -146,6 +149,89 @@ def _parse_classes(value: str) -> list[str]:
     return classes or ["target"]
 
 
+def _safe_component(value: str, fallback: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip()).strip("._-")
+    return normalized or fallback
+
+
+def _model_sidecar(path: Path) -> dict[str, Any]:
+    sidecar = path.with_suffix(".json")
+    if not sidecar.exists():
+        return {}
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sync_models_directory(registry: ModelRegistry) -> None:
+    roots = [Path(registry.data_dir), Path("models")]
+    seen: set[Path] = set()
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        root = root.resolve(strict=False)
+        for model_file in sorted(root.rglob("*")):
+            if not model_file.is_file() or model_file.suffix.lower() not in {".onnx", ".engine"}:
+                continue
+            resolved = model_file.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            _sync_model_file(registry, root, resolved)
+
+
+def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> None:
+    try:
+        kind = _artifact_kind_from_filename(model_file.name)
+        relative = model_file.relative_to(root)
+        if len(relative.parts) >= 3:
+            project_name = _safe_component(relative.parts[0], model_file.stem)
+            version_name = _safe_component(relative.parts[1], "default")
+            filename = Path(*relative.parts[2:]).name
+        else:
+            project_name = _safe_component(model_file.stem, "model")
+            version_name = "default"
+            filename = model_file.name
+        sidecar = _model_sidecar(model_file)
+        classes_value = sidecar.get("classes", ["target"])
+        classes = classes_value if isinstance(classes_value, list) else ["target"]
+        classes = [str(item) for item in classes if str(item).strip()] or ["target"]
+        input_shape = str(sidecar.get("input_shape", "1x3x640x640"))
+        project = _find_project_by_name(registry, project_name)
+        if project is None:
+            project = registry.create_project(
+                name=project_name,
+                description="从服务端 models 目录自动发现的模型。",
+            )
+        version = _find_version(registry, project.id, version_name)
+        if version is None:
+            version = registry.create_version(
+                project_id=project.id,
+                version=version_name,
+                source_kind=_source_kind_from_artifact(kind),
+                source_path=model_file.as_posix(),
+                classes=classes,
+                input_shape=input_shape,
+            )
+        asset_path = Path(registry.data_dir) / project.name / version.version / filename
+        if model_file.resolve(strict=False) != asset_path.resolve(strict=False):
+            asset_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(model_file, asset_path)
+        checksum = _sha256(asset_path)
+        if _find_artifact(registry, version.id, filename) is None:
+            registry.create_artifact(
+                version_id=version.id,
+                kind=kind,
+                path=filename,
+                checksum=checksum,
+                status="ready",
+            )
+    except (OSError, RegistryError):
+        return
+
+
 def _registry(request: Request) -> ModelRegistry:
     return request.app.state.models
 
@@ -199,7 +285,18 @@ def _load_published_artifact(
 
 @router.get("/projects")
 def list_projects(request: Request) -> list[dict[str, Any]]:
-    return [asdict(project) for project in _registry(request).list_projects()]
+    registry = _registry(request)
+    _sync_models_directory(registry)
+    return [asdict(project) for project in registry.list_projects()]
+
+
+@router.post("/scan")
+def scan_models(request: Request) -> dict[str, Any]:
+    registry = _registry(request)
+    before = len(registry.list_projects())
+    _sync_models_directory(registry)
+    projects = registry.list_projects()
+    return {"projects": [asdict(project) for project in projects], "project_count": len(projects), "previous_project_count": before}
 
 
 @router.post("/examples/yolov8n/prepare")

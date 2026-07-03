@@ -7,6 +7,7 @@ import {
   prepareYolov8nExample,
   publishModel,
   rollbackModel,
+  scanModelDirectory,
   uploadModelFile,
   type ActiveModel,
   type ModelArtifact,
@@ -64,6 +65,7 @@ export function ModelsView({
   const [rollingBack, setRollingBack] = useState(false);
   const [preparingExample, setPreparingExample] = useState(false);
   const [uploadingModel, setUploadingModel] = useState(false);
+  const [scanningModels, setScanningModels] = useState(false);
   const [modelActionMessage, setModelActionMessage] = useState<string>();
   const [modelActionError, setModelActionError] = useState<string>();
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -333,6 +335,24 @@ export function ModelsView({
     }
   }
 
+  async function handleScanModels() {
+    setScanningModels(true);
+    setModelActionError(undefined);
+    setModelActionMessage(undefined);
+    try {
+      const result = await scanModelDirectory();
+      await onRuntimeRefresh();
+      setRegistryRefreshKey((current) => current + 1);
+      setModelActionMessage(
+        `已扫描服务端 models 目录，当前发现 ${result.project_count} 个模型方案。`
+      );
+    } catch (requestError) {
+      setModelActionError(getErrorMessage(requestError));
+    } finally {
+      setScanningModels(false);
+    }
+  }
+
   async function handleUploadModel() {
     if (!uploadFile) {
       setModelActionError("请选择 .pt、.onnx 或 .engine 模型文件。");
@@ -371,6 +391,21 @@ export function ModelsView({
         <div className="model-workbench">
           <article className="model-workbench-card">
             <div>
+              <strong>服务端 models 目录</strong>
+              <p>把 .onnx / .engine 放进服务端 models 目录后，点击扫描即可同步到模型仓库。</p>
+            </div>
+            <button
+              className="button compact-button"
+              type="button"
+              onClick={handleScanModels}
+              disabled={scanningModels || preparingExample || uploadingModel}
+            >
+              {scanningModels ? "扫描中..." : "扫描 models 目录"}
+            </button>
+          </article>
+
+          <article className="model-workbench-card">
+            <div>
               <strong>测试模型</strong>
               <p>自动准备开源 YOLOv8n，用图片输入源验证推理链路。</p>
             </div>
@@ -378,7 +413,7 @@ export function ModelsView({
               className="button compact-button"
               type="button"
               onClick={handlePrepareExample}
-              disabled={preparingExample || uploadingModel}
+              disabled={preparingExample || uploadingModel || scanningModels}
             >
               {preparingExample ? "准备中..." : "准备 YOLOv8n"}
             </button>
@@ -418,7 +453,7 @@ export function ModelsView({
                 className="button compact-button"
                 type="button"
                 onClick={handleUploadModel}
-                disabled={uploadingModel || preparingExample}
+                disabled={uploadingModel || preparingExample || scanningModels}
               >
                 {uploadingModel ? "上传中..." : "上传并注册"}
               </button>

@@ -90,8 +90,16 @@ def _runtime_roi_detections(
     roi_size: int,
 ) -> list[Detection]:
     context = getattr(runtime, "last_frame_context", None)
-    if context is None or getattr(context, "frame_id", None) != frame_id:
+    if context is None:
         return []
+    context_frame_id = getattr(context, "frame_id", None)
+    if context_frame_id != frame_id:
+        try:
+            frame_delta = int(frame_id) - int(context_frame_id)
+        except (TypeError, ValueError):
+            return []
+        if frame_delta < 0 or frame_delta > 10:
+            return []
     detections: list[Detection] = []
     for detection in getattr(context, "detections", []):
         x = float(detection.x) - offset_x

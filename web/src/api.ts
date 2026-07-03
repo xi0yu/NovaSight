@@ -418,6 +418,12 @@ export function prepareYolov8nExample(): Promise<ModelPrepareResponse> {
   });
 }
 
+export function scanModelDirectory(): Promise<{ project_count: number; previous_project_count: number }> {
+  return requestJson<{ project_count: number; previous_project_count: number }>("/api/models/scan", {
+    method: "POST"
+  });
+}
+
 export function uploadModelFile(payload: {
   projectName: string;
   version: string;

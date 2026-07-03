@@ -39,6 +39,7 @@ class TensorRtInferenceEngine:
             "available": self._available,
             "loaded": self._loaded,
             "warmed": self._warmed,
+            "supports_execution": False,
             "reason": self._reason,
             "input_shape": str(self._input_shape) if self._input_shape is not None else "",
             "last_input_mode": self._last_input.mode if self._last_input is not None else "",
@@ -72,7 +73,11 @@ class TensorRtInferenceEngine:
             self._last_input = prepare_tensor_input(frame, self._input_shape)
         except ValueError as exc:
             return InferenceResult(available=False, reason=str(exc))
-        return InferenceResult(available=True, detections=[], classes=self._classes)
+        return InferenceResult(
+            available=False,
+            reason="TensorRT execution bindings are not implemented yet",
+            classes=self._classes,
+        )
 
     def _warmup(self) -> None:
         self._warmed = True

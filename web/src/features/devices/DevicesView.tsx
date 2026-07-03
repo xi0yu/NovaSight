@@ -441,6 +441,7 @@ export function DevicesView({
   const backendMismatch = recommendedBackend !== inferenceBackend;
   const inferenceStatus = runtime?.inference ?? {};
   const inferenceLoaded = inferenceStatus.loaded === true;
+  const inferenceSupportsExecution = inferenceStatus.supports_execution !== false;
   const inferenceReason = typeof inferenceStatus.reason === "string" ? inferenceStatus.reason : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferenceBackend;
@@ -881,7 +882,13 @@ export function DevicesView({
                 </div>
                 <div>
                   <span>推理状态</span>
-                  <strong>{inferenceLoaded ? `已加载 ${inferenceSelected}` : inferenceReason || "未加载"}</strong>
+                  <strong>
+                    {!inferenceSupportsExecution
+                      ? "不支持真实执行"
+                      : inferenceLoaded
+                        ? `已加载 ${inferenceSelected}`
+                        : inferenceReason || "未加载"}
+                  </strong>
                 </div>
               </div>
 
@@ -949,7 +956,13 @@ export function DevicesView({
                   <div>
                     <span>模型仓库绑定</span>
                     <strong>{activeModelName}</strong>
-                    <p>{inferenceReason ? `${activeArtifactPath} · ${inferenceReason}` : activeArtifactPath}</p>
+                    <p>
+                      {!inferenceSupportsExecution
+                        ? `${activeArtifactPath} · TensorRT engine 当前只能加载/预处理，尚未接入真实执行绑定`
+                        : inferenceReason
+                          ? `${activeArtifactPath} · ${inferenceReason}`
+                          : activeArtifactPath}
+                    </p>
                   </div>
                   <div className="model-binding-actions">
                     <Badge tone={activeArtifact === "未绑定" ? "idle" : "good"}>
