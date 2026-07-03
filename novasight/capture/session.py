@@ -34,6 +34,7 @@ class CaptureSession:
         self._latest_frame: CapturedFrame | None = None
         self._last_frame_ts_ns: int | None = None
         self._capture_window_ts_ns: deque[int] = deque()
+        self._drop_window_ts_ns: deque[int] = deque()
 
     @property
     def running(self) -> bool:
@@ -72,6 +73,7 @@ class CaptureSession:
                 self._latest_frame = None
                 self._last_frame_ts_ns = None
                 self._capture_window_ts_ns.clear()
+                self._drop_window_ts_ns.clear()
                 self._stop_event = stop_event
                 self.state = CaptureRuntimeState(
                     available=True,
@@ -172,7 +174,10 @@ class CaptureSession:
                 with self._lock:
                     if self._source is source:
                         self.state.frames_dropped += 1
-                        self.state.statistics.dropped_counter += 1
+                        now_ns = time.monotonic_ns()
+                        self._drop_window_ts_ns.append(now_ns)
+                        self._prune_window(self._drop_window_ts_ns, now_ns)
+                        self.state.statistics.dropped_counter = len(self._drop_window_ts_ns)
                 if self.empty_read_sleep_s > 0:
                     time.sleep(self.empty_read_sleep_s)
                 continue
@@ -190,13 +195,13 @@ class CaptureSession:
                 return
             self.state.available = True
             self.state.capture_wait_ms = frame.capture_wait_ms
-            self.state.statistics.capture_counter += 1
             if self._last_frame_ts_ns is not None:
                 self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
             self._capture_window_ts_ns.append(frame.ts_ns)
-            window_start_ns = frame.ts_ns - 1_000_000_000
-            while self._capture_window_ts_ns and self._capture_window_ts_ns[0] < window_start_ns:
-                self._capture_window_ts_ns.popleft()
+            self._prune_window(self._capture_window_ts_ns, frame.ts_ns)
+            self._prune_window(self._drop_window_ts_ns, frame.ts_ns)
+            self.state.statistics.capture_counter = len(self._capture_window_ts_ns)
+            self.state.statistics.dropped_counter = len(self._drop_window_ts_ns)
             self.state.fps_capture = self._window_fps(self._capture_window_ts_ns)
             self.state.statistics.capture_fps = self.state.fps_capture
             self._last_frame_ts_ns = frame.ts_ns
@@ -211,6 +216,11 @@ class CaptureSession:
         if elapsed_s <= 0:
             return 0.0
         return (len(timestamps_ns) - 1) / elapsed_s
+
+    def _prune_window(self, timestamps_ns: deque[int], now_ns: int) -> None:
+        window_start_ns = now_ns - 1_000_000_000
+        while timestamps_ns and timestamps_ns[0] < window_start_ns:
+            timestamps_ns.popleft()
 
     def _mark_unavailable(
         self,
@@ -233,6 +243,7 @@ class CaptureSession:
             self._latest_frame = None
             self._last_frame_ts_ns = None
             self._capture_window_ts_ns.clear()
+            self._drop_window_ts_ns.clear()
             self._condition.notify_all()
 
     def _close_source_locked(self) -> str:

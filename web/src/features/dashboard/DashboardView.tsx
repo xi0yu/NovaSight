@@ -385,13 +385,13 @@ export function DashboardView({
             <MetricTile
               label="丢帧"
               value={String(stats.dropped_counter)}
-              detail="累计采集丢帧"
+              detail="最近 1 秒采集丢帧"
               tone={stats.dropped_counter > 0 ? "warn" : "good"}
             />
             <MetricTile
               label="跳帧"
               value={String(stats.skipped_counter)}
-              detail="推理跳过旧帧"
+              detail="最近 1 秒推理跳过旧帧"
               tone={stats.skipped_counter > 0 ? "warn" : "good"}
             />
             <MetricTile
