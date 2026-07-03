@@ -1,27 +1,27 @@
 :root {
-  color-scheme: dark;
-  --bg-app: #080b0f;
-  --bg-subtle: #0c1117;
-  --surface-1: #111820;
-  --surface-2: #151e28;
-  --surface-3: #1b2633;
-  --border-subtle: rgba(148, 163, 184, 0.16);
-  --border-strong: rgba(148, 163, 184, 0.28);
-  --text-primary: #eef4f8;
-  --text-secondary: #9aa8b5;
-  --text-muted: #667584;
-  --text-disabled: #46525f;
-  --primary: #33c7d6;
-  --primary-strong: #17a8b8;
-  --success: #3ddc97;
-  --warning: #f6c350;
-  --danger: #ff6b66;
-  --info: #67a8ff;
-  --radius-6: 6px;
-  --radius-8: 8px;
-  --radius-10: 10px;
+  color-scheme: light;
+  --bg-app: #f3f6fa;
+  --bg-subtle: #f9fbff;
+  --surface-1: rgba(255, 255, 255, 0.84);
+  --surface-2: #ffffff;
+  --surface-3: #f8fafc;
+  --border-subtle: rgba(16, 24, 40, 0.1);
+  --border-strong: rgba(37, 99, 235, 0.28);
+  --text-primary: #101828;
+  --text-secondary: #667085;
+  --text-muted: #98a2b3;
+  --text-disabled: #cbd5e1;
+  --primary: #2563eb;
+  --primary-strong: #1d4ed8;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --info: #0284c7;
+  --radius-6: 10px;
+  --radius-8: 12px;
+  --radius-10: 18px;
   --font-ui:
-    "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui,
     -apple-system, sans-serif;
   --font-mono: "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
 }

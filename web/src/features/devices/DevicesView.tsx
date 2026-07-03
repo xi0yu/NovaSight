@@ -12,7 +12,7 @@ import {
   streamUrl
 } from "../../api";
 import { VideoPanel } from "../../components/studio";
-import { EmptyState, InlineError, Panel } from "../../components/ui";
+import { EmptyState, InlineError } from "../../components/ui";
 import { formatProfile, getErrorMessage } from "../shared/format";
 import { InferenceControl } from "../shared/InferenceControl";
 
@@ -176,66 +176,140 @@ function getCapabilityTone(row: CapabilityChoice): string {
   return "plain";
 }
 
-function CaptureDiagnostics({ capture }: { capture: CaptureState | undefined }) {
-  if (!capture) {
-    return <EmptyState title="没有采集状态" detail="后端没有返回摄像头诊断信息。" />;
+function getFormatDescription(pixelFormat: string): string {
+  switch (pixelFormat) {
+    case "MJPG":
+      return "高帧率，适合 1K240 / 2K144";
+    case "NV12":
+      return "低转换成本，适合稳定低延迟";
+    case "YUYV":
+      return "兼容性好，高分辨率帧率较低";
+    case "BGR3":
+      return "原始 BGR，作为特殊兼容路径";
+    default:
+      return "采集卡返回的扩展格式";
   }
+}
 
+function getFormatPill(pixelFormat: string): { label: string; tone: string } {
+  switch (pixelFormat) {
+    case "MJPG":
+      return { label: "推荐", tone: "prime" };
+    case "NV12":
+      return { label: "稳定", tone: "cool" };
+    case "YUYV":
+      return { label: "备用", tone: "amber" };
+    default:
+      return { label: "高级", tone: "plain" };
+  }
+}
+
+function isMainstreamProfile(choice: CapabilityChoice): boolean {
+  const isStandardRate = [60, 120, 144, 240].includes(choice.fps);
+  const isCommonSize =
+    (choice.width === 1920 && choice.height === 1080) ||
+    (choice.width === 2560 && choice.height === 1440) ||
+    (choice.width === 3840 && choice.height === 2160);
+  return isStandardRate && isCommonSize;
+}
+
+function profilePriority(choice: CapabilityChoice): number {
+  const formatRank =
+    choice.pixel_format === "MJPG"
+      ? 0
+      : choice.pixel_format === "NV12"
+        ? 1
+        : choice.pixel_format === "YUYV"
+          ? 2
+          : 3;
+  const sizeRank = choice.width === 1920 && choice.height === 1080 ? 0 : 1;
+  return formatRank * 100000000 - choice.fps * 100000 + sizeRank * 10000 - choice.width * choice.height;
+}
+
+function getVisibleProfiles(groups: CapabilityGroup[], selectedFormat: string): CapabilityChoice[] {
+  const group = groups.find((item) => item.pixel_format === selectedFormat);
+  const choices = group?.choices ?? [];
+  const mainstream = choices.filter(isMainstreamProfile);
+  return (mainstream.length > 0 ? mainstream : choices).sort(
+    (left, right) => profilePriority(left) - profilePriority(right)
+  ).slice(0, 6);
+}
+
+function getProfileTitle(choice: CapabilityChoice): string {
+  const heightLabel = choice.height >= 2160 ? "4K" : choice.height >= 1440 ? "2K" : "1K";
+  return `${heightLabel} · ${choice.fps}fps`;
+}
+
+function getProfileTag(choice: CapabilityChoice): string {
+  if (choice.pixel_format === "MJPG" && choice.fps >= 180) {
+    return "最高帧率";
+  }
+  if (choice.pixel_format === "MJPG" && choice.height >= 1440) {
+    return "高画质";
+  }
+  if (choice.pixel_format === "NV12" && choice.fps >= 120) {
+    return "低延迟";
+  }
+  if (choice.height >= 2160) {
+    return "预览/录制";
+  }
+  return "均衡";
+}
+
+function CaptureFeedback({
+  capture,
+  runtimeRunning,
+  roiSize,
+  streamKey,
+  configVersion
+}: {
+  capture: CaptureState | undefined;
+  runtimeRunning: boolean;
+  roiSize: number;
+  streamKey: number;
+  configVersion: number;
+}) {
   return (
-    <dl className="metric-list">
+    <aside className="capture-feedback">
       <div>
-        <dt>设备</dt>
-        <dd className="mono">{capture.device}</dd>
+        <div className="section-title">实时反馈</div>
+        <div className="hint">配置不是终点，跑起来后的结果才是主界面重点。</div>
       </div>
-      <div>
-        <dt>后端</dt>
-        <dd className="mono">{capture.backend ?? "未选择"}</dd>
+      <VideoPanel
+        available={Boolean(capture?.available)}
+        caption={`ROI ${roiSize}x${roiSize}`}
+        className="capture-preview-card"
+        profile={formatProfile(capture)}
+        running={runtimeRunning}
+        src={capture?.available ? streamUrl(streamKey, configVersion) : undefined}
+      />
+      <div className="small-card">
+        <div className="metric-row">
+          <span>采集 FPS</span>
+          <b>{capture ? capture.fps_capture.toFixed(1) : "--"}</b>
+        </div>
+        <div className="metric-row">
+          <span>预览 FPS</span>
+          <b>{capture ? capture.preview_fps.toFixed(1) : "--"}</b>
+        </div>
+        <div className="metric-row">
+          <span>读取等待</span>
+          <b>{capture ? `${capture.capture_wait_ms.toFixed(2)} ms` : "--"}</b>
+        </div>
+        <div className="metric-row">
+          <span>丢帧</span>
+          <b>{capture?.frames_dropped ?? 0}</b>
+        </div>
       </div>
-      <div>
-        <dt>配置</dt>
-        <dd>{formatProfile(capture)}</dd>
+      <div className="small-card capture-advice">
+        {capture?.last_error
+          ? capture.last_error
+          : "当前模式适合验证采集吞吐。若推理或 UI 反馈跟不上，优先切换到 1K120 NV12 或降低 ROI 输入。"}
       </div>
-      <div>
-        <dt>采集帧率</dt>
-        <dd className="mono">{capture.fps_capture.toFixed(1)} fps</dd>
+      <div className="footer-note">
+        能力列表会缓存到当前页面；刷新按钮用于重新读取采集卡变化。
       </div>
-      <div>
-        <dt>预览目标</dt>
-        <dd className="mono">{capture.preview_target_fps} fps</dd>
-      </div>
-      <div>
-        <dt>预览输出</dt>
-        <dd className="mono">{capture.preview_fps.toFixed(1)} fps</dd>
-      </div>
-      <div>
-        <dt>帧间隔</dt>
-        <dd className="mono">{capture.frame_period_ms.toFixed(2)} ms</dd>
-      </div>
-      <div>
-        <dt>读取等待</dt>
-        <dd className="mono">{capture.capture_wait_ms.toFixed(2)} ms</dd>
-      </div>
-      <div>
-        <dt>丢帧</dt>
-        <dd className="mono">{capture.frames_dropped}</dd>
-      </div>
-      <div>
-        <dt>预览帧</dt>
-        <dd className="mono">{capture.preview_output_frames}</dd>
-      </div>
-      <div>
-        <dt>预览丢帧</dt>
-        <dd className="mono">{capture.preview_dropped}</dd>
-      </div>
-      <div>
-        <dt>恢复次数</dt>
-        <dd className="mono">{capture.recoveries}</dd>
-      </div>
-      <div>
-        <dt>最近错误</dt>
-        <dd>{capture.last_error ?? "无"}</dd>
-      </div>
-    </dl>
+    </aside>
   );
 }
 
@@ -253,6 +327,7 @@ export function DevicesView({
   const [loadingCaps, setLoadingCaps] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
   const [stoppingCapture, setStoppingCapture] = useState(false);
+  const [selectedFormat, setSelectedFormat] = useState("MJPG");
   const [streamKey, setStreamKey] = useState(Date.now());
   const capabilityRequestId = useRef(0);
 
@@ -267,6 +342,21 @@ export function DevicesView({
   }, [error]);
 
   const groups = useMemo(() => groupCapabilities(capabilities?.capabilities ?? []), [capabilities]);
+  const visibleProfiles = useMemo(
+    () => getVisibleProfiles(groups, selectedFormat),
+    [groups, selectedFormat]
+  );
+
+  useEffect(() => {
+    const activeFormat = runtime?.capture?.profile?.pixel_format?.toUpperCase();
+    if (activeFormat) {
+      setSelectedFormat(activeFormat);
+      return;
+    }
+    if (groups.length > 0 && !groups.some((group) => group.pixel_format === selectedFormat)) {
+      setSelectedFormat(groups[0].pixel_format);
+    }
+  }, [groups, runtime?.capture?.profile?.pixel_format, selectedFormat]);
 
   const refreshCapabilities = useCallback(async () => {
     const requestId = capabilityRequestId.current + 1;
@@ -343,11 +433,13 @@ export function DevicesView({
     typeof runtime?.config?.roi_size === "number" ? runtime.config.roi_size : 640;
 
   return (
-    <div className="capture-workbench">
-      <Panel
-        title="采集工作台"
-        eyebrow="设备能力与配置切换"
-        action={
+    <div className="capture-setup">
+      <main className="capture-setup-main">
+        <div className="capture-setup-topbar">
+          <div>
+            <h2>采集配置</h2>
+            <p>先选择目标采集方式，复杂能力已自动折叠。</p>
+          </div>
           <div className="panel-actions">
             {canControlRuntime ? (
               <InferenceControl
@@ -356,7 +448,7 @@ export function DevicesView({
                 onCommand={onInferenceControlCommand}
               />
             ) : (
-              <span className="panel-action-note">当前授权不包含 runtime 控制能力</span>
+              <span className="panel-action-note">当前授权不包含运行控制能力</span>
             )}
             <button
               className="button"
@@ -367,86 +459,166 @@ export function DevicesView({
               {stoppingCapture ? "停止中" : "停止采集"}
             </button>
             <button className="button" type="button" onClick={refreshCapabilities}>
-              {loadingCaps ? "读取中" : "刷新能力"}
+              {loadingCaps ? "读取中" : "刷新采集卡信息"}
             </button>
           </div>
-        }
-      >
+        </div>
+
         <InlineError message={captureError} />
-        {capture?.available ? (
-          <div className="inline-note">
-            采集会话已打开。浏览器预览按目标帧率取样，推理控制读取同一个最新帧队列。
+
+        <section className="setup-card">
+          <div className="section-title">1. 选择采集格式</div>
+          <div className="hint">默认只显示主流格式，BGR3 / 特殊尺寸 / 29.97fps 等放到更多里。</div>
+          <div className="format-choice-grid">
+            {groups.map((group) => {
+              const pill = getFormatPill(group.pixel_format);
+              return (
+                <button
+                  className={
+                    group.pixel_format === selectedFormat
+                      ? "format-choice active"
+                      : "format-choice"
+                  }
+                  key={group.pixel_format}
+                  onClick={() => setSelectedFormat(group.pixel_format)}
+                  type="button"
+                >
+                  <span className="format-key">{group.pixel_format}</span>
+                  <span className="format-detail">{getFormatDescription(group.pixel_format)}</span>
+                  <span className={`pill ${pill.tone}`}>{pill.label}</span>
+                </button>
+              );
+            })}
           </div>
-        ) : (
-          <div className="inline-note">
-            请选择格式并应用，后端会打开正式采集会话；预览不会单独占用采集卡。
+        </section>
+
+        <section className="setup-card">
+          <div className="section-title">2. 选择分辨率 / 帧率</div>
+          <div className="hint">这里不展示所有枚举，只展示对项目有意义的主流 Profile。</div>
+          {visibleProfiles.length > 0 ? (
+            <div className="profile-choice-grid">
+              {visibleProfiles.map((row) => {
+                const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
+                const active =
+                  capture?.profile?.pixel_format?.toUpperCase() === row.pixel_format &&
+                  capture.profile.width === row.width &&
+                  capture.profile.height === row.height &&
+                  capture.profile.fps === row.fps;
+                return (
+                  <button
+                    className={active ? "profile-choice active" : "profile-choice"}
+                    disabled={applying !== null}
+                    key={id}
+                    onClick={() =>
+                      applySelection(
+                        {
+                          device,
+                          preference: "manual",
+                          pixel_format: row.pixel_format,
+                          width: row.width,
+                          height: row.height,
+                          fps: row.fps
+                        },
+                        id
+                      )
+                    }
+                    type="button"
+                  >
+                    <span>
+                      <strong>{getProfileTitle(row)}</strong>
+                      <small>
+                        {row.width}x{row.height} {row.pixel_format}
+                      </small>
+                    </span>
+                    <em>{applying === id ? "应用中" : getProfileTag(row)}</em>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState
+              title="尚未读取采集能力"
+              detail="点击刷新采集卡信息，读取 /dev/video0 支持的格式、分辨率和帧率。"
+              command="python3 -m novasight doctor camera --device /dev/video0"
+            />
+          )}
+          <details className="advanced-capability-block">
+            <summary>More：显示非主流分辨率和完整 v4l2 能力枚举</summary>
+            <CapabilityTable
+              applying={applying}
+              groups={groups}
+              onApply={(row) =>
+                applySelection(
+                  {
+                    device,
+                    preference: "manual",
+                    pixel_format: row.pixel_format,
+                    width: row.width,
+                    height: row.height,
+                    fps: row.fps
+                  },
+                  `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
+                )
+              }
+            />
+          </details>
+        </section>
+
+        <section className="setup-card">
+          <div className="section-title">3. 当前采集链路</div>
+          <div className="hint">用户关注的是采集之后能不能顺畅进入推理和控制反馈。</div>
+          <div className="capture-pipeline">
+            <div className="pipeline-step">
+              <b>采集</b>
+              <span>{formatProfile(capture)}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>解码/转换</b>
+              <span>{capture?.backend ?? "等待打开"}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>推理输入</b>
+              <span>ROI {roiSize}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>UI 反馈</b>
+              <span>延迟 / FPS / 丢帧</span>
+            </div>
           </div>
-        )}
-        <div className="capture-toolbar">
+        </section>
+
+        <section className="advanced-summary">
           <label className="device-input">
             <span>设备</span>
             <input value={device} onChange={(event) => setDevice(event.target.value)} />
           </label>
-          <div className="preference-actions" aria-label="推荐配置">
-            <button
-              className="button"
-              disabled={applying !== null}
-              onClick={() => applyPreference("auto_high_fps", "高帧率")}
-              type="button"
-            >
-              高帧率
-            </button>
-            <button
-              className="button"
-              disabled={applying !== null}
-              onClick={() => applyPreference("auto_low_latency", "低延迟")}
-              type="button"
-            >
-              低延迟
-            </button>
-            <button
-              className="button"
-              disabled={applying !== null}
-              onClick={() => applyPreference("auto_balanced", "均衡")}
-              type="button"
-            >
-              均衡
-            </button>
-          </div>
-        </div>
-        <CapabilityTable
-          applying={applying}
-          groups={groups}
-          onApply={(row) =>
-            applySelection(
-              {
-                device,
-                preference: "manual",
-                pixel_format: row.pixel_format,
-                width: row.width,
-                height: row.height,
-                fps: row.fps
-              },
-              `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
-            )
-          }
-        />
-      </Panel>
+          <button
+            className="button"
+            disabled={applying !== null}
+            onClick={() => applyPreference("auto_high_fps", "高帧率")}
+            type="button"
+          >
+            自动高帧率
+          </button>
+          <button
+            className="button"
+            disabled={applying !== null}
+            onClick={() => applyPreference("auto_low_latency", "低延迟")}
+            type="button"
+          >
+            自动低延迟
+          </button>
+          <span>原始能力列表已折叠，最近错误会在右侧实时反馈展示。</span>
+        </section>
+      </main>
 
-      <Panel title="实时预览" eyebrow="MJPEG 采集流">
-        <VideoPanel
-          available={Boolean(capture?.available)}
-          caption={`中心 ROI ${roiSize}x${roiSize}，预览限速输出，采集与推理控制不依赖浏览器帧率`}
-          className="live-preview"
-          profile={formatProfile(capture)}
-          running={runtimeRunning}
-          src={capture?.available ? streamUrl(streamKey, configVersion) : undefined}
-        />
-      </Panel>
-
-      <Panel title="当前配置" eyebrow="采集状态">
-        <CaptureDiagnostics capture={capture} />
-      </Panel>
+      <CaptureFeedback
+        capture={capture}
+        configVersion={configVersion}
+        roiSize={roiSize}
+        runtimeRunning={runtimeRunning}
+        streamKey={streamKey}
+      />
     </div>
   );
 }
