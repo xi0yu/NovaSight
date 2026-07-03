@@ -38,27 +38,16 @@ class PIDStrategy:
         kd: float = 0.04,
         kp_x: float | None = None,
         kp_y: float | None = None,
-        ki_x: float | None = None,
-        ki_y: float | None = None,
-        kd_x: float | None = None,
-        kd_y: float | None = None,
         integral_limit: float = 250.0,
-        integral_limit_x: float | None = None,
-        integral_limit_y: float | None = None,
-        output_limit_x: float | None = None,
-        output_limit_y: float | None = None,
+        move_limit: float | None = None,
         derivative_alpha: float = 0.35,
     ) -> None:
         self.kp_x = kp if kp_x is None else kp_x
         self.kp_y = kp if kp_y is None else kp_y
-        self.ki_x = ki if ki_x is None else ki_x
-        self.ki_y = ki if ki_y is None else ki_y
-        self.kd_x = kd if kd_x is None else kd_x
-        self.kd_y = kd if kd_y is None else kd_y
-        self.integral_limit_x = abs(integral_limit if integral_limit_x is None else integral_limit_x)
-        self.integral_limit_y = abs(integral_limit if integral_limit_y is None else integral_limit_y)
-        self.output_limit_x = None if output_limit_x is None else abs(output_limit_x)
-        self.output_limit_y = None if output_limit_y is None else abs(output_limit_y)
+        self.ki = ki
+        self.kd = kd
+        self.integral_limit = abs(integral_limit)
+        self.move_limit = None if move_limit is None else abs(move_limit)
         self.derivative_alpha = max(0.0, min(1.0, derivative_alpha))
         self._ix = 0.0
         self._iy = 0.0
@@ -75,8 +64,8 @@ class PIDStrategy:
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
         ex = target.cx - current_pos[0]
         ey = target.cy - current_pos[1]
-        self._ix = max(-self.integral_limit_x, min(self.integral_limit_x, self._ix + ex))
-        self._iy = max(-self.integral_limit_y, min(self.integral_limit_y, self._iy + ey))
+        self._ix = max(-self.integral_limit, min(self.integral_limit, self._ix + ex))
+        self._iy = max(-self.integral_limit, min(self.integral_limit, self._iy + ey))
         if self._last_error is None:
             raw_dx = raw_dy = 0.0
         else:
@@ -86,11 +75,11 @@ class PIDStrategy:
         dy_d = self.derivative_alpha * raw_dy + (1 - self.derivative_alpha) * self._last_derivative[1]
         self._last_error = (ex, ey)
         self._last_derivative = (dx_d, dy_d)
-        dx = self.kp_x * ex + self.ki_x * self._ix + self.kd_x * dx_d
-        dy = self.kp_y * ey + self.ki_y * self._iy + self.kd_y * dy_d
+        dx = self.kp_x * ex + self.ki * self._ix + self.kd * dx_d
+        dy = self.kp_y * ey + self.ki * self._iy + self.kd * dy_d
         return MoveCommand(
-            dx=self._clamp_axis(dx, self.output_limit_x),
-            dy=self._clamp_axis(dy, self.output_limit_y),
+            dx=self._clamp_axis(dx, self.move_limit),
+            dy=self._clamp_axis(dy, self.move_limit),
             confidence=target.score,
             reason="pid strategy",
         )

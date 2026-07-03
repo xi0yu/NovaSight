@@ -62,14 +62,10 @@ class ControlConfig:
     strategy: str = "pid"
     pid_kp_x: float = 0.35
     pid_kp_y: float = 0.35
-    pid_ki_x: float = 0.1
-    pid_ki_y: float = 0.1
-    pid_kd_x: float = 0.1
-    pid_kd_y: float = 0.1
-    pid_integral_limit_x: float = 250.0
-    pid_integral_limit_y: float = 250.0
-    pid_output_limit_x: float = 120.0
-    pid_output_limit_y: float = 120.0
+    pid_ki: float = 0.1
+    pid_kd: float = 0.1
+    pid_integral_limit: float = 250.0
+    pid_move_limit: float = 120.0
     command_interval_ms: float = 1.0
 
 
@@ -179,10 +175,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     for key in (
-        "pid_integral_limit_x",
-        "pid_integral_limit_y",
-        "pid_output_limit_x",
-        "pid_output_limit_y",
+        "pid_integral_limit",
+        "pid_move_limit",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")

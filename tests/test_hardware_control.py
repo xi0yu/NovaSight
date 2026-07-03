@@ -31,21 +31,18 @@ def test_pid_strategy_requires_hardware_trigger_and_limits_integral() -> None:
     assert active.confidence == 0.9
 
 
-def test_pid_strategy_supports_axis_specific_gains_and_output_limits() -> None:
+def test_pid_strategy_uses_axis_kp_with_shared_ki_kd_and_move_limit() -> None:
     strategy = PIDStrategy(
         kp_x=2.0,
         kp_y=0.5,
-        ki_x=0.0,
-        ki_y=0.0,
-        kd_x=0.0,
-        kd_y=0.0,
-        output_limit_x=30,
-        output_limit_y=10,
+        ki=0.0,
+        kd=0.0,
+        move_limit=10,
     )
 
     command = strategy.calculate(_target(100, 90), (50, 50), BoxInputState(left=True))
 
-    assert command.dx == 30
+    assert command.dx == 10
     assert command.dy == 10
 
 

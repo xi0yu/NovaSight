@@ -750,19 +750,15 @@ export function DevicesView({
             </section>
 
             <section className="setup-card">
-              <div className="section-title">3. PID 分轴参数</div>
+              <div className="section-title">3. PID 参数</div>
               <div className="settings-form-grid dense">
                 {[
                   ["pid_kp_x", "Kp X", 0.35],
                   ["pid_kp_y", "Kp Y", 0.35],
-                  ["pid_ki_x", "Ki X", 0.1],
-                  ["pid_ki_y", "Ki Y", 0.1],
-                  ["pid_kd_x", "Kd X", 0.1],
-                  ["pid_kd_y", "Kd Y", 0.1],
-                  ["pid_integral_limit_x", "积分上限 X", 250],
-                  ["pid_integral_limit_y", "积分上限 Y", 250],
-                  ["pid_output_limit_x", "输出上限 X", 120],
-                  ["pid_output_limit_y", "输出上限 Y", 120],
+                  ["pid_ki", "Ki", 0.1],
+                  ["pid_kd", "Kd", 0.1],
+                  ["pid_integral_limit", "积分上限", 250],
+                  ["pid_move_limit", "控制量上限", 120],
                 ].map(([key, label, fallback]) => (
                   <NumberField
                     key={key}

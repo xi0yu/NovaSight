@@ -34,14 +34,10 @@ def test_runtime_config_defaults_include_axis_pid_settings() -> None:
 
     assert cfg.control.pid_kp_x == 0.35
     assert cfg.control.pid_kp_y == 0.35
-    assert cfg.control.pid_ki_x == 0.1
-    assert cfg.control.pid_ki_y == 0.1
-    assert cfg.control.pid_kd_x == 0.1
-    assert cfg.control.pid_kd_y == 0.1
-    assert cfg.control.pid_integral_limit_x == 250.0
-    assert cfg.control.pid_integral_limit_y == 250.0
-    assert cfg.control.pid_output_limit_x == 120.0
-    assert cfg.control.pid_output_limit_y == 120.0
+    assert cfg.control.pid_ki == 0.1
+    assert cfg.control.pid_kd == 0.1
+    assert cfg.control.pid_integral_limit == 250.0
+    assert cfg.control.pid_move_limit == 120.0
 
 
 def test_runtime_config_round_trip(tmp_path: Path) -> None:
@@ -194,12 +190,10 @@ def test_runtime_config_schema_exposes_axis_pid_fields() -> None:
     assert {
         "control.pid_kp_x",
         "control.pid_kp_y",
-        "control.pid_ki_x",
-        "control.pid_ki_y",
-        "control.pid_kd_x",
-        "control.pid_kd_y",
-        "control.pid_integral_limit_x",
-        "control.pid_integral_limit_y",
-        "control.pid_output_limit_x",
-        "control.pid_output_limit_y",
+        "control.pid_ki",
+        "control.pid_kd",
+        "control.pid_integral_limit",
+        "control.pid_move_limit",
     }.issubset(paths)
+    assert "control.pid_ki_x" not in paths
+    assert "control.pid_kd_x" not in paths
