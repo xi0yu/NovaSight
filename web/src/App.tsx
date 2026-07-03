@@ -324,27 +324,27 @@ export default function App() {
   const hasErrors = Object.keys(state.errors).length > 0;
   const shellCopy: Record<StudioViewId, { title: string; subtitle: string }> = {
     dashboard: {
-      title: "Dashboard",
-      subtitle: "运行健康、链路状态和当前控制路径。"
+      title: "性能指挥台",
+      subtitle: "采集吞吐、链路延迟、推理状态和控制路径。"
     },
     devices: {
-      title: "Devices",
+      title: "采集设备",
       subtitle: "采集配置、设备能力和实时预览。"
     },
     models: {
-      title: "Models",
+      title: "模型仓库",
       subtitle: "模型部署、版本产物和转换任务。"
     },
     config: {
-      title: "Config",
+      title: "运行配置",
       subtitle: "运行参数、保存差异和硬件配置。"
     },
     plugins: {
-      title: "Plugins",
+      title: "算法插件",
       subtitle: "视觉插件、控制插件和执行器状态。"
     },
     license: {
-      title: "License",
+      title: "授权许可",
       subtitle: "本机授权、功能权益和到期状态。"
     }
   };

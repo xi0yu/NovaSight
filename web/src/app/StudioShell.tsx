@@ -26,13 +26,13 @@ export function StudioShell({
           <span className="brand-mark"><span>NS</span></span>
           <div className="studio-brand-copy">
             <strong>NovaSight Studio</strong>
-            <span>Production console</span>
+            <span>视觉控制工作台</span>
           </div>
         </div>
 
         <div className="studio-sidebar-section">
-          <span className="studio-sidebar-label">Workspace</span>
-          <nav className="studio-nav" aria-label="Studio navigation">
+          <span className="studio-sidebar-label">工作区</span>
+          <nav className="studio-nav" aria-label="工作台导航">
             {studioNavItems.map((item) => (
               <button
                 key={item.id}
@@ -52,22 +52,21 @@ export function StudioShell({
         <div />
 
         <div className="admin-reserved">
-          Admin workspace is reserved for a later task. This shell leaves the slot out of the
-          current production navigation.
+          当前版本聚焦采集、推理、模型和授权。管理区会在硬件控制闭环稳定后接入。
         </div>
       </aside>
 
       <section className="studio-main">
         <header className="studio-topbar">
           <div className="studio-topbar-copy">
-            <span className="studio-breadcrumb">Studio / {title}</span>
+            <span className="studio-breadcrumb">工作台 / {title}</span>
             <h1 className="studio-title">{title}</h1>
             <p className="studio-subtitle">{subtitle}</p>
           </div>
           {status ? <div className="studio-status">{status}</div> : null}
         </header>
 
-        <nav className="mobile-nav" aria-label="Studio navigation mobile">
+        <nav className="mobile-nav" aria-label="移动端工作台导航">
           {studioNavItems.map((item) => (
             <button
               key={item.id}
