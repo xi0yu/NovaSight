@@ -430,21 +430,19 @@ export function DevicesView({
     return typeof value === "boolean" ? value : fallback;
   };
   const inferenceEnabled = readBoolean(inferenceConfig, "enabled", true);
-  const inferenceBackend = readString(inferenceConfig, "backend", "onnxruntime");
   const confidenceThreshold = readNumber(inferenceConfig, "confidence_threshold", 0.25);
   const nmsThreshold = readNumber(inferenceConfig, "nms_threshold", 0.45);
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const activeArtifact = runtime?.active_model?.artifact?.kind ?? "未绑定";
   const activeArtifactPath = runtime?.active_model?.artifact?.path ?? "未绑定文件";
-  const recommendedBackend =
-    activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : inferenceBackend;
-  const backendMismatch = recommendedBackend !== inferenceBackend;
   const inferenceStatus = runtime?.inference ?? {};
   const inferenceLoaded = inferenceStatus.loaded === true;
   const inferenceSupportsExecution = inferenceStatus.supports_execution !== false;
   const inferenceReason = typeof inferenceStatus.reason === "string" ? inferenceStatus.reason : "";
+  const inferredBackend =
+    activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : "";
   const inferenceSelected =
-    typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferenceBackend;
+    typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
   const controlStrategy = readString(controlConfig, "strategy", "pid");
   const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
   const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
@@ -517,7 +515,7 @@ export function DevicesView({
               id: "inference",
               label: "推理消费",
               value: inferenceEnabled ? activeModelName : "已关闭",
-              detail: `${inferenceBackend === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
+              detail: `${inferenceSelected === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
               ready: inferenceEnabled && activeModelName !== "未发布模型"
             },
             {
@@ -877,8 +875,14 @@ export function DevicesView({
                   <strong>{normalizedActiveSource === "image" ? "图片输入" : "采集卡"}</strong>
                 </div>
                 <div>
-                  <span>配置后端</span>
-                  <strong>{inferenceBackend === "tensorrt" ? "TensorRT" : "ONNX Runtime"}</strong>
+                  <span>自动后端</span>
+                  <strong>
+                    {inferenceSelected === "tensorrt"
+                      ? "TensorRT"
+                      : inferenceSelected === "onnxruntime"
+                        ? "ONNX Runtime"
+                        : inferenceSelected || "未选择"}
+                  </strong>
                 </div>
                 <div>
                   <span>推理状态</span>
@@ -896,7 +900,7 @@ export function DevicesView({
                 <div className="settings-panel-head">
                   <div>
                     <h3>推理配置</h3>
-                    <p>推理默认跟随采集流启动；这里调整是否消费帧、执行后端和检测过滤阈值。</p>
+                    <p>推理默认跟随采集流启动；后端由模型文件后缀自动决定，这里只调整消费开关和检测过滤阈值。</p>
                   </div>
                   <button
                     className={inferenceEnabled ? "config-toggle on" : "config-toggle"}
@@ -910,20 +914,14 @@ export function DevicesView({
 
                 <div className="commercial-grid">
                   <div className="commercial-field span-2">
-                    <span>推理后端</span>
-                    <div className="mini-segmented">
-                      {["onnxruntime", "tensorrt"].map((backend) => (
-                        <button
-                          className={inferenceBackend === backend ? "active" : ""}
-                          key={backend}
-                          type="button"
-                          disabled={configBusy === "inference.backend"}
-                          onClick={() => void updateRuntimeField("inference", "backend", backend)}
-                        >
-                          {backend === "onnxruntime" ? "ONNX Runtime" : "TensorRT"}
-                        </button>
-                      ))}
-                    </div>
+                    <span>自动后端</span>
+                    <strong>
+                      {activeArtifact === "engine"
+                        ? "TensorRT · engine"
+                        : activeArtifact === "onnx"
+                          ? "ONNX Runtime · onnx"
+                          : "等待选择 ONNX 或 engine 模型"}
+                    </strong>
                   </div>
                   <NumberField
                     label="置信度阈值"
@@ -952,7 +950,7 @@ export function DevicesView({
                   </button>
                 </div>
 
-                <div className={backendMismatch ? "model-binding-card warn" : "model-binding-card"}>
+                <div className={!inferenceSupportsExecution || inferenceReason ? "model-binding-card warn" : "model-binding-card"}>
                   <div>
                     <span>模型仓库绑定</span>
                     <strong>{activeModelName}</strong>
@@ -968,16 +966,6 @@ export function DevicesView({
                     <Badge tone={activeArtifact === "未绑定" ? "idle" : "good"}>
                       {activeArtifact === "engine" ? "TensorRT 引擎" : activeArtifact === "onnx" ? "ONNX 模型" : activeArtifact}
                     </Badge>
-                    {backendMismatch ? (
-                      <button
-                        className="button compact-button"
-                        type="button"
-                        disabled={configBusy === "inference.backend"}
-                        onClick={() => void updateRuntimeField("inference", "backend", recommendedBackend)}
-                      >
-                        切到推荐后端
-                      </button>
-                    ) : null}
                     <button className="button compact-button" type="button" onClick={onOpenModels}>
                       去模型仓库选择
                     </button>

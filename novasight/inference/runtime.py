@@ -55,16 +55,18 @@ class InferenceRuntime:
         classes: list[str],
         input_shape: str,
     ) -> None:
-        if artifact_path.suffix.lower() == ".onnx":
+        suffix = artifact_path.suffix.lower()
+        if suffix == ".onnx":
             self.engine = OnnxRuntimeInferenceEngine(
                 confidence_threshold=self.confidence_threshold,
                 nms_threshold=self.nms_threshold,
             )
-        elif artifact_path.suffix.lower() == ".engine" and self.engine.engine_id in {
-            "unavailable",
-            "onnxruntime",
-        }:
+        elif suffix == ".engine":
             self.engine = TensorRtInferenceEngine()
+        else:
+            self.engine = UnavailableInferenceEngine(
+                f"unsupported inference artifact suffix: {artifact_path.suffix}"
+            )
         self.configure()
         try:
             self.engine.load(artifact_path, classes, input_shape)

@@ -101,13 +101,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 "label": "推理",
                 "fields": [
                     {"path": "inference.enabled", "label": "启用推理", "type": "bool", "restart_required": False},
-                    {
-                        "path": "inference.backend",
-                        "label": "推理后端",
-                        "type": "select",
-                        "options": ["onnxruntime", "tensorrt"],
-                        "restart_required": False,
-                    },
                     {"path": "inference.confidence_threshold", "label": "置信度阈值", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "inference.nms_threshold", "label": "NMS 阈值", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {
