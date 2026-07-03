@@ -239,7 +239,7 @@ def test_default_source_factory_passes_roi_size_to_appsink_candidates(monkeypatc
     assert "src-crop" not in pipelines[0]
 
 
-def test_default_source_factory_does_not_generate_cpu_or_full_frame_fallbacks(monkeypatch) -> None:
+def test_default_source_factory_keeps_roi_on_python_appsink_path(monkeypatch) -> None:
     from novasight.capture import service as service_module
 
     attempts: list[str] = []
@@ -277,7 +277,8 @@ def test_default_source_factory_does_not_generate_cpu_or_full_frame_fallbacks(mo
     assert attempts
     assert all("left=800 right=1120 top=380 bottom=700" in attempt for attempt in attempts)
     assert all("src-crop" not in attempt for attempt in attempts)
-    assert all("video/x-raw,format=BGRx" not in attempt for attempt in attempts)
+    assert all("video/x-raw,format=BGRx,width=320,height=320 ! appsink" in attempt for attempt in attempts)
+    assert all("width=1920,height=1080 ! appsink" not in attempt for attempt in attempts)
 
 
 def test_default_source_factory_opens_selected_appsink_only_once(monkeypatch) -> None:

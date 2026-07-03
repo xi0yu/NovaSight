@@ -141,55 +141,52 @@ def build_appsink_candidates(
             roi_offset_y=candidate_roi_offset_y,
         )
 
-    nvmm_caps = (
-        "video/x-raw(memory:NVMM),format=NV12,"
-        f"width={output_width},height={output_height}"
-    )
+    appsink_caps = f"video/x-raw,format=BGRx,width={output_width},height={output_height}"
     nvvidconv = f"nvvidconv{crop_properties}"
-    mjpg_nvmm_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {nvmm_caps} ! {sink}"
-    nv12_nvmm_tail = f"{nvvidconv} ! {nvmm_caps} ! {sink}"
-    yuyv_nvmm_tail = f"{nvvidconv} ! {nvmm_caps} ! {sink}"
+    mjpg_appsink_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {appsink_caps} ! {sink}"
+    nv12_appsink_tail = f"{nvvidconv} ! {appsink_caps} ! {sink}"
+    yuyv_appsink_tail = f"{nvvidconv} ! {appsink_caps} ! {sink}"
 
     mjpg = [
         gst(
             "nvmm-mjpg-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! {mjpg_nvmm_tail}",
+            f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! {mjpg_appsink_tail}",
         ),
         gst(
             "nvmm-mjpg-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {mjpg_caps} ! {mjpg_nvmm_tail}",
+            f"v4l2src device={device} io-mode=4 ! {mjpg_caps} ! {mjpg_appsink_tail}",
         ),
         gst(
             "nvmm-mjpg-ioauto",
-            f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_nvmm_tail}",
+            f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_appsink_tail}",
         ),
     ]
     nv12 = [
         gst(
             "nvmm-nv12-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nv12_nvmm_tail}",
+            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nv12_appsink_tail}",
         ),
         gst(
             "nvmm-nv12-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {nv12_caps} ! {nv12_nvmm_tail}",
+            f"v4l2src device={device} io-mode=4 ! {nv12_caps} ! {nv12_appsink_tail}",
         ),
         gst(
             "nvmm-nv12-ioauto",
-            f"v4l2src device={device} ! {nv12_caps} ! {nv12_nvmm_tail}",
+            f"v4l2src device={device} ! {nv12_caps} ! {nv12_appsink_tail}",
         ),
     ]
     yuyv = [
         gst(
             "nvmm-yuyv-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {yuyv_nvmm_tail}",
+            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {yuyv_appsink_tail}",
         ),
         gst(
             "nvmm-yuyv-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {yuyv_caps} ! {yuyv_nvmm_tail}",
+            f"v4l2src device={device} io-mode=4 ! {yuyv_caps} ! {yuyv_appsink_tail}",
         ),
         gst(
             "nvmm-yuyv-ioauto",
-            f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_nvmm_tail}",
+            f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_appsink_tail}",
         ),
     ]
 

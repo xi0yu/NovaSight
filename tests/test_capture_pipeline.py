@@ -53,10 +53,17 @@ def test_appsink_candidates_do_not_use_opencv_labels() -> None:
 
     assert candidates[0].label == "gst-appsink:nvmm-mjpg-iomode2"
     assert "appsink name=sink" in candidates[0].pipeline
-    assert "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidates[0].pipeline
     assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
-    assert all("cpu-bgr" not in candidate.label for candidate in candidates)
     assert all(not candidate.label.startswith("opencv:") for candidate in candidates)
+
+
+def test_appsink_candidates_end_in_cpu_readable_bgrx() -> None:
+    candidates = build_appsink_candidates(_profile("MJPG"))
+
+    assert "nvv4l2decoder mjpeg=1" in candidates[0].pipeline
+    assert "nvvidconv" in candidates[0].pipeline
+    assert "video/x-raw,format=BGRx,width=1920,height=1080 ! appsink" in candidates[0].pipeline
+    assert "video/x-raw(memory:NVMM)" not in candidates[0].pipeline.split(" ! appsink")[0].split(" ! ")[-1]
 
 
 def test_appsink_candidates_can_emit_center_roi() -> None:
@@ -69,9 +76,8 @@ def test_appsink_candidates_can_emit_center_roi() -> None:
     assert candidates[0].roi_offset_x == 800
     assert candidates[0].roi_offset_y == 380
     assert "left=800 right=1120 top=380 bottom=700" in candidates[0].pipeline
-    assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in candidates[0].pipeline
+    assert "video/x-raw,format=BGRx,width=320,height=320 ! appsink" in candidates[0].pipeline
     assert all("src-crop" not in candidate.pipeline for candidate in candidates)
-    assert all("cpu-bgr" not in candidate.label for candidate in candidates)
 
 
 def test_appsink_candidates_do_not_include_full_frame_fallback_when_roi_enabled() -> None:
@@ -89,14 +95,14 @@ def test_appsink_candidates_map_yuyv_to_gstreamer_yuy2_then_nv12() -> None:
 
     assert candidates[0].label == "gst-appsink:nvmm-yuyv-iomode2"
     assert "video/x-raw,format=YUY2,width=1920,height=1080" in candidates[0].pipeline
-    assert "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080" in candidates[0].pipeline
+    assert "video/x-raw,format=BGRx,width=1920,height=1080 ! appsink" in candidates[0].pipeline
 
 
-def test_appsink_candidates_do_not_include_cpu_fallbacks() -> None:
+def test_appsink_candidates_do_not_include_opencv_or_plain_v4l2_fallbacks() -> None:
     candidates = build_appsink_candidates(_profile("MJPG"))
 
-    assert all("cpu-bgr" not in candidate.label for candidate in candidates)
-    assert all("video/x-raw,format=BGRx" not in candidate.pipeline for candidate in candidates)
+    assert all("opencv" not in candidate.label for candidate in candidates)
+    assert all("CAP_V4L2" not in candidate.pipeline for candidate in candidates)
 
 
 def test_select_open_source_returns_first_candidate_that_reads() -> None:
