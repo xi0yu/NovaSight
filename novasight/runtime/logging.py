@@ -25,4 +25,9 @@ def configure_logging(config: RuntimeConfig) -> Path:
         logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
     )
     root.addHandler(handler)
+    console = logging.StreamHandler()
+    console.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    root.addHandler(console)
     return log_path
