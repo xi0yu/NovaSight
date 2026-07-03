@@ -34,6 +34,7 @@ type DevicesViewProps = {
 };
 
 type SettingsSection = "capture" | "inference" | "algorithm";
+type CaptureInputSource = "capture" | "image";
 
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -249,6 +250,7 @@ export function DevicesView({
   const [stoppingCapture, setStoppingCapture] = useState(false);
   const [selectedFormat, setSelectedFormat] = useState("MJPG");
   const [activeSection, setActiveSection] = useState<SettingsSection>("capture");
+  const [selectedSource, setSelectedSource] = useState<CaptureInputSource>("capture");
   const [imagePath, setImagePath] = useState("");
   const [imageFps, setImageFps] = useState(15);
   const [configBusy, setConfigBusy] = useState<string | null>(null);
@@ -393,7 +395,10 @@ export function DevicesView({
   const roiConfig = getNestedRecord(runtime?.config, "roi");
   const controlConfig = getNestedRecord(runtime?.config, "control");
   const roiSize = typeof roiConfig?.size === "number" ? roiConfig.size : 640;
-  const activeSource = String(getNestedRecord(runtime?.config, "source")?.default ?? runtime?.source ?? "null");
+  const sourceConfig = getNestedRecord(runtime?.config, "source");
+  const activeSource = String(sourceConfig?.default ?? runtime?.source ?? "null");
+  const normalizedActiveSource: CaptureInputSource =
+    activeSource === "image" || activeSource.startsWith("image:") ? "image" : "capture";
   const readNumber = (section: Record<string, unknown> | null, key: string, fallback: number) => {
     const value = section?.[key];
     return typeof value === "number" ? value : fallback;
@@ -402,6 +407,10 @@ export function DevicesView({
     const value = section?.[key];
     return typeof value === "string" ? value : fallback;
   };
+
+  useEffect(() => {
+    setSelectedSource(normalizedActiveSource);
+  }, [normalizedActiveSource]);
 
   return (
     <div className="capture-setup inference-setup">
@@ -447,177 +456,253 @@ export function DevicesView({
         </div>
 
         {activeSection === "capture" ? (
-          <>
-            <section className="setup-card">
-              <div className="section-title">1. 采集输入源</div>
-              <div className="hint">采集是唯一的启动入口；采集有输出后，推理默认消费最新 RoiFrame。</div>
-              <div className="source-mode-grid">
-                <div className={activeSource === "capture" ? "source-mode active" : "source-mode"}>
-                  <strong>采集卡</strong>
-                  <span>{capture?.available ? formatProfile(capture) : "未启动，选择 Profile 后启动"}</span>
+          <section className="settings-console">
+            <aside className="settings-console-sidebar">
+              <div className="settings-side-head">
+                <strong>采集输入源</strong>
+                <span>选择后再执行应用动作，不做隐式启动。</span>
+              </div>
+              <div className="source-segmented" role="tablist" aria-label="采集输入源">
+                {[
+                  ["capture", "采集卡", capture?.available ? formatProfile(capture) : "等待启动"],
+                  ["image", "图片输入", readString(sourceConfig, "image_path", "未配置图片")],
+                ].map(([id, label, desc]) => (
+                  <button
+                    className={selectedSource === id ? "source-option active" : "source-option"}
+                    key={id}
+                    type="button"
+                    onClick={() => setSelectedSource(id as CaptureInputSource)}
+                  >
+                    <span>{label}</span>
+                    <small>{desc}</small>
+                  </button>
+                ))}
+              </div>
+
+              <dl className="settings-summary-list">
+                <div>
+                  <dt>当前来源</dt>
+                  <dd>{normalizedActiveSource === "image" ? "图片输入" : "采集卡"}</dd>
                 </div>
-                <div className={activeSource === "image" || activeSource.startsWith("image:") ? "source-mode active" : "source-mode"}>
-                  <strong>图片输入</strong>
-                  <span>用于模型和 UI 链路测试，不占用采集卡。</span>
+                <div>
+                  <dt>运行状态</dt>
+                  <dd>{capture?.available ? "采集中" : "未启动"}</dd>
+                </div>
+                <div>
+                  <dt>当前 Profile</dt>
+                  <dd>{formatProfile(capture)}</dd>
+                </div>
+                <div>
+                  <dt>后端</dt>
+                  <dd>{capture?.backend ?? "未打开"}</dd>
+                </div>
+              </dl>
+            </aside>
+
+            <div className="settings-console-main">
+              <div className="settings-status-strip">
+                <div>
+                  <span>设备</span>
+                  <strong>{device}</strong>
+                </div>
+                <div>
+                  <span>格式</span>
+                  <strong>{capture?.profile?.pixel_format ?? selectedFormat}</strong>
+                </div>
+                <div>
+                  <span>帧率</span>
+                  <strong>{capture?.profile ? `${capture.profile.fps}fps` : "--"}</strong>
+                </div>
+                <div>
+                  <span>最近错误</span>
+                  <strong>{capture?.last_error ?? "无"}</strong>
                 </div>
               </div>
-            </section>
 
-            <section className="setup-card">
-              <div className="section-title">2. 采集卡能力</div>
-              <div className="hint">按像素格式分组，组内优先展示最高 FPS；完整能力折叠在 More。</div>
-              <div className="format-choice-grid">
-                {groups.map((group) => {
-                  const pill = getFormatPill(group.pixel_format);
-                  return (
-                    <button
-                      className={
-                        group.pixel_format === selectedFormat
-                          ? "format-choice active"
-                          : "format-choice"
-                      }
-                      key={group.pixel_format}
-                      onClick={() => setSelectedFormat(group.pixel_format)}
-                      type="button"
-                    >
-                      <span className="format-key">{group.pixel_format}</span>
-                      <span className="format-detail">{getFormatDescription(group.pixel_format)}</span>
-                      <span className={`pill ${pill.tone}`}>{pill.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="setup-card">
-              <div className="section-title">3. 分辨率 / 帧率</div>
-              <div className="hint">只展示当前格式里最有价值的组合，默认按 FPS 从高到低排序。</div>
-              {visibleProfiles.length > 0 ? (
-                <div className="profile-choice-grid">
-                  {visibleProfiles.map((row) => {
-                    const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
-                    const active =
-                      capture?.profile?.pixel_format?.toUpperCase() === row.pixel_format &&
-                      capture.profile.width === row.width &&
-                      capture.profile.height === row.height &&
-                      capture.profile.fps === row.fps;
-                    return (
+              {selectedSource === "capture" ? (
+                <div className="settings-panel">
+                  <div className="settings-panel-head">
+                    <div>
+                      <h3>采集卡输入</h3>
+                      <p>先选设备与策略，再应用 Profile 启动采集。</p>
+                    </div>
+                    <div className="settings-panel-actions">
                       <button
-                        className={active ? "profile-choice active" : "profile-choice"}
+                        className="button compact-button"
                         disabled={applying !== null}
-                        key={id}
-                        onClick={() =>
-                          applySelection(
-                            {
-                              device,
-                              preference: "manual",
-                              pixel_format: row.pixel_format,
-                              width: row.width,
-                              height: row.height,
-                              fps: row.fps
-                            },
-                            id
-                          )
-                        }
                         type="button"
+                        onClick={() => applyPreference("auto_high_fps", "auto-high-fps")}
                       >
-                        <span>
-                          <strong>{getProfileTitle(row)}</strong>
-                          <small>
-                            {row.width}x{row.height} {row.pixel_format}
-                          </small>
-                        </span>
-                        <em>{applying === id ? "应用中" : getProfileTag(row)}</em>
+                        自动高帧率
                       </button>
-                    );
-                  })}
+                      <button
+                        className="button compact-button"
+                        disabled={applying !== null}
+                        type="button"
+                        onClick={() => applyPreference("auto_low_latency", "auto-low-latency")}
+                      >
+                        自动低延迟
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="control-row">
+                    <label className="device-input">
+                      <span>设备路径</span>
+                      <input value={device} onChange={(event) => setDevice(event.target.value)} />
+                    </label>
+                    <button className="button" type="button" onClick={refreshCapabilities}>
+                      {loadingCaps ? "读取中" : "刷新能力"}
+                    </button>
+                  </div>
+
+                  <div className="control-block">
+                    <div className="control-block-head">
+                      <strong>像素格式</strong>
+                      <span>按项目优先级分组，组内 Profile 按 FPS 降序。</span>
+                    </div>
+                    <div className="format-tabs">
+                      {groups.map((group) => {
+                        const pill = getFormatPill(group.pixel_format);
+                        return (
+                          <button
+                            className={group.pixel_format === selectedFormat ? "format-tab active" : "format-tab"}
+                            key={group.pixel_format}
+                            onClick={() => setSelectedFormat(group.pixel_format)}
+                            type="button"
+                          >
+                            <strong>{group.pixel_format}</strong>
+                            <span>{getFormatSummary(group)}</span>
+                            <em className={`pill ${pill.tone}`}>{pill.label}</em>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="control-block">
+                    <div className="control-block-head">
+                      <strong>Profile</strong>
+                      <span>点击某一行会明确应用并启动采集。</span>
+                    </div>
+                    {visibleProfiles.length > 0 ? (
+                      <div className="profile-list">
+                        {visibleProfiles.map((row) => {
+                          const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
+                          const active =
+                            capture?.profile?.pixel_format?.toUpperCase() === row.pixel_format &&
+                            capture.profile.width === row.width &&
+                            capture.profile.height === row.height &&
+                            capture.profile.fps === row.fps;
+                          return (
+                            <button
+                              className={active ? "profile-row active" : "profile-row"}
+                              disabled={applying !== null}
+                              key={id}
+                              onClick={() =>
+                                applySelection(
+                                  {
+                                    device,
+                                    preference: "manual",
+                                    pixel_format: row.pixel_format,
+                                    width: row.width,
+                                    height: row.height,
+                                    fps: row.fps
+                                  },
+                                  id
+                                )
+                              }
+                              type="button"
+                            >
+                              <span className="profile-row-main">
+                                <strong>{getProfileTitle(row)}</strong>
+                                <small>{row.width}x{row.height} · {row.pixel_format}</small>
+                              </span>
+                              <span className="profile-row-fps">{row.fps} fps</span>
+                              <em>{applying === id ? "应用中" : getProfileTag(row)}</em>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <EmptyState
+                        title="尚未读取采集能力"
+                        detail="点击刷新能力，读取设备支持的格式、分辨率和帧率。"
+                        command="python3 -m novasight doctor camera --device /dev/video0"
+                      />
+                    )}
+                  </div>
+
+                  <details className="advanced-capability-block advanced-compact">
+                    <summary>高级能力：完整 v4l2 枚举</summary>
+                    <CapabilityCompactList
+                      applying={applying}
+                      groups={groups}
+                      onApply={(row) =>
+                        applySelection(
+                          {
+                            device,
+                            preference: "manual",
+                            pixel_format: row.pixel_format,
+                            width: row.width,
+                            height: row.height,
+                            fps: row.fps
+                          },
+                          `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
+                        )
+                      }
+                    />
+                  </details>
                 </div>
               ) : (
-                <EmptyState
-                  title="尚未读取采集能力"
-                  detail="点击刷新采集卡信息，读取 /dev/video0 支持的格式、分辨率和帧率。"
-                  command="python3 -m novasight doctor camera --device /dev/video0"
-                />
-              )}
-              <details className="advanced-capability-block">
-                <summary>More：显示全部格式内排序后的能力组合</summary>
-                <CapabilityCompactList
-                  applying={applying}
-                  groups={groups}
-                  onApply={(row) =>
-                    applySelection(
-                      {
-                        device,
-                        preference: "manual",
-                        pixel_format: row.pixel_format,
-                        width: row.width,
-                        height: row.height,
-                        fps: row.fps
-                      },
-                      `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`
-                    )
-                  }
-                />
-              </details>
-            </section>
+                <div className="settings-panel">
+                  <div className="settings-panel-head">
+                    <div>
+                      <h3>图片输入</h3>
+                      <p>用于模型、预览和配置链路测试，不占用采集卡。</p>
+                    </div>
+                  </div>
 
-            <section className="setup-card">
-              <div className="section-title">4. 图片输入源</div>
-              <div className="hint">用于离线验证模型、预览和配置链路；真机采集调试时可随时切回采集卡。</div>
-              <div className="image-source-row">
-                <input
-                  className="home-inline-input"
-                  placeholder="/home/nvidia/NovaSight/data/sample.jpg"
-                  value={imagePath}
-                  onChange={(event) => setImagePath(event.target.value)}
-                />
-                <div className="home-chips">
-                  {[1, 5, 15, 30, 60].map((fps) => (
+                  <div className="source-action-grid">
+                    <label className="device-input">
+                      <span>图片路径</span>
+                      <input
+                        placeholder="/home/nvidia/NovaSight/data/sample.jpg"
+                        value={imagePath}
+                        onChange={(event) => setImagePath(event.target.value)}
+                      />
+                    </label>
+                    <div className="control-block inline">
+                      <div className="control-block-head">
+                        <strong>循环帧率</strong>
+                        <span>仅用于测试源节奏。</span>
+                      </div>
+                      <div className="home-chips">
+                        {[1, 5, 15, 30, 60].map((fps) => (
+                          <button
+                            className={imageFps === fps ? "home-chip active" : "home-chip"}
+                            key={fps}
+                            type="button"
+                            onClick={() => setImageFps(fps)}
+                          >
+                            {fps}fps
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <button
-                      className={imageFps === fps ? "home-chip active" : "home-chip"}
-                      key={fps}
+                      className="button"
                       type="button"
-                      onClick={() => setImageFps(fps)}
+                      disabled={!imagePath.trim() || applying !== null}
+                      onClick={() => void applyImageSource()}
                     >
-                      {fps}fps
+                      {applying === "image-source" ? "切换中" : "切换到图片输入"}
                     </button>
-                  ))}
+                  </div>
                 </div>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!imagePath.trim() || applying !== null}
-                  onClick={() => void applyImageSource()}
-                >
-                  {applying === "image-source" ? "切换中" : "切换到图片输入"}
-                </button>
-              </div>
-            </section>
-
-            <section className="advanced-summary">
-              <label className="device-input">
-                <span>设备</span>
-                <input value={device} onChange={(event) => setDevice(event.target.value)} />
-              </label>
-              <button
-                className="button"
-                disabled={applying !== null}
-                onClick={() => applyPreference("auto_high_fps", "高帧率")}
-                type="button"
-              >
-                自动高帧率
-              </button>
-              <button
-                className="button"
-                disabled={applying !== null}
-                onClick={() => applyPreference("auto_low_latency", "低延迟")}
-                type="button"
-              >
-                自动低延迟
-              </button>
-              <span>采集参数修改会重新打开采集源；性能指挥台只负责观察结果。</span>
-            </section>
-          </>
+              )}
+            </div>
+          </section>
         ) : null}
 
         {activeSection === "inference" ? (

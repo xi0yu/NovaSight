@@ -137,6 +137,9 @@ def select(request: Request, payload: CaptureSelectRequest):
         state.backend,
         asdict(state.profile) if state.profile else None,
     )
+    config = getattr(request.app.state, "config", None)
+    if config is not None:
+        config.source.default = "capture"
     return body
 
 

@@ -297,6 +297,28 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
     assert service.config.preference == "auto_low_latency"
 
 
+def test_capture_select_marks_capture_as_active_source(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    cfg = RuntimeConfig()
+    cfg.source.default = "image"
+    service = CaptureService(
+        config=cfg.capture,
+        capability_runner=lambda device: CAPS_TEXT,
+        source_factory=lambda profile: FakeSource(),
+    )
+    app.state.config = cfg
+    app.state.capture = service
+    client = _client(app)
+
+    response = client.post(
+        "/api/capture/select",
+        json={"device": "/dev/video0", "preference": "auto_high_fps"},
+    )
+
+    assert response.status_code == 200
+    assert app.state.config.source.default == "capture"
+
+
 def test_capture_image_source_starts_previewable_session(tmp_path) -> None:
     from PIL import Image
 
