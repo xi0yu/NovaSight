@@ -137,6 +137,7 @@ export type RuntimeState = {
   inference: Record<string, unknown>;
   config: Record<string, unknown>;
   pipeline: Record<string, unknown>;
+  vision?: Record<string, unknown>;
   fatal_error: Record<string, unknown> | null;
 };
 
@@ -182,7 +183,6 @@ export type LicenseFeature =
   | "capture"
   | "runtime"
   | "models"
-  | "plugins"
   | "tensorrt"
   | "hardware_control"
   | "config_read"
@@ -202,14 +202,6 @@ export type LicenseStatus = {
   duration_unit: string;
   updated_at: number | null;
   message: string;
-};
-
-export type PluginKind = "vision" | "control" | string;
-
-export type PluginInfo = {
-  plugin_id: string;
-  kind: PluginKind;
-  enabled: boolean;
 };
 
 export class ApiError extends Error {
@@ -234,7 +226,6 @@ export const API_PATHS = {
   captureImage: "/api/capture/image",
   captureStop: "/api/capture/stop",
   captureStream: "/api/capture/stream.mjpg",
-  plugins: "/api/plugins",
   modelProjects: "/api/models/projects",
   modelJobs: "/api/models/jobs",
   license: "/api/license",
@@ -372,10 +363,6 @@ export function stopCapture(reason = "用户停止采集"): Promise<CaptureState
     },
     body: JSON.stringify({ reason })
   });
-}
-
-export function getPlugins(): Promise<PluginInfo[]> {
-  return requestJson<PluginInfo[]>(API_PATHS.plugins);
 }
 
 export function getModelProjects(): Promise<ModelProject[]> {

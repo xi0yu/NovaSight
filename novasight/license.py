@@ -15,7 +15,6 @@ ALL_FEATURES = [
     "capture",
     "runtime",
     "models",
-    "plugins",
     "tensorrt",
     "hardware_control",
     "config_read",

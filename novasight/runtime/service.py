@@ -5,10 +5,12 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
+from novasight.control import PIDStrategy, PredictiveStrategy
 from novasight.executors import ExecutorRegistry
+from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
 from novasight.model_registry import ModelRegistry
-from novasight.plugins import Detection, FrameContext, PluginRuntime
+from novasight.contracts import ControlIntent, Detection, FrameContext, Track
 from novasight.roi import center_roi_frame, map_detection_to_source
 
 from .config_store import RuntimeConfigStore
@@ -20,15 +22,15 @@ class RuntimeService:
         self,
         config: RuntimeConfig,
         models: ModelRegistry,
-        plugins: PluginRuntime,
         executors: ExecutorRegistry,
+        hardware: Any | None = None,
         capture: Any | None = None,
         inference: Any | None = None,
     ) -> None:
         self.config = config
         self.models = models
-        self.plugins = plugins
         self.executors = executors
+        self.hardware = hardware
         self.capture = capture
         self.inference = inference
         self.running = False
@@ -36,6 +38,9 @@ class RuntimeService:
         self.pipeline = None
         self.fatal_error: dict | None = None
         self.last_frame_context: FrameContext | None = None
+        self.last_target: dict[str, Any] | None = None
+        self.last_control: dict[str, Any] | None = None
+        self.control_strategy = self._create_control_strategy(config)
 
     def state(self) -> RuntimeState:
         capture_state = getattr(self, "capture", None)
@@ -64,11 +69,13 @@ class RuntimeService:
             ),
             config=self.config_store.status(),
             pipeline=self.pipeline.status() if self.pipeline is not None else {},
+            vision=self._vision_status(),
             fatal_error=self.fatal_error,
         )
 
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
         self.config = config
+        self.control_strategy = self._create_control_strategy(config)
         return self.config_store.replace(config)
 
     def record_fatal_error(self, thread_name: str, exc: BaseException, path) -> None:
@@ -81,13 +88,11 @@ class RuntimeService:
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
         self.last_frame_context = context
-        plugin_batch = self.plugins.process(context)
-        execution_results = [
-            self.executors.execute(intent)
-            for intent in plugin_batch.control_intents
-        ]
+        intent = self._control_intent_from_context(context)
+        control_intents = [intent] if intent is not None else []
+        execution_results = [self.executors.execute(intent) for intent in control_intents]
         return RuntimeFrameResult(
-            plugin_batch=plugin_batch,
+            control_intents=control_intents,
             execution_results=execution_results,
         )
 
@@ -147,6 +152,128 @@ class RuntimeService:
             width=self._source_width(frame),
             height=self._source_height(frame),
         )
+
+    def _control_intent_from_context(self, context: FrameContext) -> ControlIntent | None:
+        target = self._select_control_target(context)
+        if target is None:
+            self.last_target = None
+            self.last_control = None
+            return None
+
+        center = (context.width / 2, context.height / 2)
+        diagnostic_state = BoxInputState(left=True)
+        command = self.control_strategy.calculate(target, center, diagnostic_state)
+        intent = ControlIntent(
+            dx=command.dx,
+            dy=command.dy,
+            action="move",
+            confidence=command.confidence,
+            reason=command.reason,
+            source_id="runtime.control",
+        )
+        box_input = self._box_input_state()
+        can_emit = box_input.active or getattr(getattr(self.config, "hardware", None), "kind", "none") == "none"
+        self.last_target = self._target_payload(target, context)
+        self.last_control = {
+            "frame_id": context.frame_id,
+            "dx": command.dx,
+            "dy": command.dy,
+            "confidence": command.confidence,
+            "reason": command.reason,
+            "trigger_active": box_input.active,
+            "will_emit": can_emit,
+        }
+        return intent if can_emit else None
+
+    def _select_control_target(self, context: FrameContext) -> Track | Detection | None:
+        candidates: list[Track | Detection] = list(context.tracks) or list(context.detections)
+        if not candidates or context.width <= 0 or context.height <= 0:
+            return None
+        min_confidence = float(getattr(self.config.control, "min_confidence", 0.0))
+        filtered = [item for item in candidates if float(item.score) >= min_confidence]
+        if not filtered:
+            return None
+        center_x = context.width / 2
+        center_y = context.height / 2
+        radius = min(context.width, context.height) * float(self.config.control.fov_ratio)
+        inside_fov = [
+            item
+            for item in filtered
+            if ((item.cx - center_x) ** 2 + (item.cy - center_y) ** 2) ** 0.5 <= radius
+        ]
+        pool = inside_fov or filtered
+        return max(
+            pool,
+            key=lambda item: (
+                float(item.score),
+                -((item.cx - center_x) ** 2 + (item.cy - center_y) ** 2),
+            ),
+        )
+
+    def _box_input_state(self) -> BoxInputState:
+        getter = getattr(self.hardware, "get_input_state", None)
+        if not callable(getter):
+            return BoxInputState()
+        try:
+            state = getter()
+        except Exception:
+            return BoxInputState()
+        return state if isinstance(state, BoxInputState) else BoxInputState()
+
+    def _create_control_strategy(self, config: RuntimeConfig):
+        strategy = getattr(config.control, "strategy", "pid")
+        if strategy == "predictive":
+            return PredictiveStrategy()
+        return PIDStrategy(
+            kp_x=config.control.pid_kp_x,
+            kp_y=config.control.pid_kp_y,
+            ki=config.control.pid_ki,
+            kd=config.control.pid_kd,
+            integral_limit=config.control.pid_integral_limit,
+            move_limit=config.control.pid_move_limit,
+        )
+
+    def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
+        class_name = (
+            context.classes[target.cls]
+            if 0 <= int(target.cls) < len(context.classes)
+            else str(target.cls)
+        )
+        payload = {
+            "frame_id": context.frame_id,
+            "class_id": int(target.cls),
+            "class_name": class_name,
+            "score": float(target.score),
+            "x": float(target.x),
+            "y": float(target.y),
+            "w": float(target.w),
+            "h": float(target.h),
+            "cx": float(target.cx),
+            "cy": float(target.cy),
+            "offset_x": float(target.cx - context.width / 2),
+            "offset_y": float(target.cy - context.height / 2),
+        }
+        if isinstance(target, Track):
+            payload["track_id"] = int(target.track_id)
+        return payload
+
+    def _vision_status(self) -> dict[str, Any]:
+        context = self.last_frame_context
+        if context is None:
+            return {
+                "frame_id": None,
+                "detections": 0,
+                "target": None,
+                "control": None,
+            }
+        return {
+            "frame_id": context.frame_id,
+            "detections": len(context.detections),
+            "tracks": len(context.tracks),
+            "classes": list(context.classes),
+            "target": self.last_target,
+            "control": self.last_control,
+        }
 
     def _source_width(self, frame: CapturedFrame) -> int:
         return int(frame.source_width or frame.width)

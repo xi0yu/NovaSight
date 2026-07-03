@@ -8,12 +8,10 @@ import {
   HealthResponse,
   LicenseStatus,
   ModelProject,
-  PluginInfo,
   RuntimeState,
   getHealth,
   getLicenseStatus,
   getModelProjects,
-  getPlugins,
   getRuntimeState,
   statusWebSocketUrl,
 } from "./api";
@@ -23,10 +21,9 @@ import { DevicesView } from "./features/devices/DevicesView";
 import { LicenseGate, LicenseView } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { ModelsView } from "./features/models/ModelsView";
-import { PluginsView } from "./features/plugins/PluginsView";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 
-type ErrorKey = "health" | "runtime" | "plugins" | "projects" | "capture";
+type ErrorKey = "health" | "runtime" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 type GuardedViewId = Exclude<StudioViewId, "license">;
 type DeviceSettingsSection = "capture" | "inference" | "algorithm";
@@ -36,7 +33,6 @@ type LoadState = {
   errors: Partial<Record<ErrorKey, string>>;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
-  plugins: PluginInfo[];
   projects: ModelProject[];
   lastUpdated: Date | null;
 };
@@ -46,7 +42,6 @@ const initialState: LoadState = {
   errors: {},
   health: null,
   runtime: null,
-  plugins: [],
   projects: [],
   lastUpdated: null
 };
@@ -54,8 +49,7 @@ const initialState: LoadState = {
 const viewFeatureMap: Partial<Record<GuardedViewId, LicenseStatus["features"][number]>> = {
   devices: "capture",
   models: "models",
-  config: "config_read",
-  plugins: "plugins"
+  config: "config_read"
 };
 
 function realtimeTone(status: RealtimeStatus): "good" | "warn" | "bad" | "idle" {
@@ -105,7 +99,6 @@ function getFallbackView(license: LicenseStatus | null): StudioViewId {
     "devices",
     "models",
     "config",
-    "plugins",
     "license"
   ];
 
@@ -159,10 +152,9 @@ export default function App() {
 
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, errors: {} }));
-    const [health, runtime, plugins, projects] = await Promise.allSettled([
+    const [health, runtime, projects] = await Promise.allSettled([
       getHealth(),
       getRuntimeState(),
-      getPlugins(),
       getModelProjects()
     ]);
     setState((current) => {
@@ -173,9 +165,6 @@ export default function App() {
       if (runtime.status === "rejected") {
         errors.runtime = getErrorMessage(runtime.reason);
       }
-      if (plugins.status === "rejected") {
-        errors.plugins = getErrorMessage(plugins.reason);
-      }
       if (projects.status === "rejected") {
         errors.projects = getErrorMessage(projects.reason);
       }
@@ -184,7 +173,6 @@ export default function App() {
         errors,
         health: health.status === "fulfilled" ? health.value : current.health,
         runtime: runtime.status === "fulfilled" ? runtime.value : current.runtime,
-        plugins: plugins.status === "fulfilled" ? plugins.value : current.plugins,
         projects: projects.status === "fulfilled" ? projects.value : current.projects,
         lastUpdated: new Date()
       };
@@ -302,10 +290,6 @@ export default function App() {
       title: "运行配置",
       subtitle: "运行参数、保存差异和硬件配置。"
     },
-    plugins: {
-      title: "算法插件",
-      subtitle: "视觉插件、控制插件和执行器状态。"
-    },
     license: {
       title: "授权许可",
       subtitle: "本机授权、功能权益和到期状态。"
@@ -378,11 +362,6 @@ export default function App() {
                 setActiveView("devices");
               }}
             />
-          </PermissionGuard>
-        ) : null}
-        {activeView === "plugins" ? (
-          <PermissionGuard feature="plugins" license={license}>
-            <PluginsView plugins={state.plugins} runtime={state.runtime} error={state.errors.plugins} />
           </PermissionGuard>
         ) : null}
         {activeView === "config" ? (

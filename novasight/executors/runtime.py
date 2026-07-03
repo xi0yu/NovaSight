@@ -8,7 +8,7 @@ from novasight.control import ControlCommandCoalescer, ControlOutputPolicy
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.dry_run import ConsoleExecutor, DryRunExecutor, SilentExecutor
 from novasight.executors.kmnet import KmNetExecutor
-from novasight.plugins import ControlIntent
+from novasight.contracts import ControlIntent
 
 
 class ExecutorRegistry:

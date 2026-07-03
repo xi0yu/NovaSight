@@ -52,7 +52,7 @@ class ConsoleExecutor:
             f"dy={output.dy} "
             f"action={output.action} "
             f"confidence={output.confidence:.2f} "
-            f"plugin={output.plugin_id} "
+            f"source={output.source_id} "
             f"accepted={output.accepted}",
             file=sys.stdout,
         )

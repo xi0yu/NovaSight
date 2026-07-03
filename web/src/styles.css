@@ -567,7 +567,6 @@ h1 {
 
 .dashboard-grid,
 .models-grid,
-.plugins-grid,
 .settings-grid,
 .live-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3400,7 +3399,6 @@ tbody tr:hover {
 
   .dashboard-grid,
   .models-grid,
-  .plugins-grid,
   .settings-grid,
   .live-grid,
   .metric-grid,

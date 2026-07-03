@@ -3,7 +3,6 @@ export type StudioViewId =
   | "devices"
   | "models"
   | "config"
-  | "plugins"
   | "license";
 
 export type StudioNavItem = {
@@ -18,6 +17,5 @@ export const studioNavItems: StudioNavItem[] = [
   { id: "devices", label: "设置", hint: "采集、推理与算法参数" },
   { id: "models", label: "模型", hint: "模型选择与场景使用" },
   { id: "config", label: "配置", hint: "运行参数与系统设置" },
-  { id: "plugins", label: "插件", hint: "视觉与控制算法模块" },
   { id: "license", label: "授权", hint: "卡密与本机许可状态" }
 ];

@@ -140,4 +140,5 @@ def _apply_config(request: Request, config) -> None:
         nms_threshold=config.inference.nms_threshold,
     )
     app.state.runtime.executors = app.state.executors
+    app.state.runtime.hardware = app.state.hardware
     app.state.runtime.update_config(config)

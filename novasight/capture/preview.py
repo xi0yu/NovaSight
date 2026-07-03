@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from novasight.capture.source import CapturedFrame
-from novasight.plugins import Detection
+from novasight.contracts import Detection
 from novasight.roi import center_roi_frame
 
 
@@ -98,7 +98,7 @@ def _runtime_roi_detections(
             frame_delta = int(frame_id) - int(context_frame_id)
         except (TypeError, ValueError):
             return []
-        if frame_delta < 0 or frame_delta > 10:
+        if frame_delta < 0 or frame_delta > 30:
             return []
     detections: list[Detection] = []
     for detection in getattr(context, "detections", []):

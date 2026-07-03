@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from novasight.hardware import BoxInputState
-from novasight.plugins import ControlIntent, Detection, Track
+from novasight.contracts import ControlIntent, Detection, Track
 
 
 Target = Detection | Track
@@ -139,7 +139,7 @@ class ControlCommandCoalescer:
             action=intent.action,
             confidence=intent.confidence,
             reason="coalesced control command",
-            plugin_id=intent.plugin_id,
+            source_id=intent.source_id,
         )
         self._pending_dx = 0.0
         self._pending_dy = 0.0

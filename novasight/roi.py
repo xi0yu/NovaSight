@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from novasight.plugins import Detection
+from novasight.contracts import Detection
 
 
 ROI_SIZE_CHOICES = (640, 480, 320, 256)

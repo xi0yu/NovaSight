@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from novasight.plugins import ControlIntent
+from novasight.contracts import ControlIntent
 
 
 @dataclass(frozen=True)
@@ -12,7 +12,7 @@ class ControlOutput:
     dy: int
     action: str | None
     confidence: float
-    plugin_id: str
+    source_id: str
     accepted: bool
     clipped: bool
     reason: str
@@ -45,7 +45,7 @@ class ControlOutputPolicy:
                 0,
                 intent.action,
                 intent.confidence,
-                intent.plugin_id,
+                intent.source_id,
                 False,
                 False,
                 "non-finite control value",
@@ -56,7 +56,7 @@ class ControlOutputPolicy:
                 0,
                 intent.action,
                 intent.confidence,
-                intent.plugin_id,
+                intent.source_id,
                 False,
                 False,
                 "confidence below threshold",
@@ -72,7 +72,7 @@ class ControlOutputPolicy:
             dy,
             intent.action,
             intent.confidence,
-            intent.plugin_id,
+            intent.source_id,
             True,
             clipped,
             reason,

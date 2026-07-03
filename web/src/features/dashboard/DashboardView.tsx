@@ -152,6 +152,11 @@ function readNestedNumber(
   return typeof value === "number" ? value : fallback;
 }
 
+function readNumberRecord(value: Record<string, unknown>, key: string): number | null {
+  const item = value[key];
+  return typeof item === "number" && Number.isFinite(item) ? item : null;
+}
+
 export function DashboardView({
   health,
   runtime,
@@ -172,6 +177,17 @@ export function DashboardView({
   const previewEnabled = readNestedBoolean(runtime?.config, "consumers", "preview", true);
   const inferenceEnabled = readNestedBoolean(runtime?.config, "consumers", "inference", true);
   const recordingEnabled = readNestedBoolean(runtime?.config, "consumers", "recording", false);
+  const vision = asRecord(runtime?.vision);
+  const target = asRecord(vision.target);
+  const control = asRecord(vision.control);
+  const targetName =
+    typeof target.class_name === "string" && target.class_name ? target.class_name : "";
+  const targetScore = readNumberRecord(target, "score");
+  const targetCx = readNumberRecord(target, "cx");
+  const targetCy = readNumberRecord(target, "cy");
+  const controlDx = readNumberRecord(control, "dx");
+  const controlDy = readNumberRecord(control, "dy");
+  const willEmit = control.will_emit === true;
 
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
     if (!runtime?.config || consumerBusy) {
@@ -403,6 +419,16 @@ export function DashboardView({
           </div>
           <div className="home-notice">
             预览流建议限制为 15-30fps；推理链路继续消费 RoiFrame 或最新帧，不让 UI 预览拖慢核心链路。
+          </div>
+          <div className="home-notice">
+            <strong>目标与控制量</strong><br />
+            {targetName
+              ? `目标 ${targetName} · ${(targetScore ?? 0).toFixed(2)} · (${formatNumber(targetCx ?? undefined, 0)}, ${formatNumber(targetCy ?? undefined, 0)})`
+              : "暂无推理目标。"}
+            <br />
+            {controlDx !== null && controlDy !== null
+              ? `控制量 dx=${formatNumber(controlDx, 1)} · dy=${formatNumber(controlDy, 1)} · ${willEmit ? "允许输出" : "等待硬件触发"}`
+              : "暂无控制量。"}
           </div>
           {errors.health || errors.runtime ? (
             <div className="home-notice bad">{errors.health ?? errors.runtime}</div>
