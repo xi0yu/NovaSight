@@ -34,12 +34,14 @@ export function ModelsView({
   projects,
   activeModel,
   error,
-  onRuntimeRefresh
+  onRuntimeRefresh,
+  onOpenInference
 }: {
   projects: ModelProject[];
   activeModel: ActiveModel | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
+  onOpenInference: () => void;
 }) {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
@@ -438,6 +440,11 @@ export function ModelsView({
               <Field label="模型类型" value={formatArtifactKind(activeModel.artifact?.kind ?? "")} />
               <Field label="文件状态" value={formatStatusLabel(activeModel.artifact?.status ?? "未知")} />
               <Field label="项目编号" value={activeModel.project?.id ?? "未知"} mono />
+            </div>
+            <div className="panel-actions">
+              <button className="button compact-button" type="button" onClick={onOpenInference}>
+                去推理设置
+              </button>
             </div>
           </div>
         ) : (

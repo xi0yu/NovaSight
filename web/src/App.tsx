@@ -29,6 +29,7 @@ import { formatTime, getErrorMessage } from "./features/shared/format";
 type ErrorKey = "health" | "runtime" | "plugins" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 type GuardedViewId = Exclude<StudioViewId, "license">;
+type DeviceSettingsSection = "capture" | "inference" | "algorithm";
 
 type LoadState = {
   loading: boolean;
@@ -117,6 +118,7 @@ export default function App() {
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
   const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
+  const [deviceSettingsSection, setDeviceSettingsSection] = useState<DeviceSettingsSection>("capture");
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
@@ -359,6 +361,8 @@ export default function App() {
               runtime={state.runtime}
               error={state.errors.capture}
               onRuntimeRefresh={load}
+              onOpenModels={() => setActiveView("models")}
+              initialSection={deviceSettingsSection}
             />
           </PermissionGuard>
         ) : null}
@@ -369,6 +373,10 @@ export default function App() {
               activeModel={activeModel}
               error={state.errors.projects}
               onRuntimeRefresh={load}
+              onOpenInference={() => {
+                setDeviceSettingsSection("inference");
+                setActiveView("devices");
+              }}
             />
           </PermissionGuard>
         ) : null}

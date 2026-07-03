@@ -318,13 +318,21 @@ export function getConfigSchema(): Promise<ConfigSchemaResponse> {
   return requestJson<ConfigSchemaResponse>(API_PATHS.configSchema);
 }
 
+export function sanitizeRuntimeConfigForUpdate(config: RuntimeConfig): RuntimeConfig {
+  const next = structuredClone(config) as RuntimeConfig;
+  delete next.version;
+  delete next.roi_size;
+  return next;
+}
+
 export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdateResponse> {
+  const payload = sanitizeRuntimeConfigForUpdate(config);
   return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(config)
+    body: JSON.stringify(payload)
   });
 }
 

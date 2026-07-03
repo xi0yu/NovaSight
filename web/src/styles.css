@@ -1719,6 +1719,51 @@ button.home-chip {
   line-height: 1.45;
 }
 
+.model-binding-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 15px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.96));
+}
+
+.model-binding-card.warn {
+  border-color: #fde68a;
+  background:
+    linear-gradient(180deg, rgba(255, 251, 235, 0.86), rgba(255, 255, 255, 0.96));
+}
+
+.model-binding-card span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 760;
+}
+
+.model-binding-card strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: 0.94rem;
+}
+
+.model-binding-card p {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.model-binding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .control-safety-note {
   display: grid;
   gap: 6px;
@@ -3392,6 +3437,14 @@ tbody tr:hover {
   .settings-next-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .model-binding-card {
+    grid-template-columns: 1fr;
+  }
+
+  .model-binding-actions {
+    justify-content: flex-start;
   }
 
   .pipeline-visual {

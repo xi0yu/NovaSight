@@ -12,7 +12,7 @@ import {
   updateRuntimeConfig,
   stopCapture
 } from "../../api";
-import { EmptyState, InlineError } from "../../components/ui";
+import { Badge, EmptyState, InlineError } from "../../components/ui";
 import pipelineVisualUrl from "../../assets/novasight-pipeline-visual.png";
 import { formatProfile, getErrorMessage } from "../shared/format";
 
@@ -32,6 +32,8 @@ type DevicesViewProps = {
   runtime: RuntimeState | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
+  onOpenModels: () => void;
+  initialSection?: SettingsSection;
 };
 
 type SettingsSection = "capture" | "inference" | "algorithm";
@@ -245,7 +247,9 @@ function formatThreshold(value: number): string {
 export function DevicesView({
   runtime,
   error,
-  onRuntimeRefresh
+  onRuntimeRefresh,
+  onOpenModels,
+  initialSection
 }: DevicesViewProps) {
   const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
   const [capabilities, setCapabilities] = useState<CaptureCapabilitiesResponse | null>(null);
@@ -260,6 +264,12 @@ export function DevicesView({
   const [imageFps, setImageFps] = useState(15);
   const [configBusy, setConfigBusy] = useState<string | null>(null);
   const capabilityRequestId = useRef(0);
+
+  useEffect(() => {
+    if (initialSection) {
+      setActiveSection(initialSection);
+    }
+  }, [initialSection]);
 
   useEffect(() => {
     if (runtime?.capture?.device) {
@@ -423,6 +433,10 @@ export function DevicesView({
   const nmsThreshold = readNumber(inferenceConfig, "nms_threshold", 0.45);
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const activeArtifact = runtime?.active_model?.artifact?.kind ?? "未绑定";
+  const activeArtifactPath = runtime?.active_model?.artifact?.path ?? "未绑定文件";
+  const recommendedBackend =
+    activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : inferenceBackend;
+  const backendMismatch = recommendedBackend !== inferenceBackend;
   const controlStrategy = readString(controlConfig, "strategy", "pid");
   const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
   const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
@@ -878,6 +892,32 @@ export function DevicesView({
                   <button className="button compact-button" type="button" onClick={() => setActiveSection("algorithm")}>
                     继续调控制量
                   </button>
+                </div>
+
+                <div className={backendMismatch ? "model-binding-card warn" : "model-binding-card"}>
+                  <div>
+                    <span>模型仓库绑定</span>
+                    <strong>{activeModelName}</strong>
+                    <p>{activeArtifactPath}</p>
+                  </div>
+                  <div className="model-binding-actions">
+                    <Badge tone={activeArtifact === "未绑定" ? "idle" : "good"}>
+                      {activeArtifact === "engine" ? "TensorRT 引擎" : activeArtifact === "onnx" ? "ONNX 模型" : activeArtifact}
+                    </Badge>
+                    {backendMismatch ? (
+                      <button
+                        className="button compact-button"
+                        type="button"
+                        disabled={configBusy === "inference.backend"}
+                        onClick={() => void updateRuntimeField("inference", "backend", recommendedBackend)}
+                      >
+                        切到推荐后端
+                      </button>
+                    ) : null}
+                    <button className="button compact-button" type="button" onClick={onOpenModels}>
+                      去模型仓库选择
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
