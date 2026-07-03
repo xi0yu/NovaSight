@@ -328,12 +328,12 @@ export default function App() {
       subtitle: "采集吞吐、链路延迟、推理状态和控制路径。"
     },
     devices: {
-      title: "采集设备",
-      subtitle: "采集配置、设备能力和实时预览。"
+      title: "推理设置",
+      subtitle: "推理输入、ROI、模型执行和检测参数。"
     },
     models: {
       title: "模型仓库",
-      subtitle: "模型部署、版本产物和转换任务。"
+      subtitle: "面向使用场景选择模型，而不是管理开发产物。"
     },
     config: {
       title: "运行配置",
@@ -419,7 +419,7 @@ export default function App() {
         ) : null}
         {activeView === "plugins" ? (
           <PermissionGuard feature="plugins" license={license}>
-            <PluginsView plugins={state.plugins} error={state.errors.plugins} />
+            <PluginsView plugins={state.plugins} runtime={state.runtime} error={state.errors.plugins} />
           </PermissionGuard>
         ) : null}
         {activeView === "config" ? (

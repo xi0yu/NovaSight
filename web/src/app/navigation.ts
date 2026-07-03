@@ -15,8 +15,8 @@ export type StudioNavItem = {
 
 export const studioNavItems: StudioNavItem[] = [
   { id: "dashboard", label: "总览", hint: "运行状态与链路健康" },
-  { id: "devices", label: "设备", hint: "采集切换与实时预览" },
-  { id: "models", label: "模型", hint: "部署绑定与项目注册表" },
+  { id: "devices", label: "推理", hint: "输入、ROI 与推理参数" },
+  { id: "models", label: "模型", hint: "模型选择与场景使用" },
   { id: "config", label: "配置", hint: "运行参数与系统设置" },
   { id: "plugins", label: "插件", hint: "视觉与控制算法模块" },
   { id: "license", label: "授权", hint: "卡密与本机许可状态" }

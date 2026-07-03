@@ -52,11 +52,18 @@ export function LicensePanel({
     <div className="license-panel">
       <InlineError message={error} />
       {message ? <div className="inline-note">{message}</div> : null}
-      <StatusIndicator tone={license?.valid ? "good" : "idle"}>
-        {license?.valid ? "授权有效" : "未授权"}
-      </StatusIndicator>
+      <div className={license?.valid ? "license-hero valid" : "license-hero"}>
+        <div>
+          <span>NovaSight 授权</span>
+          <strong>{license?.valid ? formatTier(license.tier) : "等待激活"}</strong>
+          <p>{license?.valid ? "已解锁核心能力，当前设备可进入完整工作台。" : "激活卡密后解锁采集、推理、插件和配置能力。"}</p>
+        </div>
+        <StatusIndicator tone={license?.valid ? "good" : "idle"}>
+          {license?.valid ? "尊享权益已启用" : "未授权"}
+        </StatusIndicator>
+      </div>
       <div className="field-grid">
-        <Field label="授权等级" value={license?.tier || "无"} mono />
+        <Field label="授权等级" value={license?.tier ? formatTier(license.tier) : "无"} />
         <Field label="指纹" value={license?.fingerprint || "无"} mono />
         <Field label="创建时间" value={formatEpoch(license?.created_at)} />
         <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
@@ -89,9 +96,39 @@ export function LicensePanel({
       </div>
       <div className="license-features">
         {(license?.features ?? []).map((feature) => (
-          <span key={feature}>{feature}</span>
+          <span key={feature}>{formatFeature(feature)}</span>
         ))}
       </div>
     </div>
   );
+}
+
+function formatTier(tier: string): string {
+  if (!tier) {
+    return "无";
+  }
+  if (tier === "test_max") {
+    return "测试全权限";
+  }
+  if (tier === "pro") {
+    return "专业版";
+  }
+  if (tier === "premium" || tier === "ultimate") {
+    return "旗舰版";
+  }
+  return tier;
+}
+
+function formatFeature(feature: string): string {
+  const labels: Record<string, string> = {
+    capture: "真机采集",
+    runtime: "运行控制",
+    models: "模型仓库",
+    plugins: "算法插件",
+    tensorrt: "TensorRT",
+    hardware_control: "硬件控制",
+    config_read: "读取配置",
+    config_write: "写入配置"
+  };
+  return labels[feature] ?? feature;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import {
   type CaptureState,
@@ -102,7 +102,9 @@ function ConsumerRow({
         <h4>{title}</h4>
         <p>{detail}</p>
       </div>
-      <div className={enabled ? "consumer-switch on" : "consumer-switch"} />
+      <span className={enabled ? "consumer-state on" : "consumer-state"}>
+        {enabled ? "启用" : "关闭"}
+      </span>
     </div>
   );
 }
@@ -262,7 +264,10 @@ export function DashboardView({
             </div>
           </div>
 
-          <div className="home-video">
+          <div
+            className="home-video"
+            style={{ "--roi-display-size": `${roiSize}px` } as CSSProperties}
+          >
             {capture?.available ? (
               <img alt="实时采集画面" src={streamUrl(configVersion, configVersion)} />
             ) : null}

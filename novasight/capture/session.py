@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -32,6 +33,7 @@ class CaptureSession:
         self._condition = threading.Condition(self._lock)
         self._latest_frame: CapturedFrame | None = None
         self._last_frame_ts_ns: int | None = None
+        self._capture_window_ts_ns: deque[int] = deque()
 
     @property
     def running(self) -> bool:
@@ -69,6 +71,7 @@ class CaptureSession:
                 self._source = source
                 self._latest_frame = None
                 self._last_frame_ts_ns = None
+                self._capture_window_ts_ns.clear()
                 self._stop_event = stop_event
                 self.state = CaptureRuntimeState(
                     available=True,
@@ -127,6 +130,7 @@ class CaptureSession:
             )
             self._latest_frame = None
             self._last_frame_ts_ns = None
+            self._capture_window_ts_ns.clear()
             self._condition.notify_all()
             return self.state
 
@@ -189,13 +193,24 @@ class CaptureSession:
             self.state.statistics.capture_counter += 1
             if self._last_frame_ts_ns is not None:
                 self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
-                if self.state.frame_period_ms > 0:
-                    self.state.fps_capture = 1000.0 / self.state.frame_period_ms
-                    self.state.statistics.capture_fps = self.state.fps_capture
+            self._capture_window_ts_ns.append(frame.ts_ns)
+            window_start_ns = frame.ts_ns - 1_000_000_000
+            while self._capture_window_ts_ns and self._capture_window_ts_ns[0] < window_start_ns:
+                self._capture_window_ts_ns.popleft()
+            self.state.fps_capture = self._window_fps(self._capture_window_ts_ns)
+            self.state.statistics.capture_fps = self.state.fps_capture
             self._last_frame_ts_ns = frame.ts_ns
             self._latest_frame = frame
             self.state.last_error = None
             self._condition.notify_all()
+
+    def _window_fps(self, timestamps_ns: deque[int]) -> float:
+        if len(timestamps_ns) < 2:
+            return 0.0
+        elapsed_s = (timestamps_ns[-1] - timestamps_ns[0]) / 1e9
+        if elapsed_s <= 0:
+            return 0.0
+        return (len(timestamps_ns) - 1) / elapsed_s
 
     def _mark_unavailable(
         self,
@@ -217,6 +232,7 @@ class CaptureSession:
             )
             self._latest_frame = None
             self._last_frame_ts_ns = None
+            self._capture_window_ts_ns.clear()
             self._condition.notify_all()
 
     def _close_source_locked(self) -> str:

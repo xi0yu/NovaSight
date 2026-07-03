@@ -88,6 +88,7 @@ export function ConfigView({
   const [initialConfig, setInitialConfig] = useState<RuntimeConfig | null>(null);
   const [message, setMessage] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>("尚未同步");
 
   const loadSettings = useCallback(async () => {
     setError(undefined);
@@ -96,6 +97,7 @@ export function ConfigView({
       setSchema(nextSchema);
       setConfig(nextSchema.values);
       setInitialConfig(structuredClone(nextSchema.values));
+      setLastSyncedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -116,6 +118,12 @@ export function ConfigView({
           )
       : [];
   const changedPaths = changedFields.map((field) => field.path);
+  const restartImpactedPaths = changedFields
+    .filter((field) => field.restart_required)
+    .map((field) => field.path);
+  const dangerousPaths = changedFields
+    .filter((field) => DANGEROUS_CONFIG_PATHS.has(field.path))
+    .map((field) => field.path);
   const isDirty =
     config && initialConfig ? JSON.stringify(initialConfig) !== JSON.stringify(config) : false;
   const canWriteConfig = Boolean(license?.features.includes("config_write"));
@@ -127,13 +135,6 @@ export function ConfigView({
     setError(undefined);
     setMessage(undefined);
     try {
-      const restartImpactedPaths = changedFields
-        .filter((field) => field.restart_required)
-        .map((field) => field.path);
-      const dangerousPaths = changedFields
-        .filter((field) => DANGEROUS_CONFIG_PATHS.has(field.path))
-        .map((field) => field.path);
-
       if (restartImpactedPaths.length > 0 || dangerousPaths.length > 0) {
         const warningLines = ["以下配置项已修改：", ...changedPaths.map((path) => `- ${path}`)];
         if (restartImpactedPaths.length > 0) {
@@ -153,6 +154,7 @@ export function ConfigView({
       setSchema(result.schema);
       setConfig(result.config);
       setInitialConfig(structuredClone(result.config));
+      setLastSyncedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
       setMessage(result.restart_required ? "配置已保存，推理控制需要重启后完全生效。" : "配置已保存并同步到运行态。");
       await onRuntimeRefresh();
     } catch (err) {
@@ -183,10 +185,33 @@ export function ConfigView({
         {message ? <div className="inline-note">{message}</div> : null}
         {!canWriteConfig ? (
           <div className="inline-note">
-            当前授权仅允许读取配置。需要 config_write feature 才能修改并保存运行参数。
+            当前授权仅允许读取配置。需要写入配置权限后才能修改并保存运行参数。
           </div>
         ) : null}
         {schema && config ? (
+          <>
+          <div className="config-sync-summary">
+            <div>
+              <span>同步状态</span>
+              <strong>{isDirty ? "有未保存修改" : "已同步运行配置"}</strong>
+            </div>
+            <div>
+              <span>上次同步</span>
+              <strong>{lastSyncedAt}</strong>
+            </div>
+            <div>
+              <span>修改项</span>
+              <strong>{changedFields.length}</strong>
+            </div>
+            <div>
+              <span>需重启</span>
+              <strong>{restartImpactedPaths.length}</strong>
+            </div>
+            <div>
+              <span>关键项</span>
+              <strong>{dangerousPaths.length}</strong>
+            </div>
+          </div>
           <div className="config-sections">
             {schema.sections.map((section) => (
               <section className="config-section" key={section.id}>
@@ -202,7 +227,7 @@ export function ConfigView({
                         <span>
                           <span className="config-field-label">
                             <span>{field.label}</span>
-                            {isFieldDirty ? <Badge tone="idle">Changed</Badge> : null}
+                            {isFieldDirty ? <Badge tone="idle">已修改</Badge> : null}
                           </span>
                           {field.restart_required ? <em>需重启链路</em> : null}
                         </span>
@@ -240,6 +265,7 @@ export function ConfigView({
               </section>
             ))}
           </div>
+          </>
         ) : (
           <EmptyState title="配置 schema 未加载" detail="后端会返回配置字段、类型、范围和枚举选项。" />
         )}

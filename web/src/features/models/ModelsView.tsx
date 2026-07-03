@@ -77,6 +77,11 @@ export function ModelsView({
       : null;
   const visibleRollbackFeedback =
     rollbackFeedback && rollbackFeedback.projectId === selectedProjectId ? rollbackFeedback : null;
+  const activeProjectId = activeModel?.project?.id ?? null;
+  const readyArtifacts = artifacts.filter((artifact) => artifact.status === "ready");
+  const publishableArtifacts = readyArtifacts.filter(
+    (artifact) => artifact.kind === "engine" || artifact.kind === "onnx"
+  );
 
   useEffect(() => {
     if (projects.length === 0) {
@@ -297,24 +302,35 @@ export function ModelsView({
 
   return (
     <div className="view-grid models-grid registry-grid">
-      <Panel title="当前模型" eyebrow="运行绑定">
+      <Panel title="模型使用" eyebrow="当前运行">
         {activeModel ? (
-          <div className="field-grid">
-            <Field label="项目" value={activeModel.project?.name ?? "未知项目"} />
-            <Field label="部署编号" value={activeModel.deployment.id} mono />
-            <Field label="模型文件" value={activeModel.artifact?.path ?? "缺少文件"} mono />
-            <Field label="文件状态" value={activeModel.artifact?.status ?? "未知"} />
+          <div className="model-usage-card">
+            <div>
+              <span>正在使用</span>
+              <strong>{activeModel.project?.name ?? "未知模型"}</strong>
+              <p>{activeModel.artifact?.path ?? "当前部署缺少文件路径"}</p>
+            </div>
+            <div className="field-grid compact">
+              <Field label="部署编号" value={activeModel.deployment.id} mono />
+              <Field label="模型类型" value={formatArtifactKind(activeModel.artifact?.kind ?? "")} />
+              <Field label="文件状态" value={formatStatusLabel(activeModel.artifact?.status ?? "未知")} />
+              <Field label="项目编号" value={activeModel.project?.id ?? "未知"} mono />
+            </div>
           </div>
         ) : (
           <EmptyState
-            title="没有发布模型"
-            detail="发布可用模型后，推理运行时会在这里显示绑定状态。"
+            title="还没有选择运行模型"
+            detail="选择一个可用模型并发布后，推理链路会绑定到这份模型。"
             command="POST /api/models/projects/{project_id}/publish"
           />
         )}
       </Panel>
 
-      <Panel title="模型项目" eyebrow="注册表">
+      <Panel
+        title="模型方案"
+        eyebrow="面向使用场景"
+        action={<Badge tone={projects.length > 0 ? "good" : "idle"}>{projects.length} 个方案</Badge>}
+      >
         <InlineError message={error} />
         {projects.length > 0 ? (
           <div className="model-panel-list">
@@ -328,12 +344,10 @@ export function ModelsView({
               >
                 <div>
                   <strong>{project.name}</strong>
-                  <span>{project.description || "没有描述"}</span>
+                  <span>{project.description || "直接选择这个模型方案用于推理。"}</span>
                 </div>
                 <aside className="panel-actions">
-                  {activeModel?.project?.id === project.id ? (
-                    <Badge tone="good">当前运行</Badge>
-                  ) : null}
+                  {activeProjectId === project.id ? <Badge tone="good">当前使用</Badge> : null}
                   <code>#{project.id}</code>
                 </aside>
               </button>
@@ -341,14 +355,14 @@ export function ModelsView({
           </div>
         ) : (
           <EmptyState
-            title="模型注册表为空"
-            detail="创建模型项目、添加版本、转换产物并发布后，这里会展示项目。"
+            title="还没有可选模型"
+            detail="后端模型仓库为空。添加模型后，这里会以使用场景展示，而不是展示开发目录。"
           />
         )}
       </Panel>
 
       <Panel
-        title="回滚部署"
+        title="部署保护"
         eyebrow={selectedProject ? `${selectedProject.name} · #${selectedProject.id}` : "等待项目"}
       >
         <InlineError message={visibleRollbackFeedback?.error} />
@@ -368,7 +382,7 @@ export function ModelsView({
                 onClick={handleRollback}
                 disabled={rollingBack || publishingArtifactId !== null}
               >
-                {rollingBack ? "回滚中..." : "回滚部署"}
+                {rollingBack ? "回滚中..." : "回到上一模型"}
               </button>
             </div>
           </>
@@ -381,7 +395,7 @@ export function ModelsView({
       </Panel>
 
       <Panel
-        title="版本记录"
+        title="模型版本"
         eyebrow={selectedProject ? `${selectedProject.name} · #${selectedProject.id}` : "等待项目"}
       >
         <InlineError message={versionsError} />
@@ -400,7 +414,7 @@ export function ModelsView({
                 <div>
                   <strong>{version.version}</strong>
                   <span>
-                    {version.source_kind} · {version.input_shape || "未标注输入规格"}
+                    {formatArtifactKind(version.source_kind)} · {version.input_shape || "未标注输入规格"}
                   </span>
                   <span className="mono">{version.source_path}</span>
                 </div>
@@ -424,8 +438,15 @@ export function ModelsView({
       </Panel>
 
       <Panel
-        title="转换产物"
+        title="可用模型文件"
         eyebrow={selectedVersion ? `${selectedVersion.version} · #${selectedVersion.id}` : "等待版本"}
+        action={
+          selectedVersion ? (
+            <Badge tone={publishableArtifacts.length > 0 ? "good" : "idle"}>
+              {publishableArtifacts.length} 个可发布
+            </Badge>
+          ) : null
+        }
       >
         <InlineError message={artifactsError ?? visiblePublishFeedback?.error} />
         {visiblePublishFeedback?.message ? (
@@ -438,13 +459,13 @@ export function ModelsView({
             {artifacts.map((artifact) => (
               <article className="project-row" key={artifact.id}>
                 <div>
-                  <strong>{artifact.kind}</strong>
+                  <strong>{formatArtifactKind(artifact.kind)}</strong>
                   <span className="mono">{artifact.path}</span>
                   <span className="mono">{artifact.checksum}</span>
                 </div>
                 <aside className="panel-actions">
                   <StatusIndicator tone={getStatusTone(artifact.status)}>
-                    {artifact.status}
+                    {formatStatusLabel(artifact.status)}
                   </StatusIndicator>
                   <button
                     className="button compact-button"
@@ -452,7 +473,7 @@ export function ModelsView({
                     onClick={() => handlePublish(artifact)}
                     disabled={rollingBack || publishingArtifactId !== null}
                   >
-                    {publishingArtifactId === artifact.id ? "发布中..." : "发布"}
+                    {publishingArtifactId === artifact.id ? "应用中..." : "设为当前"}
                   </button>
                 </aside>
               </article>
@@ -463,15 +484,15 @@ export function ModelsView({
             title={selectedVersion ? "这个版本还没有产物" : "没有选中的版本"}
             detail={
               selectedVersion
-                ? "后端返回的产物列表为空。"
-                : "选择一个版本后，这里会显示可发布的 ONNX 或 engine 产物。"
+                ? "后端返回的模型文件为空。"
+                : "选择一个版本后，这里会显示可直接用于推理的模型文件。"
             }
           />
         )}
       </Panel>
 
       <Panel
-        title="转换任务"
+        title="高级转换记录"
         eyebrow={selectedVersion ? `${selectedVersion.version} · #${selectedVersion.id}` : "等待版本"}
       >
         <InlineError message={jobsError} />
@@ -482,12 +503,14 @@ export function ModelsView({
             {jobs.map((job) => (
               <article className="project-row" key={job.id}>
                 <div>
-                  <strong>{job.target_kind}</strong>
+                  <strong>{formatArtifactKind(job.target_kind)}</strong>
                   <span className="mono">{formatCommand(job.command)}</span>
                   <span>{formatLogPreview(job.log)}</span>
                 </div>
                 <aside className="panel-actions">
-                  <StatusIndicator tone={getStatusTone(job.status)}>{job.status}</StatusIndicator>
+                  <StatusIndicator tone={getStatusTone(job.status)}>
+                    {formatStatusLabel(job.status)}
+                  </StatusIndicator>
                   <code>#{job.id}</code>
                 </aside>
               </article>
@@ -519,6 +542,35 @@ function getStatusTone(status: string): "good" | "warn" | "bad" | "idle" {
     return "warn";
   }
   return "idle";
+}
+
+function formatArtifactKind(kind: string): string {
+  if (kind === "engine") {
+    return "TensorRT 引擎";
+  }
+  if (kind === "onnx") {
+    return "ONNX 模型";
+  }
+  if (kind === "pt") {
+    return "训练权重";
+  }
+  return kind || "未知类型";
+}
+
+function formatStatusLabel(status: string): string {
+  if (status === "ready" || status === "succeeded") {
+    return "可用";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  if (status === "running") {
+    return "处理中";
+  }
+  if (status === "pending") {
+    return "等待中";
+  }
+  return status || "未知";
 }
 
 function formatCommand(command: string[]): string {

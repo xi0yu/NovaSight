@@ -156,6 +156,26 @@ def test_configure_starts_capture_session_and_publishes_frames() -> None:
     assert source.closed is True
 
 
+def test_preview_fps_uses_sliding_window(monkeypatch) -> None:
+    service = _service()
+    frame = object()
+    ticks = iter(
+        [
+            1_000_000_000,
+            1_200_000_000,
+            1_500_000_000,
+            1_900_000_000,
+            2_000_000_000,
+        ]
+    )
+    monkeypatch.setattr("novasight.capture.service.time.monotonic_ns", lambda: next(ticks))
+
+    for _ in range(5):
+        service.record_preview_output(frame, target_fps=30)
+
+    assert service.state.preview_fps == pytest.approx(4.0)
+
+
 def test_service_exposes_session_running_state_after_configure() -> None:
     service = _service()
 

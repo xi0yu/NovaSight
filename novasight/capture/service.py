@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -97,6 +98,7 @@ class CaptureService:
         self.state = CaptureRuntimeState(device=config.device)
         self.last_config_error: CaptureRuntimeState | None = None
         self._last_preview_output_ts_ns: int | None = None
+        self._preview_window_ts_ns: deque[int] = deque()
         self._source_lock = threading.RLock()
 
     def _open_configured_source(self, profile: CaptureProfile) -> FrameSource:
@@ -216,6 +218,7 @@ class CaptureService:
         self.config.fps = selected_fps
         self.last_config_error = None
         self._last_preview_output_ts_ns = None
+        self._preview_window_ts_ns.clear()
         return self._sync_state()
 
     def stop(self, reason: str | None = None) -> CaptureRuntimeState:
@@ -243,13 +246,22 @@ class CaptureService:
             now_ns = time.monotonic_ns()
             self.state.preview_target_fps = target_fps
             self.state.preview_output_frames += 1
-            if self._last_preview_output_ts_ns is not None:
-                period_ms = (now_ns - self._last_preview_output_ts_ns) / 1e6
-                if period_ms > 0:
-                    self.state.preview_fps = 1000.0 / period_ms
+            self._preview_window_ts_ns.append(now_ns)
+            window_start_ns = now_ns - 1_000_000_000
+            while self._preview_window_ts_ns and self._preview_window_ts_ns[0] < window_start_ns:
+                self._preview_window_ts_ns.popleft()
+            self.state.preview_fps = self._window_fps(self._preview_window_ts_ns)
             self._last_preview_output_ts_ns = now_ns
 
     def record_preview_drop(self, *, target_fps: int) -> None:
         with self.session._condition:
             self.state.preview_target_fps = target_fps
             self.state.preview_dropped += 1
+
+    def _window_fps(self, timestamps_ns: deque[int]) -> float:
+        if len(timestamps_ns) < 2:
+            return 0.0
+        elapsed_s = (timestamps_ns[-1] - timestamps_ns[0]) / 1e9
+        if elapsed_s <= 0:
+            return 0.0
+        return (len(timestamps_ns) - 1) / elapsed_s

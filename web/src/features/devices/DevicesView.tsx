@@ -4,14 +4,11 @@ import {
   type CaptureCapabilitiesResponse,
   type CaptureCapability,
   type CaptureSelectPayload,
-  type CaptureState,
   type RuntimeState,
   getCaptureCapabilities,
   selectCaptureProfile,
-  stopCapture,
-  streamUrl
+  stopCapture
 } from "../../api";
-import { VideoPanel } from "../../components/studio";
 import { EmptyState, InlineError } from "../../components/ui";
 import { formatProfile, getErrorMessage } from "../shared/format";
 import { InferenceControl } from "../shared/InferenceControl";
@@ -36,6 +33,16 @@ type DevicesViewProps = {
   onInferenceControlCommand: (action: "start" | "stop") => void;
   runtimeCommandBusy: boolean;
 };
+
+function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return typeof child === "object" && child !== null && !Array.isArray(child)
+    ? (child as Record<string, unknown>)
+    : null;
+}
 
 function groupCapabilities(caps: CaptureCapability[]): CapabilityGroup[] {
   const grouped = new Map<string, CapabilityChoice[]>();
@@ -256,63 +263,6 @@ function getProfileTag(choice: CapabilityChoice): string {
   return "均衡";
 }
 
-function CaptureFeedback({
-  capture,
-  runtimeRunning,
-  roiSize,
-  streamKey,
-  configVersion
-}: {
-  capture: CaptureState | undefined;
-  runtimeRunning: boolean;
-  roiSize: number;
-  streamKey: number;
-  configVersion: number;
-}) {
-  return (
-    <aside className="capture-feedback">
-      <div>
-        <div className="section-title">实时反馈</div>
-        <div className="hint">配置不是终点，跑起来后的结果才是主界面重点。</div>
-      </div>
-      <VideoPanel
-        available={Boolean(capture?.available)}
-        caption={`ROI ${roiSize}x${roiSize}`}
-        className="capture-preview-card"
-        profile={formatProfile(capture)}
-        running={runtimeRunning}
-        src={capture?.available ? streamUrl(streamKey, configVersion) : undefined}
-      />
-      <div className="small-card">
-        <div className="metric-row">
-          <span>采集 FPS</span>
-          <b>{capture ? capture.fps_capture.toFixed(1) : "--"}</b>
-        </div>
-        <div className="metric-row">
-          <span>预览 FPS</span>
-          <b>{capture ? capture.preview_fps.toFixed(1) : "--"}</b>
-        </div>
-        <div className="metric-row">
-          <span>读取等待</span>
-          <b>{capture ? `${capture.capture_wait_ms.toFixed(2)} ms` : "--"}</b>
-        </div>
-        <div className="metric-row">
-          <span>丢帧</span>
-          <b>{capture?.frames_dropped ?? 0}</b>
-        </div>
-      </div>
-      <div className="small-card capture-advice">
-        {capture?.last_error
-          ? capture.last_error
-          : "当前模式适合验证采集吞吐。若推理或 UI 反馈跟不上，优先切换到 1K120 NV12 或降低 ROI 输入。"}
-      </div>
-      <div className="footer-note">
-        能力列表会缓存到当前页面；刷新按钮用于重新读取采集卡变化。
-      </div>
-    </aside>
-  );
-}
-
 export function DevicesView({
   canControlRuntime,
   runtime,
@@ -328,7 +278,6 @@ export function DevicesView({
   const [applying, setApplying] = useState<string | null>(null);
   const [stoppingCapture, setStoppingCapture] = useState(false);
   const [selectedFormat, setSelectedFormat] = useState("MJPG");
-  const [streamKey, setStreamKey] = useState(Date.now());
   const capabilityRequestId = useRef(0);
 
   useEffect(() => {
@@ -395,7 +344,6 @@ export function DevicesView({
       setCaptureError(undefined);
       try {
         await selectCaptureProfile(payload);
-        setStreamKey(Date.now());
         await onRuntimeRefresh();
       } catch (err) {
         setCaptureError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
@@ -412,7 +360,6 @@ export function DevicesView({
     setCaptureError(undefined);
     try {
       await stopCapture();
-      setStreamKey(Date.now());
       await onRuntimeRefresh();
     } catch (err) {
       setCaptureError(getErrorMessage(err));
@@ -427,18 +374,16 @@ export function DevicesView({
 
   const capture = runtime?.capture;
   const runtimeRunning = Boolean(runtime?.running);
-  const configVersion =
-    typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
-  const roiSize =
-    typeof runtime?.config?.roi_size === "number" ? runtime.config.roi_size : 640;
+  const roiConfig = getNestedRecord(runtime?.config, "roi");
+  const roiSize = typeof roiConfig?.size === "number" ? roiConfig.size : 640;
 
   return (
-    <div className="capture-setup">
+    <div className="capture-setup inference-setup">
       <main className="capture-setup-main">
         <div className="capture-setup-topbar">
           <div>
-            <h2>采集配置</h2>
-            <p>先选择目标采集方式，复杂能力已自动折叠。</p>
+            <h2>推理设置</h2>
+            <p>配置 ROI、输入尺寸、推理后端和检测阈值；实时画面统一放在性能指挥台。</p>
           </div>
           <div className="panel-actions">
             {canControlRuntime ? (
@@ -467,8 +412,69 @@ export function DevicesView({
         <InlineError message={captureError} />
 
         <section className="setup-card">
-          <div className="section-title">1. 选择采集格式</div>
-          <div className="hint">默认只显示主流格式，BGR3 / 特殊尺寸 / 29.97fps 等放到更多里。</div>
+          <div className="section-title">1. 推理输入</div>
+          <div className="hint">推理输入来自性能指挥台中的 RoiFrame，当前页面只配置消费方式。</div>
+          <div className="inference-setting-grid">
+            <div className="pipeline-step">
+              <b>RoiFrame</b>
+              <span>{roiSize}x{roiSize} · {capture?.profile?.pixel_format ?? "未选择"}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>采集来源</b>
+              <span>{formatProfile(capture)}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>推理策略</b>
+              <span>最新帧 · 跳过旧帧</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="setup-card">
+          <div className="section-title">2. 检测参数</div>
+          <div className="hint">这些参数后续会接入运行配置热更新；当前先固定展示目标结构。</div>
+          <div className="inference-setting-grid">
+            <div className="pipeline-step">
+              <b>置信度阈值</b>
+              <span>0.25</span>
+            </div>
+            <div className="pipeline-step">
+              <b>NMS 阈值</b>
+              <span>0.45</span>
+            </div>
+            <div className="pipeline-step">
+              <b>类别策略</b>
+              <span>使用模型类别</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="setup-card">
+          <div className="section-title">3. 推理后端</div>
+          <div className="hint">TensorRT 闭环接入后，这里会显示 engine、binding、输入尺寸和执行 provider。</div>
+          <div className="capture-pipeline">
+            <div className="pipeline-step">
+              <b>模型</b>
+              <span>{runtime?.active_model?.project?.name ?? "未发布模型"}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>产物</b>
+              <span>{runtime?.active_model?.artifact?.kind ?? "未绑定"}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>执行</b>
+              <span>{runtimeRunning ? "运行中" : "待机"}</span>
+            </div>
+            <div className="pipeline-step">
+              <b>输出</b>
+              <span>{runtime?.executor?.selected ?? "未选择"}</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="setup-card">
+          <div className="section-title">高级：采集输入源</div>
+          <div className="hint">保留采集卡配置入口，但运行画面和指标只在性能指挥台展示。</div>
           <div className="format-choice-grid">
             {groups.map((group) => {
               const pill = getFormatPill(group.pixel_format);
@@ -493,7 +499,7 @@ export function DevicesView({
         </section>
 
         <section className="setup-card">
-          <div className="section-title">2. 选择分辨率 / 帧率</div>
+          <div className="section-title">高级：分辨率 / 帧率</div>
           <div className="hint">这里不展示所有枚举，只展示对项目有意义的主流 Profile。</div>
           {visibleProfiles.length > 0 ? (
             <div className="profile-choice-grid">
@@ -564,29 +570,6 @@ export function DevicesView({
           </details>
         </section>
 
-        <section className="setup-card">
-          <div className="section-title">3. 当前采集链路</div>
-          <div className="hint">用户关注的是采集之后能不能顺畅进入推理和控制反馈。</div>
-          <div className="capture-pipeline">
-            <div className="pipeline-step">
-              <b>采集</b>
-              <span>{formatProfile(capture)}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>解码/转换</b>
-              <span>{capture?.backend ?? "等待打开"}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>推理输入</b>
-              <span>ROI {roiSize}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>UI 反馈</b>
-              <span>延迟 / FPS / 丢帧</span>
-            </div>
-          </div>
-        </section>
-
         <section className="advanced-summary">
           <label className="device-input">
             <span>设备</span>
@@ -608,17 +591,10 @@ export function DevicesView({
           >
             自动低延迟
           </button>
-          <span>原始能力列表已折叠，最近错误会在右侧实时反馈展示。</span>
+          <span>原始能力列表已折叠，运行状态和最近错误统一在性能指挥台展示。</span>
         </section>
       </main>
 
-      <CaptureFeedback
-        capture={capture}
-        configVersion={configVersion}
-        roiSize={roiSize}
-        runtimeRunning={runtimeRunning}
-        streamKey={streamKey}
-      />
     </div>
   );
 }

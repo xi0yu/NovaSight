@@ -155,6 +155,43 @@ def test_capture_session_updates_statistics_for_published_frames() -> None:
     assert state.statistics.skipped_counter == 0
 
 
+def test_capture_session_uses_sliding_window_fps_not_instant_period() -> None:
+    source = CountingSource()
+    session = CaptureSession(source_factory=lambda profile: source)
+    stop_event = threading.Event()
+    session.state.profile = _profile()
+    session._source = source
+
+    for index, ts_ns in enumerate(
+        [
+            1_000_000_000,
+            1_200_000_000,
+            1_500_000_000,
+            1_900_000_000,
+            2_000_000_000,
+        ],
+        start=1,
+    ):
+        session._publish_frame(
+            CapturedFrame(
+                frame_id=index,
+                width=320,
+                height=320,
+                pixel_format="NV12",
+                ts_ns=ts_ns,
+                capture_wait_ms=0.1,
+                image=None,
+            ),
+            source=source,
+            stop_event=stop_event,
+        )
+
+    assert session.state.frame_period_ms == 100.0
+    assert session.state.statistics.capture_counter == 5
+    assert session.state.statistics.capture_fps == pytest.approx(4.0)
+    assert session.state.fps_capture == pytest.approx(4.0)
+
+
 def test_capture_session_reconfigure_closes_previous_source() -> None:
     sources: list[CountingSource] = []
 
