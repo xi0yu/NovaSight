@@ -39,6 +39,8 @@ type DevicesViewProps = {
 type SettingsSection = "capture" | "inference" | "algorithm";
 type CaptureInputSource = "capture" | "image";
 
+const ROI_SIZE_CHOICES = [640, 480, 320, 256];
+
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
@@ -437,6 +439,11 @@ export function DevicesView({
   const recommendedBackend =
     activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : inferenceBackend;
   const backendMismatch = recommendedBackend !== inferenceBackend;
+  const inferenceStatus = runtime?.inference ?? {};
+  const inferenceLoaded = inferenceStatus.loaded === true;
+  const inferenceReason = typeof inferenceStatus.reason === "string" ? inferenceStatus.reason : "";
+  const inferenceSelected =
+    typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferenceBackend;
   const controlStrategy = readString(controlConfig, "strategy", "pid");
   const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
   const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
@@ -577,6 +584,10 @@ export function DevicesView({
                   <dt>后端</dt>
                   <dd>{capture?.backend ?? "未打开"}</dd>
                 </div>
+                <div>
+                  <dt>RoiFrame</dt>
+                  <dd>{roiSize}x{roiSize}</dd>
+                </div>
               </dl>
             </aside>
 
@@ -635,6 +646,26 @@ export function DevicesView({
                     <button className="button" type="button" onClick={refreshCapabilities}>
                       {loadingCaps ? "读取中" : "刷新能力"}
                     </button>
+                  </div>
+
+                  <div className="control-block">
+                    <div className="control-block-head">
+                      <strong>RoiFrame 输出大小</strong>
+                      <span>影响采集输出、推理输入和浏览器预览裁剪尺寸。</span>
+                    </div>
+                    <div className="home-chips">
+                      {ROI_SIZE_CHOICES.map((size) => (
+                        <button
+                          className={roiSize === size ? "home-chip active" : "home-chip"}
+                          disabled={configBusy === "roi.size"}
+                          key={size}
+                          onClick={() => void updateRuntimeField("roi", "size", size)}
+                          type="button"
+                        >
+                          {size}x{size}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="control-block">
@@ -744,6 +775,26 @@ export function DevicesView({
                     </div>
                   </div>
 
+                  <div className="control-block">
+                    <div className="control-block-head">
+                      <strong>RoiFrame 输出大小</strong>
+                      <span>图片输入同样会按这个尺寸裁剪后进入推理。</span>
+                    </div>
+                    <div className="home-chips">
+                      {ROI_SIZE_CHOICES.map((size) => (
+                        <button
+                          className={roiSize === size ? "home-chip active" : "home-chip"}
+                          disabled={configBusy === "roi.size"}
+                          key={size}
+                          onClick={() => void updateRuntimeField("roi", "size", size)}
+                          type="button"
+                        >
+                          {size}x{size}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="source-action-grid">
                     <label className="device-input">
                       <span>图片路径</span>
@@ -825,12 +876,12 @@ export function DevicesView({
                   <strong>{normalizedActiveSource === "image" ? "图片输入" : "采集卡"}</strong>
                 </div>
                 <div>
-                  <span>后端</span>
+                  <span>配置后端</span>
                   <strong>{inferenceBackend === "tensorrt" ? "TensorRT" : "ONNX Runtime"}</strong>
                 </div>
                 <div>
-                  <span>执行条件</span>
-                  <strong>{capture?.available ? "采集帧驱动" : "采集未启动"}</strong>
+                  <span>推理状态</span>
+                  <strong>{inferenceLoaded ? `已加载 ${inferenceSelected}` : inferenceReason || "未加载"}</strong>
                 </div>
               </div>
 
@@ -898,7 +949,7 @@ export function DevicesView({
                   <div>
                     <span>模型仓库绑定</span>
                     <strong>{activeModelName}</strong>
-                    <p>{activeArtifactPath}</p>
+                    <p>{inferenceReason ? `${activeArtifactPath} · ${inferenceReason}` : activeArtifactPath}</p>
                   </div>
                   <div className="model-binding-actions">
                     <Badge tone={activeArtifact === "未绑定" ? "idle" : "good"}>

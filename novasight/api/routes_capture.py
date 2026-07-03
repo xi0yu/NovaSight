@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from novasight.capture.preview import render_preview_frame
+from novasight.runtime.pipeline import RuntimePipeline
 from novasight.roi import normalize_roi_size
 
 
@@ -140,6 +141,7 @@ def select(request: Request, payload: CaptureSelectRequest):
     config = getattr(request.app.state, "config", None)
     if config is not None:
         config.source.default = "capture"
+    _ensure_runtime_pipeline(request)
     return body
 
 
@@ -166,13 +168,35 @@ def image_source(request: Request, payload: ImageSourceRequest):
     body = asdict(state)
     if state.available is False:
         return JSONResponse(status_code=400, content=body)
+    _ensure_runtime_pipeline(request)
     return body
 
 
 @router.post("/stop")
 def stop(request: Request) -> dict:
+    runtime = getattr(request.app.state, "runtime", None)
+    pipeline = getattr(runtime, "pipeline", None)
+    if pipeline is not None and getattr(pipeline, "running", False):
+        pipeline.stop()
     state = request.app.state.capture.stop("capture stopped by user")
     return asdict(state)
+
+
+def _ensure_runtime_pipeline(request: Request) -> None:
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        return
+    if getattr(runtime, "pipeline", None) is None:
+        runtime.pipeline = RuntimePipeline(
+            capture=request.app.state.capture,
+            runtime=runtime,
+        )
+    if getattr(runtime.pipeline, "running", False):
+        return
+    try:
+        runtime.pipeline.start()
+    except RuntimeError as exc:
+        logger.warning("runtime pipeline auto-start skipped: %s", exc)
 
 
 def _normalize_preview_fps(value: int | None) -> int:

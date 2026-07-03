@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -21,6 +22,8 @@ from .routes_health import router as health_router
 from .routes_models import router as models_router
 from .routes_plugins import router as plugins_router
 from .routes_runtime import router as runtime_router
+
+logger = logging.getLogger("novasight.api.app")
 
 
 OPEN_API_PATHS = {
@@ -58,6 +61,7 @@ def create_app(
         confidence_threshold=config.inference.confidence_threshold,
         nms_threshold=config.inference.nms_threshold,
     )
+    _load_active_model(models, inference)
     runtime = RuntimeService(
         config=config,
         models=models,
@@ -99,3 +103,31 @@ def create_app(
     app.include_router(plugins_router)
     app.include_router(executors_router)
     return app
+
+
+def _load_active_model(models: ModelRegistry, inference: InferenceRuntime) -> None:
+    deployment = models.get_active_deployment()
+    if deployment is None:
+        return
+    artifact = models.get_artifact(deployment.artifact_id)
+    if artifact is None:
+        inference.disable(f"active deployment artifact not found: {deployment.artifact_id}")
+        return
+    if artifact.kind not in {"onnx", "engine"}:
+        inference.disable(f"active artifact is not runnable inference artifact: {artifact.kind}")
+        return
+    version = models.get_version(artifact.version_id)
+    if version is None:
+        inference.disable(f"active artifact version not found: {artifact.version_id}")
+        return
+    project = models.get_project(version.project_id)
+    if project is None:
+        inference.disable(f"active artifact project not found: {version.project_id}")
+        return
+    artifact_path = Path(models.data_dir) / project.name / version.version / artifact.path
+    inference.load(artifact_path, list(version.classes), version.input_shape)
+    status = inference.status()
+    if status.get("loaded"):
+        logger.info("active model loaded artifact=%s", artifact_path)
+    else:
+        logger.warning("active model failed to load artifact=%s reason=%s", artifact_path, status.get("reason"))
