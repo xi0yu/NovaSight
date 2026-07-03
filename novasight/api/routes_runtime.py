@@ -135,5 +135,9 @@ def _apply_config(request: Request, config) -> None:
     app.state.capture.roi_size = config.roi.size
     app.state.executors = ExecutorRegistry.from_config(config)
     app.state.hardware = create_hardware_box(config)
+    app.state.inference.configure(
+        confidence_threshold=config.inference.confidence_threshold,
+        nms_threshold=config.inference.nms_threshold,
+    )
     app.state.runtime.executors = app.state.executors
     app.state.runtime.update_config(config)

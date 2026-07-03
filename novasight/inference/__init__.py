@@ -9,6 +9,7 @@ from novasight.inference.input import (
     parse_tensor_input_shape,
     prepare_tensor_input,
 )
+from novasight.inference.onnxruntime_engine import OnnxRuntimeInferenceEngine
 from novasight.inference.runtime import InferenceRuntime
 from novasight.inference.tensorrt import TensorRtInferenceEngine
 from novasight.inference.unavailable import UnavailableInferenceEngine
@@ -18,6 +19,7 @@ __all__ = [
     "InferenceEngine",
     "InferenceResult",
     "InferenceRuntime",
+    "OnnxRuntimeInferenceEngine",
     "PreparedTensorInput",
     "TensorRtInferenceEngine",
     "TensorInputShape",

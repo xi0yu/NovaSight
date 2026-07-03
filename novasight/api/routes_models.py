@@ -176,9 +176,9 @@ def _load_published_artifact(
     artifact = registry.get_artifact(artifact_id)
     if artifact is None:
         return
-    if artifact.kind != "engine":
+    if artifact.kind not in {"onnx", "engine"}:
         request.app.state.inference.disable(
-            f"published artifact is not TensorRT engine: {artifact.kind}"
+            f"published artifact is not runnable inference artifact: {artifact.kind}"
         )
         return
     version = registry.get_version(artifact.version_id)

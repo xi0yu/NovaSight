@@ -235,8 +235,6 @@ export function ModelsView({
     const requestProjectId = selectedProject.id;
     const requestProjectName = selectedProject.name;
     const requestVersionId = selectedVersionId;
-    const warning =
-      artifact.kind !== "engine" ? "\n\n警告: 这个产物不是 engine，发布后推理可能不可用。" : "";
     const confirmed = window.confirm(
       [
         "确认发布模型？",
@@ -244,7 +242,7 @@ export function ModelsView({
         `项目: ${requestProjectName} (#${requestProjectId})`,
         `产物路径: ${artifact.path}`,
         `产物类型: ${artifact.kind}`,
-        `产物状态: ${artifact.status}${warning}`
+        `产物状态: ${artifact.status}`
       ].join("\n")
     );
     if (!confirmed) {
@@ -335,7 +333,7 @@ export function ModelsView({
 
   async function handleUploadModel() {
     if (!uploadFile) {
-      setModelActionError("请选择 .pt 或 .onnx 模型文件。");
+      setModelActionError("请选择 .pt、.onnx 或 .engine 模型文件。");
       return;
     }
     setUploadingModel(true);
@@ -387,7 +385,7 @@ export function ModelsView({
           <article className="model-workbench-card upload">
             <div>
               <strong>上传模型</strong>
-              <p>上传 .pt 或 .onnx 文件，注册为可使用模型。</p>
+              <p>上传 .pt、.onnx 或 .engine 文件，注册为可使用模型。</p>
             </div>
             <div className="model-upload-grid">
               <label>
@@ -409,7 +407,7 @@ export function ModelsView({
               <label className="model-file-input">
                 <span>模型文件</span>
                 <input
-                  accept=".pt,.onnx"
+                  accept=".pt,.onnx,.engine"
                   type="file"
                   onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
                 />

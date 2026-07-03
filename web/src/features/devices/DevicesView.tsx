@@ -363,7 +363,7 @@ export function DevicesView({
   }, [imageFps, imagePath, onRuntimeRefresh]);
 
   const updateRuntimeField = useCallback(
-    async (section: string, key: string, value: string | number) => {
+    async (section: string, key: string, value: string | number | boolean) => {
       if (!runtime?.config || configBusy) {
         return;
       }
@@ -393,6 +393,7 @@ export function DevicesView({
 
   const capture = runtime?.capture;
   const roiConfig = getNestedRecord(runtime?.config, "roi");
+  const inferenceConfig = getNestedRecord(runtime?.config, "inference");
   const controlConfig = getNestedRecord(runtime?.config, "control");
   const roiSize = typeof roiConfig?.size === "number" ? roiConfig.size : 640;
   const sourceConfig = getNestedRecord(runtime?.config, "source");
@@ -406,6 +407,10 @@ export function DevicesView({
   const readString = (section: Record<string, unknown> | null, key: string, fallback: string) => {
     const value = section?.[key];
     return typeof value === "string" ? value : fallback;
+  };
+  const readBoolean = (section: Record<string, unknown> | null, key: string, fallback: boolean) => {
+    const value = section?.[key];
+    return typeof value === "boolean" ? value : fallback;
   };
 
   useEffect(() => {
@@ -709,39 +714,78 @@ export function DevicesView({
           <>
         <section className="setup-card">
           <div className="section-title">1. 推理输入</div>
-          <div className="hint">采集流存在时，推理默认消费最新 RoiFrame；推理状态由采集帧驱动。</div>
+          <div className="hint">推理输入跟随当前采集源；采集卡或图片输入有帧后才会执行推理。</div>
           <div className="inference-setting-grid">
             <div className="pipeline-step">
               <b>RoiFrame</b>
               <span>{roiSize}x{roiSize} · {capture?.profile?.pixel_format ?? "未选择"}</span>
             </div>
             <div className="pipeline-step">
-              <b>采集来源</b>
-              <span>{formatProfile(capture)}</span>
+              <b>输入源</b>
+              <span>{normalizedActiveSource === "image" ? "图片输入" : "采集卡"} · {formatProfile(capture)}</span>
             </div>
             <div className="pipeline-step">
-              <b>推理策略</b>
-              <span>最新帧 · 跳过旧帧</span>
+              <b>执行条件</b>
+              <span>{capture?.available ? "采集流可用" : "等待采集输入"}</span>
             </div>
           </div>
         </section>
 
         <section className="setup-card">
-          <div className="section-title">2. 检测参数</div>
-          <div className="hint">这些参数后续会接入运行配置热更新；当前先固定展示目标结构。</div>
-          <div className="inference-setting-grid">
-            <div className="pipeline-step">
-              <b>置信度阈值</b>
-              <span>0.25</span>
+          <div className="section-title">2. 推理配置</div>
+          <div className="hint">这些参数会同步到后端运行态；ONNX Runtime 当前支持真实执行，TensorRT engine 先保留加载合同。</div>
+          <div className="settings-form-grid">
+            <div className="settings-number-field">
+              <span>推理开关</span>
+              <button
+                className={readBoolean(inferenceConfig, "enabled", true) ? "config-toggle on" : "config-toggle"}
+                type="button"
+                disabled={configBusy === "inference.enabled"}
+                onClick={() =>
+                  void updateRuntimeField(
+                    "inference",
+                    "enabled",
+                    !readBoolean(inferenceConfig, "enabled", true)
+                  )
+                }
+              >
+                {readBoolean(inferenceConfig, "enabled", true) ? "已启用" : "已关闭"}
+              </button>
             </div>
-            <div className="pipeline-step">
-              <b>NMS 阈值</b>
-              <span>0.45</span>
+            <div className="settings-number-field">
+              <span>推理后端</span>
+              <div className="mini-segmented">
+                {["onnxruntime", "tensorrt"].map((backend) => (
+                  <button
+                    className={readString(inferenceConfig, "backend", "onnxruntime") === backend ? "active" : ""}
+                    key={backend}
+                    type="button"
+                    disabled={configBusy === "inference.backend"}
+                    onClick={() => void updateRuntimeField("inference", "backend", backend)}
+                  >
+                    {backend === "onnxruntime" ? "ONNX" : "TRT"}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="pipeline-step">
-              <b>类别策略</b>
-              <span>使用模型类别</span>
-            </div>
+            <NumberField
+              label="置信度阈值"
+              value={readNumber(inferenceConfig, "confidence_threshold", 0.25)}
+              busy={configBusy === "inference.confidence_threshold"}
+              min={0}
+              max={1}
+              step={0.01}
+              onCommit={(value) => void updateRuntimeField("inference", "confidence_threshold", value)}
+            />
+            <NumberField
+              label="NMS 阈值"
+              value={readNumber(inferenceConfig, "nms_threshold", 0.45)}
+              busy={configBusy === "inference.nms_threshold"}
+              min={0}
+              max={1}
+              step={0.01}
+              onCommit={(value) => void updateRuntimeField("inference", "nms_threshold", value)}
+            />
           </div>
         </section>
 

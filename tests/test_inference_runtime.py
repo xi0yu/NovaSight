@@ -21,6 +21,7 @@ from novasight.inference import (
     InferenceDetection,
     InferenceResult,
     InferenceRuntime,
+    OnnxRuntimeInferenceEngine,
     TensorRtInferenceEngine,
     UnavailableInferenceEngine,
 )
@@ -164,6 +165,133 @@ def test_tensorrt_engine_rejects_empty_input_frame(monkeypatch) -> None:
 
     assert result.available is False
     assert result.reason == "TensorRT input frame has no gpu_buffer or image"
+
+
+def test_onnx_engine_filters_confidence_and_applies_nms() -> None:
+    class FakeInput:
+        name = "images"
+
+    class FakeSession:
+        def get_inputs(self):
+            return [FakeInput()]
+
+        def run(self, _output_names, _inputs):
+            return [[
+                [10, 20, 50, 60, 0.90, 0],
+                [12, 22, 52, 62, 0.80, 0],
+                [100, 120, 140, 160, 0.20, 0],
+            ]]
+
+    engine = OnnxRuntimeInferenceEngine(
+        session_factory=lambda path: FakeSession(),
+        confidence_threshold=0.25,
+        nms_threshold=0.45,
+    )
+    frame = SimpleNamespace(
+        width=640,
+        height=640,
+        source_width=640,
+        source_height=640,
+        offset_x=0,
+        offset_y=0,
+        image=object(),
+        gpu_buffer=None,
+    )
+
+    engine.load(Path("model.onnx"), classes=["target"], input_shape="1x3x640x640")
+    result = engine.infer(frame)
+
+    assert result.available is True
+    assert result.classes == ["target"]
+    assert len(result.detections) == 1
+    detection = result.detections[0]
+    assert detection.cls == 0
+    assert detection.score == pytest.approx(0.90)
+    assert detection.x == 10
+    assert detection.y == 20
+    assert detection.w == 40
+    assert detection.h == 40
+
+
+def test_onnx_engine_decodes_yolov8_class_score_output() -> None:
+    class FakeInput:
+        name = "images"
+
+    class FakeSession:
+        def get_inputs(self):
+            return [FakeInput()]
+
+        def run(self, _output_names, _inputs):
+            return [[
+                [
+                    [30, 100],
+                    [40, 120],
+                    [20, 20],
+                    [10, 20],
+                    [0.91, 0.10],
+                    [0.05, 0.88],
+                ]
+            ]]
+
+    engine = OnnxRuntimeInferenceEngine(
+        session_factory=lambda path: FakeSession(),
+        confidence_threshold=0.25,
+        nms_threshold=0.45,
+    )
+    frame = SimpleNamespace(
+        width=640,
+        height=640,
+        source_width=640,
+        source_height=640,
+        offset_x=0,
+        offset_y=0,
+        image=object(),
+        gpu_buffer=None,
+    )
+
+    engine.load(Path("yolov8.onnx"), classes=["a", "b"], input_shape="1x3x640x640")
+    result = engine.infer(frame)
+
+    assert result.available is True
+    assert [(item.cls, item.score, item.x, item.y, item.w, item.h) for item in result.detections] == [
+        (0, pytest.approx(0.91), 20, 35, 20, 10),
+        (1, pytest.approx(0.88), 90, 110, 20, 20),
+    ]
+
+
+def test_runtime_loads_onnx_artifacts_even_when_default_tensorrt_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeInput:
+        name = "images"
+
+    class FakeSession:
+        def get_inputs(self):
+            return [FakeInput()]
+
+        def run(self, _output_names, _inputs):
+            return [[]]
+
+    import novasight.inference.onnxruntime_engine as onnx_engine
+
+    monkeypatch.setattr(
+        onnx_engine.OnnxRuntimeInferenceEngine,
+        "_create_session",
+        lambda self, path: FakeSession(),
+    )
+    monkeypatch.setattr(
+        onnx_engine.OnnxRuntimeInferenceEngine,
+        "available",
+        lambda self: True,
+    )
+    runtime = InferenceRuntime(TensorRtInferenceEngine())
+
+    runtime.load(Path("model.onnx"), ["target"], "1x3x640x640")
+
+    status = runtime.status()
+    assert status["selected"] == "onnxruntime"
+    assert status["available"] is True
+    assert status["loaded"] is True
 
 
 def test_runtime_falls_back_to_unavailable_engine() -> None:

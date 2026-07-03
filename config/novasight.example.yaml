@@ -4,12 +4,24 @@ web:
 source:
   default: "null"
   target_fps: 60
+  image_path: ""
+  image_fps: 30
+consumers:
+  preview: true
+  inference: true
+  recording: false
 limits:
   max_frame_queue: 1
   stream_fps: 30
 roi:
   size: 640
   mode: center
+inference:
+  enabled: true
+  backend: onnxruntime
+  confidence_threshold: 0.25
+  nms_threshold: 0.45
+  input_source: source.default
 capture:
   device: /dev/video0
   preference: auto_high_fps
@@ -21,7 +33,14 @@ control:
   max_abs_dx: 120
   max_abs_dy: 120
   min_confidence: 0
+  fov_ratio: 0.28
   strategy: pid
+  pid_kp_x: 0.35
+  pid_kp_y: 0.35
+  pid_ki: 0.1
+  pid_kd: 0.1
+  pid_integral_limit: 250
+  pid_move_limit: 120
   command_interval_ms: 1
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.

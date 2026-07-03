@@ -43,6 +43,15 @@ class RoiConfig:
 
 
 @dataclass
+class InferenceConfig:
+    enabled: bool = True
+    backend: str = "onnxruntime"
+    confidence_threshold: float = 0.25
+    nms_threshold: float = 0.45
+    input_source: str = "source.default"
+
+
+@dataclass
 class CaptureConfig:
     device: str = "/dev/video0"
     preference: str = "auto_high_fps"
@@ -96,6 +105,7 @@ class RuntimeConfig:
     consumers: ConsumerConfig = field(default_factory=ConsumerConfig)
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
     roi: RoiConfig = field(default_factory=RoiConfig)
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
@@ -172,6 +182,14 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
     if cfg.roi.mode != "center":
         raise ValueError("unsupported ROI mode: only center is supported")
+    if cfg.inference.backend not in {"onnxruntime", "tensorrt"}:
+        raise ValueError("runtime config key 'inference.backend' must be onnxruntime or tensorrt")
+    if cfg.inference.confidence_threshold < 0 or cfg.inference.confidence_threshold > 1:
+        raise ValueError("runtime config key 'inference.confidence_threshold' must be >= 0 and <= 1")
+    if cfg.inference.nms_threshold < 0 or cfg.inference.nms_threshold > 1:
+        raise ValueError("runtime config key 'inference.nms_threshold' must be >= 0 and <= 1")
+    if cfg.inference.input_source != "source.default":
+        raise ValueError("runtime config key 'inference.input_source' must be source.default")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     for key in (

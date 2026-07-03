@@ -152,7 +152,7 @@ def test_publish_engine_loads_inference_runtime(tmp_path: Path) -> None:
     }
 
 
-def test_publish_non_engine_disables_previous_inference_runtime(tmp_path: Path) -> None:
+def test_publish_onnx_loads_inference_runtime(tmp_path: Path) -> None:
     client = _client(tmp_path)
     events: list[tuple] = []
 
@@ -162,9 +162,6 @@ def test_publish_non_engine_disables_previous_inference_runtime(tmp_path: Path) 
 
         def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
             events.append(("load", artifact_path.name, tuple(classes), input_shape))
-
-        def disable(self, reason: str) -> None:
-            events.append(("disable", reason))
 
     client.app.state.inference = RecordingInference()
     project = _project(client)
@@ -184,7 +181,7 @@ def test_publish_non_engine_disables_previous_inference_runtime(tmp_path: Path) 
 
     assert events == [
         ("load", "model.engine", ("target",), "1x3x640x640"),
-        ("disable", "published artifact is not TensorRT engine: onnx"),
+        ("load", "model.onnx", ("target",), "1x3x640x640"),
     ]
 
 

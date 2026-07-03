@@ -54,6 +54,10 @@ def create_app(
     hardware = create_hardware_box(config)
     capture = CaptureService(config.capture, roi_size=config.roi.size)
     inference = InferenceRuntime()
+    inference.configure(
+        confidence_threshold=config.inference.confidence_threshold,
+        nms_threshold=config.inference.nms_threshold,
+    )
     runtime = RuntimeService(
         config=config,
         models=models,

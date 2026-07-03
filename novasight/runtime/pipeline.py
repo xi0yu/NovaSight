@@ -116,4 +116,7 @@ class RuntimePipeline:
     def _inference_enabled(self) -> bool:
         config = getattr(self.runtime, "config", None)
         consumers = getattr(config, "consumers", None)
-        return bool(getattr(consumers, "inference", True))
+        inference = getattr(config, "inference", None)
+        return bool(getattr(consumers, "inference", True)) and bool(
+            getattr(inference, "enabled", True)
+        )

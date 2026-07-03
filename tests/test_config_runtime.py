@@ -40,6 +40,16 @@ def test_runtime_config_defaults_include_axis_pid_settings() -> None:
     assert cfg.control.pid_move_limit == 120.0
 
 
+def test_runtime_config_defaults_include_inference_settings() -> None:
+    cfg = RuntimeConfig()
+
+    assert cfg.inference.enabled is True
+    assert cfg.inference.backend == "onnxruntime"
+    assert cfg.inference.confidence_threshold == 0.25
+    assert cfg.inference.nms_threshold == 0.45
+    assert cfg.inference.input_source == "source.default"
+
+
 def test_runtime_config_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "novasight.yaml"
     cfg = RuntimeConfig()
@@ -70,6 +80,13 @@ def test_runtime_config_returns_defaults_for_blank_or_empty_inputs(
 
 def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
     assert load_runtime_config(tmp_path / "missing.yaml") == RuntimeConfig()
+
+
+def test_example_runtime_config_loads_with_current_schema() -> None:
+    cfg = load_runtime_config(Path("config/novasight.example.yaml"))
+
+    assert cfg.inference.backend == "onnxruntime"
+    assert cfg.consumers.inference is True
 
 
 def test_runtime_config_partial_nested_config_preserves_defaults(
@@ -197,3 +214,17 @@ def test_runtime_config_schema_exposes_axis_pid_fields() -> None:
     }.issubset(paths)
     assert "control.pid_ki_x" not in paths
     assert "control.pid_kd_x" not in paths
+
+
+def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    inference_section = next(section for section in schema["sections"] if section["id"] == "inference")
+    paths = {field["path"] for field in inference_section["fields"]}
+
+    assert {
+        "inference.enabled",
+        "inference.backend",
+        "inference.confidence_threshold",
+        "inference.nms_threshold",
+        "inference.input_source",
+    }.issubset(paths)
