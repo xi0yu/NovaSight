@@ -98,6 +98,11 @@ class OnnxRuntimeInferenceEngine:
                 confidence_threshold=self.confidence_threshold,
                 nms_threshold=self.nms_threshold,
             )
+            detections = _scale_detections_to_input_frame(
+                detections,
+                prepared=self._last_input,
+                shape=self._input_shape,
+            )
         except Exception as exc:
             return InferenceResult(available=False, reason=str(exc))
         return InferenceResult(available=True, detections=detections, classes=self._classes)
@@ -130,7 +135,55 @@ def _prepare_numpy_tensor(prepared: PreparedTensorInput, shape: TensorInputShape
             return array.transpose(2, 0, 1)[None, ...]
     except Exception:
         pass
+    if hasattr(image, "shape"):
+        array = np.asarray(image)
+        if array.ndim == 2:
+            array = np.repeat(array[:, :, None], 3, axis=2)
+        if array.ndim == 3 and array.shape[2] >= 3:
+            array = np.ascontiguousarray(array[:, :, :3])
+            if prepared.pixel_format in {"BGR", "BGR3"}:
+                array = array[:, :, ::-1]
+            if array.shape[1] != shape.width or array.shape[0] != shape.height:
+                array = _resize_numpy_image(array, width=shape.width, height=shape.height, np=np)
+            array = array.astype(np.float32) / 255.0
+            return array.transpose(2, 0, 1)[None, ...]
     return np.zeros((shape.batch, shape.channels, shape.height, shape.width), dtype=np.float32)
+
+
+def _resize_numpy_image(image: Any, *, width: int, height: int, np: Any) -> Any:
+    try:
+        from PIL import Image
+
+        return np.asarray(Image.fromarray(image).resize((width, height)))
+    except Exception:
+        y_idx = np.linspace(0, image.shape[0] - 1, height).astype(np.int64)
+        x_idx = np.linspace(0, image.shape[1] - 1, width).astype(np.int64)
+        return image[y_idx][:, x_idx]
+
+
+def _scale_detections_to_input_frame(
+    detections: list[InferenceDetection],
+    *,
+    prepared: PreparedTensorInput,
+    shape: TensorInputShape,
+) -> list[InferenceDetection]:
+    if not detections:
+        return []
+    scale_x = prepared.width / shape.width
+    scale_y = prepared.height / shape.height
+    if scale_x == 1 and scale_y == 1:
+        return detections
+    return [
+        InferenceDetection(
+            cls=item.cls,
+            score=item.score,
+            x=item.x * scale_x,
+            y=item.y * scale_y,
+            w=item.w * scale_x,
+            h=item.h * scale_y,
+        )
+        for item in detections
+    ]
 
 
 def decode_nx6_detections(

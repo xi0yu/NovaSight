@@ -40,6 +40,7 @@ class RuntimeService:
         self.last_frame_context: FrameContext | None = None
         self.last_target: dict[str, Any] | None = None
         self.last_control: dict[str, Any] | None = None
+        self.last_inference_reason = ""
         self.control_strategy = self._create_control_strategy(config)
 
     def state(self) -> RuntimeState:
@@ -107,13 +108,16 @@ class RuntimeService:
         try:
             roi_frame = center_roi_frame(frame, requested_size=self.config.roi.size)
             inference_result = infer(roi_frame)
-        except Exception:
+        except Exception as exc:
+            self.last_inference_reason = str(exc)
             return self.process_frame(self._empty_frame_context(frame))
 
         if not isinstance(inference_result, InferenceResult):
+            self.last_inference_reason = "invalid inference result"
             return self.process_frame(self._empty_frame_context(frame))
 
         if not inference_result.available:
+            self.last_inference_reason = inference_result.reason
             return self.process_frame(self._empty_frame_context(frame))
 
         try:
@@ -134,8 +138,10 @@ class RuntimeService:
                     )
                 )
             classes = list(inference_result.classes)
-        except Exception:
+        except Exception as exc:
+            self.last_inference_reason = str(exc)
             return self.process_frame(self._empty_frame_context(frame))
+        self.last_inference_reason = ""
 
         context = FrameContext(
             frame_id=frame.frame_id,
@@ -263,6 +269,7 @@ class RuntimeService:
             return {
                 "frame_id": None,
                 "detections": 0,
+                "inference_reason": self.last_inference_reason,
                 "target": None,
                 "control": None,
             }
@@ -271,6 +278,7 @@ class RuntimeService:
             "detections": len(context.detections),
             "tracks": len(context.tracks),
             "classes": list(context.classes),
+            "inference_reason": self.last_inference_reason,
             "target": self.last_target,
             "control": self.last_control,
         }

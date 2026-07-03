@@ -24,6 +24,7 @@ class PreparedTensorInput:
     buffer: Any
     width: int
     height: int
+    pixel_format: str
     source_width: int
     source_height: int
     offset_x: int
@@ -69,6 +70,7 @@ def prepare_tensor_input(frame: Any, shape: TensorInputShape) -> PreparedTensorI
         buffer=buffer,
         width=width,
         height=height,
+        pixel_format=str(getattr(frame, "pixel_format", "")).upper(),
         source_width=int(getattr(frame, "source_width", width)),
         source_height=int(getattr(frame, "source_height", height)),
         offset_x=int(getattr(frame, "offset_x", 0)),

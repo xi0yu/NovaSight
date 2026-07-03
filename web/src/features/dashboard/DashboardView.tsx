@@ -188,6 +188,8 @@ export function DashboardView({
   const controlDx = readNumberRecord(control, "dx");
   const controlDy = readNumberRecord(control, "dy");
   const willEmit = control.will_emit === true;
+  const inferenceReason =
+    typeof vision.inference_reason === "string" ? vision.inference_reason : "";
 
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
     if (!runtime?.config || consumerBusy) {
@@ -424,7 +426,9 @@ export function DashboardView({
             <strong>目标与控制量</strong><br />
             {targetName
               ? `目标 ${targetName} · ${(targetScore ?? 0).toFixed(2)} · (${formatNumber(targetCx ?? undefined, 0)}, ${formatNumber(targetCy ?? undefined, 0)})`
-              : "暂无推理目标。"}
+              : inferenceReason
+                ? `暂无推理目标：${inferenceReason}`
+                : "暂无推理目标。"}
             <br />
             {controlDx !== null && controlDy !== null
               ? `控制量 dx=${formatNumber(controlDx, 1)} · dy=${formatNumber(controlDy, 1)} · ${willEmit ? "允许输出" : "等待硬件触发"}`
