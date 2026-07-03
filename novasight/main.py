@@ -23,6 +23,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     doctor_sub = doctor.add_subparsers(dest="doctor_command")
     doctor_camera = doctor_sub.add_parser("camera")
     doctor_camera.add_argument("--device", default="/dev/video0")
+    doctor_kmnet = doctor_sub.add_parser("kmnet")
+    doctor_kmnet.add_argument("--km-host", default=None)
+    doctor_kmnet.add_argument("--km-port", type=int, default=None)
+    doctor_kmnet.add_argument("--km-uuid", default=None)
+    doctor_kmnet.add_argument("--monitor-port", type=int, default=None)
+    doctor_kmnet.add_argument("--move-dx", type=int, default=1)
+    doctor_kmnet.add_argument("--move-dy", type=int, default=0)
+    doctor_kmnet.add_argument("--no-move", action="store_true")
 
     capture_smoke = subparsers.add_parser("capture-smoke")
     capture_smoke.add_argument("--device", default="/dev/video0")
@@ -39,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.web.port = args.port
     configure_logging(cfg)
     if args.command == "doctor" and args.doctor_command is None:
-        print("error: doctor requires a subcommand: camera", file=sys.stderr)
+        print("error: doctor requires a subcommand: camera, kmnet", file=sys.stderr)
         return 2
     if args.command == "doctor" and args.doctor_command == "camera":
         from novasight.capture import query_capabilities
@@ -59,6 +67,53 @@ def main(argv: list[str] | None = None) -> int:
         elif caps.reason:
             print(f"reason: {caps.reason}")
         return 0 if caps.available else 2
+    if args.command == "doctor" and args.doctor_command == "kmnet":
+        from novasight.executors.kmnet import KmNetExecutor
+
+        host = args.km_host or cfg.hardware.host
+        port = args.km_port if args.km_port is not None else cfg.hardware.port
+        uuid = args.km_uuid if args.km_uuid is not None else cfg.hardware.uuid
+        monitor_port = (
+            args.monitor_port
+            if args.monitor_port is not None
+            else cfg.hardware.monitor_port
+        )
+        executor = KmNetExecutor(
+            host=host,
+            port=port,
+            uuid=uuid,
+            monitor_port=monitor_port,
+            flip_dy=cfg.hardware.flip_dy,
+        )
+        status = executor.status()
+        print(f"driver_available: {status['available']}")
+        print(f"connected: {status['connected']}")
+        print(f"host: {status['host']}")
+        print(f"port: {status['port']}")
+        print(f"monitor_port: {status['monitor_port']}")
+        print(f"monitoring: {status['monitoring']}")
+        print(f"has_move_auto: {status['has_move_auto']}")
+        print(f"has_move_bezier: {status['has_move_bezier']}")
+        print(f"has_trace: {status['has_trace']}")
+        print(f"has_left_button: {status['has_left_button']}")
+        print(f"has_right_button: {status['has_right_button']}")
+        buttons = executor.read_buttons()
+        print(f"buttons_available: {buttons['available']}")
+        print(f"button_left: {buttons['left']}")
+        print(f"button_right: {buttons['right']}")
+        if buttons["reason"]:
+            print(f"button_reason: {buttons['reason']}")
+        if not args.no_move:
+            result = executor.diagnostic_move(args.move_dx, args.move_dy)
+            print(f"move_sent: {result.sent}")
+            print(f"move_message: {result.message}")
+        refreshed = executor.status()
+        print(f"move_count: {refreshed['move_count']}")
+        print(f"last_dx: {refreshed['last_dx']}")
+        print(f"last_dy: {refreshed['last_dy']}")
+        if refreshed["last_error"]:
+            print(f"reason: {refreshed['last_error']}")
+        return 0 if refreshed["available"] and refreshed["connected"] else 2
     if args.command == "capture-smoke":
         from novasight.capture.service import CaptureService
 

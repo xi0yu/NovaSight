@@ -67,7 +67,35 @@ class KmNetExecutor:
             "has_move_auto": self._driver is not None and hasattr(self._driver, "move_auto"),
             "has_move_bezier": self._driver is not None and hasattr(self._driver, "move_beizer"),
             "has_trace": self._driver is not None and hasattr(self._driver, "trace"),
+            "has_left_button": self._driver is not None and hasattr(self._driver, "isdown_left"),
+            "has_right_button": self._driver is not None and hasattr(self._driver, "isdown_right"),
         }
+
+    def read_buttons(self) -> dict[str, Any]:
+        if self._driver is None:
+            return {"available": False, "left": False, "right": False, "reason": self.last_error}
+        if not self.monitoring:
+            return {"available": False, "left": False, "right": False, "reason": "kmNet monitor is not enabled"}
+        try:
+            left = self._read_button("isdown_left")
+            right = self._read_button("isdown_right")
+        except Exception as exc:
+            self.last_error = f"kmNet button read failed: {exc}"
+            return {"available": False, "left": False, "right": False, "reason": self.last_error}
+        return {"available": True, "left": left, "right": right, "reason": ""}
+
+    def diagnostic_move(self, dx: int, dy: int) -> ExecutionResult:
+        output = ControlOutput(
+            dx=int(dx),
+            dy=int(dy),
+            action="move",
+            confidence=1.0,
+            source_id="doctor.kmnet",
+            accepted=True,
+            clipped=False,
+            reason="kmNet diagnostic move",
+        )
+        return self.execute(output)
 
     def execute(self, output: ControlOutput) -> ExecutionResult:
         if not output.accepted:
@@ -166,3 +194,9 @@ class KmNetExecutor:
             y1 = -y1
             y2 = -y2
         fn(dx, dy, int(move_ms), int(x1), int(y1), int(x2), int(y2))
+
+    def _read_button(self, name: str) -> bool:
+        fn = getattr(self._driver, name, None)
+        if fn is None:
+            return False
+        return int(fn()) == 1
