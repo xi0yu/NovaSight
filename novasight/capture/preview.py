@@ -14,12 +14,18 @@ def render_preview_frame(
     roi_size: int = 640,
     fov_ratio: float = 0.28,
 ) -> Any:
-    del runtime
     roi = center_roi_frame(frame, requested_size=roi_size)
     image = roi.image
     if image is None:
         return image
-    detections: list[Detection] = []
+    fov_ratio = _runtime_fov_ratio(runtime, fallback=fov_ratio)
+    detections = _runtime_roi_detections(
+        runtime,
+        frame_id=frame.frame_id,
+        offset_x=roi.offset_x,
+        offset_y=roi.offset_y,
+        roi_size=roi.width,
+    )
     return draw_overlay(
         image,
         width=roi.width,
@@ -60,6 +66,51 @@ def draw_overlay(
         draw.line((center, target), fill=(180, 220, 120), width=1)
         draw.text((x1, max(2, y1 - 14)), f"{detection.cls}:{detection.score:.2f}", fill=(230, 240, 210))
     return output
+
+
+def _runtime_fov_ratio(runtime: Any | None, *, fallback: float) -> float:
+    config = getattr(runtime, "config", None)
+    control = getattr(config, "control", None)
+    value = getattr(control, "fov_ratio", fallback)
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if ratio <= 0 or ratio > 1:
+        return fallback
+    return ratio
+
+
+def _runtime_roi_detections(
+    runtime: Any | None,
+    *,
+    frame_id: int,
+    offset_x: int,
+    offset_y: int,
+    roi_size: int,
+) -> list[Detection]:
+    context = getattr(runtime, "last_frame_context", None)
+    if context is None or getattr(context, "frame_id", None) != frame_id:
+        return []
+    detections: list[Detection] = []
+    for detection in getattr(context, "detections", []):
+        x = float(detection.x) - offset_x
+        y = float(detection.y) - offset_y
+        w = float(detection.w)
+        h = float(detection.h)
+        if x + w < 0 or y + h < 0 or x > roi_size or y > roi_size:
+            continue
+        detections.append(
+            Detection(
+                cls=int(detection.cls),
+                score=float(detection.score),
+                x=max(0.0, x),
+                y=max(0.0, y),
+                w=min(w, roi_size - max(0.0, x)),
+                h=min(h, roi_size - max(0.0, y)),
+            )
+        )
+    return detections
 
 
 def _to_pil_rgb(image: Any):

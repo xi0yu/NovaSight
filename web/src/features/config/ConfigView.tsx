@@ -55,6 +55,8 @@ export function setConfigValue(
       ? Number.parseInt(rawValue || "0", 10)
       : field.type === "float"
         ? Number.parseFloat(rawValue || "0")
+        : field.type === "bool"
+          ? rawValue === "true"
         : field.type === "select" && typeof current === "number"
           ? Number.parseInt(rawValue || "0", 10)
           : rawValue;
@@ -231,7 +233,16 @@ export function ConfigView({
                           </span>
                           {field.restart_required ? <em>需重启链路</em> : null}
                         </span>
-                        {field.type === "select" ? (
+                        {field.type === "bool" ? (
+                          <input
+                            type="checkbox"
+                            checked={Boolean(value)}
+                            disabled={!canWriteConfig}
+                            onChange={(event) =>
+                              setConfig(setConfigValue(config, field.path, String(event.target.checked), field))
+                            }
+                          />
+                        ) : field.type === "select" ? (
                           <select
                             value={String(value ?? "")}
                             disabled={!canWriteConfig}

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.request import urlretrieve
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 from novasight.model_registry import (
@@ -16,6 +18,22 @@ from novasight.model_registry import (
 )
 
 router = APIRouter(prefix="/api/models")
+
+YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
+YOLOV8N_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
+]
 
 
 class ProjectCreateRequest(BaseModel):
@@ -62,6 +80,70 @@ class PublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: StrictInt
+
+
+def _download_file(url: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    urlretrieve(url, path)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _find_project_by_name(registry: ModelRegistry, name: str):
+    return next(
+        (project for project in registry.list_projects() if project.name == name),
+        None,
+    )
+
+
+def _find_version(registry: ModelRegistry, project_id: int, version_name: str):
+    return next(
+        (
+            version
+            for version in registry.list_versions(project_id)
+            if version.version == version_name
+        ),
+        None,
+    )
+
+
+def _find_artifact(registry: ModelRegistry, version_id: int, path: str):
+    return next(
+        (
+            artifact
+            for artifact in registry.list_artifacts(version_id)
+            if artifact.path == path
+        ),
+        None,
+    )
+
+
+def _artifact_kind_from_filename(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pt":
+        return "pt"
+    if suffix == ".onnx":
+        return "onnx"
+    if suffix == ".engine":
+        return "engine"
+    raise RegistryValidationError("model file must end with .pt, .onnx, or .engine")
+
+
+def _source_kind_from_artifact(kind: str) -> str:
+    if kind in {"pt", "onnx"}:
+        return kind
+    return "onnx"
+
+
+def _parse_classes(value: str) -> list[str]:
+    classes = [item.strip() for item in value.split(",") if item.strip()]
+    return classes or ["target"]
 
 
 def _registry(request: Request) -> ModelRegistry:
@@ -118,6 +200,103 @@ def _load_published_artifact(
 @router.get("/projects")
 def list_projects(request: Request) -> list[dict[str, Any]]:
     return [asdict(project) for project in _registry(request).list_projects()]
+
+
+@router.post("/examples/yolov8n/prepare")
+def prepare_yolov8n_example(request: Request) -> dict[str, Any]:
+    registry = _registry(request)
+    project = _find_project_by_name(registry, "yolov8n")
+    if project is None:
+        project = registry.create_project(
+            name="yolov8n",
+            description="Ultralytics YOLOv8n 开源测试模型，用于图片输入源和推理链路验证。",
+        )
+    version = _find_version(registry, project.id, "v8n")
+    if version is None:
+        version = registry.create_version(
+            project_id=project.id,
+            version="v8n",
+            source_kind="pt",
+            source_path=YOLOV8N_URL,
+            classes=YOLOV8N_CLASSES,
+            input_shape="1x3x640x640",
+        )
+    model_path = Path(registry.data_dir) / project.name / version.version / "yolov8n.pt"
+    downloaded = False
+    if not model_path.exists():
+        _download_file(YOLOV8N_URL, model_path)
+        downloaded = True
+    checksum = _sha256(model_path)
+    artifact = _find_artifact(registry, version.id, "yolov8n.pt")
+    if artifact is None:
+        artifact = registry.create_artifact(
+            version_id=version.id,
+            kind="pt",
+            path="yolov8n.pt",
+            checksum=checksum,
+            status="ready",
+        )
+    return {
+        "project": asdict(project),
+        "version": asdict(version),
+        "artifact": asdict(artifact),
+        "downloaded": downloaded,
+        "url": YOLOV8N_URL,
+    }
+
+
+@router.post("/upload")
+async def upload_model(
+    request: Request,
+    project_name: str = Form(...),
+    version: str = Form(...),
+    description: str = Form(""),
+    classes: str = Form("target"),
+    input_shape: str = Form("1x3x640x640"),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    registry = _registry(request)
+    filename = Path(file.filename or "").name
+    if not filename:
+        raise HTTPException(status_code=400, detail="model filename is required")
+    try:
+        kind = _artifact_kind_from_filename(filename)
+        project = _find_project_by_name(registry, project_name)
+        if project is None:
+            project = registry.create_project(
+                name=project_name,
+                description=description,
+            )
+        model_version = _find_version(registry, project.id, version)
+        if model_version is None:
+            model_version = registry.create_version(
+                project_id=project.id,
+                version=version,
+                source_kind=_source_kind_from_artifact(kind),
+                source_path=filename,
+                classes=_parse_classes(classes),
+                input_shape=input_shape,
+            )
+        asset_path = Path(registry.data_dir) / project.name / model_version.version / filename
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(await file.read())
+        checksum = _sha256(asset_path)
+        artifact = _find_artifact(registry, model_version.id, filename)
+        if artifact is None:
+            artifact = registry.create_artifact(
+                version_id=model_version.id,
+                kind=kind,
+                path=filename,
+                checksum=checksum,
+                status="ready",
+            )
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    return {
+        "project": asdict(project),
+        "version": asdict(model_version),
+        "artifact": asdict(artifact),
+    }
 
 
 @router.post("/projects")

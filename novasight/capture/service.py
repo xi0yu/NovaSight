@@ -13,7 +13,7 @@ from .caps import query_capabilities, run_v4l2_ctl
 from .pipeline import CaptureCandidate, build_appsink_candidates
 from .profile import select_capture_profile
 from .session import CaptureSession
-from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource
+from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, ImageFrameSource
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 logger = logging.getLogger("novasight.capture.service")
@@ -220,6 +220,42 @@ class CaptureService:
         self._last_preview_output_ts_ns = None
         self._preview_window_ts_ns.clear()
         return self._sync_state()
+
+    def configure_image(self, path: str, *, fps: int = 30) -> CaptureRuntimeState:
+        with self._source_lock:
+            image_source = ImageFrameSource(path, fps=fps)
+            profile = CaptureProfile(
+                device=path,
+                pixel_format="IMAGE",
+                width=image_source.width,
+                height=image_source.height,
+                fps=image_source.fps,
+                preference="image",
+                selection_reason="image source",
+            )
+
+            def factory(_: CaptureProfile) -> FrameSource:
+                return image_source
+
+            previous_factory = self.session.source_factory
+            self.session.source_factory = factory
+            try:
+                self.session.reconfigure(profile)
+            except Exception:
+                self.session.source_factory = previous_factory
+                image_source.close()
+                raise
+            self.source_factory = factory
+            self.config.device = path
+            self.config.preference = "image"
+            self.config.pixel_format = "IMAGE"
+            self.config.width = image_source.width
+            self.config.height = image_source.height
+            self.config.fps = image_source.fps
+            self.last_config_error = None
+            self._last_preview_output_ts_ns = None
+            self._preview_window_ts_ns.clear()
+            return self._sync_state()
 
     def stop(self, reason: str | None = None) -> CaptureRuntimeState:
         with self._source_lock:

@@ -35,6 +35,7 @@ class RuntimeService:
         self.config_store = RuntimeConfigStore(config)
         self.pipeline = None
         self.fatal_error: dict | None = None
+        self.last_frame_context: FrameContext | None = None
 
     def state(self) -> RuntimeState:
         capture_state = getattr(self, "capture", None)
@@ -81,6 +82,7 @@ class RuntimeService:
         }
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
+        self.last_frame_context = context
         plugin_batch = self.plugins.process(context)
         execution_results = [
             self.executors.execute(intent)

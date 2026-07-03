@@ -21,6 +21,37 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 ],
             },
             {
+                "id": "source",
+                "label": "输入源",
+                "fields": [
+                    {
+                        "path": "source.default",
+                        "label": "默认输入源",
+                        "type": "select",
+                        "options": ["null", "capture", "image"],
+                        "restart_required": False,
+                    },
+                    {"path": "source.target_fps", "label": "目标帧率", "type": "int", "min": 1, "max": 240, "restart_required": False},
+                    {"path": "source.image_path", "label": "图片路径", "type": "string", "restart_required": False},
+                    {
+                        "path": "source.image_fps",
+                        "label": "图片循环帧率",
+                        "type": "select",
+                        "options": ["1", "5", "15", "30", "60"],
+                        "restart_required": False,
+                    },
+                ],
+            },
+            {
+                "id": "consumers",
+                "label": "消费者",
+                "fields": [
+                    {"path": "consumers.preview", "label": "浏览器预览", "type": "bool", "restart_required": False},
+                    {"path": "consumers.inference", "label": "TensorRT 推理", "type": "bool", "restart_required": False},
+                    {"path": "consumers.recording", "label": "录制回放", "type": "bool", "restart_required": False},
+                ],
+            },
+            {
                 "id": "capture",
                 "label": "采集",
                 "fields": [
@@ -72,6 +103,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.max_abs_dx", "label": "X 限幅", "type": "int", "min": 0, "restart_required": False},
                     {"path": "control.max_abs_dy", "label": "Y 限幅", "type": "int", "min": 0, "restart_required": False},
                     {"path": "control.min_confidence", "label": "最低置信度", "type": "float", "min": 0, "max": 1, "restart_required": False},
+                    {"path": "control.fov_ratio", "label": "FOV 比例", "type": "float", "min": 0.01, "max": 1, "restart_required": False},
                     {"path": "control.strategy", "label": "控制策略", "type": "select", "options": ["pid", "predictive"], "restart_required": False},
                     {"path": "control.command_interval_ms", "label": "指令合并间隔 ms", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.output_mode", "label": "输出模式", "type": "select", "options": ["", "silent", "console", "dry_run", "kmnet"], "restart_required": False},

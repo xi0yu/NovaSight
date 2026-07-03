@@ -105,8 +105,15 @@ class RuntimePipeline:
             )
             if frame is None:
                 continue
-            self.runtime.process_captured_frame(frame)
             self.stats.consumed_frames += 1
-            self.stats.processed_frames += 1
             self._last_consumed_frame_id = frame.frame_id
             self.stats.last_frame_id = self._last_consumed_frame_id
+            if not self._inference_enabled():
+                continue
+            self.runtime.process_captured_frame(frame)
+            self.stats.processed_frames += 1
+
+    def _inference_enabled(self) -> bool:
+        config = getattr(self.runtime, "config", None)
+        consumers = getattr(config, "consumers", None)
+        return bool(getattr(consumers, "inference", True))

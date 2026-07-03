@@ -39,6 +39,20 @@ export type Deployment = {
   previous_artifact_id: number | null;
 };
 
+export type ModelPrepareResponse = {
+  project: ModelProject;
+  version: ModelVersion;
+  artifact: ModelArtifact;
+  downloaded: boolean;
+  url: string;
+};
+
+export type ModelUploadResponse = {
+  project: ModelProject;
+  version: ModelVersion;
+  artifact: ModelArtifact;
+};
+
 export type ConversionJob = {
   id: number;
   version_id: number;
@@ -139,7 +153,7 @@ export type RuntimeConfig = Record<string, RuntimeConfigValue>;
 export type ConfigFieldSchema = {
   path: string;
   label: string;
-  type: "string" | "int" | "float" | "select";
+  type: "string" | "int" | "float" | "select" | "bool";
   options?: string[];
   min?: number;
   max?: number;
@@ -219,6 +233,7 @@ export const API_PATHS = {
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
   captureSelect: "/api/capture/select",
+  captureImage: "/api/capture/image",
   captureStop: "/api/capture/stop",
   captureStream: "/api/capture/stream.mjpg",
   plugins: "/api/plugins",
@@ -345,6 +360,16 @@ export function selectCaptureProfile(payload: CaptureSelectPayload): Promise<Cap
   });
 }
 
+export function selectImageSource(path: string, fps: number): Promise<CaptureState> {
+  return requestJson<CaptureState>(API_PATHS.captureImage, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ path, fps })
+  });
+}
+
 export function stopCapture(reason = "用户停止采集"): Promise<CaptureState> {
   return requestJson<CaptureState>(API_PATHS.captureStop, {
     method: "POST",
@@ -390,6 +415,33 @@ export function publishModel(projectId: number, artifactId: number): Promise<Dep
 export function rollbackModel(projectId: number): Promise<Deployment> {
   return requestJson<Deployment>(`${API_PATHS.modelProjects}/${projectId}/rollback`, {
     method: "POST"
+  });
+}
+
+export function prepareYolov8nExample(): Promise<ModelPrepareResponse> {
+  return requestJson<ModelPrepareResponse>("/api/models/examples/yolov8n/prepare", {
+    method: "POST"
+  });
+}
+
+export function uploadModelFile(payload: {
+  projectName: string;
+  version: string;
+  description: string;
+  classes: string;
+  inputShape: string;
+  file: File;
+}): Promise<ModelUploadResponse> {
+  const form = new FormData();
+  form.set("project_name", payload.projectName);
+  form.set("version", payload.version);
+  form.set("description", payload.description);
+  form.set("classes", payload.classes);
+  form.set("input_shape", payload.inputShape);
+  form.set("file", payload.file);
+  return requestJson<ModelUploadResponse>("/api/models/upload", {
+    method: "POST",
+    body: form
   });
 }
 

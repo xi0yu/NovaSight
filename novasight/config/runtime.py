@@ -19,6 +19,15 @@ class WebConfig:
 class SourceConfig:
     default: str = "null"
     target_fps: int = 60
+    image_path: str = ""
+    image_fps: int = 30
+
+
+@dataclass
+class ConsumerConfig:
+    preview: bool = True
+    inference: bool = True
+    recording: bool = False
 
 
 @dataclass
@@ -48,6 +57,7 @@ class ControlConfig:
     max_abs_dx: int = 120
     max_abs_dy: int = 120
     min_confidence: float = 0.0
+    fov_ratio: float = 0.28
     output_mode: str = ""
     strategy: str = "pid"
     command_interval_ms: float = 1.0
@@ -77,6 +87,7 @@ class HardwareConfig:
 class RuntimeConfig:
     web: WebConfig = field(default_factory=WebConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
+    consumers: ConsumerConfig = field(default_factory=ConsumerConfig)
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
     roi: RoiConfig = field(default_factory=RoiConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
@@ -107,6 +118,9 @@ def _validate_leaf_value(key_name: str, value: Any, expected_type: type[Any]) ->
     elif expected_type is str:
         if not isinstance(value, str):
             raise ValueError(f"runtime config key '{key_name}' must be a string")
+    elif expected_type is bool:
+        if not isinstance(value, bool):
+            raise ValueError(f"runtime config key '{key_name}' must be a boolean")
 
 
 def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
@@ -139,6 +153,10 @@ def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
 
 
 def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
+    if cfg.source.default not in {"null", "capture", "image"} and not cfg.source.default.startswith("image:"):
+        raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
+    if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
+        raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
     if cfg.limits.stream_fps not in {15, 30, 60}:
         raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
     try:
@@ -148,6 +166,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
     if cfg.roi.mode != "center":
         raise ValueError("unsupported ROI mode: only center is supported")
+    if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
+        raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:

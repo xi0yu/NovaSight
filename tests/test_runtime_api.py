@@ -65,6 +65,40 @@ def test_config_schema_matches_runtime_config_and_update_syncs_runtime_objects(t
     assert any(section["id"] == "hardware" for section in schema["sections"])
 
 
+def test_config_schema_exposes_image_source_and_consumers(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    client = TestClient(app)
+    _activate(client)
+
+    schema = client.get("/api/config/schema").json()
+    body = schema["values"]
+
+    section_ids = {section["id"] for section in schema["sections"]}
+    field_paths = {
+        field["path"]
+        for section in schema["sections"]
+        for field in section["fields"]
+    }
+
+    assert "source" in section_ids
+    assert "consumers" in section_ids
+    assert body["source"]["default"] == "null"
+    assert body["source"]["image_path"] == ""
+    assert body["consumers"] == {
+        "preview": True,
+        "inference": True,
+        "recording": False,
+    }
+    assert {
+        "source.default",
+        "source.image_path",
+        "source.image_fps",
+        "consumers.preview",
+        "consumers.inference",
+        "consumers.recording",
+    }.issubset(field_paths)
+
+
 def test_runtime_stop_endpoint_is_idempotent(tmp_path) -> None:
     app = create_app(
         data_dir=tmp_path / "data",

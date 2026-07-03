@@ -3,9 +3,12 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   type CaptureState,
   type HealthResponse,
+  type RuntimeConfig,
   type RuntimeState,
   type Statistics,
-  streamUrl
+  selectImageSource,
+  streamUrl,
+  updateRuntimeConfig
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
 import { formatProfile, statusTone } from "../shared/format";
@@ -20,7 +23,7 @@ type DashboardViewProps = {
     health?: string;
     runtime?: string;
   };
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   onInferenceControlCommand: (action: "start" | "stop") => void;
   runtimeCommandBusy: boolean;
 };
@@ -88,12 +91,16 @@ function ConsumerRow({
   icon,
   title,
   detail,
-  enabled
+  enabled,
+  busy,
+  onToggle
 }: {
   icon: string;
   title: string;
   detail: string;
   enabled: boolean;
+  busy?: boolean;
+  onToggle: (enabled: boolean) => void;
 }) {
   return (
     <div className="consumer-row">
@@ -102,9 +109,15 @@ function ConsumerRow({
         <h4>{title}</h4>
         <p>{detail}</p>
       </div>
-      <span className={enabled ? "consumer-state on" : "consumer-state"}>
-        {enabled ? "启用" : "关闭"}
-      </span>
+      <button
+        className={enabled ? "consumer-switch on" : "consumer-switch"}
+        type="button"
+        aria-pressed={enabled}
+        disabled={busy}
+        onClick={() => onToggle(!enabled)}
+      >
+        <span />
+      </button>
     </div>
   );
 }
@@ -116,6 +129,32 @@ function useDisplayTick(intervalMs = 250): number {
     return () => window.clearInterval(id);
   }, [intervalMs]);
   return tick;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readNestedBoolean(
+  config: Record<string, unknown> | undefined,
+  section: string,
+  key: string,
+  fallback: boolean
+): boolean {
+  const value = asRecord(config?.[section])[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function readNestedNumber(
+  config: Record<string, unknown> | undefined,
+  section: string,
+  key: string,
+  fallback: number
+): number {
+  const value = asRecord(config?.[section])[key];
+  return typeof value === "number" ? value : fallback;
 }
 
 export function DashboardView({
@@ -133,12 +172,54 @@ export function DashboardView({
   const runtimeRunning = Boolean(runtime?.running);
   const stats = useMemo(() => readStatistics(runtime), [runtime, displayTick]);
   const targetFps = capture?.profile?.fps ?? 120;
-  const roiSize =
-    typeof runtime?.config?.roi_size === "number" ? runtime.config.roi_size : 640;
+  const roiSize = readNestedNumber(runtime?.config, "roi", "size", 640);
   const configVersion =
     typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const modelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const e2eText = stats.e2e_latency > 0 ? `${formatNumber(stats.e2e_latency, 1)}ms` : "--";
+  const [consumerBusy, setConsumerBusy] = useState<string | null>(null);
+  const [imagePath, setImagePath] = useState("");
+  const [imageFps, setImageFps] = useState(15);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState<string>();
+  const previewEnabled = readNestedBoolean(runtime?.config, "consumers", "preview", true);
+  const inferenceEnabled = readNestedBoolean(runtime?.config, "consumers", "inference", true);
+  const recordingEnabled = readNestedBoolean(runtime?.config, "consumers", "recording", false);
+
+  async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
+    if (!runtime?.config || consumerBusy) {
+      return;
+    }
+    setConsumerBusy(key);
+    const nextConfig = structuredClone(runtime.config) as RuntimeConfig;
+    delete nextConfig.version;
+    (nextConfig as Record<string, unknown>).consumers = {
+      ...asRecord(nextConfig.consumers),
+      [key]: enabled
+    };
+    try {
+      await updateRuntimeConfig(nextConfig);
+      await onRefresh();
+    } finally {
+      setConsumerBusy(null);
+    }
+  }
+
+  async function applyImageSource() {
+    if (!imagePath.trim() || imageBusy) {
+      return;
+    }
+    setImageBusy(true);
+    setImageError(undefined);
+    try {
+      await selectImageSource(imagePath.trim(), imageFps);
+      await onRefresh();
+    } catch (requestError) {
+      setImageError(requestError instanceof Error ? requestError.message : "图片输入源切换失败");
+    } finally {
+      setImageBusy(false);
+    }
+  }
 
   return (
     <div className="home-workspace">
@@ -196,6 +277,40 @@ export function DashboardView({
               <div className="home-tiny">
                 目标对象不是 CPU Mat，而是可被多路消费的 RoiFrame / GpuFrameView。
               </div>
+            </div>
+
+            <div className="home-field">
+              <div className="home-field-label">
+                <span>图片输入源</span>
+                <span>测试链路</span>
+              </div>
+              <input
+                className="home-inline-input"
+                placeholder="/home/nvidia/NovaSight/data/sample.jpg"
+                value={imagePath}
+                onChange={(event) => setImagePath(event.target.value)}
+              />
+              <div className="home-chips">
+                {[1, 5, 15, 30, 60].map((fps) => (
+                  <button
+                    className={imageFps === fps ? "home-chip active" : "home-chip"}
+                    key={fps}
+                    type="button"
+                    onClick={() => setImageFps(fps)}
+                  >
+                    {fps}fps
+                  </button>
+                ))}
+              </div>
+              <button
+                className="button compact-button"
+                type="button"
+                disabled={!imagePath.trim() || imageBusy}
+                onClick={applyImageSource}
+              >
+                {imageBusy ? "切换中..." : "切换到图片"}
+              </button>
+              {imageError ? <div className="home-tiny bad">{imageError}</div> : null}
             </div>
           </div>
         </section>
@@ -268,45 +383,42 @@ export function DashboardView({
             className="home-video"
             style={{ "--roi-display-size": `${roiSize}px` } as CSSProperties}
           >
-            {capture?.available ? (
+            {capture?.available && previewEnabled ? (
               <img alt="实时采集画面" src={streamUrl(configVersion, configVersion)} />
             ) : null}
             <div className="home-video-grid" />
             <div className="home-video-scan" />
-            <div className="home-roi" data-label={`ROI ${roiSize}x${roiSize}`} />
-            <div className="home-target" />
             <div className="home-hud home-hud-left">
-              <span>Preview {capture?.preview_target_fps ?? 30}fps</span>
+              <span>预览 {previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
               <span>{captureMode(capture)}</span>
               <span>ROI {roiSize}</span>
-              <span>GPU Path</span>
+              <span>GPU 路线</span>
             </div>
             <div className="home-hud home-hud-right">
-              <span>直播感预览</span>
-              <span>不影响推理链路</span>
+              <span>预览不影响推理链路</span>
             </div>
           </div>
         </section>
 
         <div className="home-bottom-timeline">
           <div className="home-stage">
-            <div className="k">Capture Wait</div>
+            <div className="k">采集等待</div>
             <div className="v">{formatNumber(capture?.capture_wait_ms, 2)}ms</div>
           </div>
           <div className="home-stage">
-            <div className="k">Frame Period</div>
+            <div className="k">帧间隔</div>
             <div className="v">{formatNumber(capture?.frame_period_ms, 2)}ms</div>
           </div>
           <div className="home-stage">
-            <div className="k">Capture Counter</div>
+            <div className="k">采集计数</div>
             <div className="v">{stats.capture_counter}</div>
           </div>
           <div className="home-stage">
-            <div className="k">Inference Counter</div>
+            <div className="k">推理计数</div>
             <div className="v">{stats.inference_counter}</div>
           </div>
           <div className="home-stage">
-            <div className="k">E2E Latency</div>
+            <div className="k">端到端延迟</div>
             <div className="v">{e2eText}</div>
           </div>
         </div>
@@ -322,13 +434,13 @@ export function DashboardView({
           </div>
           <div className="home-metric-grid">
             <MetricTile
-              label="Capture FPS"
+              label="采集 FPS"
               value={formatNumber(stats.capture_fps)}
               detail={`目标 ${targetFps}`}
               tone={metricTone(stats.capture_fps, targetFps)}
             />
             <MetricTile
-              label="Infer FPS"
+              label="推理 FPS"
               value={stats.inference_fps > 0 ? formatNumber(stats.inference_fps) : "--"}
               detail="最新帧模式"
               tone="info"
@@ -340,19 +452,19 @@ export function DashboardView({
               tone={stats.e2e_latency > 0 && stats.e2e_latency <= 30 ? "good" : "warn"}
             />
             <MetricTile
-              label="Dropped"
+              label="丢帧"
               value={String(stats.dropped_counter)}
               detail="累计采集丢帧"
               tone={stats.dropped_counter > 0 ? "warn" : "good"}
             />
             <MetricTile
-              label="Skipped"
+              label="跳帧"
               value={String(stats.skipped_counter)}
               detail="推理跳过旧帧"
               tone={stats.skipped_counter > 0 ? "warn" : "good"}
             />
             <MetricTile
-              label="GPU Memory"
+              label="GPU 内存"
               value="目标"
               detail="NVMM/CUDA 路径"
               tone="good"
@@ -374,9 +486,30 @@ export function DashboardView({
             </div>
           </div>
           <div className="consumer-list">
-            <ConsumerRow icon="TRT" title="TensorRT 推理" detail={modelName} enabled={runtimeRunning} />
-            <ConsumerRow icon="WEB" title="浏览器预览" detail={`${capture?.preview_target_fps ?? 30}fps 降采样推流`} enabled={Boolean(capture?.available)} />
-            <ConsumerRow icon="REC" title="录制回放" detail="保存帧生命周期与结果" enabled={false} />
+            <ConsumerRow
+              icon="TRT"
+              title="TensorRT 推理"
+              detail={inferenceEnabled ? modelName : "已从运行配置关闭"}
+              enabled={inferenceEnabled}
+              busy={consumerBusy === "inference"}
+              onToggle={(enabled) => void updateConsumer("inference", enabled)}
+            />
+            <ConsumerRow
+              icon="WEB"
+              title="浏览器预览"
+              detail={`${capture?.preview_target_fps ?? 30}fps 降采样推流`}
+              enabled={previewEnabled}
+              busy={consumerBusy === "preview"}
+              onToggle={(enabled) => void updateConsumer("preview", enabled)}
+            />
+            <ConsumerRow
+              icon="REC"
+              title="录制回放"
+              detail={recordingEnabled ? "保存帧生命周期与结果" : "当前未写入回放文件"}
+              enabled={recordingEnabled}
+              busy={consumerBusy === "recording"}
+              onToggle={(enabled) => void updateConsumer("recording", enabled)}
+            />
           </div>
         </section>
       </aside>

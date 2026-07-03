@@ -297,6 +297,38 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
     assert service.config.preference == "auto_low_latency"
 
 
+def test_capture_image_source_starts_previewable_session(tmp_path) -> None:
+    from PIL import Image
+
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    image_path = tmp_path / "sample.jpg"
+    Image.new("RGB", (32, 24), (20, 40, 60)).save(image_path)
+    client = _client(app)
+
+    response = client.post(
+        "/api/capture/image",
+        json={"path": str(image_path), "fps": 15},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["backend"] == "image:file"
+    assert body["profile"] == {
+        "device": str(image_path),
+        "pixel_format": "IMAGE",
+        "width": 32,
+        "height": 24,
+        "fps": 15,
+        "preference": "image",
+        "selection_reason": "image source",
+    }
+    frame = app.state.capture.wait_preview_frame(timeout_s=0.2)
+    assert frame is not None
+    assert frame.width == 32
+    assert frame.height == 24
+
+
 def test_capture_stream_returns_503_when_capture_session_not_running(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     service = FakeCaptureService(

@@ -31,6 +31,59 @@ class FrameSource(Protocol):
     def close(self) -> None: ...
 
 
+class ImageFrameSource:
+    backend_label = "image:file"
+
+    def __init__(self, path: str, *, fps: int = 30) -> None:
+        from PIL import Image
+
+        image_path = str(path).strip()
+        if not image_path:
+            raise ValueError("image path is required")
+        self.path = image_path
+        self.fps = max(1, int(fps))
+        self._image = Image.open(self.path).convert("RGB")
+        self._frame_id = 0
+        self._closed = False
+        self._last_ts_ns: int | None = None
+
+    @property
+    def width(self) -> int:
+        return int(self._image.width)
+
+    @property
+    def height(self) -> int:
+        return int(self._image.height)
+
+    def read(self) -> CapturedFrame | None:
+        if self._closed:
+            return None
+        t0 = time.monotonic_ns()
+        if self._last_ts_ns is not None:
+            interval_ns = int(1_000_000_000 / self.fps)
+            sleep_ns = interval_ns - (t0 - self._last_ts_ns)
+            if sleep_ns > 0:
+                time.sleep(sleep_ns / 1e9)
+        t1 = time.monotonic_ns()
+        self._last_ts_ns = t1
+        self._frame_id += 1
+        return CapturedFrame(
+            frame_id=self._frame_id,
+            width=self.width,
+            height=self.height,
+            pixel_format="RGB",
+            ts_ns=t1,
+            capture_wait_ms=(t1 - t0) / 1e6,
+            image=self._image.copy(),
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._image.close()
+        self._closed = True
+
+
 class OpenCvFrameSource:
     @classmethod
     def probe(cls, profile: CaptureProfile, candidate: CaptureCandidate) -> bool:

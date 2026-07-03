@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import threading
+from dataclasses import asdict
 
 from novasight.config import RuntimeConfig
 
@@ -22,9 +23,10 @@ class RuntimeConfigStore:
             self.version += 1
             return copy.deepcopy(self._config)
 
-    def status(self) -> dict[str, int]:
+    def status(self) -> dict:
         with self._lock:
             return {
+                **asdict(self._config),
                 "version": self.version,
                 "roi_size": self._config.roi.size,
             }

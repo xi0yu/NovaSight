@@ -4,8 +4,10 @@ import {
   getConversionJobs,
   getModelArtifacts,
   getModelVersions,
+  prepareYolov8nExample,
   publishModel,
   rollbackModel,
+  uploadModelFile,
   type ActiveModel,
   type ModelArtifact,
   type ModelProject
@@ -58,6 +60,15 @@ export function ModelsView({
   const [rollbackFeedback, setRollbackFeedback] = useState<RollbackFeedback | null>(null);
   const [publishingArtifactId, setPublishingArtifactId] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
+  const [preparingExample, setPreparingExample] = useState(false);
+  const [uploadingModel, setUploadingModel] = useState(false);
+  const [modelActionMessage, setModelActionMessage] = useState<string>();
+  const [modelActionError, setModelActionError] = useState<string>();
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadProjectName, setUploadProjectName] = useState("custom_model");
+  const [uploadVersion, setUploadVersion] = useState("v1");
+  const [uploadClasses, setUploadClasses] = useState("target");
+  const [uploadInputShape, setUploadInputShape] = useState("1x3x640x640");
   const [registryRefreshKey, setRegistryRefreshKey] = useState(0);
   const previousProjectId = useRef<number | null>(null);
 
@@ -300,8 +311,122 @@ export function ModelsView({
     }
   }
 
+  async function handlePrepareExample() {
+    setPreparingExample(true);
+    setModelActionError(undefined);
+    setModelActionMessage(undefined);
+    try {
+      const result = await prepareYolov8nExample();
+      await onRuntimeRefresh();
+      setRegistryRefreshKey((current) => current + 1);
+      setSelectedProjectId(result.project.id);
+      setSelectedVersionId(result.version.id);
+      setModelActionMessage(
+        result.downloaded
+          ? "YOLOv8n 测试模型已下载并注册。"
+          : "YOLOv8n 测试模型已存在，已复用本地文件。"
+      );
+    } catch (requestError) {
+      setModelActionError(getErrorMessage(requestError));
+    } finally {
+      setPreparingExample(false);
+    }
+  }
+
+  async function handleUploadModel() {
+    if (!uploadFile) {
+      setModelActionError("请选择 .pt 或 .onnx 模型文件。");
+      return;
+    }
+    setUploadingModel(true);
+    setModelActionError(undefined);
+    setModelActionMessage(undefined);
+    try {
+      const result = await uploadModelFile({
+        projectName: uploadProjectName.trim() || "custom_model",
+        version: uploadVersion.trim() || "v1",
+        description: "前端上传模型",
+        classes: uploadClasses,
+        inputShape: uploadInputShape,
+        file: uploadFile
+      });
+      await onRuntimeRefresh();
+      setRegistryRefreshKey((current) => current + 1);
+      setSelectedProjectId(result.project.id);
+      setSelectedVersionId(result.version.id);
+      setModelActionMessage(`已上传 ${uploadFile.name}，可在可用模型文件中设为当前。`);
+      setUploadFile(null);
+    } catch (requestError) {
+      setModelActionError(getErrorMessage(requestError));
+    } finally {
+      setUploadingModel(false);
+    }
+  }
+
   return (
     <div className="view-grid models-grid registry-grid">
+      <Panel title="模型使用台" eyebrow="准备、上传、选择">
+        <InlineError message={modelActionError} />
+        {modelActionMessage ? <div className="action-message">{modelActionMessage}</div> : null}
+        <div className="model-workbench">
+          <article className="model-workbench-card">
+            <div>
+              <strong>测试模型</strong>
+              <p>自动准备开源 YOLOv8n，用图片输入源验证推理链路。</p>
+            </div>
+            <button
+              className="button compact-button"
+              type="button"
+              onClick={handlePrepareExample}
+              disabled={preparingExample || uploadingModel}
+            >
+              {preparingExample ? "准备中..." : "准备 YOLOv8n"}
+            </button>
+          </article>
+
+          <article className="model-workbench-card upload">
+            <div>
+              <strong>上传模型</strong>
+              <p>上传 .pt 或 .onnx 文件，注册为可使用模型。</p>
+            </div>
+            <div className="model-upload-grid">
+              <label>
+                <span>模型名称</span>
+                <input value={uploadProjectName} onChange={(event) => setUploadProjectName(event.target.value)} />
+              </label>
+              <label>
+                <span>版本</span>
+                <input value={uploadVersion} onChange={(event) => setUploadVersion(event.target.value)} />
+              </label>
+              <label>
+                <span>类别</span>
+                <input value={uploadClasses} onChange={(event) => setUploadClasses(event.target.value)} />
+              </label>
+              <label>
+                <span>输入尺寸</span>
+                <input value={uploadInputShape} onChange={(event) => setUploadInputShape(event.target.value)} />
+              </label>
+              <label className="model-file-input">
+                <span>模型文件</span>
+                <input
+                  accept=".pt,.onnx"
+                  type="file"
+                  onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <button
+                className="button compact-button"
+                type="button"
+                onClick={handleUploadModel}
+                disabled={uploadingModel || preparingExample}
+              >
+                {uploadingModel ? "上传中..." : "上传并注册"}
+              </button>
+            </div>
+          </article>
+        </div>
+      </Panel>
+
       <Panel title="模型使用" eyebrow="当前运行">
         {activeModel ? (
           <div className="model-usage-card">

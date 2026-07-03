@@ -36,6 +36,19 @@ class CaptureSelectRequest(BaseModel):
         return stripped
 
 
+class ImageSourceRequest(BaseModel):
+    path: str
+    fps: int = 30
+
+    @field_validator("path")
+    @classmethod
+    def path_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("path must not be blank")
+        return stripped
+
+
 @router.get("/capabilities")
 def capabilities(request: Request, device: str = "/dev/video0") -> dict:
     return asdict(request.app.state.capture.capabilities(device))
@@ -124,6 +137,32 @@ def select(request: Request, payload: CaptureSelectRequest):
         state.backend,
         asdict(state.profile) if state.profile else None,
     )
+    return body
+
+
+@router.post("/image")
+def image_source(request: Request, payload: ImageSourceRequest):
+    capture = request.app.state.capture
+    fps = payload.fps if payload.fps in {1, 5, 15, 30, 60} else 30
+    try:
+        state = capture.configure_image(payload.path, fps=fps)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "available": False,
+                "device": payload.path,
+                "last_error": str(exc),
+            },
+        )
+    config = getattr(request.app.state, "config", None)
+    if config is not None:
+        config.source.default = "image"
+        config.source.image_path = payload.path
+        config.source.image_fps = fps
+    body = asdict(state)
+    if state.available is False:
+        return JSONResponse(status_code=400, content=body)
     return body
 
 

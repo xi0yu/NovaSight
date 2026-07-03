@@ -220,6 +220,76 @@ def test_runtime_state_reports_latest_published_deployment(tmp_path: Path) -> No
     assert updated["artifact"]["id"] == first_artifact["id"]
 
 
+def test_prepare_yolov8n_example_downloads_and_registers_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path)
+    downloads: list[tuple[str, Path]] = []
+
+    def fake_download(url: str, path: Path) -> None:
+        downloads.append((url, path))
+        path.write_bytes(b"fake-yolov8n")
+
+    monkeypatch.setattr(
+        "novasight.api.routes_models._download_file",
+        fake_download,
+    )
+
+    response = client.post("/api/models/examples/yolov8n/prepare")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project"]["name"] == "yolov8n"
+    assert body["version"]["version"] == "v8n"
+    assert body["artifact"]["kind"] == "pt"
+    assert body["artifact"]["status"] == "ready"
+    assert body["downloaded"] is True
+    assert downloads == [
+        (
+            "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt",
+            tmp_path / "data" / "models" / "yolov8n" / "v8n" / "yolov8n.pt",
+        )
+    ]
+
+    again = client.post("/api/models/examples/yolov8n/prepare").json()
+
+    assert again["downloaded"] is False
+    assert client.get("/api/models/projects").json()[0]["name"] == "yolov8n"
+
+
+def test_upload_model_file_registers_ready_artifact(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/models/upload",
+        data={
+            "project_name": "custom_model",
+            "version": "v1",
+            "description": "自定义模型",
+            "classes": "target,ignore",
+            "input_shape": "1x3x640x640",
+        },
+        files={"file": ("custom.onnx", b"onnx-bytes", "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project"]["name"] == "custom_model"
+    assert body["version"]["source_kind"] == "onnx"
+    assert body["version"]["classes"] == ["target", "ignore"]
+    assert body["artifact"]["kind"] == "onnx"
+    assert body["artifact"]["path"] == "custom.onnx"
+    assert body["artifact"]["status"] == "ready"
+    assert (
+        tmp_path
+        / "data"
+        / "models"
+        / "custom_model"
+        / "v1"
+        / "custom.onnx"
+    ).read_bytes() == b"onnx-bytes"
+
+
 def test_plugin_and_executor_endpoints(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

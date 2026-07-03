@@ -20,6 +20,7 @@ export function LicensePanel({
   const [licenseInput, setLicenseInput] = useState("");
   const [message, setMessage] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
 
   const saveLicense = useCallback(async () => {
     setError(undefined);
@@ -65,7 +66,7 @@ export function LicensePanel({
       <div className="field-grid">
         <Field label="授权等级" value={license?.tier ? formatTier(license.tier) : "无"} />
         <Field label="指纹" value={license?.fingerprint || "无"} mono />
-        <Field label="创建时间" value={formatEpoch(license?.created_at)} />
+        <Field label="当前时间" value={currentTime} />
         <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
         <Field label="到期时间" value={formatEpoch(license?.expires_at)} />
         <Field
