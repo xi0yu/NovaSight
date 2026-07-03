@@ -156,6 +156,7 @@ class RuntimeService:
                 available=False,
                 reason=inference_result.reason,
                 raw_detections=len(inference_result.detections),
+                debug=inference_result.debug,
             )
             return self.process_frame(self._empty_frame_context(frame))
 
@@ -186,6 +187,7 @@ class RuntimeService:
                 available=False,
                 reason=str(exc),
                 raw_detections=len(inference_result.detections),
+                debug=inference_result.debug,
             )
             return self.process_frame(self._empty_frame_context(frame))
         self.last_inference_reason = ""
@@ -198,6 +200,7 @@ class RuntimeService:
             raw_detections=len(inference_result.detections),
             mapped_detections=len(detections),
             classes=classes,
+            debug=inference_result.debug,
         )
 
         context = FrameContext(
@@ -227,6 +230,7 @@ class RuntimeService:
         raw_detections: int = 0,
         mapped_detections: int = 0,
         classes: list[str] | None = None,
+        debug: dict[str, Any] | None = None,
     ) -> None:
         self.last_inference_status = {
             "frame_id": frame.frame_id,
@@ -243,6 +247,7 @@ class RuntimeService:
             "source_height": self._source_height(frame),
             "roi_offset_x": int(getattr(roi_frame, "offset_x", 0)),
             "roi_offset_y": int(getattr(roi_frame, "offset_y", 0)),
+            "debug": dict(debug or {}),
         }
 
     def _control_intent_from_context(self, context: FrameContext) -> ControlIntent | None:
@@ -349,12 +354,32 @@ class RuntimeService:
             payload["track_id"] = int(target.track_id)
         return payload
 
+    def _detection_payload(self, detection: Detection, context: FrameContext) -> dict[str, Any]:
+        class_name = (
+            context.classes[detection.cls]
+            if 0 <= int(detection.cls) < len(context.classes)
+            else str(detection.cls)
+        )
+        return {
+            "frame_id": context.frame_id,
+            "class_id": int(detection.cls),
+            "class_name": class_name,
+            "score": float(detection.score),
+            "x": float(detection.x),
+            "y": float(detection.y),
+            "w": float(detection.w),
+            "h": float(detection.h),
+            "cx": float(detection.cx),
+            "cy": float(detection.cy),
+        }
+
     def _vision_status(self) -> dict[str, Any]:
         context = self.last_frame_context
         if context is None:
             return {
                 "frame_id": None,
                 "detections": 0,
+                "detection_items": [],
                 "inference_reason": self.last_inference_reason,
                 "inference": dict(self.last_inference_status),
                 "target": None,
@@ -363,6 +388,10 @@ class RuntimeService:
         return {
             "frame_id": context.frame_id,
             "detections": len(context.detections),
+            "detection_items": [
+                self._detection_payload(item, context)
+                for item in context.detections
+            ],
             "tracks": len(context.tracks),
             "classes": list(context.classes),
             "inference_reason": self.last_inference_reason,

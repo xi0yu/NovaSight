@@ -24,6 +24,16 @@ type DashboardViewProps = {
 };
 
 type Tone = "good" | "info" | "warn" | "bad";
+type DetectionOverlay = {
+  className: string;
+  score: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
+};
 
 function formatNumber(value: number | undefined, digits = 1): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -157,6 +167,93 @@ function readNumberRecord(value: Record<string, unknown>, key: string): number |
   return typeof item === "number" && Number.isFinite(item) ? item : null;
 }
 
+function readStringRecord(value: Record<string, unknown>, key: string): string {
+  const item = value[key];
+  return typeof item === "string" ? item : "";
+}
+
+function readDetectionItems(value: unknown): DetectionOverlay[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    const x = readNumberRecord(record, "x");
+    const y = readNumberRecord(record, "y");
+    const w = readNumberRecord(record, "w");
+    const h = readNumberRecord(record, "h");
+    const score = readNumberRecord(record, "score");
+    const cx = readNumberRecord(record, "cx");
+    const cy = readNumberRecord(record, "cy");
+    if (
+      x === null ||
+      y === null ||
+      w === null ||
+      h === null ||
+      score === null ||
+      cx === null ||
+      cy === null ||
+      w <= 0 ||
+      h <= 0
+    ) {
+      return [];
+    }
+    const className =
+      readStringRecord(record, "class_name") ||
+      String(readNumberRecord(record, "class_id") ?? "");
+    return [
+      {
+        className,
+        score,
+        x,
+        y,
+        w,
+        h,
+        cx,
+        cy
+      }
+    ];
+  });
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, value));
+}
+
+function detectionStyle(
+  detection: DetectionOverlay,
+  roiOffsetX: number,
+  roiOffsetY: number,
+  roiWidth: number,
+  roiHeight: number
+): CSSProperties {
+  const left = ((detection.x - roiOffsetX) / roiWidth) * 100;
+  const top = ((detection.y - roiOffsetY) / roiHeight) * 100;
+  const width = (detection.w / roiWidth) * 100;
+  const height = (detection.h / roiHeight) * 100;
+  return {
+    left: `${clampPercent(left)}%`,
+    top: `${clampPercent(top)}%`,
+    width: `${clampPercent(width)}%`,
+    height: `${clampPercent(height)}%`
+  };
+}
+
+function isSelectedDetection(
+  detection: DetectionOverlay,
+  targetCx: number | null,
+  targetCy: number | null
+): boolean {
+  if (targetCx === null || targetCy === null) {
+    return false;
+  }
+  return Math.abs(detection.cx - targetCx) <= 2 && Math.abs(detection.cy - targetCy) <= 2;
+}
+
 export function DashboardView({
   health,
   runtime,
@@ -202,6 +299,18 @@ export function DashboardView({
     typeof inferenceTrace.input_pixel_format === "string" ? inferenceTrace.input_pixel_format : "--";
   const inferenceTraceReason =
     typeof inferenceTrace.reason === "string" ? inferenceTrace.reason : inferenceReason;
+  const inferenceDebug = asRecord(inferenceTrace.debug);
+  const debugEngine = readStringRecord(inferenceDebug, "engine");
+  const debugOutputName = readStringRecord(inferenceDebug, "output_name");
+  const debugOutputDtype = readStringRecord(inferenceDebug, "output_dtype");
+  const debugOutputShape = Array.isArray(inferenceDebug.output_shape)
+    ? inferenceDebug.output_shape.join("x")
+    : "";
+  const detections = readDetectionItems(vision.detection_items);
+  const roiOffsetX = readNumberRecord(inferenceTrace, "roi_offset_x") ?? 0;
+  const roiOffsetY = readNumberRecord(inferenceTrace, "roi_offset_y") ?? 0;
+  const overlayWidth = inputWidth ?? roiSize;
+  const overlayHeight = inputHeight ?? roiSize;
 
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
     if (!runtime?.config || consumerBusy) {
@@ -349,6 +458,28 @@ export function DashboardView({
             ) : null}
             <div className="home-video-grid" />
             <div className="home-video-scan" />
+            <div className="home-detection-layer" aria-hidden="true">
+              {detections.map((detection, index) => {
+                const selected = isSelectedDetection(detection, targetCx, targetCy);
+                return (
+                  <div
+                    className={selected ? "home-detection-box selected" : "home-detection-box"}
+                    key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
+                    style={detectionStyle(
+                      detection,
+                      roiOffsetX,
+                      roiOffsetY,
+                      overlayWidth,
+                      overlayHeight
+                    )}
+                  >
+                    <span>
+                      {detection.className || "目标"} {detection.score.toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
             <div className="home-hud home-hud-left">
               <span>预览 {previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
               <span>{captureMode(capture)}</span>
@@ -443,6 +574,15 @@ export function DashboardView({
             <br />
             检测：raw {rawDetections ?? 0} · mapped {mappedDetections ?? 0}
             {inferenceTraceReason ? <><br />原因：{inferenceTraceReason}</> : null}
+            {debugEngine || debugOutputShape ? (
+              <>
+                <br />
+                调试：{debugEngine || "runtime"}
+                {debugOutputName ? ` · ${debugOutputName}` : ""}
+                {debugOutputShape ? ` · ${debugOutputShape}` : ""}
+                {debugOutputDtype ? ` · ${debugOutputDtype}` : ""}
+              </>
+            ) : null}
           </div>
           <div className="home-notice">
             <strong>目标与控制量</strong><br />

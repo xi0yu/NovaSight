@@ -44,9 +44,11 @@ class TensorRtInferenceEngine:
         self._device_input: int | None = None
         self._host_input: Any | None = None
         self._device_outputs: dict[str, int] = {}
-        self._host_output: Any | None = None
+        self._host_outputs: dict[str, Any] = {}
         self._output_shapes: dict[str, tuple[int, ...]] = {}
+        self._output_dtypes: dict[str, str] = {}
         self._output_shape: tuple[int, ...] = ()
+        self._output_dtype = ""
         self._last_failure_logged = ""
 
     def available(self) -> bool:
@@ -79,6 +81,15 @@ class TensorRtInferenceEngine:
             "reason": self._reason,
             "input_shape": str(self._input_shape) if self._input_shape is not None else "",
             "output_shape": "x".join(str(item) for item in self._output_shape),
+            "output_name": self._output_name,
+            "output_dtype": self._output_dtype,
+            "outputs": {
+                name: {
+                    "shape": list(self._output_shapes.get(name, ())),
+                    "dtype": self._output_dtypes.get(name, ""),
+                }
+                for name in self._output_shapes
+            },
             "confidence_threshold": self.confidence_threshold,
             "nms_threshold": self.nms_threshold,
             "last_input_mode": self._last_input.mode if self._last_input is not None else "",
@@ -124,7 +135,19 @@ class TensorRtInferenceEngine:
         except Exception as exc:
             self._log_failure_once(str(exc), with_trace=True)
             return InferenceResult(available=False, reason=str(exc), classes=self._classes)
-        return InferenceResult(available=True, detections=detections, classes=self._classes)
+        return InferenceResult(
+            available=True,
+            detections=detections,
+            classes=self._classes,
+            debug={
+                "engine": self.engine_id,
+                "input_name": self._input_name,
+                "output_name": self._output_name,
+                "output_shape": list(self._output_shape),
+                "output_dtype": self._output_dtype,
+                "decoded_detections": len(detections),
+            },
+        )
 
     def _warmup(self) -> None:
         if self._input_shape is None:
@@ -216,10 +239,14 @@ class TensorRtInferenceEngine:
             if any(int(item) < 0 for item in shape):
                 raise RuntimeError(f"unresolved TensorRT output shape for {name}: {shape}")
             self._output_shapes[name] = tuple(int(item) for item in shape)
-            nbytes = int(np.prod(shape)) * np.dtype(np.float32).itemsize
+            dtype = np.dtype(trt.nptype(engine.get_tensor_dtype(name)))
+            self._output_dtypes[name] = str(dtype)
+            host_output = np.empty(int(np.prod(shape)), dtype=dtype)
+            nbytes = host_output.nbytes
             err, device_output = cudart.cudaMalloc(nbytes)
             _cuda_check(err, f"cudaMalloc output {name}")
             self._device_outputs[name] = int(device_output)
+            self._host_outputs[name] = host_output
             context.set_tensor_address(name, int(device_output))
 
         self._output_name = next(
@@ -227,14 +254,21 @@ class TensorRtInferenceEngine:
             output_names[0],
         )
         self._output_shape = self._output_shapes[self._output_name]
-        self._host_output = np.empty(int(np.prod(self._output_shape)), dtype=np.float32)
+        self._output_dtype = self._output_dtypes.get(self._output_name, "")
         logger.info(
-            "TensorRT engine loaded path=%s input=%s output=%s shape=%s outputs=%d",
+            "TensorRT engine loaded path=%s input=%s output=%s shape=%s dtype=%s outputs=%s",
             artifact_path,
             self._input_shape,
             self._output_name,
             self._output_shape,
-            len(output_names),
+            self._output_dtype,
+            {
+                name: {
+                    "shape": self._output_shapes[name],
+                    "dtype": self._output_dtypes[name],
+                }
+                for name in output_names
+            },
         )
 
     def _execute(self, tensor: Any) -> list[InferenceDetection]:
@@ -244,13 +278,16 @@ class TensorRtInferenceEngine:
             self._cudart is None
             or self._context is None
             or self._host_input is None
-            or self._host_output is None
+            or not self._host_outputs
             or self._device_input is None
             or self._stream is None
             or not self._output_name
         ):
             raise RuntimeError("TensorRT execution buffers are not initialized")
         cudart = self._cudart
+        host_output = self._host_outputs.get(self._output_name)
+        if host_output is None:
+            raise RuntimeError(f"TensorRT selected output buffer is not initialized: {self._output_name}")
         host_input = np.ascontiguousarray(tensor, dtype=np.float32)
         if host_input.shape != self._host_input.shape:
             raise RuntimeError(
@@ -275,16 +312,16 @@ class TensorRtInferenceEngine:
             raise RuntimeError("TensorRT execute_async_v3 returned false")
         _cuda_check(
             cudart.cudaMemcpyAsync(
-                self._host_output.ctypes.data,
+                host_output.ctypes.data,
                 self._device_outputs[self._output_name],
-                self._host_output.nbytes,
+                host_output.nbytes,
                 d2h,
                 self._stream,
             ),
             "D2H",
         )
         _cuda_check(cudart.cudaStreamSynchronize(self._stream), "stream synchronize")
-        output = self._host_output.reshape(self._output_shape)
+        output = host_output.reshape(self._output_shape).astype(np.float32, copy=False)
         return decode_nx6_detections(
             output,
             confidence_threshold=self.confidence_threshold,
@@ -315,7 +352,12 @@ class TensorRtInferenceEngine:
         self._context = None
         self._engine = None
         self._host_input = None
-        self._host_output = None
+        self._host_outputs = {}
+        self._output_shapes = {}
+        self._output_dtypes = {}
+        self._output_shape = ()
+        self._output_dtype = ""
+        self._output_name = ""
         self._loaded = False
         self._warmed = False
 

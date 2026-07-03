@@ -21,6 +21,7 @@ class InferenceResult:
     detections: list[InferenceDetection] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
     reason: str = ""
+    debug: dict[str, Any] = field(default_factory=dict)
 
 
 class InferenceEngine(Protocol):

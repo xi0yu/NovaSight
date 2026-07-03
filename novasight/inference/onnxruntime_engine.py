@@ -93,8 +93,9 @@ class OnnxRuntimeInferenceEngine:
             self._last_input = prepare_tensor_input(frame, self._input_shape)
             tensor = _prepare_numpy_tensor(self._last_input, self._input_shape)
             outputs = self._session.run(None, {self._input_name: tensor})
+            primary_output = outputs[0] if outputs else []
             detections = decode_nx6_detections(
-                outputs[0] if outputs else [],
+                primary_output,
                 confidence_threshold=self.confidence_threshold,
                 nms_threshold=self.nms_threshold,
             )
@@ -105,7 +106,18 @@ class OnnxRuntimeInferenceEngine:
             )
         except Exception as exc:
             return InferenceResult(available=False, reason=str(exc))
-        return InferenceResult(available=True, detections=detections, classes=self._classes)
+        output_shape = tuple(getattr(primary_output, "shape", ()))
+        return InferenceResult(
+            available=True,
+            detections=detections,
+            classes=self._classes,
+            debug={
+                "engine": self.engine_id,
+                "input_name": self._input_name,
+                "output_shape": list(output_shape),
+                "decoded_detections": len(detections),
+            },
+        )
 
     def _create_session(self, artifact_path: Path) -> Any:
         if self._session_factory is not None:
