@@ -178,6 +178,7 @@ export function DashboardView({
   const inferenceEnabled = readNestedBoolean(runtime?.config, "consumers", "inference", true);
   const recordingEnabled = readNestedBoolean(runtime?.config, "consumers", "recording", false);
   const vision = asRecord(runtime?.vision);
+  const inferenceTrace = asRecord(vision.inference);
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
   const targetName =
@@ -190,6 +191,17 @@ export function DashboardView({
   const willEmit = control.will_emit === true;
   const inferenceReason =
     typeof vision.inference_reason === "string" ? vision.inference_reason : "";
+  const inferenceRan = inferenceTrace.ran === true;
+  const inferenceAvailable = inferenceTrace.available === true;
+  const inferenceFrameId = readNumberRecord(inferenceTrace, "frame_id");
+  const rawDetections = readNumberRecord(inferenceTrace, "raw_detections");
+  const mappedDetections = readNumberRecord(inferenceTrace, "mapped_detections");
+  const inputWidth = readNumberRecord(inferenceTrace, "input_width");
+  const inputHeight = readNumberRecord(inferenceTrace, "input_height");
+  const inputFormat =
+    typeof inferenceTrace.input_pixel_format === "string" ? inferenceTrace.input_pixel_format : "--";
+  const inferenceTraceReason =
+    typeof inferenceTrace.reason === "string" ? inferenceTrace.reason : inferenceReason;
 
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
     if (!runtime?.config || consumerBusy) {
@@ -421,6 +433,16 @@ export function DashboardView({
           </div>
           <div className="home-notice">
             预览流建议限制为 15-30fps；推理链路继续消费 RoiFrame 或最新帧，不让 UI 预览拖慢核心链路。
+          </div>
+          <div className={inferenceAvailable ? "home-notice good" : "home-notice"}>
+            <strong>推理结果</strong><br />
+            状态：{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "尚未执行"}
+            {inferenceFrameId !== null ? ` · 帧 #${inferenceFrameId}` : ""}
+            <br />
+            输入：{inputWidth !== null && inputHeight !== null ? `${inputWidth}x${inputHeight}` : "--"} · {inputFormat}
+            <br />
+            检测：raw {rawDetections ?? 0} · mapped {mappedDetections ?? 0}
+            {inferenceTraceReason ? <><br />原因：{inferenceTraceReason}</> : null}
           </div>
           <div className="home-notice">
             <strong>目标与控制量</strong><br />

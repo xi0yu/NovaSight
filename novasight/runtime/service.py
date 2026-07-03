@@ -41,6 +41,11 @@ class RuntimeService:
         self.last_target: dict[str, Any] | None = None
         self.last_control: dict[str, Any] | None = None
         self.last_inference_reason = ""
+        self.last_inference_status: dict[str, Any] = {
+            "ran": False,
+            "available": False,
+            "reason": "推理尚未执行",
+        }
         self.control_strategy = self._create_control_strategy(config)
 
     def state(self) -> RuntimeState:
@@ -99,10 +104,22 @@ class RuntimeService:
 
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
         if self.inference is None:
+            self._record_inference_status(
+                frame=frame,
+                ran=False,
+                available=False,
+                reason="推理运行时未初始化",
+            )
             return self.process_frame(self._empty_frame_context(frame))
 
         infer = getattr(self.inference, "infer", None)
         if not callable(infer):
+            self._record_inference_status(
+                frame=frame,
+                ran=False,
+                available=False,
+                reason="推理运行时没有 infer 方法",
+            )
             return self.process_frame(self._empty_frame_context(frame))
 
         try:
@@ -110,14 +127,36 @@ class RuntimeService:
             inference_result = infer(roi_frame)
         except Exception as exc:
             self.last_inference_reason = str(exc)
+            self._record_inference_status(
+                frame=frame,
+                roi_frame=locals().get("roi_frame"),
+                ran=True,
+                available=False,
+                reason=str(exc),
+            )
             return self.process_frame(self._empty_frame_context(frame))
 
         if not isinstance(inference_result, InferenceResult):
             self.last_inference_reason = "invalid inference result"
+            self._record_inference_status(
+                frame=frame,
+                roi_frame=roi_frame,
+                ran=True,
+                available=False,
+                reason=self.last_inference_reason,
+            )
             return self.process_frame(self._empty_frame_context(frame))
 
         if not inference_result.available:
             self.last_inference_reason = inference_result.reason
+            self._record_inference_status(
+                frame=frame,
+                roi_frame=roi_frame,
+                ran=True,
+                available=False,
+                reason=inference_result.reason,
+                raw_detections=len(inference_result.detections),
+            )
             return self.process_frame(self._empty_frame_context(frame))
 
         try:
@@ -140,8 +179,26 @@ class RuntimeService:
             classes = list(inference_result.classes)
         except Exception as exc:
             self.last_inference_reason = str(exc)
+            self._record_inference_status(
+                frame=frame,
+                roi_frame=roi_frame,
+                ran=True,
+                available=False,
+                reason=str(exc),
+                raw_detections=len(inference_result.detections),
+            )
             return self.process_frame(self._empty_frame_context(frame))
         self.last_inference_reason = ""
+        self._record_inference_status(
+            frame=frame,
+            roi_frame=roi_frame,
+            ran=True,
+            available=True,
+            reason="",
+            raw_detections=len(inference_result.detections),
+            mapped_detections=len(detections),
+            classes=classes,
+        )
 
         context = FrameContext(
             frame_id=frame.frame_id,
@@ -158,6 +215,35 @@ class RuntimeService:
             width=self._source_width(frame),
             height=self._source_height(frame),
         )
+
+    def _record_inference_status(
+        self,
+        *,
+        frame: CapturedFrame,
+        ran: bool,
+        available: bool,
+        reason: str,
+        roi_frame: Any | None = None,
+        raw_detections: int = 0,
+        mapped_detections: int = 0,
+        classes: list[str] | None = None,
+    ) -> None:
+        self.last_inference_status = {
+            "frame_id": frame.frame_id,
+            "ran": ran,
+            "available": available,
+            "reason": reason,
+            "raw_detections": raw_detections,
+            "mapped_detections": mapped_detections,
+            "classes": list(classes or []),
+            "input_width": int(getattr(roi_frame, "width", frame.width)),
+            "input_height": int(getattr(roi_frame, "height", frame.height)),
+            "input_pixel_format": str(getattr(roi_frame, "pixel_format", frame.pixel_format)),
+            "source_width": self._source_width(frame),
+            "source_height": self._source_height(frame),
+            "roi_offset_x": int(getattr(roi_frame, "offset_x", 0)),
+            "roi_offset_y": int(getattr(roi_frame, "offset_y", 0)),
+        }
 
     def _control_intent_from_context(self, context: FrameContext) -> ControlIntent | None:
         target = self._select_control_target(context)
@@ -270,6 +356,7 @@ class RuntimeService:
                 "frame_id": None,
                 "detections": 0,
                 "inference_reason": self.last_inference_reason,
+                "inference": dict(self.last_inference_status),
                 "target": None,
                 "control": None,
             }
@@ -279,6 +366,7 @@ class RuntimeService:
             "tracks": len(context.tracks),
             "classes": list(context.classes),
             "inference_reason": self.last_inference_reason,
+            "inference": dict(self.last_inference_status),
             "target": self.last_target,
             "control": self.last_control,
         }

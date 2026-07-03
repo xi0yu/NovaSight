@@ -1203,6 +1203,12 @@ button.home-chip {
   background: var(--red-soft);
 }
 
+.home-notice.good {
+  border-color: #bbf7d0;
+  background: var(--green-soft);
+  color: #047857;
+}
+
 .consumer-list {
   display: flex;
   flex-direction: column;
