@@ -40,6 +40,17 @@ class CaptureProfile:
 
 
 @dataclass
+class CaptureStatistics:
+    capture_counter: int = 0
+    inference_counter: int = 0
+    dropped_counter: int = 0
+    skipped_counter: int = 0
+    capture_fps: float = 0.0
+    inference_fps: float = 0.0
+    e2e_latency: float = 0.0
+
+
+@dataclass
 class CaptureRuntimeState:
     available: bool = False
     device: str = "/dev/video0"
@@ -56,3 +67,4 @@ class CaptureRuntimeState:
     preview_dropped: int = 0
     recoveries: int = 0
     last_error: str | None = None
+    statistics: CaptureStatistics = field(default_factory=CaptureStatistics)

@@ -168,6 +168,7 @@ class CaptureSession:
                 with self._lock:
                     if self._source is source:
                         self.state.frames_dropped += 1
+                        self.state.statistics.dropped_counter += 1
                 if self.empty_read_sleep_s > 0:
                     time.sleep(self.empty_read_sleep_s)
                 continue
@@ -185,10 +186,12 @@ class CaptureSession:
                 return
             self.state.available = True
             self.state.capture_wait_ms = frame.capture_wait_ms
+            self.state.statistics.capture_counter += 1
             if self._last_frame_ts_ns is not None:
                 self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
                 if self.state.frame_period_ms > 0:
                     self.state.fps_capture = 1000.0 / self.state.frame_period_ms
+                    self.state.statistics.capture_fps = self.state.fps_capture
             self._last_frame_ts_ns = frame.ts_ns
             self._latest_frame = frame
             self.state.last_error = None

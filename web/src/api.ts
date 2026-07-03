@@ -77,6 +77,17 @@ export type CaptureState = {
   preview_dropped: number;
   recoveries: number;
   last_error: string | null;
+  statistics?: Statistics;
+};
+
+export type Statistics = {
+  capture_counter: number;
+  inference_counter: number;
+  dropped_counter: number;
+  skipped_counter: number;
+  capture_fps: number;
+  inference_fps: number;
+  e2e_latency: number;
 };
 
 export type CaptureCapability = {
@@ -108,6 +119,7 @@ export type RuntimeState = {
   active_model: ActiveModel | null;
   executor: ExecutorStatus;
   capture: CaptureState;
+  statistics?: Statistics;
   inference: Record<string, unknown>;
   config: Record<string, unknown>;
   pipeline: Record<string, unknown>;

@@ -13,6 +13,7 @@ class RuntimeState:
     active_model: dict | None
     executor: dict
     capture: dict
+    statistics: dict
     inference: dict
     config: dict
     pipeline: dict

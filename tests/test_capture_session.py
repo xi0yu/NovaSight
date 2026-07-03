@@ -140,6 +140,21 @@ def test_capture_session_starts_thread_and_publishes_latest_frame() -> None:
     assert source.closed is True
 
 
+def test_capture_session_updates_statistics_for_published_frames() -> None:
+    source = CountingSource()
+    session = CaptureSession(source_factory=lambda profile: source)
+
+    session.start(_profile())
+    frame = session.latest_frame(after_frame_id=0, timeout_s=0.2)
+    state = session.stop("test complete")
+
+    assert frame is not None
+    assert state.statistics.capture_counter >= 1
+    assert state.statistics.capture_fps >= 0
+    assert state.statistics.dropped_counter == 0
+    assert state.statistics.skipped_counter == 0
+
+
 def test_capture_session_reconfigure_closes_previous_source() -> None:
     sources: list[CountingSource] = []
 

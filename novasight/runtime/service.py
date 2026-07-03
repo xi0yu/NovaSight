@@ -39,12 +39,25 @@ class RuntimeService:
     def state(self) -> RuntimeState:
         capture_state = getattr(self, "capture", None)
         inference_state = getattr(self, "inference", None)
+        capture_payload = asdict(capture_state.state) if capture_state is not None else {}
+        statistics = dict(capture_payload.get("statistics", {}))
+        pipeline_stats = getattr(getattr(self, "pipeline", None), "stats", None)
+        if pipeline_stats is not None:
+            statistics["inference_counter"] = getattr(pipeline_stats, "processed_frames", 0)
+            statistics["skipped_counter"] = max(
+                0,
+                int(statistics.get("capture_counter", 0))
+                - getattr(pipeline_stats, "processed_frames", 0),
+            )
+        if capture_payload:
+            capture_payload["statistics"] = statistics
         return RuntimeState(
             running=self.running,
             source=self.config.source.default,
             active_model=self._active_model(),
             executor=self.executors.status(),
-            capture=asdict(capture_state.state) if capture_state is not None else {},
+            capture=capture_payload,
+            statistics=statistics,
             inference=(
                 inference_state.status()
                 if inference_state is not None
