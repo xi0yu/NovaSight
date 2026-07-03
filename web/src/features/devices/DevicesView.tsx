@@ -13,6 +13,7 @@ import {
   stopCapture
 } from "../../api";
 import { EmptyState, InlineError } from "../../components/ui";
+import pipelineVisualUrl from "../../assets/novasight-pipeline-visual.png";
 import { formatProfile, getErrorMessage } from "../shared/format";
 
 type CapabilityChoice = {
@@ -237,6 +238,10 @@ function getProfileTag(choice: CapabilityChoice): string {
   return "均衡";
 }
 
+function formatThreshold(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
 export function DevicesView({
   runtime,
   error,
@@ -412,6 +417,23 @@ export function DevicesView({
     const value = section?.[key];
     return typeof value === "boolean" ? value : fallback;
   };
+  const inferenceEnabled = readBoolean(inferenceConfig, "enabled", true);
+  const inferenceBackend = readString(inferenceConfig, "backend", "onnxruntime");
+  const confidenceThreshold = readNumber(inferenceConfig, "confidence_threshold", 0.25);
+  const nmsThreshold = readNumber(inferenceConfig, "nms_threshold", 0.45);
+  const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
+  const activeArtifact = runtime?.active_model?.artifact?.kind ?? "未绑定";
+  const controlStrategy = readString(controlConfig, "strategy", "pid");
+  const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
+  const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
+  const maxAbsDy = readNumber(controlConfig, "max_abs_dy", 120);
+  const minConfidence = readNumber(controlConfig, "min_confidence", 0);
+  const pidKpX = readNumber(controlConfig, "pid_kp_x", 0.35);
+  const pidKpY = readNumber(controlConfig, "pid_kp_y", 0.35);
+  const pidKi = readNumber(controlConfig, "pid_ki", 0.1);
+  const pidKd = readNumber(controlConfig, "pid_kd", 0.1);
+  const pidIntegralLimit = readNumber(controlConfig, "pid_integral_limit", 250);
+  const pidMoveLimit = readNumber(controlConfig, "pid_move_limit", 120);
 
   useEffect(() => {
     setSelectedSource(normalizedActiveSource);
@@ -456,6 +478,46 @@ export function DevicesView({
             >
               <strong>{label}</strong>
               <span>{desc}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="settings-flow" aria-label="采集推理控制量流程">
+          {[
+            {
+              id: "capture",
+              label: "采集输入",
+              value: capture?.available ? formatProfile(capture) : "未启动",
+              detail: normalizedActiveSource === "image" ? "图片输入" : device,
+              ready: Boolean(capture?.available)
+            },
+            {
+              id: "inference",
+              label: "推理消费",
+              value: inferenceEnabled ? activeModelName : "已关闭",
+              detail: `${inferenceBackend === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
+              ready: inferenceEnabled && activeModelName !== "未发布模型"
+            },
+            {
+              id: "algorithm",
+              label: "控制输出",
+              value: controlStrategy === "pid" ? "PID 平滑追踪" : "预测追踪",
+              detail: `X/Y 限幅 ${maxAbsDx}/${maxAbsDy}`,
+              ready: maxAbsDx > 0 && maxAbsDy > 0
+            }
+          ].map((step, index) => (
+            <button
+              className={activeSection === step.id ? "flow-step active" : step.ready ? "flow-step ready" : "flow-step"}
+              key={step.id}
+              onClick={() => setActiveSection(step.id as SettingsSection)}
+              type="button"
+            >
+              <span className="flow-index">{index + 1}</span>
+              <span className="flow-copy">
+                <strong>{step.label}</strong>
+                <em>{step.value}</em>
+                <small>{step.detail}</small>
+              </span>
             </button>
           ))}
         </div>
@@ -711,197 +773,256 @@ export function DevicesView({
         ) : null}
 
         {activeSection === "inference" ? (
-          <>
-        <section className="setup-card">
-          <div className="section-title">1. 推理输入</div>
-          <div className="hint">推理输入跟随当前采集源；采集卡或图片输入有帧后才会执行推理。</div>
-          <div className="inference-setting-grid">
-            <div className="pipeline-step">
-              <b>RoiFrame</b>
-              <span>{roiSize}x{roiSize} · {capture?.profile?.pixel_format ?? "未选择"}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>输入源</b>
-              <span>{normalizedActiveSource === "image" ? "图片输入" : "采集卡"} · {formatProfile(capture)}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>执行条件</b>
-              <span>{capture?.available ? "采集流可用" : "等待采集输入"}</span>
-            </div>
-          </div>
-        </section>
+          <section className="settings-console commercial-console">
+            <aside className="settings-console-sidebar visual-sidebar">
+              <div className="settings-side-head">
+                <strong>推理链路</strong>
+                <span>用户只需要确认三件事：有输入、有模型、阈值合适。</span>
+              </div>
+              <img className="pipeline-visual" src={pipelineVisualUrl} alt="" aria-hidden="true" />
+              <dl className="settings-summary-list">
+                <div>
+                  <dt>输入</dt>
+                  <dd>{capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
+                </div>
+                <div>
+                  <dt>模型</dt>
+                  <dd>{activeModelName}</dd>
+                </div>
+                <div>
+                  <dt>产物</dt>
+                  <dd>{activeArtifact}</dd>
+                </div>
+                <div>
+                  <dt>阈值</dt>
+                  <dd>{formatThreshold(confidenceThreshold)} / NMS {formatThreshold(nmsThreshold)}</dd>
+                </div>
+              </dl>
+            </aside>
 
-        <section className="setup-card">
-          <div className="section-title">2. 推理配置</div>
-          <div className="hint">这些参数会同步到后端运行态；ONNX Runtime 当前支持真实执行，TensorRT engine 先保留加载合同。</div>
-          <div className="settings-form-grid">
-            <div className="settings-number-field">
-              <span>推理开关</span>
-              <button
-                className={readBoolean(inferenceConfig, "enabled", true) ? "config-toggle on" : "config-toggle"}
-                type="button"
-                disabled={configBusy === "inference.enabled"}
-                onClick={() =>
-                  void updateRuntimeField(
-                    "inference",
-                    "enabled",
-                    !readBoolean(inferenceConfig, "enabled", true)
-                  )
-                }
-              >
-                {readBoolean(inferenceConfig, "enabled", true) ? "已启用" : "已关闭"}
-              </button>
-            </div>
-            <div className="settings-number-field">
-              <span>推理后端</span>
-              <div className="mini-segmented">
-                {["onnxruntime", "tensorrt"].map((backend) => (
+            <div className="settings-console-main">
+              <div className="settings-status-strip compact-strip">
+                <div>
+                  <span>RoiFrame</span>
+                  <strong>{roiSize}x{roiSize}</strong>
+                </div>
+                <div>
+                  <span>输入源</span>
+                  <strong>{normalizedActiveSource === "image" ? "图片输入" : "采集卡"}</strong>
+                </div>
+                <div>
+                  <span>后端</span>
+                  <strong>{inferenceBackend === "tensorrt" ? "TensorRT" : "ONNX Runtime"}</strong>
+                </div>
+                <div>
+                  <span>执行条件</span>
+                  <strong>{capture?.available ? "采集帧驱动" : "采集未启动"}</strong>
+                </div>
+              </div>
+
+              <div className="settings-panel">
+                <div className="settings-panel-head">
+                  <div>
+                    <h3>推理配置</h3>
+                    <p>推理默认跟随采集流启动；这里调整是否消费帧、执行后端和检测过滤阈值。</p>
+                  </div>
                   <button
-                    className={readString(inferenceConfig, "backend", "onnxruntime") === backend ? "active" : ""}
-                    key={backend}
+                    className={inferenceEnabled ? "config-toggle on" : "config-toggle"}
                     type="button"
-                    disabled={configBusy === "inference.backend"}
-                    onClick={() => void updateRuntimeField("inference", "backend", backend)}
+                    disabled={configBusy === "inference.enabled"}
+                    onClick={() => void updateRuntimeField("inference", "enabled", !inferenceEnabled)}
                   >
-                    {backend === "onnxruntime" ? "ONNX" : "TRT"}
+                    {inferenceEnabled ? "推理已启用" : "推理已关闭"}
                   </button>
-                ))}
+                </div>
+
+                <div className="commercial-grid">
+                  <div className="commercial-field span-2">
+                    <span>推理后端</span>
+                    <div className="mini-segmented">
+                      {["onnxruntime", "tensorrt"].map((backend) => (
+                        <button
+                          className={inferenceBackend === backend ? "active" : ""}
+                          key={backend}
+                          type="button"
+                          disabled={configBusy === "inference.backend"}
+                          onClick={() => void updateRuntimeField("inference", "backend", backend)}
+                        >
+                          {backend === "onnxruntime" ? "ONNX Runtime" : "TensorRT"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <NumberField
+                    label="置信度阈值"
+                    value={confidenceThreshold}
+                    busy={configBusy === "inference.confidence_threshold"}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    onCommit={(value) => void updateRuntimeField("inference", "confidence_threshold", value)}
+                  />
+                  <NumberField
+                    label="NMS 阈值"
+                    value={nmsThreshold}
+                    busy={configBusy === "inference.nms_threshold"}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    onCommit={(value) => void updateRuntimeField("inference", "nms_threshold", value)}
+                  />
+                </div>
+
+                <div className="settings-next-row">
+                  <span>推理参数确认后，下一步调整 FOV、PID 和输出限幅，避免控制量过冲。</span>
+                  <button className="button compact-button" type="button" onClick={() => setActiveSection("algorithm")}>
+                    继续调控制量
+                  </button>
+                </div>
               </div>
             </div>
-            <NumberField
-              label="置信度阈值"
-              value={readNumber(inferenceConfig, "confidence_threshold", 0.25)}
-              busy={configBusy === "inference.confidence_threshold"}
-              min={0}
-              max={1}
-              step={0.01}
-              onCommit={(value) => void updateRuntimeField("inference", "confidence_threshold", value)}
-            />
-            <NumberField
-              label="NMS 阈值"
-              value={readNumber(inferenceConfig, "nms_threshold", 0.45)}
-              busy={configBusy === "inference.nms_threshold"}
-              min={0}
-              max={1}
-              step={0.01}
-              onCommit={(value) => void updateRuntimeField("inference", "nms_threshold", value)}
-            />
-          </div>
-        </section>
-
-        <section className="setup-card">
-          <div className="section-title">3. 推理后端</div>
-          <div className="hint">TensorRT 闭环接入后，这里会显示 engine、binding、输入尺寸和执行 provider。</div>
-          <div className="capture-pipeline">
-            <div className="pipeline-step">
-              <b>模型</b>
-              <span>{runtime?.active_model?.project?.name ?? "未发布模型"}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>产物</b>
-              <span>{runtime?.active_model?.artifact?.kind ?? "未绑定"}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>执行</b>
-              <span>{capture?.available ? "等待采集帧驱动" : "采集未启动"}</span>
-            </div>
-            <div className="pipeline-step">
-              <b>输出</b>
-              <span>{runtime?.executor?.selected ?? "未选择"}</span>
-            </div>
-          </div>
-        </section>
-          </>
+          </section>
         ) : null}
 
         {activeSection === "algorithm" ? (
-          <>
-            <section className="setup-card">
-              <div className="section-title">1. 算法选择</div>
-              <div className="hint">控制算法参数实时同步到运行配置，FOV 会影响预览层绘制。</div>
-              <div className="algorithm-choice-row">
-                {["pid", "predictive"].map((strategy) => (
-                  <button
-                    className={
-                      readString(controlConfig, "strategy", "pid") === strategy
-                        ? "algorithm-choice active"
-                        : "algorithm-choice"
-                    }
-                    key={strategy}
-                    type="button"
-                    onClick={() => void updateRuntimeField("control", "strategy", strategy)}
-                  >
-                    <strong>{strategy === "pid" ? "PID 平滑追踪" : "预测追踪"}</strong>
-                    <span>{strategy === "pid" ? "支持 X/Y 分轴参数" : "基于目标位移提前量"}</span>
-                  </button>
-                ))}
+          <section className="settings-console commercial-console">
+            <aside className="settings-console-sidebar">
+              <div className="settings-side-head">
+                <strong>控制量调整</strong>
+                <span>把检测结果变成可控范围内的输出，核心是 FOV、PID 和限幅。</span>
               </div>
-            </section>
-
-            <section className="setup-card">
-              <div className="section-title">2. FOV 与输出限制</div>
-              <div className="settings-form-grid">
-                <NumberField
-                  label="FOV 比例"
-                  value={readNumber(controlConfig, "fov_ratio", 0.28)}
-                  busy={configBusy === "control.fov_ratio"}
-                  min={0.01}
-                  max={1}
-                  step={0.01}
-                  onCommit={(value) => void updateRuntimeField("control", "fov_ratio", value)}
-                />
-                <NumberField
-                  label="X 限幅"
-                  value={readNumber(controlConfig, "max_abs_dx", 120)}
-                  busy={configBusy === "control.max_abs_dx"}
-                  min={0}
-                  step={1}
-                  onCommit={(value) => void updateRuntimeField("control", "max_abs_dx", value)}
-                />
-                <NumberField
-                  label="Y 限幅"
-                  value={readNumber(controlConfig, "max_abs_dy", 120)}
-                  busy={configBusy === "control.max_abs_dy"}
-                  min={0}
-                  step={1}
-                  onCommit={(value) => void updateRuntimeField("control", "max_abs_dy", value)}
-                />
-                <NumberField
-                  label="最低置信度"
-                  value={readNumber(controlConfig, "min_confidence", 0)}
-                  busy={configBusy === "control.min_confidence"}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  onCommit={(value) => void updateRuntimeField("control", "min_confidence", value)}
-                />
+              <dl className="settings-summary-list">
+                <div>
+                  <dt>策略</dt>
+                  <dd>{controlStrategy === "pid" ? "PID 平滑追踪" : "预测追踪"}</dd>
+                </div>
+                <div>
+                  <dt>FOV</dt>
+                  <dd>{formatThreshold(fovRatio)}</dd>
+                </div>
+                <div>
+                  <dt>限幅</dt>
+                  <dd>X {maxAbsDx} / Y {maxAbsDy}</dd>
+                </div>
+                <div>
+                  <dt>PID</dt>
+                  <dd>Kp {pidKpX}/{pidKpY} · Ki {pidKi} · Kd {pidKd} · 积分 {pidIntegralLimit}</dd>
+                </div>
+              </dl>
+              <div className="control-safety-note">
+                <strong>安全顺序</strong>
+                <span>先缩小输出上限，再提高 Kp；如果抖动明显，优先降低 Kd 或提高置信度门槛。</span>
               </div>
-            </section>
+            </aside>
 
-            <section className="setup-card">
-              <div className="section-title">3. PID 参数</div>
-              <div className="settings-form-grid dense">
-                {[
-                  ["pid_kp_x", "Kp X", 0.35],
-                  ["pid_kp_y", "Kp Y", 0.35],
-                  ["pid_ki", "Ki", 0.1],
-                  ["pid_kd", "Kd", 0.1],
-                  ["pid_integral_limit", "积分上限", 250],
-                  ["pid_move_limit", "控制量上限", 120],
-                ].map(([key, label, fallback]) => (
+            <div className="settings-console-main">
+              <div className="settings-status-strip compact-strip">
+                <div>
+                  <span>最低置信度</span>
+                  <strong>{formatThreshold(minConfidence)}</strong>
+                </div>
+                <div>
+                  <span>Kp X/Y</span>
+                  <strong>{pidKpX} / {pidKpY}</strong>
+                </div>
+                <div>
+                  <span>PID 上限</span>
+                  <strong>{pidMoveLimit}</strong>
+                </div>
+                <div>
+                  <span>输出上限</span>
+                  <strong>{maxAbsDx} / {maxAbsDy}</strong>
+                </div>
+              </div>
+
+              <div className="settings-panel">
+                <div className="settings-panel-head">
+                  <div>
+                    <h3>算法与输出边界</h3>
+                    <p>参数会实时同步到后端运行配置。FOV 决定可追踪区域，限幅决定最终控制量边界。</p>
+                  </div>
+                </div>
+
+                <div className="algorithm-choice-row">
+                  {["pid", "predictive"].map((strategy) => (
+                    <button
+                      className={controlStrategy === strategy ? "algorithm-choice active" : "algorithm-choice"}
+                      key={strategy}
+                      type="button"
+                      onClick={() => void updateRuntimeField("control", "strategy", strategy)}
+                    >
+                      <strong>{strategy === "pid" ? "PID 平滑追踪" : "预测追踪"}</strong>
+                      <span>{strategy === "pid" ? "Kp X/Y 分轴，Ki/Kd 共用" : "基于目标位移提前量"}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="commercial-grid">
                   <NumberField
-                    key={key}
-                    label={String(label)}
-                    value={readNumber(controlConfig, String(key), Number(fallback))}
-                    busy={configBusy === `control.${key}`}
-                    min={0}
+                    label="FOV 比例"
+                    value={fovRatio}
+                    busy={configBusy === "control.fov_ratio"}
+                    min={0.01}
+                    max={1}
                     step={0.01}
-                    onCommit={(value) => void updateRuntimeField("control", String(key), value)}
+                    onCommit={(value) => void updateRuntimeField("control", "fov_ratio", value)}
                   />
-                ))}
+                  <NumberField
+                    label="X 限幅"
+                    value={maxAbsDx}
+                    busy={configBusy === "control.max_abs_dx"}
+                    min={0}
+                    step={1}
+                    onCommit={(value) => void updateRuntimeField("control", "max_abs_dx", value)}
+                  />
+                  <NumberField
+                    label="Y 限幅"
+                    value={maxAbsDy}
+                    busy={configBusy === "control.max_abs_dy"}
+                    min={0}
+                    step={1}
+                    onCommit={(value) => void updateRuntimeField("control", "max_abs_dy", value)}
+                  />
+                  <NumberField
+                    label="最低置信度"
+                    value={minConfidence}
+                    busy={configBusy === "control.min_confidence"}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    onCommit={(value) => void updateRuntimeField("control", "min_confidence", value)}
+                  />
+                </div>
+
+                <div className="control-block">
+                  <div className="control-block-head">
+                    <strong>PID 参数</strong>
+                    <span>Kp 分 X/Y，Ki 和 Kd 共用；控制量上限会截断 PID 计算结果。</span>
+                  </div>
+                  <div className="commercial-grid dense">
+                    {[
+                      ["pid_kp_x", "Kp X", 0.35],
+                      ["pid_kp_y", "Kp Y", 0.35],
+                      ["pid_ki", "Ki", 0.1],
+                      ["pid_kd", "Kd", 0.1],
+                      ["pid_integral_limit", "积分上限", 250],
+                      ["pid_move_limit", "控制量上限", 120],
+                    ].map(([key, label, fallback]) => (
+                      <NumberField
+                        key={key}
+                        label={String(label)}
+                        value={readNumber(controlConfig, String(key), Number(fallback))}
+                        busy={configBusy === `control.${key}`}
+                        min={0}
+                        step={0.01}
+                        onCommit={(value) => void updateRuntimeField("control", String(key), value)}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
-            </section>
-          </>
+            </div>
+          </section>
         ) : null}
       </main>
 

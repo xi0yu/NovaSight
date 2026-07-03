@@ -1394,6 +1394,92 @@ button.home-chip {
   line-height: 1.4;
 }
 
+.settings-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.flow-step {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 78px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.92));
+  color: var(--text-primary);
+  text-align: left;
+  box-shadow: 0 10px 28px rgba(16, 24, 40, 0.05);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.flow-step:hover {
+  transform: translateY(-1px);
+  border-color: #bfdbfe;
+  box-shadow: 0 16px 38px rgba(16, 24, 40, 0.08);
+}
+
+.flow-step.active {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08), 0 18px 44px rgba(16, 24, 40, 0.08);
+}
+
+.flow-step.ready .flow-index {
+  color: #047857;
+  background: #ecfdf3;
+  border-color: #a7f3d0;
+}
+
+.flow-index {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: #f8fafc;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 820;
+}
+
+.flow-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.flow-copy strong,
+.flow-copy em,
+.flow-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-copy strong {
+  color: var(--text-primary);
+  font-size: 0.84rem;
+}
+
+.flow-copy em {
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.flow-copy small {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
 .setup-card {
   display: grid;
   gap: 14px;
@@ -1415,6 +1501,11 @@ button.home-chip {
   overflow: hidden;
 }
 
+.settings-console.commercial-console {
+  grid-template-columns: 300px minmax(0, 1fr);
+  box-shadow: var(--shadow-panel);
+}
+
 .settings-console-sidebar {
   display: grid;
   align-content: start;
@@ -1422,6 +1513,20 @@ button.home-chip {
   padding: 16px;
   border-right: 1px solid var(--border-subtle);
   background: #f8fafc;
+}
+
+.visual-sidebar {
+  background:
+    radial-gradient(circle at 50% 12%, rgba(37, 99, 235, 0.08), transparent 34%),
+    #f8fafc;
+}
+
+.pipeline-visual {
+  width: min(100%, 250px);
+  justify-self: center;
+  display: block;
+  margin: 2px 0 4px;
+  filter: drop-shadow(0 20px 32px rgba(16, 24, 40, 0.16));
 }
 
 .settings-side-head {
@@ -1535,6 +1640,10 @@ button.home-chip {
   overflow: hidden;
 }
 
+.settings-status-strip.compact-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .settings-status-strip > div {
   display: grid;
   gap: 4px;
@@ -1561,6 +1670,73 @@ button.home-chip {
 .settings-panel {
   display: grid;
   gap: 14px;
+}
+
+.commercial-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.commercial-grid.dense {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.commercial-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-3);
+}
+
+.commercial-field.span-2 {
+  grid-column: span 2;
+}
+
+.commercial-field > span {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  font-weight: 740;
+}
+
+.settings-next-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.settings-next-row span {
+  color: #1e3a8a;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.control-safety-note {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+  background: #fffbeb;
+}
+
+.control-safety-note strong {
+  color: #92400e;
+  font-size: 0.78rem;
+}
+
+.control-safety-note span {
+  color: #a16207;
+  font-size: 0.74rem;
+  line-height: 1.5;
 }
 
 .settings-panel-head {
@@ -3200,6 +3376,26 @@ tbody tr:hover {
 
   .command-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-flow,
+  .commercial-grid,
+  .commercial-grid.dense,
+  .settings-status-strip.compact-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .commercial-field.span-2 {
+    grid-column: auto;
+  }
+
+  .settings-next-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pipeline-visual {
+    max-width: 220px;
   }
 
   .capture-workbench,
