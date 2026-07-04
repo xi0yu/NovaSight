@@ -94,10 +94,12 @@ class OnnxRuntimeInferenceEngine:
             tensor = _prepare_numpy_tensor(self._last_input, self._input_shape)
             outputs = self._session.run(None, {self._input_name: tensor})
             primary_output = outputs[0] if outputs else []
+            decode_debug: dict[str, Any] = {}
             detections = decode_nx6_detections(
                 primary_output,
                 confidence_threshold=self.confidence_threshold,
                 nms_threshold=self.nms_threshold,
+                debug=decode_debug,
             )
             detections = _scale_detections_to_input_frame(
                 detections,
@@ -116,6 +118,7 @@ class OnnxRuntimeInferenceEngine:
                 "input_name": self._input_name,
                 "output_shape": list(output_shape),
                 "decoded_detections": len(detections),
+                "decode": decode_debug,
             },
         )
 
@@ -213,38 +216,126 @@ def decode_nx6_detections(
     *,
     confidence_threshold: float,
     nms_threshold: float,
+    debug: dict[str, Any] | None = None,
 ) -> list[InferenceDetection]:
     import numpy as np
 
     array = np.asarray(output, dtype=np.float32)
+    original_shape = tuple(int(item) for item in getattr(array, "shape", ()))
     if array.size == 0:
+        _update_decode_debug(debug, output_shape=original_shape, reason="empty output")
         return []
     array = np.squeeze(array)
     if array.ndim == 1:
         array = array.reshape(1, -1)
     if array.ndim != 2:
+        _update_decode_debug(
+            debug,
+            output_shape=original_shape,
+            squeezed_shape=tuple(int(item) for item in getattr(array, "shape", ())),
+            reason="unsupported output dimensions",
+        )
         return []
 
-    candidates_first = array.T if array.shape[0] < array.shape[1] else array
-    if candidates_first.shape[1] >= 5 and candidates_first.shape[1] != 6:
-        return _decode_yolo_scores(
+    candidates_first = (
+        array.T
+        if 4 < array.shape[0] < array.shape[1]
+        else array
+    )
+    if candidates_first.shape[1] < 5:
+        _update_decode_debug(
+            debug,
+            output_shape=original_shape,
+            squeezed_shape=tuple(int(item) for item in array.shape),
+            candidates_shape=tuple(int(item) for item in candidates_first.shape),
+            reason="fewer than 5 prediction columns",
+        )
+        return []
+
+    variants: list[tuple[list[InferenceDetection], dict[str, Any]]] = []
+    variants.append(
+        _decode_yolo_scores(
             candidates_first,
+            mode="yolov8-cxcywh-cls",
             confidence_threshold=confidence_threshold,
             nms_threshold=nms_threshold,
         )
-    if candidates_first.shape[1] < 6:
-        return []
+    )
+    if candidates_first.shape[1] >= 6:
+        variants.append(
+            _decode_yolo_scores(
+                candidates_first,
+                mode="yolov5-cxcywh-obj-cls",
+                confidence_threshold=confidence_threshold,
+                nms_threshold=nms_threshold,
+            )
+        )
+        variants.append(
+            _decode_xyxy_score_cls(
+                candidates_first,
+                confidence_threshold=confidence_threshold,
+                nms_threshold=nms_threshold,
+            )
+        )
+    best_detections, best_stats = max(
+        variants,
+        key=lambda item: (
+            int(
+                bool(item[1].get("class_id_like", False))
+                and int(item[1].get("nms_detections", 0)) > 0
+            ),
+            int(item[1].get("nms_detections", 0)),
+            int(item[1].get("threshold_candidates", 0)),
+            float(item[1].get("max_score", 0.0)),
+        ),
+    )
+    _update_decode_debug(
+        debug,
+        output_shape=original_shape,
+        squeezed_shape=tuple(int(item) for item in array.shape),
+        candidates_shape=tuple(int(item) for item in candidates_first.shape),
+        selected_layout=best_stats.get("layout", ""),
+        raw_candidates=int(best_stats.get("raw_candidates", 0)),
+        max_score=float(best_stats.get("max_score", 0.0)),
+        threshold_candidates=int(best_stats.get("threshold_candidates", 0)),
+        nms_detections=int(best_stats.get("nms_detections", 0)),
+        variants=[stats for _, stats in variants],
+    )
+    return best_detections
+
+
+def _decode_xyxy_score_cls(
+    array: Any,
+    *,
+    confidence_threshold: float,
+    nms_threshold: float,
+) -> tuple[list[InferenceDetection], dict[str, Any]]:
+    import numpy as np
+
+    scores = np.asarray(array[:, 4], dtype=np.float32)
+    stats: dict[str, Any] = {
+        "layout": "xyxy-score-cls",
+        "raw_candidates": int(array.shape[0]),
+        "max_score": float(np.max(scores)) if scores.size else 0.0,
+        "threshold_candidates": 0,
+        "nms_detections": 0,
+        "class_id_like": _looks_like_class_ids(array[:, 5]) if array.shape[1] >= 6 else False,
+    }
+    if array.shape[1] < 6 or scores.size == 0:
+        return [], stats
     candidates: list[InferenceDetection] = []
-    for row in candidates_first:
+    threshold_candidates = 0
+    for row in array:
         score = float(row[4])
         if score < confidence_threshold:
             continue
+        threshold_candidates += 1
         x1, y1, x2, y2 = [float(value) for value in row[:4]]
         if x2 <= x1 or y2 <= y1:
             continue
         candidates.append(
             InferenceDetection(
-                cls=int(row[5]),
+                cls=int(round(float(row[5]))),
                 score=score,
                 x=x1,
                 y=y1,
@@ -252,24 +343,45 @@ def decode_nx6_detections(
                 h=y2 - y1,
             )
         )
-    return _nms(candidates, nms_threshold)
+    kept = _nms(candidates, nms_threshold)
+    stats["threshold_candidates"] = int(threshold_candidates)
+    stats["nms_detections"] = int(len(kept))
+    return kept, stats
 
 
 def _decode_yolo_scores(
     array: Any,
     *,
+    mode: str,
     confidence_threshold: float,
     nms_threshold: float,
-) -> list[InferenceDetection]:
+) -> tuple[list[InferenceDetection], dict[str, Any]]:
     import numpy as np
 
-    candidates: list[InferenceDetection] = []
     boxes = array[:, :4]
-    scores = array[:, 4:]
-    if scores.size == 0:
-        return []
+    if mode == "yolov5-cxcywh-obj-cls":
+        if array.shape[1] < 6:
+            scores = np.empty((array.shape[0], 0), dtype=np.float32)
+        else:
+            obj = array[:, 4]
+            scores = obj[:, None] * array[:, 5:]
+    else:
+        scores = array[:, 4:]
+    stats: dict[str, Any] = {
+        "layout": mode,
+        "raw_candidates": int(array.shape[0]),
+        "max_score": 0.0,
+        "threshold_candidates": 0,
+        "nms_detections": 0,
+    }
+    if scores.size == 0 or scores.shape[1] == 0:
+        return [], stats
     cls_ids = np.argmax(scores, axis=1)
     cls_scores = np.max(scores, axis=1)
+    stats["max_score"] = float(np.max(cls_scores)) if cls_scores.size else 0.0
+    threshold_mask = cls_scores >= confidence_threshold
+    stats["threshold_candidates"] = int(np.count_nonzero(threshold_mask))
+    candidates: list[InferenceDetection] = []
     for index, score_value in enumerate(cls_scores):
         score = float(score_value)
         if score < confidence_threshold:
@@ -287,7 +399,32 @@ def _decode_yolo_scores(
                 h=h,
             )
         )
-    return _nms(candidates, nms_threshold)
+    kept = _nms(candidates, nms_threshold)
+    stats["nms_detections"] = int(len(kept))
+    return kept, stats
+
+
+def _update_decode_debug(debug: dict[str, Any] | None, **values: Any) -> None:
+    if debug is None:
+        return
+    for key, value in values.items():
+        if isinstance(value, tuple):
+            debug[key] = [int(item) for item in value]
+        else:
+            debug[key] = value
+
+
+def _looks_like_class_ids(values: Any) -> bool:
+    import numpy as np
+
+    array = np.asarray(values, dtype=np.float32)
+    if array.size == 0:
+        return False
+    finite = array[np.isfinite(array)]
+    if finite.size == 0:
+        return False
+    rounded = np.round(finite)
+    return bool(np.all(np.abs(finite - rounded) <= 1e-3) and np.min(finite) >= 0)
 
 
 def _nms(detections: list[InferenceDetection], threshold: float) -> list[InferenceDetection]:

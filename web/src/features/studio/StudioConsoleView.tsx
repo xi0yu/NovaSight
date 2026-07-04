@@ -170,6 +170,10 @@ function formatNumber(value: unknown, digits = 1): string {
   return Number.isFinite(number) ? number.toFixed(digits) : "待机";
 }
 
+function formatShape(value: unknown): string {
+  return Array.isArray(value) && value.length > 0 ? value.map((item) => String(item)).join("x") : "-";
+}
+
 function formatDate(value: Date | null): string {
   return value ? value.toLocaleTimeString("zh-CN", { hour12: false }) : "--:--:--";
 }
@@ -358,6 +362,8 @@ export function StudioConsoleView({
   const inferenceRan = inferenceTrace.ran === true;
   const inferenceAvailable = inferenceTrace.available === true;
   const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
+  const inferenceDebug = asRecord(inferenceTrace.debug);
+  const decodeDebug = asRecord(inferenceDebug.decode);
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
 
   useEffect(() => {
@@ -1083,6 +1089,12 @@ export function StudioConsoleView({
                 <span>推理原因</span><b>{inferenceReason || "-"}</b>
                 <span>raw 检测</span><b>{String(rawDetections)}</b>
                 <span>前端检测</span><b>{String(mappedDetections)}</b>
+                <span>输出形状</span><b>{formatShape(decodeDebug.output_shape ?? inferenceDebug.output_shape)}</b>
+                <span>解码布局</span><b>{readString(decodeDebug.selected_layout, "-")}</b>
+                <span>最大分数</span><b>{formatNumber(decodeDebug.max_score, 3)}</b>
+                <span>阈值前候选</span><b>{String(readNumber(decodeDebug.raw_candidates, 0))}</b>
+                <span>过阈值候选</span><b>{String(readNumber(decodeDebug.threshold_candidates, 0))}</b>
+                <span>NMS 后候选</span><b>{String(readNumber(decodeDebug.nms_detections, 0))}</b>
                 <span>当前类别</span><b>{readString(target.class_name, "-")}</b>
                 <span>最高置信度</span><b>{target.score ? Number(target.score).toFixed(2) : "-"}</b>
                 <span>候选框数量</span><b>{detections}</b>

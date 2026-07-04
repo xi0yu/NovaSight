@@ -123,7 +123,7 @@ class TensorRtInferenceEngine:
         try:
             self._last_input = prepare_tensor_input(frame, self._input_shape)
             tensor = _prepare_numpy_tensor(self._last_input, self._input_shape)
-            detections = self._execute(tensor)
+            detections, decode_debug = self._execute(tensor)
             detections = _scale_detections_to_input_frame(
                 detections,
                 prepared=self._last_input,
@@ -146,6 +146,7 @@ class TensorRtInferenceEngine:
                 "output_shape": list(self._output_shape),
                 "output_dtype": self._output_dtype,
                 "decoded_detections": len(detections),
+                "decode": decode_debug,
             },
         )
 
@@ -271,7 +272,7 @@ class TensorRtInferenceEngine:
             },
         )
 
-    def _execute(self, tensor: Any) -> list[InferenceDetection]:
+    def _execute(self, tensor: Any) -> tuple[list[InferenceDetection], dict[str, Any]]:
         import numpy as np
 
         if (
@@ -322,11 +323,14 @@ class TensorRtInferenceEngine:
         )
         _cuda_check(cudart.cudaStreamSynchronize(self._stream), "stream synchronize")
         output = host_output.reshape(self._output_shape).astype(np.float32, copy=False)
-        return decode_nx6_detections(
+        decode_debug: dict[str, Any] = {}
+        detections = decode_nx6_detections(
             output,
             confidence_threshold=self.confidence_threshold,
             nms_threshold=self.nms_threshold,
+            debug=decode_debug,
         )
+        return detections, decode_debug
 
     def close(self) -> None:
         cudart = self._cudart
