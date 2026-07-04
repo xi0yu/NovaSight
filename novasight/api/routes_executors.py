@@ -17,6 +17,7 @@ class DiagnosticMoveRequest(BaseModel):
     dy: int = 0
     repeat: int = Field(default=1, ge=1, le=200)
     interval_ms: int = Field(default=0, ge=0, le=50)
+    move_kind: str | None = None
 
 
 class DiagnosticCircleRequest(BaseModel):
@@ -58,7 +59,7 @@ def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> d
     sent = 0
     failed: dict[str, Any] | None = None
     for index in range(payload.repeat):
-        result = move(payload.dx, payload.dy)
+        result = move(payload.dx, payload.dy, move_kind=payload.move_kind)
         if bool(getattr(result, "sent", False)):
             sent += 1
         else:

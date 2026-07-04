@@ -328,6 +328,8 @@ export function StudioConsoleView({
   const targetLockEnabled = controlConfig.target_lock_enabled !== false;
   const targetStickyBias = readNumber(controlConfig.target_sticky_bias, 0.25);
   const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
+  const moveKind = readString(controlConfig.move_kind, "raw");
+  const moveMs = readNumber(controlConfig.move_ms, 12);
   const straightFovDeg = readNumber(controlConfig.straight_fov_deg, 105);
   const straightC360 = readNumber(controlConfig.straight_c360, 9980);
   const straightKpX = readNumber(controlConfig.straight_kp_x, 0.3);
@@ -869,19 +871,21 @@ export function StudioConsoleView({
     dx = kmnetTestDx,
     dy = kmnetTestDy,
     repeat = 1,
-    intervalMs = 0
+    intervalMs = 0,
+    moveKindOverride?: string
   ) => {
     setBusy("kmnet.diagnostic");
     setLocalError(null);
     setKmnetTestMessage("");
     try {
-      const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy), repeat, intervalMs);
+      const effectiveMoveKind = moveKindOverride ?? moveKind;
+      const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy), repeat, intervalMs, effectiveMoveKind);
       const status = asRecord(result.status);
       const stepsSent = readNumber(result.steps_sent, result.sent === true ? repeat : 0);
       setKmnetTestMessage(
         result.sent === true
-          ? `已发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
-          : `未发送：${readString(result.message, "未知原因")} · ${stepsSent}/${repeat} 步`
+          ? `已发送 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
+          : `未发送 ${effectiveMoveKind}：${readString(result.message, "未知原因")} · ${stepsSent}/${repeat} 步`
       );
       await onRefresh();
     } catch (err) {
@@ -890,7 +894,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [kmnetTestDx, kmnetTestDy, onRefresh]);
+  }, [kmnetTestDx, kmnetTestDy, moveKind, onRefresh]);
 
   const diagnosticCircleHardware = useCallback(async () => {
     setBusy("kmnet.circle");
@@ -1392,6 +1396,19 @@ export function StudioConsoleView({
               </select>
               <NumberControl label="目标粘性" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
+              <label>kmNet 移动 API</label>
+              <select
+                value={moveKind}
+                onChange={(event) => void updateConfigField("control", "move_kind", event.target.value)}
+              >
+                <option value="raw">move</option>
+                <option value="enc_raw">enc_move</option>
+                <option value="auto">move_auto</option>
+                <option value="enc_auto">enc_move_auto</option>
+                <option value="bezier">move_beizer</option>
+                <option value="enc_bezier">enc_move_beizer</option>
+              </select>
+              <NumberControl label="移动铺展 ms" value={moveMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "move_ms", Math.round(value))} />
               <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
               <NumberControl label="Straight FOV" value={straightFovDeg} min={30} max={140} step={1} onCommit={(value) => updateConfigField("control", "straight_fov_deg", Math.round(value))} />
               <NumberControl label="Straight c360" value={straightC360} min={500} max={50000} step={20} onCommit={(value) => updateConfigField("control", "straight_c360", Math.round(value))} />
@@ -1446,6 +1463,7 @@ export function StudioConsoleView({
                 <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
+                <span>移动 API</span><b>{readString(execution.move_kind, moveKind)}</b>
                 <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
                 <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
                 <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
@@ -1578,6 +1596,32 @@ export function StudioConsoleView({
                     type="button"
                   >
                     右移大步测试
+                  </button>
+                </div>
+                <div className="console-action-row">
+                  <button
+                    className="console-button"
+                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12, "raw")}
+                    type="button"
+                  >
+                    测 move
+                  </button>
+                  <button
+                    className="console-button"
+                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12, "enc_raw")}
+                    type="button"
+                  >
+                    测 enc_move
+                  </button>
+                  <button
+                    className="console-button"
+                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12, "auto")}
+                    type="button"
+                  >
+                    测 move_auto
                   </button>
                 </div>
                 <button

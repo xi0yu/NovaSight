@@ -281,8 +281,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.trigger_mode' must be hardware, telemetry, or always")
     if cfg.control.target_lost_grace_frames < 0:
         raise ValueError("runtime config key 'control.target_lost_grace_frames' must be >= 0")
-    if cfg.control.move_kind not in {"raw", "auto", "bezier"}:
-        raise ValueError("runtime config key 'control.move_kind' must be raw, auto, or bezier")
+    if cfg.control.move_kind not in {"raw", "enc_raw", "auto", "enc_auto", "bezier", "enc_bezier"}:
+        raise ValueError("runtime config key 'control.move_kind' must be raw, enc_raw, auto, enc_auto, bezier, or enc_bezier")
     for key in (
         "pid_integral_limit",
         "pid_move_limit",

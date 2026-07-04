@@ -10,6 +10,7 @@ from novasight.contracts import ControlIntent, Detection, Track
 
 
 Target = Detection | Track
+MOVE_KINDS = {"raw", "enc_raw", "auto", "enc_auto", "bezier", "enc_bezier"}
 
 
 def aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
@@ -99,7 +100,7 @@ class PIDStrategy:
         self.deadzone_counts = max(0, int(deadzone_counts))
         self.counts_per_revolution_x = max(1.0, counts_per_revolution_x)
         self.counts_per_revolution_y = max(1.0, counts_per_revolution_y)
-        self.move_kind = move_kind if move_kind in {"raw", "auto", "bezier"} else "raw"
+        self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
         self.bezier_curvature = max(0.0, bezier_curvature)
@@ -311,7 +312,7 @@ class StraightStrategy:
         self.pred_gain = max(0.0, pred_gain)
         self.pred_consistency_frames = max(1, int(pred_consistency_frames))
         self.gain_y = max(0.0, gain_y)
-        self.move_kind = move_kind if move_kind in {"raw", "auto", "bezier"} else "raw"
+        self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
         self.bezier_curvature = max(0.0, bezier_curvature)
@@ -599,7 +600,7 @@ class ProportionalStrategy:
         self.deadzone_counts = max(0, int(deadzone_counts))
         self.counts_per_revolution_x = max(1.0, counts_per_revolution_x)
         self.counts_per_revolution_y = max(1.0, counts_per_revolution_y)
-        self.move_kind = move_kind if move_kind in {"raw", "auto", "bezier"} else "raw"
+        self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
         self.bezier_curvature = max(0.0, bezier_curvature)
