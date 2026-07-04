@@ -332,6 +332,18 @@ class RuntimeService:
     def _box_input_state(self) -> BoxInputState:
         if getattr(getattr(self.config, "hardware", None), "kind", "none") in {"", "none", "silent"}:
             return BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
+        button_reader = getattr(self.executors, "read_buttons", None)
+        if callable(button_reader):
+            try:
+                buttons = button_reader()
+            except Exception:
+                buttons = {}
+            if buttons.get("available") is True:
+                return BoxInputState(
+                    left=bool(buttons.get("left")),
+                    right=bool(buttons.get("right")),
+                    raw={"source": "kmnet_executor", **buttons},
+                )
         getter = getattr(self.hardware, "get_input_state", None)
         if not callable(getter):
             return BoxInputState()

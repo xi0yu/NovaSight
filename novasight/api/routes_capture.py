@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from novasight.capture.preview import render_preview_frame
+from novasight.config import save_runtime_config
 from novasight.runtime.pipeline import RuntimePipeline
 from novasight.roi import normalize_roi_size
 
@@ -185,6 +186,14 @@ def stop(request: Request) -> dict:
     if pipeline is not None and getattr(pipeline, "running", False):
         pipeline.stop()
     state = request.app.state.capture.stop("capture stopped by user")
+    config = getattr(request.app.state, "config", None)
+    if config is not None:
+        config.source.default = "null"
+        if runtime is not None:
+            runtime.update_config(config)
+        config_path = getattr(request.app.state, "config_path", None)
+        if config_path is not None:
+            save_runtime_config(config, config_path)
     return asdict(state)
 
 

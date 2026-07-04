@@ -90,3 +90,10 @@ class ExecutorRegistry:
                 for executor_id, executor in self.executors.items()
             },
         }
+
+    def read_buttons(self) -> dict[str, Any]:
+        kmnet = self.executors.get("kmnet")
+        reader = getattr(kmnet, "read_buttons", None)
+        if not callable(reader):
+            return {"available": False, "left": False, "right": False, "reason": "kmNet executor is unavailable"}
+        return reader()

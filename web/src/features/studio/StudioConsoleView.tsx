@@ -181,6 +181,7 @@ export function StudioConsoleView({
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
   const hardwareKind = readString(hardwareConfig.kind, "none");
+  const outputMode = readString(controlConfig.output_mode, "");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -375,6 +376,40 @@ export function StudioConsoleView({
       };
       sectionValue[key] = value;
       next[section] = sectionValue as RuntimeConfig[string];
+      try {
+        await updateRuntimeConfig(next);
+        await onRefresh();
+      } catch (err) {
+        setLocalError(`配置同步失败：${getErrorMessage(err)}`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [onRefresh, runtime]
+  );
+
+  const updateHardwareKind = useCallback(
+    async (kind: string) => {
+      const next = cloneRuntimeConfig(runtime);
+      if (!next) {
+        return;
+      }
+      setBusy("hardware.kind");
+      setLocalError(null);
+      next.hardware = {
+        ...asRecord(next.hardware),
+        kind
+      } as RuntimeConfig[string];
+      const control = {
+        ...asRecord(next.control)
+      };
+      if (kind === "kmnet" && !["kmnet", "console"].includes(readString(control.output_mode, ""))) {
+        control.output_mode = "kmnet";
+      }
+      if (kind === "none" && readString(control.output_mode, "") === "kmnet") {
+        control.output_mode = "silent";
+      }
+      next.control = control as RuntimeConfig[string];
       try {
         await updateRuntimeConfig(next);
         await onRefresh();
@@ -708,11 +743,22 @@ export function StudioConsoleView({
               <label>硬件类型</label>
               <select
                 value={hardwareKind}
-                onChange={(event) => void updateConfigField("hardware", "kind", event.target.value)}
+                onChange={(event) => void updateHardwareKind(event.target.value)}
               >
                 <option value="none">不连接硬件</option>
                 <option value="kmnet">kmNet</option>
                 <option value="makcu">MAKCU</option>
+              </select>
+              <label>输出执行器</label>
+              <select
+                value={outputMode}
+                onChange={(event) => void updateConfigField("control", "output_mode", event.target.value)}
+              >
+                <option value="">跟随默认执行器</option>
+                <option value="silent">静默吞没</option>
+                <option value="dry_run">调试记录</option>
+                <option value="console">命令行输出</option>
+                <option value="kmnet">kmNet 实发</option>
               </select>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
