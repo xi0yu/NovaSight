@@ -67,8 +67,9 @@ class PIDStrategy:
         near_speed: float = 0.16,
         far_speed: float = 0.42,
         deadzone_counts: int = 1,
-        counts_per_revolution_x: float = 4096.0,
-        counts_per_revolution_y: float = 4096.0,
+        counts_per_revolution_x: float = 9980.0,
+        counts_per_revolution_y: float = 9980.0,
+        fov_deg: float = 105.0,
         move_kind: str = "raw",
         move_ms: int = 0,
         trace_ms: int = 0,
@@ -100,6 +101,7 @@ class PIDStrategy:
         self.deadzone_counts = max(0, int(deadzone_counts))
         self.counts_per_revolution_x = max(1.0, counts_per_revolution_x)
         self.counts_per_revolution_y = max(1.0, counts_per_revolution_y)
+        self.fov_deg = max(1.0, min(179.0, fov_deg))
         self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
@@ -131,10 +133,12 @@ class PIDStrategy:
         ex_px = predicted_center[0] - current_pos[0]
         ey_px = current_pos[1] - predicted_center[1]
         err_px = math.hypot(ex_px, ey_px)
-        fov_counts_x, fov_counts_y = self._pixel_error_to_counts(ex_px, ey_px)
-        speed = self._speed_for(err_px, min(current_pos[0], current_pos[1]) * 2)
-        ex = fov_counts_x * speed
-        ey = fov_counts_y * speed
+        projection = self._pixel_error_to_counts(ex_px, ey_px, current_pos[0] * 2.0)
+        fov_counts_x = projection["err_cx"]
+        fov_counts_y = projection["err_cy"]
+        speed = 1.0
+        ex = fov_counts_x
+        ey = fov_counts_y
         now_s = time.monotonic()
         dt = now_s - self._last_s if self._last_s is not None else 1.0 / 60.0
         self._last_s = now_s
@@ -160,6 +164,7 @@ class PIDStrategy:
         dx = px + ix + dx_term
         dy = py + iy + dy_term
         debug = {
+            **projection,
             "stage": "pid_counts_pipeline",
             "coordinate_y": "cartesian_up_positive",
             "raw_px_x": ex_px,
@@ -172,8 +177,12 @@ class PIDStrategy:
             "fov_counts_x": fov_counts_x,
             "fov_counts_y": fov_counts_y,
             "speed": speed,
+            "speed_note": "disabled: PID gain is the only intentional movement scale",
             "work_counts_x": ex,
             "work_counts_y": ey,
+            "c360_x": self.counts_per_revolution_x,
+            "c360_y": self.counts_per_revolution_y,
+            "fov_deg": self.fov_deg,
             "dt": dt,
             "p_x": px,
             "p_y": py,
@@ -244,12 +253,21 @@ class PIDStrategy:
         self._last_center = None
         self._last_s = None
 
-    def _pixel_error_to_counts(self, ex_px: float, ey_px: float) -> tuple[float, float]:
-        rx = self.counts_per_revolution_x / (2.0 * math.pi)
-        ry = self.counts_per_revolution_y / (2.0 * math.pi)
-        counts_x = math.atan2(ex_px, rx) * rx
-        counts_y = math.atan2(ey_px, math.sqrt(ex_px * ex_px + rx * rx)) * ry
-        return counts_x, counts_y
+    def _pixel_error_to_counts(self, ex_px: float, ey_px: float, frame_width: float) -> dict[str, float]:
+        focal = (frame_width * 0.5) / math.tan(math.radians(self.fov_deg) * 0.5) if frame_width > 0 else 0.0
+        counts_per_degree_x = self.counts_per_revolution_x / 360.0
+        counts_per_degree_y = self.counts_per_revolution_y / 360.0
+        yaw_deg = math.degrees(math.atan(ex_px / focal)) if focal > 0 else 0.0
+        pitch_deg = math.degrees(math.atan(ey_px / focal)) if focal > 0 else 0.0
+        return {
+            "focal": focal,
+            "yaw_deg": yaw_deg,
+            "pitch_deg": pitch_deg,
+            "counts_per_degree_x": counts_per_degree_x,
+            "counts_per_degree_y": counts_per_degree_y,
+            "err_cx": yaw_deg * counts_per_degree_x,
+            "err_cy": pitch_deg * counts_per_degree_y,
+        }
 
     def _speed_for(self, err_px: float, fov_radius: float) -> float:
         if self.near_px <= 0:

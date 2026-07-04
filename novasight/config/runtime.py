@@ -118,8 +118,8 @@ class ControlConfig:
     near_speed: float = 0.16
     far_speed: float = 0.42
     ema_alpha: float = 0.45
-    counts_per_revolution_x: float = 4096.0
-    counts_per_revolution_y: float = 4096.0
+    counts_per_revolution_x: float = 9980.0
+    counts_per_revolution_y: float = 9980.0
     bezier_curvature: float = 0.18
     straight_fov_deg: float = 105.0
     straight_c360: float = 9980.0

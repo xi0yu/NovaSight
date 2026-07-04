@@ -901,6 +901,7 @@ class RuntimeService:
             deadzone_counts=config.control.deadzone_counts,
             counts_per_revolution_x=config.control.counts_per_revolution_x,
             counts_per_revolution_y=config.control.counts_per_revolution_y,
+            fov_deg=config.control.straight_fov_deg,
             move_kind=config.control.move_kind,
             move_ms=config.control.move_ms,
             trace_ms=config.control.trace_ms,
