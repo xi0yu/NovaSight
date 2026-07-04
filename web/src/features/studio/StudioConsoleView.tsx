@@ -261,6 +261,7 @@ export function StudioConsoleView({
   const [localTriggerActive, setLocalTriggerActive] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [modelSwitchMessage, setModelSwitchMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pressedBindingsRef = useRef<Set<string>>(new Set());
   const localTriggerActiveRef = useRef(false);
@@ -341,6 +342,8 @@ export function StudioConsoleView({
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
+  const activeArtifactLabel = artifact ? `${artifact.kind.toUpperCase()} · ${artifact.path}` : "未加载产物";
+  const lastModelSwitchError = readString(runtime?.inference?.last_switch_error, "");
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.status === "ready" &&
@@ -909,8 +912,10 @@ export function StudioConsoleView({
     }
     setBusy("model.switch");
     setLocalError(null);
+    setModelSwitchMessage("");
     try {
-      await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
+      const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
+      setModelSwitchMessage(response.report?.message ?? "模型已切换，推理运行态已刷新。");
       await onRefresh();
     } catch (err) {
       setLocalError(`模型切换失败，当前运行模型已保留：${getErrorMessage(err)}`);
@@ -1095,6 +1100,16 @@ export function StudioConsoleView({
                 <span>{version?.input_shape ? `输入 ${version.input_shape}` : "等待模型输入信息"}</span>
                 <span>{selectedSwitchArtifact?.kind ? selectedSwitchArtifact.kind.toUpperCase() : "无可用产物"}</span>
               </div>
+              <div className="model-active-summary">
+                <span>当前运行模型</span>
+                <b>{activeModelName}</b>
+                <small>{activeArtifactLabel}</small>
+              </div>
+              {modelSwitchMessage || lastModelSwitchError ? (
+                <div className={lastModelSwitchError && !modelSwitchMessage ? "model-switch-note bad" : "model-switch-note good"}>
+                  {modelSwitchMessage || `上次切换失败：${lastModelSwitchError}`}
+                </div>
+              ) : null}
               <button
                 className="console-button primary console-full-button"
                 disabled={busy === "model.switch" || selectedModelProjectId === "" || selectedSwitchArtifact === null}

@@ -4331,6 +4331,66 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.model-active-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(229, 231, 238, 0.95);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.model-active-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.model-active-summary b,
+.model-active-summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-active-summary b {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.model-active-summary small {
+  grid-column: 1 / -1;
+  color: #687386;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.model-switch-note {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.model-switch-note.good {
+  border: 1px solid rgba(25, 198, 74, 0.25);
+  background: rgba(25, 198, 74, 0.08);
+  color: #11863b;
+}
+
+.model-switch-note.bad {
+  border: 1px solid rgba(255, 64, 88, 0.28);
+  background: rgba(255, 64, 88, 0.08);
+  color: #c42338;
+}
+
 .model-debug-details {
   margin-top: 18px;
   border: 1px dashed var(--hairline);

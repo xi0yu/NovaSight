@@ -31,6 +31,8 @@ NovaSight 当前已经具备产品骨架：
 
 更新：采集选择已开始纳入 `RuntimeReconfigurator`，`/api/capture/select` 现在返回采集状态和配置应用报告，成功/失败都能描述 capture live rebuild 的应用结果。
 
+更新：模型切换已补充运行态报告。`/api/models/projects/{project_id}/publish` 成功时返回 `report`，说明实际加载的产物、后端、输入尺寸和类别数量；失败时会记录 `last_switch_error`，前端能明确显示“当前运行模型已保留”，避免推理入口变成黑盒。
+
 ## 2. 产品级设计原则
 
 后续所有模块改造都应该遵循这些原则：

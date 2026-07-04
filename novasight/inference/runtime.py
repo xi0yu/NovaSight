@@ -58,6 +58,10 @@ class InferenceRuntime:
         self._load_error = reason
         logger.warning("inference disabled: %s", reason)
 
+    def record_switch_error(self, reason: str) -> None:
+        self._last_switch_error = reason
+        logger.warning("inference model switch failed: %s", reason)
+
     def probe(
         self,
         artifact_path: Path,

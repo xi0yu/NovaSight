@@ -445,7 +445,12 @@ def _prepare_runnable_artifact(
     try:
         return prepare(artifact_path, classes, input_shape)
     except Exception as exc:
-        raise RegistryValidationError(f"model switch rejected: {exc}") from exc
+        reason = f"model switch rejected: {exc}"
+        record_switch_error = getattr(inference, "record_switch_error", None)
+        if callable(record_switch_error):
+            record_switch_error(reason)
+        logger.exception("model switch prepare failed artifact=%s", artifact_path)
+        raise RegistryValidationError(reason) from exc
 
 
 def _close_candidate(candidate: Any) -> None:
@@ -463,6 +468,50 @@ def _inference_status(request: Request) -> dict[str, Any]:
     if not callable(status):
         return {"available": False, "loaded": False, "reason": "inference runtime unavailable"}
     return dict(status())
+
+
+def _model_switch_report(
+    *,
+    action: str,
+    deployment: Any,
+    artifact_path: Path,
+    classes: list[str],
+    input_shape: str,
+    inference_status: dict[str, Any],
+) -> dict[str, Any]:
+    loaded = inference_status.get("loaded") is True
+    selected = str(inference_status.get("selected") or inference_status.get("engine") or "auto")
+    message = (
+        f"模型已切换：{artifact_path.name} · {selected} · {input_shape}"
+        if loaded
+        else f"模型登记完成，但推理运行态未加载：{artifact_path.name}"
+    )
+    return {
+        "action": action,
+        "applied": loaded,
+        "rolled_back": False,
+        "message": message,
+        "artifact_id": deployment.artifact_id,
+        "previous_artifact_id": deployment.previous_artifact_id,
+        "artifact_path": str(artifact_path),
+        "backend": selected,
+        "input_shape": input_shape,
+        "classes": len(classes),
+        "sections": [
+            {
+                "section": "模型产物",
+                "impact": "推理入口",
+                "status": "applied",
+                "message": f"使用 {artifact_path.suffix.lower() or 'unknown'} 后缀自动选择后端",
+            },
+            {
+                "section": "推理运行态",
+                "impact": "采集 -> 推理 -> 控制",
+                "status": "applied" if loaded else "failed",
+                "message": "候选模型已加载并替换当前模型" if loaded else str(inference_status.get("reason") or "未加载"),
+            },
+        ],
+    }
 
 
 @router.get("/projects")
@@ -771,6 +820,9 @@ def publish(
             input_shape=input_shape,
         )
     except RegistryError as exc:
+        record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
+        if callable(record_switch_error):
+            record_switch_error(str(exc))
         logger.warning(
             "model publish rejected project_id=%s artifact_id=%s error=%s",
             project_id,
@@ -778,9 +830,18 @@ def publish(
             exc,
         )
         raise _as_http_error(exc) from exc
+    inference_status = _inference_status(request)
     return {
         "deployment": asdict(deployment),
-        "inference": _inference_status(request),
+        "inference": inference_status,
+        "report": _model_switch_report(
+            action="publish",
+            deployment=deployment,
+            artifact_path=artifact_path,
+            classes=classes,
+            input_shape=input_shape,
+            inference_status=inference_status,
+        ),
     }
 
 
@@ -792,10 +853,24 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
         current = registry.get_deployment(project_id)
         if current is None or current.previous_artifact_id is None:
             deployment = registry.rollback(project_id=project_id)
+            artifact_path, classes, input_shape = _resolve_runnable_artifact(
+                registry,
+                project_id=project_id,
+                artifact_id=deployment.artifact_id,
+            )
             _load_published_artifact(request, registry, deployment.artifact_id)
+            inference_status = _inference_status(request)
             return {
                 "deployment": asdict(deployment),
-                "inference": _inference_status(request),
+                "inference": inference_status,
+                "report": _model_switch_report(
+                    action="rollback",
+                    deployment=deployment,
+                    artifact_path=artifact_path,
+                    classes=classes,
+                    input_shape=input_shape,
+                    inference_status=inference_status,
+                ),
             }
         artifact_path, classes, input_shape = _resolve_runnable_artifact(
             registry,
@@ -820,9 +895,21 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             input_shape=input_shape,
         )
     except RegistryError as exc:
+        record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
+        if callable(record_switch_error):
+            record_switch_error(str(exc))
         logger.warning("model rollback rejected project_id=%s error=%s", project_id, exc)
         raise _as_http_error(exc) from exc
+    inference_status = _inference_status(request)
     return {
         "deployment": asdict(deployment),
-        "inference": _inference_status(request),
+        "inference": inference_status,
+        "report": _model_switch_report(
+            action="rollback",
+            deployment=deployment,
+            artifact_path=artifact_path,
+            classes=classes,
+            input_shape=input_shape,
+            inference_status=inference_status,
+        ),
     }

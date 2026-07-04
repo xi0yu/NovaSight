@@ -69,9 +69,31 @@ export type ActiveModel = {
   artifact: ModelArtifact | null;
 };
 
+export type OperationReportSection = {
+  section: string;
+  impact: string;
+  status: string;
+  message: string;
+};
+
+export type ModelSwitchReport = {
+  action: string;
+  applied: boolean;
+  rolled_back: boolean;
+  message: string;
+  artifact_id: number;
+  previous_artifact_id: number | null;
+  artifact_path: string;
+  backend: string;
+  input_shape: string;
+  classes: number;
+  sections: OperationReportSection[];
+};
+
 export type ModelPublishResponse = {
   deployment: Deployment;
   inference: Record<string, unknown>;
+  report?: ModelSwitchReport;
 };
 
 export type CaptureState = {
@@ -187,12 +209,7 @@ export type ConfigUpdateResponse = {
   applied?: boolean;
   rolled_back?: boolean;
   message?: string;
-  sections?: Array<{
-    section: string;
-    impact: string;
-    status: string;
-    message: string;
-  }>;
+  sections?: OperationReportSection[];
 };
 
 export type LicenseFeature =
@@ -310,6 +327,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
           ? objectBody.reason
           : objectBody && typeof objectBody.detail === "string"
             ? objectBody.detail
+            : objectBody &&
+                typeof objectBody.detail === "object" &&
+                objectBody.detail !== null &&
+                typeof (objectBody.detail as Record<string, unknown>).message === "string"
+              ? String((objectBody.detail as Record<string, unknown>).message)
             : response.statusText;
     throw new ApiError(detail || "请求失败", response.status, body);
   }
