@@ -284,6 +284,7 @@ export function StudioConsoleView({
   const inferenceConfig = nestedRecord(config, "inference");
   const controlConfig = nestedRecord(config, "control");
   const hardwareConfig = nestedRecord(config, "hardware");
+  const consumersConfig = nestedRecord(config, "consumers");
   const vision = asRecord(runtime?.vision);
   const execution = asRecord(vision.execution);
   const executionIntent = asRecord(execution.intent);
@@ -362,6 +363,7 @@ export function StudioConsoleView({
   const kmnetDriverAvailable = kmnetStatus.available === true;
   const kmnetButtonLeft = kmnetStatus.button_left === true;
   const kmnetButtonRight = kmnetStatus.button_right === true;
+  const previewEnabled = consumersConfig.preview !== false;
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
@@ -1280,7 +1282,7 @@ export function StudioConsoleView({
             </div>
             <div className="console-card">
               <h2 className="console-title">推理输出</h2>
-              <PreviewFrame enabled={activePage === "infer"} runtime={runtime} roiSize={roiSize} />
+              <PreviewFrame enabled={activePage === "infer" && previewEnabled} runtime={runtime} roiSize={roiSize} />
               <div className="business-trace">
                 <div className="business-trace-head">
                   <span>主营链路诊断</span>

@@ -65,6 +65,13 @@ def state(request: Request) -> dict:
 @router.get("/stream.mjpg")
 def stream(request: Request):
     capture = request.app.state.capture
+    config = getattr(request.app.state, "config", None)
+    consumers = getattr(config, "consumers", None)
+    if consumers is not None and getattr(consumers, "preview", True) is not True:
+        return JSONResponse(
+            status_code=503,
+            content={"message": "预览消费者已关闭，主链路保持运行。"},
+        )
     session = getattr(capture, "session", None)
     if (
         capture.source is None
@@ -76,15 +83,15 @@ def stream(request: Request):
             content={"message": "采集未启动，无法打开预览。"},
         )
     preview_fps = _normalize_preview_fps(
-        getattr(getattr(request.app.state, "config", None), "limits", None)
-        and request.app.state.config.limits.stream_fps
+        getattr(config, "limits", None)
+        and config.limits.stream_fps
     )
     roi_size = _normalize_roi_size(
-        getattr(getattr(request.app.state, "config", None), "roi", None)
-        and request.app.state.config.roi.size
+        getattr(config, "roi", None)
+        and config.roi.size
     )
-    roi_offset_x = int(getattr(getattr(request.app.state.config, "roi", None), "offset_x", 0))
-    roi_offset_y = int(getattr(getattr(request.app.state.config, "roi", None), "offset_y", 0))
+    roi_offset_x = int(getattr(getattr(config, "roi", None), "offset_x", 0))
+    roi_offset_y = int(getattr(getattr(config, "roi", None), "offset_y", 0))
     capture.state.preview_target_fps = preview_fps
     return StreamingResponse(
         _mjpeg_frames(
@@ -94,6 +101,7 @@ def stream(request: Request):
             roi_size=roi_size,
             roi_offset_x=roi_offset_x,
             roi_offset_y=roi_offset_y,
+            config_getter=lambda: getattr(request.app.state, "config", None),
         ),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
@@ -241,6 +249,7 @@ def _mjpeg_frames(
     roi_size: int = 640,
     roi_offset_x: int = 0,
     roi_offset_y: int = 0,
+    config_getter=None,
     max_frames: int | None = None,
     max_attempts: int | None = None,
 ) -> Iterator[bytes]:
@@ -252,6 +261,11 @@ def _mjpeg_frames(
     interval_s = 1.0 / preview_fps
     capture.state.preview_target_fps = preview_fps
     while True:
+        if config_getter is not None:
+            config = config_getter()
+            consumers = getattr(config, "consumers", None)
+            if consumers is not None and getattr(consumers, "preview", True) is not True:
+                break
         if max_frames is not None and emitted >= max_frames:
             break
         if max_attempts is not None and attempts >= max_attempts:

@@ -102,15 +102,20 @@ class ExecutorRegistry:
             },
         )
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, refresh_buttons: bool = False) -> dict[str, Any]:
+        def executor_status(executor: Executor) -> dict[str, Any]:
+            status = getattr(executor, "status", None)
+            if not callable(status):
+                return {"available": executor.available()}
+            try:
+                return status(refresh_buttons=refresh_buttons)
+            except TypeError:
+                return status()
+
         return {
             "selected": self.selected,
             "executors": {
-                executor_id: (
-                    executor.status()
-                    if hasattr(executor, "status") and callable(getattr(executor, "status"))
-                    else {"available": executor.available()}
-                )
+                executor_id: executor_status(executor)
                 for executor_id, executor in self.executors.items()
             },
         }

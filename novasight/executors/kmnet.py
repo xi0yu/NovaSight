@@ -64,8 +64,8 @@ class KmNetExecutor:
     def available(self) -> bool:
         return self._driver is not None
 
-    def status(self) -> dict[str, Any]:
-        if self._driver is not None and self.monitoring:
+    def status(self, *, refresh_buttons: bool = False) -> dict[str, Any]:
+        if refresh_buttons and self._driver is not None and self.monitoring:
             self.read_buttons()
         return {
             "available": self.available(),
