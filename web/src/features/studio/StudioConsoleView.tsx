@@ -349,6 +349,9 @@ export function StudioConsoleView({
   const version = runtime?.active_model?.version;
   const activeArtifactLabel = artifact ? `${artifact.kind.toUpperCase()} · ${artifact.path}` : "未加载产物";
   const lastModelSwitchError = readString(runtime?.inference?.last_switch_error, "");
+  const runtimeInputShape = readString(runtime?.inference?.input_shape, "");
+  const registeredInputShape = version?.input_shape ?? "";
+  const displayedInputShape = runtimeInputShape || registeredInputShape;
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.status === "ready" &&
@@ -1114,7 +1117,7 @@ export function StudioConsoleView({
               </select>
               <div className="model-primary-summary">
                 <span>{readString(runtime?.inference?.selected, "按模型后缀自动选择")}</span>
-                <span>{version?.input_shape ? `输入 ${version.input_shape}` : "等待模型输入信息"}</span>
+                <span>{displayedInputShape ? `运行输入 ${displayedInputShape}` : "等待模型输入信息"}</span>
                 <span>{selectedSwitchArtifact?.kind ? selectedSwitchArtifact.kind.toUpperCase() : "无可用产物"}</span>
               </div>
               <div className="model-active-summary">
@@ -1216,7 +1219,8 @@ export function StudioConsoleView({
                 <div className="model-debug-grid">
                   <span>推荐产物</span><b>{preferredSwitchArtifact ? `${preferredSwitchArtifact.kind} · ${preferredSwitchArtifact.path}` : "-"}</b>
                   <span>当前产物</span><b>{selectedSwitchArtifact ? `${selectedSwitchArtifact.kind} · ${selectedSwitchArtifact.path}` : "-"}</b>
-                  <span>输入尺寸</span><b>{version?.input_shape ?? "-"}</b>
+                  <span>运行输入</span><b>{runtimeInputShape || "-"}</b>
+                  <span>登记输入</span><b>{registeredInputShape || "-"}</b>
                   <span>ROI</span><b>{roiSize} · 自动缩放</b>
                   <span>后端</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
                   <span>类别数量</span><b>{String(version?.classes.length ?? 0)}</b>

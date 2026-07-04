@@ -462,6 +462,32 @@ def _close_candidate(candidate: Any) -> None:
             pass
 
 
+def _actual_runtime_input_shape(status: dict[str, Any], fallback: str) -> str:
+    actual = status.get("input_shape")
+    return str(actual).strip() if isinstance(actual, str) and actual.strip() else fallback
+
+
+def _sync_artifact_version_input_shape(
+    registry: ModelRegistry,
+    *,
+    artifact_id: int,
+    input_shape: str,
+) -> None:
+    artifact = registry.get_artifact(artifact_id)
+    if artifact is None:
+        return
+    version = registry.get_version(artifact.version_id)
+    if version is None or version.input_shape == input_shape:
+        return
+    registry.update_version_input_shape(version.id, input_shape)
+    logger.info(
+        "model version input shape updated from runtime artifact_id=%s version_id=%s input=%s",
+        artifact_id,
+        version.id,
+        input_shape,
+    )
+
+
 def _pause_runtime_pipeline_for_model_switch(request: Request) -> bool:
     runtime = getattr(request.app.state, "runtime", None)
     pipeline = getattr(runtime, "pipeline", None)
@@ -825,12 +851,13 @@ def publish(
             artifact_id=payload.artifact_id,
         )
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
-        candidate, _candidate_status = _prepare_runnable_artifact(
+        candidate, candidate_status = _prepare_runnable_artifact(
             request,
             artifact_path=artifact_path,
             classes=classes,
             input_shape=input_shape,
         )
+        input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
         try:
             deployment = registry.publish(
                 project_id=project_id,
@@ -839,6 +866,11 @@ def publish(
         except RegistryError:
             _close_candidate(candidate)
             raise
+        _sync_artifact_version_input_shape(
+            registry,
+            artifact_id=payload.artifact_id,
+            input_shape=input_shape,
+        )
         request.app.state.inference.commit(
             candidate,
             artifact_path=artifact_path,
@@ -894,6 +926,12 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             _load_published_artifact(request, registry, deployment.artifact_id)
             _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
             inference_status = _inference_status(request)
+            input_shape = _actual_runtime_input_shape(inference_status, input_shape)
+            _sync_artifact_version_input_shape(
+                registry,
+                artifact_id=deployment.artifact_id,
+                input_shape=input_shape,
+            )
             return {
                 "deployment": asdict(deployment),
                 "inference": inference_status,
@@ -911,17 +949,23 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             project_id=project_id,
             artifact_id=current.previous_artifact_id,
         )
-        candidate, _candidate_status = _prepare_runnable_artifact(
+        candidate, candidate_status = _prepare_runnable_artifact(
             request,
             artifact_path=artifact_path,
             classes=classes,
             input_shape=input_shape,
         )
+        input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
         try:
             deployment = registry.rollback(project_id=project_id)
         except RegistryError:
             _close_candidate(candidate)
             raise
+        _sync_artifact_version_input_shape(
+            registry,
+            artifact_id=current.previous_artifact_id,
+            input_shape=input_shape,
+        )
         request.app.state.inference.commit(
             candidate,
             artifact_path=artifact_path,
