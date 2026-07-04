@@ -22,6 +22,7 @@ import {
   startRuntimePipeline,
   stopCapture,
   streamUrl,
+  updateLocalTrigger,
   updateRuntimeConfig
 } from "../../api";
 import { getErrorMessage } from "../shared/format";
@@ -98,6 +99,27 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function mouseBindingName(button: number): string {
+  if (button === 0) {
+    return "MouseLeft";
+  }
+  if (button === 1) {
+    return "MouseMiddle";
+  }
+  if (button === 2) {
+    return "MouseRight";
+  }
+  return `Mouse${button}`;
+}
+
+function keyBindingName(code: string): string {
+  return code.startsWith("Key") ? code : `Key${code}`;
 }
 
 function triggerModeLabel(value: string): string {
@@ -218,9 +240,13 @@ export function StudioConsoleView({
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
   const [kmnetTestMessage, setKmnetTestMessage] = useState("");
+  const [captureBindingSlot, setCaptureBindingSlot] = useState<number | null>(null);
+  const [localTriggerActive, setLocalTriggerActive] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pressedBindingsRef = useRef<Set<string>>(new Set());
+  const localTriggerActiveRef = useRef(false);
 
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
@@ -282,6 +308,7 @@ export function StudioConsoleView({
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
+  const triggerBindings = readStringArray(controlConfig.trigger_bindings).slice(0, 2);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -559,7 +586,7 @@ export function StudioConsoleView({
   }, [onRefresh]);
 
   const updateConfigField = useCallback(
-    async (section: string, key: string, value: number | string | boolean) => {
+    async (section: string, key: string, value: number | string | boolean | string[]) => {
       const next = cloneRuntimeConfig(runtime);
       if (!next) {
         return;
@@ -582,6 +609,99 @@ export function StudioConsoleView({
     },
     [onRefresh, runtime]
   );
+
+  const setTriggerBinding = useCallback(
+    async (slot: number, binding: string) => {
+      const next = [...triggerBindings];
+      next[slot] = binding;
+      const unique = next.filter(Boolean).filter((item, index, arr) => arr.indexOf(item) === index).slice(0, 2);
+      await updateConfigField("control", "trigger_bindings", unique);
+    },
+    [triggerBindings, updateConfigField]
+  );
+
+  useEffect(() => {
+    const allowed = new Set(triggerBindings.map((item) => item.toLowerCase()));
+    const commit = (nextActive: boolean, bindings: string[]) => {
+      if (localTriggerActiveRef.current === nextActive) {
+        return;
+      }
+      localTriggerActiveRef.current = nextActive;
+      setLocalTriggerActive(nextActive);
+      void updateLocalTrigger(nextActive, bindings);
+    };
+    const activeBindings = () =>
+      [...pressedBindingsRef.current].filter((item) => allowed.has(item.toLowerCase()));
+    const refresh = () => {
+      const active = activeBindings();
+      commit(active.length > 0, active);
+    };
+    const isEditableTarget = (target: EventTarget | null) => {
+      const element = target instanceof HTMLElement ? target : null;
+      return !!element?.closest("input, textarea, select, [contenteditable='true']");
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (captureBindingSlot !== null) {
+        event.preventDefault();
+        void setTriggerBinding(captureBindingSlot, keyBindingName(event.code));
+        setCaptureBindingSlot(null);
+        return;
+      }
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+      const binding = keyBindingName(event.code);
+      if (!allowed.has(binding.toLowerCase())) {
+        return;
+      }
+      pressedBindingsRef.current.add(binding);
+      refresh();
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      pressedBindingsRef.current.delete(keyBindingName(event.code));
+      refresh();
+    };
+    const onMouseDown = (event: MouseEvent) => {
+      const binding = mouseBindingName(event.button);
+      if (captureBindingSlot !== null) {
+        event.preventDefault();
+        void setTriggerBinding(captureBindingSlot, binding);
+        setCaptureBindingSlot(null);
+        return;
+      }
+      if (!allowed.has(binding.toLowerCase())) {
+        return;
+      }
+      if (binding === "MouseRight") {
+        event.preventDefault();
+      }
+      pressedBindingsRef.current.add(binding);
+      refresh();
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      pressedBindingsRef.current.delete(mouseBindingName(event.button));
+      refresh();
+    };
+    const clear = () => {
+      pressedBindingsRef.current.clear();
+      commit(false, []);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    window.addEventListener("blur", clear);
+    window.addEventListener("contextmenu", onMouseDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("mouseup", onMouseUp, true);
+      window.removeEventListener("blur", clear);
+      window.removeEventListener("contextmenu", onMouseDown, true);
+      clear();
+    };
+  }, [captureBindingSlot, setTriggerBinding, triggerBindings]);
 
   const updateHardwareKind = useCallback(
     async (kind: string) => {
@@ -1091,6 +1211,23 @@ export function StudioConsoleView({
                 <option value="telemetry">持续计算，按键发送</option>
                 <option value="always">调试直出</option>
               </select>
+              <label>本地按键绑定</label>
+              <div className="trigger-binding-grid">
+                {[0, 1].map((slot) => (
+                  <button
+                    className={captureBindingSlot === slot ? "trigger-binding capture" : "trigger-binding"}
+                    key={slot}
+                    onClick={() => setCaptureBindingSlot(slot)}
+                    type="button"
+                  >
+                    <span>{slot === 0 ? "绑定一" : "绑定二"}</span>
+                    <b>{captureBindingSlot === slot ? "按下键盘或鼠标" : triggerBindings[slot] || "未设置"}</b>
+                  </button>
+                ))}
+              </div>
+              <div className={localTriggerActive ? "trigger-state active" : "trigger-state"}>
+                {localTriggerActive ? "本地触发已按下" : "本地触发未按下"}
+              </div>
               <label>目标锁定</label>
               <select
                 value={targetLockEnabled ? "true" : "false"}
@@ -1136,6 +1273,7 @@ export function StudioConsoleView({
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
                 <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
                 <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
+                <span>本地绑定</span><b>{triggerBindings.length ? triggerBindings.join(" / ") : "-"}</b>
                 <span>输出状态</span><b>{control.will_emit === true ? "允许输出" : "等待触发"}</b>
                 <span>触发要求</span><b>{control.trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
                 <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>

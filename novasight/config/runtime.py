@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import MISSING, Field, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar, get_type_hints
+from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -97,6 +97,7 @@ class ControlConfig:
     target_lost_grace_frames: int = 5
     aim_ratio: float = 40.0
     trigger_mode: str = "hardware"
+    trigger_bindings: list[str] = field(default_factory=lambda: ["MouseRight"])
     output_mode: str = ""
     strategy: str = "pid"
     pid_kp_x: float = 0.35
@@ -172,6 +173,14 @@ def _field_default(item: Field[Any]) -> Any:
 
 
 def _validate_leaf_value(key_name: str, value: Any, expected_type: type[Any]) -> None:
+    origin = get_origin(expected_type)
+    args = get_args(expected_type)
+    if origin is list:
+        if not isinstance(value, list):
+            raise ValueError(f"runtime config key '{key_name}' must be a list")
+        if args and args[0] is str and not all(isinstance(item, str) for item in value):
+            raise ValueError(f"runtime config key '{key_name}' must be a list of strings")
+        return
     if expected_type is int:
         if not isinstance(value, int) or isinstance(value, bool):
             raise ValueError(f"runtime config key '{key_name}' must be an int")
@@ -255,6 +264,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.target_sticky_bias' must be >= 0 and <= 0.9")
     if cfg.control.aim_ratio < 0 or cfg.control.aim_ratio > 100:
         raise ValueError("runtime config key 'control.aim_ratio' must be >= 0 and <= 100")
+    cfg.control.trigger_bindings = _normalize_trigger_bindings(cfg.control.trigger_bindings)
+    if cfg.control.trigger_mode not in {"hardware", "telemetry", "always"}:
+        raise ValueError("runtime config key 'control.trigger_mode' must be hardware, telemetry, or always")
     if cfg.control.target_lost_grace_frames < 0:
         raise ValueError("runtime config key 'control.target_lost_grace_frames' must be >= 0")
     if cfg.control.move_kind not in {"raw", "auto", "bezier"}:
@@ -328,6 +340,20 @@ def _parse_class_priority(value: str) -> list[int]:
         if class_id not in seen:
             seen.add(class_id)
             result.append(class_id)
+    return result
+
+
+def _normalize_trigger_bindings(value: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+        if len(result) >= 2:
+            break
     return result
 
 

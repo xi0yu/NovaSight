@@ -6,6 +6,8 @@ from novasight.capture.source import CapturedFrame
 from novasight.contracts import Detection
 from novasight.roi import center_roi_frame
 
+MAX_PREVIEW_DETECTION_FRAME_LAG = 6
+
 
 def render_preview_frame(
     frame: CapturedFrame,
@@ -75,7 +77,12 @@ def _runtime_roi_detections(
         return []
     context_frame_id = getattr(context, "frame_id", None)
     if context_frame_id != frame_id:
-        return []
+        try:
+            frame_delta = int(frame_id) - int(context_frame_id)
+        except (TypeError, ValueError):
+            return []
+        if frame_delta < 0 or frame_delta > MAX_PREVIEW_DETECTION_FRAME_LAG:
+            return []
     detections: list[Detection] = []
     context_width = int(getattr(context, "width", 0) or 0)
     context_height = int(getattr(context, "height", 0) or 0)

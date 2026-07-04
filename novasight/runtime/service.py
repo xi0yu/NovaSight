@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import time
 from typing import Any
 
 from novasight.capture.source import CapturedFrame
@@ -48,6 +49,9 @@ class RuntimeService:
             "available": False,
             "reason": "推理尚未执行",
         }
+        self._local_trigger_active = False
+        self._local_trigger_bindings: list[str] = []
+        self._local_trigger_updated_s = 0.0
         self.control_strategy = self._create_control_strategy(config)
         self.target_selector = RuntimeTargetSelector()
 
@@ -100,6 +104,22 @@ class RuntimeService:
             "thread": thread_name,
             "message": str(exc),
             "crash_log": str(path),
+        }
+
+    def update_local_trigger(self, *, active: bool, bindings: list[str] | None = None) -> dict[str, Any]:
+        configured = self._configured_trigger_bindings()
+        normalized = self._normalize_trigger_bindings(bindings if bindings is not None else configured)
+        allowed = {item.lower() for item in configured}
+        accepted = bool(active) and bool(normalized) and any(item.lower() in allowed for item in normalized)
+        self._local_trigger_active = accepted
+        self._local_trigger_bindings = normalized
+        self._local_trigger_updated_s = time.monotonic()
+        return {
+            "available": bool(configured),
+            "active": self._local_trigger_active,
+            "bindings": list(configured),
+            "pressed": list(normalized),
+            "updated_ms": int(self._local_trigger_updated_s * 1000),
         }
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
@@ -437,7 +457,10 @@ class RuntimeService:
         return result
 
     def _box_input_state(self) -> BoxInputState:
+        local = self._local_trigger_state()
         if getattr(getattr(self.config, "hardware", None), "kind", "none") in {"", "none", "silent"}:
+            if local.active:
+                return local
             return BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
         button_reader = getattr(self.executors, "read_buttons", None)
         if callable(button_reader):
@@ -446,11 +469,16 @@ class RuntimeService:
             except Exception:
                 buttons = {}
             if buttons.get("available") is True:
-                return BoxInputState(
+                hardware_state = BoxInputState(
                     left=bool(buttons.get("left")),
                     right=bool(buttons.get("right")),
                     raw={"source": "kmnet_executor", **buttons},
                 )
+                if local.active:
+                    return self._merge_box_input(hardware_state, local)
+                return hardware_state
+        if local.active:
+            return local
         getter = getattr(self.hardware, "get_input_state", None)
         if not callable(getter):
             return BoxInputState()
@@ -459,6 +487,54 @@ class RuntimeService:
         except Exception:
             return BoxInputState()
         return state if isinstance(state, BoxInputState) else BoxInputState()
+
+    def _local_trigger_state(self) -> BoxInputState:
+        if not self._local_trigger_active:
+            return BoxInputState(raw={"source": "local_trigger", "active": False})
+        if time.monotonic() - self._local_trigger_updated_s > 0.75:
+            self._local_trigger_active = False
+            self._local_trigger_bindings = []
+            return BoxInputState(raw={"source": "local_trigger", "active": False, "reason": "expired"})
+        return BoxInputState(
+            side=True,
+            raw={
+                "source": "local_trigger",
+                "active": True,
+                "bindings": list(self._local_trigger_bindings),
+            },
+        )
+
+    @staticmethod
+    def _merge_box_input(first: BoxInputState, second: BoxInputState) -> BoxInputState:
+        return BoxInputState(
+            left=first.left or second.left,
+            right=first.right or second.right,
+            side=first.side or second.side,
+            raw={
+                "source": "merged",
+                "hardware": first.raw,
+                "local": second.raw,
+            },
+        )
+
+    def _configured_trigger_bindings(self) -> list[str]:
+        return self._normalize_trigger_bindings(
+            list(getattr(getattr(self.config, "control", None), "trigger_bindings", []) or [])
+        )
+
+    @staticmethod
+    def _normalize_trigger_bindings(bindings: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in bindings:
+            normalized = str(item).strip()
+            if not normalized or normalized.lower() in seen:
+                continue
+            seen.add(normalized.lower())
+            result.append(normalized)
+            if len(result) >= 2:
+                break
+        return result
 
     def _create_control_strategy(self, config: RuntimeConfig):
         strategy = getattr(config.control, "strategy", "pid")

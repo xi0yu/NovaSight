@@ -41,6 +41,8 @@ control:
   # telemetry: always calculate telemetry, hardware button gates output.
   # always: debug direct output without hardware trigger gate.
   trigger_mode: hardware
+  trigger_bindings:
+    - MouseRight
   strategy: pid
   pid_kp_x: 0.35
   pid_kp_y: 0.24

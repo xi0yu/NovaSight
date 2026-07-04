@@ -57,6 +57,8 @@ export function setConfigValue(
         ? Number.parseFloat(rawValue || "0")
         : field.type === "bool"
           ? rawValue === "true"
+        : field.type === "string_list"
+          ? rawValue.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 2)
         : field.type === "select" && typeof current === "number"
           ? Number.parseInt(rawValue || "0", 10)
           : rawValue;
@@ -258,11 +260,11 @@ export function ConfigView({
                           </select>
                         ) : (
                           <input
-                            type={field.type === "string" ? "text" : "number"}
+                            type={field.type === "string" || field.type === "string_list" ? "text" : "number"}
                             min={field.min}
                             max={field.max}
                             step={field.type === "float" ? "0.1" : "1"}
-                            value={String(value ?? "")}
+                            value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
                             disabled={!canWriteConfig}
                             onChange={(event) =>
                               setConfig(setConfigValue(config, field.path, event.target.value, field))

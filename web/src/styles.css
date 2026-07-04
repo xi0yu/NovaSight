@@ -4136,6 +4136,68 @@ tbody tr:hover {
   white-space: normal;
 }
 
+.trigger-binding-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 8px 0 10px;
+}
+
+.trigger-binding {
+  min-width: 0;
+  height: auto;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--text);
+  text-align: left;
+}
+
+.trigger-binding span,
+.trigger-binding b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger-binding span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.trigger-binding b {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.84rem;
+}
+
+.trigger-binding.capture {
+  border-color: rgba(255, 64, 88, 0.58);
+  background: rgba(255, 64, 88, 0.08);
+  box-shadow: 0 0 0 4px rgba(255, 64, 88, 0.08);
+}
+
+.trigger-state {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.52);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.trigger-state.active {
+  border-color: rgba(25, 198, 74, 0.36);
+  background: rgba(25, 198, 74, 0.1);
+  color: #11863b;
+}
+
 .model-primary-summary {
   display: flex;
   flex-wrap: wrap;

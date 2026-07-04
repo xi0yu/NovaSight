@@ -160,7 +160,7 @@ export type RuntimeConfig = Record<string, RuntimeConfigValue>;
 export type ConfigFieldSchema = {
   path: string;
   label: string;
-  type: "string" | "int" | "float" | "select" | "bool";
+  type: "string" | "string_list" | "int" | "float" | "select" | "bool";
   options?: string[];
   min?: number;
   max?: number;
@@ -227,6 +227,7 @@ export const API_PATHS = {
   runtimeState: "/api/runtime/state",
   runtimeStart: "/api/runtime/start",
   runtimeStop: "/api/runtime/stop",
+  runtimeLocalTrigger: "/api/runtime/local-trigger",
   config: "/api/config",
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
@@ -323,6 +324,19 @@ export function startRuntimePipeline(): Promise<Record<string, RuntimeConfigValu
 export function stopRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeStop, {
     method: "POST"
+  });
+}
+
+export function updateLocalTrigger(
+  active: boolean,
+  bindings: string[]
+): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeLocalTrigger, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ active, bindings: bindings.slice(0, 2) })
   });
 }
 

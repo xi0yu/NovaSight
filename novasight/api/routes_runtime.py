@@ -107,6 +107,15 @@ def stop_runtime(request: Request) -> dict[str, Any]:
     return {"running": False}
 
 
+@router.post("/api/runtime/local-trigger")
+async def update_local_trigger(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    active = bool(payload.get("active", False))
+    raw_bindings = payload.get("bindings", [])
+    bindings = [str(item) for item in raw_bindings[:2]] if isinstance(raw_bindings, list) else []
+    return request.app.state.runtime.update_local_trigger(active=active, bindings=bindings)
+
+
 @router.websocket("/ws/status")
 async def websocket_status(websocket: WebSocket) -> None:
     status = websocket.app.state.license.status()
