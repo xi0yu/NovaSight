@@ -75,12 +75,7 @@ def _runtime_roi_detections(
         return []
     context_frame_id = getattr(context, "frame_id", None)
     if context_frame_id != frame_id:
-        try:
-            frame_delta = int(frame_id) - int(context_frame_id)
-        except (TypeError, ValueError):
-            return []
-        if frame_delta < 0 or frame_delta > 240:
-            return []
+        return []
     detections: list[Detection] = []
     context_width = int(getattr(context, "width", 0) or 0)
     context_height = int(getattr(context, "height", 0) or 0)

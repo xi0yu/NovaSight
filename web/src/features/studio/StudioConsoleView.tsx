@@ -1114,6 +1114,7 @@ export function StudioConsoleView({
               <h2 className="console-title">控制量反馈</h2>
               <div className="console-kv control-feedback-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
+                <span>目标序号</span><b>{formatNumber(control.target_detection_index ?? target.target_detection_index, 0)}</b>
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
                 <span>aim dx</span><b>{formatNumber(control.aim_error_x, 1)}</b>

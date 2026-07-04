@@ -341,8 +341,10 @@ class RuntimeService:
         raw_error_x = float(pipeline_debug.get("raw_px_x", aim_error_x))
         raw_error_y = float(pipeline_debug.get("raw_px_y", aim_error_y))
         raw_error_y_image = -raw_error_y
+        target_detection_index = self._target_detection_index(context, target)
         self.last_target = {
             **self._target_payload(target, context),
+            "target_detection_index": target_detection_index,
             "aim_ratio": aim_ratio,
             "aim_x": aim_x,
             "aim_y": aim_y,
@@ -373,6 +375,7 @@ class RuntimeService:
             "pipeline": pipeline_debug,
             "selector_state": selection.state,
             "selection_reason": selection.reason,
+            "target_detection_index": target_detection_index,
             "priority_rank": selection.priority_rank,
             "distance_px": selection.distance_px,
             "trigger_active": box_input.active,
@@ -512,6 +515,22 @@ class RuntimeService:
         ):
             if hasattr(self.control_strategy, name):
                 setattr(self.control_strategy, name, value)
+
+    @staticmethod
+    def _target_detection_index(context: FrameContext, target: Track | Detection) -> int | None:
+        for index, detection in enumerate(context.detections):
+            if detection is target:
+                return index
+        for index, detection in enumerate(context.detections):
+            if (
+                int(detection.cls) == int(target.cls)
+                and abs(float(detection.x) - float(target.x)) <= 1e-3
+                and abs(float(detection.y) - float(target.y)) <= 1e-3
+                and abs(float(detection.w) - float(target.w)) <= 1e-3
+                and abs(float(detection.h) - float(target.h)) <= 1e-3
+            ):
+                return index
+        return None
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
         class_name = self._class_display_name(int(target.cls), context)
