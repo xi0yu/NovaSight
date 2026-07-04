@@ -4057,6 +4057,41 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.console-class-list {
+  max-height: 220px;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.console-class-row {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--ink);
+  box-shadow: none;
+  font-size: 14px;
+  font-weight: 850;
+  text-align: left;
+}
+
+.console-class-row.active {
+  border-color: var(--accent-red);
+  background: linear-gradient(180deg, var(--accent-red-2), var(--accent-red));
+  color: #11151f;
+  box-shadow: 0 8px 16px rgba(255, 64, 88, 0.18);
+}
+
 .console-tabs {
   height: 48px;
   display: grid;

@@ -49,6 +49,28 @@ class InferenceConfig:
     confidence_threshold: float = 0.25
     nms_threshold: float = 0.45
     input_source: str = "source.default"
+    detection_class_profile: str = "default"
+    detection_class_filter: str = "all"
+    detection_class_profiles: dict[str, list[str]] = field(default_factory=lambda: {
+        "default": [
+            "0-敌人/身体",
+            "1-头部",
+            "2-队友",
+            "3-小兵",
+            "4-倒地",
+            "5-靶场",
+            "6-靶场头",
+            "7-类别7",
+            "8-类别8",
+            "9-类别9",
+            "10-类别10",
+            "11-类别11",
+            "12-类别12",
+            "13-类别13",
+            "14-类别14",
+            "15-类别15",
+        ]
+    })
 
 
 @dataclass
@@ -70,11 +92,13 @@ class ControlConfig:
     output_mode: str = ""
     strategy: str = "pid"
     pid_kp_x: float = 0.35
-    pid_kp_y: float = 0.35
+    pid_kp_y: float = 0.24
     pid_ki: float = 0.1
     pid_kd: float = 0.1
     pid_integral_limit: float = 250.0
     pid_move_limit: float = 120.0
+    kp_x_move_max: float = 150.0
+    kp_y_move_max: float = 30.0
     command_interval_ms: float = 1.0
     move_kind: str = "raw"
     move_ms: int = 12
@@ -204,6 +228,15 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'inference.nms_threshold' must be >= 0 and <= 1")
     if cfg.inference.input_source != "source.default":
         raise ValueError("runtime config key 'inference.input_source' must be source.default")
+    if cfg.inference.detection_class_filter != "all":
+        try:
+            class_index = int(cfg.inference.detection_class_filter)
+        except ValueError as exc:
+            raise ValueError("runtime config key 'inference.detection_class_filter' must be all or a class index") from exc
+        if class_index < 0 or class_index > 255:
+            raise ValueError("runtime config key 'inference.detection_class_filter' must be between 0 and 255")
+    if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
+        raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
     if cfg.control.strategy not in {"pid", "proportional", "predictive"}:
         raise ValueError("runtime config key 'control.strategy' must be pid, proportional, or predictive")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
@@ -213,6 +246,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     for key in (
         "pid_integral_limit",
         "pid_move_limit",
+        "kp_x_move_max",
+        "kp_y_move_max",
         "move_ms",
         "trace_ms",
         "deadzone_counts",

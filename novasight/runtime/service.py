@@ -183,6 +183,7 @@ class RuntimeService:
                         offset_y=roi_frame.offset_y,
                     )
                 )
+            detections = self._filter_detections_by_config(detections)
             classes = list(inference_result.classes)
         except Exception as exc:
             self.last_inference_reason = str(exc)
@@ -318,6 +319,16 @@ class RuntimeService:
             ),
         )
 
+    def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
+        selected = str(getattr(self.config.inference, "detection_class_filter", "all"))
+        if selected == "all":
+            return detections
+        try:
+            class_id = int(selected)
+        except ValueError:
+            return detections
+        return [item for item in detections if int(item.cls) == class_id]
+
     def _box_input_state(self) -> BoxInputState:
         if getattr(getattr(self.config, "hardware", None), "kind", "none") in {"", "none", "silent"}:
             return BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
@@ -356,14 +367,12 @@ class RuntimeService:
             kd=config.control.pid_kd,
             integral_limit=config.control.pid_integral_limit,
             move_limit=config.control.pid_move_limit,
+            move_limit_x=config.control.kp_x_move_max,
+            move_limit_y=config.control.kp_y_move_max,
         )
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
-        class_name = (
-            context.classes[target.cls]
-            if 0 <= int(target.cls) < len(context.classes)
-            else str(target.cls)
-        )
+        class_name = self._class_display_name(int(target.cls), context)
         payload = {
             "frame_id": context.frame_id,
             "class_id": int(target.cls),
@@ -383,11 +392,7 @@ class RuntimeService:
         return payload
 
     def _detection_payload(self, detection: Detection, context: FrameContext) -> dict[str, Any]:
-        class_name = (
-            context.classes[detection.cls]
-            if 0 <= int(detection.cls) < len(context.classes)
-            else str(detection.cls)
-        )
+        class_name = self._class_display_name(int(detection.cls), context)
         return {
             "frame_id": context.frame_id,
             "class_id": int(detection.cls),
@@ -433,6 +438,16 @@ class RuntimeService:
 
     def _source_height(self, frame: CapturedFrame) -> int:
         return int(frame.source_height or frame.height)
+
+    def _class_display_name(self, class_id: int, context: FrameContext) -> str:
+        profiles = getattr(self.config.inference, "detection_class_profiles", {}) or {}
+        profile_name = str(getattr(self.config.inference, "detection_class_profile", "default"))
+        profile = profiles.get(profile_name) or profiles.get("default") or []
+        if 0 <= class_id < len(profile):
+            return str(profile[class_id])
+        if 0 <= class_id < len(context.classes):
+            return context.classes[class_id]
+        return str(class_id)
 
     def _image_width(self, image: Any | None) -> int | None:
         if image is None:

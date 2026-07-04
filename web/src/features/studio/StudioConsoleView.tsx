@@ -21,7 +21,7 @@ import {
 } from "../../api";
 import { getErrorMessage } from "../shared/format";
 
-type ConsolePage = "capture" | "infer" | "stats" | "latency";
+type ConsolePage = "capture" | "infer" | "params" | "stats" | "latency";
 
 type StudioConsoleViewProps = {
   health: HealthResponse | null;
@@ -42,8 +42,9 @@ type CapabilityChoice = {
 const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "capture", index: "01", label: "采集" },
   { id: "infer", index: "02", label: "模型推理" },
-  { id: "stats", index: "03", label: "统计" },
-  { id: "latency", index: "04", label: "采集延迟" }
+  { id: "params", index: "03", label: "参数设置" },
+  { id: "stats", index: "04", label: "统计" },
+  { id: "latency", index: "05", label: "采集延迟" }
 ];
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
@@ -56,6 +57,15 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function nestedRecord(value: unknown, key: string): Record<string, unknown> {
   return asRecord(asRecord(value)[key]);
+}
+
+function recordList(value: unknown): Record<string, string[]> {
+  const raw = asRecord(value);
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([, items]) => Array.isArray(items))
+      .map(([key, items]) => [key, (items as unknown[]).map((item) => String(item))])
+  );
 }
 
 function readNumber(value: unknown, fallback = 0): number {
@@ -146,6 +156,7 @@ export function StudioConsoleView({
   const config = runtime?.config;
   const roiConfig = nestedRecord(config, "roi");
   const inferenceConfig = nestedRecord(config, "inference");
+  const controlConfig = nestedRecord(config, "control");
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
   const pipeline = asRecord(runtime?.pipeline);
@@ -156,6 +167,17 @@ export function StudioConsoleView({
   const roiSize = readNumber(roiConfig.size, 640);
   const confidence = readNumber(inferenceConfig.confidence_threshold, 0.25);
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
+  const detectionProfiles = recordList(inferenceConfig.detection_class_profiles);
+  const activeDetectionProfile = readString(inferenceConfig.detection_class_profile, "default");
+  const activeDetectionClass = readString(inferenceConfig.detection_class_filter, "all");
+  const detectionProfileNames = Object.keys(detectionProfiles);
+  const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
+  const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
+  const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
+  const pidKi = readNumber(controlConfig.pid_ki, 0.1);
+  const pidKd = readNumber(controlConfig.pid_kd, 0.1);
+  const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
+  const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
@@ -596,6 +618,34 @@ export function StudioConsoleView({
                 <input type="range" min="0" max="1" step=".01" value={nms} onChange={(event) => void updateConfigField("inference", "nms_threshold", Number(event.target.value))} />
                 <input value={nms.toFixed(2)} readOnly />
               </div>
+              <label>检测类别</label>
+              <select
+                value={activeDetectionProfile}
+                onChange={(event) => void updateConfigField("inference", "detection_class_profile", event.target.value)}
+              >
+                {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+              <div className="console-class-list">
+                <button
+                  className={activeDetectionClass === "all" ? "console-class-row active" : "console-class-row"}
+                  onClick={() => void updateConfigField("inference", "detection_class_filter", "all")}
+                  type="button"
+                >
+                  全部类别
+                </button>
+                {detectionClasses.map((item, index) => (
+                  <button
+                    className={activeDetectionClass === String(index) ? "console-class-row active" : "console-class-row"}
+                    key={`${index}-${item}`}
+                    onClick={() => void updateConfigField("inference", "detection_class_filter", String(index))}
+                    type="button"
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="console-card">
               <h2 className="console-title">推理输出</h2>
@@ -604,6 +654,44 @@ export function StudioConsoleView({
                 <span>当前类别</span><b>{readString(target.class_name, "-")}</b>
                 <span>最高置信度</span><b>{target.score ? Number(target.score).toFixed(2) : "-"}</b>
                 <span>候选框数量</span><b>{detections}</b>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className={activePage === "params" ? "console-page active" : "console-page"}>
+          <div className="console-metrics">
+            <Metric title="控制策略" value={readString(controlConfig.strategy, "pid")} small="strategy" />
+            <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
+            <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
+            <Metric title="控制量上限" value={`${kpXMoveMax}/${kpYMoveMax}`} small="x/y" />
+          </div>
+          <div className="console-grid2">
+            <div className="console-card">
+              <h2 className="console-title">鼠标移动算法</h2>
+              <label>算法模式</label>
+              <select
+                value={readString(controlConfig.strategy, "pid")}
+                onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
+              >
+                <option value="pid">PID 平滑追踪</option>
+                <option value="proportional">比例速度</option>
+                <option value="predictive">预测追踪</option>
+              </select>
+              <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
+              <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
+              <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
+              <NumberControl label="kd" value={pidKd} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
+              <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
+              <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
+            </div>
+            <div className="console-card">
+              <h2 className="console-title">控制量反馈</h2>
+              <div className="console-kv">
+                <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
+                <span>dx</span><b>{formatNumber(asRecord(vision.control).dx, 1)}</b>
+                <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
+                <span>输出状态</span><b>{asRecord(vision.control).will_emit === true ? "允许输出" : "等待触发"}</b>
               </div>
             </div>
           </div>
@@ -653,6 +741,51 @@ export function StudioConsoleView({
         </section>
       </main>
     </section>
+  );
+}
+
+function NumberControl({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onCommit
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (value: number) => Promise<void> | void;
+}) {
+  return (
+    <>
+      <label>{label}</label>
+      <div className="console-row">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => void onCommit(Number(event.target.value))}
+        />
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={Number.isInteger(value) ? String(value) : value.toFixed(2)}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (Number.isFinite(next)) {
+              void onCommit(next);
+            }
+          }}
+        />
+      </div>
+    </>
   );
 }
 

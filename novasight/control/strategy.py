@@ -45,6 +45,8 @@ class PIDStrategy:
         kp_y: float | None = None,
         integral_limit: float = 250.0,
         move_limit: float | None = None,
+        move_limit_x: float | None = None,
+        move_limit_y: float | None = None,
         derivative_alpha: float = 0.35,
     ) -> None:
         self.kp_x = kp if kp_x is None else kp_x
@@ -53,6 +55,12 @@ class PIDStrategy:
         self.kd = kd
         self.integral_limit = abs(integral_limit)
         self.move_limit = None if move_limit is None else abs(move_limit)
+        self.move_limit_x = (
+            self.move_limit if move_limit_x is None else abs(move_limit_x)
+        )
+        self.move_limit_y = (
+            self.move_limit if move_limit_y is None else abs(move_limit_y)
+        )
         self.derivative_alpha = max(0.0, min(1.0, derivative_alpha))
         self._ix = 0.0
         self._iy = 0.0
@@ -83,8 +91,8 @@ class PIDStrategy:
         dx = self.kp_x * ex + self.ki * self._ix + self.kd * dx_d
         dy = self.kp_y * ey + self.ki * self._iy + self.kd * dy_d
         return MoveCommand(
-            dx=self._clamp_axis(dx, self.move_limit),
-            dy=self._clamp_axis(dy, self.move_limit),
+            dx=self._clamp_axis(dx, self.move_limit_x),
+            dy=self._clamp_axis(dy, self.move_limit_y),
             confidence=target.score,
             reason="pid strategy",
         )
