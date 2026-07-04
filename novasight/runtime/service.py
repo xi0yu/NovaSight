@@ -47,6 +47,7 @@ class RuntimeService:
         self.last_control: dict[str, Any] | None = None
         self.last_execution: dict[str, Any] | None = None
         self.last_inference_reason = ""
+        self.last_pipeline_timings: dict[str, float] = {}
         self.last_inference_status: dict[str, Any] = {
             "ran": False,
             "available": False,
@@ -77,6 +78,8 @@ class RuntimeService:
             statistics["queue_latency"] = getattr(pipeline_stats, "queue_latency_ms", 0.0)
             statistics["inference_latency"] = getattr(pipeline_stats, "inference_latency_ms", 0.0)
             statistics["e2e_latency"] = getattr(pipeline_stats, "e2e_latency_ms", 0.0)
+        for key, value in self.last_pipeline_timings.items():
+            statistics[f"stage_{key}"] = value
         if capture_payload:
             capture_payload["statistics"] = statistics
         return RuntimeState(
@@ -147,13 +150,14 @@ class RuntimeService:
         if execution_results:
             self.last_execution = self._execution_result_payload(execution_results[-1])
             logger.info(
-                "control execution result frame=%s executor=%s sent=%s dx=%.1f dy=%.1f message=%s",
+                "control execution result frame=%s executor=%s sent=%s dx=%.1f dy=%.1f message=%s meta=%s",
                 context.frame_id,
                 self.last_execution.get("executor_id"),
                 self.last_execution.get("sent"),
                 float(self.last_execution.get("output_dx") or 0.0),
                 float(self.last_execution.get("output_dy") or 0.0),
                 self.last_execution.get("message"),
+                self.last_execution.get("metadata"),
             )
         return RuntimeFrameResult(
             control_intents=control_intents,
@@ -161,6 +165,7 @@ class RuntimeService:
         )
 
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
+        total_start_ns = time.monotonic_ns()
         if self.inference is None:
             self._record_inference_status(
                 frame=frame,
@@ -168,7 +173,9 @@ class RuntimeService:
                 available=False,
                 reason="推理运行时未初始化",
             )
-            return self.process_frame(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
+            self._record_pipeline_timings(total_start_ns, control_start_ns=total_start_ns)
+            return result
 
         infer = getattr(self.inference, "infer", None)
         if not callable(infer):
@@ -178,16 +185,21 @@ class RuntimeService:
                 available=False,
                 reason="推理运行时没有 infer 方法",
             )
-            return self.process_frame(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
+            self._record_pipeline_timings(total_start_ns, control_start_ns=total_start_ns)
+            return result
 
         try:
+            roi_start_ns = time.monotonic_ns()
             roi_frame = center_roi_frame(
                 frame,
                 requested_size=self.config.roi.size,
                 offset_x=self.config.roi.offset_x,
                 offset_y=self.config.roi.offset_y,
             )
+            infer_start_ns = time.monotonic_ns()
             inference_result = infer(roi_frame)
+            postprocess_start_ns = time.monotonic_ns()
         except Exception as exc:
             self.last_inference_reason = str(exc)
             self._record_inference_status(
@@ -197,7 +209,16 @@ class RuntimeService:
                 available=False,
                 reason=str(exc),
             )
-            return self.process_frame(self._empty_frame_context(frame))
+            control_start_ns = time.monotonic_ns()
+            result = self.process_frame(self._empty_frame_context(frame))
+            self._record_pipeline_timings(
+                total_start_ns,
+                roi_start_ns=locals().get("roi_start_ns"),
+                infer_start_ns=locals().get("infer_start_ns"),
+                postprocess_start_ns=locals().get("postprocess_start_ns"),
+                control_start_ns=control_start_ns,
+            )
+            return result
 
         if not isinstance(inference_result, InferenceResult):
             self.last_inference_reason = "invalid inference result"
@@ -208,7 +229,16 @@ class RuntimeService:
                 available=False,
                 reason=self.last_inference_reason,
             )
-            return self.process_frame(self._empty_frame_context(frame))
+            control_start_ns = time.monotonic_ns()
+            result = self.process_frame(self._empty_frame_context(frame))
+            self._record_pipeline_timings(
+                total_start_ns,
+                roi_start_ns=roi_start_ns,
+                infer_start_ns=infer_start_ns,
+                postprocess_start_ns=postprocess_start_ns,
+                control_start_ns=control_start_ns,
+            )
+            return result
 
         if not inference_result.available:
             self.last_inference_reason = inference_result.reason
@@ -221,7 +251,16 @@ class RuntimeService:
                 raw_detections=len(inference_result.detections),
                 debug=inference_result.debug,
             )
-            return self.process_frame(self._empty_frame_context(frame))
+            control_start_ns = time.monotonic_ns()
+            result = self.process_frame(self._empty_frame_context(frame))
+            self._record_pipeline_timings(
+                total_start_ns,
+                roi_start_ns=roi_start_ns,
+                infer_start_ns=infer_start_ns,
+                postprocess_start_ns=postprocess_start_ns,
+                control_start_ns=control_start_ns,
+            )
+            return result
 
         try:
             detections = []
@@ -248,7 +287,16 @@ class RuntimeService:
                 raw_detections=len(inference_result.detections),
                 debug=inference_result.debug,
             )
-            return self.process_frame(self._empty_frame_context(frame))
+            control_start_ns = time.monotonic_ns()
+            result = self.process_frame(self._empty_frame_context(frame))
+            self._record_pipeline_timings(
+                total_start_ns,
+                roi_start_ns=roi_start_ns,
+                infer_start_ns=infer_start_ns,
+                postprocess_start_ns=postprocess_start_ns,
+                control_start_ns=control_start_ns,
+            )
+            return result
         self.last_inference_reason = ""
         self._record_inference_status(
             frame=frame,
@@ -269,7 +317,40 @@ class RuntimeService:
             detections=detections,
             classes=classes,
         )
-        return self.process_frame(context)
+        control_start_ns = time.monotonic_ns()
+        result = self.process_frame(context)
+        self._record_pipeline_timings(
+            total_start_ns,
+            roi_start_ns=roi_start_ns,
+            infer_start_ns=infer_start_ns,
+            postprocess_start_ns=postprocess_start_ns,
+            control_start_ns=control_start_ns,
+        )
+        return result
+
+    def _record_pipeline_timings(
+        self,
+        total_start_ns: int,
+        *,
+        roi_start_ns: int | None = None,
+        infer_start_ns: int | None = None,
+        postprocess_start_ns: int | None = None,
+        control_start_ns: int,
+    ) -> None:
+        done_ns = time.monotonic_ns()
+
+        def ms(start: int | None, end: int | None) -> float:
+            if start is None or end is None:
+                return 0.0
+            return max(0.0, (end - start) / 1e6)
+
+        self.last_pipeline_timings = {
+            "roi_ms": ms(roi_start_ns, infer_start_ns),
+            "engine_ms": ms(infer_start_ns, postprocess_start_ns),
+            "postprocess_ms": ms(postprocess_start_ns, control_start_ns),
+            "control_ms": ms(control_start_ns, done_ns),
+            "total_ms": ms(total_start_ns, done_ns),
+        }
 
     def _empty_frame_context(self, frame: CapturedFrame) -> FrameContext:
         return FrameContext(
@@ -359,6 +440,7 @@ class RuntimeService:
                 "candidates": selection.candidates,
                 "inside_fov": selection.inside_fov,
                 "lost_count": selection.lost_count,
+                "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
                 "will_emit": False,
             }
             self.last_execution = None
@@ -450,6 +532,7 @@ class RuntimeService:
             "pipeline": pipeline_debug,
             "selector_state": selection.state,
             "selection_reason": selection.reason,
+            "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
             "target_detection_index": target_detection_index,
             "priority_rank": selection.priority_rank,
             "distance_px": selection.distance_px,
@@ -646,8 +729,9 @@ class RuntimeService:
         if callable(button_reader):
             try:
                 buttons = button_reader()
-            except Exception:
-                buttons = {}
+            except Exception as exc:
+                buttons = {"available": False, "left": False, "right": False, "reason": f"button reader exception: {exc}"}
+                logger.warning("box input button reader failed: %s", exc)
             if buttons.get("available") is True:
                 hardware_state = BoxInputState(
                     left=bool(buttons.get("left")),
@@ -1001,10 +1085,12 @@ class RuntimeService:
 
     def _execution_result_payload(self, result: Any) -> dict[str, Any]:
         intent = getattr(result, "intent", None)
+        metadata = getattr(result, "metadata", None) or {}
         return {
             "executor_id": str(getattr(result, "executor_id", "")),
             "sent": bool(getattr(result, "sent", False)),
             "message": str(getattr(result, "message", "")),
+            "metadata": dict(metadata),
             "accepted": bool(getattr(intent, "accepted", False)),
             "clipped": bool(getattr(intent, "clipped", False)),
             "output_dx": float(getattr(intent, "dx", 0.0)),

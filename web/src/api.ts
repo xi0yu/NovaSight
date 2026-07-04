@@ -132,6 +132,11 @@ export type Statistics = {
   inference_fps: number;
   queue_latency?: number;
   inference_latency?: number;
+  stage_roi_ms?: number;
+  stage_engine_ms?: number;
+  stage_postprocess_ms?: number;
+  stage_control_ms?: number;
+  stage_total_ms?: number;
   e2e_latency: number;
 };
 

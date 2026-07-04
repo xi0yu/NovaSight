@@ -73,10 +73,34 @@ class ExecutorRegistry:
                     sent=False,
                     intent=bounded,
                     message="control command coalesced",
+                    metadata={
+                        "stage": "coalescer",
+                        "selected_executor": self.selected,
+                        "requested_dx": float(intent.dx),
+                        "requested_dy": float(intent.dy),
+                        "pending_dx": float(getattr(self.coalescer, "_pending_dx", 0.0)),
+                        "pending_dy": float(getattr(self.coalescer, "_pending_dy", 0.0)),
+                        "min_interval_ms": float(self.coalescer.min_interval_s * 1000.0),
+                    },
                 )
             intent = merged
         bounded = self.policy.apply(intent)
-        return self.executors[self.selected].execute(bounded)
+        result = self.executors[self.selected].execute(bounded)
+        if result.metadata is not None:
+            return result
+        return ExecutionResult(
+            executor_id=result.executor_id,
+            sent=result.sent,
+            intent=result.intent,
+            message=result.message,
+            metadata={
+                "stage": "executor",
+                "selected_executor": self.selected,
+                "accepted": bool(bounded.accepted),
+                "clipped": bool(bounded.clipped),
+                "policy_reason": str(bounded.reason),
+            },
+        )
 
     def status(self) -> dict[str, Any]:
         return {

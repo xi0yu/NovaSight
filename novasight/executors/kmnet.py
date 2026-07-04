@@ -201,17 +201,18 @@ class KmNetExecutor:
         dx = int(output.dx)
         dy = int(-output.dy if self.flip_dy else output.dy)
         api_name = "move"
+        driver_rc: Any | None = None
         try:
             if output.action == "left_down":
                 api_name = "left"
-                self._call_driver("left", 1)
+                driver_rc = self._call_driver("left", 1)
             elif output.action == "left_up":
                 api_name = "left"
-                self._call_driver("left", 0)
+                driver_rc = self._call_driver("left", 0)
             elif output.move_kind in {"auto", "enc_auto"}:
-                api_name = self._move_auto(dx, dy, output.move_ms, encrypted=output.move_kind == "enc_auto")
+                api_name, driver_rc = self._move_auto(dx, dy, output.move_ms, encrypted=output.move_kind == "enc_auto")
             elif output.move_kind in {"bezier", "enc_bezier"} and output.bezier_ctrl is not None:
-                api_name = self._move_bezier(
+                api_name, driver_rc = self._move_bezier(
                     dx,
                     dy,
                     output.move_ms,
@@ -220,7 +221,7 @@ class KmNetExecutor:
                 )
             else:
                 api_name = "enc_move" if output.move_kind == "enc_raw" else "move"
-                self._call_driver(api_name, dx, dy)
+                driver_rc = self._call_driver(api_name, dx, dy)
             self.move_count += 1
             self.last_dx = dx
             self.last_dy = dy
@@ -253,12 +254,30 @@ class KmNetExecutor:
                 sent=False,
                 intent=output,
                 message=self.last_error,
+                metadata={
+                    "stage": "driver",
+                    "api_name": api_name,
+                    "driver_rc": None,
+                    "flipped_dy": dy,
+                    "driver_dx": dx,
+                    "driver_dy": dy,
+                    "error": str(exc),
+                },
             )
         return ExecutionResult(
             executor_id=self.executor_id,
             sent=True,
             intent=output,
             message="sent output to kmNet driver",
+            metadata={
+                "stage": "driver",
+                "api_name": api_name,
+                "driver_rc": driver_rc,
+                "flipped_dy": dy,
+                "driver_dx": dx,
+                "driver_dy": dy,
+                "move_count": self.move_count,
+            },
         )
 
     def _connect(self) -> None:
@@ -294,19 +313,19 @@ class KmNetExecutor:
                 exc,
             )
 
-    def _move_auto(self, dx: int, dy: int, move_ms: int, *, encrypted: bool = False) -> str:
+    def _move_auto(self, dx: int, dy: int, move_ms: int, *, encrypted: bool = False) -> tuple[str, Any]:
         name = "enc_move_auto" if encrypted else "move_auto"
         if getattr(self._driver, name, None) is None:
             name = "enc_move" if encrypted else "move"
         if getattr(self._driver, name, None) is None:
             fallback = "move"
-            self._call_driver(fallback, dx, dy)
-            return fallback
+            rc = self._call_driver(fallback, dx, dy)
+            return fallback, rc
         if name.endswith("move_auto"):
-            self._call_driver(name, dx, dy, int(move_ms))
+            rc = self._call_driver(name, dx, dy, int(move_ms))
         else:
-            self._call_driver(name, dx, dy)
-        return name
+            rc = self._call_driver(name, dx, dy)
+        return name, rc
 
     def _move_bezier(
         self,
@@ -316,21 +335,21 @@ class KmNetExecutor:
         ctrl: tuple[int, int, int, int],
         *,
         encrypted: bool = False,
-    ) -> str:
+    ) -> tuple[str, Any]:
         name = "enc_move_beizer" if encrypted else "move_beizer"
         alternate = "enc_move_bezier" if encrypted else "move_bezier"
         if getattr(self._driver, name, None) is None:
             name = alternate
         if getattr(self._driver, name, None) is None:
             fallback = "enc_move" if encrypted else "move"
-            self._call_driver(fallback, dx, dy)
-            return fallback
+            rc = self._call_driver(fallback, dx, dy)
+            return fallback, rc
         x1, y1, x2, y2 = ctrl
         if self.flip_dy:
             y1 = -y1
             y2 = -y2
-        self._call_driver(name, dx, dy, int(move_ms), int(x1), int(y1), int(x2), int(y2))
-        return name
+        rc = self._call_driver(name, dx, dy, int(move_ms), int(x1), int(y1), int(x2), int(y2))
+        return name, rc
 
     def _call_driver(self, name: str, *args: Any) -> Any:
         if self._driver is None:

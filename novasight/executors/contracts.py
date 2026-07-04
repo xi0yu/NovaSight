@@ -12,6 +12,7 @@ class ExecutionResult:
     sent: bool
     intent: ControlOutput
     message: str = ""
+    metadata: dict | None = None
 
 
 class Executor(Protocol):

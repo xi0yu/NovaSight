@@ -287,6 +287,7 @@ export function StudioConsoleView({
   const vision = asRecord(runtime?.vision);
   const execution = asRecord(vision.execution);
   const executionIntent = asRecord(execution.intent);
+  const executionMeta = asRecord(execution.metadata);
   const inferenceTrace = asRecord(vision.inference);
   const pipeline = asRecord(runtime?.pipeline);
   const executorStatus = asRecord(runtime?.executor);
@@ -317,6 +318,7 @@ export function StudioConsoleView({
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
+  const controlStrategy = readString(controlConfig.strategy, "straight");
   const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
   const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
   const pidKi = readNumber(controlConfig.pid_ki, 0.1);
@@ -387,6 +389,7 @@ export function StudioConsoleView({
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
+  const selectorDebug = asRecord(control.selector_debug);
   const businessTrace = asRecord(vision.trace);
   const businessTraceStages = readTraceStages(vision.trace);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
@@ -1124,7 +1127,7 @@ export function StudioConsoleView({
           </div>
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
-            <Metric title="推理延迟" value={formatNumber(pipeline.e2e_latency_ms ?? statistics?.e2e_latency, 1)} small="ms" />
+            <Metric title="推理延迟" value={formatNumber(statistics?.stage_engine_ms ?? statistics?.inference_latency, 1)} small="ms" />
             <Metric title="目标数量" value={String(detections)} small="objects" />
             <Metric title="引擎状态" value={readString(runtime?.inference?.loaded, "") ? "已加载" : runtime?.inference?.loaded === true ? "已加载" : "未加载"} small={readString(runtime?.inference?.selected, "engine")} />
           </div>
@@ -1332,11 +1335,11 @@ export function StudioConsoleView({
 
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="控制策略" value={readString(controlConfig.strategy, "straight")} small="strategy" />
+            <Metric title="控制策略" value={controlStrategy} small="strategy" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-            <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
-            <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
-            <Metric title="预测" value={straightPredGain.toFixed(2)} small="lead" />
+            <Metric title="Kp X" value={(controlStrategy === "straight" ? straightKpX : pidKpX).toFixed(2)} small="axis x" />
+            <Metric title="Kp Y" value={(controlStrategy === "straight" ? straightKpY : pidKpY).toFixed(2)} small="axis y" />
+            <Metric title="预测" value={(controlStrategy === "straight" ? straightPredGain : predictionFactor).toFixed(2)} small="lead" />
             <Metric title="瞄准高度" value={`${aimYRatio.toFixed(0)}%`} small="aim y" />
           </div>
           <div className="console-grid2">
@@ -1344,7 +1347,7 @@ export function StudioConsoleView({
               <h2 className="console-title">鼠标移动算法</h2>
               <label>算法模式</label>
               <select
-                value={readString(controlConfig.strategy, "straight")}
+                value={controlStrategy}
                 onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
               >
                 <option value="straight">Straight 透视一击</option>
@@ -1358,7 +1361,7 @@ export function StudioConsoleView({
                 onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}
               >
                 <option value="hardware">硬件按键触发</option>
-                <option value="telemetry">持续计算，按键发送</option>
+                <option value="telemetry">持续计算，触发后发送</option>
                 <option value="always">调试直出</option>
               </select>
               <label>本地按键绑定</label>
@@ -1414,25 +1417,33 @@ export function StudioConsoleView({
               </select>
               <NumberControl label="移动铺展 ms" value={moveMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "move_ms", Math.round(value))} />
               <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
-              <NumberControl label="Straight FOV" value={straightFovDeg} min={30} max={140} step={1} onCommit={(value) => updateConfigField("control", "straight_fov_deg", Math.round(value))} />
-              <NumberControl label="Straight c360" value={straightC360} min={500} max={50000} step={20} onCommit={(value) => updateConfigField("control", "straight_c360", Math.round(value))} />
-              <NumberControl label="Straight kp_x" value={straightKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_x", value)} />
-              <NumberControl label="Straight kp_y" value={straightKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_y", value)} />
-              <NumberControl label="首帧增益 gain_first" value={straightFirstFrameGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_first_frame_gain", value)} />
-              <NumberControl label="首帧上限 first_max_step" value={straightFirstMaxStep} min={1} max={2000} step={10} onCommit={(value) => updateConfigField("control", "straight_first_max_step", value)} />
-              <NumberControl label="精修上限 max_step" value={straightMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_max_step", value)} />
-              <NumberControl label="输入死区 px" value={straightInDeadzone} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "straight_in_deadzone", value)} />
-              <NumberControl label="跳变重锁 px" value={straightJumpThreshold} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_jump_threshold", value)} />
-              <NumberControl label="前馈预测 pred_gain" value={straightPredGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_pred_gain", value)} />
-              <NumberControl label="动作判定帧" value={straightPredConsistencyFrames} min={1} max={15} step={1} onCommit={(value) => updateConfigField("control", "straight_pred_consistency_frames", Math.round(value))} />
-              <NumberControl label="首帧 Y 增益" value={straightGainY} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "straight_gain_y", value)} />
-              <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
-              <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
-              <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
-              <NumberControl label="kd" value={pidKd} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
-              <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
-              <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
-              <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
+              {controlStrategy === "straight" ? (
+                <>
+                  <NumberControl label="Straight FOV" value={straightFovDeg} min={30} max={140} step={1} onCommit={(value) => updateConfigField("control", "straight_fov_deg", Math.round(value))} />
+                  <NumberControl label="Straight c360" value={straightC360} min={500} max={50000} step={20} onCommit={(value) => updateConfigField("control", "straight_c360", Math.round(value))} />
+                  <NumberControl label="Straight kp_x" value={straightKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_x", value)} />
+                  <NumberControl label="Straight kp_y" value={straightKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_y", value)} />
+                  <NumberControl label="首帧增益 gain_first" value={straightFirstFrameGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_first_frame_gain", value)} />
+                  <NumberControl label="首帧上限 first_max_step" value={straightFirstMaxStep} min={1} max={2000} step={10} onCommit={(value) => updateConfigField("control", "straight_first_max_step", value)} />
+                  <NumberControl label="精修上限 max_step" value={straightMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_max_step", value)} />
+                  <NumberControl label="输入死区 px" value={straightInDeadzone} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "straight_in_deadzone", value)} />
+                  <NumberControl label="跳变重锁 px" value={straightJumpThreshold} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_jump_threshold", value)} />
+                  <NumberControl label="前馈预测 pred_gain" value={straightPredGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_pred_gain", value)} />
+                  <NumberControl label="动作判定帧" value={straightPredConsistencyFrames} min={1} max={15} step={1} onCommit={(value) => updateConfigField("control", "straight_pred_consistency_frames", Math.round(value))} />
+                  <NumberControl label="首帧 Y 增益" value={straightGainY} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "straight_gain_y", value)} />
+                </>
+              ) : null}
+              {controlStrategy === "pid" ? (
+                <>
+                  <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
+                  <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
+                  <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
+                  <NumberControl label="kd" value={pidKd} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
+                  <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
+                  <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
+                  <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
+                </>
+              ) : null}
             </div>
             <div className="console-card">
               <h2 className="console-title">控制量反馈</h2>
@@ -1458,7 +1469,10 @@ export function StudioConsoleView({
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
                 <span>策略 dx</span><b>{formatNumber(control.dx, 1)}</b>
                 <span>策略 dy</span><b>{formatNumber(control.dy, 1)}</b>
+                <span>策略模式</span><b>{readString(controlConfig.strategy, "straight")}</b>
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
+                <span>FOV 半径</span><b>{formatNumber(selectorDebug.fov_radius, 1)}</b>
+                <span>过滤后候选</span><b>{formatNumber(selectorDebug.filtered_candidates, 0)}</b>
                 <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
                 <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
                 <span>本地绑定</span><b>{activeTriggerBindings.length ? activeTriggerBindings.join(" / ") : "-"}</b>
@@ -1468,8 +1482,13 @@ export function StudioConsoleView({
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
                 <span>移动 API</span><b>{readString(execution.move_kind, moveKind)}</b>
+                <span>执行阶段</span><b>{readString(executionMeta.stage, "-")}</b>
+                <span>Driver API</span><b>{readString(executionMeta.api_name, "-")}</b>
+                <span>Driver rc</span><b>{String(executionMeta.driver_rc ?? "-")}</b>
                 <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
                 <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
+                <span>Driver dx</span><b>{formatNumber(executionMeta.driver_dx, 1)}</b>
+                <span>Driver dy</span><b>{formatNumber(executionMeta.driver_dy, 1)}</b>
                 <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
                 <span>kmNet 最近</span><b>{`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`}</b>
                 <span>限幅</span><b>{(execution.clipped ?? executionIntent.clipped) === true ? "已限幅" : (execution.clipped ?? executionIntent.clipped) === false ? "未限幅" : "-"}</b>
@@ -1658,7 +1677,13 @@ export function StudioConsoleView({
           </div>
           <div className="console-grid3">
             <KvCard title="采集统计" rows={[["成功帧", String(statistics?.capture_counter ?? 0)], ["丢弃帧", String(statistics?.dropped_counter ?? 0)], ["抖动", formatNumber(capture?.frame_period_ms, 2)]]} />
-            <KvCard title="推理统计" rows={[["完成帧", String(statistics?.inference_counter ?? 0)], ["最近耗时", formatNumber(statistics?.inference_latency, 1)], ["队列等待", formatNumber(statistics?.queue_latency, 1)]]} />
+            <KvCard title="推理统计" rows={[
+              ["完成帧", String(statistics?.inference_counter ?? 0)],
+              ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
+              ["Engine", formatNumber(statistics?.stage_engine_ms, 1)],
+              ["后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
+              ["控制", formatNumber(statistics?.stage_control_ms, 1)]
+            ]} />
             <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
           </div>
           <div className="console-card">
@@ -1683,10 +1708,10 @@ export function StudioConsoleView({
               <div className="console-timeline">
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
                 <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
-                <Event label="Decode" value="--" width={22} />
-                <Event label="Preprocess" value="--" width={18} />
-                <Event label="Inference" value={formatNumber(statistics?.inference_latency, 1)} width={56} />
-                <Event label="Postprocess" value="--" width={20} />
+                <Event label="ROI" value={formatNumber(statistics?.stage_roi_ms, 1)} width={18} />
+                <Event label="Engine" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
+                <Event label="Postprocess" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
+                <Event label="Control" value={formatNumber(statistics?.stage_control_ms, 1)} width={14} />
               </div>
             </div>
             <KvCard title="采集诊断" rows={[["状态判断", capture?.available ? "采集中" : "等待数据"], ["队列积压", String(readNumber(asRecord(pipeline.queue).size, 0))], ["建议", capture?.available ? "观察队列等待和帧间隔" : "启动后分析"]]} />

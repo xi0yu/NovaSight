@@ -34,6 +34,7 @@ class RuntimeTargetSelector:
     def __init__(self) -> None:
         self._locked: _LockedTarget | None = None
         self._lost_count = 0
+        self.last_debug: dict = {}
 
     def reset(self) -> None:
         self._locked = None
@@ -52,8 +53,15 @@ class RuntimeTargetSelector:
         lost_grace_frames: int = 5,
     ) -> TargetSelection:
         candidates: list[Target] = list(context.tracks) or list(context.detections)
+        raw_candidates = list(candidates)
         if not candidates or context.width <= 0 or context.height <= 0:
             self._lost_count += 1 if self._locked is not None else 0
+            self.last_debug = {
+                "raw_candidates": len(raw_candidates),
+                "filtered_candidates": 0,
+                "inside_fov": 0,
+                "reason": "no target candidates",
+            }
             return self._lost_or_clear(lost_grace_frames, "no target candidates", 0, 0)
 
         candidates = [
@@ -62,6 +70,15 @@ class RuntimeTargetSelector:
         ]
         if not candidates:
             self._lost_count += 1 if self._locked is not None else 0
+            self.last_debug = {
+                "raw_candidates": len(raw_candidates),
+                "filtered_candidates": 0,
+                "inside_fov": 0,
+                "min_confidence": float(min_confidence),
+                "class_filter": str(class_filter),
+                "reason": "no candidate after confidence/class filter",
+                "raw": self._candidate_debug(raw_candidates, context),
+            }
             return self._lost_or_clear(
                 lost_grace_frames,
                 "no candidate after confidence/class filter",
@@ -79,6 +96,17 @@ class RuntimeTargetSelector:
         ]
         if not inside_fov:
             self._lost_count += 1 if self._locked is not None else 0
+            self.last_debug = {
+                "raw_candidates": len(raw_candidates),
+                "filtered_candidates": len(candidates),
+                "inside_fov": 0,
+                "fov_radius": float(radius),
+                "fov_ratio": float(fov_ratio),
+                "min_confidence": float(min_confidence),
+                "class_filter": str(class_filter),
+                "reason": "no candidate inside fov",
+                "candidates": self._candidate_debug(candidates, context),
+            }
             return self._lost_or_clear(
                 lost_grace_frames,
                 "no candidate inside fov",
@@ -100,6 +128,17 @@ class RuntimeTargetSelector:
         previous_key = self._locked.key if self._locked is not None else None
         self._remember(best)
         selected_locked = locked is not None and self._target_key(best) == self._target_key(locked)
+        self.last_debug = {
+            "raw_candidates": len(raw_candidates),
+            "filtered_candidates": len(candidates),
+            "inside_fov": len(inside_fov),
+            "fov_radius": float(radius),
+            "fov_ratio": float(fov_ratio),
+            "min_confidence": float(min_confidence),
+            "class_filter": str(class_filter),
+            "selected": self._candidate_debug([best], context)[0] if best is not None else None,
+            "candidates": self._candidate_debug(inside_fov, context),
+        }
         return TargetSelection(
             target=best,
             state="locked" if selected_locked else "acquire" if previous_key != self._target_key(best) else "fresh",
@@ -215,3 +254,17 @@ class RuntimeTargetSelector:
     @staticmethod
     def _distance(target: Target, center_x: float, center_y: float) -> float:
         return ((float(target.cx) - center_x) ** 2 + (float(target.cy) - center_y) ** 2) ** 0.5
+
+    def _candidate_debug(self, candidates: list[Target], context: FrameContext) -> list[dict]:
+        center_x = context.width / 2
+        center_y = context.height / 2
+        return [
+            {
+                "cls": int(getattr(item, "cls", -1)),
+                "score": float(getattr(item, "score", 0.0)),
+                "cx": float(getattr(item, "cx", 0.0)),
+                "cy": float(getattr(item, "cy", 0.0)),
+                "distance_px": self._distance(item, center_x, center_y),
+            }
+            for item in candidates[:12]
+        ]
