@@ -44,18 +44,6 @@ type CapabilityChoice = {
   fps: number;
 };
 
-type DetectionOverlay = {
-  classId: number;
-  className: string;
-  score: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  cx: number;
-  cy: number;
-};
-
 const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "capture", index: "01", label: "采集" },
   { id: "infer", index: "02", label: "模型推理" },
@@ -112,42 +100,6 @@ function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-function readDetectionItems(value: unknown): DetectionOverlay[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((item) => {
-    const record = asRecord(item);
-    const x = readNullableNumber(record.x);
-    const y = readNullableNumber(record.y);
-    const w = readNullableNumber(record.w);
-    const h = readNullableNumber(record.h);
-    const score = readNullableNumber(record.score);
-    const cx = readNullableNumber(record.cx);
-    const cy = readNullableNumber(record.cy);
-    const classId = readNullableNumber(record.class_id);
-    if (x === null || y === null || w === null || h === null || score === null || cx === null || cy === null || w <= 0 || h <= 0) {
-      return [];
-    }
-    return [{
-      classId: classId === null ? -1 : Math.trunc(classId),
-      className: readString(record.class_name, String(classId ?? "")),
-      score,
-      x,
-      y,
-      w,
-      h,
-      cx,
-      cy
-    }];
-  });
-}
-
-function detectionClassName(detection: DetectionOverlay): string {
-  const classBucket = detection.classId >= 0 ? detection.classId % 8 : 7;
-  return `console-detection-box detection-class-${classBucket}`;
-}
-
 function triggerModeLabel(value: string): string {
   if (value === "always") {
     return "调试直出";
@@ -163,15 +115,6 @@ function clampPercent(value: number): number {
     return 0;
   }
   return Math.min(100, Math.max(0, value));
-}
-
-function detectionStyle(detection: DetectionOverlay, width: number, height: number): CSSProperties {
-  return {
-    left: `${clampPercent((detection.x / width) * 100)}%`,
-    top: `${clampPercent((detection.y / height) * 100)}%`,
-    width: `${clampPercent((detection.w / width) * 100)}%`,
-    height: `${clampPercent((detection.h / height) * 100)}%`
-  };
 }
 
 function formatNumber(value: unknown, digits = 1): string {
@@ -1462,26 +1405,12 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
-  const detections = readDetectionItems(vision.detection_items);
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
   return (
     <div className="console-preview" style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
       {runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
-      <div className="console-detection-layer" aria-hidden="true">
-        {detections.map((detection, index) => {
-          return (
-            <div
-              className={detectionClassName(detection)}
-              key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
-              style={detectionStyle(detection, previewWidth, previewHeight)}
-            >
-              <span>{detection.className || "目标"} {detection.score.toFixed(2)}</span>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
