@@ -12,7 +12,7 @@ from novasight.contracts import ControlIntent, Detection, Track
 Target = Detection | Track
 
 
-def _aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
+def aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
     ratio = max(0.0, min(100.0, aim_ratio)) / 100.0
     return (float(target.x) + float(target.w) / 2.0, float(target.y) + float(target.h) * ratio)
 
@@ -121,7 +121,7 @@ class PIDStrategy:
                 "hardware trigger inactive",
                 debug={"stage": "trigger", "coordinate_y": "cartesian_up_positive"},
             )
-        aim_center = _aim_point(target, self.aim_ratio)
+        aim_center = aim_point(target, self.aim_ratio)
         predicted_center, prediction_weight = self._predict_center(aim_center)
         ex_px = predicted_center[0] - current_pos[0]
         ey_px = current_pos[1] - predicted_center[1]
@@ -276,7 +276,7 @@ class PredictiveStrategy:
     ) -> MoveCommand:
         if not box_input.active:
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
-        center = _aim_point(target, self.aim_ratio)
+        center = aim_point(target, self.aim_ratio)
         if self._last_center is None:
             vx = vy = 0.0
         else:
@@ -348,7 +348,7 @@ class ProportionalStrategy:
             self._ema_y = 0.0
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
 
-        aim_x, aim_y = _aim_point(target, self.aim_ratio)
+        aim_x, aim_y = aim_point(target, self.aim_ratio)
         ex = aim_x - current_pos[0]
         ey = current_pos[1] - aim_y
         err = math.hypot(ex, ey)

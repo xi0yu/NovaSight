@@ -5,7 +5,7 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
-from novasight.control import PIDStrategy, PredictiveStrategy, ProportionalStrategy
+from novasight.control import PIDStrategy, PredictiveStrategy, ProportionalStrategy, aim_point
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
@@ -296,9 +296,14 @@ class RuntimeService:
         center = (context.width / 2, context.height / 2)
         box_input = self._box_input_state()
         aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
-        aim_x = float(target.x + target.w / 2)
-        aim_y = float(target.y + target.h * aim_ratio / 100.0)
+        aim_x, aim_y = aim_point(target, aim_ratio)
         command = self.control_strategy.calculate(target, center, box_input)
+        pipeline_debug = dict(command.debug)
+        strategy_aim_x = pipeline_debug.get("aim_x")
+        strategy_aim_y = pipeline_debug.get("aim_y")
+        if isinstance(strategy_aim_x, (int, float)) and isinstance(strategy_aim_y, (int, float)):
+            aim_x = float(strategy_aim_x)
+            aim_y = float(strategy_aim_y)
         intent = ControlIntent(
             dx=command.dx,
             dy=command.dy,
@@ -319,14 +324,18 @@ class RuntimeService:
         requires_trigger = output_mode == "kmnet" and hardware_kind not in {"", "none", "silent"}
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
-        raw_error_x = float(aim_x - center[0])
-        raw_error_y = float(center[1] - aim_y)
-        raw_error_y_image = float(aim_y - center[1])
+        aim_error_x = float(aim_x - center[0])
+        aim_error_y = float(center[1] - aim_y)
+        raw_error_x = float(pipeline_debug.get("raw_px_x", aim_error_x))
+        raw_error_y = float(pipeline_debug.get("raw_px_y", aim_error_y))
+        raw_error_y_image = -raw_error_y
         self.last_target = {
             **self._target_payload(target, context),
             "aim_ratio": aim_ratio,
             "aim_x": aim_x,
             "aim_y": aim_y,
+            "aim_offset_x": float(aim_x - center[0]),
+            "aim_offset_y": float(aim_y - center[1]),
             "selector_state": selection.state,
             "selection_reason": selection.reason,
             "locked": selection.locked,
@@ -337,6 +346,8 @@ class RuntimeService:
         }
         self.last_control = {
             "frame_id": context.frame_id,
+            "aim_error_x": aim_error_x,
+            "aim_error_y": aim_error_y,
             "raw_error_x": raw_error_x,
             "raw_error_y": raw_error_y,
             "raw_error_y_image": raw_error_y_image,
@@ -347,7 +358,7 @@ class RuntimeService:
             "dy": command.dy,
             "confidence": command.confidence,
             "reason": command.reason,
-            "pipeline": dict(command.debug),
+            "pipeline": pipeline_debug,
             "selector_state": selection.state,
             "selection_reason": selection.reason,
             "priority_rank": selection.priority_rank,
@@ -476,8 +487,12 @@ class RuntimeService:
             "h": float(target.h),
             "cx": float(target.cx),
             "cy": float(target.cy),
+            "box_cx": float(target.cx),
+            "box_cy": float(target.cy),
             "offset_x": float(target.cx - context.width / 2),
             "offset_y": float(target.cy - context.height / 2),
+            "box_offset_x": float(target.cx - context.width / 2),
+            "box_offset_y": float(target.cy - context.height / 2),
         }
         if isinstance(target, Track):
             payload["track_id"] = int(target.track_id)

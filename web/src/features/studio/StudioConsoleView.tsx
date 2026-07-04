@@ -1110,6 +1110,8 @@ export function StudioConsoleView({
                 <span>NMS 后候选</span><b>{String(readNumber(decodeDebug.nms_detections, 0))}</b>
                 <span>当前类别</span><b>{readString(target.class_name, "-")}</b>
                 <span>最高置信度</span><b>{target.score ? Number(target.score).toFixed(2) : "-"}</b>
+                <span>目标框中心</span><b>{`${formatNumber(target.box_cx ?? target.cx, 1)}, ${formatNumber(target.box_cy ?? target.cy, 1)}`}</b>
+                <span>瞄准点</span><b>{`${formatNumber(target.aim_x, 1)}, ${formatNumber(target.aim_y, 1)}`}</b>
                 <span>候选框数量</span><b>{detections}</b>
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
@@ -1164,10 +1166,13 @@ export function StudioConsoleView({
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
+                <span>aim dx</span><b>{formatNumber(control.aim_error_x, 1)}</b>
+                <span>aim dy</span><b>{formatNumber(control.aim_error_y, 1)}</b>
                 <span>raw dx</span><b>{formatNumber(control.raw_error_x, 1)}</b>
                 <span>raw dy</span><b>{formatNumber(control.raw_error_y, 1)}</b>
                 <span>aim ratio</span><b>{formatNumber(control.aim_ratio, 0)}%</b>
                 <span>aim point</span><b>{`${formatNumber(control.aim_x, 1)}, ${formatNumber(control.aim_y, 1)}`}</b>
+                <span>预测点</span><b>{`${formatNumber(controlPipeline.predicted_x, 1)}, ${formatNumber(controlPipeline.predicted_y, 1)}`}</b>
                 <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
                 <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
                 <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
