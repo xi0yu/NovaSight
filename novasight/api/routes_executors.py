@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -11,6 +13,12 @@ router = APIRouter()
 class DiagnosticMoveRequest(BaseModel):
     dx: int = 1
     dy: int = 0
+
+
+class DiagnosticCircleRequest(BaseModel):
+    radius: int = Field(default=8, ge=1, le=80)
+    steps: int = Field(default=32, ge=8, le=128)
+    interval_ms: int = Field(default=8, ge=0, le=50)
 
 
 @router.get("/api/executors")
@@ -44,6 +52,54 @@ def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> d
         raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic move")
     result = move(payload.dx, payload.dy)
     return _execution_result_payload(result)
+
+
+@router.post("/api/executors/kmnet/diagnostic-circle")
+def diagnostic_circle_kmnet(request: Request, payload: DiagnosticCircleRequest) -> dict[str, Any]:
+    executor = _kmnet_executor(request)
+    move = getattr(executor, "diagnostic_move", None)
+    if not callable(move):
+        raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic circle")
+
+    previous_x = payload.radius
+    previous_y = 0
+    sent = 0
+    failed: dict[str, Any] | None = None
+    for index in range(1, payload.steps + 1):
+        angle = (math.tau * index) / payload.steps
+        x = int(round(math.cos(angle) * payload.radius))
+        y = int(round(math.sin(angle) * payload.radius))
+        dx = x - previous_x
+        dy = y - previous_y
+        previous_x = x
+        previous_y = y
+        if dx == 0 and dy == 0:
+            continue
+
+        result = move(dx, dy)
+        if bool(getattr(result, "sent", False)):
+            sent += 1
+        else:
+            failed = {
+                "step": index,
+                "dx": dx,
+                "dy": dy,
+                "message": str(getattr(result, "message", "")),
+            }
+            break
+        if payload.interval_ms > 0:
+            time.sleep(payload.interval_ms / 1000)
+
+    status = executor.status() if callable(getattr(executor, "status", None)) else {}
+    return {
+        "sent": failed is None and sent > 0,
+        "steps_requested": payload.steps,
+        "steps_sent": sent,
+        "radius": payload.radius,
+        "interval_ms": payload.interval_ms,
+        "failed": failed,
+        "status": status,
+    }
 
 
 def _kmnet_executor(request: Request) -> Any:

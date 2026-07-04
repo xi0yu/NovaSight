@@ -213,12 +213,12 @@ class CaptureService:
             self.session.stop(str(exc))
             self.state = failure
             return self.state
-        self.config.device = selected_device
-        self.config.preference = selected_preference
-        self.config.pixel_format = selected_pixel_format
-        self.config.width = selected_width
-        self.config.height = selected_height
-        self.config.fps = selected_fps
+        self.config.device = profile.device
+        self.config.preference = "manual"
+        self.config.pixel_format = profile.pixel_format
+        self.config.width = profile.width
+        self.config.height = profile.height
+        self.config.fps = profile.fps
         self.last_config_error = None
         self._last_preview_output_ts_ns = None
         self._preview_window_ts_ns.clear()

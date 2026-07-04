@@ -4250,6 +4250,23 @@ tbody tr:hover {
   color: #11151f;
 }
 
+.kmnet-circle-button {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(255, 64, 88, 0.32);
+  border-radius: 12px;
+  background: rgba(255, 64, 88, 0.08);
+  color: var(--accent-red);
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.kmnet-circle-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .kmnet-test-result {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

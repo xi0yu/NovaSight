@@ -261,6 +261,34 @@ function formatThreshold(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function readConfiguredCapture(runtime: RuntimeState | null): {
+  device: string;
+  pixelFormat: string;
+  width: number;
+  height: number;
+  fps: number;
+} {
+  const captureConfig = getNestedRecord(runtime?.config, "capture");
+  const configuredDevice = captureConfig?.device;
+  const configuredPixelFormat = captureConfig?.pixel_format;
+  const configuredWidth = captureConfig?.width;
+  const configuredHeight = captureConfig?.height;
+  const configuredFps = captureConfig?.fps;
+  return {
+    device:
+      typeof configuredDevice === "string" && configuredDevice.trim()
+        ? configuredDevice
+        : runtime?.capture?.device || "/dev/video0",
+    pixelFormat:
+      typeof configuredPixelFormat === "string" && configuredPixelFormat.trim()
+        ? configuredPixelFormat.toUpperCase()
+        : runtime?.capture?.profile?.pixel_format?.toUpperCase() || "MJPG",
+    width: typeof configuredWidth === "number" ? configuredWidth : runtime?.capture?.profile?.width ?? 0,
+    height: typeof configuredHeight === "number" ? configuredHeight : runtime?.capture?.profile?.height ?? 0,
+    fps: typeof configuredFps === "number" ? configuredFps : runtime?.capture?.profile?.fps ?? 0
+  };
+}
+
 export function DevicesView({
   runtime,
   error,
@@ -268,13 +296,14 @@ export function DevicesView({
   onOpenModels,
   initialSection
 }: DevicesViewProps) {
-  const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
+  const configuredCapture = readConfiguredCapture(runtime);
+  const [device, setDevice] = useState(configuredCapture.device);
   const [capabilities, setCapabilities] = useState<CaptureCapabilitiesResponse | null>(null);
   const [captureError, setCaptureError] = useState<string | undefined>(error);
   const [loadingCaps, setLoadingCaps] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
   const [stoppingCapture, setStoppingCapture] = useState(false);
-  const [selectedFormat, setSelectedFormat] = useState("MJPG");
+  const [selectedFormat, setSelectedFormat] = useState(configuredCapture.pixelFormat);
   const [activeSection, setActiveSection] = useState<SettingsSection>("capture");
   const [selectedSource, setSelectedSource] = useState<CaptureInputSource>("capture");
   const [imagePath, setImagePath] = useState("");
@@ -289,10 +318,10 @@ export function DevicesView({
   }, [initialSection]);
 
   useEffect(() => {
-    if (runtime?.capture?.device) {
-      setDevice(runtime.capture.device);
+    if (configuredCapture.device) {
+      setDevice(configuredCapture.device);
     }
-  }, [runtime?.capture?.device]);
+  }, [configuredCapture.device]);
 
   useEffect(() => {
     setCaptureError(error);
@@ -305,7 +334,8 @@ export function DevicesView({
   );
 
   useEffect(() => {
-    const activeFormat = runtime?.capture?.profile?.pixel_format?.toUpperCase();
+    const activeFormat =
+      runtime?.capture?.profile?.pixel_format?.toUpperCase() || configuredCapture.pixelFormat;
     if (activeFormat) {
       setSelectedFormat(activeFormat);
       return;
@@ -313,7 +343,7 @@ export function DevicesView({
     if (groups.length > 0 && !groups.some((group) => group.pixel_format === selectedFormat)) {
       setSelectedFormat(groups[0].pixel_format);
     }
-  }, [groups, runtime?.capture?.profile?.pixel_format, selectedFormat]);
+  }, [configuredCapture.pixelFormat, groups, runtime?.capture?.profile?.pixel_format, selectedFormat]);
 
   const refreshCapabilities = useCallback(async () => {
     const requestId = capabilityRequestId.current + 1;
@@ -747,10 +777,15 @@ export function DevicesView({
                         {visibleProfiles.map((row) => {
                           const id = `${row.pixel_format}-${row.width}-${row.height}-${row.fps}`;
                           const active =
-                            capture?.profile?.pixel_format?.toUpperCase() === row.pixel_format &&
-                            capture.profile.width === row.width &&
-                            capture.profile.height === row.height &&
-                            capture.profile.fps === row.fps;
+                            (capture?.profile
+                              ? capture.profile.pixel_format?.toUpperCase() === row.pixel_format &&
+                                capture.profile.width === row.width &&
+                                capture.profile.height === row.height &&
+                                capture.profile.fps === row.fps
+                              : configuredCapture.pixelFormat === row.pixel_format &&
+                                configuredCapture.width === row.width &&
+                                configuredCapture.height === row.height &&
+                                configuredCapture.fps === row.fps);
                           return (
                             <button
                               className={active ? "profile-row active" : "profile-row"}

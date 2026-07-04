@@ -238,6 +238,7 @@ export const API_PATHS = {
   kmnetConnect: "/api/executors/kmnet/connect",
   kmnetDisconnect: "/api/executors/kmnet/disconnect",
   kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
+  kmnetDiagnosticCircle: "/api/executors/kmnet/diagnostic-circle",
   modelProjects: "/api/models/projects",
   modelJobs: "/api/models/jobs",
   license: "/api/license",
@@ -344,6 +345,20 @@ export function diagnosticMoveKmNet(dx = 1, dy = 0): Promise<Record<string, Runt
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ dx, dy })
+  });
+}
+
+export function diagnosticCircleKmNet(
+  radius = 8,
+  steps = 32,
+  intervalMs = 8
+): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticCircle, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ radius, steps, interval_ms: intervalMs })
   });
 }
 

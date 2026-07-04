@@ -141,6 +141,13 @@ def select(request: Request, payload: CaptureSelectRequest):
     config = getattr(request.app.state, "config", None)
     if config is not None:
         config.source.default = "capture"
+        if state.profile is not None:
+            config.capture.device = state.profile.device
+            config.capture.preference = "manual"
+            config.capture.pixel_format = state.profile.pixel_format
+            config.capture.width = state.profile.width
+            config.capture.height = state.profile.height
+            config.capture.fps = state.profile.fps
         runtime = getattr(request.app.state, "runtime", None)
         if runtime is not None:
             runtime.update_config(config)
