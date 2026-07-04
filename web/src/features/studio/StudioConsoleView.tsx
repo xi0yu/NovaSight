@@ -1151,15 +1151,23 @@ export function StudioConsoleView({
                 {busy === "model.switch" ? "安全切换中..." : "安全切换模型"}
               </button>
               <label>置信度阈值</label>
-              <div className="console-row">
-                <input type="range" min="0" max="1" step=".01" value={confidence} onChange={(event) => void updateConfigField("inference", "confidence_threshold", Number(event.target.value))} />
-                <input value={confidence.toFixed(2)} readOnly />
-              </div>
+              <CommitNumberControl
+                value={confidence}
+                min={0}
+                max={1}
+                step={0.01}
+                digits={2}
+                onCommit={(value) => updateConfigField("inference", "confidence_threshold", value)}
+              />
               <label>NMS 阈值</label>
-              <div className="console-row">
-                <input type="range" min="0" max="1" step=".01" value={nms} onChange={(event) => void updateConfigField("inference", "nms_threshold", Number(event.target.value))} />
-                <input value={nms.toFixed(2)} readOnly />
-              </div>
+              <CommitNumberControl
+                value={nms}
+                min={0}
+                max={1}
+                step={0.01}
+                digits={2}
+                onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
+              />
               <label>检测类别</label>
               <select
                 value={activeDetectionProfile}
@@ -1646,6 +1654,72 @@ function NumberControl({
         />
       </div>
     </>
+  );
+}
+
+function CommitNumberControl({
+  value,
+  min,
+  max,
+  step,
+  digits,
+  onCommit
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  digits: number;
+  onCommit: (value: number) => Promise<void> | void;
+}) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const next = clampNumber(Number(draft.toFixed(digits)), min, max);
+    if (Math.abs(next - value) >= step / 2) {
+      void onCommit(next);
+    } else {
+      setDraft(value);
+    }
+  }, [draft, digits, max, min, onCommit, step, value]);
+
+  return (
+    <div className="console-row">
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        onBlur={commit}
+        onChange={(event) => setDraft(clampNumber(Number(event.target.value), min, max))}
+        onMouseUp={commit}
+        onTouchEnd={commit}
+      />
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={Number.isInteger(draft) ? String(draft) : draft.toFixed(digits)}
+        onBlur={commit}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          if (Number.isFinite(next)) {
+            setDraft(clampNumber(next, min, max));
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    </div>
   );
 }
 
