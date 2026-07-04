@@ -4241,7 +4241,35 @@ tbody tr:hover {
   }
 
   .console-sidebar {
-    display: none;
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding: 12px 18px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .console-nav {
+    width: auto;
+    min-width: 132px;
+    height: 48px;
+    flex: 0 0 auto;
+    gap: 12px;
+    margin-bottom: 0;
+    padding: 0 14px;
+    white-space: nowrap;
+    touch-action: manipulation;
+  }
+
+  .console-nav.active::before {
+    top: auto;
+    right: 16px;
+    bottom: 0;
+    left: 16px;
+    width: auto;
+    height: 4px;
   }
 
   .console-main {
@@ -4267,6 +4295,22 @@ tbody tr:hover {
   .console-process {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .console-sidebar {
+    padding: 10px 12px;
+  }
+
+  .console-nav {
+    min-width: 108px;
+    height: 44px;
+    gap: 8px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .console-nav span {
+    width: auto;
   }
 }
 

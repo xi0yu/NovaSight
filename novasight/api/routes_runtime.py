@@ -131,6 +131,13 @@ async def websocket_status(websocket: WebSocket) -> None:
 def _apply_config(request: Request, config) -> None:
     app = request.app
     previous_config = getattr(app.state, "config", None)
+    previous_executors = getattr(app.state, "executors", None)
+    previous_kmnet = getattr(previous_executors, "executors", {}).get("kmnet")
+    previous_kmnet_status = (
+        previous_kmnet.status()
+        if previous_kmnet is not None and callable(getattr(previous_kmnet, "status", None))
+        else {}
+    )
     previous_roi_size = (
         getattr(getattr(previous_config, "roi", None), "size", None)
         if previous_config is not None
@@ -151,6 +158,7 @@ def _apply_config(request: Request, config) -> None:
     app.state.runtime.executors = app.state.executors
     app.state.runtime.hardware = app.state.hardware
     app.state.runtime.update_config(config)
+    _restore_live_executor_connection(app.state.executors, previous_kmnet_status)
     config_path = getattr(app.state, "config_path", None)
     if config_path is not None:
         save_runtime_config(config, config_path)
@@ -192,4 +200,28 @@ def _reconfigure_live_capture_for_roi(app) -> None:
     if getattr(new_state, "available", False) is not True:
         raise ValueError(
             f"runtime config applied but live capture ROI rebuild failed: {new_state.last_error}"
+        )
+
+
+def _restore_live_executor_connection(
+    executors: ExecutorRegistry,
+    previous_kmnet_status: dict[str, Any],
+) -> None:
+    if previous_kmnet_status.get("connected") is not True:
+        return
+    kmnet = executors.executors.get("kmnet")
+    connect = getattr(kmnet, "connect", None)
+    if not callable(connect):
+        return
+    try:
+        status = connect()
+    except Exception as exc:
+        logger.warning("kmNet reconnect after config update failed: %s", exc)
+        return
+    if status.get("connected") is True:
+        logger.info("kmNet connection restored after config update")
+    else:
+        logger.warning(
+            "kmNet reconnect after config update did not connect: %s",
+            status.get("last_error") or status,
         )

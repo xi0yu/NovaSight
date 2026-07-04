@@ -287,7 +287,14 @@ class RuntimeService:
             trace_ms=command.trace_ms,
             bezier_ctrl=command.bezier_ctrl,
         )
-        can_emit = box_input.active or getattr(getattr(self.config, "hardware", None), "kind", "none") == "none"
+        output_mode = str(
+            getattr(self.config.control, "output_mode", "")
+            or getattr(getattr(self.config, "executor", None), "default", "")
+        )
+        hardware_kind = str(getattr(getattr(self.config, "hardware", None), "kind", "none"))
+        requires_trigger = output_mode == "kmnet" and hardware_kind not in {"", "none", "silent"}
+        can_emit = box_input.active or not requires_trigger
+        trigger_raw = getattr(box_input, "raw", {}) or {}
         self.last_target = self._target_payload(target, context)
         self.last_control = {
             "frame_id": context.frame_id,
@@ -296,6 +303,9 @@ class RuntimeService:
             "confidence": command.confidence,
             "reason": command.reason,
             "trigger_active": box_input.active,
+            "trigger_required": requires_trigger,
+            "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
+            "output_mode": output_mode,
             "will_emit": can_emit,
         }
         return intent if can_emit else None

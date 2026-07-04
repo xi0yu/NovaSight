@@ -878,6 +878,8 @@ export function StudioConsoleView({
                 <span>dx</span><b>{formatNumber(asRecord(vision.control).dx, 1)}</b>
                 <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
                 <span>输出状态</span><b>{asRecord(vision.control).will_emit === true ? "允许输出" : "等待触发"}</b>
+                <span>触发要求</span><b>{asRecord(vision.control).trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
+                <span>触发信息</span><b>{readString(asRecord(vision.control).trigger_reason, "-") || "-"}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
                 <span>限幅</span><b>{executionIntent.clipped === true ? "已限幅" : executionIntent.clipped === false ? "未限幅" : "-"}</b>
