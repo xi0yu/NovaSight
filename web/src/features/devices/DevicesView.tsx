@@ -443,6 +443,7 @@ export function DevicesView({
         await onRuntimeRefresh();
       } catch (err) {
         setCaptureError(`配置同步失败：${getErrorMessage(err)}`);
+        await onRuntimeRefresh();
       } finally {
         setConfigBusy(null);
       }

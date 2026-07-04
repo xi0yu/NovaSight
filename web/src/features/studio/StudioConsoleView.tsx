@@ -621,6 +621,7 @@ export function StudioConsoleView({
         await onRefresh();
       } catch (err) {
         setLocalError(`配置同步失败：${getErrorMessage(err)}`);
+        await onRefresh();
       } finally {
         setBusy(null);
       }
