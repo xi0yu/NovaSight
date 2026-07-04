@@ -174,7 +174,7 @@ def _apply_config(request: Request, config) -> None:
     )
     if roi_changed:
         try:
-            _reconfigure_live_capture_for_roi(app, previous_config=previous_config)
+            _reconfigure_live_capture_for_roi(app)
         except ValueError:
             if previous_config is not None:
                 _rollback_runtime_config_after_reconfigure_failure(
@@ -208,7 +208,7 @@ def _install_runtime_config(app, config) -> None:
     app.state.runtime.update_config(config)
 
 
-def _reconfigure_live_capture_for_roi(app, *, previous_config) -> None:
+def _reconfigure_live_capture_for_roi(app) -> None:
     capture = app.state.capture
     session = getattr(capture, "session", None)
     state = getattr(capture, "state", None)
@@ -221,7 +221,6 @@ def _reconfigure_live_capture_for_roi(app, *, previous_config) -> None:
         return
     if getattr(profile, "preference", "") == "image":
         return
-    previous_profile = profile
     logger.info(
         "capture roi changed; rebuilding live capture pipeline device=%s roi_size=%s offset=(%s,%s)",
         profile.device,
@@ -239,45 +238,12 @@ def _reconfigure_live_capture_for_roi(app, *, previous_config) -> None:
     )
     config_error = getattr(capture, "last_config_error", None)
     if config_error is not None:
-        _restore_live_capture_profile(app, previous_profile, previous_config=previous_config)
         raise ValueError(
             f"runtime config rejected; previous capture pipeline was restored: {config_error.last_error}"
         )
     if getattr(new_state, "available", False) is not True:
-        _restore_live_capture_profile(app, previous_profile, previous_config=previous_config)
         raise ValueError(
             f"runtime config rejected; previous capture pipeline was restored: {new_state.last_error}"
-        )
-
-
-def _restore_live_capture_profile(app, profile, *, previous_config) -> None:
-    capture = app.state.capture
-    if previous_config is not None:
-        capture.roi_size = previous_config.roi.size
-        capture.roi_offset_x = previous_config.roi.offset_x
-        capture.roi_offset_y = previous_config.roi.offset_y
-    restored_state = capture.configure(
-        profile.device,
-        preference="manual",
-        pixel_format=profile.pixel_format,
-        width=profile.width,
-        height=profile.height,
-        fps=profile.fps,
-    )
-    if getattr(restored_state, "available", False) is not True:
-        logger.error(
-            "capture rollback failed device=%s error=%s",
-            profile.device,
-            getattr(restored_state, "last_error", ""),
-        )
-    else:
-        logger.info(
-            "capture rollback restored previous pipeline device=%s pixel_format=%s size=%sx%s fps=%s",
-            profile.device,
-            profile.pixel_format,
-            profile.width,
-            profile.height,
-            profile.fps,
         )
 
 

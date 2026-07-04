@@ -283,6 +283,11 @@ def _mjpeg_frames(
             after_frame_id=last_frame_id,
             timeout_s=interval_s,
         )
+        if frame is None and last_frame_id > 0:
+            latest = capture.wait_preview_frame(after_frame_id=None, timeout_s=0.0)
+            if latest is not None and int(latest.frame_id) <= int(last_frame_id):
+                last_frame_id = 0
+                frame = latest
         if frame is None:
             capture.record_preview_drop(target_fps=preview_fps)
             time.sleep(interval_s)

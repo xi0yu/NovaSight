@@ -174,6 +174,8 @@ class CaptureService:
     ) -> CaptureRuntimeState:
         self.source_factory = self._default_source_factory
         self.session.source_factory = self._default_source_factory
+        previous_profile = self.state.profile
+        previous_running = self.session.running and self.source is not None
         selected_device = self.config.device if device is None else device
         if not selected_device.strip():
             failure = CaptureRuntimeState(
@@ -182,9 +184,10 @@ class CaptureService:
                 last_error="capture device is required",
             )
             self.last_config_error = failure
-            self.session.stop(failure.last_error)
-            self.state = failure
-            return self.state
+            if not previous_running:
+                self.session.stop(failure.last_error)
+                self.state = failure
+            return failure
         selected_preference = preference if preference is not None else self.config.preference
         selected_pixel_format = (
             pixel_format if pixel_format is not None else self.config.pixel_format
@@ -200,9 +203,10 @@ class CaptureService:
                 last_error=caps.reason,
             )
             self.last_config_error = failure
-            self.session.stop(failure.last_error)
-            self.state = failure
-            return self.state
+            if not previous_running:
+                self.session.stop(failure.last_error)
+                self.state = failure
+            return failure
         try:
             profile = select_capture_profile(
                 selected_device,
@@ -226,9 +230,12 @@ class CaptureService:
                 last_error=str(exc),
             )
             self.last_config_error = failure
-            self.session.stop(str(exc))
-            self.state = failure
-            return self.state
+            if previous_running and previous_profile is not None:
+                self._restore_previous_profile(previous_profile)
+            else:
+                self.session.stop(str(exc))
+                self.state = failure
+            return failure
         self.config.device = profile.device
         self.config.preference = "manual"
         self.config.pixel_format = profile.pixel_format
@@ -239,6 +246,29 @@ class CaptureService:
         self._last_preview_output_ts_ns = None
         self._preview_window_ts_ns.clear()
         return self._sync_state()
+
+    def _restore_previous_profile(self, profile: CaptureProfile) -> None:
+        try:
+            restored = self.session.reconfigure(profile)
+        except Exception as restore_exc:
+            logger.error(
+                "capture restore previous profile failed device=%s error=%s",
+                profile.device,
+                restore_exc,
+            )
+            self.state = CaptureRuntimeState(
+                available=False,
+                device=profile.device,
+                profile=profile,
+                last_error=f"capture restore failed: {restore_exc}",
+            )
+            return
+        logger.info(
+            "capture restored previous profile device=%s backend=%s profile=%s",
+            restored.device,
+            restored.backend,
+            restored.profile,
+        )
 
     def configure_image(self, path: str, *, fps: int = 30) -> CaptureRuntimeState:
         with self._source_lock:

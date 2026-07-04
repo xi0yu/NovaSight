@@ -475,6 +475,10 @@ class ControlCommandCoalescer:
             confidence=intent.confidence,
             reason="coalesced control command",
             source_id=intent.source_id,
+            move_kind=intent.move_kind,
+            move_ms=intent.move_ms,
+            trace_ms=intent.trace_ms,
+            bezier_ctrl=intent.bezier_ctrl,
         )
         self._pending_dx = 0.0
         self._pending_dy = 0.0
