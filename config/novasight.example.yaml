@@ -36,11 +36,14 @@ control:
   fov_ratio: 0.28
   strategy: pid
   pid_kp_x: 0.35
-  pid_kp_y: 0.35
+  pid_kp_y: 0.24
   pid_ki: 0.1
   pid_kd: 0.1
   pid_integral_limit: 250
   pid_move_limit: 120
+  kp_x_move_max: 150
+  kp_y_move_max: 30
+  prediction_factor: 0.1
   command_interval_ms: 1
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.
@@ -52,7 +55,9 @@ logging:
   dir: logs
 hardware:
   kind: none
-  host: 127.0.0.1
-  port: 0
+  host: 192.168.2.188
+  port: 8888
+  uuid: "12345678"
+  monitor_port: 5001
   serial_port: ""
   heartbeat_timeout_ms: 50

@@ -48,6 +48,9 @@ class PIDStrategy:
         move_limit_x: float | None = None,
         move_limit_y: float | None = None,
         derivative_alpha: float = 0.35,
+        prediction_factor: float = 0.1,
+        prediction_stationary_px: float = 1.5,
+        prediction_moving_px: float = 12.0,
     ) -> None:
         self.kp_x = kp if kp_x is None else kp_x
         self.kp_y = kp if kp_y is None else kp_y
@@ -62,10 +65,17 @@ class PIDStrategy:
             self.move_limit if move_limit_y is None else abs(move_limit_y)
         )
         self.derivative_alpha = max(0.0, min(1.0, derivative_alpha))
+        self.prediction_factor = max(0.0, prediction_factor)
+        self.prediction_stationary_px = max(0.0, prediction_stationary_px)
+        self.prediction_moving_px = max(
+            self.prediction_stationary_px + 1.0,
+            prediction_moving_px,
+        )
         self._ix = 0.0
         self._iy = 0.0
         self._last_error: tuple[float, float] | None = None
         self._last_derivative = (0.0, 0.0)
+        self._last_center: tuple[float, float] | None = None
 
     def calculate(
         self,
@@ -74,9 +84,11 @@ class PIDStrategy:
         box_input: BoxInputState,
     ) -> MoveCommand:
         if not box_input.active:
+            self._reset_motion_state()
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
-        ex = target.cx - current_pos[0]
-        ey = target.cy - current_pos[1]
+        predicted_center, prediction_weight = self._predict_center(target)
+        ex = predicted_center[0] - current_pos[0]
+        ey = predicted_center[1] - current_pos[1]
         self._ix = max(-self.integral_limit, min(self.integral_limit, self._ix + ex))
         self._iy = max(-self.integral_limit, min(self.integral_limit, self._iy + ey))
         if self._last_error is None:
@@ -94,7 +106,11 @@ class PIDStrategy:
             dx=self._clamp_axis(dx, self.move_limit_x),
             dy=self._clamp_axis(dy, self.move_limit_y),
             confidence=target.score,
-            reason="pid strategy",
+            reason=(
+                "pid strategy"
+                if prediction_weight <= 0
+                else f"pid strategy with prediction {prediction_weight:.2f}"
+            ),
         )
 
     @staticmethod
@@ -102,6 +118,31 @@ class PIDStrategy:
         if limit is None:
             return value
         return max(-limit, min(limit, value))
+
+    def _predict_center(self, target: Target) -> tuple[tuple[float, float], float]:
+        center = (target.cx, target.cy)
+        if self._last_center is None or self.prediction_factor <= 0:
+            self._last_center = center
+            return center, 0.0
+
+        vx = center[0] - self._last_center[0]
+        vy = center[1] - self._last_center[1]
+        self._last_center = center
+
+        speed = math.hypot(vx, vy)
+        if speed <= self.prediction_stationary_px:
+            return center, 0.0
+        span = self.prediction_moving_px - self.prediction_stationary_px
+        motion_weight = min(1.0, (speed - self.prediction_stationary_px) / span)
+        lead = self.prediction_factor * motion_weight
+        return (center[0] + vx * lead, center[1] + vy * lead), motion_weight
+
+    def _reset_motion_state(self) -> None:
+        self._ix = 0.0
+        self._iy = 0.0
+        self._last_error = None
+        self._last_derivative = (0.0, 0.0)
+        self._last_center = None
 
 
 class PredictiveStrategy:

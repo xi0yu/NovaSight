@@ -369,6 +369,7 @@ class RuntimeService:
             move_limit=config.control.pid_move_limit,
             move_limit_x=config.control.kp_x_move_max,
             move_limit_y=config.control.kp_y_move_max,
+            prediction_factor=config.control.prediction_factor,
         )
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:

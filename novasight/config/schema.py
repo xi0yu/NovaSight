@@ -131,6 +131,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.pid_move_limit", "label": "PID 控制量上限", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.kp_x_move_max", "label": "Kp X 控制量上限", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.kp_y_move_max", "label": "Kp Y 控制量上限", "type": "float", "min": 0, "restart_required": False},
+                    {"path": "control.prediction_factor", "label": "预测系数", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "control.command_interval_ms", "label": "指令合并间隔 ms", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.move_kind", "label": "移动方式", "type": "select", "options": ["raw", "auto", "bezier"], "restart_required": False},
                     {"path": "control.move_ms", "label": "移动铺展 ms", "type": "int", "min": 0, "restart_required": False},

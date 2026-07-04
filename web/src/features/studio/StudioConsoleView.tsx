@@ -157,6 +157,7 @@ export function StudioConsoleView({
   const roiConfig = nestedRecord(config, "roi");
   const inferenceConfig = nestedRecord(config, "inference");
   const controlConfig = nestedRecord(config, "control");
+  const hardwareConfig = nestedRecord(config, "hardware");
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
   const pipeline = asRecord(runtime?.pipeline);
@@ -178,6 +179,12 @@ export function StudioConsoleView({
   const pidKd = readNumber(controlConfig.pid_kd, 0.1);
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
+  const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
+  const hardwareKind = readString(hardwareConfig.kind, "none");
+  const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
+  const kmnetPort = readNumber(hardwareConfig.port, 8888);
+  const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
+  const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
@@ -664,6 +671,7 @@ export function StudioConsoleView({
             <Metric title="控制策略" value={readString(controlConfig.strategy, "pid")} small="strategy" />
             <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
             <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
+            <Metric title="预测" value={predictionFactor.toFixed(2)} small="lead" />
             <Metric title="控制量上限" value={`${kpXMoveMax}/${kpYMoveMax}`} small="x/y" />
           </div>
           <div className="console-grid2">
@@ -682,6 +690,7 @@ export function StudioConsoleView({
               <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
               <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
               <NumberControl label="kd" value={pidKd} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
+              <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
               <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
               <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
             </div>
@@ -693,6 +702,22 @@ export function StudioConsoleView({
                 <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
                 <span>输出状态</span><b>{asRecord(vision.control).will_emit === true ? "允许输出" : "等待触发"}</b>
               </div>
+            </div>
+            <div className="console-card">
+              <h2 className="console-title">其他参数</h2>
+              <label>硬件类型</label>
+              <select
+                value={hardwareKind}
+                onChange={(event) => void updateConfigField("hardware", "kind", event.target.value)}
+              >
+                <option value="none">不连接硬件</option>
+                <option value="kmnet">kmNet</option>
+                <option value="makcu">MAKCU</option>
+              </select>
+              <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
+              <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
+              <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
+              <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
             </div>
           </div>
         </section>
@@ -785,6 +810,45 @@ function NumberControl({
           }}
         />
       </div>
+    </>
+  );
+}
+
+function TextControl({
+  label,
+  value,
+  onCommit
+}: {
+  label: string;
+  value: string;
+  onCommit: (value: string) => Promise<void> | void;
+}) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const next = draft.trim();
+    if (next !== value) {
+      void onCommit(next);
+    }
+  }, [draft, onCommit, value]);
+
+  return (
+    <>
+      <label>{label}</label>
+      <input
+        value={draft}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
     </>
   );
 }

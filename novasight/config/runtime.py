@@ -99,6 +99,7 @@ class ControlConfig:
     pid_move_limit: float = 120.0
     kp_x_move_max: float = 150.0
     kp_y_move_max: float = 30.0
+    prediction_factor: float = 0.1
     command_interval_ms: float = 1.0
     move_kind: str = "raw"
     move_ms: int = 12
@@ -127,10 +128,10 @@ class LoggingConfig:
 @dataclass
 class HardwareConfig:
     kind: str = "none"
-    host: str = "127.0.0.1"
-    port: int = 0
-    uuid: str = ""
-    monitor_port: int = 0
+    host: str = "192.168.2.188"
+    port: int = 8888
+    uuid: str = "12345678"
+    monitor_port: int = 5001
     flip_dy: bool = True
     serial_port: str = ""
     heartbeat_timeout_ms: float = 50.0
@@ -248,6 +249,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "pid_move_limit",
         "kp_x_move_max",
         "kp_y_move_max",
+        "prediction_factor",
         "move_ms",
         "trace_ms",
         "deadzone_counts",
@@ -263,6 +265,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
     if cfg.control.ema_alpha > 1:
         raise ValueError("runtime config key 'control.ema_alpha' must be <= 1")
+    if cfg.control.prediction_factor > 1:
+        raise ValueError("runtime config key 'control.prediction_factor' must be <= 1")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
