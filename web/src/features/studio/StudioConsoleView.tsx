@@ -116,6 +116,11 @@ function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function readTraceStages(value: unknown): Record<string, unknown>[] {
+  const stages = asRecord(value).stages;
+  return Array.isArray(stages) ? stages.map(asRecord) : [];
+}
+
 function mouseBindingName(button: number): string {
   if (button === 0) {
     return "MouseLeft";
@@ -355,6 +360,8 @@ export function StudioConsoleView({
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
+  const businessTrace = asRecord(vision.trace);
+  const businessTraceStages = readTraceStages(vision.trace);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
   const rawDetections = readNumber(inferenceTrace.raw_detections, 0);
   const mappedDetections = readNumber(inferenceTrace.mapped_detections, 0);
@@ -1187,6 +1194,28 @@ export function StudioConsoleView({
             <div className="console-card">
               <h2 className="console-title">推理输出</h2>
               <PreviewFrame runtime={runtime} roiSize={roiSize} />
+              <div className="business-trace">
+                <div className="business-trace-head">
+                  <span>主营链路诊断</span>
+                  <b>{readString(businessTrace.message, "等待运行状态")}</b>
+                </div>
+                <div className="business-trace-steps">
+                  {businessTraceStages.map((stage) => (
+                    <div className={`business-trace-step ${readString(stage.status, "blocked")}`} key={readString(stage.id, readString(stage.label, ""))}>
+                      <span>{readString(stage.label, "-")}</span>
+                      <b>{readString(stage.message, "-")}</b>
+                      <small>{readString(stage.detail, "") || readString(stage.status, "-")}</small>
+                    </div>
+                  ))}
+                  {businessTraceStages.length === 0 ? (
+                    <div className="business-trace-step blocked">
+                      <span>链路</span>
+                      <b>等待运行状态</b>
+                      <small>暂无 trace</small>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
               <div className="console-kv">
                 <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
                 <span>推理原因</span><b>{inferenceReason || "-"}</b>

@@ -27,6 +27,8 @@ NovaSight 当前已经具备产品骨架：
 
 更新：`RuntimeReconfigurator` 已开始落地，`PUT /api/config` 的配置安装、ROI live rebuild、kmNet 连接恢复、配置保存和 pipeline auto-start 已经从路由层迁移到运行态 reconfiguration 模块。后续还需要继续把采集选择、模型切换和硬件重连纳入同一套报告模型。
 
+更新：主营链路诊断 `vision.trace` 已开始落地，后端按采集、ROI、推理、目标、控制量、执行六个阶段输出状态，前端模型推理页已展示当前卡住位置和原因。
+
 ## 2. 产品级设计原则
 
 后续所有模块改造都应该遵循这些原则：

@@ -4095,6 +4095,97 @@ tbody tr:hover {
   font-weight: 800;
 }
 
+.business-trace {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.business-trace-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.business-trace-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.business-trace-head b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.business-trace-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.business-trace-step {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: rgba(17, 21, 31, 0.04);
+}
+
+.business-trace-step.ok {
+  border-color: rgba(25, 198, 74, 0.28);
+  background: rgba(25, 198, 74, 0.08);
+}
+
+.business-trace-step.blocked {
+  border-color: rgba(217, 119, 6, 0.24);
+  background: rgba(255, 247, 230, 0.76);
+}
+
+.business-trace-step.failed {
+  border-color: rgba(255, 64, 88, 0.28);
+  background: rgba(255, 64, 88, 0.08);
+}
+
+.business-trace-step span,
+.business-trace-step b,
+.business-trace-step small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.business-trace-step span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.business-trace-step b {
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.business-trace-step small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
 .console-kv span:nth-child(odd) {
   color: var(--muted);
 }

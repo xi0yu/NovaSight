@@ -659,6 +659,7 @@ class RuntimeService:
                 "target": None,
                 "control": None,
                 "execution": self.last_execution,
+                "trace": self._business_trace(None),
             }
         return {
             "frame_id": context.frame_id,
@@ -674,7 +675,117 @@ class RuntimeService:
             "target": self.last_target,
             "control": self.last_control,
             "execution": self.last_execution,
+            "trace": self._business_trace(context),
         }
+
+    def _business_trace(self, context: FrameContext | None) -> dict[str, Any]:
+        capture_state = getattr(getattr(self, "capture", None), "state", None)
+        inference = dict(self.last_inference_status)
+        control = dict(self.last_control or {})
+        execution = dict(self.last_execution or {})
+        stages = [
+            self._trace_capture_stage(capture_state),
+            self._trace_roi_stage(inference),
+            self._trace_inference_stage(inference),
+            self._trace_target_stage(context, control),
+            self._trace_control_stage(control),
+            self._trace_execution_stage(execution),
+        ]
+        failed = next((item for item in stages if item["status"] == "failed"), None)
+        blocked = next((item for item in stages if item["status"] == "blocked"), None)
+        summary = failed or blocked or stages[-1]
+        return {
+            "frame_id": getattr(context, "frame_id", None),
+            "status": summary["status"],
+            "blocked_at": summary["id"] if summary["status"] in {"failed", "blocked"} else "",
+            "message": summary["message"],
+            "stages": stages,
+        }
+
+    @staticmethod
+    def _trace_capture_stage(capture_state: Any) -> dict[str, Any]:
+        available = getattr(capture_state, "available", False) is True
+        message = "采集正常"
+        status = "ok" if available else "blocked"
+        if not available:
+            message = str(getattr(capture_state, "last_error", "") or "采集未启动")
+        profile = getattr(capture_state, "profile", None)
+        detail = ""
+        if profile is not None:
+            detail = f"{getattr(profile, 'pixel_format', '-')}/{getattr(profile, 'width', 0)}x{getattr(profile, 'height', 0)}@{getattr(profile, 'fps', 0)}"
+        return {"id": "capture", "label": "采集", "status": status, "message": message, "detail": detail}
+
+    @staticmethod
+    def _trace_roi_stage(inference: dict[str, Any]) -> dict[str, Any]:
+        if not inference:
+            return {"id": "roi", "label": "ROI", "status": "blocked", "message": "等待采集帧", "detail": ""}
+        width = inference.get("input_width")
+        height = inference.get("input_height")
+        detail = f"{width}x{height}" if width and height else ""
+        return {"id": "roi", "label": "ROI", "status": "ok", "message": "ROI 帧已生成", "detail": detail}
+
+    @staticmethod
+    def _trace_inference_stage(inference: dict[str, Any]) -> dict[str, Any]:
+        if not inference.get("ran"):
+            return {"id": "inference", "label": "推理", "status": "blocked", "message": inference.get("reason") or "推理尚未执行", "detail": ""}
+        if inference.get("available") is not True:
+            return {"id": "inference", "label": "推理", "status": "failed", "message": inference.get("reason") or "推理失败", "detail": ""}
+        mapped = int(inference.get("mapped_detections") or 0)
+        if mapped <= 0:
+            raw = int(inference.get("raw_detections") or 0)
+            return {"id": "inference", "label": "推理", "status": "blocked", "message": "未检测到可用目标", "detail": f"raw={raw}, mapped={mapped}"}
+        return {"id": "inference", "label": "推理", "status": "ok", "message": "推理有检测结果", "detail": f"mapped={mapped}"}
+
+    def _trace_target_stage(self, context: FrameContext | None, control: dict[str, Any]) -> dict[str, Any]:
+        if context is None:
+            return {"id": "target", "label": "目标", "status": "blocked", "message": "等待推理帧", "detail": ""}
+        detections = len(context.detections)
+        if self.last_target is None:
+            return {
+                "id": "target",
+                "label": "目标",
+                "status": "blocked",
+                "message": str(control.get("selection_reason") or "没有选中目标"),
+                "detail": f"candidates={detections}",
+            }
+        target = self.last_target
+        return {
+            "id": "target",
+            "label": "目标",
+            "status": "ok",
+            "message": str(target.get("class_name") or "目标已选中"),
+            "detail": f"idx={target.get('target_detection_index', '-')}, score={float(target.get('score') or 0):.2f}",
+        }
+
+    @staticmethod
+    def _trace_control_stage(control: dict[str, Any]) -> dict[str, Any]:
+        if not control:
+            return {"id": "control", "label": "控制量", "status": "blocked", "message": "没有目标，未计算控制量", "detail": ""}
+        dx = float(control.get("dx") or 0.0)
+        dy = float(control.get("dy") or 0.0)
+        detail = f"dx={dx:.1f}, dy={dy:.1f}"
+        if control.get("will_emit") is not True:
+            return {
+                "id": "control",
+                "label": "控制量",
+                "status": "blocked",
+                "message": str(control.get("trigger_reason") or "等待触发，控制量未发送"),
+                "detail": detail,
+            }
+        if round(dx) == 0 and round(dy) == 0:
+            return {"id": "control", "label": "控制量", "status": "blocked", "message": str(control.get("reason") or "控制量为 0"), "detail": detail}
+        return {"id": "control", "label": "控制量", "status": "ok", "message": str(control.get("reason") or "控制量已生成"), "detail": detail}
+
+    @staticmethod
+    def _trace_execution_stage(execution: dict[str, Any]) -> dict[str, Any]:
+        if not execution:
+            return {"id": "execution", "label": "执行", "status": "blocked", "message": "没有控制命令", "detail": ""}
+        detail = str(execution.get("executor_id") or "")
+        if execution.get("sent") is True:
+            return {"id": "execution", "label": "执行", "status": "ok", "message": str(execution.get("message") or "已发送"), "detail": detail}
+        message = str(execution.get("message") or "未发送")
+        status = "failed" if "failed" in message.lower() or "unavailable" in message.lower() else "blocked"
+        return {"id": "execution", "label": "执行", "status": status, "message": message, "detail": detail}
 
     def _execution_result_payload(self, result: Any) -> dict[str, Any]:
         intent = getattr(result, "intent", None)
