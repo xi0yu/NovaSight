@@ -51,6 +51,16 @@ class PIDStrategy:
         prediction_factor: float = 0.1,
         prediction_stationary_px: float = 1.5,
         prediction_moving_px: float = 12.0,
+        near_px: float = 24.0,
+        near_speed: float = 0.16,
+        far_speed: float = 0.42,
+        deadzone_counts: int = 1,
+        counts_per_revolution_x: float = 4096.0,
+        counts_per_revolution_y: float = 4096.0,
+        move_kind: str = "raw",
+        move_ms: int = 0,
+        trace_ms: int = 0,
+        bezier_curvature: float = 0.18,
     ) -> None:
         self.kp_x = kp if kp_x is None else kp_x
         self.kp_y = kp if kp_y is None else kp_y
@@ -71,11 +81,22 @@ class PIDStrategy:
             self.prediction_stationary_px + 1.0,
             prediction_moving_px,
         )
+        self.near_px = max(0.0, near_px)
+        self.near_speed = max(0.0, near_speed)
+        self.far_speed = max(0.0, far_speed)
+        self.deadzone_counts = max(0, int(deadzone_counts))
+        self.counts_per_revolution_x = max(1.0, counts_per_revolution_x)
+        self.counts_per_revolution_y = max(1.0, counts_per_revolution_y)
+        self.move_kind = move_kind if move_kind in {"raw", "auto", "bezier"} else "raw"
+        self.move_ms = max(0, int(move_ms))
+        self.trace_ms = max(0, int(trace_ms))
+        self.bezier_curvature = max(0.0, bezier_curvature)
         self._ix = 0.0
         self._iy = 0.0
         self._last_error: tuple[float, float] | None = None
         self._last_derivative = (0.0, 0.0)
         self._last_center: tuple[float, float] | None = None
+        self._last_s: float | None = None
 
     def calculate(
         self,
@@ -87,30 +108,51 @@ class PIDStrategy:
             self._reset_motion_state()
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
         predicted_center, prediction_weight = self._predict_center(target)
-        ex = predicted_center[0] - current_pos[0]
-        ey = predicted_center[1] - current_pos[1]
-        self._ix = max(-self.integral_limit, min(self.integral_limit, self._ix + ex))
-        self._iy = max(-self.integral_limit, min(self.integral_limit, self._iy + ey))
+        ex_px = predicted_center[0] - current_pos[0]
+        ey_px = predicted_center[1] - current_pos[1]
+        err_px = math.hypot(ex_px, ey_px)
+        ex, ey = self._pixel_error_to_counts(ex_px, ey_px)
+        speed = self._speed_for(err_px, min(current_pos[0], current_pos[1]) * 2)
+        ex *= speed
+        ey *= speed
+        now_s = time.monotonic()
+        dt = now_s - self._last_s if self._last_s is not None else 1.0 / 60.0
+        self._last_s = now_s
+        if not (0.001 < dt < 0.5):
+            dt = 1.0 / 60.0
+        self._ix = max(-self.integral_limit, min(self.integral_limit, self._ix + ex * dt))
+        self._iy = max(-self.integral_limit, min(self.integral_limit, self._iy + ey * dt))
         if self._last_error is None:
             raw_dx = raw_dy = 0.0
         else:
-            raw_dx = ex - self._last_error[0]
-            raw_dy = ey - self._last_error[1]
+            raw_dx = (ex - self._last_error[0]) / dt
+            raw_dy = (ey - self._last_error[1]) / dt
         dx_d = self.derivative_alpha * raw_dx + (1 - self.derivative_alpha) * self._last_derivative[0]
         dy_d = self.derivative_alpha * raw_dy + (1 - self.derivative_alpha) * self._last_derivative[1]
         self._last_error = (ex, ey)
         self._last_derivative = (dx_d, dy_d)
         dx = self.kp_x * ex + self.ki * self._ix + self.kd * dx_d
         dy = self.kp_y * ey + self.ki * self._iy + self.kd * dy_d
+        if abs(ex) <= self.deadzone_counts and abs(ey) <= self.deadzone_counts:
+            return MoveCommand(0, 0, target.score, "pid deadzone")
+        dx = self._minimum_effective_step(dx, ex)
+        dy = self._minimum_effective_step(dy, ey)
+        dx = self._clamp_axis(dx, self.move_limit_x)
+        dy = self._clamp_axis(dy, self.move_limit_y)
+        bezier_ctrl = _bezier_ctrl(int(round(dx)), int(round(dy)), self.bezier_curvature) if self.move_kind == "bezier" else None
         return MoveCommand(
-            dx=self._clamp_axis(dx, self.move_limit_x),
-            dy=self._clamp_axis(dy, self.move_limit_y),
+            dx=dx,
+            dy=dy,
             confidence=target.score,
             reason=(
-                "pid strategy"
+                f"pid counts strategy px={err_px:.1f}"
                 if prediction_weight <= 0
-                else f"pid strategy with prediction {prediction_weight:.2f}"
+                else f"pid counts strategy px={err_px:.1f} prediction={prediction_weight:.2f}"
             ),
+            move_kind=self.move_kind,
+            move_ms=self.move_ms,
+            trace_ms=self.trace_ms,
+            bezier_ctrl=bezier_ctrl,
         )
 
     @staticmethod
@@ -143,6 +185,29 @@ class PIDStrategy:
         self._last_error = None
         self._last_derivative = (0.0, 0.0)
         self._last_center = None
+        self._last_s = None
+
+    def _pixel_error_to_counts(self, ex_px: float, ey_px: float) -> tuple[float, float]:
+        rx = self.counts_per_revolution_x / (2.0 * math.pi)
+        ry = self.counts_per_revolution_y / (2.0 * math.pi)
+        counts_x = math.atan2(ex_px, rx) * rx
+        counts_y = math.atan2(ey_px, math.sqrt(ex_px * ex_px + rx * rx)) * ry
+        return counts_x, counts_y
+
+    def _speed_for(self, err_px: float, fov_radius: float) -> float:
+        if self.near_px <= 0:
+            return self.far_speed
+        if err_px <= self.near_px:
+            return self.near_speed
+        span = max(1.0, fov_radius - self.near_px)
+        ratio = min(1.0, (err_px - self.near_px) / span)
+        return self.near_speed + (self.far_speed - self.near_speed) * ratio
+
+    @staticmethod
+    def _minimum_effective_step(value: float, error_counts: float) -> float:
+        if round(value) != 0 or abs(error_counts) < 1.0:
+            return value
+        return 1.0 if error_counts > 0 else -1.0
 
 
 class PredictiveStrategy:

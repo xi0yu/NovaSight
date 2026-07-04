@@ -428,6 +428,16 @@ class RuntimeService:
             move_limit_x=config.control.kp_x_move_max,
             move_limit_y=config.control.kp_y_move_max,
             prediction_factor=config.control.prediction_factor,
+            near_px=config.control.near_px,
+            near_speed=config.control.near_speed,
+            far_speed=config.control.far_speed,
+            deadzone_counts=config.control.deadzone_counts,
+            counts_per_revolution_x=config.control.counts_per_revolution_x,
+            counts_per_revolution_y=config.control.counts_per_revolution_y,
+            move_kind=config.control.move_kind,
+            move_ms=config.control.move_ms,
+            trace_ms=config.control.trace_ms,
+            bezier_curvature=config.control.bezier_curvature,
         )
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
