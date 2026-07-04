@@ -143,9 +143,9 @@ function readDetectionItems(value: unknown): DetectionOverlay[] {
   });
 }
 
-function detectionClassName(detection: DetectionOverlay, selected: boolean): string {
+function detectionClassName(detection: DetectionOverlay): string {
   const classBucket = detection.classId >= 0 ? detection.classId % 8 : 7;
-  return `console-detection-box detection-class-${classBucket}${selected ? " selected" : ""}`;
+  return `console-detection-box detection-class-${classBucket}`;
 }
 
 function triggerModeLabel(value: string): string {
@@ -172,27 +172,6 @@ function detectionStyle(detection: DetectionOverlay, width: number, height: numb
     width: `${clampPercent((detection.w / width) * 100)}%`,
     height: `${clampPercent((detection.h / height) * 100)}%`
   };
-}
-
-function pointStyle(x: unknown, y: unknown, width: number, height: number): CSSProperties | null {
-  const px = readNullableNumber(x);
-  const py = readNullableNumber(y);
-  if (px === null || py === null || width <= 0 || height <= 0) {
-    return null;
-  }
-  return {
-    left: `${clampPercent((px / width) * 100)}%`,
-    top: `${clampPercent((py / height) * 100)}%`
-  };
-}
-
-function isSelectedDetection(detection: DetectionOverlay, target: Record<string, unknown>): boolean {
-  const targetCx = readNullableNumber(target.cx);
-  const targetCy = readNullableNumber(target.cy);
-  if (targetCx === null || targetCy === null) {
-    return false;
-  }
-  return Math.abs(detection.cx - targetCx) <= 2 && Math.abs(detection.cy - targetCy) <= 2;
 }
 
 function formatNumber(value: unknown, digits = 1): string {
@@ -1483,29 +1462,25 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
-  const target = asRecord(vision.target);
   const detections = readDetectionItems(vision.detection_items);
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
-  const aimPointStyle = pointStyle(target.aim_x, target.aim_y, previewWidth, previewHeight);
   return (
     <div className="console-preview" style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
       {runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
       <div className="console-detection-layer" aria-hidden="true">
         {detections.map((detection, index) => {
-          const selected = isSelectedDetection(detection, target);
           return (
             <div
-              className={detectionClassName(detection, selected)}
+              className={detectionClassName(detection)}
               key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
               style={detectionStyle(detection, previewWidth, previewHeight)}
             >
-              <span>{selected ? "当前 " : ""}{detection.className || "目标"} {detection.score.toFixed(2)}</span>
+              <span>{detection.className || "目标"} {detection.score.toFixed(2)}</span>
             </div>
           );
         })}
-        {aimPointStyle ? <div className="console-aim-point" style={aimPointStyle} /> : null}
       </div>
     </div>
   );
