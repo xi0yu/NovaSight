@@ -199,7 +199,7 @@ class KmNetExecutor:
             self.connected = False
             return
         try:
-            self._call_driver("init", self.host, int(self.port), self.uuid)
+            self._call_init_driver()
             self.connected = True
             self.last_error = ""
             if self.monitor_port > 0:
@@ -252,6 +252,15 @@ class KmNetExecutor:
         if rc not in (None, 0):
             raise RuntimeError(f"{name} failed rc={rc}")
         return rc
+
+    def _call_init_driver(self) -> Any:
+        try:
+            return self._call_driver("init", self.host, str(self.port), self.uuid)
+        except TypeError as exc:
+            if "incompatible function arguments" not in str(exc):
+                raise
+            logger.info("kmNet init rejected string port; retrying with integer port")
+            return self._call_driver("init", self.host, int(self.port), self.uuid)
 
     def _read_button(self, name: str) -> bool:
         fn = getattr(self._driver, name, None)
