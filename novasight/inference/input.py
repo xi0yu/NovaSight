@@ -33,16 +33,38 @@ class PreparedTensorInput:
 
 
 def parse_tensor_input_shape(value: str) -> TensorInputShape:
-    normalized = value.strip().lower().replace(",", "x").replace(" ", "")
+    normalized = (
+        value.strip()
+        .lower()
+        .replace(",", "x")
+        .replace(" ", "")
+        .replace("[", "")
+        .replace("]", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
     parts = [part for part in normalized.split("x") if part]
-    if len(parts) != 4:
-        raise ValueError(f"TensorRT input shape must be NCHW, got: {value}")
     try:
-        batch, channels, height, width = [int(part) for part in parts]
+        numbers = [int(part) for part in parts]
     except ValueError as exc:
         raise ValueError(f"TensorRT input shape must contain integers: {value}") from exc
+    if len(numbers) == 2:
+        height, width = numbers
+        batch = 1
+        channels = 3
+    elif len(numbers) == 3:
+        channels, height, width = numbers
+        batch = 1
+    elif len(numbers) == 4:
+        batch, channels, height, width = numbers
+    else:
+        raise ValueError(
+            f"TensorRT input shape must be NCHW, CHW, or HW, got: {value}"
+        )
     if min(batch, channels, height, width) <= 0:
         raise ValueError(f"TensorRT input shape values must be positive: {value}")
+    if channels not in {1, 3, 4}:
+        raise ValueError(f"TensorRT input channels must be 1, 3, or 4, got: {channels}")
     return TensorInputShape(
         batch=batch,
         channels=channels,

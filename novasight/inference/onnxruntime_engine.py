@@ -124,9 +124,19 @@ class OnnxRuntimeInferenceEngine:
             return self._session_factory(artifact_path)
         import onnxruntime
 
+        available = set(onnxruntime.get_available_providers())
+        preferred = [
+            "CUDAExecutionProvider",
+            "TensorrtExecutionProvider",
+            "CoreMLExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        providers = [provider for provider in preferred if provider in available]
+        if not providers:
+            raise RuntimeError("ONNX Runtime has no available execution providers")
         return onnxruntime.InferenceSession(
             str(artifact_path),
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            providers=providers,
         )
 
 
