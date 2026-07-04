@@ -500,6 +500,10 @@ class RuntimeService:
         )
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
+        trigger_requirement = self._trigger_requirement_label(
+            requires_trigger=requires_trigger,
+            trigger_mode=trigger_mode,
+        )
         aim_error_x = float(aim_x - center[0])
         aim_error_y = float(center[1] - aim_y)
         raw_error_x = float(pipeline_debug.get("raw_px_x", aim_error_x))
@@ -548,7 +552,9 @@ class RuntimeService:
             "trigger_active": box_input.active,
             "trigger_required": requires_trigger,
             "trigger_mode": trigger_mode,
+            "trigger_requirement": trigger_requirement,
             "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
+            "trigger_raw": trigger_raw,
             "output_mode": output_mode,
             "will_emit": can_emit,
         }
@@ -570,7 +576,7 @@ class RuntimeService:
                 "clipped": False,
                 "output_dx": 0.0,
                 "output_dy": 0.0,
-                "message": "等待硬件触发，控制量未发送",
+                "message": f"{trigger_requirement}，控制量未发送",
                 "intent": {
                     "dx": float(command.dx),
                     "dy": float(command.dy),
@@ -580,6 +586,16 @@ class RuntimeService:
                 },
             }
         return intent if can_emit else None
+
+    @staticmethod
+    def _trigger_requirement_label(*, requires_trigger: bool, trigger_mode: str) -> str:
+        if not requires_trigger:
+            return "无需触发"
+        if trigger_mode == "hardware":
+            return "需要 kmNet 硬件按键回传"
+        if trigger_mode == "telemetry":
+            return "需要本地绑定或 kmNet 按键"
+        return "需要触发"
 
     def _log_control_decision(
         self,

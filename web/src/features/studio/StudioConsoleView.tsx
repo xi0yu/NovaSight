@@ -143,7 +143,7 @@ function triggerModeLabel(value: string): string {
     return "调试直出";
   }
   if (value === "telemetry") {
-    return "持续计算，按键发送";
+    return "本地或硬件按键触发";
   }
   return "硬件按键触发";
 }
@@ -392,6 +392,12 @@ export function StudioConsoleView({
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
   const selectorDebug = asRecord(control.selector_debug);
+  const triggerRaw = asRecord(control.trigger_raw);
+  const triggerHardwareRaw = asRecord(triggerRaw.hardware);
+  const triggerLocalRaw = asRecord(triggerRaw.local);
+  const triggerLeft = triggerRaw.left === true || triggerHardwareRaw.left === true;
+  const triggerRight = triggerRaw.right === true || triggerHardwareRaw.right === true;
+  const triggerLocalActive = triggerRaw.active === true || triggerLocalRaw.active === true;
   const businessTrace = asRecord(vision.trace);
   const businessTraceStages = readTraceStages(vision.trace);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
@@ -715,7 +721,11 @@ export function StudioConsoleView({
       const active = activeBindings();
       commit(active.length > 0, active);
     };
-    const isControlTarget = (target: EventTarget | null) => {
+    const isTextInputTarget = (target: EventTarget | null) => {
+      const element = target instanceof HTMLElement ? target : null;
+      return !!element?.closest("input, textarea, select, [contenteditable='true']");
+    };
+    const isKeyboardControlTarget = (target: EventTarget | null) => {
       const element = target instanceof HTMLElement ? target : null;
       return !!element?.closest("button, input, textarea, select, [contenteditable='true']");
     };
@@ -726,7 +736,7 @@ export function StudioConsoleView({
         setCaptureBindingSlot(null);
         return;
       }
-      if (isControlTarget(event.target)) {
+      if (isKeyboardControlTarget(event.target)) {
         return;
       }
       const binding = keyBindingName(event.code);
@@ -748,7 +758,7 @@ export function StudioConsoleView({
         setCaptureBindingSlot(null);
         return;
       }
-      if (isControlTarget(event.target)) {
+      if (isTextInputTarget(event.target)) {
         return;
       }
       if (!allowed.has(binding.toLowerCase())) {
@@ -1369,7 +1379,7 @@ export function StudioConsoleView({
                 onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}
               >
                 <option value="hardware">硬件按键触发</option>
-                <option value="telemetry">持续计算，触发后发送</option>
+                <option value="telemetry">本地或硬件按键触发</option>
                 <option value="always">调试直出</option>
               </select>
               <label>本地按键绑定</label>
@@ -1485,8 +1495,9 @@ export function StudioConsoleView({
                 <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
                 <span>本地绑定</span><b>{activeTriggerBindings.length ? activeTriggerBindings.join(" / ") : "-"}</b>
                 <span>输出状态</span><b>{control.will_emit === true ? "允许输出" : "等待触发"}</b>
-                <span>触发要求</span><b>{control.trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
+                <span>触发要求</span><b>{readString(control.trigger_requirement, control.trigger_required === true ? "需要按键触发" : "无需触发")}</b>
                 <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
+                <span>触发 raw</span><b>{`L:${triggerLeft ? "1" : "0"} R:${triggerRight ? "1" : "0"} Local:${triggerLocalActive ? "1" : "0"}`}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
                 <span>移动 API</span><b>{readString(execution.move_kind, moveKind)}</b>
