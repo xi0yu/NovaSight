@@ -110,6 +110,8 @@ class ControlConfig:
     kp_y_move_max: float = 30.0
     prediction_factor: float = 0.1
     command_interval_ms: float = 1.0
+    y_rate_window_ms: float = 10.0
+    y_rate_max_counts: float = 0.0
     move_kind: str = "raw"
     move_ms: int = 12
     trace_ms: int = 0
@@ -291,6 +293,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "prediction_factor",
         "move_ms",
         "trace_ms",
+        "command_interval_ms",
+        "y_rate_window_ms",
+        "y_rate_max_counts",
         "deadzone_counts",
         "near_px",
         "near_speed",

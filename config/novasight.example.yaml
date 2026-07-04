@@ -67,6 +67,9 @@ control:
   kp_y_move_max: 30
   prediction_factor: 0.1
   command_interval_ms: 1
+  # 0 disables Y-axis window limiter. Example: window=10, max=8 means at most 8 Y counts per 10ms.
+  y_rate_window_ms: 10
+  y_rate_max_counts: 0
   move_kind: raw
   move_ms: 12
   # Set to silent, console, dry_run, or kmnet to override executor.default.

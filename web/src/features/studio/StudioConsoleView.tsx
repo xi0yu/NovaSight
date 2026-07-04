@@ -289,6 +289,7 @@ export function StudioConsoleView({
   const execution = asRecord(vision.execution);
   const executionIntent = asRecord(execution.intent);
   const executionMeta = asRecord(execution.metadata);
+  const yRateLimiterMeta = asRecord(executionMeta.y_rate_limiter ?? executionMeta);
   const inferenceTrace = asRecord(vision.inference);
   const pipeline = asRecord(runtime?.pipeline);
   const executorStatus = asRecord(runtime?.executor);
@@ -327,6 +328,9 @@ export function StudioConsoleView({
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
+  const commandIntervalMs = readNumber(controlConfig.command_interval_ms, 1);
+  const yRateWindowMs = readNumber(controlConfig.y_rate_window_ms, 10);
+  const yRateMaxCounts = readNumber(controlConfig.y_rate_max_counts, 0);
   const aimYRatio = readNumber(controlConfig.aim_ratio, 40);
   const targetLockEnabled = controlConfig.target_lock_enabled !== false;
   const targetStickyBias = readNumber(controlConfig.target_sticky_bias, 0.25);
@@ -1434,6 +1438,9 @@ export function StudioConsoleView({
                 <option value="enc_bezier">enc_move_beizer</option>
               </select>
               <NumberControl label="移动铺展 ms" value={moveMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "move_ms", Math.round(value))} />
+              <NumberControl label="指令合并间隔 ms" value={commandIntervalMs} min={0} max={50} step={0.5} onCommit={(value) => updateConfigField("control", "command_interval_ms", value)} />
+              <NumberControl label="Y 压制窗口 ms" value={yRateWindowMs} min={0} max={50} step={0.5} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
+              <NumberControl label="Y 窗口 counts 上限" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
               <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
               {controlStrategy === "straight" ? (
                 <>
@@ -1506,6 +1513,7 @@ export function StudioConsoleView({
                 <span>Driver rc</span><b>{String(executionMeta.driver_rc ?? "-")}</b>
                 <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
                 <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
+                <span>Y 压制</span><b>{readNumber(yRateLimiterMeta.max_counts, 0) > 0 ? `${formatNumber(yRateLimiterMeta.limited_dy, 0)} / ${formatNumber(yRateLimiterMeta.max_counts, 0)}` : "关闭"}</b>
                 <span>Driver dx</span><b>{formatNumber(executionMeta.driver_dx, 1)}</b>
                 <span>Driver dy</span><b>{formatNumber(executionMeta.driver_dy, 1)}</b>
                 <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
@@ -1763,29 +1771,14 @@ function NumberControl({
   return (
     <>
       <label>{label}</label>
-      <div className="console-row">
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(event) => void onCommit(Number(event.target.value))}
-        />
-        <input
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={Number.isInteger(value) ? String(value) : value.toFixed(2)}
-          onChange={(event) => {
-            const next = Number(event.target.value);
-            if (Number.isFinite(next)) {
-              void onCommit(next);
-            }
-          }}
-        />
-      </div>
+      <CommitNumberControl
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        digits={step >= 1 ? 0 : 2}
+        onCommit={onCommit}
+      />
     </>
   );
 }
@@ -1831,6 +1824,7 @@ function CommitNumberControl({
         onBlur={commit}
         onChange={(event) => setDraft(clampNumber(Number(event.target.value), min, max))}
         onMouseUp={commit}
+        onPointerUp={commit}
         onTouchEnd={commit}
       />
       <input
