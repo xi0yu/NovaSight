@@ -15,7 +15,9 @@ import {
   getModelVersions,
   publishModel,
   selectCaptureProfile,
+  startRuntimePipeline,
   stopCapture,
+  stopRuntimePipeline,
   streamUrl,
   updateRuntimeConfig
 } from "../../api";
@@ -363,6 +365,34 @@ export function StudioConsoleView({
     }
   }, [onRefresh]);
 
+  const startInferenceThread = useCallback(async () => {
+    setBusy("runtime.start");
+    setLocalError(null);
+    try {
+      await startRuntimePipeline();
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`启动推理失败：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
+
+  const stopInferenceThread = useCallback(async () => {
+    setBusy("runtime.stop");
+    setLocalError(null);
+    try {
+      await stopRuntimePipeline();
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`停止推理失败：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
+
   const updateConfigField = useCallback(
     async (section: string, key: string, value: number | string | boolean) => {
       const next = cloneRuntimeConfig(runtime);
@@ -512,13 +542,19 @@ export function StudioConsoleView({
         <section className="console-process">
           <div className="console-process-state">
             <span className="console-dot" />
-            进程状态：{capture?.available ? "采集中" : "未运行"}
+            采集：{capture?.available ? "运行中" : "已停止"} · 推理：{runtime?.running ? "运行中" : "已停止"}
           </div>
           <button className="console-button primary" disabled={busy === "capture"} onClick={applyCapture} type="button">
-            ▶ Start
+            ▶ 启动采集
           </button>
           <button className="console-button danger" disabled={busy === "stop"} onClick={stopCurrentCapture} type="button">
-            ▪ Stop
+            ▪ 停止采集
+          </button>
+          <button className="console-button primary" disabled={busy === "runtime.start" || !capture?.available} onClick={startInferenceThread} type="button">
+            ▶ 启动推理
+          </button>
+          <button className="console-button danger" disabled={busy === "runtime.stop" || !runtime?.running} onClick={stopInferenceThread} type="button">
+            ▪ 停止推理
           </button>
           <button className="console-button" onClick={exportConfig} type="button">导出配置...</button>
           <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">导入配置...</button>
