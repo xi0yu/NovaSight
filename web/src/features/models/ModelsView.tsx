@@ -98,7 +98,7 @@ export function ModelsView({
   const [uploadProjectName, setUploadProjectName] = useState("custom_model");
   const [uploadVersion, setUploadVersion] = useState("v1");
   const [uploadClasses, setUploadClasses] = useState("target");
-  const [uploadInputShape, setUploadInputShape] = useState("1x3x640x640");
+  const [uploadInputShape, setUploadInputShape] = useState("");
   const [registryRefreshKey, setRegistryRefreshKey] = useState(0);
   const previousProjectId = useRef<number | null>(null);
 
@@ -473,7 +473,11 @@ export function ModelsView({
               </label>
               <label>
                 <span>输入尺寸</span>
-                <input value={uploadInputShape} onChange={(event) => setUploadInputShape(event.target.value)} />
+                <input
+                  placeholder="自动识别，或填写 1x3x256x256 / 256x256"
+                  value={uploadInputShape}
+                  onChange={(event) => setUploadInputShape(event.target.value)}
+                />
               </label>
               <label className="model-file-input">
                 <span>模型文件</span>
@@ -612,9 +616,9 @@ export function ModelsView({
                 onClick={() => setSelectedVersionId(version.id)}
               >
                 <div>
-                  <strong>{version.version}</strong>
+                  <strong>{version.version === "default" ? "自动发现版本" : version.version}</strong>
                   <span>
-                    {formatArtifactKind(version.source_kind)} · {version.input_shape || "未标注输入规格"}
+                    {formatArtifactKind(version.source_kind)} · 输入 {version.input_shape || "未标注"}
                   </span>
                   <span className="mono">{version.source_path}</span>
                 </div>

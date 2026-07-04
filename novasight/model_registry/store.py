@@ -293,6 +293,30 @@ class ModelRegistry:
             )
             return model_version
 
+    def update_version_input_shape(
+        self,
+        version_id: int,
+        input_shape: str,
+    ) -> ModelVersion:
+        if not input_shape.strip():
+            raise RegistryValidationError("input shape must not be empty")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+            if row is None:
+                raise RegistryNotFoundError(f"unknown version id: {version_id}")
+            conn.execute(
+                "UPDATE model_versions SET input_shape = ? WHERE id = ?",
+                (input_shape, version_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM model_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+            if updated is None:
+                raise RegistryNotFoundError(f"unknown version id: {version_id}")
+            return self._version_from_row(updated)
+
     def create_artifact(
         self,
         version_id: int,

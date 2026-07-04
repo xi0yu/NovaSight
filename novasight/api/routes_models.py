@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -19,8 +21,10 @@ from novasight.model_registry import (
     RegistryNotFoundError,
     RegistryValidationError,
 )
+from novasight.inference import parse_tensor_input_shape
 
 router = APIRouter(prefix="/api/models")
+logger = logging.getLogger("novasight.api.models")
 
 YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 YOLOV8N_CLASSES = [
@@ -149,6 +153,67 @@ def _parse_classes(value: str) -> list[str]:
     return classes or ["target"]
 
 
+def _normalize_input_shape(value: Any, fallback: str = "1x3x640x640") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = fallback
+    try:
+        return str(parse_tensor_input_shape(raw))
+    except ValueError:
+        return fallback
+
+
+def _shape_from_dims(dims: list[int | None]) -> str | None:
+    if len(dims) == 2:
+        height = dims[0] or 640
+        width = dims[1] or 640
+        return str(parse_tensor_input_shape(f"{height}x{width}"))
+    if len(dims) == 3:
+        channels = dims[0] or 3
+        height = dims[1] or 640
+        width = dims[2] or 640
+        return str(parse_tensor_input_shape(f"{channels}x{height}x{width}"))
+    if len(dims) == 4:
+        batch = dims[0] or 1
+        channels = dims[1] or 3
+        height = dims[2] or 640
+        width = dims[3] or 640
+        return str(parse_tensor_input_shape(f"{batch}x{channels}x{height}x{width}"))
+    return None
+
+
+def _detect_onnx_input_shape(model_file: Path) -> str | None:
+    try:
+        import onnx
+
+        model = onnx.load(str(model_file))
+        initializers = {item.name for item in model.graph.initializer}
+        graph_input = next(
+            (item for item in model.graph.input if item.name not in initializers),
+            model.graph.input[0] if model.graph.input else None,
+        )
+        if graph_input is None:
+            return None
+        shape = graph_input.type.tensor_type.shape
+        dims: list[int | None] = []
+        for dim in shape.dim:
+            dims.append(int(dim.dim_value) if dim.dim_value > 0 else None)
+        return _shape_from_dims(dims)
+    except Exception as exc:
+        logger.info("ONNX input shape auto-detect skipped path=%s error=%s", model_file, exc)
+        return None
+
+
+def _detect_input_shape(model_file: Path, sidecar: dict[str, Any]) -> str:
+    if "input_shape" in sidecar:
+        return _normalize_input_shape(sidecar.get("input_shape"))
+    if model_file.suffix.lower() == ".onnx":
+        detected = _detect_onnx_input_shape(model_file)
+        if detected:
+            return detected
+    return "1x3x640x640"
+
+
 def _safe_component(value: str, fallback: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip()).strip("._-")
     return normalized or fallback
@@ -163,6 +228,19 @@ def _model_sidecar(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _classes_from_sidecar(sidecar: dict[str, Any]) -> list[str]:
+    classes_value = sidecar.get("classes", sidecar.get("names", ["target"]))
+    if isinstance(classes_value, dict):
+        ordered = sorted(
+            ((int(key), value) for key, value in classes_value.items() if str(key).isdigit()),
+            key=lambda item: item[0],
+        )
+        classes_value = [value for _key, value in ordered]
+    if not isinstance(classes_value, list):
+        return ["target"]
+    return [str(item) for item in classes_value if str(item).strip()] or ["target"]
 
 
 def _sync_models_directory(registry: ModelRegistry) -> None:
@@ -195,10 +273,8 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
             version_name = "default"
             filename = model_file.name
         sidecar = _model_sidecar(model_file)
-        classes_value = sidecar.get("classes", ["target"])
-        classes = classes_value if isinstance(classes_value, list) else ["target"]
-        classes = [str(item) for item in classes if str(item).strip()] or ["target"]
-        input_shape = str(sidecar.get("input_shape", "1x3x640x640"))
+        classes = _classes_from_sidecar(sidecar)
+        input_shape = _detect_input_shape(model_file, sidecar)
         project = _find_project_by_name(registry, project_name)
         if project is None:
             project = registry.create_project(
@@ -215,6 +291,8 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
                 classes=classes,
                 input_shape=input_shape,
             )
+        elif version.input_shape != input_shape:
+            version = registry.update_version_input_shape(version.id, input_shape)
         asset_path = Path(registry.data_dir) / project.name / version.version / filename
         if model_file.resolve(strict=False) != asset_path.resolve(strict=False):
             asset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +306,8 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
                 checksum=checksum,
                 status="ready",
             )
-    except (OSError, RegistryError):
+    except (OSError, RegistryError) as exc:
+        logger.warning("model directory sync skipped path=%s error=%s", model_file, exc)
         return
 
 
@@ -431,15 +510,27 @@ async def upload_model(
     version: str = Form(...),
     description: str = Form(""),
     classes: str = Form("target"),
-    input_shape: str = Form("1x3x640x640"),
+    input_shape: str = Form(""),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     registry = _registry(request)
     filename = Path(file.filename or "").name
     if not filename:
         raise HTTPException(status_code=400, detail="model filename is required")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="model file is empty")
+    tmp_path: Path | None = None
     try:
         kind = _artifact_kind_from_filename(filename)
+        with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as handle:
+            handle.write(content)
+            tmp_path = Path(handle.name)
+        resolved_input_shape = (
+            _normalize_input_shape(input_shape)
+            if input_shape.strip()
+            else _detect_input_shape(tmp_path, {})
+        )
         project = _find_project_by_name(registry, project_name)
         if project is None:
             project = registry.create_project(
@@ -454,11 +545,16 @@ async def upload_model(
                 source_kind=_source_kind_from_artifact(kind),
                 source_path=filename,
                 classes=_parse_classes(classes),
-                input_shape=input_shape,
+                input_shape=resolved_input_shape,
+            )
+        elif model_version.input_shape != resolved_input_shape:
+            model_version = registry.update_version_input_shape(
+                model_version.id,
+                resolved_input_shape,
             )
         asset_path = Path(registry.data_dir) / project.name / model_version.version / filename
         asset_path.parent.mkdir(parents=True, exist_ok=True)
-        asset_path.write_bytes(await file.read())
+        asset_path.write_bytes(content)
         checksum = _sha256(asset_path)
         artifact = _find_artifact(registry, model_version.id, filename)
         if artifact is None:
@@ -470,7 +566,14 @@ async def upload_model(
                 status="ready",
             )
     except RegistryError as exc:
+        logger.warning("model upload rejected filename=%s error=%s", filename, exc)
         raise _as_http_error(exc) from exc
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return {
         "project": asdict(project),
         "version": asdict(model_version),
@@ -647,6 +750,12 @@ def publish(
             input_shape=input_shape,
         )
     except RegistryError as exc:
+        logger.warning(
+            "model publish rejected project_id=%s artifact_id=%s error=%s",
+            project_id,
+            payload.artifact_id,
+            exc,
+        )
         raise _as_http_error(exc) from exc
     return {
         "deployment": asdict(deployment),
@@ -690,6 +799,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             input_shape=input_shape,
         )
     except RegistryError as exc:
+        logger.warning("model rollback rejected project_id=%s error=%s", project_id, exc)
         raise _as_http_error(exc) from exc
     return {
         "deployment": asdict(deployment),

@@ -200,7 +200,10 @@ export function StudioConsoleView({
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
   const switchableArtifacts = modelArtifacts.filter(
-    (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
+    (item) =>
+      item.status === "ready" &&
+      (item.kind === "onnx" || item.kind === "engine") &&
+      (selectedModelVersionId === "" || item.version_id === selectedModelVersionId)
   );
   const selectedSwitchArtifact =
     switchableArtifacts.find((item) => item.id === selectedModelArtifactId) ??
@@ -227,6 +230,10 @@ export function StudioConsoleView({
   useEffect(() => {
     if (projects.length === 0) {
       setSelectedModelProjectId("");
+      setModelVersions([]);
+      setSelectedModelVersionId("");
+      setModelArtifacts([]);
+      setSelectedModelArtifactId("");
       return;
     }
     setSelectedModelProjectId((current) =>
@@ -240,20 +247,31 @@ export function StudioConsoleView({
     if (selectedModelProjectId === "") {
       setModelVersions([]);
       setSelectedModelVersionId("");
+      setModelArtifacts([]);
+      setSelectedModelArtifactId("");
       return;
     }
     let cancelled = false;
+    setModelVersions([]);
+    setSelectedModelVersionId("");
+    setModelArtifacts([]);
+    setSelectedModelArtifactId("");
     getModelVersions(selectedModelProjectId)
       .then((items) => {
         if (cancelled) {
           return;
         }
         setModelVersions(items);
-        setSelectedModelVersionId((current) =>
-          typeof current === "number" && items.some((item) => item.id === current)
-            ? current
-            : runtime?.active_model?.version?.id ?? items[0]?.id ?? ""
-        );
+        setSelectedModelVersionId((current) => {
+          if (typeof current === "number" && items.some((item) => item.id === current)) {
+            return current;
+          }
+          const activeVersionId = runtime?.active_model?.version?.id;
+          return typeof activeVersionId === "number" &&
+            items.some((item) => item.id === activeVersionId)
+            ? activeVersionId
+            : items[0]?.id ?? "";
+        });
       })
       .catch((err) => {
         if (!cancelled) {
@@ -270,9 +288,12 @@ export function StudioConsoleView({
   useEffect(() => {
     if (selectedModelVersionId === "") {
       setModelArtifacts([]);
+      setSelectedModelArtifactId("");
       return;
     }
     let cancelled = false;
+    setModelArtifacts([]);
+    setSelectedModelArtifactId("");
     getModelArtifacts(selectedModelVersionId)
       .then((items) => {
         if (cancelled) {
@@ -282,11 +303,15 @@ export function StudioConsoleView({
         const runnable = items.filter(
           (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
         );
-        setSelectedModelArtifactId((current) =>
-          typeof current === "number" && runnable.some((item) => item.id === current)
-            ? current
-            : artifact?.id ?? runnable[0]?.id ?? ""
-        );
+        setSelectedModelArtifactId((current) => {
+          if (typeof current === "number" && runnable.some((item) => item.id === current)) {
+            return current;
+          }
+          return typeof artifact?.id === "number" &&
+            runnable.some((item) => item.id === artifact.id)
+            ? artifact.id
+            : runnable[0]?.id ?? "";
+        });
       })
       .catch((err) => {
         if (!cancelled) {
@@ -541,6 +566,13 @@ export function StudioConsoleView({
       setLocalError("请选择可推理的 ONNX 或 TensorRT engine 产物。");
       return;
     }
+    if (
+      selectedModelVersionId === "" ||
+      selectedSwitchArtifact.version_id !== selectedModelVersionId
+    ) {
+      setLocalError("模型选择已刷新，请重新选择这个版本下的推理产物。");
+      return;
+    }
     setBusy("model.switch");
     setLocalError(null);
     try {
@@ -691,7 +723,19 @@ export function StudioConsoleView({
               <label>模型文件</label>
               <select
                 value={selectedModelProjectId}
-                onChange={(event) => setSelectedModelProjectId(Number(event.target.value))}
+                onChange={(event) => {
+                  const nextProjectId =
+                    event.target.value === "" ? "" : Number(event.target.value);
+                  setSelectedModelProjectId(
+                    typeof nextProjectId === "number" && Number.isFinite(nextProjectId)
+                      ? nextProjectId
+                      : ""
+                  );
+                  setSelectedModelVersionId("");
+                  setSelectedModelArtifactId("");
+                  setModelVersions([]);
+                  setModelArtifacts([]);
+                }}
               >
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>{project.name}</option>
@@ -701,10 +745,22 @@ export function StudioConsoleView({
               <label>模型版本</label>
               <select
                 value={selectedModelVersionId}
-                onChange={(event) => setSelectedModelVersionId(Number(event.target.value))}
+                onChange={(event) => {
+                  const nextVersionId =
+                    event.target.value === "" ? "" : Number(event.target.value);
+                  setSelectedModelVersionId(
+                    typeof nextVersionId === "number" && Number.isFinite(nextVersionId)
+                      ? nextVersionId
+                      : ""
+                  );
+                  setSelectedModelArtifactId("");
+                  setModelArtifacts([]);
+                }}
               >
                 {modelVersions.map((item) => (
-                  <option key={item.id} value={item.id}>{item.version} · {item.input_shape}</option>
+                  <option key={item.id} value={item.id}>
+                    {item.version === "default" ? "自动发现版本" : item.version} · 输入 {item.input_shape}
+                  </option>
                 ))}
                 {modelVersions.length === 0 ? <option value="">暂无版本</option> : null}
               </select>
@@ -734,7 +790,7 @@ export function StudioConsoleView({
               </select>
               <label>输入尺寸</label>
               <select value={version?.input_shape ?? ""} disabled>
-                <option>{version?.input_shape ?? "模型未发布"} · 当前 {artifact?.path ?? activeModelName}</option>
+                <option>{version?.input_shape ?? "模型未发布"} · ROI 会按模型输入自动缩放</option>
               </select>
               <label>置信度阈值</label>
               <div className="console-row">
