@@ -250,6 +250,7 @@ export function StudioConsoleView({
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
+  const controlPipeline = asRecord(asRecord(vision.control).pipeline);
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
 
   useEffect(() => {
@@ -1016,6 +1017,13 @@ export function StudioConsoleView({
                 <span>选择原因</span><b>{readString(asRecord(vision.control).selection_reason, "-")}</b>
                 <span>raw dx</span><b>{formatNumber(asRecord(vision.control).raw_error_x, 1)}</b>
                 <span>raw dy</span><b>{formatNumber(asRecord(vision.control).raw_error_y, 1)}</b>
+                <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
+                <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
+                <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
+                <span>速度系数</span><b>{formatNumber(controlPipeline.speed, 2)}</b>
+                <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
+                <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
+                <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
                 <span>dx</span><b>{formatNumber(asRecord(vision.control).dx, 1)}</b>
                 <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
                 <span>FOV 内候选</span><b>{formatNumber(asRecord(vision.control).inside_fov, 0)}</b>

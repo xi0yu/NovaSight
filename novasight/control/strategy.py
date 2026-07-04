@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 import math
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from novasight.hardware import BoxInputState
 from novasight.contracts import ControlIntent, Detection, Track
@@ -22,6 +22,7 @@ class MoveCommand:
     move_ms: int = 0
     trace_ms: int = 0
     bezier_ctrl: tuple[int, int, int, int] | None = None
+    debug: dict[str, Any] = field(default_factory=dict)
 
 
 class IControlStrategy(Protocol):
@@ -106,15 +107,21 @@ class PIDStrategy:
     ) -> MoveCommand:
         if not box_input.active:
             self._reset_motion_state()
-            return MoveCommand(0, 0, 0, "hardware trigger inactive")
+            return MoveCommand(
+                0,
+                0,
+                0,
+                "hardware trigger inactive",
+                debug={"stage": "trigger", "coordinate_y": "cartesian_up_positive"},
+            )
         predicted_center, prediction_weight = self._predict_center(target)
         ex_px = predicted_center[0] - current_pos[0]
-        ey_px = predicted_center[1] - current_pos[1]
+        ey_px = current_pos[1] - predicted_center[1]
         err_px = math.hypot(ex_px, ey_px)
-        ex, ey = self._pixel_error_to_counts(ex_px, ey_px)
+        fov_counts_x, fov_counts_y = self._pixel_error_to_counts(ex_px, ey_px)
         speed = self._speed_for(err_px, min(current_pos[0], current_pos[1]) * 2)
-        ex *= speed
-        ey *= speed
+        ex = fov_counts_x * speed
+        ey = fov_counts_y * speed
         now_s = time.monotonic()
         dt = now_s - self._last_s if self._last_s is not None else 1.0 / 60.0
         self._last_s = now_s
@@ -131,15 +138,49 @@ class PIDStrategy:
         dy_d = self.derivative_alpha * raw_dy + (1 - self.derivative_alpha) * self._last_derivative[1]
         self._last_error = (ex, ey)
         self._last_derivative = (dx_d, dy_d)
-        dx = self.kp_x * ex + self.ki * self._ix + self.kd * dx_d
-        dy = self.kp_y * ey + self.ki * self._iy + self.kd * dy_d
+        px = self.kp_x * ex
+        py = self.kp_y * ey
+        ix = self.ki * self._ix
+        iy = self.ki * self._iy
+        dx_term = self.kd * dx_d
+        dy_term = self.kd * dy_d
+        dx = px + ix + dx_term
+        dy = py + iy + dy_term
+        debug = {
+            "stage": "pid_counts_pipeline",
+            "coordinate_y": "cartesian_up_positive",
+            "raw_px_x": ex_px,
+            "raw_px_y": ey_px,
+            "predicted_x": predicted_center[0],
+            "predicted_y": predicted_center[1],
+            "fov_counts_x": fov_counts_x,
+            "fov_counts_y": fov_counts_y,
+            "speed": speed,
+            "work_counts_x": ex,
+            "work_counts_y": ey,
+            "dt": dt,
+            "p_x": px,
+            "p_y": py,
+            "i_x": ix,
+            "i_y": iy,
+            "d_x": dx_term,
+            "d_y": dy_term,
+        }
         if abs(ex) <= self.deadzone_counts and abs(ey) <= self.deadzone_counts:
-            return MoveCommand(0, 0, target.score, "pid deadzone")
+            return MoveCommand(
+                0,
+                0,
+                target.score,
+                "pid deadzone",
+                debug={**debug, "final_dx": 0.0, "final_dy": 0.0},
+            )
         dx = self._minimum_effective_step(dx, ex)
         dy = self._minimum_effective_step(dy, ey)
         dx = self._clamp_axis(dx, self.move_limit_x)
         dy = self._clamp_axis(dy, self.move_limit_y)
         bezier_ctrl = _bezier_ctrl(int(round(dx)), int(round(dy)), self.bezier_curvature) if self.move_kind == "bezier" else None
+        debug["final_dx"] = dx
+        debug["final_dy"] = dy
         return MoveCommand(
             dx=dx,
             dy=dy,
@@ -153,6 +194,7 @@ class PIDStrategy:
             move_ms=self.move_ms,
             trace_ms=self.trace_ms,
             bezier_ctrl=bezier_ctrl,
+            debug=debug,
         )
 
     @staticmethod
@@ -233,9 +275,17 @@ class PredictiveStrategy:
         predicted = (center[0] + vx * self.lead_factor, center[1] + vy * self.lead_factor)
         return MoveCommand(
             dx=predicted[0] - current_pos[0],
-            dy=predicted[1] - current_pos[1],
+            dy=current_pos[1] - predicted[1],
             confidence=target.score,
             reason="predictive strategy",
+            debug={
+                "stage": "predictive",
+                "coordinate_y": "cartesian_up_positive",
+                "raw_px_x": predicted[0] - current_pos[0],
+                "raw_px_y": current_pos[1] - predicted[1],
+                "final_dx": predicted[0] - current_pos[0],
+                "final_dy": current_pos[1] - predicted[1],
+            },
         )
 
 
@@ -283,13 +333,26 @@ class ProportionalStrategy:
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
 
         ex = target.cx - current_pos[0]
-        ey = target.cy - current_pos[1]
+        ey = current_pos[1] - target.cy
         err = math.hypot(ex, ey)
         radius = min(current_pos[0], current_pos[1]) * 2 * self.fov_ratio
         if radius > 0 and err > radius:
             self._ema_x = 0.0
             self._ema_y = 0.0
-            return MoveCommand(0, 0, target.score, "target outside proportional fov")
+            return MoveCommand(
+                0,
+                0,
+                target.score,
+                "target outside proportional fov",
+                debug={
+                    "stage": "proportional",
+                    "coordinate_y": "cartesian_up_positive",
+                    "raw_px_x": ex,
+                    "raw_px_y": ey,
+                    "final_dx": 0,
+                    "final_dy": 0,
+                },
+            )
 
         speed = self._speed_for(err, radius)
         rx = self.counts_per_revolution_x / (2 * math.pi)
@@ -301,7 +364,23 @@ class ProportionalStrategy:
         dx = int(round(self._ema_x))
         dy = int(round(self._ema_y))
         if abs(dx) < self.deadzone_counts and abs(dy) < self.deadzone_counts:
-            return MoveCommand(0, 0, target.score, "proportional deadzone")
+            return MoveCommand(
+                0,
+                0,
+                target.score,
+                "proportional deadzone",
+                debug={
+                    "stage": "proportional",
+                    "coordinate_y": "cartesian_up_positive",
+                    "raw_px_x": ex,
+                    "raw_px_y": ey,
+                    "fov_counts_x": counts_x,
+                    "fov_counts_y": counts_y,
+                    "speed": speed,
+                    "final_dx": 0,
+                    "final_dy": 0,
+                },
+            )
 
         bezier_ctrl = _bezier_ctrl(dx, dy, self.bezier_curvature) if self.move_kind == "bezier" else None
         return MoveCommand(
@@ -313,6 +392,17 @@ class ProportionalStrategy:
             move_ms=self.move_ms,
             trace_ms=self.trace_ms,
             bezier_ctrl=bezier_ctrl,
+            debug={
+                "stage": "proportional",
+                "coordinate_y": "cartesian_up_positive",
+                "raw_px_x": ex,
+                "raw_px_y": ey,
+                "fov_counts_x": counts_x,
+                "fov_counts_y": counts_y,
+                "speed": speed,
+                "final_dx": dx,
+                "final_dy": dy,
+            },
         )
 
     def _speed_for(self, err_px: float, fov_radius: float) -> float:

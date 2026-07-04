@@ -308,7 +308,8 @@ class RuntimeService:
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
         raw_error_x = float(target.cx - center[0])
-        raw_error_y = float(target.cy - center[1])
+        raw_error_y = float(center[1] - target.cy)
+        raw_error_y_image = float(target.cy - center[1])
         self.last_target = {
             **self._target_payload(target, context),
             "selector_state": selection.state,
@@ -323,10 +324,12 @@ class RuntimeService:
             "frame_id": context.frame_id,
             "raw_error_x": raw_error_x,
             "raw_error_y": raw_error_y,
+            "raw_error_y_image": raw_error_y_image,
             "dx": command.dx,
             "dy": command.dy,
             "confidence": command.confidence,
             "reason": command.reason,
+            "pipeline": dict(command.debug),
             "selector_state": selection.state,
             "selection_reason": selection.reason,
             "priority_rank": selection.priority_rank,
