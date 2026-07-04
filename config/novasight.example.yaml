@@ -37,6 +37,10 @@ control:
   min_confidence: 0
   fov_ratio: 0.28
   aim_ratio: 40
+  # hardware: kmNet hardware button gates output.
+  # telemetry: always calculate telemetry, hardware button gates output.
+  # always: debug direct output without hardware trigger gate.
+  trigger_mode: hardware
   strategy: pid
   pid_kp_x: 0.35
   pid_kp_y: 0.24

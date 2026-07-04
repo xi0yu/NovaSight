@@ -45,6 +45,7 @@ type CapabilityChoice = {
 };
 
 type DetectionOverlay = {
+  classId: number;
   className: string;
   score: number;
   x: number;
@@ -124,11 +125,13 @@ function readDetectionItems(value: unknown): DetectionOverlay[] {
     const score = readNullableNumber(record.score);
     const cx = readNullableNumber(record.cx);
     const cy = readNullableNumber(record.cy);
+    const classId = readNullableNumber(record.class_id);
     if (x === null || y === null || w === null || h === null || score === null || cx === null || cy === null || w <= 0 || h <= 0) {
       return [];
     }
     return [{
-      className: readString(record.class_name, String(readNullableNumber(record.class_id) ?? "")),
+      classId: classId === null ? -1 : Math.trunc(classId),
+      className: readString(record.class_name, String(classId ?? "")),
       score,
       x,
       y,
@@ -138,6 +141,21 @@ function readDetectionItems(value: unknown): DetectionOverlay[] {
       cy
     }];
   });
+}
+
+function detectionClassName(detection: DetectionOverlay, selected: boolean): string {
+  const classBucket = detection.classId >= 0 ? detection.classId % 8 : 7;
+  return `console-detection-box detection-class-${classBucket}${selected ? " selected" : ""}`;
+}
+
+function triggerModeLabel(value: string): string {
+  if (value === "always") {
+    return "调试直出";
+  }
+  if (value === "telemetry") {
+    return "持续计算，按键发送";
+  }
+  return "硬件按键触发";
 }
 
 function clampPercent(value: number): number {
@@ -341,6 +359,7 @@ export function StudioConsoleView({
   const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
+  const triggerMode = readString(controlConfig.trigger_mode, "hardware");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -1123,11 +1142,11 @@ export function StudioConsoleView({
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制策略" value={readString(controlConfig.strategy, "pid")} small="strategy" />
+            <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
             <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
             <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
             <Metric title="预测" value={predictionFactor.toFixed(2)} small="lead" />
             <Metric title="瞄准高度" value={`${aimRatio.toFixed(0)}%`} small="aim" />
-            <Metric title="控制量上限" value={`${kpXMoveMax}/${kpYMoveMax}`} small="x/y" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
@@ -1140,6 +1159,15 @@ export function StudioConsoleView({
                 <option value="pid">PID 平滑追踪</option>
                 <option value="proportional">比例速度</option>
                 <option value="predictive">预测追踪</option>
+              </select>
+              <label>触发方式</label>
+              <select
+                value={triggerMode}
+                onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}
+              >
+                <option value="hardware">硬件按键触发</option>
+                <option value="telemetry">持续计算，按键发送</option>
+                <option value="always">调试直出</option>
               </select>
               <label>目标锁定</label>
               <select
@@ -1162,7 +1190,7 @@ export function StudioConsoleView({
             </div>
             <div className="console-card">
               <h2 className="console-title">控制量反馈</h2>
-              <div className="console-kv">
+              <div className="console-kv control-feedback-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
@@ -1184,13 +1212,14 @@ export function StudioConsoleView({
                 <span>dy</span><b>{formatNumber(control.dy, 1)}</b>
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
                 <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
+                <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
                 <span>输出状态</span><b>{control.will_emit === true ? "允许输出" : "等待触发"}</b>
                 <span>触发要求</span><b>{control.trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
                 <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
                 <span>限幅</span><b>{executionIntent.clipped === true ? "已限幅" : executionIntent.clipped === false ? "未限幅" : "-"}</b>
-                <span>执行信息</span><b>{readString(execution.message, "-")}</b>
+                <span className="wide">执行信息</span><b className="wide">{readString(execution.message, "-")}</b>
               </div>
             </div>
             <div className="console-card">
@@ -1468,7 +1497,7 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
           const selected = isSelectedDetection(detection, target);
           return (
             <div
-              className="console-detection-box"
+              className={detectionClassName(detection, selected)}
               key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
               style={detectionStyle(detection, previewWidth, previewHeight)}
             >

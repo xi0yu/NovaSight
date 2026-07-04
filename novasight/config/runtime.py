@@ -96,6 +96,7 @@ class ControlConfig:
     target_sticky_bias: float = 0.25
     target_lost_grace_frames: int = 5
     aim_ratio: float = 40.0
+    trigger_mode: str = "hardware"
     output_mode: str = ""
     strategy: str = "pid"
     pid_kp_x: float = 0.35

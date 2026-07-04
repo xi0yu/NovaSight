@@ -326,7 +326,14 @@ class RuntimeService:
             or getattr(getattr(self.config, "executor", None), "default", "")
         )
         hardware_kind = str(getattr(getattr(self.config, "hardware", None), "kind", "none"))
-        requires_trigger = output_mode == "kmnet" and hardware_kind not in {"", "none", "silent"}
+        trigger_mode = str(getattr(self.config.control, "trigger_mode", "hardware") or "hardware")
+        if trigger_mode not in {"hardware", "telemetry", "always"}:
+            trigger_mode = "hardware"
+        requires_trigger = (
+            output_mode == "kmnet"
+            and hardware_kind not in {"", "none", "silent"}
+            and trigger_mode != "always"
+        )
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
         aim_error_x = float(aim_x - center[0])
@@ -370,6 +377,7 @@ class RuntimeService:
             "distance_px": selection.distance_px,
             "trigger_active": box_input.active,
             "trigger_required": requires_trigger,
+            "trigger_mode": trigger_mode,
             "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
             "output_mode": output_mode,
             "will_emit": can_emit,
