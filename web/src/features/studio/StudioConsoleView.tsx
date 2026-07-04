@@ -400,6 +400,8 @@ export function StudioConsoleView({
   const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
   const inferenceDebug = asRecord(inferenceTrace.debug);
   const decodeDebug = asRecord(inferenceDebug.decode);
+  const inferenceTimings = asRecord(inferenceDebug.timings);
+  const trtTimings = asRecord(decodeDebug.timings);
   const preprocessDebug = asRecord(inferenceDebug.preprocess);
   const roiInputWidth = readNumber(inferenceTrace.input_width, readNumber(preprocessDebug.roi_width, roiSize));
   const roiInputHeight = readNumber(inferenceTrace.input_height, readNumber(preprocessDebug.roi_height, roiSize));
@@ -1311,6 +1313,10 @@ export function StudioConsoleView({
                 <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
                 <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio, 1) : "-"}</b>
                 <span>输出形状</span><b>{formatShape(decodeDebug.output_shape ?? inferenceDebug.output_shape)}</b>
+                <span>输入准备</span><b>{formatNumber(inferenceTimings.numpy_tensor_ms, 1)} ms</b>
+                <span>TRT 总耗时</span><b>{formatNumber(inferenceTimings.execute_total_ms, 1)} ms</b>
+                <span>GPU 等待</span><b>{formatNumber(trtTimings.stream_sync_ms, 1)} ms</b>
+                <span>TRT 解码</span><b>{formatNumber(trtTimings.decode_ms, 1)} ms</b>
                 <span>解码布局</span><b>{readString(decodeDebug.selected_layout, "-")}</b>
                 <span>最大分数</span><b>{formatNumber(decodeDebug.max_score, 3)}</b>
                 <span>阈值前候选</span><b>{String(readNumber(decodeDebug.raw_candidates, 0))}</b>

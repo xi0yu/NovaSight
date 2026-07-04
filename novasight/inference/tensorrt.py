@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -121,16 +122,32 @@ class TensorRtInferenceEngine:
             return InferenceResult(available=False, reason="TensorRT engine not loaded")
         if self._input_shape is None or self._context is None or self._cudart is None:
             return InferenceResult(available=False, reason="TensorRT input shape not loaded")
+        timings: dict[str, float] = {}
+        total_start_ns = time.monotonic_ns()
         try:
+            prepare_start_ns = time.monotonic_ns()
             self._last_input = prepare_tensor_input(frame, self._input_shape)
+            tensor_start_ns = time.monotonic_ns()
             tensor = _prepare_numpy_tensor(self._last_input, self._input_shape)
+            execute_start_ns = time.monotonic_ns()
             detections, decode_debug = self._execute(tensor)
+            scale_start_ns = time.monotonic_ns()
             detections = _scale_detections_to_input_frame(
                 detections,
                 prepared=self._last_input,
                 shape=self._input_shape,
             )
             preprocess_debug = _preprocess_debug(self._last_input, self._input_shape)
+            done_ns = time.monotonic_ns()
+            timings.update(
+                {
+                    "prepare_input_ms": _elapsed_ms(prepare_start_ns, tensor_start_ns),
+                    "numpy_tensor_ms": _elapsed_ms(tensor_start_ns, execute_start_ns),
+                    "execute_total_ms": _elapsed_ms(execute_start_ns, scale_start_ns),
+                    "scale_ms": _elapsed_ms(scale_start_ns, done_ns),
+                    "total_ms": _elapsed_ms(total_start_ns, done_ns),
+                }
+            )
         except ValueError as exc:
             self._log_failure_once(f"input rejected: {exc}")
             return InferenceResult(available=False, reason=str(exc))
@@ -150,6 +167,7 @@ class TensorRtInferenceEngine:
                 "decoded_detections": len(detections),
                 "preprocess": preprocess_debug,
                 "decode": decode_debug,
+                "timings": timings,
             },
         )
 
@@ -295,6 +313,8 @@ class TensorRtInferenceEngine:
         host_output = self._host_outputs.get(self._output_name)
         if host_output is None:
             raise RuntimeError(f"TensorRT selected output buffer is not initialized: {self._output_name}")
+        timings: dict[str, float] = {}
+        prepare_host_start_ns = time.monotonic_ns()
         host_input = np.ascontiguousarray(tensor, dtype=np.float32)
         if host_input.shape != self._host_input.shape:
             raise RuntimeError(
@@ -302,6 +322,7 @@ class TensorRtInferenceEngine:
                 f"expected {self._host_input.shape}"
             )
         np.copyto(self._host_input, host_input)
+        h2d_start_ns = time.monotonic_ns()
         h2d = cudart.cudaMemcpyKind.cudaMemcpyHostToDevice
         d2h = cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost
         _cuda_check(
@@ -314,9 +335,11 @@ class TensorRtInferenceEngine:
             ),
             "H2D",
         )
+        execute_start_ns = time.monotonic_ns()
         ok = self._context.execute_async_v3(int(self._stream))
         if ok is False:
             raise RuntimeError("TensorRT execute_async_v3 returned false")
+        d2h_start_ns = time.monotonic_ns()
         _cuda_check(
             cudart.cudaMemcpyAsync(
                 host_output.ctypes.data,
@@ -327,7 +350,9 @@ class TensorRtInferenceEngine:
             ),
             "D2H",
         )
+        sync_start_ns = time.monotonic_ns()
         _cuda_check(cudart.cudaStreamSynchronize(self._stream), "stream synchronize")
+        decode_start_ns = time.monotonic_ns()
         output = host_output.reshape(self._output_shape).astype(np.float32, copy=False)
         decode_debug: dict[str, Any] = {}
         detections = decode_nx6_detections(
@@ -337,6 +362,19 @@ class TensorRtInferenceEngine:
             class_count=len(self._classes),
             debug=decode_debug,
         )
+        done_ns = time.monotonic_ns()
+        timings.update(
+            {
+                "host_prepare_ms": _elapsed_ms(prepare_host_start_ns, h2d_start_ns),
+                "h2d_enqueue_ms": _elapsed_ms(h2d_start_ns, execute_start_ns),
+                "execute_enqueue_ms": _elapsed_ms(execute_start_ns, d2h_start_ns),
+                "d2h_enqueue_ms": _elapsed_ms(d2h_start_ns, sync_start_ns),
+                "stream_sync_ms": _elapsed_ms(sync_start_ns, decode_start_ns),
+                "decode_ms": _elapsed_ms(decode_start_ns, done_ns),
+                "total_ms": _elapsed_ms(prepare_host_start_ns, done_ns),
+            }
+        )
+        decode_debug["timings"] = timings
         return detections, decode_debug
 
     def close(self) -> None:
@@ -397,3 +435,7 @@ def _cuda_check(result: Any, what: str) -> None:
     err = result[0] if isinstance(result, tuple) else result
     if int(err) != 0:
         raise RuntimeError(f"CUDA error {int(err)} at {what}")
+
+
+def _elapsed_ms(start_ns: int, end_ns: int) -> float:
+    return max(0.0, (end_ns - start_ns) / 1e6)

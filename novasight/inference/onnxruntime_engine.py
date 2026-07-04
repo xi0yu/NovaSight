@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any, Callable
 
 from .contracts import InferenceDetection, InferenceResult
@@ -89,10 +90,16 @@ class OnnxRuntimeInferenceEngine:
             return InferenceResult(available=False, reason="ONNX model not loaded")
         if self._input_shape is None:
             return InferenceResult(available=False, reason="ONNX input shape not loaded")
+        timings: dict[str, float] = {}
+        total_start_ns = time.monotonic_ns()
         try:
+            prepare_start_ns = time.monotonic_ns()
             self._last_input = prepare_tensor_input(frame, self._input_shape)
+            tensor_start_ns = time.monotonic_ns()
             tensor = _prepare_numpy_tensor(self._last_input, self._input_shape)
+            run_start_ns = time.monotonic_ns()
             outputs = self._session.run(None, {self._input_name: tensor})
+            decode_start_ns = time.monotonic_ns()
             primary_output = outputs[0] if outputs else []
             decode_debug: dict[str, Any] = {}
             detections = decode_nx6_detections(
@@ -102,12 +109,24 @@ class OnnxRuntimeInferenceEngine:
                 class_count=len(self._classes),
                 debug=decode_debug,
             )
+            scale_start_ns = time.monotonic_ns()
             detections = _scale_detections_to_input_frame(
                 detections,
                 prepared=self._last_input,
                 shape=self._input_shape,
             )
             preprocess_debug = _preprocess_debug(self._last_input, self._input_shape)
+            done_ns = time.monotonic_ns()
+            timings.update(
+                {
+                    "prepare_input_ms": _elapsed_ms(prepare_start_ns, tensor_start_ns),
+                    "numpy_tensor_ms": _elapsed_ms(tensor_start_ns, run_start_ns),
+                    "execute_total_ms": _elapsed_ms(run_start_ns, decode_start_ns),
+                    "decode_ms": _elapsed_ms(decode_start_ns, scale_start_ns),
+                    "scale_ms": _elapsed_ms(scale_start_ns, done_ns),
+                    "total_ms": _elapsed_ms(total_start_ns, done_ns),
+                }
+            )
         except Exception as exc:
             return InferenceResult(available=False, reason=str(exc))
         output_shape = tuple(getattr(primary_output, "shape", ()))
@@ -122,6 +141,7 @@ class OnnxRuntimeInferenceEngine:
                 "decoded_detections": len(detections),
                 "preprocess": preprocess_debug,
                 "decode": decode_debug,
+                "timings": timings,
             },
         )
 
@@ -187,6 +207,10 @@ def _resize_numpy_image(image: Any, *, width: int, height: int, np: Any) -> Any:
         y_idx = np.linspace(0, image.shape[0] - 1, height).astype(np.int64)
         x_idx = np.linspace(0, image.shape[1] - 1, width).astype(np.int64)
         return image[y_idx][:, x_idx]
+
+
+def _elapsed_ms(start_ns: int, end_ns: int) -> float:
+    return max(0.0, (end_ns - start_ns) / 1e6)
 
 
 def _scale_detections_to_input_frame(
