@@ -1086,7 +1086,12 @@ export function StudioConsoleView({
                 </div>
               </div>
             </div>
-            <PreviewCard runtime={runtime} title="实时画面" roiSize={roiSize} />
+            <PreviewCard
+              enabled={activePage === "capture"}
+              runtime={runtime}
+              title="实时画面"
+              roiSize={roiSize}
+            />
           </div>
         </section>
 
@@ -1249,7 +1254,7 @@ export function StudioConsoleView({
             </div>
             <div className="console-card">
               <h2 className="console-title">推理输出</h2>
-              <PreviewFrame runtime={runtime} roiSize={roiSize} />
+              <PreviewFrame enabled={activePage === "infer"} runtime={runtime} roiSize={roiSize} />
               <div className="business-trace">
                 <div className="business-trace-head">
                   <span>主营链路诊断</span>
@@ -1766,16 +1771,34 @@ function Metric({ title, value, small }: { title: string; value: string; small: 
   return <div className="console-metric">{title}<br />{value}<small>{small}</small></div>;
 }
 
-function PreviewCard({ runtime, title, roiSize }: { runtime: RuntimeState | null; title: string; roiSize: number }) {
+function PreviewCard({
+  enabled,
+  runtime,
+  title,
+  roiSize
+}: {
+  enabled: boolean;
+  runtime: RuntimeState | null;
+  title: string;
+  roiSize: number;
+}) {
   return (
     <div className="console-card">
       <h2 className="console-title">{title}</h2>
-      <PreviewFrame runtime={runtime} roiSize={roiSize} />
+      <PreviewFrame enabled={enabled} runtime={runtime} roiSize={roiSize} />
     </div>
   );
 }
 
-function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiSize: number }) {
+function PreviewFrame({
+  enabled,
+  runtime,
+  roiSize
+}: {
+  enabled: boolean;
+  runtime: RuntimeState | null;
+  roiSize: number;
+}) {
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
@@ -1784,7 +1807,7 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
   return (
     <div className="console-preview" style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
-      {runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
+      {enabled && runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
     </div>
   );
 }
