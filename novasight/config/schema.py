@@ -94,6 +94,8 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "options": ["640", "480", "320", "256"],
                         "restart_required": False,
                     },
+                    {"path": "roi.offset_x", "label": "ROI 水平偏移", "type": "int", "min": -4096, "max": 4096, "restart_required": False},
+                    {"path": "roi.offset_y", "label": "ROI 垂直偏移", "type": "int", "min": -4096, "max": 4096, "restart_required": False},
                 ],
             },
             {

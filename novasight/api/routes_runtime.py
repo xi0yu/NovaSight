@@ -143,12 +143,24 @@ def _apply_config(request: Request, config) -> None:
         if previous_config is not None
         else None
     )
+    previous_roi_offset_x = (
+        getattr(getattr(previous_config, "roi", None), "offset_x", None)
+        if previous_config is not None
+        else None
+    )
+    previous_roi_offset_y = (
+        getattr(getattr(previous_config, "roi", None), "offset_y", None)
+        if previous_config is not None
+        else None
+    )
     next_executors = ExecutorRegistry.from_config(config)
     next_hardware = create_hardware_box(config)
 
     app.state.config = config
     app.state.capture.config = config.capture
     app.state.capture.roi_size = config.roi.size
+    app.state.capture.roi_offset_x = config.roi.offset_x
+    app.state.capture.roi_offset_y = config.roi.offset_y
     app.state.executors = next_executors
     app.state.hardware = next_hardware
     app.state.inference.configure(
@@ -162,7 +174,15 @@ def _apply_config(request: Request, config) -> None:
     config_path = getattr(app.state, "config_path", None)
     if config_path is not None:
         save_runtime_config(config, config_path)
-    if previous_roi_size is not None and previous_roi_size != config.roi.size:
+    roi_changed = (
+        previous_roi_size is not None
+        and (
+            previous_roi_size != config.roi.size
+            or previous_roi_offset_x != config.roi.offset_x
+            or previous_roi_offset_y != config.roi.offset_y
+        )
+    )
+    if roi_changed:
         _reconfigure_live_capture_for_roi(app)
 
 
@@ -180,9 +200,11 @@ def _reconfigure_live_capture_for_roi(app) -> None:
     if getattr(profile, "preference", "") == "image":
         return
     logger.info(
-        "capture roi changed; rebuilding live capture pipeline device=%s roi_size=%s",
+        "capture roi changed; rebuilding live capture pipeline device=%s roi_size=%s offset=(%s,%s)",
         profile.device,
         app.state.config.roi.size,
+        app.state.config.roi.offset_x,
+        app.state.config.roi.offset_y,
     )
     new_state = capture.configure(
         profile.device,

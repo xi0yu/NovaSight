@@ -89,6 +89,10 @@ function readNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -203,6 +207,14 @@ export function StudioConsoleView({
   const selectedChoice =
     choices.find((choice) => choiceId(choice) === selectedChoiceId) ?? choices[0];
   const roiSize = readNumber(roiConfig.size, 640);
+  const roiOffsetX = readNumber(roiConfig.offset_x, 0);
+  const roiOffsetY = readNumber(roiConfig.offset_y, 0);
+  const sourceWidth = selectedProfile?.width ?? readNumber(inferenceTrace.source_width, 0);
+  const sourceHeight = selectedProfile?.height ?? readNumber(inferenceTrace.source_height, 0);
+  const roiBaseX = sourceWidth > 0 ? Math.max(0, Math.floor((sourceWidth - roiSize) / 2)) : 0;
+  const roiBaseY = sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
+  const roiX = sourceWidth > 0 ? clampNumber(roiBaseX + roiOffsetX, 0, Math.max(0, sourceWidth - roiSize)) : roiOffsetX;
+  const roiY = sourceHeight > 0 ? clampNumber(roiBaseY + roiOffsetY, 0, Math.max(0, sourceHeight - roiSize)) : roiOffsetY;
   const confidence = readNumber(inferenceConfig.confidence_threshold, 0.25);
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
   const detectionProfiles = recordList(inferenceConfig.detection_class_profiles);
@@ -798,8 +810,9 @@ export function StudioConsoleView({
               <div className="console-card">
                 <h2 className="console-title">ROI 裁剪</h2>
                 <label>ROI 模式</label>
-                <select value="center" disabled>
+                <select value={roiOffsetX === 0 && roiOffsetY === 0 ? "center" : "manual"} disabled>
                   <option value="center">中心正方形</option>
+                  <option value="manual">手动偏移</option>
                 </select>
                 <label>ROI 尺寸</label>
                 <div className="console-row">
@@ -814,6 +827,13 @@ export function StudioConsoleView({
                   <select value={roiSize} onChange={(event) => void updateConfigField("roi", "size", Number(event.target.value))}>
                     {ROI_SIZE_CHOICES.map((size) => <option key={size} value={size}>{size}</option>)}
                   </select>
+                </div>
+                <NumberControl label="水平偏移" value={roiOffsetX} min={-1280} max={1280} step={16} onCommit={(value) => updateConfigField("roi", "offset_x", Math.round(value))} />
+                <NumberControl label="垂直偏移" value={roiOffsetY} min={-720} max={720} step={16} onCommit={(value) => updateConfigField("roi", "offset_y", Math.round(value))} />
+                <div className="console-kv compact-kv">
+                  <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : "等待采集"}</b>
+                  <span>ROI 区域</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}` : "等待采集"}</b>
+                  <span>坐标系</span><b>推理 / 预览 / 控制统一 ROI</b>
                 </div>
               </div>
             </div>

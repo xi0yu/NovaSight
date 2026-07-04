@@ -40,6 +40,8 @@ class RuntimeLimitsConfig:
 class RoiConfig:
     size: int = 640
     mode: str = "center"
+    offset_x: int = 0
+    offset_y: int = 0
 
 
 @dataclass
@@ -223,8 +225,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     except ValueError as exc:
         allowed = ", ".join(str(size) for size in ROI_SIZE_CHOICES)
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
-    if cfg.roi.mode != "center":
-        raise ValueError("unsupported ROI mode: only center is supported")
+    if cfg.roi.mode not in {"center", "manual"}:
+        raise ValueError("unsupported ROI mode: must be center or manual")
     if cfg.inference.backend not in {"onnxruntime", "tensorrt"}:
         raise ValueError("runtime config key 'inference.backend' must be onnxruntime or tensorrt")
     if cfg.inference.confidence_threshold < 0 or cfg.inference.confidence_threshold > 1:

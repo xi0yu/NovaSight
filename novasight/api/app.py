@@ -52,7 +52,12 @@ def create_app(
     )
     executors = ExecutorRegistry.from_config(config)
     hardware = create_hardware_box(config)
-    capture = CaptureService(config.capture, roi_size=config.roi.size)
+    capture = CaptureService(
+        config.capture,
+        roi_size=config.roi.size,
+        roi_offset_x=config.roi.offset_x,
+        roi_offset_y=config.roi.offset_y,
+    )
     inference = InferenceRuntime()
     inference.configure(
         confidence_threshold=config.inference.confidence_threshold,

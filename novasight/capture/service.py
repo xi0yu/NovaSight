@@ -68,10 +68,17 @@ def _open_default_source(
     profile: CaptureProfile,
     *,
     roi_size: int | None = None,
+    roi_offset_x: int = 0,
+    roi_offset_y: int = 0,
 ) -> FrameSource:
     return _open_first_readable_source(
         profile,
-        candidates=build_appsink_candidates(profile, roi_size=roi_size),
+        candidates=build_appsink_candidates(
+            profile,
+            roi_size=roi_size,
+            roi_offset_x=roi_offset_x,
+            roi_offset_y=roi_offset_y,
+        ),
         source_cls=GstAppSinkFrameSource,
     )
 
@@ -85,9 +92,13 @@ class CaptureService:
         source_factory: Callable[[CaptureProfile], FrameSource] | None = None,
         empty_read_sleep_s: float = 0.001,
         roi_size: int | None = None,
+        roi_offset_x: int = 0,
+        roi_offset_y: int = 0,
     ) -> None:
         self.config = config
         self.roi_size = roi_size
+        self.roi_offset_x = int(roi_offset_x)
+        self.roi_offset_y = int(roi_offset_y)
         self.capability_runner = capability_runner
         self._default_source_factory = source_factory or self._open_configured_source
         self.source_factory = self._default_source_factory
@@ -103,7 +114,12 @@ class CaptureService:
         self._source_lock = threading.RLock()
 
     def _open_configured_source(self, profile: CaptureProfile) -> FrameSource:
-        return _open_default_source(profile, roi_size=self.roi_size)
+        return _open_default_source(
+            profile,
+            roi_size=self.roi_size,
+            roi_offset_x=self.roi_offset_x,
+            roi_offset_y=self.roi_offset_y,
+        )
 
     @property
     def state(self) -> CaptureRuntimeState:

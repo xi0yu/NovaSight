@@ -12,9 +12,16 @@ def render_preview_frame(
     *,
     runtime: Any | None = None,
     roi_size: int = 640,
+    roi_offset_x: int = 0,
+    roi_offset_y: int = 0,
     fov_ratio: float = 0.28,
 ) -> Any:
-    roi = center_roi_frame(frame, requested_size=roi_size)
+    roi = center_roi_frame(
+        frame,
+        requested_size=roi_size,
+        offset_x=roi_offset_x,
+        offset_y=roi_offset_y,
+    )
     image = roi.image
     if image is None:
         return image

@@ -138,7 +138,12 @@ class RuntimeService:
             return self.process_frame(self._empty_frame_context(frame))
 
         try:
-            roi_frame = center_roi_frame(frame, requested_size=self.config.roi.size)
+            roi_frame = center_roi_frame(
+                frame,
+                requested_size=self.config.roi.size,
+                offset_x=self.config.roi.offset_x,
+                offset_y=self.config.roi.offset_y,
+            )
             inference_result = infer(roi_frame)
         except Exception as exc:
             self.last_inference_reason = str(exc)
@@ -262,6 +267,14 @@ class RuntimeService:
             "source_height": self._source_height(frame),
             "roi_offset_x": int(getattr(roi_frame, "offset_x", 0)),
             "roi_offset_y": int(getattr(roi_frame, "offset_y", 0)),
+            "roi_region": {
+                "x": int(getattr(roi_frame, "offset_x", 0)),
+                "y": int(getattr(roi_frame, "offset_y", 0)),
+                "w": int(getattr(roi_frame, "width", frame.width)),
+                "h": int(getattr(roi_frame, "height", frame.height)),
+            },
+            "configured_roi_offset_x": int(getattr(self.config.roi, "offset_x", 0)),
+            "configured_roi_offset_y": int(getattr(self.config.roi, "offset_y", 0)),
             "debug": dict(debug or {}),
         }
 

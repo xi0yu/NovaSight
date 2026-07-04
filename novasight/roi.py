@@ -43,15 +43,25 @@ def center_roi_region(
     source_width: int,
     source_height: int,
     requested_size: int,
+    offset_x: int = 0,
+    offset_y: int = 0,
 ) -> tuple[int, int, int]:
     configured_size = normalize_roi_size(requested_size)
     roi_size = min(configured_size, int(source_width), int(source_height))
-    offset_x = max(0, (int(source_width) - roi_size) // 2)
-    offset_y = max(0, (int(source_height) - roi_size) // 2)
-    return offset_x, offset_y, roi_size
+    base_x = (int(source_width) - roi_size) // 2
+    base_y = (int(source_height) - roi_size) // 2
+    roi_x = _clamp(base_x + int(offset_x), 0, int(source_width) - roi_size)
+    roi_y = _clamp(base_y + int(offset_y), 0, int(source_height) - roi_size)
+    return roi_x, roi_y, roi_size
 
 
-def center_roi_frame(frame: Any, *, requested_size: int) -> RoiFrame:
+def center_roi_frame(
+    frame: Any,
+    *,
+    requested_size: int,
+    offset_x: int = 0,
+    offset_y: int = 0,
+) -> RoiFrame:
     configured_size = normalize_roi_size(requested_size)
     frame_roi_size = getattr(frame, "roi_size", None)
     source_width = int(getattr(frame, "source_width", None) or frame.width)
@@ -60,6 +70,8 @@ def center_roi_frame(frame: Any, *, requested_size: int) -> RoiFrame:
         source_width=source_width,
         source_height=source_height,
         requested_size=configured_size,
+        offset_x=offset_x,
+        offset_y=offset_y,
     )
     image_width, image_height = _image_size(getattr(frame, "image", None))
 
@@ -161,6 +173,8 @@ def center_roi_frame(frame: Any, *, requested_size: int) -> RoiFrame:
         source_width=int(frame.width),
         source_height=int(frame.height),
         requested_size=configured_size,
+        offset_x=offset_x,
+        offset_y=offset_y,
     )
     image = _crop_image(frame.image, offset_x=offset_x, offset_y=offset_y, size=roi_size)
     return RoiFrame(
@@ -190,6 +204,10 @@ def map_detection_to_source(
         w=detection.w,
         h=detection.h,
     )
+
+
+def _clamp(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
 
 
 def _crop_image(image: Any, *, offset_x: int, offset_y: int, size: int) -> Any | None:

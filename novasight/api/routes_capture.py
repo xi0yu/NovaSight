@@ -81,6 +81,8 @@ def stream(request: Request):
         getattr(getattr(request.app.state, "config", None), "roi", None)
         and request.app.state.config.roi.size
     )
+    roi_offset_x = int(getattr(getattr(request.app.state.config, "roi", None), "offset_x", 0))
+    roi_offset_y = int(getattr(getattr(request.app.state.config, "roi", None), "offset_y", 0))
     capture.state.preview_target_fps = preview_fps
     return StreamingResponse(
         _mjpeg_frames(
@@ -88,6 +90,8 @@ def stream(request: Request):
             runtime=getattr(request.app.state, "runtime", None),
             preview_fps=preview_fps,
             roi_size=roi_size,
+            roi_offset_x=roi_offset_x,
+            roi_offset_y=roi_offset_y,
         ),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
@@ -226,6 +230,8 @@ def _mjpeg_frames(
     runtime=None,
     preview_fps: int = 30,
     roi_size: int = 640,
+    roi_offset_x: int = 0,
+    roi_offset_y: int = 0,
     max_frames: int | None = None,
     max_attempts: int | None = None,
 ) -> Iterator[bytes]:
@@ -251,7 +257,13 @@ def _mjpeg_frames(
             time.sleep(interval_s)
             continue
         last_frame_id = frame.frame_id
-        preview = render_preview_frame(frame, runtime=runtime, roi_size=roi_size)
+        preview = render_preview_frame(
+            frame,
+            runtime=runtime,
+            roi_size=roi_size,
+            roi_offset_x=roi_offset_x,
+            roi_offset_y=roi_offset_y,
+        )
         payload = _encode_jpeg(preview)
         if payload is None:
             capture.record_preview_drop(target_fps=preview_fps)
