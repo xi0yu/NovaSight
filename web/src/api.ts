@@ -98,6 +98,7 @@ export type CaptureState = {
   recoveries: number;
   last_error: string | null;
   statistics?: Statistics;
+  report?: ConfigUpdateResponse;
 };
 
 export type Statistics = {

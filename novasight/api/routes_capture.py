@@ -12,6 +12,7 @@ from pydantic import BaseModel, field_validator
 
 from novasight.capture.preview import render_preview_frame
 from novasight.config import save_runtime_config
+from novasight.runtime.reconfigurator import RuntimeReconfigurator
 from novasight.runtime.pipeline import RuntimePipeline
 from novasight.roi import normalize_roi_size
 
@@ -100,7 +101,6 @@ def stream(request: Request):
 
 @router.post("/select")
 def select(request: Request, payload: CaptureSelectRequest):
-    capture = request.app.state.capture
     logger.info(
         "capture select requested device=%s preference=%s pixel_format=%s size=%sx%s fps=%s",
         payload.device,
@@ -110,60 +110,38 @@ def select(request: Request, payload: CaptureSelectRequest):
         payload.height,
         payload.fps,
     )
-    state = capture.configure(
-        payload.device,
+    report = RuntimeReconfigurator(request.app).select_capture(
+        device=payload.device,
         preference=payload.preference,
         pixel_format=payload.pixel_format,
         width=payload.width,
         height=payload.height,
         fps=payload.fps,
     )
-    config_error = getattr(capture, "last_config_error", None)
-    if config_error is not None:
+    if not report.applied:
+        capture = report.capture or {}
         logger.warning(
             "capture select rejected device=%s error=%s",
             payload.device,
-            config_error.last_error,
+            report.message,
         )
         return JSONResponse(
             status_code=400,
-            content=asdict(config_error),
+            content={
+                **capture,
+                "report": report.asdict(),
+            },
         )
-    body = asdict(state)
-    if state.available is False:
-        logger.warning(
-            "capture select unavailable device=%s error=%s",
-            payload.device,
-            state.last_error,
-        )
-        return JSONResponse(status_code=400, content=body)
     logger.info(
         "capture select applied device=%s backend=%s profile=%s",
-        state.device,
-        state.backend,
-        asdict(state.profile) if state.profile else None,
+        (report.capture or {}).get("device"),
+        (report.capture or {}).get("backend"),
+        (report.capture or {}).get("profile"),
     )
-    config = getattr(request.app.state, "config", None)
-    if config is not None:
-        config.source.default = "capture"
-        capture.roi_size = config.roi.size
-        capture.roi_offset_x = config.roi.offset_x
-        capture.roi_offset_y = config.roi.offset_y
-        if state.profile is not None:
-            config.capture.device = state.profile.device
-            config.capture.preference = "manual"
-            config.capture.pixel_format = state.profile.pixel_format
-            config.capture.width = state.profile.width
-            config.capture.height = state.profile.height
-            config.capture.fps = state.profile.fps
-        runtime = getattr(request.app.state, "runtime", None)
-        if runtime is not None:
-            runtime.update_config(config)
-        config_path = getattr(request.app.state, "config_path", None)
-        if config_path is not None:
-            save_runtime_config(config, config_path)
-    _ensure_runtime_pipeline(request)
-    return body
+    return {
+        **(report.capture or {}),
+        "report": report.asdict(),
+    }
 
 
 @router.post("/image")

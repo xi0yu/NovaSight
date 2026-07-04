@@ -29,6 +29,8 @@ NovaSight 当前已经具备产品骨架：
 
 更新：主营链路诊断 `vision.trace` 已开始落地，后端按采集、ROI、推理、目标、控制量、执行六个阶段输出状态，前端模型推理页已展示当前卡住位置和原因。
 
+更新：采集选择已开始纳入 `RuntimeReconfigurator`，`/api/capture/select` 现在返回采集状态和配置应用报告，成功/失败都能描述 capture live rebuild 的应用结果。
+
 ## 2. 产品级设计原则
 
 后续所有模块改造都应该遵循这些原则：
@@ -788,7 +790,7 @@ StudioConsoleView
 
 任务：
 
-1. 扩展 `RuntimeReconfigurator`，覆盖采集选择、模型切换和硬件连接变更。
+1. 扩展 `RuntimeReconfigurator`，继续覆盖模型切换和硬件连接变更。
 2. 配置更新返回 `ConfigApplyReport`。
 3. 引入 `capture_generation`。
 4. 采集、ROI、模型、kmNet 热更新统一走 reconfigurator。

@@ -31,6 +31,7 @@ class ConfigApplyReport:
     rolled_back: bool = False
     sections: list[ConfigSectionApplyResult] = field(default_factory=list)
     message: str = ""
+    capture: dict[str, Any] | None = None
 
     def asdict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -97,6 +98,99 @@ class RuntimeReconfigurator:
             applied=True,
             sections=sections,
             message="配置已应用到运行态",
+        )
+
+    def select_capture(
+        self,
+        *,
+        device: str,
+        preference: str | None = None,
+        pixel_format: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: int | None = None,
+    ) -> ConfigApplyReport:
+        state = self.app.state.capture.configure(
+            device,
+            preference=preference,
+            pixel_format=pixel_format,
+            width=width,
+            height=height,
+            fps=fps,
+        )
+        capture_payload = asdict(state)
+        config_error = getattr(self.app.state.capture, "last_config_error", None)
+        if config_error is not None:
+            return ConfigApplyReport(
+                config=asdict(self.app.state.config),
+                schema=runtime_config_schema(self.app.state.config),
+                restart_required=bool(getattr(getattr(self.app.state, "runtime", None), "running", False)),
+                applied=False,
+                rolled_back=True,
+                sections=[
+                    ConfigSectionApplyResult(
+                        section="capture",
+                        impact="live_capture_rebuild",
+                        status="rolled_back",
+                        message=str(config_error.last_error),
+                    )
+                ],
+                message="采集切换失败，上一组可用采集链路已保留",
+                capture=asdict(config_error),
+            )
+        if state.available is False:
+            return ConfigApplyReport(
+                config=asdict(self.app.state.config),
+                schema=runtime_config_schema(self.app.state.config),
+                restart_required=bool(getattr(getattr(self.app.state, "runtime", None), "running", False)),
+                applied=False,
+                rolled_back=True,
+                sections=[
+                    ConfigSectionApplyResult(
+                        section="capture",
+                        impact="live_capture_rebuild",
+                        status="failed",
+                        message=str(state.last_error or "capture unavailable"),
+                    )
+                ],
+                message="采集切换失败",
+                capture=capture_payload,
+            )
+        config = self.app.state.config
+        config.source.default = "capture"
+        config.capture.device = state.profile.device if state.profile is not None else state.device
+        config.capture.preference = "manual"
+        if state.profile is not None:
+            config.capture.pixel_format = state.profile.pixel_format
+            config.capture.width = state.profile.width
+            config.capture.height = state.profile.height
+            config.capture.fps = state.profile.fps
+        self.app.state.capture.roi_size = config.roi.size
+        self.app.state.capture.roi_offset_x = config.roi.offset_x
+        self.app.state.capture.roi_offset_y = config.roi.offset_y
+        self.app.state.runtime.update_config(config)
+        config_path = getattr(self.app.state, "config_path", None)
+        if config_path is not None:
+            save_runtime_config(config, config_path)
+        self._ensure_runtime_pipeline_for_live_capture()
+        return ConfigApplyReport(
+            config=asdict(config),
+            schema=runtime_config_schema(config),
+            restart_required=bool(getattr(self.app.state.runtime, "running", False)),
+            applied=True,
+            sections=[
+                ConfigSectionApplyResult(
+                    section="capture",
+                    impact="live_capture_rebuild",
+                    status="applied",
+                    message=(
+                        f"{config.capture.pixel_format} {config.capture.width}x"
+                        f"{config.capture.height}@{config.capture.fps}"
+                    ),
+                )
+            ],
+            message="采集配置已应用",
+            capture=capture_payload,
         )
 
     def _install_config(self, config: RuntimeConfig) -> None:
@@ -227,4 +321,3 @@ class RuntimeReconfigurator:
             logger.warning("runtime pipeline auto-start after config update failed: %s", exc)
         else:
             logger.info("runtime pipeline auto-started after config update")
-
