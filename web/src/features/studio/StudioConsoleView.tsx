@@ -4,6 +4,9 @@ import {
   CaptureCapabilitiesResponse,
   CaptureCapability,
   CaptureSelectPayload,
+  connectKmNet,
+  diagnosticMoveKmNet,
+  disconnectKmNet,
   HealthResponse,
   ModelArtifact,
   ModelProject,
@@ -161,8 +164,13 @@ export function StudioConsoleView({
   const controlConfig = nestedRecord(config, "control");
   const hardwareConfig = nestedRecord(config, "hardware");
   const vision = asRecord(runtime?.vision);
+  const execution = asRecord(vision.execution);
+  const executionIntent = asRecord(execution.intent);
   const inferenceTrace = asRecord(vision.inference);
   const pipeline = asRecord(runtime?.pipeline);
+  const executorStatus = asRecord(runtime?.executor);
+  const executors = asRecord(executorStatus.executors);
+  const kmnetStatus = asRecord(executors.kmnet);
   const selectedProfile = capture?.profile;
   const choices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
   const selectedChoice =
@@ -451,6 +459,48 @@ export function StudioConsoleView({
     },
     [onRefresh, runtime]
   );
+
+  const connectHardware = useCallback(async () => {
+    setBusy("kmnet.connect");
+    setLocalError(null);
+    try {
+      await connectKmNet();
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`kmNet 连接失败：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
+
+  const disconnectHardware = useCallback(async () => {
+    setBusy("kmnet.disconnect");
+    setLocalError(null);
+    try {
+      await disconnectKmNet();
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`kmNet 断开失败：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
+
+  const diagnosticMoveHardware = useCallback(async () => {
+    setBusy("kmnet.diagnostic");
+    setLocalError(null);
+    try {
+      await diagnosticMoveKmNet(1, 0);
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`kmNet 诊断移动失败：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
 
   const exportConfig = () => {
     if (!runtime?.config) {
@@ -772,6 +822,10 @@ export function StudioConsoleView({
                 <span>dx</span><b>{formatNumber(asRecord(vision.control).dx, 1)}</b>
                 <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
                 <span>输出状态</span><b>{asRecord(vision.control).will_emit === true ? "允许输出" : "等待触发"}</b>
+                <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
+                <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
+                <span>限幅</span><b>{executionIntent.clipped === true ? "已限幅" : executionIntent.clipped === false ? "未限幅" : "-"}</b>
+                <span>执行信息</span><b>{readString(execution.message, "-")}</b>
               </div>
             </div>
             <div className="console-card">
@@ -800,6 +854,16 @@ export function StudioConsoleView({
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
               <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
+              <div className="console-kv">
+                <span>kmNet 状态</span><b>{kmnetStatus.connected === true ? "已连接" : "未连接"}</b>
+                <span>按键监听</span><b>{kmnetStatus.monitoring === true ? "已启动" : "未启动"}</b>
+                <span>最后错误</span><b>{readString(kmnetStatus.last_error, "-") || "-"}</b>
+              </div>
+              <div className="console-action-row">
+                <button className="console-button primary" disabled={busy === "kmnet.connect"} onClick={connectHardware} type="button">连接 kmNet</button>
+                <button className="console-button danger" disabled={busy === "kmnet.disconnect"} onClick={disconnectHardware} type="button">断开</button>
+                <button className="console-button" disabled={busy === "kmnet.diagnostic"} onClick={diagnosticMoveHardware} type="button">诊断移动</button>
+              </div>
             </div>
           </div>
         </section>

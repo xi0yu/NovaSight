@@ -40,6 +40,7 @@ class RuntimeService:
         self.last_frame_context: FrameContext | None = None
         self.last_target: dict[str, Any] | None = None
         self.last_control: dict[str, Any] | None = None
+        self.last_execution: dict[str, Any] | None = None
         self.last_inference_reason = ""
         self.last_inference_status: dict[str, Any] = {
             "ran": False,
@@ -103,6 +104,11 @@ class RuntimeService:
         intent = self._control_intent_from_context(context)
         control_intents = [intent] if intent is not None else []
         execution_results = [self.executors.execute(intent) for intent in control_intents]
+        self.last_execution = (
+            self._execution_result_payload(execution_results[-1])
+            if execution_results
+            else None
+        )
         return RuntimeFrameResult(
             control_intents=control_intents,
             execution_results=execution_results,
@@ -430,6 +436,7 @@ class RuntimeService:
                 "inference": dict(self.last_inference_status),
                 "target": None,
                 "control": None,
+                "execution": self.last_execution,
             }
         return {
             "frame_id": context.frame_id,
@@ -444,6 +451,22 @@ class RuntimeService:
             "inference": dict(self.last_inference_status),
             "target": self.last_target,
             "control": self.last_control,
+            "execution": self.last_execution,
+        }
+
+    def _execution_result_payload(self, result: Any) -> dict[str, Any]:
+        intent = getattr(result, "intent", None)
+        return {
+            "executor_id": str(getattr(result, "executor_id", "")),
+            "sent": bool(getattr(result, "sent", False)),
+            "message": str(getattr(result, "message", "")),
+            "intent": {
+                "dx": float(getattr(intent, "dx", 0.0)),
+                "dy": float(getattr(intent, "dy", 0.0)),
+                "accepted": bool(getattr(intent, "accepted", False)),
+                "clipped": bool(getattr(intent, "clipped", False)),
+                "reason": str(getattr(intent, "reason", "")),
+            },
         }
 
     def _source_width(self, frame: CapturedFrame) -> int:

@@ -234,6 +234,10 @@ export const API_PATHS = {
   captureImage: "/api/capture/image",
   captureStop: "/api/capture/stop",
   captureStream: "/api/capture/stream.mjpg",
+  executors: "/api/executors",
+  kmnetConnect: "/api/executors/kmnet/connect",
+  kmnetDisconnect: "/api/executors/kmnet/disconnect",
+  kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
   modelProjects: "/api/models/projects",
   modelJobs: "/api/models/jobs",
   license: "/api/license",
@@ -318,6 +322,28 @@ export function startRuntimePipeline(): Promise<Record<string, RuntimeConfigValu
 export function stopRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeStop, {
     method: "POST"
+  });
+}
+
+export function connectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetConnect, {
+    method: "POST"
+  });
+}
+
+export function disconnectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDisconnect, {
+    method: "POST"
+  });
+}
+
+export function diagnosticMoveKmNet(dx = 1, dy = 0): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticMove, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ dx, dy })
   });
 }
 

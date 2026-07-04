@@ -37,7 +37,6 @@ class KmNetExecutor:
             self.last_error = f"kmNet driver unavailable: {exc}"
         else:
             self._driver = kmNet
-            self._connect()
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> KmNetExecutor:
@@ -97,6 +96,16 @@ class KmNetExecutor:
         )
         return self.execute(output)
 
+    def connect(self) -> dict[str, Any]:
+        self._connect()
+        return self.status()
+
+    def disconnect(self) -> dict[str, Any]:
+        self.connected = False
+        self.monitoring = False
+        self.last_error = ""
+        return self.status()
+
     def execute(self, output: ControlOutput) -> ExecutionResult:
         if not output.accepted:
             return ExecutionResult(
@@ -112,8 +121,6 @@ class KmNetExecutor:
                 intent=output,
                 message="kmNet driver unavailable",
             )
-        if not self.connected:
-            self._connect()
         if not self.connected:
             return ExecutionResult(
                 executor_id=self.executor_id,
@@ -157,6 +164,8 @@ class KmNetExecutor:
 
     def _connect(self) -> None:
         if self._driver is None:
+            return
+        if self.connected:
             return
         if self.port <= 0:
             self.last_error = "kmNet port is not configured"
