@@ -87,38 +87,26 @@ class RuntimeTargetSelector:
             )
 
         priority = {int(cls): rank for rank, cls in enumerate(class_priority)}
-        locked = self._locked_match(inside_fov)
-        if lock_enabled and locked is not None:
-            self._remember(locked)
-            return TargetSelection(
-                target=locked,
-                state="locked",
-                reason="kept locked target",
-                candidates=len(candidates),
-                inside_fov=len(inside_fov),
-                locked=True,
-                priority_rank=self._priority_rank(locked, priority),
-                distance_px=self._distance(locked, center_x, center_y),
-            )
+        locked = self._locked_match(inside_fov) if lock_enabled else None
 
         best = min(
             inside_fov,
             key=lambda item: (
+                self._selection_distance(item, locked, sticky_bias, center_x, center_y),
                 self._priority_rank(item, priority),
-                self._sticky_distance(item, sticky_bias),
-                self._distance(item, center_x, center_y),
                 -float(item.score),
             ),
         )
         previous_key = self._locked.key if self._locked is not None else None
         self._remember(best)
+        selected_locked = locked is not None and self._target_key(best) == self._target_key(locked)
         return TargetSelection(
             target=best,
-            state="acquire" if previous_key != self._target_key(best) else "fresh",
-            reason="class priority then nearest target",
+            state="locked" if selected_locked else "acquire" if previous_key != self._target_key(best) else "fresh",
+            reason="nearest target with sticky and class priority tiebreak",
             candidates=len(candidates),
             inside_fov=len(inside_fov),
-            locked=False,
+            locked=selected_locked,
             priority_rank=self._priority_rank(best, priority),
             distance_px=self._distance(best, center_x, center_y),
         )
@@ -189,10 +177,19 @@ class RuntimeTargetSelector:
         return nearest if distance <= 96.0 else None
         return None
 
-    def _sticky_distance(self, target: Target, sticky_bias: float) -> float:
-        if self._locked is None or sticky_bias <= 0:
-            return 0.0
-        distance = ((float(target.cx) - self._locked.cx) ** 2 + (float(target.cy) - self._locked.cy) ** 2) ** 0.5
+    def _selection_distance(
+        self,
+        target: Target,
+        locked: Target | None,
+        sticky_bias: float,
+        center_x: float,
+        center_y: float,
+    ) -> float:
+        distance = self._distance(target, center_x, center_y)
+        if locked is None or sticky_bias <= 0:
+            return distance
+        if self._target_key(target) != self._target_key(locked):
+            return distance
         return distance * max(0.0, 1.0 - min(0.9, sticky_bias))
 
     @staticmethod
