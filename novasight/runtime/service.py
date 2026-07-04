@@ -867,7 +867,12 @@ class RuntimeService:
                 bezier_curvature=config.control.bezier_curvature,
             )
         if strategy == "predictive":
-            return PredictiveStrategy(aim_ratio=config.control.aim_ratio)
+            return PredictiveStrategy(
+                lead_factor=config.control.prediction_factor,
+                aim_ratio=config.control.aim_ratio,
+                fov_deg=config.control.straight_fov_deg,
+                counts_per_revolution=config.control.straight_c360,
+            )
         if strategy == "proportional":
             return ProportionalStrategy(
                 fov_ratio=config.control.fov_ratio,
@@ -879,6 +884,7 @@ class RuntimeService:
                 deadzone_counts=config.control.deadzone_counts,
                 counts_per_revolution_x=config.control.counts_per_revolution_x,
                 counts_per_revolution_y=config.control.counts_per_revolution_y,
+                fov_deg=config.control.straight_fov_deg,
                 move_kind=config.control.move_kind,
                 move_ms=config.control.move_ms,
                 trace_ms=config.control.trace_ms,

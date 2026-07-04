@@ -126,7 +126,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.min_confidence", "label": "最低置信度", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "control.fov_ratio", "label": "FOV 比例", "type": "float", "min": 0.01, "max": 1, "restart_required": False},
                     {"path": "control.target_lock_enabled", "label": "目标锁定", "type": "bool", "restart_required": False},
-                    {"path": "control.target_sticky_bias", "label": "目标粘性", "type": "float", "min": 0, "max": 0.9, "restart_required": False},
+                    {"path": "control.target_sticky_bias", "label": "锁定偏好", "type": "float", "min": 0, "max": 0.9, "restart_required": False},
                     {"path": "control.target_lost_grace_frames", "label": "丢失容忍帧", "type": "int", "min": 0, "restart_required": False},
                     {"path": "control.aim_ratio", "label": "瞄准高度", "type": "float", "min": 0, "max": 100, "restart_required": False},
                     {"path": "control.trigger_mode", "label": "触发方式", "type": "select", "options": ["hardware", "telemetry", "always"], "restart_required": False},

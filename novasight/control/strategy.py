@@ -551,9 +551,18 @@ class StraightStrategy:
 
 
 class PredictiveStrategy:
-    def __init__(self, *, lead_factor: float = 0.25, aim_ratio: float = 40.0) -> None:
+    def __init__(
+        self,
+        *,
+        lead_factor: float = 0.25,
+        aim_ratio: float = 40.0,
+        fov_deg: float = 105.0,
+        counts_per_revolution: float = 9980.0,
+    ) -> None:
         self.lead_factor = lead_factor
         self.aim_ratio = max(0.0, min(100.0, aim_ratio))
+        self.fov_deg = max(1.0, min(179.0, fov_deg))
+        self.counts_per_revolution = max(100.0, counts_per_revolution)
         self._last_center: tuple[float, float] | None = None
 
     def calculate(
@@ -572,21 +581,39 @@ class PredictiveStrategy:
             vy = center[1] - self._last_center[1]
         self._last_center = center
         predicted = (center[0] + vx * self.lead_factor, center[1] + vy * self.lead_factor)
+        ex = predicted[0] - current_pos[0]
+        ey = current_pos[1] - predicted[1]
+        projection = _project_pixels_to_counts(
+            ex,
+            ey,
+            current_pos[0] * 2.0,
+            fov_deg=self.fov_deg,
+            counts_per_revolution=self.counts_per_revolution,
+        )
+        dx = projection["err_cx"]
+        dy = projection["err_cy"]
         return MoveCommand(
-            dx=predicted[0] - current_pos[0],
-            dy=current_pos[1] - predicted[1],
+            dx=dx,
+            dy=dy,
             confidence=target.score,
-            reason="predictive strategy",
+            reason="predictive fov counts strategy",
             debug={
+                **projection,
                 "stage": "predictive",
                 "coordinate_y": "cartesian_up_positive",
-                "raw_px_x": predicted[0] - current_pos[0],
-                "raw_px_y": current_pos[1] - predicted[1],
+                "raw_px_x": ex,
+                "raw_px_y": ey,
                 "aim_ratio": self.aim_ratio,
                 "aim_x": center[0],
                 "aim_y": center[1],
-                "final_dx": predicted[0] - current_pos[0],
-                "final_dy": current_pos[1] - predicted[1],
+                "predicted_x": predicted[0],
+                "predicted_y": predicted[1],
+                "fov_counts_x": dx,
+                "fov_counts_y": dy,
+                "c360": self.counts_per_revolution,
+                "fov_deg": self.fov_deg,
+                "final_dx": dx,
+                "final_dy": dy,
             },
         )
 
@@ -604,6 +631,7 @@ class ProportionalStrategy:
         deadzone_counts: int = 1,
         counts_per_revolution_x: float = 4096.0,
         counts_per_revolution_y: float = 4096.0,
+        fov_deg: float = 105.0,
         move_kind: str = "raw",
         move_ms: int = 12,
         trace_ms: int = 0,
@@ -618,6 +646,7 @@ class ProportionalStrategy:
         self.deadzone_counts = max(0, int(deadzone_counts))
         self.counts_per_revolution_x = max(1.0, counts_per_revolution_x)
         self.counts_per_revolution_y = max(1.0, counts_per_revolution_y)
+        self.fov_deg = max(1.0, min(179.0, fov_deg))
         self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
@@ -663,10 +692,22 @@ class ProportionalStrategy:
             )
 
         speed = self._speed_for(err, radius)
-        rx = self.counts_per_revolution_x / (2 * math.pi)
-        ry = self.counts_per_revolution_y / (2 * math.pi)
-        counts_x = rx * math.atan((ex * speed) / rx)
-        counts_y = ry * math.atan((ey * speed) / ry)
+        projection_x = _project_pixels_to_counts(
+            ex,
+            ey,
+            current_pos[0] * 2.0,
+            fov_deg=self.fov_deg,
+            counts_per_revolution=self.counts_per_revolution_x,
+        )
+        projection_y = _project_pixels_to_counts(
+            ex,
+            ey,
+            current_pos[0] * 2.0,
+            fov_deg=self.fov_deg,
+            counts_per_revolution=self.counts_per_revolution_y,
+        )
+        counts_x = projection_x["err_cx"] * speed
+        counts_y = projection_y["err_cy"] * speed
         self._ema_x = self.ema_alpha * counts_x + (1 - self.ema_alpha) * self._ema_x
         self._ema_y = self.ema_alpha * counts_y + (1 - self.ema_alpha) * self._ema_y
         dx = int(round(self._ema_x))
@@ -687,6 +728,7 @@ class ProportionalStrategy:
                     "aim_y": aim_y,
                     "fov_counts_x": counts_x,
                     "fov_counts_y": counts_y,
+                    "fov_deg": self.fov_deg,
                     "speed": speed,
                     "final_dx": 0,
                     "final_dy": 0,
@@ -704,6 +746,7 @@ class ProportionalStrategy:
             trace_ms=self.trace_ms,
             bezier_ctrl=bezier_ctrl,
             debug={
+                **projection_x,
                 "stage": "proportional",
                 "coordinate_y": "cartesian_up_positive",
                 "raw_px_x": ex,
@@ -713,6 +756,9 @@ class ProportionalStrategy:
                 "aim_y": aim_y,
                 "fov_counts_x": counts_x,
                 "fov_counts_y": counts_y,
+                "c360_x": self.counts_per_revolution_x,
+                "c360_y": self.counts_per_revolution_y,
+                "fov_deg": self.fov_deg,
                 "speed": speed,
                 "final_dx": dx,
                 "final_dy": dy,
@@ -741,6 +787,28 @@ def _bezier_ctrl(dx: int, dy: int, curvature: float) -> tuple[int, int, int, int
         int(round(dx * 2.0 / 3.0 + nx * bow)),
         int(round(dy * 2.0 / 3.0 + ny * bow)),
     )
+
+
+def _project_pixels_to_counts(
+    error_pixels_x: float,
+    error_pixels_y: float,
+    frame_width: float,
+    *,
+    fov_deg: float,
+    counts_per_revolution: float,
+) -> dict[str, float]:
+    focal = (frame_width * 0.5) / math.tan(math.radians(fov_deg) * 0.5) if frame_width > 0 else 0.0
+    counts_per_degree = counts_per_revolution / 360.0
+    yaw_deg = math.degrees(math.atan(error_pixels_x / focal)) if focal > 0 else 0.0
+    pitch_deg = math.degrees(math.atan(error_pixels_y / focal)) if focal > 0 else 0.0
+    return {
+        "focal": focal,
+        "yaw_deg": yaw_deg,
+        "pitch_deg": pitch_deg,
+        "counts_per_degree": counts_per_degree,
+        "err_cx": yaw_deg * counts_per_degree,
+        "err_cy": pitch_deg * counts_per_degree,
+    }
 
 
 class ControlCommandCoalescer:

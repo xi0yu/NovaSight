@@ -136,13 +136,15 @@ class RuntimeTargetSelector:
             "fov_ratio": float(fov_ratio),
             "min_confidence": float(min_confidence),
             "class_filter": str(class_filter),
+            "sticky_bias": float(sticky_bias),
+            "lock_enabled": bool(lock_enabled),
             "selected": self._candidate_debug([best], context)[0] if best is not None else None,
             "candidates": self._candidate_debug(inside_fov, context),
         }
         return TargetSelection(
             target=best,
             state="locked" if selected_locked else "acquire" if previous_key != self._target_key(best) else "fresh",
-            reason="nearest target with sticky and class priority tiebreak",
+            reason="按距离选目标，锁定偏好和类别优先级参与排序",
             candidates=len(candidates),
             inside_fov=len(inside_fov),
             locked=selected_locked,

@@ -1372,11 +1372,14 @@ export function StudioConsoleView({
                 value={controlStrategy}
                 onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
               >
-                <option value="straight">Straight 透视一击</option>
-                <option value="pid">PID 平滑追踪</option>
-                <option value="proportional">比例速度</option>
-                <option value="predictive">预测追踪</option>
+                <option value="straight">推荐：FOV/c360 直线跟随</option>
+                <option value="pid">调试：PID 平滑追踪</option>
+                <option value="proportional">实验：比例速度</option>
+                <option value="predictive">实验：预测追踪</option>
               </select>
+              <p className="console-field-hint">
+                主链路优先使用推荐模式；实验模式保留用于对比手感，不作为默认产品模式。
+              </p>
               <label>触发方式</label>
               <select
                 value={triggerMode}
@@ -1423,7 +1426,10 @@ export function StudioConsoleView({
                 <option value="true">开启：保持当前目标</option>
                 <option value="false">关闭：每帧重新选择</option>
               </select>
-              <NumberControl label="目标粘性" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
+              <p className="console-field-hint">
+                目标锁定偏好只影响“多个候选目标选谁”，不改变鼠标移动速度。数值越高，越不容易从当前目标切到旁边的新目标。
+              </p>
+              <NumberControl label="锁定偏好" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
               <label>kmNet 移动 API</label>
               <select

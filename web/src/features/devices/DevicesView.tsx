@@ -520,7 +520,7 @@ export function DevicesView({
       tone: inferenceEnabled ? "ready" : "blocked"
     }
   ];
-  const controlStrategy = readString(controlConfig, "strategy", "pid");
+  const controlStrategy = readString(controlConfig, "strategy", "straight");
   const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
   const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
   const maxAbsDy = readNumber(controlConfig, "max_abs_dy", 120);
@@ -598,7 +598,7 @@ export function DevicesView({
             {
               id: "algorithm",
               label: "控制输出",
-              value: controlStrategy === "pid" ? "PID 平滑追踪" : "预测追踪",
+              value: controlStrategy === "straight" ? "FOV/c360 跟随" : controlStrategy === "pid" ? "PID 平滑追踪" : "实验算法",
               detail: `X/Y 限幅 ${maxAbsDx}/${maxAbsDy}`,
               ready: maxAbsDx > 0 && maxAbsDy > 0
             }
@@ -1144,15 +1144,15 @@ export function DevicesView({
                 </div>
 
                 <div className="algorithm-choice-row">
-                  {["pid", "predictive"].map((strategy) => (
+                  {["straight", "pid"].map((strategy) => (
                     <button
                       className={controlStrategy === strategy ? "algorithm-choice active" : "algorithm-choice"}
                       key={strategy}
                       type="button"
                       onClick={() => void updateRuntimeField("control", "strategy", strategy)}
                     >
-                      <strong>{strategy === "pid" ? "PID 平滑追踪" : "预测追踪"}</strong>
-                      <span>{strategy === "pid" ? "Kp X/Y 分轴，Ki/Kd 共用" : "基于目标位移提前量"}</span>
+                      <strong>{strategy === "straight" ? "推荐：FOV/c360 跟随" : "调试：PID 平滑追踪"}</strong>
+                      <span>{strategy === "straight" ? "按 FOV 和 c360 将像素误差换算成 kmNet counts" : "Kp X/Y 分轴，Ki/Kd 共用"}</span>
                     </button>
                   ))}
                 </div>
