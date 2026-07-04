@@ -4019,6 +4019,12 @@ tbody tr:hover {
   gap: 24px;
 }
 
+.console-grid1 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
 .console-grid3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

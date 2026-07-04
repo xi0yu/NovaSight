@@ -1030,7 +1030,7 @@ export function StudioConsoleView({
             <Metric title="丢帧" value={String(statistics?.dropped_counter ?? capture?.frames_dropped ?? 0)} small="drop" />
           </div>
 
-          <div className="console-grid2">
+          <div className="console-grid1">
             <div>
               <div className="console-card">
                 <h2 className="console-title">采集设备</h2>
@@ -1086,12 +1086,6 @@ export function StudioConsoleView({
                 </div>
               </div>
             </div>
-            <PreviewCard
-              enabled={activePage === "capture"}
-              runtime={runtime}
-              title="实时画面"
-              roiSize={roiSize}
-            />
           </div>
         </section>
 
@@ -1769,25 +1763,6 @@ function TextControl({
 
 function Metric({ title, value, small }: { title: string; value: string; small: string }) {
   return <div className="console-metric">{title}<br />{value}<small>{small}</small></div>;
-}
-
-function PreviewCard({
-  enabled,
-  runtime,
-  title,
-  roiSize
-}: {
-  enabled: boolean;
-  runtime: RuntimeState | null;
-  title: string;
-  roiSize: number;
-}) {
-  return (
-    <div className="console-card">
-      <h2 className="console-title">{title}</h2>
-      <PreviewFrame enabled={enabled} runtime={runtime} roiSize={roiSize} />
-    </div>
-  );
 }
 
 function PreviewFrame({
