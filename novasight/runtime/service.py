@@ -11,7 +11,7 @@ from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
 from novasight.model_registry import ModelRegistry
 from novasight.contracts import ControlIntent, Detection, FrameContext, Track
-from novasight.roi import center_roi_frame, map_detection_to_source
+from novasight.roi import center_roi_frame
 
 from .config_store import RuntimeConfigStore
 from .state import RuntimeFrameResult, RuntimeState
@@ -179,17 +179,13 @@ class RuntimeService:
             detections = []
             for item in inference_result.detections:
                 detections.append(
-                    map_detection_to_source(
-                        Detection(
-                            cls=item.cls,
-                            score=item.score,
-                            x=item.x,
-                            y=item.y,
-                            w=item.w,
-                            h=item.h,
-                        ),
-                        offset_x=roi_frame.offset_x,
-                        offset_y=roi_frame.offset_y,
+                    Detection(
+                        cls=item.cls,
+                        score=item.score,
+                        x=item.x,
+                        y=item.y,
+                        w=item.w,
+                        h=item.h,
                     )
                 )
             detections = self._filter_detections_by_config(detections)
@@ -221,8 +217,8 @@ class RuntimeService:
 
         context = FrameContext(
             frame_id=frame.frame_id,
-            width=self._source_width(frame),
-            height=self._source_height(frame),
+            width=roi_frame.width,
+            height=roi_frame.height,
             detections=detections,
             classes=classes,
         )
@@ -261,6 +257,7 @@ class RuntimeService:
             "input_image_width": self._image_width(getattr(roi_frame, "image", frame.image)),
             "input_image_height": self._image_height(getattr(roi_frame, "image", frame.image)),
             "input_pixel_format": str(getattr(roi_frame, "pixel_format", frame.pixel_format)),
+            "detection_coordinate_space": "roi",
             "source_width": self._source_width(frame),
             "source_height": self._source_height(frame),
             "roi_offset_x": int(getattr(roi_frame, "offset_x", 0)),

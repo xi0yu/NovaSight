@@ -229,10 +229,13 @@ function detectionStyle(
   roiOffsetX: number,
   roiOffsetY: number,
   roiWidth: number,
-  roiHeight: number
+  roiHeight: number,
+  coordinateSpace: string
 ): CSSProperties {
-  const left = ((detection.x - roiOffsetX) / roiWidth) * 100;
-  const top = ((detection.y - roiOffsetY) / roiHeight) * 100;
+  const x = coordinateSpace === "roi" ? detection.x : detection.x - roiOffsetX;
+  const y = coordinateSpace === "roi" ? detection.y : detection.y - roiOffsetY;
+  const left = (x / roiWidth) * 100;
+  const top = (y / roiHeight) * 100;
   const width = (detection.w / roiWidth) * 100;
   const height = (detection.h / roiHeight) * 100;
   return {
@@ -311,6 +314,7 @@ export function DashboardView({
   const detections = readDetectionItems(vision.detection_items);
   const roiOffsetX = readNumberRecord(inferenceTrace, "roi_offset_x") ?? 0;
   const roiOffsetY = readNumberRecord(inferenceTrace, "roi_offset_y") ?? 0;
+  const detectionCoordinateSpace = readStringRecord(inferenceTrace, "detection_coordinate_space") || "source";
   const overlayWidth = inputWidth ?? roiSize;
   const overlayHeight = inputHeight ?? roiSize;
 
@@ -472,7 +476,8 @@ export function DashboardView({
                       roiOffsetX,
                       roiOffsetY,
                       overlayWidth,
-                      overlayHeight
+                      overlayHeight,
+                      detectionCoordinateSpace
                     )}
                   >
                     <span>

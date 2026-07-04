@@ -101,9 +101,16 @@ def _runtime_roi_detections(
         if frame_delta < 0 or frame_delta > 30:
             return []
     detections: list[Detection] = []
+    context_width = int(getattr(context, "width", 0) or 0)
+    context_height = int(getattr(context, "height", 0) or 0)
+    uses_roi_coordinates = context_width == roi_size and context_height == roi_size
     for detection in getattr(context, "detections", []):
-        x = float(detection.x) - offset_x
-        y = float(detection.y) - offset_y
+        if uses_roi_coordinates:
+            x = float(detection.x)
+            y = float(detection.y)
+        else:
+            x = float(detection.x) - offset_x
+            y = float(detection.y) - offset_y
         w = float(detection.w)
         h = float(detection.h)
         if x + w < 0 or y + h < 0 or x > roi_size or y > roi_size:
