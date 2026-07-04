@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import logging
 import time
 from typing import Any
 
@@ -17,6 +18,8 @@ from novasight.roi import center_roi_frame
 from .config_store import RuntimeConfigStore
 from .state import RuntimeFrameResult, RuntimeState
 from .target_selector import RuntimeTargetSelector, TargetSelection
+
+logger = logging.getLogger("novasight.runtime.service")
 
 
 class RuntimeService:
@@ -52,6 +55,8 @@ class RuntimeService:
         self._local_trigger_active = False
         self._local_trigger_bindings: list[str] = []
         self._local_trigger_updated_s = 0.0
+        self._last_control_log_signature = ""
+        self._last_control_log_s = 0.0
         self.control_strategy = self._create_control_strategy(config)
         self.target_selector = RuntimeTargetSelector()
 
@@ -129,6 +134,15 @@ class RuntimeService:
         execution_results = [self.executors.execute(intent) for intent in control_intents]
         if execution_results:
             self.last_execution = self._execution_result_payload(execution_results[-1])
+            logger.info(
+                "control execution result frame=%s executor=%s sent=%s dx=%.1f dy=%.1f message=%s",
+                context.frame_id,
+                self.last_execution.get("executor_id"),
+                self.last_execution.get("sent"),
+                float(self.last_execution.get("output_dx") or 0.0),
+                float(self.last_execution.get("output_dy") or 0.0),
+                self.last_execution.get("message"),
+            )
         return RuntimeFrameResult(
             control_intents=control_intents,
             execution_results=execution_results,
@@ -433,6 +447,16 @@ class RuntimeService:
             "output_mode": output_mode,
             "will_emit": can_emit,
         }
+        self._log_control_decision(
+            context=context,
+            target=target,
+            command=command,
+            can_emit=can_emit,
+            trigger_raw=trigger_raw,
+            output_mode=output_mode,
+            hardware_kind=hardware_kind,
+            trigger_mode=trigger_mode,
+        )
         if not can_emit:
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
@@ -451,6 +475,45 @@ class RuntimeService:
                 },
             }
         return intent if can_emit else None
+
+    def _log_control_decision(
+        self,
+        *,
+        context: FrameContext,
+        target: Track | Detection,
+        command: Any,
+        can_emit: bool,
+        trigger_raw: dict[str, Any],
+        output_mode: str,
+        hardware_kind: str,
+        trigger_mode: str,
+    ) -> None:
+        trigger_source = str(trigger_raw.get("source") or trigger_raw.get("mode") or trigger_raw.get("reason") or "")
+        signature = (
+            f"emit={can_emit}|out={output_mode}|hardware={hardware_kind}|"
+            f"trigger={trigger_mode}|source={trigger_source}|"
+            f"active={bool(trigger_raw.get('left') or trigger_raw.get('right') or trigger_raw.get('active'))}"
+        )
+        now = time.monotonic()
+        if signature == self._last_control_log_signature and now - self._last_control_log_s < 1.0:
+            return
+        self._last_control_log_signature = signature
+        self._last_control_log_s = now
+        logger.info(
+            "control decision frame=%s target_cls=%s score=%.3f dx=%.1f dy=%.1f emit=%s output=%s hardware=%s trigger=%s trigger_source=%s trigger_raw=%s reason=%s",
+            context.frame_id,
+            int(getattr(target, "cls", -1)),
+            float(getattr(target, "score", 0.0)),
+            float(getattr(command, "dx", 0.0)),
+            float(getattr(command, "dy", 0.0)),
+            can_emit,
+            output_mode,
+            hardware_kind,
+            trigger_mode,
+            trigger_source,
+            trigger_raw,
+            str(getattr(command, "reason", "")),
+        )
 
     def _select_control_target(self, context: FrameContext) -> TargetSelection:
         return self.target_selector.select(
