@@ -4064,6 +4064,158 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.kmnet-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.kmnet-status-tile {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.kmnet-status-tile span,
+.kmnet-test-result span,
+.kmnet-driver-line span:first-child {
+  display: block;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kmnet-status-tile b,
+.kmnet-test-result b,
+.kmnet-driver-line span:last-child {
+  display: block;
+  overflow: hidden;
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kmnet-status-tile.good {
+  border-color: rgba(25, 198, 74, 0.28);
+  background: rgba(25, 198, 74, 0.08);
+}
+
+.kmnet-status-tile.bad {
+  border-color: rgba(255, 64, 88, 0.28);
+  background: rgba(255, 64, 88, 0.08);
+}
+
+.kmnet-status-tile.idle {
+  background: rgba(17, 21, 31, 0.04);
+}
+
+.kmnet-driver-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border: 1px dashed var(--hairline);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.kmnet-test-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.kmnet-test-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.kmnet-test-inputs label {
+  margin: 0;
+}
+
+.kmnet-test-inputs span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.kmnet-pad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.kmnet-pad button {
+  min-height: 40px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: none;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.kmnet-pad button:first-child,
+.kmnet-pad button:last-child {
+  grid-column: 2;
+}
+
+.kmnet-pad button:nth-child(3) {
+  border-color: var(--accent-red);
+  background: linear-gradient(180deg, var(--accent-red-2), var(--accent-red));
+  color: #11151f;
+}
+
+.kmnet-test-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.kmnet-test-message,
+.kmnet-error {
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.kmnet-test-message {
+  border: 1px solid rgba(25, 198, 74, 0.22);
+  background: rgba(25, 198, 74, 0.08);
+  color: #176a2d;
+}
+
+.kmnet-error {
+  margin-top: 12px;
+  border: 1px solid #ff9aa6;
+  background: #fff1f3;
+  color: var(--accent-red);
+  word-break: break-word;
+}
+
 .console-class-list {
   max-height: 220px;
   display: grid;
@@ -4295,6 +4447,16 @@ tbody tr:hover {
   .console-process {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .kmnet-status-grid,
+  .kmnet-test-inputs {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .kmnet-driver-line,
+  .kmnet-test-result {
+    grid-template-columns: 1fr;
   }
 
   .console-sidebar {
