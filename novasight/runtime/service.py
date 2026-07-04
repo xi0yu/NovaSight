@@ -15,6 +15,7 @@ from novasight.roi import center_roi_frame, map_detection_to_source
 
 from .config_store import RuntimeConfigStore
 from .state import RuntimeFrameResult, RuntimeState
+from .target_selector import RuntimeTargetSelector, TargetSelection
 
 
 class RuntimeService:
@@ -48,6 +49,7 @@ class RuntimeService:
             "reason": "推理尚未执行",
         }
         self.control_strategy = self._create_control_strategy(config)
+        self.target_selector = RuntimeTargetSelector()
 
     def state(self) -> RuntimeState:
         capture_state = getattr(self, "capture", None)
@@ -83,6 +85,7 @@ class RuntimeService:
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
         self.config = config
         self.control_strategy = self._create_control_strategy(config)
+        self.target_selector.reset()
         configure = getattr(self.inference, "configure", None)
         if callable(configure):
             configure(
@@ -266,10 +269,19 @@ class RuntimeService:
         }
 
     def _control_intent_from_context(self, context: FrameContext) -> ControlIntent | None:
-        target = self._select_control_target(context)
+        selection = self._select_control_target(context)
+        target = selection.target
         if target is None:
             self.last_target = None
-            self.last_control = None
+            self.last_control = {
+                "frame_id": context.frame_id,
+                "selector_state": selection.state,
+                "selection_reason": selection.reason,
+                "candidates": selection.candidates,
+                "inside_fov": selection.inside_fov,
+                "lost_count": selection.lost_count,
+                "will_emit": False,
+            }
             return None
 
         center = (context.width / 2, context.height / 2)
@@ -295,13 +307,30 @@ class RuntimeService:
         requires_trigger = output_mode == "kmnet" and hardware_kind not in {"", "none", "silent"}
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
-        self.last_target = self._target_payload(target, context)
+        raw_error_x = float(target.cx - center[0])
+        raw_error_y = float(target.cy - center[1])
+        self.last_target = {
+            **self._target_payload(target, context),
+            "selector_state": selection.state,
+            "selection_reason": selection.reason,
+            "locked": selection.locked,
+            "priority_rank": selection.priority_rank,
+            "distance_px": selection.distance_px,
+            "inside_fov": selection.inside_fov,
+            "candidates": selection.candidates,
+        }
         self.last_control = {
             "frame_id": context.frame_id,
+            "raw_error_x": raw_error_x,
+            "raw_error_y": raw_error_y,
             "dx": command.dx,
             "dy": command.dy,
             "confidence": command.confidence,
             "reason": command.reason,
+            "selector_state": selection.state,
+            "selection_reason": selection.reason,
+            "priority_rank": selection.priority_rank,
+            "distance_px": selection.distance_px,
             "trigger_active": box_input.active,
             "trigger_required": requires_trigger,
             "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
@@ -310,29 +339,16 @@ class RuntimeService:
         }
         return intent if can_emit else None
 
-    def _select_control_target(self, context: FrameContext) -> Track | Detection | None:
-        candidates: list[Track | Detection] = list(context.tracks) or list(context.detections)
-        if not candidates or context.width <= 0 or context.height <= 0:
-            return None
-        min_confidence = float(getattr(self.config.control, "min_confidence", 0.0))
-        filtered = [item for item in candidates if float(item.score) >= min_confidence]
-        if not filtered:
-            return None
-        center_x = context.width / 2
-        center_y = context.height / 2
-        radius = min(context.width, context.height) * float(self.config.control.fov_ratio)
-        inside_fov = [
-            item
-            for item in filtered
-            if ((item.cx - center_x) ** 2 + (item.cy - center_y) ** 2) ** 0.5 <= radius
-        ]
-        pool = inside_fov or filtered
-        return max(
-            pool,
-            key=lambda item: (
-                float(item.score),
-                -((item.cx - center_x) ** 2 + (item.cy - center_y) ** 2),
-            ),
+    def _select_control_target(self, context: FrameContext) -> TargetSelection:
+        return self.target_selector.select(
+            context,
+            min_confidence=float(getattr(self.config.control, "min_confidence", 0.0)),
+            fov_ratio=float(getattr(self.config.control, "fov_ratio", 0.28)),
+            class_filter=str(getattr(self.config.inference, "detection_class_filter", "all")),
+            class_priority=self._class_priority(),
+            sticky_bias=float(getattr(self.config.control, "target_sticky_bias", 0.25)),
+            lock_enabled=bool(getattr(self.config.control, "target_lock_enabled", True)),
+            lost_grace_frames=int(getattr(self.config.control, "target_lost_grace_frames", 5)),
         )
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
@@ -344,6 +360,20 @@ class RuntimeService:
         except ValueError:
             return detections
         return [item for item in detections if int(item.cls) == class_id]
+
+    def _class_priority(self) -> list[int]:
+        raw = str(getattr(self.config.inference, "detection_class_priority", ""))
+        result: list[int] = []
+        seen: set[int] = set()
+        for part in raw.split(","):
+            try:
+                class_id = int(part.strip())
+            except ValueError:
+                continue
+            if class_id not in seen:
+                seen.add(class_id)
+                result.append(class_id)
+        return result
 
     def _box_input_state(self) -> BoxInputState:
         if getattr(getattr(self.config, "hardware", None), "kind", "none") in {"", "none", "silent"}:

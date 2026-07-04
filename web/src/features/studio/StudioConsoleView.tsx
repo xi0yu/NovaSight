@@ -210,6 +210,7 @@ export function StudioConsoleView({
   const activeDetectionClass = readString(inferenceConfig.detection_class_filter, "all");
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
+  const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
   const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
   const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
   const pidKi = readNumber(controlConfig.pid_ki, 0.1);
@@ -217,6 +218,9 @@ export function StudioConsoleView({
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
+  const targetLockEnabled = controlConfig.target_lock_enabled !== false;
+  const targetStickyBias = readNumber(controlConfig.target_sticky_bias, 0.25);
+  const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
@@ -904,6 +908,12 @@ export function StudioConsoleView({
                   </button>
                 ))}
               </div>
+              <TextControl
+                label="类别优先级"
+                value={detectionClassPriority}
+                onCommit={(value) => updateConfigField("inference", "detection_class_priority", value)}
+              />
+              <p className="console-field-hint">按 class id 从高到低填写，例如 1,0 表示先选头部，再选身体；未列出的类别会排在后面。</p>
               <details className="model-debug-details">
                 <summary>工程调试详情</summary>
                 <label>模型版本</label>
@@ -980,6 +990,16 @@ export function StudioConsoleView({
                 <option value="proportional">比例速度</option>
                 <option value="predictive">预测追踪</option>
               </select>
+              <label>目标锁定</label>
+              <select
+                value={targetLockEnabled ? "true" : "false"}
+                onChange={(event) => void updateConfigField("control", "target_lock_enabled", event.target.value === "true")}
+              >
+                <option value="true">开启：保持当前目标</option>
+                <option value="false">关闭：每帧重新选择</option>
+              </select>
+              <NumberControl label="目标粘性" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
+              <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
               <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
               <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
               <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
@@ -992,8 +1012,14 @@ export function StudioConsoleView({
               <h2 className="console-title">控制量反馈</h2>
               <div className="console-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
+                <span>选择状态</span><b>{readString(asRecord(vision.control).selector_state, "-")}</b>
+                <span>选择原因</span><b>{readString(asRecord(vision.control).selection_reason, "-")}</b>
+                <span>raw dx</span><b>{formatNumber(asRecord(vision.control).raw_error_x, 1)}</b>
+                <span>raw dy</span><b>{formatNumber(asRecord(vision.control).raw_error_y, 1)}</b>
                 <span>dx</span><b>{formatNumber(asRecord(vision.control).dx, 1)}</b>
                 <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
+                <span>FOV 内候选</span><b>{formatNumber(asRecord(vision.control).inside_fov, 0)}</b>
+                <span>目标距离</span><b>{formatNumber(asRecord(vision.control).distance_px, 1)}</b>
                 <span>输出状态</span><b>{asRecord(vision.control).will_emit === true ? "允许输出" : "等待触发"}</b>
                 <span>触发要求</span><b>{asRecord(vision.control).trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
                 <span>触发信息</span><b>{readString(asRecord(vision.control).trigger_reason, "-") || "-"}</b>

@@ -105,6 +105,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "inference.nms_threshold", "label": "NMS 阈值", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "inference.detection_class_profile", "label": "检测类别配置", "type": "string", "restart_required": False},
                     {"path": "inference.detection_class_filter", "label": "检测类别过滤", "type": "string", "restart_required": False},
+                    {"path": "inference.detection_class_priority", "label": "类别优先级", "type": "string", "restart_required": False},
                     {
                         "path": "inference.input_source",
                         "label": "推理输入源",
@@ -122,6 +123,9 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.max_abs_dy", "label": "Y 限幅", "type": "int", "min": 0, "restart_required": False},
                     {"path": "control.min_confidence", "label": "最低置信度", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "control.fov_ratio", "label": "FOV 比例", "type": "float", "min": 0.01, "max": 1, "restart_required": False},
+                    {"path": "control.target_lock_enabled", "label": "目标锁定", "type": "bool", "restart_required": False},
+                    {"path": "control.target_sticky_bias", "label": "目标粘性", "type": "float", "min": 0, "max": 0.9, "restart_required": False},
+                    {"path": "control.target_lost_grace_frames", "label": "丢失容忍帧", "type": "int", "min": 0, "restart_required": False},
                     {"path": "control.strategy", "label": "控制策略", "type": "select", "options": ["pid", "proportional", "predictive"], "restart_required": False},
                     {"path": "control.pid_kp_x", "label": "PID Kp X轴", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.pid_kp_y", "label": "PID Kp Y轴", "type": "float", "min": 0, "restart_required": False},

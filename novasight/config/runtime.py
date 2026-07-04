@@ -51,6 +51,7 @@ class InferenceConfig:
     input_source: str = "source.default"
     detection_class_profile: str = "default"
     detection_class_filter: str = "all"
+    detection_class_priority: str = "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
     detection_class_profiles: dict[str, list[str]] = field(default_factory=lambda: {
         "default": [
             "0-敌人/身体",
@@ -89,6 +90,9 @@ class ControlConfig:
     max_abs_dy: int = 120
     min_confidence: float = 0.0
     fov_ratio: float = 0.28
+    target_lock_enabled: bool = True
+    target_sticky_bias: float = 0.25
+    target_lost_grace_frames: int = 5
     output_mode: str = ""
     strategy: str = "pid"
     pid_kp_x: float = 0.35
@@ -236,12 +240,17 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError("runtime config key 'inference.detection_class_filter' must be all or a class index") from exc
         if class_index < 0 or class_index > 255:
             raise ValueError("runtime config key 'inference.detection_class_filter' must be between 0 and 255")
+    _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
     if cfg.control.strategy not in {"pid", "proportional", "predictive"}:
         raise ValueError("runtime config key 'control.strategy' must be pid, proportional, or predictive")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
+    if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
+        raise ValueError("runtime config key 'control.target_sticky_bias' must be >= 0 and <= 0.9")
+    if cfg.control.target_lost_grace_frames < 0:
+        raise ValueError("runtime config key 'control.target_lost_grace_frames' must be >= 0")
     if cfg.control.move_kind not in {"raw", "auto", "bezier"}:
         raise ValueError("runtime config key 'control.move_kind' must be raw, auto, or bezier")
     for key in (
@@ -289,6 +298,31 @@ def parse_runtime_config(raw: dict[str, Any]) -> RuntimeConfig:
     cfg = _build_dataclass(RuntimeConfig, raw)
     _validate_runtime_rules(cfg)
     return cfg
+
+
+def _parse_class_priority(value: str) -> list[int]:
+    if not value.strip():
+        return []
+    result: list[int] = []
+    seen: set[int] = set()
+    for part in value.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            class_id = int(text)
+        except ValueError as exc:
+            raise ValueError(
+                "runtime config key 'inference.detection_class_priority' must be comma-separated class indexes"
+            ) from exc
+        if class_id < 0 or class_id > 255:
+            raise ValueError(
+                "runtime config key 'inference.detection_class_priority' must contain class indexes between 0 and 255"
+            )
+        if class_id not in seen:
+            seen.add(class_id)
+            result.append(class_id)
+    return result
 
 
 def save_runtime_config(cfg: RuntimeConfig, path: str | Path) -> None:
