@@ -107,6 +107,7 @@ class OnnxRuntimeInferenceEngine:
                 prepared=self._last_input,
                 shape=self._input_shape,
             )
+            preprocess_debug = _preprocess_debug(self._last_input, self._input_shape)
         except Exception as exc:
             return InferenceResult(available=False, reason=str(exc))
         output_shape = tuple(getattr(primary_output, "shape", ()))
@@ -119,6 +120,7 @@ class OnnxRuntimeInferenceEngine:
                 "input_name": self._input_name,
                 "output_shape": list(output_shape),
                 "decoded_detections": len(detections),
+                "preprocess": preprocess_debug,
                 "decode": decode_debug,
             },
         )
@@ -210,6 +212,37 @@ def _scale_detections_to_input_frame(
         )
         for item in detections
     ]
+
+
+def _preprocess_debug(prepared: PreparedTensorInput, shape: TensorInputShape) -> dict[str, Any]:
+    roi_width = max(1, prepared.width)
+    roi_height = max(1, prepared.height)
+    roi_pixels = max(1, roi_width * roi_height)
+    model_pixels = max(1, shape.width * shape.height)
+    model_to_roi_scale_x = roi_width / shape.width
+    model_to_roi_scale_y = roi_height / shape.height
+    downscale_factor = max(model_to_roi_scale_x, model_to_roi_scale_y)
+    pixel_ratio = model_pixels / roi_pixels
+    return {
+        "input_mode": prepared.mode,
+        "pixel_format": prepared.pixel_format,
+        "roi_width": roi_width,
+        "roi_height": roi_height,
+        "model_width": shape.width,
+        "model_height": shape.height,
+        "source_width": prepared.source_width,
+        "source_height": prepared.source_height,
+        "offset_x": prepared.offset_x,
+        "offset_y": prepared.offset_y,
+        "needs_resize": prepared.needs_resize,
+        "model_to_roi_scale_x": model_to_roi_scale_x,
+        "model_to_roi_scale_y": model_to_roi_scale_y,
+        "roi_to_model_scale_x": shape.width / roi_width,
+        "roi_to_model_scale_y": shape.height / roi_height,
+        "downscale_factor": downscale_factor,
+        "pixel_ratio": pixel_ratio,
+        "density_warning": prepared.needs_resize and downscale_factor > 1.25,
+    }
 
 
 def decode_nx6_detections(

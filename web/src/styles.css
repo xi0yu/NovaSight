@@ -4190,6 +4190,18 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.inference-density-warning {
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 64, 88, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 64, 88, 0.08);
+  color: #8a1c2a;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.55;
+}
+
 .control-feedback-kv {
   grid-template-columns: minmax(88px, 0.72fr) minmax(0, 1fr);
   gap: 8px 12px;

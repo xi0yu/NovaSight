@@ -160,6 +160,11 @@ function formatNumber(value: unknown, digits = 1): string {
   return Number.isFinite(number) ? number.toFixed(digits) : "待机";
 }
 
+function formatPercent(value: unknown, digits = 1): string {
+  const number = readNumber(value, Number.NaN);
+  return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : "待机";
+}
+
 function formatShape(value: unknown): string {
   return Array.isArray(value) && value.length > 0 ? value.map((item) => String(item)).join("x") : "-";
 }
@@ -373,6 +378,18 @@ export function StudioConsoleView({
   const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
   const inferenceDebug = asRecord(inferenceTrace.debug);
   const decodeDebug = asRecord(inferenceDebug.decode);
+  const preprocessDebug = asRecord(inferenceDebug.preprocess);
+  const roiInputWidth = readNumber(inferenceTrace.input_width, readNumber(preprocessDebug.roi_width, roiSize));
+  const roiInputHeight = readNumber(inferenceTrace.input_height, readNumber(preprocessDebug.roi_height, roiSize));
+  const modelInputWidth = readNumber(inferenceTrace.model_input_width, readNumber(preprocessDebug.model_width, 0));
+  const modelInputHeight = readNumber(inferenceTrace.model_input_height, readNumber(preprocessDebug.model_height, 0));
+  const inputDownscaleFactor = readNumber(
+    inferenceTrace.input_downscale_factor,
+    readNumber(preprocessDebug.downscale_factor, 0)
+  );
+  const inputPixelRatio = readNumber(inferenceTrace.input_pixel_ratio, readNumber(preprocessDebug.pixel_ratio, 0));
+  const inputDensityWarning =
+    inferenceTrace.input_density_warning === true || preprocessDebug.density_warning === true;
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
 
   useEffect(() => {
@@ -1236,6 +1253,10 @@ export function StudioConsoleView({
                 <span>推理原因</span><b>{inferenceReason || "-"}</b>
                 <span>raw 检测</span><b>{String(rawDetections)}</b>
                 <span>前端检测</span><b>{String(mappedDetections)}</b>
+                <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
+                <span>模型输入</span><b>{modelInputWidth && modelInputHeight ? `${modelInputWidth}x${modelInputHeight}` : "-"}</b>
+                <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
+                <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio, 1) : "-"}</b>
                 <span>输出形状</span><b>{formatShape(decodeDebug.output_shape ?? inferenceDebug.output_shape)}</b>
                 <span>解码布局</span><b>{readString(decodeDebug.selected_layout, "-")}</b>
                 <span>最大分数</span><b>{formatNumber(decodeDebug.max_score, 3)}</b>
@@ -1250,6 +1271,11 @@ export function StudioConsoleView({
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
               </div>
+              {inputDensityWarning ? (
+                <div className="inference-density-warning">
+                  ROI 正在被压缩到模型输入，远距离小目标可能丢失。建议让 ROI 尺寸接近模型输入，或切换到更大输入尺寸的模型。
+                </div>
+              ) : null}
             </div>
           </div>
         </section>

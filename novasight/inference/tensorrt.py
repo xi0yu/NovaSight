@@ -8,6 +8,7 @@ from .contracts import InferenceDetection, InferenceResult
 from .input import PreparedTensorInput, TensorInputShape, parse_tensor_input_shape, prepare_tensor_input
 from .onnxruntime_engine import (
     _prepare_numpy_tensor,
+    _preprocess_debug,
     _scale_detections_to_input_frame,
     decode_nx6_detections,
 )
@@ -129,6 +130,7 @@ class TensorRtInferenceEngine:
                 prepared=self._last_input,
                 shape=self._input_shape,
             )
+            preprocess_debug = _preprocess_debug(self._last_input, self._input_shape)
         except ValueError as exc:
             self._log_failure_once(f"input rejected: {exc}")
             return InferenceResult(available=False, reason=str(exc))
@@ -146,6 +148,7 @@ class TensorRtInferenceEngine:
                 "output_shape": list(self._output_shape),
                 "output_dtype": self._output_dtype,
                 "decoded_detections": len(detections),
+                "preprocess": preprocess_debug,
                 "decode": decode_debug,
             },
         )

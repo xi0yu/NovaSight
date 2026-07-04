@@ -265,6 +265,15 @@ class RuntimeService:
         classes: list[str] | None = None,
         debug: dict[str, Any] | None = None,
     ) -> None:
+        debug_payload = dict(debug or {})
+        preprocess = debug_payload.get("preprocess")
+        preprocess_debug = preprocess if isinstance(preprocess, dict) else {}
+        model_input_width = self._debug_int(preprocess_debug, "model_width")
+        model_input_height = self._debug_int(preprocess_debug, "model_height")
+        model_to_roi_scale_x = self._debug_float(preprocess_debug, "model_to_roi_scale_x")
+        model_to_roi_scale_y = self._debug_float(preprocess_debug, "model_to_roi_scale_y")
+        input_downscale_factor = self._debug_float(preprocess_debug, "downscale_factor")
+        input_pixel_ratio = self._debug_float(preprocess_debug, "pixel_ratio")
         self.last_inference_status = {
             "frame_id": frame.frame_id,
             "ran": ran,
@@ -278,6 +287,13 @@ class RuntimeService:
             "input_image_width": self._image_width(getattr(roi_frame, "image", frame.image)),
             "input_image_height": self._image_height(getattr(roi_frame, "image", frame.image)),
             "input_pixel_format": str(getattr(roi_frame, "pixel_format", frame.pixel_format)),
+            "model_input_width": model_input_width,
+            "model_input_height": model_input_height,
+            "model_to_roi_scale_x": model_to_roi_scale_x,
+            "model_to_roi_scale_y": model_to_roi_scale_y,
+            "input_downscale_factor": input_downscale_factor,
+            "input_pixel_ratio": input_pixel_ratio,
+            "input_density_warning": bool(preprocess_debug.get("density_warning", False)),
             "detection_coordinate_space": "roi",
             "source_width": self._source_width(frame),
             "source_height": self._source_height(frame),
@@ -291,8 +307,18 @@ class RuntimeService:
             },
             "configured_roi_offset_x": int(getattr(self.config.roi, "offset_x", 0)),
             "configured_roi_offset_y": int(getattr(self.config.roi, "offset_y", 0)),
-            "debug": dict(debug or {}),
+            "debug": debug_payload,
         }
+
+    @staticmethod
+    def _debug_int(payload: dict[str, Any], key: str) -> int:
+        value = payload.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    @staticmethod
+    def _debug_float(payload: dict[str, Any], key: str) -> float:
+        value = payload.get(key)
+        return float(value) if isinstance(value, (int, float)) else 0.0
 
     def _control_intent_from_context(self, context: FrameContext) -> ControlIntent | None:
         selection = self._select_control_target(context)
