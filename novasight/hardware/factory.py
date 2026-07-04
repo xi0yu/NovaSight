@@ -12,8 +12,8 @@ def create_hardware_box(config: RuntimeConfig) -> IHardwareBox | None:
     if kind in {"", "none", "silent"}:
         return None
     if kind in {"kmnet", "kmbox", "kmbox_net"}:
-        if config.hardware.port <= 0:
-            raise ValueError("hardware.port must be > 0 for kmNet")
+        if not config.hardware.host.strip() or config.hardware.port <= 0:
+            return None
         return KmboxNetAdapter(config.hardware.host, config.hardware.port)
     if kind == "makcu":
         if not config.hardware.serial_port.strip():

@@ -69,6 +69,7 @@ def create_app(
     )
 
     app.state.config = config
+    app.state.config_path = Path(config_path)
     app.state.models = models
     app.state.executors = executors
     app.state.hardware = hardware

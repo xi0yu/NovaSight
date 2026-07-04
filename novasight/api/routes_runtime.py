@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
-from novasight.config import parse_runtime_config
+from novasight.config import parse_runtime_config, save_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import create_hardware_box
@@ -136,11 +136,14 @@ def _apply_config(request: Request, config) -> None:
         if previous_config is not None
         else None
     )
+    next_executors = ExecutorRegistry.from_config(config)
+    next_hardware = create_hardware_box(config)
+
     app.state.config = config
     app.state.capture.config = config.capture
     app.state.capture.roi_size = config.roi.size
-    app.state.executors = ExecutorRegistry.from_config(config)
-    app.state.hardware = create_hardware_box(config)
+    app.state.executors = next_executors
+    app.state.hardware = next_hardware
     app.state.inference.configure(
         confidence_threshold=config.inference.confidence_threshold,
         nms_threshold=config.inference.nms_threshold,
@@ -148,6 +151,9 @@ def _apply_config(request: Request, config) -> None:
     app.state.runtime.executors = app.state.executors
     app.state.runtime.hardware = app.state.hardware
     app.state.runtime.update_config(config)
+    config_path = getattr(app.state, "config_path", None)
+    if config_path is not None:
+        save_runtime_config(config, config_path)
     if previous_roi_size is not None and previous_roi_size != config.roi.size:
         _reconfigure_live_capture_for_roi(app)
 
