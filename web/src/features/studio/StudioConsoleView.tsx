@@ -61,6 +61,17 @@ const KMNET_RECOMMENDED = {
   monitor_port: 5001
 };
 
+const TRIGGER_BINDING_OPTIONS = [
+  { value: "", label: "未设置" },
+  { value: "MouseLeft", label: "鼠标左键" },
+  { value: "MouseRight", label: "鼠标右键" },
+  { value: "MouseMiddle", label: "鼠标中键" },
+  { value: "KeySpace", label: "空格键" },
+  { value: "KeyShiftLeft", label: "左 Shift" },
+  { value: "KeyControlLeft", label: "左 Ctrl" },
+  { value: "KeyAltLeft", label: "左 Alt" }
+];
+
 const ARTIFACT_KIND_RANK: Record<string, number> = {
   engine: 0,
   onnx: 1
@@ -241,6 +252,7 @@ export function StudioConsoleView({
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
   const [kmnetTestMessage, setKmnetTestMessage] = useState("");
   const [captureBindingSlot, setCaptureBindingSlot] = useState<number | null>(null);
+  const [bindingDrafts, setBindingDrafts] = useState<string[] | null>(null);
   const [localTriggerActive, setLocalTriggerActive] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -309,6 +321,12 @@ export function StudioConsoleView({
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
   const triggerBindings = readStringArray(controlConfig.trigger_bindings).slice(0, 2);
+  const triggerBindingKey = triggerBindings.join("\u0000");
+  const activeTriggerBindings = useMemo(
+    () => (bindingDrafts ?? triggerBindings).slice(0, 2),
+    [bindingDrafts, triggerBindingKey]
+  );
+  const activeTriggerBindingKey = activeTriggerBindings.join("\u0000");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -612,16 +630,23 @@ export function StudioConsoleView({
 
   const setTriggerBinding = useCallback(
     async (slot: number, binding: string) => {
-      const next = [...triggerBindings];
+      const next = [...activeTriggerBindings];
       next[slot] = binding;
       const unique = next.filter(Boolean).filter((item, index, arr) => arr.indexOf(item) === index).slice(0, 2);
+      setBindingDrafts(unique);
       await updateConfigField("control", "trigger_bindings", unique);
     },
-    [triggerBindings, updateConfigField]
+    [activeTriggerBindings, updateConfigField]
   );
 
   useEffect(() => {
-    const allowed = new Set(triggerBindings.map((item) => item.toLowerCase()));
+    if (captureBindingSlot === null) {
+      setBindingDrafts(triggerBindings);
+    }
+  }, [captureBindingSlot, triggerBindingKey]);
+
+  useEffect(() => {
+    const allowed = new Set(activeTriggerBindings.map((item) => item.toLowerCase()));
     const commit = (nextActive: boolean, bindings: string[]) => {
       if (localTriggerActiveRef.current === nextActive) {
         return;
@@ -636,9 +661,9 @@ export function StudioConsoleView({
       const active = activeBindings();
       commit(active.length > 0, active);
     };
-    const isEditableTarget = (target: EventTarget | null) => {
+    const isControlTarget = (target: EventTarget | null) => {
       const element = target instanceof HTMLElement ? target : null;
-      return !!element?.closest("input, textarea, select, [contenteditable='true']");
+      return !!element?.closest("button, input, textarea, select, [contenteditable='true']");
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (captureBindingSlot !== null) {
@@ -647,7 +672,7 @@ export function StudioConsoleView({
         setCaptureBindingSlot(null);
         return;
       }
-      if (isEditableTarget(event.target)) {
+      if (isControlTarget(event.target)) {
         return;
       }
       const binding = keyBindingName(event.code);
@@ -667,6 +692,9 @@ export function StudioConsoleView({
         event.preventDefault();
         void setTriggerBinding(captureBindingSlot, binding);
         setCaptureBindingSlot(null);
+        return;
+      }
+      if (isControlTarget(event.target)) {
         return;
       }
       if (!allowed.has(binding.toLowerCase())) {
@@ -701,7 +729,7 @@ export function StudioConsoleView({
       window.removeEventListener("contextmenu", onMouseDown, true);
       clear();
     };
-  }, [captureBindingSlot, setTriggerBinding, triggerBindings]);
+  }, [activeTriggerBindingKey, activeTriggerBindings, captureBindingSlot, setTriggerBinding]);
 
   const updateHardwareKind = useCallback(
     async (kind: string) => {
@@ -1214,15 +1242,27 @@ export function StudioConsoleView({
               <label>本地按键绑定</label>
               <div className="trigger-binding-grid">
                 {[0, 1].map((slot) => (
-                  <button
+                  <div
                     className={captureBindingSlot === slot ? "trigger-binding capture" : "trigger-binding"}
                     key={slot}
-                    onClick={() => setCaptureBindingSlot(slot)}
-                    type="button"
                   >
                     <span>{slot === 0 ? "绑定一" : "绑定二"}</span>
-                    <b>{captureBindingSlot === slot ? "按下键盘或鼠标" : triggerBindings[slot] || "未设置"}</b>
-                  </button>
+                    <select
+                      value={activeTriggerBindings[slot] ?? ""}
+                      onChange={(event) => void setTriggerBinding(slot, event.target.value)}
+                    >
+                      {TRIGGER_BINDING_OPTIONS.map((item) => (
+                        <option key={item.value || "empty"} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="trigger-capture-button"
+                      onClick={() => setCaptureBindingSlot(slot)}
+                      type="button"
+                    >
+                      {captureBindingSlot === slot ? "等待输入" : "捕获其他"}
+                    </button>
+                  </div>
                 ))}
               </div>
               <div className={localTriggerActive ? "trigger-state active" : "trigger-state"}>
@@ -1273,12 +1313,14 @@ export function StudioConsoleView({
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
                 <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
                 <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
-                <span>本地绑定</span><b>{triggerBindings.length ? triggerBindings.join(" / ") : "-"}</b>
+                <span>本地绑定</span><b>{activeTriggerBindings.length ? activeTriggerBindings.join(" / ") : "-"}</b>
                 <span>输出状态</span><b>{control.will_emit === true ? "允许输出" : "等待触发"}</b>
                 <span>触发要求</span><b>{control.trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
                 <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
+                <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
+                <span>kmNet 最近</span><b>{`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`}</b>
                 <span>限幅</span><b>{executionIntent.clipped === true ? "已限幅" : executionIntent.clipped === false ? "未限幅" : "-"}</b>
                 <span className="wide">执行信息</span><b className="wide">{readString(execution.message, "-")}</b>
               </div>
@@ -1301,6 +1343,22 @@ export function StudioConsoleView({
                 <div className="kmnet-status-tile">
                   <span>平台</span>
                   <b>{`${readString(kmnetStatus.driver_platform, "-")}/${readString(kmnetStatus.driver_machine, "-")}`}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>发送次数</span>
+                  <b>{formatNumber(kmnetStatus.move_count, 0)}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>最近移动</span>
+                  <b>{`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`}</b>
+                </div>
+                <div className={execution.sent === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                  <span>算法发送</span>
+                  <b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>执行器</span>
+                  <b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 </div>
               </div>
               <div className="kmnet-driver-line">
