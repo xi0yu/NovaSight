@@ -4064,6 +4064,70 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.model-primary-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.model-primary-summary span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #4f5967;
+  font-size: 12px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-debug-details {
+  margin-top: 18px;
+  border: 1px dashed var(--hairline);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.44);
+}
+
+.model-debug-details summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.model-debug-details[open] {
+  padding: 0 14px 14px;
+}
+
+.model-debug-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 92px) minmax(0, 1fr);
+  gap: 9px 12px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.model-debug-grid span {
+  color: var(--muted);
+  font-weight: 850;
+}
+
+.model-debug-grid b {
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .kmnet-status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

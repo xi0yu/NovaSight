@@ -60,6 +60,11 @@ const KMNET_RECOMMENDED = {
   monitor_port: 5001
 };
 
+const ARTIFACT_KIND_RANK: Record<string, number> = {
+  engine: 0,
+  onnx: 1
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -228,10 +233,16 @@ export function StudioConsoleView({
       (item.kind === "onnx" || item.kind === "engine") &&
       (selectedModelVersionId === "" || item.version_id === selectedModelVersionId)
   );
+  const sortedSwitchableArtifacts = [...switchableArtifacts].sort((left, right) => {
+    const leftRank = ARTIFACT_KIND_RANK[left.kind] ?? 99;
+    const rightRank = ARTIFACT_KIND_RANK[right.kind] ?? 99;
+    return leftRank - rightRank || left.path.localeCompare(right.path);
+  });
   const selectedSwitchArtifact =
-    switchableArtifacts.find((item) => item.id === selectedModelArtifactId) ??
-    switchableArtifacts[0] ??
+    sortedSwitchableArtifacts.find((item) => item.id === selectedModelArtifactId) ??
+    sortedSwitchableArtifacts[0] ??
     null;
+  const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
@@ -323,9 +334,15 @@ export function StudioConsoleView({
           return;
         }
         setModelArtifacts(items);
-        const runnable = items.filter(
-          (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
-        );
+        const runnable = items
+          .filter(
+            (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
+          )
+          .sort((left, right) => {
+            const leftRank = ARTIFACT_KIND_RANK[left.kind] ?? 99;
+            const rightRank = ARTIFACT_KIND_RANK[right.kind] ?? 99;
+            return leftRank - rightRank || left.path.localeCompare(right.path);
+          });
         setSelectedModelArtifactId((current) => {
           if (typeof current === "number" && runnable.some((item) => item.id === current)) {
             return current;
@@ -812,38 +829,11 @@ export function StudioConsoleView({
                 ))}
                 {projects.length === 0 ? <option value="">未发现模型</option> : null}
               </select>
-              <label>模型版本</label>
-              <select
-                value={selectedModelVersionId}
-                onChange={(event) => {
-                  const nextVersionId =
-                    event.target.value === "" ? "" : Number(event.target.value);
-                  setSelectedModelVersionId(
-                    typeof nextVersionId === "number" && Number.isFinite(nextVersionId)
-                      ? nextVersionId
-                      : ""
-                  );
-                  setSelectedModelArtifactId("");
-                  setModelArtifacts([]);
-                }}
-              >
-                {modelVersions.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.version === "default" ? "自动发现版本" : item.version} · 输入 {item.input_shape}
-                  </option>
-                ))}
-                {modelVersions.length === 0 ? <option value="">暂无版本</option> : null}
-              </select>
-              <label>推理产物</label>
-              <select
-                value={selectedSwitchArtifact?.id ?? ""}
-                onChange={(event) => setSelectedModelArtifactId(Number(event.target.value))}
-              >
-                {switchableArtifacts.map((item) => (
-                  <option key={item.id} value={item.id}>{item.kind} · {item.path}</option>
-                ))}
-                {switchableArtifacts.length === 0 ? <option value="">暂无 ONNX / engine ready 产物</option> : null}
-              </select>
+              <div className="model-primary-summary">
+                <span>{readString(runtime?.inference?.selected, "按模型后缀自动选择")}</span>
+                <span>{version?.input_shape ? `输入 ${version.input_shape}` : "等待模型输入信息"}</span>
+                <span>{selectedSwitchArtifact?.kind ? selectedSwitchArtifact.kind.toUpperCase() : "无可用产物"}</span>
+              </div>
               <button
                 className="console-button primary console-full-button"
                 disabled={busy === "model.switch" || selectedModelProjectId === "" || selectedSwitchArtifact === null}
@@ -852,16 +842,6 @@ export function StudioConsoleView({
               >
                 {busy === "model.switch" ? "安全切换中..." : "安全切换模型"}
               </button>
-              <label>推理后端</label>
-              <select value={readString(runtime?.inference?.selected, "auto")} disabled>
-                <option value={readString(runtime?.inference?.selected, "auto")}>
-                  {readString(runtime?.inference?.selected, "按模型后缀自动选择")}
-                </option>
-              </select>
-              <label>输入尺寸</label>
-              <select value={version?.input_shape ?? ""} disabled>
-                <option>{version?.input_shape ?? "模型未发布"} · ROI 会按模型输入自动缩放</option>
-              </select>
               <label>置信度阈值</label>
               <div className="console-row">
                 <input type="range" min="0" max="1" step=".01" value={confidence} onChange={(event) => void updateConfigField("inference", "confidence_threshold", Number(event.target.value))} />
@@ -900,6 +880,49 @@ export function StudioConsoleView({
                   </button>
                 ))}
               </div>
+              <details className="model-debug-details">
+                <summary>工程调试详情</summary>
+                <label>模型版本</label>
+                <select
+                  value={selectedModelVersionId}
+                  onChange={(event) => {
+                    const nextVersionId =
+                      event.target.value === "" ? "" : Number(event.target.value);
+                    setSelectedModelVersionId(
+                      typeof nextVersionId === "number" && Number.isFinite(nextVersionId)
+                        ? nextVersionId
+                        : ""
+                    );
+                    setSelectedModelArtifactId("");
+                    setModelArtifacts([]);
+                  }}
+                >
+                  {modelVersions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.version === "default" ? "自动发现版本" : item.version} · 输入 {item.input_shape}
+                    </option>
+                  ))}
+                  {modelVersions.length === 0 ? <option value="">暂无版本</option> : null}
+                </select>
+                <label>推理产物</label>
+                <select
+                  value={selectedSwitchArtifact?.id ?? ""}
+                  onChange={(event) => setSelectedModelArtifactId(Number(event.target.value))}
+                >
+                  {sortedSwitchableArtifacts.map((item) => (
+                    <option key={item.id} value={item.id}>{item.kind} · {item.path}</option>
+                  ))}
+                  {sortedSwitchableArtifacts.length === 0 ? <option value="">暂无 ONNX / engine ready 产物</option> : null}
+                </select>
+                <div className="model-debug-grid">
+                  <span>推荐产物</span><b>{preferredSwitchArtifact ? `${preferredSwitchArtifact.kind} · ${preferredSwitchArtifact.path}` : "-"}</b>
+                  <span>当前产物</span><b>{selectedSwitchArtifact ? `${selectedSwitchArtifact.kind} · ${selectedSwitchArtifact.path}` : "-"}</b>
+                  <span>输入尺寸</span><b>{version?.input_shape ?? "-"}</b>
+                  <span>ROI</span><b>{roiSize} · 自动缩放</b>
+                  <span>后端</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
+                  <span>类别数量</span><b>{String(version?.classes.length ?? 0)}</b>
+                </div>
+              </details>
             </div>
             <div className="console-card">
               <h2 className="console-title">推理输出</h2>
