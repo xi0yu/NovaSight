@@ -690,8 +690,8 @@ export function StudioConsoleView({
 
   useEffect(() => {
     const allowed = new Set(activeTriggerBindings.map((item) => item.toLowerCase()));
-    const commit = (nextActive: boolean, bindings: string[]) => {
-      if (localTriggerActiveRef.current === nextActive) {
+    const commit = (nextActive: boolean, bindings: string[], force = false) => {
+      if (!force && localTriggerActiveRef.current === nextActive) {
         return;
       }
       localTriggerActiveRef.current = nextActive;
@@ -757,6 +757,17 @@ export function StudioConsoleView({
       pressedBindingsRef.current.clear();
       commit(false, []);
     };
+    const heartbeat = window.setInterval(() => {
+      if (!localTriggerActiveRef.current) {
+        return;
+      }
+      const active = activeBindings();
+      if (active.length > 0) {
+        commit(true, active, true);
+      } else {
+        commit(false, [], true);
+      }
+    }, 250);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("mousedown", onMouseDown, true);
@@ -764,6 +775,7 @@ export function StudioConsoleView({
     window.addEventListener("blur", clear);
     window.addEventListener("contextmenu", onMouseDown, true);
     return () => {
+      window.clearInterval(heartbeat);
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("mousedown", onMouseDown, true);
@@ -859,10 +871,11 @@ export function StudioConsoleView({
     setKmnetTestMessage("");
     try {
       const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy));
+      const status = asRecord(result.status);
       setKmnetTestMessage(
         result.sent === true
-          ? `已发送 dx=${Math.round(dx)} dy=${Math.round(dy)}`
-          : readString(result.message, "未发送")
+          ? `已发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${readNumber(status.move_count, 0)} 次`
+          : `未发送：${readString(result.message, "未知原因")}`
       );
       await onRefresh();
     } catch (err) {
@@ -1361,7 +1374,7 @@ export function StudioConsoleView({
                 ))}
               </div>
               <div className={localTriggerActive ? "trigger-state active" : "trigger-state"}>
-                {localTriggerActive ? "本地触发已按下" : "本地触发未按下"}
+                {localTriggerActive ? "本地触发已按下 · 正在续期" : "本地触发未按下"}
               </div>
               <label>目标锁定</label>
               <select

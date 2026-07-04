@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import Any
@@ -8,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter()
+logger = logging.getLogger("novasight.api.executors")
 
 
 class DiagnosticMoveRequest(BaseModel):
@@ -51,7 +53,18 @@ def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> d
     if not callable(move):
         raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic move")
     result = move(payload.dx, payload.dy)
-    return _execution_result_payload(result)
+    response = _execution_result_payload(result)
+    response["status"] = executor.status() if callable(getattr(executor, "status", None)) else {}
+    if response["sent"]:
+        logger.info("kmNet diagnostic move sent dx=%s dy=%s", payload.dx, payload.dy)
+    else:
+        logger.warning(
+            "kmNet diagnostic move rejected dx=%s dy=%s message=%s",
+            payload.dx,
+            payload.dy,
+            response.get("message"),
+        )
+    return response
 
 
 @router.post("/api/executors/kmnet/diagnostic-circle")
@@ -91,6 +104,10 @@ def diagnostic_circle_kmnet(request: Request, payload: DiagnosticCircleRequest) 
             time.sleep(payload.interval_ms / 1000)
 
     status = executor.status() if callable(getattr(executor, "status", None)) else {}
+    if failed is None and sent > 0:
+        logger.info("kmNet diagnostic circle sent steps=%s radius=%s", sent, payload.radius)
+    else:
+        logger.warning("kmNet diagnostic circle failed sent=%s failed=%s", sent, failed)
     return {
         "sent": failed is None and sent > 0,
         "steps_requested": payload.steps,

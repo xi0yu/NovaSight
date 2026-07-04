@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from novasight.config import RuntimeConfig
 from novasight.control import ControlOutput
 from novasight.executors.contracts import ExecutionResult
 from novasight.executors.kmnet_loader import load_kmnet_driver
+
+logger = logging.getLogger("novasight.executors.kmnet")
 
 
 class KmNetExecutor:
@@ -139,22 +142,40 @@ class KmNetExecutor:
         dy = int(-output.dy if self.flip_dy else output.dy)
         try:
             if output.action == "left_down":
-                self._driver.left(1)
+                self._call_driver("left", 1)
             elif output.action == "left_up":
-                self._driver.left(0)
+                self._call_driver("left", 0)
             elif output.move_kind == "auto":
                 self._move_auto(dx, dy, output.move_ms)
             elif output.move_kind == "bezier" and output.bezier_ctrl is not None:
                 self._move_bezier(dx, dy, output.move_ms, output.bezier_ctrl)
             else:
-                self._driver.move(dx, dy)
+                self._call_driver("move", dx, dy)
             self.move_count += 1
             self.last_dx = dx
             self.last_dy = dy
+            self.last_error = ""
             if output.trace_ms > 0 and hasattr(self._driver, "trace"):
-                self._driver.trace(0, int(output.trace_ms))
+                self._call_driver("trace", 0, int(output.trace_ms))
+            logger.info(
+                "kmNet output sent action=%s kind=%s dx=%s dy=%s source=%s",
+                output.action,
+                output.move_kind,
+                dx,
+                dy,
+                output.source_id,
+            )
         except Exception as exc:
             self.last_error = f"kmNet send failed: {exc}"
+            logger.warning(
+                "kmNet output failed action=%s kind=%s dx=%s dy=%s source=%s error=%s",
+                output.action,
+                output.move_kind,
+                dx,
+                dy,
+                output.source_id,
+                exc,
+            )
             return ExecutionResult(
                 executor_id=self.executor_id,
                 sent=False,
@@ -178,37 +199,59 @@ class KmNetExecutor:
             self.connected = False
             return
         try:
-            rc = self._driver.init(self.host, str(self.port), self.uuid)
-            if rc not in (None, 0):
-                self.last_error = f"kmNet init failed rc={rc}"
-                self.connected = False
-                return
+            self._call_driver("init", self.host, int(self.port), self.uuid)
             self.connected = True
             self.last_error = ""
             if self.monitor_port > 0:
-                self._driver.monitor(int(self.monitor_port))
+                self._call_driver("monitor", int(self.monitor_port))
                 self.monitoring = True
+            logger.info(
+                "kmNet connected host=%s port=%s monitor_port=%s",
+                self.host,
+                self.port,
+                self.monitor_port,
+            )
         except Exception as exc:
             self.last_error = f"kmNet init failed: {exc}"
             self.connected = False
+            logger.warning(
+                "kmNet connect failed host=%s port=%s monitor_port=%s error=%s",
+                self.host,
+                self.port,
+                self.monitor_port,
+                exc,
+            )
 
     def _move_auto(self, dx: int, dy: int, move_ms: int) -> None:
         fn = getattr(self._driver, "move_auto", None)
         if fn is None:
-            self._driver.move(dx, dy)
+            self._call_driver("move", dx, dy)
             return
-        fn(dx, dy, int(move_ms))
+        self._call_driver("move_auto", dx, dy, int(move_ms))
 
     def _move_bezier(self, dx: int, dy: int, move_ms: int, ctrl: tuple[int, int, int, int]) -> None:
-        fn = getattr(self._driver, "move_beizer", None)
-        if fn is None:
-            self._driver.move(dx, dy)
+        name = "move_beizer"
+        if getattr(self._driver, name, None) is None:
+            name = "move_bezier"
+        if getattr(self._driver, name, None) is None:
+            self._call_driver("move", dx, dy)
             return
         x1, y1, x2, y2 = ctrl
         if self.flip_dy:
             y1 = -y1
             y2 = -y2
-        fn(dx, dy, int(move_ms), int(x1), int(y1), int(x2), int(y2))
+        self._call_driver(name, dx, dy, int(move_ms), int(x1), int(y1), int(x2), int(y2))
+
+    def _call_driver(self, name: str, *args: Any) -> Any:
+        if self._driver is None:
+            raise RuntimeError("driver unavailable")
+        fn = getattr(self._driver, name, None)
+        if fn is None:
+            raise RuntimeError(f"driver function unavailable: {name}")
+        rc = fn(*args)
+        if rc not in (None, 0):
+            raise RuntimeError(f"{name} failed rc={rc}")
+        return rc
 
     def _read_button(self, name: str) -> bool:
         fn = getattr(self._driver, name, None)
