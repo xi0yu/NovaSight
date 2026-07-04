@@ -328,6 +328,7 @@ class TensorRtInferenceEngine:
             output,
             confidence_threshold=self.confidence_threshold,
             nms_threshold=self.nms_threshold,
+            class_count=len(self._classes),
             debug=decode_debug,
         )
         return detections, decode_debug

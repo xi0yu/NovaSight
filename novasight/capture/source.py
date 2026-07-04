@@ -135,6 +135,11 @@ class OpenCvFrameSource:
             ts_ns=t1,
             capture_wait_ms=(t1 - t0) / 1e6,
             image=image,
+            source_width=self._candidate.source_width,
+            source_height=self._candidate.source_height,
+            roi_size=self._candidate.roi_size,
+            roi_offset_x=self._candidate.roi_offset_x,
+            roi_offset_y=self._candidate.roi_offset_y,
         )
 
     def close(self) -> None:

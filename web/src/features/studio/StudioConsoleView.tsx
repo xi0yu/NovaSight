@@ -147,24 +147,24 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
-function detectionStyle(detection: DetectionOverlay, roiSize: number): CSSProperties {
+function detectionStyle(detection: DetectionOverlay, width: number, height: number): CSSProperties {
   return {
-    left: `${clampPercent((detection.x / roiSize) * 100)}%`,
-    top: `${clampPercent((detection.y / roiSize) * 100)}%`,
-    width: `${clampPercent((detection.w / roiSize) * 100)}%`,
-    height: `${clampPercent((detection.h / roiSize) * 100)}%`
+    left: `${clampPercent((detection.x / width) * 100)}%`,
+    top: `${clampPercent((detection.y / height) * 100)}%`,
+    width: `${clampPercent((detection.w / width) * 100)}%`,
+    height: `${clampPercent((detection.h / height) * 100)}%`
   };
 }
 
-function pointStyle(x: unknown, y: unknown, roiSize: number): CSSProperties | null {
+function pointStyle(x: unknown, y: unknown, width: number, height: number): CSSProperties | null {
   const px = readNullableNumber(x);
   const py = readNullableNumber(y);
-  if (px === null || py === null || roiSize <= 0) {
+  if (px === null || py === null || width <= 0 || height <= 0) {
     return null;
   }
   return {
-    left: `${clampPercent((px / roiSize) * 100)}%`,
-    top: `${clampPercent((py / roiSize) * 100)}%`
+    left: `${clampPercent((px / width) * 100)}%`,
+    top: `${clampPercent((py / height) * 100)}%`
   };
 }
 
@@ -1448,11 +1448,15 @@ function PreviewCard({ runtime, title, roiSize }: { runtime: RuntimeState | null
 function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiSize: number }) {
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
+  const inferenceTrace = asRecord(vision.inference);
   const target = asRecord(vision.target);
   const detections = readDetectionItems(vision.detection_items);
-  const aimPointStyle = pointStyle(target.aim_x, target.aim_y, roiSize);
+  const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
+  const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
+  const displaySize = Math.max(previewWidth, previewHeight, roiSize);
+  const aimPointStyle = pointStyle(target.aim_x, target.aim_y, previewWidth, previewHeight);
   return (
-    <div className="console-preview" style={{ "--roi-size": `${roiSize}px` } as CSSProperties}>
+    <div className="console-preview" style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
       {runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
       <div className="console-detection-layer" aria-hidden="true">
         {detections.map((detection, index) => {
@@ -1461,7 +1465,7 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
             <div
               className="console-detection-box"
               key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
-              style={detectionStyle(detection, roiSize)}
+              style={detectionStyle(detection, previewWidth, previewHeight)}
             >
               <span>{selected ? "当前 " : ""}{detection.className || "目标"} {detection.score.toFixed(2)}</span>
             </div>

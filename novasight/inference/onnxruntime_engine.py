@@ -99,6 +99,7 @@ class OnnxRuntimeInferenceEngine:
                 primary_output,
                 confidence_threshold=self.confidence_threshold,
                 nms_threshold=self.nms_threshold,
+                class_count=len(self._classes),
                 debug=decode_debug,
             )
             detections = _scale_detections_to_input_frame(
@@ -216,6 +217,7 @@ def decode_nx6_detections(
     *,
     confidence_threshold: float,
     nms_threshold: float,
+    class_count: int | None = None,
     debug: dict[str, Any] | None = None,
 ) -> list[InferenceDetection]:
     import numpy as np
@@ -237,11 +239,8 @@ def decode_nx6_detections(
         )
         return []
 
-    candidates_first = (
-        array.T
-        if 4 < array.shape[0] < array.shape[1]
-        else array
-    )
+    transposed_from_channel_first = 4 < array.shape[0] < array.shape[1]
+    candidates_first = array.T if transposed_from_channel_first else array
     if candidates_first.shape[1] < 5:
         _update_decode_debug(
             debug,
@@ -252,6 +251,8 @@ def decode_nx6_detections(
         )
         return []
 
+    expected_classes = max(0, int(class_count or 0))
+    columns = int(candidates_first.shape[1])
     variants: list[tuple[list[InferenceDetection], dict[str, Any]]] = []
     variants.append(
         _decode_yolo_scores(
@@ -261,7 +262,7 @@ def decode_nx6_detections(
             nms_threshold=nms_threshold,
         )
     )
-    if candidates_first.shape[1] >= 6:
+    if columns >= 6:
         variants.append(
             _decode_yolo_scores(
                 candidates_first,
@@ -277,6 +278,16 @@ def decode_nx6_detections(
                 nms_threshold=nms_threshold,
             )
         )
+    for _detections, stats in variants:
+        stats["shape_match"] = _layout_shape_matches(
+            str(stats.get("layout", "")),
+            columns=columns,
+            class_count=expected_classes,
+        )
+        stats["orientation_match"] = _layout_orientation_matches(
+            str(stats.get("layout", "")),
+            transposed_from_channel_first=transposed_from_channel_first,
+        )
     best_detections, best_stats = max(
         variants,
         key=lambda item: (
@@ -284,6 +295,8 @@ def decode_nx6_detections(
                 bool(item[1].get("class_id_like", False))
                 and int(item[1].get("nms_detections", 0)) > 0
             ),
+            int(bool(item[1].get("shape_match", False))),
+            int(bool(item[1].get("orientation_match", False))),
             int(item[1].get("nms_detections", 0)),
             int(item[1].get("threshold_candidates", 0)),
             float(item[1].get("max_score", 0.0)),
@@ -294,6 +307,8 @@ def decode_nx6_detections(
         output_shape=original_shape,
         squeezed_shape=tuple(int(item) for item in array.shape),
         candidates_shape=tuple(int(item) for item in candidates_first.shape),
+        expected_classes=expected_classes,
+        prediction_columns=columns,
         selected_layout=best_stats.get("layout", ""),
         raw_candidates=int(best_stats.get("raw_candidates", 0)),
         max_score=float(best_stats.get("max_score", 0.0)),
@@ -425,6 +440,24 @@ def _looks_like_class_ids(values: Any) -> bool:
         return False
     rounded = np.round(finite)
     return bool(np.all(np.abs(finite - rounded) <= 1e-3) and np.min(finite) >= 0)
+
+
+def _layout_shape_matches(layout: str, *, columns: int, class_count: int) -> bool:
+    if class_count <= 0:
+        return False
+    if layout == "yolov8-cxcywh-cls":
+        return columns == 4 + class_count
+    if layout == "yolov5-cxcywh-obj-cls":
+        return columns == 5 + class_count
+    return False
+
+
+def _layout_orientation_matches(layout: str, *, transposed_from_channel_first: bool) -> bool:
+    if layout == "yolov8-cxcywh-cls":
+        return transposed_from_channel_first
+    if layout == "yolov5-cxcywh-obj-cls":
+        return not transposed_from_channel_first
+    return False
 
 
 def _nms(detections: list[InferenceDetection], threshold: float) -> list[InferenceDetection]:
