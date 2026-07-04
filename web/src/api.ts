@@ -384,13 +384,18 @@ export function disconnectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
   });
 }
 
-export function diagnosticMoveKmNet(dx = 1, dy = 0): Promise<Record<string, RuntimeConfigValue>> {
+export function diagnosticMoveKmNet(
+  dx = 1,
+  dy = 0,
+  repeat = 1,
+  intervalMs = 0
+): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticMove, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ dx, dy })
+    body: JSON.stringify({ dx, dy, repeat, interval_ms: intervalMs })
   });
 }
 

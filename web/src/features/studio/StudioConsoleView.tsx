@@ -865,17 +865,23 @@ export function StudioConsoleView({
     }
   }, [kmnetConnected, onRefresh]);
 
-  const diagnosticMoveHardware = useCallback(async (dx = kmnetTestDx, dy = kmnetTestDy) => {
+  const diagnosticMoveHardware = useCallback(async (
+    dx = kmnetTestDx,
+    dy = kmnetTestDy,
+    repeat = 1,
+    intervalMs = 0
+  ) => {
     setBusy("kmnet.diagnostic");
     setLocalError(null);
     setKmnetTestMessage("");
     try {
-      const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy));
+      const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy), repeat, intervalMs);
       const status = asRecord(result.status);
+      const stepsSent = readNumber(result.steps_sent, result.sent === true ? repeat : 0);
       setKmnetTestMessage(
         result.sent === true
-          ? `已发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${readNumber(status.move_count, 0)} 次`
-          : `未发送：${readString(result.message, "未知原因")}`
+          ? `已发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
+          : `未发送：${readString(result.message, "未知原因")} · ${stepsSent}/${repeat} 步`
       );
       await onRefresh();
     } catch (err) {
@@ -1555,6 +1561,24 @@ export function StudioConsoleView({
                   <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}>发送</button>
                   <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(10, 0)}>→</button>
                   <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
+                </div>
+                <div className="console-action-row">
+                  <button
+                    className="console-button"
+                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                    onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 10, 8)}
+                    type="button"
+                  >
+                    连续发送
+                  </button>
+                  <button
+                    className="console-button primary"
+                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12)}
+                    type="button"
+                  >
+                    右移大步测试
+                  </button>
                 </div>
                 <button
                   className="kmnet-circle-button"

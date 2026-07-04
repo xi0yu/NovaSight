@@ -15,6 +15,8 @@ logger = logging.getLogger("novasight.api.executors")
 class DiagnosticMoveRequest(BaseModel):
     dx: int = 1
     dy: int = 0
+    repeat: int = Field(default=1, ge=1, le=200)
+    interval_ms: int = Field(default=0, ge=0, le=50)
 
 
 class DiagnosticCircleRequest(BaseModel):
@@ -52,17 +54,42 @@ def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> d
     move = getattr(executor, "diagnostic_move", None)
     if not callable(move):
         raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic move")
-    result = move(payload.dx, payload.dy)
-    response = _execution_result_payload(result)
+    result: Any | None = None
+    sent = 0
+    failed: dict[str, Any] | None = None
+    for index in range(payload.repeat):
+        result = move(payload.dx, payload.dy)
+        if bool(getattr(result, "sent", False)):
+            sent += 1
+        else:
+            failed = {
+                "step": index + 1,
+                "message": str(getattr(result, "message", "")),
+            }
+            break
+        if payload.interval_ms > 0 and index < payload.repeat - 1:
+            time.sleep(payload.interval_ms / 1000)
+    response = _execution_result_payload(result) if result is not None else {}
+    response["sent"] = failed is None and sent > 0
+    response["steps_requested"] = payload.repeat
+    response["steps_sent"] = sent
+    response["failed"] = failed
     response["status"] = executor.status() if callable(getattr(executor, "status", None)) else {}
     if response["sent"]:
-        logger.info("kmNet diagnostic move sent dx=%s dy=%s", payload.dx, payload.dy)
-    else:
-        logger.warning(
-            "kmNet diagnostic move rejected dx=%s dy=%s message=%s",
+        logger.info(
+            "kmNet diagnostic move sent dx=%s dy=%s repeat=%s",
             payload.dx,
             payload.dy,
+            sent,
+        )
+    else:
+        logger.warning(
+            "kmNet diagnostic move rejected dx=%s dy=%s repeat=%s message=%s failed=%s",
+            payload.dx,
+            payload.dy,
+            payload.repeat,
             response.get("message"),
+            failed,
         )
     return response
 
