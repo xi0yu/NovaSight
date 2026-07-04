@@ -4407,6 +4407,55 @@ tbody tr:hover {
   content: "";
 }
 
+.console-detection-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.console-detection-box {
+  position: absolute;
+  min-width: 18px;
+  min-height: 18px;
+  border: 2px solid rgba(96, 165, 250, 0.96);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.32),
+    0 0 22px rgba(96, 165, 250, 0.24);
+}
+
+.console-detection-box.selected {
+  border-color: rgba(34, 197, 94, 0.98);
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.34),
+    0 0 26px rgba(34, 197, 94, 0.32);
+}
+
+.console-detection-box span {
+  position: absolute;
+  left: -2px;
+  top: -28px;
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid rgba(191, 219, 254, 0.36);
+  border-radius: 999px;
+  background: rgba(29, 78, 216, 0.86);
+  color: #eff6ff;
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-detection-box.selected span {
+  border-color: rgba(187, 247, 208, 0.36);
+  background: rgba(22, 101, 52, 0.82);
+  color: #dcfce7;
+}
+
 .console-bar {
   height: 12px;
   overflow: hidden;

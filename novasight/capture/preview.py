@@ -105,7 +105,7 @@ def _runtime_roi_detections(
             frame_delta = int(frame_id) - int(context_frame_id)
         except (TypeError, ValueError):
             return []
-        if frame_delta < 0 or frame_delta > 30:
+        if frame_delta < 0 or frame_delta > 240:
             return []
     detections: list[Detection] = []
     context_width = int(getattr(context, "width", 0) or 0)

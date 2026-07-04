@@ -1,4 +1,4 @@
-import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
   CaptureCapabilitiesResponse,
@@ -21,7 +21,6 @@ import {
   selectCaptureProfile,
   startRuntimePipeline,
   stopCapture,
-  stopRuntimePipeline,
   streamUrl,
   updateRuntimeConfig
 } from "../../api";
@@ -43,6 +42,17 @@ type CapabilityChoice = {
   width: number;
   height: number;
   fps: number;
+};
+
+type DetectionOverlay = {
+  className: string;
+  score: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
 };
 
 const navItems: { id: ConsolePage; index: string; label: string }[] = [
@@ -89,12 +99,70 @@ function readNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function readNullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function readDetectionItems(value: unknown): DetectionOverlay[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    const x = readNullableNumber(record.x);
+    const y = readNullableNumber(record.y);
+    const w = readNullableNumber(record.w);
+    const h = readNullableNumber(record.h);
+    const score = readNullableNumber(record.score);
+    const cx = readNullableNumber(record.cx);
+    const cy = readNullableNumber(record.cy);
+    if (x === null || y === null || w === null || h === null || score === null || cx === null || cy === null || w <= 0 || h <= 0) {
+      return [];
+    }
+    return [{
+      className: readString(record.class_name, String(readNullableNumber(record.class_id) ?? "")),
+      score,
+      x,
+      y,
+      w,
+      h,
+      cx,
+      cy
+    }];
+  });
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, value));
+}
+
+function detectionStyle(detection: DetectionOverlay, roiSize: number): CSSProperties {
+  return {
+    left: `${clampPercent((detection.x / roiSize) * 100)}%`,
+    top: `${clampPercent((detection.y / roiSize) * 100)}%`,
+    width: `${clampPercent((detection.w / roiSize) * 100)}%`,
+    height: `${clampPercent((detection.h / roiSize) * 100)}%`
+  };
+}
+
+function isSelectedDetection(detection: DetectionOverlay, target: Record<string, unknown>): boolean {
+  const targetCx = readNullableNumber(target.cx);
+  const targetCy = readNullableNumber(target.cy);
+  if (targetCx === null || targetCy === null) {
+    return false;
+  }
+  return Math.abs(detection.cx - targetCx) <= 2 && Math.abs(detection.cy - targetCy) <= 2;
 }
 
 function formatNumber(value: unknown, digits = 1): string {
@@ -484,28 +552,6 @@ export function StudioConsoleView({
     }
   }, [onRefresh]);
 
-  const stopInferenceThread = useCallback(async () => {
-    setBusy("runtime.stop");
-    setLocalError(null);
-    try {
-      await stopRuntimePipeline();
-      await onRefresh();
-    } catch (err) {
-      setLocalError(`停止推理失败：${getErrorMessage(err)}`);
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [onRefresh]);
-
-  const toggleInferenceThread = useCallback(async () => {
-    if (runtime?.running) {
-      await stopInferenceThread();
-      return;
-    }
-    await startInferenceThread();
-  }, [runtime?.running, startInferenceThread, stopInferenceThread]);
-
   const updateConfigField = useCallback(
     async (section: string, key: string, value: number | string | boolean) => {
       const next = cloneRuntimeConfig(runtime);
@@ -760,18 +806,16 @@ export function StudioConsoleView({
           >
             {capture?.available ? "▪ 停止采集" : "▶ 启动采集"}
           </button>
-          <button
-            className={runtime?.running ? "console-button danger" : "console-button primary"}
-            disabled={
-              busy === "runtime.start" ||
-              busy === "runtime.stop" ||
-              (!runtime?.running && !capture?.available)
-            }
-            onClick={() => void toggleInferenceThread()}
-            type="button"
-          >
-            {runtime?.running ? "▪ 停止推理" : "▶ 启动推理"}
-          </button>
+          {!runtime?.running && capture?.available ? (
+            <button
+              className="console-button"
+              disabled={busy === "runtime.start"}
+              onClick={() => void startInferenceThread()}
+              type="button"
+            >
+              恢复推理线程
+            </button>
+          ) : null}
           <button className="console-button" onClick={exportConfig} type="button">导出配置...</button>
           <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">导入配置...</button>
           <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
@@ -1328,9 +1372,26 @@ function PreviewCard({ runtime, title, roiSize }: { runtime: RuntimeState | null
 
 function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiSize: number }) {
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
+  const vision = asRecord(runtime?.vision);
+  const target = asRecord(vision.target);
+  const detections = readDetectionItems(vision.detection_items);
   return (
-    <div className="console-preview" style={{ "--roi-size": `${roiSize}px` } as React.CSSProperties}>
+    <div className="console-preview" style={{ "--roi-size": `${roiSize}px` } as CSSProperties}>
       {runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
+      <div className="console-detection-layer" aria-hidden="true">
+        {detections.map((detection, index) => {
+          const selected = isSelectedDetection(detection, target);
+          return (
+            <div
+              className={selected ? "console-detection-box selected" : "console-detection-box"}
+              key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
+              style={detectionStyle(detection, roiSize)}
+            >
+              <span>{detection.className || "目标"} {detection.score.toFixed(2)}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
