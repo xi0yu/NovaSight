@@ -41,7 +41,7 @@ const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "latency", index: "04", label: "采集延迟" }
 ];
 
-const ROI_SIZE_CHOICES = [256, 320, 480, 640, 960];
+const ROI_SIZE_CHOICES = [256, 320, 480, 640];
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -98,6 +98,12 @@ function choiceId(choice: CapabilityChoice): string {
 
 function choiceLabel(choice: CapabilityChoice): string {
   return `${choice.pixel_format} / ${choice.width}x${choice.height} / ${choice.fps} FPS`;
+}
+
+function nearestRoiSize(value: number): number {
+  return ROI_SIZE_CHOICES.reduce((best, current) =>
+    Math.abs(current - value) < Math.abs(best - value) ? current : best
+  );
 }
 
 function cloneRuntimeConfig(runtime: RuntimeState | null): RuntimeConfig | null {
@@ -181,21 +187,36 @@ export function StudioConsoleView({
     }
   }, [device]);
 
+  useEffect(() => {
+    void refreshCapabilities();
+  }, [refreshCapabilities]);
+
   const applyCapture = useCallback(async () => {
     const choice = selectedChoice;
-    if (!choice) {
-      return;
-    }
     setBusy("capture");
     setLocalError(null);
-    const payload: CaptureSelectPayload = {
-      device,
-      preference: "manual",
-      pixel_format: choice.pixel_format,
-      width: choice.width,
-      height: choice.height,
-      fps: choice.fps
-    };
+    const payload: CaptureSelectPayload = choice
+      ? {
+          device,
+          preference: "manual",
+          pixel_format: choice.pixel_format,
+          width: choice.width,
+          height: choice.height,
+          fps: choice.fps
+        }
+      : selectedProfile
+        ? {
+            device,
+            preference: "manual",
+            pixel_format: selectedProfile.pixel_format,
+            width: selectedProfile.width,
+            height: selectedProfile.height,
+            fps: selectedProfile.fps
+          }
+        : {
+            device,
+            preference: "auto_high_fps"
+          };
     try {
       await selectCaptureProfile(payload);
       await onRefresh();
@@ -205,7 +226,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [device, onRefresh, selectedChoice]);
+  }, [device, onRefresh, selectedChoice, selectedProfile]);
 
   const stopCurrentCapture = useCallback(async () => {
     setBusy("stop");
@@ -377,10 +398,10 @@ export function StudioConsoleView({
                   <input
                     type="range"
                     min="256"
-                    max="960"
+                    max="640"
                     step="64"
                     value={roiSize}
-                    onChange={(event) => void updateConfigField("roi", "size", Number(event.target.value))}
+                    onChange={(event) => void updateConfigField("roi", "size", nearestRoiSize(Number(event.target.value)))}
                   />
                   <select value={roiSize} onChange={(event) => void updateConfigField("roi", "size", Number(event.target.value))}>
                     {ROI_SIZE_CHOICES.map((size) => <option key={size} value={size}>{size}</option>)}
@@ -412,12 +433,10 @@ export function StudioConsoleView({
                 <option>{artifact?.path ?? activeModelName}</option>
               </select>
               <label>推理后端</label>
-              <select
-                value={readString(inferenceConfig.backend, "onnxruntime")}
-                onChange={(event) => void updateConfigField("inference", "backend", event.target.value)}
-              >
-                <option value="tensorrt">TensorRT FP16</option>
-                <option value="onnxruntime">ONNX Runtime</option>
+              <select value={readString(runtime?.inference?.selected, "auto")} disabled>
+                <option value={readString(runtime?.inference?.selected, "auto")}>
+                  {readString(runtime?.inference?.selected, "按模型后缀自动选择")}
+                </option>
               </select>
               <label>输入尺寸</label>
               <select value={version?.input_shape ?? ""} disabled>

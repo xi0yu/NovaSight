@@ -130,6 +130,12 @@ async def websocket_status(websocket: WebSocket) -> None:
 
 def _apply_config(request: Request, config) -> None:
     app = request.app
+    previous_config = getattr(app.state, "config", None)
+    previous_roi_size = (
+        getattr(getattr(previous_config, "roi", None), "size", None)
+        if previous_config is not None
+        else None
+    )
     app.state.config = config
     app.state.capture.config = config.capture
     app.state.capture.roi_size = config.roi.size
@@ -142,3 +148,42 @@ def _apply_config(request: Request, config) -> None:
     app.state.runtime.executors = app.state.executors
     app.state.runtime.hardware = app.state.hardware
     app.state.runtime.update_config(config)
+    if previous_roi_size is not None and previous_roi_size != config.roi.size:
+        _reconfigure_live_capture_for_roi(app)
+
+
+def _reconfigure_live_capture_for_roi(app) -> None:
+    capture = app.state.capture
+    session = getattr(capture, "session", None)
+    state = getattr(capture, "state", None)
+    profile = getattr(state, "profile", None)
+    if (
+        profile is None
+        or getattr(state, "available", False) is not True
+        or (session is not None and getattr(session, "running", False) is not True)
+    ):
+        return
+    if getattr(profile, "preference", "") == "image":
+        return
+    logger.info(
+        "capture roi changed; rebuilding live capture pipeline device=%s roi_size=%s",
+        profile.device,
+        app.state.config.roi.size,
+    )
+    new_state = capture.configure(
+        profile.device,
+        preference="manual",
+        pixel_format=profile.pixel_format,
+        width=profile.width,
+        height=profile.height,
+        fps=profile.fps,
+    )
+    config_error = getattr(capture, "last_config_error", None)
+    if config_error is not None:
+        raise ValueError(
+            f"runtime config applied but live capture ROI rebuild failed: {config_error.last_error}"
+        )
+    if getattr(new_state, "available", False) is not True:
+        raise ValueError(
+            f"runtime config applied but live capture ROI rebuild failed: {new_state.last_error}"
+        )
