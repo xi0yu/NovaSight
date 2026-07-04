@@ -358,6 +358,8 @@ export function StudioConsoleView({
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetConnected = kmnetStatus.connected === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
+  const kmnetButtonLeft = kmnetStatus.button_left === true;
+  const kmnetButtonRight = kmnetStatus.button_right === true;
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
@@ -1481,7 +1483,7 @@ export function StudioConsoleView({
                 </div>
                 <div className={kmnetStatus.monitoring === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>按键</span>
-                  <b>{kmnetStatus.monitoring === true ? "监听中" : "未监听"}</b>
+                  <b>{kmnetStatus.monitoring === true ? `${kmnetButtonLeft ? "左键" : "-"} / ${kmnetButtonRight ? "右键" : "-"}` : "未监听"}</b>
                 </div>
                 <div className={kmnetDriverAvailable ? "kmnet-status-tile good" : "kmnet-status-tile bad"}>
                   <span>驱动</span>
@@ -1584,7 +1586,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button"
                     disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 10, 8)}
+                    onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 3, 4)}
                     type="button"
                   >
                     连续发送
@@ -1592,7 +1594,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button primary"
                     disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12)}
+                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0)}
                     type="button"
                   >
                     右移大步测试
@@ -1602,7 +1604,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button"
                     disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12, "raw")}
+                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "raw")}
                     type="button"
                   >
                     测 move
@@ -1610,7 +1612,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button"
                     disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12, "enc_raw")}
+                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "enc_raw")}
                     type="button"
                   >
                     测 enc_move
@@ -1618,7 +1620,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button"
                     disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(120, 0, 5, 12, "auto")}
+                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "auto")}
                     type="button"
                   >
                     测 move_auto

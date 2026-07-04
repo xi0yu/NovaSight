@@ -49,6 +49,17 @@ def disconnect_kmnet(request: Request) -> dict[str, Any]:
     return disconnect()
 
 
+@router.get("/api/executors/kmnet/buttons")
+def buttons_kmnet(request: Request) -> dict[str, Any]:
+    executor = _kmnet_executor(request)
+    read = getattr(executor, "read_buttons", None)
+    if not callable(read):
+        raise HTTPException(status_code=400, detail="kmNet executor does not support button read")
+    buttons = read()
+    logger.info("kmNet diagnostic buttons %s", buttons)
+    return buttons
+
+
 @router.post("/api/executors/kmnet/diagnostic-move")
 def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> dict[str, Any]:
     executor = _kmnet_executor(request)

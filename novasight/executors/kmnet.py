@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from novasight.config import RuntimeConfig
@@ -34,6 +35,12 @@ class KmNetExecutor:
         self.last_dx = 0
         self.last_dy = 0
         self.last_error = ""
+        self.last_button_left = False
+        self.last_button_right = False
+        self.last_button_available = False
+        self.last_button_reason = ""
+        self._last_button_log_signature = ""
+        self._last_button_log_s = 0.0
         result = load_kmnet_driver()
         self._driver: Any | None = result.module
         self.driver_source = result.source
@@ -57,6 +64,8 @@ class KmNetExecutor:
         return self._driver is not None
 
     def status(self) -> dict[str, Any]:
+        if self._driver is not None and self.monitoring:
+            self.read_buttons()
         return {
             "available": self.available(),
             "connected": self.connected,
@@ -79,20 +88,43 @@ class KmNetExecutor:
             "has_trace": self._driver is not None and hasattr(self._driver, "trace"),
             "has_left_button": self._driver is not None and hasattr(self._driver, "isdown_left"),
             "has_right_button": self._driver is not None and hasattr(self._driver, "isdown_right"),
+            "button_available": self.last_button_available,
+            "button_left": self.last_button_left,
+            "button_right": self.last_button_right,
+            "button_reason": self.last_button_reason,
         }
 
     def read_buttons(self) -> dict[str, Any]:
         if self._driver is None:
-            return {"available": False, "left": False, "right": False, "reason": self.last_error}
+            return self._record_buttons(False, False, False, self.last_error)
         if not self.monitoring:
-            return {"available": False, "left": False, "right": False, "reason": "kmNet monitor is not enabled"}
+            return self._record_buttons(False, False, False, "kmNet monitor is not enabled")
         try:
             left = self._read_button("isdown_left")
             right = self._read_button("isdown_right")
         except Exception as exc:
             self.last_error = f"kmNet button read failed: {exc}"
-            return {"available": False, "left": False, "right": False, "reason": self.last_error}
-        return {"available": True, "left": left, "right": right, "reason": ""}
+            return self._record_buttons(False, False, False, self.last_error)
+        return self._record_buttons(True, left, right, "")
+
+    def _record_buttons(self, available: bool, left: bool, right: bool, reason: str) -> dict[str, Any]:
+        self.last_button_available = bool(available)
+        self.last_button_left = bool(left)
+        self.last_button_right = bool(right)
+        self.last_button_reason = str(reason or "")
+        signature = f"available={available}|left={left}|right={right}|reason={reason}"
+        now = time.monotonic()
+        if signature != self._last_button_log_signature or now - self._last_button_log_s >= 1.0:
+            self._last_button_log_signature = signature
+            self._last_button_log_s = now
+            logger.info(
+                "kmNet buttons available=%s left=%s right=%s reason=%s",
+                available,
+                left,
+                right,
+                reason or "",
+            )
+        return {"available": bool(available), "left": bool(left), "right": bool(right), "reason": str(reason or "")}
 
     def diagnostic_move(self, dx: int, dy: int, move_kind: str | None = None) -> ExecutionResult:
         output = ControlOutput(
