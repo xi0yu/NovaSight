@@ -57,6 +57,10 @@ class RuntimeService:
         self._local_trigger_updated_s = 0.0
         self._last_control_log_signature = ""
         self._last_control_log_s = 0.0
+        self._last_trigger_log_signature = ""
+        self._last_trigger_log_s = 0.0
+        self._last_box_input_log_signature = ""
+        self._last_box_input_log_s = 0.0
         self.control_strategy = self._create_control_strategy(config)
         self.target_selector = RuntimeTargetSelector()
 
@@ -119,6 +123,12 @@ class RuntimeService:
         self._local_trigger_active = accepted
         self._local_trigger_bindings = normalized
         self._local_trigger_updated_s = time.monotonic()
+        self._log_local_trigger_update(
+            active=bool(active),
+            accepted=accepted,
+            configured=configured,
+            pressed=normalized,
+        )
         return {
             "available": bool(configured),
             "active": self._local_trigger_active,
@@ -338,6 +348,7 @@ class RuntimeService:
         selection = self._select_control_target(context)
         target = selection.target
         if target is None:
+            self._log_no_control_target(context, selection)
             self.last_target = None
             self.last_control = {
                 "frame_id": context.frame_id,
@@ -515,6 +526,75 @@ class RuntimeService:
             str(getattr(command, "reason", "")),
         )
 
+    def _log_no_control_target(self, context: FrameContext, selection: TargetSelection) -> None:
+        signature = (
+            f"no_target|state={selection.state}|reason={selection.reason}|"
+            f"dets={len(context.detections)}|tracks={len(context.tracks)}|"
+            f"candidates={selection.candidates}|inside={selection.inside_fov}"
+        )
+        if not self._should_log("_last_control_log_signature", "_last_control_log_s", signature, interval_s=1.0):
+            return
+        logger.info(
+            "control trace frame=%s stage=target state=%s reason=%s detections=%s tracks=%s candidates=%s inside_fov=%s class_filter=%s min_conf=%.3f fov_ratio=%.3f",
+            context.frame_id,
+            selection.state,
+            selection.reason,
+            len(context.detections),
+            len(context.tracks),
+            selection.candidates,
+            selection.inside_fov,
+            str(getattr(self.config.inference, "detection_class_filter", "all")),
+            float(getattr(self.config.control, "min_confidence", 0.0)),
+            float(getattr(self.config.control, "fov_ratio", 0.28)),
+        )
+
+    def _log_local_trigger_update(
+        self,
+        *,
+        active: bool,
+        accepted: bool,
+        configured: list[str],
+        pressed: list[str],
+    ) -> None:
+        signature = f"local|active={active}|accepted={accepted}|configured={configured}|pressed={pressed}"
+        if not self._should_log("_last_trigger_log_signature", "_last_trigger_log_s", signature, interval_s=1.0):
+            return
+        logger.info(
+            "trigger update source=local active=%s accepted=%s configured=%s pressed=%s",
+            active,
+            accepted,
+            configured,
+            pressed,
+        )
+
+    def _log_box_input_state(self, state: BoxInputState, source: str) -> None:
+        raw = getattr(state, "raw", {}) or {}
+        signature = (
+            f"box|source={source}|active={state.active}|left={state.left}|"
+            f"right={state.right}|side={state.side}|raw={raw}"
+        )
+        if not self._should_log("_last_box_input_log_signature", "_last_box_input_log_s", signature, interval_s=1.0):
+            return
+        logger.info(
+            "box input source=%s active=%s left=%s right=%s side=%s raw=%s",
+            source,
+            state.active,
+            state.left,
+            state.right,
+            state.side,
+            raw,
+        )
+
+    def _should_log(self, signature_attr: str, time_attr: str, signature: str, *, interval_s: float) -> bool:
+        now = time.monotonic()
+        previous_signature = str(getattr(self, signature_attr, ""))
+        previous_s = float(getattr(self, time_attr, 0.0))
+        if signature == previous_signature and now - previous_s < interval_s:
+            return False
+        setattr(self, signature_attr, signature)
+        setattr(self, time_attr, now)
+        return True
+
     def _select_control_target(self, context: FrameContext) -> TargetSelection:
         return self.target_selector.select(
             context,
@@ -555,8 +635,11 @@ class RuntimeService:
         local = self._local_trigger_state()
         if getattr(getattr(self.config, "hardware", None), "kind", "none") in {"", "none", "silent"}:
             if local.active:
+                self._log_box_input_state(local, "local_no_hardware")
                 return local
-            return BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
+            state = BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
+            self._log_box_input_state(state, "diagnostic_auto_trigger")
+            return state
         button_reader = getattr(self.executors, "read_buttons", None)
         if callable(button_reader):
             try:
@@ -570,18 +653,28 @@ class RuntimeService:
                     raw={"source": "kmnet_executor", **buttons},
                 )
                 if local.active:
-                    return self._merge_box_input(hardware_state, local)
+                    merged = self._merge_box_input(hardware_state, local)
+                    self._log_box_input_state(merged, "hardware_plus_local")
+                    return merged
+                self._log_box_input_state(hardware_state, "hardware")
                 return hardware_state
         if local.active:
+            self._log_box_input_state(local, "local_fallback")
             return local
         getter = getattr(self.hardware, "get_input_state", None)
         if not callable(getter):
-            return BoxInputState()
+            state = BoxInputState(raw={"source": "none", "reason": "no input reader"})
+            self._log_box_input_state(state, "none")
+            return state
         try:
             state = getter()
         except Exception:
-            return BoxInputState()
-        return state if isinstance(state, BoxInputState) else BoxInputState()
+            state = BoxInputState(raw={"source": "hardware_box", "reason": "read exception"})
+            self._log_box_input_state(state, "hardware_box_exception")
+            return state
+        result = state if isinstance(state, BoxInputState) else BoxInputState(raw={"source": "hardware_box", "reason": "invalid state"})
+        self._log_box_input_state(result, "hardware_box")
+        return result
 
     def _local_trigger_state(self) -> BoxInputState:
         if not self._local_trigger_active:
