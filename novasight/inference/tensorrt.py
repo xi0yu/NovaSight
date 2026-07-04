@@ -52,6 +52,10 @@ class TensorRtInferenceEngine:
         self._output_shape: tuple[int, ...] = ()
         self._output_dtype = ""
         self._last_failure_logged = ""
+        self._engine_input_shape: tuple[int, ...] = ()
+        self._input_profile_shapes: dict[str, tuple[int, ...]] = {}
+        self._input_shape_source = ""
+        self._last_slow_log_ns = 0
 
     def available(self) -> bool:
         try:
@@ -85,6 +89,12 @@ class TensorRtInferenceEngine:
             "output_shape": "x".join(str(item) for item in self._output_shape),
             "output_name": self._output_name,
             "output_dtype": self._output_dtype,
+            "engine_input_shape": "x".join(str(item) for item in self._engine_input_shape),
+            "input_shape_source": self._input_shape_source,
+            "input_profile": {
+                name: list(shape)
+                for name, shape in self._input_profile_shapes.items()
+            },
             "outputs": {
                 name: {
                     "shape": list(self._output_shapes.get(name, ())),
@@ -148,6 +158,7 @@ class TensorRtInferenceEngine:
                     "total_ms": _elapsed_ms(total_start_ns, done_ns),
                 }
             )
+            self._log_slow_inference(timings, decode_debug)
         except ValueError as exc:
             self._log_failure_once(f"input rejected: {exc}")
             return InferenceResult(available=False, reason=str(exc))
@@ -226,20 +237,36 @@ class TensorRtInferenceEngine:
             raise RuntimeError(f"TensorRT engine missing input/output tensors: {artifact_path}")
 
         input_name = input_names[0]
-        input_shape = tuple(engine.get_tensor_shape(input_name))
-        if len(input_shape) != 4:
-            raise RuntimeError(f"unsupported TensorRT input shape: {input_shape}")
-        if -1 in input_shape:
-            input_shape = (
-                configured_shape.batch,
-                configured_shape.channels,
-                configured_shape.height,
-                configured_shape.width,
-            )
+        engine_input_shape = _shape_tuple(engine.get_tensor_shape(input_name))
+        if len(engine_input_shape) != 4:
+            raise RuntimeError(f"unsupported TensorRT input shape: {engine_input_shape}")
+        configured_tuple = (
+            configured_shape.batch,
+            configured_shape.channels,
+            configured_shape.height,
+            configured_shape.width,
+        )
+        input_shape, input_shape_source, input_profile_shapes = _resolve_input_shape(
+            engine,
+            input_name=input_name,
+            engine_shape=engine_input_shape,
+            configured_shape=configured_tuple,
+        )
+        if -1 in engine_input_shape:
             context.set_input_shape(input_name, input_shape)
+            resolved_context_shape = _shape_tuple(context.get_tensor_shape(input_name))
+            if (
+                resolved_context_shape
+                and len(resolved_context_shape) == 4
+                and all(item > 0 for item in resolved_context_shape)
+            ):
+                input_shape = resolved_context_shape
         batch, channels, height, width = [int(item) for item in input_shape]
         if channels != 3:
             raise RuntimeError(f"unsupported TensorRT input channels: {input_shape}")
+        self._engine_input_shape = engine_input_shape
+        self._input_profile_shapes = input_profile_shapes
+        self._input_shape_source = input_shape_source
         self._input_shape = TensorInputShape(
             batch=batch,
             channels=channels,
@@ -281,9 +308,15 @@ class TensorRtInferenceEngine:
         self._output_shape = self._output_shapes[self._output_name]
         self._output_dtype = self._output_dtypes.get(self._output_name, "")
         logger.info(
-            "TensorRT engine loaded path=%s input=%s output=%s shape=%s dtype=%s outputs=%s",
+            "TensorRT engine loaded path=%s engine_input=%s selected_input=%s input_source=%s profile=%s output=%s shape=%s dtype=%s outputs=%s",
             artifact_path,
+            "x".join(str(item) for item in self._engine_input_shape),
             self._input_shape,
+            self._input_shape_source,
+            {
+                name: "x".join(str(item) for item in shape)
+                for name, shape in self._input_profile_shapes.items()
+            },
             self._output_name,
             self._output_shape,
             self._output_dtype,
@@ -412,8 +445,29 @@ class TensorRtInferenceEngine:
         self._output_shape = ()
         self._output_dtype = ""
         self._output_name = ""
+        self._engine_input_shape = ()
+        self._input_profile_shapes = {}
+        self._input_shape_source = ""
         self._loaded = False
         self._warmed = False
+
+    def _log_slow_inference(self, timings: dict[str, float], decode_debug: dict[str, Any]) -> None:
+        total_ms = float(timings.get("total_ms") or 0.0)
+        if total_ms < 100.0:
+            return
+        now_ns = time.monotonic_ns()
+        if now_ns - self._last_slow_log_ns < 1_000_000_000:
+            return
+        self._last_slow_log_ns = now_ns
+        logger.warning(
+            "TensorRT slow inference input=%s engine_input=%s source=%s output=%s timings=%s decode_timings=%s",
+            self._input_shape,
+            "x".join(str(item) for item in self._engine_input_shape),
+            self._input_shape_source,
+            self._output_shape,
+            timings,
+            decode_debug.get("timings", {}),
+        )
 
     def _log_failure_once(self, reason: str, *, with_trace: bool = False) -> None:
         if reason == self._last_failure_logged:
@@ -435,6 +489,81 @@ def _cuda_check(result: Any, what: str) -> None:
     err = result[0] if isinstance(result, tuple) else result
     if int(err) != 0:
         raise RuntimeError(f"CUDA error {int(err)} at {what}")
+
+
+def _resolve_input_shape(
+    engine: Any,
+    *,
+    input_name: str,
+    engine_shape: tuple[int, ...],
+    configured_shape: tuple[int, ...],
+) -> tuple[tuple[int, ...], str, dict[str, tuple[int, ...]]]:
+    if -1 not in engine_shape:
+        return engine_shape, "engine_static", {}
+
+    profile_shapes = _read_input_profile_shapes(engine, input_name)
+    if profile_shapes:
+        profile_min = profile_shapes.get("min", ())
+        profile_opt = profile_shapes.get("opt", ())
+        profile_max = profile_shapes.get("max", ())
+        if _shape_is_static(profile_opt):
+            return profile_opt, "engine_profile_opt", profile_shapes
+        if _shape_fits_profile(configured_shape, profile_min, profile_max):
+            return configured_shape, "configured_within_profile", profile_shapes
+
+    return configured_shape, "configured_fallback", profile_shapes
+
+
+def _read_input_profile_shapes(engine: Any, input_name: str) -> dict[str, tuple[int, ...]]:
+    shapes: Any | None = None
+    try:
+        getter = getattr(engine, "get_tensor_profile_shape", None)
+        if callable(getter):
+            shapes = getter(input_name, 0)
+    except Exception:
+        shapes = None
+    if shapes is None:
+        try:
+            getter = getattr(engine, "get_profile_shape", None)
+            if callable(getter):
+                shapes = getter(0, input_name)
+        except Exception:
+            shapes = None
+    if shapes is None or len(shapes) != 3:
+        return {}
+    profile_min, profile_opt, profile_max = shapes
+    return {
+        "min": _shape_tuple(profile_min),
+        "opt": _shape_tuple(profile_opt),
+        "max": _shape_tuple(profile_max),
+    }
+
+
+def _shape_tuple(value: Any) -> tuple[int, ...]:
+    if value is None:
+        return ()
+    try:
+        return tuple(int(item) for item in value)
+    except TypeError:
+        dims = getattr(value, "d", None)
+        nb_dims = int(getattr(value, "nbDims", 0) or 0)
+        if dims is None or nb_dims <= 0:
+            return ()
+        return tuple(int(dims[index]) for index in range(nb_dims))
+
+
+def _shape_is_static(shape: tuple[int, ...]) -> bool:
+    return bool(shape) and all(int(item) > 0 for item in shape)
+
+
+def _shape_fits_profile(
+    shape: tuple[int, ...],
+    profile_min: tuple[int, ...],
+    profile_max: tuple[int, ...],
+) -> bool:
+    if not shape or len(shape) != len(profile_min) or len(shape) != len(profile_max):
+        return False
+    return all(low <= item <= high for item, low, high in zip(shape, profile_min, profile_max))
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> float:

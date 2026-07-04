@@ -148,6 +148,7 @@ class InferenceRuntime:
         with self._engine_lock:
             previous_engine = self.engine
             self.engine = candidate
+            runtime_status = dict(self.engine.status())
             self._load_error = ""
             self._last_switch_error = ""
             self._last_infer_error_logged = ""
@@ -158,10 +159,12 @@ class InferenceRuntime:
                 except Exception:
                     pass
         logger.info(
-            "inference loaded artifact=%s engine=%s shape=%s classes=%d",
+            "inference loaded artifact=%s engine=%s registered_shape=%s runtime_shape=%s shape_source=%s classes=%d",
             artifact_path,
             self.engine.engine_id,
             input_shape,
+            runtime_status.get("input_shape", ""),
+            runtime_status.get("input_shape_source", ""),
             len(classes),
         )
 
