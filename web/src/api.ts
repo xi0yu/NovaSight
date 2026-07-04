@@ -183,6 +183,15 @@ export type ConfigUpdateResponse = {
   config: RuntimeConfig;
   schema: ConfigSchemaResponse;
   restart_required: boolean;
+  applied?: boolean;
+  rolled_back?: boolean;
+  message?: string;
+  sections?: Array<{
+    section: string;
+    impact: string;
+    status: string;
+    message: string;
+  }>;
 };
 
 export type LicenseFeature =

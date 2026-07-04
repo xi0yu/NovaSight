@@ -3,6 +3,7 @@ from .failfast import FailFastHandler
 from .logging import configure_logging
 from .pipeline import RuntimePipeline
 from .queue import LatestFrameQueue
+from .reconfigurator import ConfigApplyReport, RuntimeReconfigurator
 from .service import RuntimeService
 from .state import RuntimeState
 from .status import StatusHub
@@ -11,6 +12,8 @@ __all__ = [
     "FailFastHandler",
     "LatestFrameQueue",
     "RuntimeConfigStore",
+    "RuntimeReconfigurator",
+    "ConfigApplyReport",
     "RuntimePipeline",
     "RuntimeService",
     "RuntimeState",

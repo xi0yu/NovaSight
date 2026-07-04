@@ -25,6 +25,8 @@ NovaSight 当前已经具备产品骨架：
 
 本次已经修复了几处会真实破坏链路的问题，但这只是第一轮产品健康治理。下一阶段应建设统一的 `RuntimeReconfigurator`。
 
+更新：`RuntimeReconfigurator` 已开始落地，`PUT /api/config` 的配置安装、ROI live rebuild、kmNet 连接恢复、配置保存和 pipeline auto-start 已经从路由层迁移到运行态 reconfiguration 模块。后续还需要继续把采集选择、模型切换和硬件重连纳入同一套报告模型。
+
 ## 2. 产品级设计原则
 
 后续所有模块改造都应该遵循这些原则：
@@ -784,7 +786,7 @@ StudioConsoleView
 
 任务：
 
-1. 建立 `RuntimeReconfigurator`。
+1. 扩展 `RuntimeReconfigurator`，覆盖采集选择、模型切换和硬件连接变更。
 2. 配置更新返回 `ConfigApplyReport`。
 3. 引入 `capture_generation`。
 4. 采集、ROI、模型、kmNet 热更新统一走 reconfigurator。
