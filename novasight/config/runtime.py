@@ -95,6 +95,7 @@ class ControlConfig:
     target_lock_enabled: bool = True
     target_sticky_bias: float = 0.25
     target_lost_grace_frames: int = 5
+    aim_ratio: float = 40.0
     output_mode: str = ""
     strategy: str = "pid"
     pid_kp_x: float = 0.35
@@ -251,6 +252,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
         raise ValueError("runtime config key 'control.target_sticky_bias' must be >= 0 and <= 0.9")
+    if cfg.control.aim_ratio < 0 or cfg.control.aim_ratio > 100:
+        raise ValueError("runtime config key 'control.aim_ratio' must be >= 0 and <= 100")
     if cfg.control.target_lost_grace_frames < 0:
         raise ValueError("runtime config key 'control.target_lost_grace_frames' must be >= 0")
     if cfg.control.move_kind not in {"raw", "auto", "bezier"}:

@@ -36,6 +36,7 @@ control:
   max_abs_dy: 120
   min_confidence: 0
   fov_ratio: 0.28
+  aim_ratio: 40
   strategy: pid
   pid_kp_x: 0.35
   pid_kp_y: 0.24

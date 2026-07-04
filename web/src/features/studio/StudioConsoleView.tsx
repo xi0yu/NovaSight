@@ -156,6 +156,18 @@ function detectionStyle(detection: DetectionOverlay, roiSize: number): CSSProper
   };
 }
 
+function pointStyle(x: unknown, y: unknown, roiSize: number): CSSProperties | null {
+  const px = readNullableNumber(x);
+  const py = readNullableNumber(y);
+  if (px === null || py === null || roiSize <= 0) {
+    return null;
+  }
+  return {
+    left: `${clampPercent((px / roiSize) * 100)}%`,
+    top: `${clampPercent((py / roiSize) * 100)}%`
+  };
+}
+
 function isSelectedDetection(detection: DetectionOverlay, target: Record<string, unknown>): boolean {
   const targetCx = readNullableNumber(target.cx);
   const targetCy = readNullableNumber(target.cy);
@@ -323,6 +335,7 @@ export function StudioConsoleView({
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
+  const aimRatio = readNumber(controlConfig.aim_ratio, 40);
   const targetLockEnabled = controlConfig.target_lock_enabled !== false;
   const targetStickyBias = readNumber(controlConfig.target_sticky_bias, 0.25);
   const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
@@ -1111,6 +1124,7 @@ export function StudioConsoleView({
             <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
             <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
             <Metric title="预测" value={predictionFactor.toFixed(2)} small="lead" />
+            <Metric title="瞄准高度" value={`${aimRatio.toFixed(0)}%`} small="aim" />
             <Metric title="控制量上限" value={`${kpXMoveMax}/${kpYMoveMax}`} small="x/y" />
           </div>
           <div className="console-grid2">
@@ -1135,6 +1149,7 @@ export function StudioConsoleView({
               </select>
               <NumberControl label="目标粘性" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
+              <NumberControl label="瞄准高度 aim_ratio" value={aimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
               <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
               <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
               <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
@@ -1151,6 +1166,8 @@ export function StudioConsoleView({
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
                 <span>raw dx</span><b>{formatNumber(control.raw_error_x, 1)}</b>
                 <span>raw dy</span><b>{formatNumber(control.raw_error_y, 1)}</b>
+                <span>aim ratio</span><b>{formatNumber(control.aim_ratio, 0)}%</b>
+                <span>aim point</span><b>{`${formatNumber(control.aim_x, 1)}, ${formatNumber(control.aim_y, 1)}`}</b>
                 <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
                 <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
                 <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
@@ -1433,6 +1450,7 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
   const vision = asRecord(runtime?.vision);
   const target = asRecord(vision.target);
   const detections = readDetectionItems(vision.detection_items);
+  const aimPointStyle = pointStyle(target.aim_x, target.aim_y, roiSize);
   return (
     <div className="console-preview" style={{ "--roi-size": `${roiSize}px` } as CSSProperties}>
       {runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
@@ -1441,14 +1459,15 @@ function PreviewFrame({ runtime, roiSize }: { runtime: RuntimeState | null; roiS
           const selected = isSelectedDetection(detection, target);
           return (
             <div
-              className={selected ? "console-detection-box selected" : "console-detection-box"}
+              className="console-detection-box"
               key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
               style={detectionStyle(detection, roiSize)}
             >
-              <span>{detection.className || "目标"} {detection.score.toFixed(2)}</span>
+              <span>{selected ? "当前 " : ""}{detection.className || "目标"} {detection.score.toFixed(2)}</span>
             </div>
           );
         })}
+        {aimPointStyle ? <div className="console-aim-point" style={aimPointStyle} /> : null}
       </div>
     </div>
   );

@@ -12,6 +12,11 @@ from novasight.contracts import ControlIntent, Detection, Track
 Target = Detection | Track
 
 
+def _aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
+    ratio = max(0.0, min(100.0, aim_ratio)) / 100.0
+    return (float(target.x) + float(target.w) / 2.0, float(target.y) + float(target.h) * ratio)
+
+
 @dataclass(frozen=True)
 class MoveCommand:
     dx: float
@@ -52,6 +57,7 @@ class PIDStrategy:
         prediction_factor: float = 0.1,
         prediction_stationary_px: float = 1.5,
         prediction_moving_px: float = 12.0,
+        aim_ratio: float = 40.0,
         near_px: float = 24.0,
         near_speed: float = 0.16,
         far_speed: float = 0.42,
@@ -82,6 +88,7 @@ class PIDStrategy:
             self.prediction_stationary_px + 1.0,
             prediction_moving_px,
         )
+        self.aim_ratio = max(0.0, min(100.0, aim_ratio))
         self.near_px = max(0.0, near_px)
         self.near_speed = max(0.0, near_speed)
         self.far_speed = max(0.0, far_speed)
@@ -114,7 +121,8 @@ class PIDStrategy:
                 "hardware trigger inactive",
                 debug={"stage": "trigger", "coordinate_y": "cartesian_up_positive"},
             )
-        predicted_center, prediction_weight = self._predict_center(target)
+        aim_center = _aim_point(target, self.aim_ratio)
+        predicted_center, prediction_weight = self._predict_center(aim_center)
         ex_px = predicted_center[0] - current_pos[0]
         ey_px = current_pos[1] - predicted_center[1]
         err_px = math.hypot(ex_px, ey_px)
@@ -151,6 +159,9 @@ class PIDStrategy:
             "coordinate_y": "cartesian_up_positive",
             "raw_px_x": ex_px,
             "raw_px_y": ey_px,
+            "aim_ratio": self.aim_ratio,
+            "aim_x": aim_center[0],
+            "aim_y": aim_center[1],
             "predicted_x": predicted_center[0],
             "predicted_y": predicted_center[1],
             "fov_counts_x": fov_counts_x,
@@ -203,8 +214,7 @@ class PIDStrategy:
             return value
         return max(-limit, min(limit, value))
 
-    def _predict_center(self, target: Target) -> tuple[tuple[float, float], float]:
-        center = (target.cx, target.cy)
+    def _predict_center(self, center: tuple[float, float]) -> tuple[tuple[float, float], float]:
         if self._last_center is None or self.prediction_factor <= 0:
             self._last_center = center
             return center, 0.0
@@ -253,8 +263,9 @@ class PIDStrategy:
 
 
 class PredictiveStrategy:
-    def __init__(self, *, lead_factor: float = 0.25) -> None:
+    def __init__(self, *, lead_factor: float = 0.25, aim_ratio: float = 40.0) -> None:
         self.lead_factor = lead_factor
+        self.aim_ratio = max(0.0, min(100.0, aim_ratio))
         self._last_center: tuple[float, float] | None = None
 
     def calculate(
@@ -265,7 +276,7 @@ class PredictiveStrategy:
     ) -> MoveCommand:
         if not box_input.active:
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
-        center = (target.cx, target.cy)
+        center = _aim_point(target, self.aim_ratio)
         if self._last_center is None:
             vx = vy = 0.0
         else:
@@ -283,6 +294,9 @@ class PredictiveStrategy:
                 "coordinate_y": "cartesian_up_positive",
                 "raw_px_x": predicted[0] - current_pos[0],
                 "raw_px_y": current_pos[1] - predicted[1],
+                "aim_ratio": self.aim_ratio,
+                "aim_x": center[0],
+                "aim_y": center[1],
                 "final_dx": predicted[0] - current_pos[0],
                 "final_dy": current_pos[1] - predicted[1],
             },
@@ -294,6 +308,7 @@ class ProportionalStrategy:
         self,
         *,
         fov_ratio: float = 0.28,
+        aim_ratio: float = 40.0,
         near_px: float = 24.0,
         near_speed: float = 0.16,
         far_speed: float = 0.42,
@@ -307,6 +322,7 @@ class ProportionalStrategy:
         bezier_curvature: float = 0.18,
     ) -> None:
         self.fov_ratio = max(0.0, min(1.0, fov_ratio))
+        self.aim_ratio = max(0.0, min(100.0, aim_ratio))
         self.near_px = max(0.0, near_px)
         self.near_speed = max(0.0, near_speed)
         self.far_speed = max(0.0, far_speed)
@@ -332,8 +348,9 @@ class ProportionalStrategy:
             self._ema_y = 0.0
             return MoveCommand(0, 0, 0, "hardware trigger inactive")
 
-        ex = target.cx - current_pos[0]
-        ey = current_pos[1] - target.cy
+        aim_x, aim_y = _aim_point(target, self.aim_ratio)
+        ex = aim_x - current_pos[0]
+        ey = current_pos[1] - aim_y
         err = math.hypot(ex, ey)
         radius = min(current_pos[0], current_pos[1]) * 2 * self.fov_ratio
         if radius > 0 and err > radius:
@@ -349,6 +366,9 @@ class ProportionalStrategy:
                     "coordinate_y": "cartesian_up_positive",
                     "raw_px_x": ex,
                     "raw_px_y": ey,
+                    "aim_ratio": self.aim_ratio,
+                    "aim_x": aim_x,
+                    "aim_y": aim_y,
                     "final_dx": 0,
                     "final_dy": 0,
                 },
@@ -374,6 +394,9 @@ class ProportionalStrategy:
                     "coordinate_y": "cartesian_up_positive",
                     "raw_px_x": ex,
                     "raw_px_y": ey,
+                    "aim_ratio": self.aim_ratio,
+                    "aim_x": aim_x,
+                    "aim_y": aim_y,
                     "fov_counts_x": counts_x,
                     "fov_counts_y": counts_y,
                     "speed": speed,
@@ -397,6 +420,9 @@ class ProportionalStrategy:
                 "coordinate_y": "cartesian_up_positive",
                 "raw_px_x": ex,
                 "raw_px_y": ey,
+                "aim_ratio": self.aim_ratio,
+                "aim_x": aim_x,
+                "aim_y": aim_y,
                 "fov_counts_x": counts_x,
                 "fov_counts_y": counts_y,
                 "speed": speed,

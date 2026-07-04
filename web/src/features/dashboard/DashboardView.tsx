@@ -246,6 +246,16 @@ function detectionStyle(
   };
 }
 
+function pointStyle(x: number | null, y: number | null, width: number, height: number): CSSProperties | null {
+  if (x === null || y === null || width <= 0 || height <= 0) {
+    return null;
+  }
+  return {
+    left: `${clampPercent((x / width) * 100)}%`,
+    top: `${clampPercent((y / height) * 100)}%`
+  };
+}
+
 function isSelectedDetection(
   detection: DetectionOverlay,
   targetCx: number | null,
@@ -286,6 +296,8 @@ export function DashboardView({
   const targetScore = readNumberRecord(target, "score");
   const targetCx = readNumberRecord(target, "cx");
   const targetCy = readNumberRecord(target, "cy");
+  const aimX = readNumberRecord(target, "aim_x");
+  const aimY = readNumberRecord(target, "aim_y");
   const controlDx = readNumberRecord(control, "dx");
   const controlDy = readNumberRecord(control, "dy");
   const willEmit = control.will_emit === true;
@@ -317,6 +329,7 @@ export function DashboardView({
   const detectionCoordinateSpace = readStringRecord(inferenceTrace, "detection_coordinate_space") || "source";
   const overlayWidth = inputWidth ?? roiSize;
   const overlayHeight = inputHeight ?? roiSize;
+  const aimPointStyle = pointStyle(aimX, aimY, overlayWidth, overlayHeight);
 
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
     if (!runtime?.config || consumerBusy) {
@@ -469,7 +482,7 @@ export function DashboardView({
                 const selected = isSelectedDetection(detection, targetCx, targetCy);
                 return (
                   <div
-                    className={selected ? "home-detection-box selected" : "home-detection-box"}
+                    className="home-detection-box"
                     key={`${detection.className}-${index}-${detection.x}-${detection.y}`}
                     style={detectionStyle(
                       detection,
@@ -481,11 +494,12 @@ export function DashboardView({
                     )}
                   >
                     <span>
-                      {detection.className || "目标"} {detection.score.toFixed(2)}
+                      {selected ? "当前 " : ""}{detection.className || "目标"} {detection.score.toFixed(2)}
                     </span>
                   </div>
                 );
               })}
+              {aimPointStyle ? <div className="home-aim-point" style={aimPointStyle} /> : null}
             </div>
             <div className="home-hud home-hud-left">
               <span>预览 {previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>

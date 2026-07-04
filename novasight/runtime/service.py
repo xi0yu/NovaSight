@@ -295,6 +295,9 @@ class RuntimeService:
 
         center = (context.width / 2, context.height / 2)
         box_input = self._box_input_state()
+        aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
+        aim_x = float(target.x + target.w / 2)
+        aim_y = float(target.y + target.h * aim_ratio / 100.0)
         command = self.control_strategy.calculate(target, center, box_input)
         intent = ControlIntent(
             dx=command.dx,
@@ -316,11 +319,14 @@ class RuntimeService:
         requires_trigger = output_mode == "kmnet" and hardware_kind not in {"", "none", "silent"}
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
-        raw_error_x = float(target.cx - center[0])
-        raw_error_y = float(center[1] - target.cy)
-        raw_error_y_image = float(target.cy - center[1])
+        raw_error_x = float(aim_x - center[0])
+        raw_error_y = float(center[1] - aim_y)
+        raw_error_y_image = float(aim_y - center[1])
         self.last_target = {
             **self._target_payload(target, context),
+            "aim_ratio": aim_ratio,
+            "aim_x": aim_x,
+            "aim_y": aim_y,
             "selector_state": selection.state,
             "selection_reason": selection.reason,
             "locked": selection.locked,
@@ -334,6 +340,9 @@ class RuntimeService:
             "raw_error_x": raw_error_x,
             "raw_error_y": raw_error_y,
             "raw_error_y_image": raw_error_y_image,
+            "aim_ratio": aim_ratio,
+            "aim_x": aim_x,
+            "aim_y": aim_y,
             "dx": command.dx,
             "dy": command.dy,
             "confidence": command.confidence,
@@ -414,10 +423,11 @@ class RuntimeService:
     def _create_control_strategy(self, config: RuntimeConfig):
         strategy = getattr(config.control, "strategy", "pid")
         if strategy == "predictive":
-            return PredictiveStrategy()
+            return PredictiveStrategy(aim_ratio=config.control.aim_ratio)
         if strategy == "proportional":
             return ProportionalStrategy(
                 fov_ratio=config.control.fov_ratio,
+                aim_ratio=config.control.aim_ratio,
                 near_px=config.control.near_px,
                 near_speed=config.control.near_speed,
                 far_speed=config.control.far_speed,
@@ -440,6 +450,7 @@ class RuntimeService:
             move_limit_x=config.control.kp_x_move_max,
             move_limit_y=config.control.kp_y_move_max,
             prediction_factor=config.control.prediction_factor,
+            aim_ratio=config.control.aim_ratio,
             near_px=config.control.near_px,
             near_speed=config.control.near_speed,
             far_speed=config.control.far_speed,
