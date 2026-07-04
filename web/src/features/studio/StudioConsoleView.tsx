@@ -262,7 +262,13 @@ export function StudioConsoleView({
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
+  const control = asRecord(vision.control);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
+  const rawDetections = readNumber(inferenceTrace.raw_detections, 0);
+  const mappedDetections = readNumber(inferenceTrace.mapped_detections, 0);
+  const inferenceRan = inferenceTrace.ran === true;
+  const inferenceAvailable = inferenceTrace.available === true;
+  const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
 
   useEffect(() => {
@@ -983,9 +989,15 @@ export function StudioConsoleView({
               <h2 className="console-title">推理输出</h2>
               <PreviewFrame runtime={runtime} roiSize={roiSize} />
               <div className="console-kv">
+                <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
+                <span>推理原因</span><b>{inferenceReason || "-"}</b>
+                <span>raw 检测</span><b>{String(rawDetections)}</b>
+                <span>前端检测</span><b>{String(mappedDetections)}</b>
                 <span>当前类别</span><b>{readString(target.class_name, "-")}</b>
                 <span>最高置信度</span><b>{target.score ? Number(target.score).toFixed(2) : "-"}</b>
                 <span>候选框数量</span><b>{detections}</b>
+                <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
+                <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
               </div>
             </div>
           </div>
@@ -1033,10 +1045,10 @@ export function StudioConsoleView({
               <h2 className="console-title">控制量反馈</h2>
               <div className="console-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
-                <span>选择状态</span><b>{readString(asRecord(vision.control).selector_state, "-")}</b>
-                <span>选择原因</span><b>{readString(asRecord(vision.control).selection_reason, "-")}</b>
-                <span>raw dx</span><b>{formatNumber(asRecord(vision.control).raw_error_x, 1)}</b>
-                <span>raw dy</span><b>{formatNumber(asRecord(vision.control).raw_error_y, 1)}</b>
+                <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
+                <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
+                <span>raw dx</span><b>{formatNumber(control.raw_error_x, 1)}</b>
+                <span>raw dy</span><b>{formatNumber(control.raw_error_y, 1)}</b>
                 <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
                 <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
                 <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
@@ -1044,13 +1056,13 @@ export function StudioConsoleView({
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
                 <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
-                <span>dx</span><b>{formatNumber(asRecord(vision.control).dx, 1)}</b>
-                <span>dy</span><b>{formatNumber(asRecord(vision.control).dy, 1)}</b>
-                <span>FOV 内候选</span><b>{formatNumber(asRecord(vision.control).inside_fov, 0)}</b>
-                <span>目标距离</span><b>{formatNumber(asRecord(vision.control).distance_px, 1)}</b>
-                <span>输出状态</span><b>{asRecord(vision.control).will_emit === true ? "允许输出" : "等待触发"}</b>
-                <span>触发要求</span><b>{asRecord(vision.control).trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
-                <span>触发信息</span><b>{readString(asRecord(vision.control).trigger_reason, "-") || "-"}</b>
+                <span>dx</span><b>{formatNumber(control.dx, 1)}</b>
+                <span>dy</span><b>{formatNumber(control.dy, 1)}</b>
+                <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
+                <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
+                <span>输出状态</span><b>{control.will_emit === true ? "允许输出" : "等待触发"}</b>
+                <span>触发要求</span><b>{control.trigger_required === true ? "需要硬件按键" : "调试模式直出"}</b>
+                <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
                 <span>限幅</span><b>{executionIntent.clipped === true ? "已限幅" : executionIntent.clipped === false ? "未限幅" : "-"}</b>

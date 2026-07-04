@@ -193,7 +193,6 @@ class RuntimeService:
                         h=item.h,
                     )
                 )
-            detections = self._filter_detections_by_config(detections)
             classes = list(inference_result.classes)
         except Exception as exc:
             self.last_inference_reason = str(exc)

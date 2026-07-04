@@ -184,6 +184,7 @@ def _apply_config(request: Request, config) -> None:
     )
     if roi_changed:
         _reconfigure_live_capture_for_roi(app)
+    _ensure_runtime_pipeline_for_live_capture(app)
 
 
 def _reconfigure_live_capture_for_roi(app) -> None:
@@ -247,3 +248,31 @@ def _restore_live_executor_connection(
             "kmNet reconnect after config update did not connect: %s",
             status.get("last_error") or status,
         )
+
+
+def _ensure_runtime_pipeline_for_live_capture(app) -> None:
+    runtime = getattr(app.state, "runtime", None)
+    capture = getattr(app.state, "capture", None)
+    config = getattr(app.state, "config", None)
+    if runtime is None or capture is None or config is None:
+        return
+    if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
+        return
+    state = getattr(capture, "state", None)
+    session = getattr(capture, "session", None)
+    if (
+        getattr(capture, "source", None) is None
+        or getattr(state, "available", False) is not True
+        or (session is not None and getattr(session, "running", False) is not True)
+    ):
+        return
+    if runtime.pipeline is None:
+        runtime.pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+    if getattr(runtime.pipeline, "running", False):
+        return
+    try:
+        runtime.pipeline.start()
+    except RuntimeError as exc:
+        logger.warning("runtime pipeline auto-start after config update failed: %s", exc)
+    else:
+        logger.info("runtime pipeline auto-started after config update")
