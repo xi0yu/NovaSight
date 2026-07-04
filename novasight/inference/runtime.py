@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ class InferenceRuntime:
         self.confidence_threshold = 0.25
         self.nms_threshold = 0.45
         self._last_infer_error_logged = ""
+        self._engine_lock = threading.RLock()
         self.engine = engine or TensorRtInferenceEngine()
         if not self.engine.available():
             self.engine = UnavailableInferenceEngine(
@@ -37,15 +39,17 @@ class InferenceRuntime:
             self.confidence_threshold = confidence_threshold
         if nms_threshold is not None:
             self.nms_threshold = nms_threshold
-        for name, value in (
-            ("confidence_threshold", self.confidence_threshold),
-            ("nms_threshold", self.nms_threshold),
-        ):
-            if hasattr(self.engine, name):
-                setattr(self.engine, name, value)
+        with self._engine_lock:
+            for name, value in (
+                ("confidence_threshold", self.confidence_threshold),
+                ("nms_threshold", self.nms_threshold),
+            ):
+                if hasattr(self.engine, name):
+                    setattr(self.engine, name, value)
 
     def status(self) -> dict:
-        status = dict(self.engine.status())
+        with self._engine_lock:
+            status = dict(self.engine.status())
         if self._load_error:
             status["available"] = False
             status["loaded"] = False
@@ -119,8 +123,9 @@ class InferenceRuntime:
             if hasattr(candidate, name):
                 setattr(candidate, name, value)
         try:
-            candidate.load(artifact_path, classes, input_shape)
-            status = dict(candidate.status())
+            with self._engine_lock:
+                candidate.load(artifact_path, classes, input_shape)
+                status = dict(candidate.status())
             status["loaded"] = status.get("loaded") is True
             return candidate, status
         except Exception:
@@ -140,17 +145,18 @@ class InferenceRuntime:
         classes: list[str],
         input_shape: str,
     ) -> None:
-        previous_engine = self.engine
-        self.engine = candidate
-        self._load_error = ""
-        self._last_switch_error = ""
-        self._last_infer_error_logged = ""
-        close = getattr(previous_engine, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+        with self._engine_lock:
+            previous_engine = self.engine
+            self.engine = candidate
+            self._load_error = ""
+            self._last_switch_error = ""
+            self._last_infer_error_logged = ""
+            close = getattr(previous_engine, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
         logger.info(
             "inference loaded artifact=%s engine=%s shape=%s classes=%d",
             artifact_path,
@@ -179,16 +185,19 @@ class InferenceRuntime:
         if self._load_error:
             return InferenceResult(available=False, reason=self._load_error)
         try:
-            result = self.engine.infer(frame)
+            with self._engine_lock:
+                engine = self.engine
+                result = engine.infer(frame)
         except Exception as exc:
-            logger.exception("inference raised engine=%s", self.engine.engine_id)
+            engine_id = getattr(locals().get("engine", None), "engine_id", "unknown")
+            logger.exception("inference raised engine=%s", engine_id)
             return InferenceResult(available=False, reason=str(exc))
         if not isinstance(result, InferenceResult):
             return InferenceResult(available=False, reason="invalid inference result")
         if not result.available and result.reason and result.reason != self._last_infer_error_logged:
             logger.warning(
                 "inference failed engine=%s reason=%s",
-                self.engine.engine_id,
+                engine.engine_id,
                 result.reason,
             )
             self._last_infer_error_logged = result.reason

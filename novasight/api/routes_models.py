@@ -462,6 +462,30 @@ def _close_candidate(candidate: Any) -> None:
             pass
 
 
+def _pause_runtime_pipeline_for_model_switch(request: Request) -> bool:
+    runtime = getattr(request.app.state, "runtime", None)
+    pipeline = getattr(runtime, "pipeline", None)
+    if pipeline is None or getattr(pipeline, "running", False) is not True:
+        return False
+    logger.info("pausing runtime pipeline for model switch")
+    pipeline.stop()
+    return True
+
+
+def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume: bool) -> None:
+    if not should_resume:
+        return
+    runtime = getattr(request.app.state, "runtime", None)
+    pipeline = getattr(runtime, "pipeline", None)
+    if pipeline is None:
+        return
+    try:
+        pipeline.start()
+        logger.info("runtime pipeline resumed after model switch")
+    except Exception as exc:
+        logger.warning("runtime pipeline resume after model switch failed: %s", exc)
+
+
 def _inference_status(request: Request) -> dict[str, Any]:
     inference = getattr(request.app.state, "inference", None)
     status = getattr(inference, "status", None)
@@ -792,6 +816,7 @@ def publish(
     payload: PublishRequest,
 ) -> dict[str, Any]:
     registry = _registry(request)
+    paused_for_switch = False
     try:
         _require_project(registry, project_id)
         artifact_path, classes, input_shape = _resolve_runnable_artifact(
@@ -799,6 +824,7 @@ def publish(
             project_id=project_id,
             artifact_id=payload.artifact_id,
         )
+        paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         candidate, _candidate_status = _prepare_runnable_artifact(
             request,
             artifact_path=artifact_path,
@@ -820,6 +846,7 @@ def publish(
             input_shape=input_shape,
         )
     except RegistryError as exc:
+        _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
         if callable(record_switch_error):
             record_switch_error(str(exc))
@@ -830,6 +857,10 @@ def publish(
             exc,
         )
         raise _as_http_error(exc) from exc
+    except Exception:
+        _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
+        raise
+    _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
     inference_status = _inference_status(request)
     return {
         "deployment": asdict(deployment),
@@ -848,9 +879,11 @@ def publish(
 @router.post("/projects/{project_id}/rollback")
 def rollback(request: Request, project_id: int) -> dict[str, Any]:
     registry = _registry(request)
+    paused_for_switch = False
     try:
         _require_project(registry, project_id)
         current = registry.get_deployment(project_id)
+        paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         if current is None or current.previous_artifact_id is None:
             deployment = registry.rollback(project_id=project_id)
             artifact_path, classes, input_shape = _resolve_runnable_artifact(
@@ -859,6 +892,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                 artifact_id=deployment.artifact_id,
             )
             _load_published_artifact(request, registry, deployment.artifact_id)
+            _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
             inference_status = _inference_status(request)
             return {
                 "deployment": asdict(deployment),
@@ -895,11 +929,16 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             input_shape=input_shape,
         )
     except RegistryError as exc:
+        _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
         if callable(record_switch_error):
             record_switch_error(str(exc))
         logger.warning("model rollback rejected project_id=%s error=%s", project_id, exc)
         raise _as_http_error(exc) from exc
+    except Exception:
+        _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
+        raise
+    _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
     inference_status = _inference_status(request)
     return {
         "deployment": asdict(deployment),

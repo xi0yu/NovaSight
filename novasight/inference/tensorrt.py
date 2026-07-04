@@ -160,6 +160,7 @@ class TensorRtInferenceEngine:
         try:
             import numpy as np
 
+            logger.info("TensorRT warmup starting input=%s output=%s", self._input_shape, self._output_name)
             dummy = np.zeros(
                 (self._input_shape.height, self._input_shape.width, 3),
                 dtype=np.uint8,
@@ -173,6 +174,8 @@ class TensorRtInferenceEngine:
             self._warmed = result.available
             if not result.available:
                 logger.warning("TensorRT warmup failed: %s", result.reason)
+            else:
+                logger.info("TensorRT warmup complete input=%s output=%s", self._input_shape, self._output_name)
         except Exception as exc:
             self._warmed = False
             logger.warning("TensorRT warmup failed: %s", exc)
@@ -339,6 +342,11 @@ class TensorRtInferenceEngine:
     def close(self) -> None:
         cudart = self._cudart
         if cudart is not None:
+            if self._stream is not None:
+                try:
+                    cudart.cudaStreamSynchronize(self._stream)
+                except Exception:
+                    pass
             if self._device_input is not None:
                 try:
                     cudart.cudaFree(self._device_input)
