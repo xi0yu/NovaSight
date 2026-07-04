@@ -324,10 +324,22 @@ export function StudioConsoleView({
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
-  const aimRatio = readNumber(controlConfig.aim_ratio, 40);
+  const aimYRatio = readNumber(controlConfig.aim_ratio, 40);
   const targetLockEnabled = controlConfig.target_lock_enabled !== false;
   const targetStickyBias = readNumber(controlConfig.target_sticky_bias, 0.25);
   const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
+  const straightFovDeg = readNumber(controlConfig.straight_fov_deg, 105);
+  const straightC360 = readNumber(controlConfig.straight_c360, 9980);
+  const straightKpX = readNumber(controlConfig.straight_kp_x, 0.3);
+  const straightKpY = readNumber(controlConfig.straight_kp_y, 0.3);
+  const straightFirstFrameGain = readNumber(controlConfig.straight_first_frame_gain, 1);
+  const straightFirstMaxStep = readNumber(controlConfig.straight_first_max_step, 200);
+  const straightMaxStep = readNumber(controlConfig.straight_max_step, 80);
+  const straightInDeadzone = readNumber(controlConfig.straight_in_deadzone, 8);
+  const straightJumpThreshold = readNumber(controlConfig.straight_jump_threshold, 40);
+  const straightPredGain = readNumber(controlConfig.straight_pred_gain, 0);
+  const straightPredConsistencyFrames = readNumber(controlConfig.straight_pred_consistency_frames, 3);
+  const straightGainY = readNumber(controlConfig.straight_gain_y, 1);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1286,21 +1298,22 @@ export function StudioConsoleView({
 
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="控制策略" value={readString(controlConfig.strategy, "pid")} small="strategy" />
+            <Metric title="控制策略" value={readString(controlConfig.strategy, "straight")} small="strategy" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
             <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
             <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
-            <Metric title="预测" value={predictionFactor.toFixed(2)} small="lead" />
-            <Metric title="瞄准高度" value={`${aimRatio.toFixed(0)}%`} small="aim" />
+            <Metric title="预测" value={straightPredGain.toFixed(2)} small="lead" />
+            <Metric title="瞄准高度" value={`${aimYRatio.toFixed(0)}%`} small="aim y" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
               <h2 className="console-title">鼠标移动算法</h2>
               <label>算法模式</label>
               <select
-                value={readString(controlConfig.strategy, "pid")}
+                value={readString(controlConfig.strategy, "straight")}
                 onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
               >
+                <option value="straight">Straight 透视一击</option>
                 <option value="pid">PID 平滑追踪</option>
                 <option value="proportional">比例速度</option>
                 <option value="predictive">预测追踪</option>
@@ -1353,7 +1366,19 @@ export function StudioConsoleView({
               </select>
               <NumberControl label="目标粘性" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
-              <NumberControl label="瞄准高度 aim_ratio" value={aimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
+              <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
+              <NumberControl label="Straight FOV" value={straightFovDeg} min={30} max={140} step={1} onCommit={(value) => updateConfigField("control", "straight_fov_deg", Math.round(value))} />
+              <NumberControl label="Straight c360" value={straightC360} min={500} max={50000} step={20} onCommit={(value) => updateConfigField("control", "straight_c360", Math.round(value))} />
+              <NumberControl label="Straight kp_x" value={straightKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_x", value)} />
+              <NumberControl label="Straight kp_y" value={straightKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_y", value)} />
+              <NumberControl label="首帧增益 gain_first" value={straightFirstFrameGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_first_frame_gain", value)} />
+              <NumberControl label="首帧上限 first_max_step" value={straightFirstMaxStep} min={1} max={2000} step={10} onCommit={(value) => updateConfigField("control", "straight_first_max_step", value)} />
+              <NumberControl label="精修上限 max_step" value={straightMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_max_step", value)} />
+              <NumberControl label="输入死区 px" value={straightInDeadzone} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "straight_in_deadzone", value)} />
+              <NumberControl label="跳变重锁 px" value={straightJumpThreshold} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_jump_threshold", value)} />
+              <NumberControl label="前馈预测 pred_gain" value={straightPredGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_pred_gain", value)} />
+              <NumberControl label="动作判定帧" value={straightPredConsistencyFrames} min={1} max={15} step={1} onCommit={(value) => updateConfigField("control", "straight_pred_consistency_frames", Math.round(value))} />
+              <NumberControl label="首帧 Y 增益" value={straightGainY} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "straight_gain_y", value)} />
               <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
               <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
               <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
@@ -1373,13 +1398,14 @@ export function StudioConsoleView({
                 <span>aim dy</span><b>{formatNumber(control.aim_error_y, 1)}</b>
                 <span>raw dx</span><b>{formatNumber(control.raw_error_x, 1)}</b>
                 <span>raw dy</span><b>{formatNumber(control.raw_error_y, 1)}</b>
-                <span>aim ratio</span><b>{formatNumber(control.aim_ratio, 0)}%</b>
+                <span>aim y ratio</span><b>{formatNumber(control.aim_y_ratio ?? control.aim_ratio, 0)}%</b>
                 <span>aim point</span><b>{`${formatNumber(control.aim_x, 1)}, ${formatNumber(control.aim_y, 1)}`}</b>
                 <span>预测点</span><b>{`${formatNumber(controlPipeline.predicted_x, 1)}, ${formatNumber(controlPipeline.predicted_y, 1)}`}</b>
                 <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
+                <span>FOV / c360</span><b>{`${formatNumber(controlPipeline.fov_deg, 0)} / ${formatNumber(controlPipeline.c360, 0)}`}</b>
                 <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
                 <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
-                <span>速度系数</span><b>{formatNumber(controlPipeline.speed, 2)}</b>
+                <span>动作门控</span><b>{`${formatNumber(controlPipeline.motion_coef_x, 2)} / ${formatNumber(controlPipeline.motion_coef_y, 2)}`}</b>
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
                 <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>

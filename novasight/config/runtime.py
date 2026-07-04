@@ -88,8 +88,8 @@ class CaptureConfig:
 
 @dataclass
 class ControlConfig:
-    max_abs_dx: int = 120
-    max_abs_dy: int = 120
+    max_abs_dx: int = 200
+    max_abs_dy: int = 200
     min_confidence: float = 0.0
     fov_ratio: float = 0.28
     target_lock_enabled: bool = True
@@ -99,7 +99,7 @@ class ControlConfig:
     trigger_mode: str = "hardware"
     trigger_bindings: list[str] = field(default_factory=lambda: ["MouseRight"])
     output_mode: str = ""
-    strategy: str = "pid"
+    strategy: str = "straight"
     pid_kp_x: float = 0.35
     pid_kp_y: float = 0.24
     pid_ki: float = 0.1
@@ -121,6 +121,18 @@ class ControlConfig:
     counts_per_revolution_x: float = 4096.0
     counts_per_revolution_y: float = 4096.0
     bezier_curvature: float = 0.18
+    straight_fov_deg: float = 105.0
+    straight_c360: float = 9980.0
+    straight_kp_x: float = 0.3
+    straight_kp_y: float = 0.3
+    straight_first_frame_gain: float = 1.0
+    straight_first_max_step: float = 200.0
+    straight_max_step: float = 80.0
+    straight_in_deadzone: float = 8.0
+    straight_jump_threshold: float = 40.0
+    straight_pred_gain: float = 0.0
+    straight_pred_consistency_frames: int = 3
+    straight_gain_y: float = 1.0
 
 
 @dataclass
@@ -256,8 +268,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
-    if cfg.control.strategy not in {"pid", "proportional", "predictive"}:
-        raise ValueError("runtime config key 'control.strategy' must be pid, proportional, or predictive")
+    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive"}:
+        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, or predictive")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
@@ -287,9 +299,22 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "counts_per_revolution_x",
         "counts_per_revolution_y",
         "bezier_curvature",
+        "straight_c360",
+        "straight_kp_x",
+        "straight_kp_y",
+        "straight_first_frame_gain",
+        "straight_first_max_step",
+        "straight_max_step",
+        "straight_in_deadzone",
+        "straight_jump_threshold",
+        "straight_pred_gain",
+        "straight_pred_consistency_frames",
+        "straight_gain_y",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
+    if cfg.control.straight_fov_deg <= 0 or cfg.control.straight_fov_deg >= 180:
+        raise ValueError("runtime config key 'control.straight_fov_deg' must be > 0 and < 180")
     if cfg.control.ema_alpha > 1:
         raise ValueError("runtime config key 'control.ema_alpha' must be <= 1")
     if cfg.control.prediction_factor > 1:
