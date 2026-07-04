@@ -3930,6 +3930,11 @@ tbody tr:hover {
   color: var(--accent-red);
 }
 
+.console-full-button {
+  width: 100%;
+  margin-top: 16px;
+}
+
 .console-page {
   display: none;
 }

@@ -17,6 +17,7 @@ logger = logging.getLogger("novasight.inference.runtime")
 class InferenceRuntime:
     def __init__(self, engine: InferenceEngine | None = None) -> None:
         self._load_error = ""
+        self._last_switch_error = ""
         self.confidence_threshold = 0.25
         self.nms_threshold = 0.45
         self._last_infer_error_logged = ""
@@ -49,11 +50,38 @@ class InferenceRuntime:
             status["available"] = False
             status["loaded"] = False
             status["reason"] = self._load_error
+        if self._last_switch_error:
+            status["last_switch_error"] = self._last_switch_error
         return status
 
     def disable(self, reason: str) -> None:
         self._load_error = reason
         logger.warning("inference disabled: %s", reason)
+
+    def probe(
+        self,
+        artifact_path: Path,
+        classes: list[str],
+        input_shape: str,
+    ) -> dict:
+        candidate: InferenceEngine | None = None
+        try:
+            candidate, status = self.prepare(artifact_path, classes, input_shape)
+            return status
+        except Exception as exc:
+            return {
+                "selected": getattr(candidate, "engine_id", "unknown"),
+                "available": False,
+                "loaded": False,
+                "reason": str(exc),
+            }
+        finally:
+            close = getattr(candidate, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def load(
         self,
@@ -61,41 +89,86 @@ class InferenceRuntime:
         classes: list[str],
         input_shape: str,
     ) -> None:
-        suffix = artifact_path.suffix.lower()
-        if suffix == ".onnx":
-            self.engine = OnnxRuntimeInferenceEngine(
-                confidence_threshold=self.confidence_threshold,
-                nms_threshold=self.nms_threshold,
-            )
-        elif suffix == ".engine":
-            self.engine = TensorRtInferenceEngine(
-                confidence_threshold=self.confidence_threshold,
-                nms_threshold=self.nms_threshold,
-            )
-        else:
-            self.engine = UnavailableInferenceEngine(
-                f"unsupported inference artifact suffix: {artifact_path.suffix}"
-            )
-        self.configure()
         try:
-            self.engine.load(artifact_path, classes, input_shape)
+            candidate, _status = self.prepare(artifact_path, classes, input_shape)
         except Exception as exc:
-            self._load_error = str(exc)
+            self._last_switch_error = str(exc)
             logger.warning(
-                "inference load failed artifact=%s engine=%s reason=%s",
+                "inference load failed artifact=%s reason=%s",
                 artifact_path,
-                self.engine.engine_id,
-                self._load_error,
+                self._last_switch_error,
             )
             return
+        self.commit(candidate, artifact_path=artifact_path, classes=classes, input_shape=input_shape)
+
+    def prepare(
+        self,
+        artifact_path: Path,
+        classes: list[str],
+        input_shape: str,
+    ) -> tuple[InferenceEngine, dict]:
+        candidate = self._engine_for_artifact(artifact_path)
+        for name, value in (
+            ("confidence_threshold", self.confidence_threshold),
+            ("nms_threshold", self.nms_threshold),
+        ):
+            if hasattr(candidate, name):
+                setattr(candidate, name, value)
+        try:
+            candidate.load(artifact_path, classes, input_shape)
+            status = dict(candidate.status())
+            status["loaded"] = status.get("loaded") is True
+            return candidate, status
+        except Exception:
+            close = getattr(candidate, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            raise
+
+    def commit(
+        self,
+        candidate: InferenceEngine,
+        *,
+        artifact_path: Path,
+        classes: list[str],
+        input_shape: str,
+    ) -> None:
+        previous_engine = self.engine
+        self.engine = candidate
         self._load_error = ""
+        self._last_switch_error = ""
         self._last_infer_error_logged = ""
+        close = getattr(previous_engine, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
         logger.info(
             "inference loaded artifact=%s engine=%s shape=%s classes=%d",
             artifact_path,
             self.engine.engine_id,
             input_shape,
             len(classes),
+        )
+
+    def _engine_for_artifact(self, artifact_path: Path) -> InferenceEngine:
+        suffix = artifact_path.suffix.lower()
+        if suffix == ".onnx":
+            return OnnxRuntimeInferenceEngine(
+                confidence_threshold=self.confidence_threshold,
+                nms_threshold=self.nms_threshold,
+            )
+        if suffix == ".engine":
+            return TensorRtInferenceEngine(
+                confidence_threshold=self.confidence_threshold,
+                nms_threshold=self.nms_threshold,
+            )
+        return UnavailableInferenceEngine(
+            f"unsupported inference artifact suffix: {artifact_path.suffix}"
         )
 
     def infer(self, frame: Any) -> InferenceResult:

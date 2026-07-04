@@ -283,6 +283,80 @@ def _load_published_artifact(
     )
 
 
+def _resolve_runnable_artifact(
+    registry: ModelRegistry,
+    *,
+    project_id: int,
+    artifact_id: int,
+) -> tuple[Path, list[str], str]:
+    artifact = registry.get_artifact(artifact_id)
+    if artifact is None:
+        raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
+    if artifact.status != "ready":
+        raise RegistryValidationError("only ready artifacts can be published")
+    if artifact.kind not in {"onnx", "engine"}:
+        raise RegistryValidationError(
+            f"published artifact is not runnable inference artifact: {artifact.kind}"
+        )
+    version = registry.get_version(artifact.version_id)
+    if version is None:
+        raise RegistryNotFoundError(f"unknown version id: {artifact.version_id}")
+    if version.project_id != project_id:
+        raise RegistryValidationError("artifact does not belong to project")
+    project = registry.get_project(version.project_id)
+    if project is None:
+        raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
+    return (
+        Path(registry.data_dir) / project.name / version.version / artifact.path,
+        list(version.classes),
+        version.input_shape,
+    )
+
+
+def _probe_runnable_artifact(
+    request: Request,
+    *,
+    artifact_path: Path,
+    classes: list[str],
+    input_shape: str,
+) -> dict[str, Any]:
+    inference = request.app.state.inference
+    probe = getattr(inference, "probe", None)
+    if not callable(probe):
+        raise RegistryValidationError("inference runtime does not support safe model switching")
+    status = dict(probe(artifact_path, classes, input_shape))
+    if status.get("loaded") is not True:
+        reason = status.get("reason") or "model probe failed"
+        raise RegistryValidationError(f"model switch rejected: {reason}")
+    return status
+
+
+def _prepare_runnable_artifact(
+    request: Request,
+    *,
+    artifact_path: Path,
+    classes: list[str],
+    input_shape: str,
+) -> tuple[Any, dict[str, Any]]:
+    inference = request.app.state.inference
+    prepare = getattr(inference, "prepare", None)
+    if not callable(prepare):
+        raise RegistryValidationError("inference runtime does not support safe model switching")
+    try:
+        return prepare(artifact_path, classes, input_shape)
+    except Exception as exc:
+        raise RegistryValidationError(f"model switch rejected: {exc}") from exc
+
+
+def _close_candidate(candidate: Any) -> None:
+    close = getattr(candidate, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _inference_status(request: Request) -> dict[str, Any]:
     inference = getattr(request.app.state, "inference", None)
     status = getattr(inference, "status", None)
@@ -547,11 +621,31 @@ def publish(
     registry = _registry(request)
     try:
         _require_project(registry, project_id)
-        deployment = registry.publish(
+        artifact_path, classes, input_shape = _resolve_runnable_artifact(
+            registry,
             project_id=project_id,
             artifact_id=payload.artifact_id,
         )
-        _load_published_artifact(request, registry, payload.artifact_id)
+        candidate, _candidate_status = _prepare_runnable_artifact(
+            request,
+            artifact_path=artifact_path,
+            classes=classes,
+            input_shape=input_shape,
+        )
+        try:
+            deployment = registry.publish(
+                project_id=project_id,
+                artifact_id=payload.artifact_id,
+            )
+        except RegistryError:
+            _close_candidate(candidate)
+            raise
+        request.app.state.inference.commit(
+            candidate,
+            artifact_path=artifact_path,
+            classes=classes,
+            input_shape=input_shape,
+        )
     except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return {
@@ -565,8 +659,36 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
     registry = _registry(request)
     try:
         _require_project(registry, project_id)
-        deployment = registry.rollback(project_id=project_id)
-        _load_published_artifact(request, registry, deployment.artifact_id)
+        current = registry.get_deployment(project_id)
+        if current is None or current.previous_artifact_id is None:
+            deployment = registry.rollback(project_id=project_id)
+            _load_published_artifact(request, registry, deployment.artifact_id)
+            return {
+                "deployment": asdict(deployment),
+                "inference": _inference_status(request),
+            }
+        artifact_path, classes, input_shape = _resolve_runnable_artifact(
+            registry,
+            project_id=project_id,
+            artifact_id=current.previous_artifact_id,
+        )
+        candidate, _candidate_status = _prepare_runnable_artifact(
+            request,
+            artifact_path=artifact_path,
+            classes=classes,
+            input_shape=input_shape,
+        )
+        try:
+            deployment = registry.rollback(project_id=project_id)
+        except RegistryError:
+            _close_candidate(candidate)
+            raise
+        request.app.state.inference.commit(
+            candidate,
+            artifact_path=artifact_path,
+            classes=classes,
+            input_shape=input_shape,
+        )
     except RegistryError as exc:
         raise _as_http_error(exc) from exc
     return {

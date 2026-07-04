@@ -5,10 +5,15 @@ import {
   CaptureCapability,
   CaptureSelectPayload,
   HealthResponse,
+  ModelArtifact,
   ModelProject,
+  ModelVersion,
   RuntimeConfig,
   RuntimeState,
   getCaptureCapabilities,
+  getModelArtifacts,
+  getModelVersions,
+  publishModel,
   selectCaptureProfile,
   stopCapture,
   streamUrl,
@@ -127,6 +132,11 @@ export function StudioConsoleView({
   const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
   const [selectedChoiceId, setSelectedChoiceId] = useState("");
+  const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
+  const [selectedModelVersionId, setSelectedModelVersionId] = useState<number | "">("");
+  const [selectedModelArtifactId, setSelectedModelArtifactId] = useState<number | "">("");
+  const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
+  const [modelArtifacts, setModelArtifacts] = useState<ModelArtifact[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -149,6 +159,13 @@ export function StudioConsoleView({
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
+  const switchableArtifacts = modelArtifacts.filter(
+    (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
+  );
+  const selectedSwitchArtifact =
+    switchableArtifacts.find((item) => item.id === selectedModelArtifactId) ??
+    switchableArtifacts[0] ??
+    null;
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
@@ -166,6 +183,81 @@ export function StudioConsoleView({
       );
     }
   }, [selectedChoiceId, selectedProfile]);
+
+  useEffect(() => {
+    if (projects.length === 0) {
+      setSelectedModelProjectId("");
+      return;
+    }
+    setSelectedModelProjectId((current) =>
+      typeof current === "number" && projects.some((project) => project.id === current)
+        ? current
+        : runtime?.active_model?.project?.id ?? projects[0].id
+    );
+  }, [projects, runtime?.active_model?.project?.id]);
+
+  useEffect(() => {
+    if (selectedModelProjectId === "") {
+      setModelVersions([]);
+      setSelectedModelVersionId("");
+      return;
+    }
+    let cancelled = false;
+    getModelVersions(selectedModelProjectId)
+      .then((items) => {
+        if (cancelled) {
+          return;
+        }
+        setModelVersions(items);
+        setSelectedModelVersionId((current) =>
+          typeof current === "number" && items.some((item) => item.id === current)
+            ? current
+            : runtime?.active_model?.version?.id ?? items[0]?.id ?? ""
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setModelVersions([]);
+          setSelectedModelVersionId("");
+          setLocalError(`模型版本读取失败：${getErrorMessage(err)}`);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runtime?.active_model?.version?.id, selectedModelProjectId]);
+
+  useEffect(() => {
+    if (selectedModelVersionId === "") {
+      setModelArtifacts([]);
+      return;
+    }
+    let cancelled = false;
+    getModelArtifacts(selectedModelVersionId)
+      .then((items) => {
+        if (cancelled) {
+          return;
+        }
+        setModelArtifacts(items);
+        const runnable = items.filter(
+          (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
+        );
+        setSelectedModelArtifactId((current) =>
+          typeof current === "number" && runnable.some((item) => item.id === current)
+            ? current
+            : artifact?.id ?? runnable[0]?.id ?? ""
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setModelArtifacts([]);
+          setLocalError(`模型产物读取失败：${getErrorMessage(err)}`);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedModelVersionId]);
 
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
@@ -300,6 +392,24 @@ export function StudioConsoleView({
     }
   };
 
+  const switchModel = async () => {
+    if (selectedModelProjectId === "" || selectedSwitchArtifact === null) {
+      setLocalError("请选择可推理的 ONNX 或 TensorRT engine 产物。");
+      return;
+    }
+    setBusy("model.switch");
+    setLocalError(null);
+    try {
+      await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`模型切换失败，当前运行模型已保留：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <section className="console-app">
       <header className="console-top">
@@ -429,9 +539,43 @@ export function StudioConsoleView({
             <div className="console-card">
               <h2 className="console-title">模型设置</h2>
               <label>模型文件</label>
-              <select value={artifact?.path ?? ""} disabled>
-                <option>{artifact?.path ?? activeModelName}</option>
+              <select
+                value={selectedModelProjectId}
+                onChange={(event) => setSelectedModelProjectId(Number(event.target.value))}
+              >
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+                {projects.length === 0 ? <option value="">未发现模型</option> : null}
               </select>
+              <label>模型版本</label>
+              <select
+                value={selectedModelVersionId}
+                onChange={(event) => setSelectedModelVersionId(Number(event.target.value))}
+              >
+                {modelVersions.map((item) => (
+                  <option key={item.id} value={item.id}>{item.version} · {item.input_shape}</option>
+                ))}
+                {modelVersions.length === 0 ? <option value="">暂无版本</option> : null}
+              </select>
+              <label>推理产物</label>
+              <select
+                value={selectedSwitchArtifact?.id ?? ""}
+                onChange={(event) => setSelectedModelArtifactId(Number(event.target.value))}
+              >
+                {switchableArtifacts.map((item) => (
+                  <option key={item.id} value={item.id}>{item.kind} · {item.path}</option>
+                ))}
+                {switchableArtifacts.length === 0 ? <option value="">暂无 ONNX / engine ready 产物</option> : null}
+              </select>
+              <button
+                className="console-button primary console-full-button"
+                disabled={busy === "model.switch" || selectedModelProjectId === "" || selectedSwitchArtifact === null}
+                onClick={switchModel}
+                type="button"
+              >
+                {busy === "model.switch" ? "安全切换中..." : "安全切换模型"}
+              </button>
               <label>推理后端</label>
               <select value={readString(runtime?.inference?.selected, "auto")} disabled>
                 <option value={readString(runtime?.inference?.selected, "auto")}>
@@ -440,7 +584,7 @@ export function StudioConsoleView({
               </select>
               <label>输入尺寸</label>
               <select value={version?.input_shape ?? ""} disabled>
-                <option>{version?.input_shape ?? "模型未发布"}</option>
+                <option>{version?.input_shape ?? "模型未发布"} · 当前 {artifact?.path ?? activeModelName}</option>
               </select>
               <label>置信度阈值</label>
               <div className="console-row">
