@@ -130,6 +130,8 @@ export type Statistics = {
   skipped_counter: number;
   capture_fps: number;
   inference_fps: number;
+  queue_latency?: number;
+  inference_latency?: number;
   e2e_latency: number;
 };
 

@@ -1658,7 +1658,7 @@ export function StudioConsoleView({
           </div>
           <div className="console-grid3">
             <KvCard title="采集统计" rows={[["成功帧", String(statistics?.capture_counter ?? 0)], ["丢弃帧", String(statistics?.dropped_counter ?? 0)], ["抖动", formatNumber(capture?.frame_period_ms, 2)]]} />
-            <KvCard title="推理统计" rows={[["完成帧", String(statistics?.inference_counter ?? 0)], ["平均耗时", formatNumber(statistics?.e2e_latency, 1)], ["最大耗时", "-"]]} />
+            <KvCard title="推理统计" rows={[["完成帧", String(statistics?.inference_counter ?? 0)], ["最近耗时", formatNumber(statistics?.inference_latency, 1)], ["队列等待", formatNumber(statistics?.queue_latency, 1)]]} />
             <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
           </div>
           <div className="console-card">
@@ -1675,20 +1675,21 @@ export function StudioConsoleView({
             <Metric title="采集等待" value={formatNumber(capture?.capture_wait_ms, 2)} small="ms" />
             <Metric title="帧间隔" value={formatNumber(capture?.frame_period_ms, 2)} small="ms" />
             <Metric title="端到端" value={formatNumber(statistics?.e2e_latency, 1)} small="ms" />
-            <Metric title="队列积压" value={String(readNumber(asRecord(pipeline.queue).size, 0))} small="frames" />
+            <Metric title="队列等待" value={formatNumber(statistics?.queue_latency, 1)} small="ms" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
               <h2 className="console-title">延迟链路</h2>
               <div className="console-timeline">
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
+                <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
                 <Event label="Decode" value="--" width={22} />
                 <Event label="Preprocess" value="--" width={18} />
-                <Event label="Inference" value={formatNumber(statistics?.e2e_latency, 1)} width={56} />
+                <Event label="Inference" value={formatNumber(statistics?.inference_latency, 1)} width={56} />
                 <Event label="Postprocess" value="--" width={20} />
               </div>
             </div>
-            <KvCard title="采集诊断" rows={[["状态判断", capture?.available ? "采集中" : "等待数据"], ["建议", capture?.available ? "观察丢帧和帧间隔" : "启动后分析"], ["峰值延迟", "-"]]} />
+            <KvCard title="采集诊断" rows={[["状态判断", capture?.available ? "采集中" : "等待数据"], ["队列积压", String(readNumber(asRecord(pipeline.queue).size, 0))], ["建议", capture?.available ? "观察队列等待和帧间隔" : "启动后分析"]]} />
           </div>
         </section>
       </main>

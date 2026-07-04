@@ -74,6 +74,8 @@ class RuntimeService:
             statistics["inference_counter"] = getattr(pipeline_stats, "window_processed_frames", 0)
             statistics["skipped_counter"] = getattr(pipeline_stats, "skipped_frames", 0)
             statistics["inference_fps"] = getattr(pipeline_stats, "inference_fps", 0.0)
+            statistics["queue_latency"] = getattr(pipeline_stats, "queue_latency_ms", 0.0)
+            statistics["inference_latency"] = getattr(pipeline_stats, "inference_latency_ms", 0.0)
             statistics["e2e_latency"] = getattr(pipeline_stats, "e2e_latency_ms", 0.0)
         if capture_payload:
             capture_payload["statistics"] = statistics

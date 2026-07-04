@@ -51,6 +51,8 @@ function readStatistics(runtime: RuntimeState | null): Statistics {
     skipped_counter: stats?.skipped_counter ?? 0,
     capture_fps: stats?.capture_fps ?? runtime?.capture?.fps_capture ?? 0,
     inference_fps: stats?.inference_fps ?? 0,
+    queue_latency: stats?.queue_latency ?? 0,
+    inference_latency: stats?.inference_latency ?? 0,
     e2e_latency: stats?.e2e_latency ?? 0
   };
 }

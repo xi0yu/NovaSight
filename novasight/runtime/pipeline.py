@@ -20,6 +20,8 @@ class PipelineStats:
     skipped_frames: int = 0
     inference_fps: float = 0.0
     e2e_latency_ms: float = 0.0
+    queue_latency_ms: float = 0.0
+    inference_latency_ms: float = 0.0
     last_frame_id: int = 0
     last_error: str | None = None
     started_at: float | None = None
@@ -128,6 +130,7 @@ class RuntimePipeline:
                 self._record_skipped(now_ns, skipped)
             if not self._inference_enabled():
                 continue
+            process_start_ns = time.monotonic_ns()
             self.runtime.process_captured_frame(frame)
             self.stats.processed_frames += 1
             done_ns = time.monotonic_ns()
@@ -136,6 +139,8 @@ class RuntimePipeline:
             self._prune_window(self._skipped_window_ts_ns, done_ns)
             self.stats.window_processed_frames = len(self._processed_window_ts_ns)
             self.stats.inference_fps = self._window_fps(self._processed_window_ts_ns)
+            self.stats.queue_latency_ms = max(0.0, (process_start_ns - int(frame.ts_ns)) / 1e6)
+            self.stats.inference_latency_ms = max(0.0, (done_ns - process_start_ns) / 1e6)
             self.stats.e2e_latency_ms = max(0.0, (done_ns - int(frame.ts_ns)) / 1e6)
             self.stats.skipped_frames = len(self._skipped_window_ts_ns)
 
