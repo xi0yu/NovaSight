@@ -876,7 +876,6 @@ export function StudioConsoleView({
     intervalMs = 0,
     moveKindOverride?: string
   ) => {
-    setBusy("kmnet.diagnostic");
     setLocalError(null);
     setKmnetTestMessage("");
     try {
@@ -884,8 +883,11 @@ export function StudioConsoleView({
       const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy), repeat, intervalMs, effectiveMoveKind);
       const status = asRecord(result.status);
       const stepsSent = readNumber(result.steps_sent, result.sent === true ? repeat : 0);
+      const queued = result.queued === true;
       setKmnetTestMessage(
-        result.sent === true
+        queued
+          ? `已下发 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${repeat} 步 · 后端后台执行`
+          : result.sent === true
           ? `已发送 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
           : `未发送 ${effectiveMoveKind}：${readString(result.message, "未知原因")} · ${stepsSent}/${repeat} 步`
       );
@@ -893,8 +895,6 @@ export function StudioConsoleView({
     } catch (err) {
       setLocalError(`kmNet 诊断移动失败：${getErrorMessage(err)}`);
       await onRefresh();
-    } finally {
-      setBusy(null);
     }
   }, [kmnetTestDx, kmnetTestDy, moveKind, onRefresh]);
 
@@ -905,7 +905,9 @@ export function StudioConsoleView({
     try {
       const result = await diagnosticCircleKmNet(8, 32, 8);
       const failed = asRecord(result.failed);
-      if (result.sent === true) {
+      if (result.queued === true) {
+        setKmnetTestMessage(`画圆测试已下发 · ${readNumber(result.steps_requested, 32)} 步 · 半径 ${readNumber(result.radius, 8)} · 后端后台执行`);
+      } else if (result.sent === true) {
         setKmnetTestMessage(`画圆测试已发送 ${readNumber(result.steps_sent, 0)} 步 · 半径 ${readNumber(result.radius, 8)}`);
       } else {
         setKmnetTestMessage(

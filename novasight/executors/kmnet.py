@@ -39,6 +39,7 @@ class KmNetExecutor:
         self.last_button_right = False
         self.last_button_available = False
         self.last_button_reason = ""
+        self.last_button_raw: dict[str, Any] = {}
         self._last_button_log_signature = ""
         self._last_button_log_s = 0.0
         result = load_kmnet_driver()
@@ -92,6 +93,7 @@ class KmNetExecutor:
             "button_left": self.last_button_left,
             "button_right": self.last_button_right,
             "button_reason": self.last_button_reason,
+            "button_raw": self.last_button_raw,
         }
 
     def read_buttons(self) -> dict[str, Any]:
@@ -100,31 +102,53 @@ class KmNetExecutor:
         if not self.monitoring:
             return self._record_buttons(False, False, False, "kmNet monitor is not enabled")
         try:
-            left = self._read_button("isdown_left")
-            right = self._read_button("isdown_right")
+            left_raw = self._read_button_raw("isdown_left")
+            right_raw = self._read_button_raw("isdown_right")
+            left = left_raw["pressed"]
+            right = right_raw["pressed"]
+            raw = {
+                "left": left_raw,
+                "right": right_raw,
+            }
         except Exception as exc:
             self.last_error = f"kmNet button read failed: {exc}"
             return self._record_buttons(False, False, False, self.last_error)
-        return self._record_buttons(True, left, right, "")
+        return self._record_buttons(True, left, right, "", raw=raw)
 
-    def _record_buttons(self, available: bool, left: bool, right: bool, reason: str) -> dict[str, Any]:
+    def _record_buttons(
+        self,
+        available: bool,
+        left: bool,
+        right: bool,
+        reason: str,
+        *,
+        raw: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.last_button_available = bool(available)
         self.last_button_left = bool(left)
         self.last_button_right = bool(right)
         self.last_button_reason = str(reason or "")
-        signature = f"available={available}|left={left}|right={right}|reason={reason}"
+        self.last_button_raw = raw or {}
+        signature = f"available={available}|left={left}|right={right}|reason={reason}|raw={self.last_button_raw}"
         now = time.monotonic()
         if signature != self._last_button_log_signature or now - self._last_button_log_s >= 1.0:
             self._last_button_log_signature = signature
             self._last_button_log_s = now
             logger.info(
-                "kmNet buttons available=%s left=%s right=%s reason=%s",
+                "kmNet buttons available=%s left=%s right=%s reason=%s raw=%s",
                 available,
                 left,
                 right,
                 reason or "",
+                self.last_button_raw,
             )
-        return {"available": bool(available), "left": bool(left), "right": bool(right), "reason": str(reason or "")}
+        return {
+            "available": bool(available),
+            "left": bool(left),
+            "right": bool(right),
+            "reason": str(reason or ""),
+            "raw": self.last_button_raw,
+        }
 
     def diagnostic_move(self, dx: int, dy: int, move_kind: str | None = None) -> ExecutionResult:
         output = ControlOutput(
@@ -315,6 +339,21 @@ class KmNetExecutor:
         if fn is None:
             raise RuntimeError(f"driver function unavailable: {name}")
         rc = fn(*args)
+        if name in {
+            "init",
+            "monitor",
+            "move",
+            "enc_move",
+            "move_auto",
+            "enc_move_auto",
+            "move_beizer",
+            "move_bezier",
+            "enc_move_beizer",
+            "enc_move_bezier",
+            "left",
+            "trace",
+        }:
+            logger.info("kmNet driver call name=%s args=%s rc=%s", name, args, rc)
         if rc not in (None, 0):
             raise RuntimeError(f"{name} failed rc={rc}")
         return rc
@@ -322,8 +361,13 @@ class KmNetExecutor:
     def _call_init_driver(self) -> Any:
         return self._call_driver("init", self.host, str(self.port), self.uuid)
 
-    def _read_button(self, name: str) -> bool:
+    def _read_button_raw(self, name: str) -> dict[str, Any]:
         fn = getattr(self._driver, name, None)
         if fn is None:
-            return False
-        return int(fn()) == 1
+            return {"function": name, "exists": False, "value": None, "pressed": False}
+        value = fn()
+        try:
+            pressed = int(value) == 1
+        except (TypeError, ValueError):
+            pressed = bool(value)
+        return {"function": name, "exists": True, "value": value, "pressed": pressed}

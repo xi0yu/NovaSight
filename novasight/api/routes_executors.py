@@ -5,7 +5,7 @@ import math
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter()
@@ -61,11 +61,40 @@ def buttons_kmnet(request: Request) -> dict[str, Any]:
 
 
 @router.post("/api/executors/kmnet/diagnostic-move")
-def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> dict[str, Any]:
+def diagnostic_move_kmnet(
+    request: Request,
+    payload: DiagnosticMoveRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
     executor = _kmnet_executor(request)
     move = getattr(executor, "diagnostic_move", None)
     if not callable(move):
         raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic move")
+    background_tasks.add_task(_run_diagnostic_move, executor, payload)
+    logger.info(
+        "kmNet diagnostic move queued dx=%s dy=%s repeat=%s interval_ms=%s kind=%s",
+        payload.dx,
+        payload.dy,
+        payload.repeat,
+        payload.interval_ms,
+        payload.move_kind,
+    )
+    return {
+        "sent": True,
+        "queued": True,
+        "message": "queued diagnostic move",
+        "steps_requested": payload.repeat,
+        "steps_sent": 0,
+        "failed": None,
+        "status": executor.status() if callable(getattr(executor, "status", None)) else {},
+    }
+
+
+def _run_diagnostic_move(executor: Any, payload: DiagnosticMoveRequest) -> None:
+    move = getattr(executor, "diagnostic_move", None)
+    if not callable(move):
+        logger.warning("kmNet diagnostic move dropped: executor has no diagnostic_move")
+        return
     result: Any | None = None
     sent = 0
     failed: dict[str, Any] | None = None
@@ -81,38 +110,61 @@ def diagnostic_move_kmnet(request: Request, payload: DiagnosticMoveRequest) -> d
             break
         if payload.interval_ms > 0 and index < payload.repeat - 1:
             time.sleep(payload.interval_ms / 1000)
-    response = _execution_result_payload(result) if result is not None else {}
-    response["sent"] = failed is None and sent > 0
-    response["steps_requested"] = payload.repeat
-    response["steps_sent"] = sent
-    response["failed"] = failed
-    response["status"] = executor.status() if callable(getattr(executor, "status", None)) else {}
-    if response["sent"]:
+    if failed is None and sent > 0:
         logger.info(
-            "kmNet diagnostic move sent dx=%s dy=%s repeat=%s",
+            "kmNet diagnostic move finished dx=%s dy=%s repeat=%s kind=%s",
             payload.dx,
             payload.dy,
             sent,
+            payload.move_kind,
         )
     else:
         logger.warning(
-            "kmNet diagnostic move rejected dx=%s dy=%s repeat=%s message=%s failed=%s",
+            "kmNet diagnostic move failed dx=%s dy=%s repeat=%s message=%s failed=%s kind=%s",
             payload.dx,
             payload.dy,
             payload.repeat,
-            response.get("message"),
+            str(getattr(result, "message", "")) if result is not None else "",
             failed,
+            payload.move_kind,
         )
-    return response
 
 
 @router.post("/api/executors/kmnet/diagnostic-circle")
-def diagnostic_circle_kmnet(request: Request, payload: DiagnosticCircleRequest) -> dict[str, Any]:
+def diagnostic_circle_kmnet(
+    request: Request,
+    payload: DiagnosticCircleRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
     executor = _kmnet_executor(request)
     move = getattr(executor, "diagnostic_move", None)
     if not callable(move):
         raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic circle")
+    background_tasks.add_task(_run_diagnostic_circle, executor, payload)
+    logger.info(
+        "kmNet diagnostic circle queued steps=%s radius=%s interval_ms=%s",
+        payload.steps,
+        payload.radius,
+        payload.interval_ms,
+    )
+    return {
+        "sent": True,
+        "queued": True,
+        "message": "queued diagnostic circle",
+        "steps_requested": payload.steps,
+        "steps_sent": 0,
+        "radius": payload.radius,
+        "interval_ms": payload.interval_ms,
+        "failed": None,
+        "status": executor.status() if callable(getattr(executor, "status", None)) else {},
+    }
 
+
+def _run_diagnostic_circle(executor: Any, payload: DiagnosticCircleRequest) -> None:
+    move = getattr(executor, "diagnostic_move", None)
+    if not callable(move):
+        logger.warning("kmNet diagnostic circle dropped: executor has no diagnostic_move")
+        return
     previous_x = payload.radius
     previous_y = 0
     sent = 0
@@ -144,18 +196,9 @@ def diagnostic_circle_kmnet(request: Request, payload: DiagnosticCircleRequest) 
 
     status = executor.status() if callable(getattr(executor, "status", None)) else {}
     if failed is None and sent > 0:
-        logger.info("kmNet diagnostic circle sent steps=%s radius=%s", sent, payload.radius)
+        logger.info("kmNet diagnostic circle finished steps=%s radius=%s status=%s", sent, payload.radius, status)
     else:
         logger.warning("kmNet diagnostic circle failed sent=%s failed=%s", sent, failed)
-    return {
-        "sent": failed is None and sent > 0,
-        "steps_requested": payload.steps,
-        "steps_sent": sent,
-        "radius": payload.radius,
-        "interval_ms": payload.interval_ms,
-        "failed": failed,
-        "status": status,
-    }
 
 
 def _kmnet_executor(request: Request) -> Any:
