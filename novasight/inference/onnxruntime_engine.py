@@ -9,6 +9,7 @@ from .input import PreparedTensorInput, TensorInputShape, parse_tensor_input_sha
 
 
 SessionFactory = Callable[[Path], Any]
+MAX_NMS_CANDIDATES = 300
 
 
 class OnnxRuntimeInferenceEngine:
@@ -347,31 +348,41 @@ def decode_nx6_detections(
 
     expected_classes = max(0, int(class_count or 0))
     columns = int(candidates_first.shape[1])
-    variants: list[tuple[list[InferenceDetection], dict[str, Any]]] = []
-    variants.append(
-        _decode_yolo_scores(
-            candidates_first,
-            mode="yolov8-cxcywh-cls",
-            confidence_threshold=confidence_threshold,
-            nms_threshold=nms_threshold,
-        )
+    layout_modes = _select_decode_layouts(
+        columns=columns,
+        class_count=expected_classes,
+        transposed_from_channel_first=transposed_from_channel_first,
     )
-    if columns >= 6:
-        variants.append(
-            _decode_yolo_scores(
-                candidates_first,
-                mode="yolov5-cxcywh-obj-cls",
-                confidence_threshold=confidence_threshold,
-                nms_threshold=nms_threshold,
+    variants: list[tuple[list[InferenceDetection], dict[str, Any]]] = []
+    for layout in layout_modes:
+        if layout in {"yolov8-cxcywh-cls", "yolov5-cxcywh-obj-cls"}:
+            variants.append(
+                _decode_yolo_scores(
+                    candidates_first,
+                    mode=layout,
+                    confidence_threshold=confidence_threshold,
+                    nms_threshold=nms_threshold,
+                )
             )
-        )
-        variants.append(
-            _decode_xyxy_score_cls(
-                candidates_first,
-                confidence_threshold=confidence_threshold,
-                nms_threshold=nms_threshold,
+        elif layout == "xyxy-score-cls":
+            variants.append(
+                _decode_xyxy_score_cls(
+                    candidates_first,
+                    confidence_threshold=confidence_threshold,
+                    nms_threshold=nms_threshold,
+                )
             )
+    if not variants:
+        _update_decode_debug(
+            debug,
+            output_shape=original_shape,
+            squeezed_shape=tuple(int(item) for item in array.shape),
+            candidates_shape=tuple(int(item) for item in candidates_first.shape),
+            expected_classes=expected_classes,
+            prediction_columns=columns,
+            reason="no supported decode layout",
         )
+        return []
     for _detections, stats in variants:
         stats["shape_match"] = _layout_shape_matches(
             str(stats.get("layout", "")),
@@ -403,6 +414,7 @@ def decode_nx6_detections(
         candidates_shape=tuple(int(item) for item in candidates_first.shape),
         expected_classes=expected_classes,
         prediction_columns=columns,
+        candidate_layouts=layout_modes,
         selected_layout=best_stats.get("layout", ""),
         raw_candidates=int(best_stats.get("raw_candidates", 0)),
         max_score=float(best_stats.get("max_score", 0.0)),
@@ -432,13 +444,12 @@ def _decode_xyxy_score_cls(
     }
     if array.shape[1] < 6 or scores.size == 0:
         return [], stats
+    selected_indices = _pre_nms_indices(scores, confidence_threshold, np=np)
     candidates: list[InferenceDetection] = []
-    threshold_candidates = 0
-    for row in array:
+    threshold_candidates = int(np.count_nonzero(scores >= confidence_threshold))
+    for index in selected_indices:
+        row = array[int(index)]
         score = float(row[4])
-        if score < confidence_threshold:
-            continue
-        threshold_candidates += 1
         x1, y1, x2, y2 = [float(value) for value in row[:4]]
         if x2 <= x1 or y2 <= y1:
             continue
@@ -454,6 +465,7 @@ def _decode_xyxy_score_cls(
         )
     kept = _nms(candidates, nms_threshold)
     stats["threshold_candidates"] = int(threshold_candidates)
+    stats["nms_input_candidates"] = int(len(candidates))
     stats["nms_detections"] = int(len(kept))
     return kept, stats
 
@@ -488,19 +500,18 @@ def _decode_yolo_scores(
     cls_ids = np.argmax(scores, axis=1)
     cls_scores = np.max(scores, axis=1)
     stats["max_score"] = float(np.max(cls_scores)) if cls_scores.size else 0.0
-    threshold_mask = cls_scores >= confidence_threshold
-    stats["threshold_candidates"] = int(np.count_nonzero(threshold_mask))
+    selected_indices = _pre_nms_indices(cls_scores, confidence_threshold, np=np)
+    stats["threshold_candidates"] = int(np.count_nonzero(cls_scores >= confidence_threshold))
     candidates: list[InferenceDetection] = []
-    for index, score_value in enumerate(cls_scores):
+    for index in selected_indices:
+        score_value = cls_scores[int(index)]
         score = float(score_value)
-        if score < confidence_threshold:
-            continue
-        cx, cy, w, h = [float(value) for value in boxes[index]]
+        cx, cy, w, h = [float(value) for value in boxes[int(index)]]
         if w <= 0 or h <= 0:
             continue
         candidates.append(
             InferenceDetection(
-                cls=int(cls_ids[index]),
+                cls=int(cls_ids[int(index)]),
                 score=score,
                 x=cx - w / 2,
                 y=cy - h / 2,
@@ -509,8 +520,37 @@ def _decode_yolo_scores(
             )
         )
     kept = _nms(candidates, nms_threshold)
+    stats["nms_input_candidates"] = int(len(candidates))
     stats["nms_detections"] = int(len(kept))
     return kept, stats
+
+
+def _select_decode_layouts(
+    *,
+    columns: int,
+    class_count: int,
+    transposed_from_channel_first: bool,
+) -> list[str]:
+    if class_count > 0:
+        if columns == 4 + class_count:
+            return ["yolov8-cxcywh-cls"]
+        if columns == 5 + class_count:
+            return ["yolov5-cxcywh-obj-cls"]
+    if transposed_from_channel_first:
+        return ["yolov8-cxcywh-cls"]
+    if columns >= 6:
+        return ["yolov5-cxcywh-obj-cls", "xyxy-score-cls"]
+    return ["yolov8-cxcywh-cls"]
+
+
+def _pre_nms_indices(scores: Any, confidence_threshold: float, *, np: Any) -> Any:
+    scores_array = np.asarray(scores, dtype=np.float32)
+    indices = np.flatnonzero(scores_array >= confidence_threshold)
+    if indices.size <= MAX_NMS_CANDIDATES:
+        return indices
+    ranked_local = np.argpartition(scores_array[indices], -MAX_NMS_CANDIDATES)[-MAX_NMS_CANDIDATES:]
+    top_indices = indices[ranked_local]
+    return top_indices[np.argsort(scores_array[top_indices])[::-1]]
 
 
 def _update_decode_debug(debug: dict[str, Any] | None, **values: Any) -> None:
@@ -555,11 +595,45 @@ def _layout_orientation_matches(layout: str, *, transposed_from_channel_first: b
 
 
 def _nms(detections: list[InferenceDetection], threshold: float) -> list[InferenceDetection]:
-    kept: list[InferenceDetection] = []
-    for item in sorted(detections, key=lambda detection: detection.score, reverse=True):
-        if all(item.cls != kept_item.cls or _iou(item, kept_item) <= threshold for kept_item in kept):
-            kept.append(item)
-    return kept
+    if not detections:
+        return []
+    import numpy as np
+
+    kept_indices: list[int] = []
+    classes = np.asarray([item.cls for item in detections], dtype=np.int32)
+    scores = np.asarray([item.score for item in detections], dtype=np.float32)
+    x1 = np.asarray([item.x for item in detections], dtype=np.float32)
+    y1 = np.asarray([item.y for item in detections], dtype=np.float32)
+    x2 = x1 + np.asarray([item.w for item in detections], dtype=np.float32)
+    y2 = y1 + np.asarray([item.h for item in detections], dtype=np.float32)
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+
+    for cls in np.unique(classes):
+        remaining = np.where(classes == cls)[0]
+        remaining = remaining[np.argsort(scores[remaining])[::-1]]
+        while remaining.size:
+            current = int(remaining[0])
+            kept_indices.append(current)
+            if remaining.size == 1:
+                break
+            rest = remaining[1:]
+            xx1 = np.maximum(x1[current], x1[rest])
+            yy1 = np.maximum(y1[current], y1[rest])
+            xx2 = np.minimum(x2[current], x2[rest])
+            yy2 = np.minimum(y2[current], y2[rest])
+            inter_w = np.maximum(0.0, xx2 - xx1)
+            inter_h = np.maximum(0.0, yy2 - yy1)
+            intersection = inter_w * inter_h
+            union = areas[current] + areas[rest] - intersection
+            iou = np.divide(
+                intersection,
+                union,
+                out=np.zeros_like(intersection),
+                where=union > 0,
+            )
+            remaining = rest[iou <= threshold]
+    kept_indices.sort(key=lambda index: detections[index].score, reverse=True)
+    return [detections[index] for index in kept_indices]
 
 
 def _iou(left: InferenceDetection, right: InferenceDetection) -> float:

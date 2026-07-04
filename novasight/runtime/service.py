@@ -344,9 +344,18 @@ class RuntimeService:
                 return 0.0
             return max(0.0, (end - start) / 1e6)
 
+        inference_debug = self.last_inference_status.get("debug", {})
+        debug_timings = inference_debug.get("timings", {}) if isinstance(inference_debug, dict) else {}
+        decode_debug = inference_debug.get("decode", {}) if isinstance(inference_debug, dict) else {}
+        decode_timings = decode_debug.get("timings", {}) if isinstance(decode_debug, dict) else {}
+        decode_ms = float(decode_timings.get("decode_ms") or debug_timings.get("decode_ms") or 0.0)
+        engine_total_ms = float(decode_timings.get("total_ms") or debug_timings.get("execute_total_ms") or 0.0)
+        engine_execute_ms = max(0.0, engine_total_ms - decode_ms)
         self.last_pipeline_timings = {
             "roi_ms": ms(roi_start_ns, infer_start_ns),
             "engine_ms": ms(infer_start_ns, postprocess_start_ns),
+            "engine_execute_ms": engine_execute_ms,
+            "decode_ms": decode_ms,
             "postprocess_ms": ms(postprocess_start_ns, control_start_ns),
             "control_ms": ms(control_start_ns, done_ns),
             "total_ms": ms(total_start_ns, done_ns),

@@ -1316,9 +1316,9 @@ export function StudioConsoleView({
                 <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio, 1) : "-"}</b>
                 <span>输出形状</span><b>{formatShape(decodeDebug.output_shape ?? inferenceDebug.output_shape)}</b>
                 <span>输入准备</span><b>{formatNumber(inferenceTimings.numpy_tensor_ms, 1)} ms</b>
-                <span>TRT 总耗时</span><b>{formatNumber(inferenceTimings.execute_total_ms, 1)} ms</b>
+                <span>推理总耗时</span><b>{formatNumber(inferenceTimings.execute_total_ms, 1)} ms</b>
                 <span>GPU 等待</span><b>{formatNumber(trtTimings.stream_sync_ms, 1)} ms</b>
-                <span>TRT 解码</span><b>{formatNumber(trtTimings.decode_ms, 1)} ms</b>
+                <span>解码/NMS</span><b>{formatNumber(trtTimings.decode_ms, 1)} ms</b>
                 <span>解码布局</span><b>{readString(decodeDebug.selected_layout, "-")}</b>
                 <span>最大分数</span><b>{formatNumber(decodeDebug.max_score, 3)}</b>
                 <span>阈值前候选</span><b>{String(readNumber(decodeDebug.raw_candidates, 0))}</b>
@@ -1688,8 +1688,10 @@ export function StudioConsoleView({
             <KvCard title="推理统计" rows={[
               ["完成帧", String(statistics?.inference_counter ?? 0)],
               ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
-              ["Engine", formatNumber(statistics?.stage_engine_ms, 1)],
-              ["后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
+              ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
+              ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
+              ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],
+              ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
             ]} />
             <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
@@ -1717,8 +1719,10 @@ export function StudioConsoleView({
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
                 <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
                 <Event label="ROI" value={formatNumber(statistics?.stage_roi_ms, 1)} width={18} />
-                <Event label="Engine" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
-                <Event label="Postprocess" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
+                <Event label="推理总耗时" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
+                <Event label="TRT执行" value={formatNumber(statistics?.stage_engine_execute_ms, 1)} width={18} />
+                <Event label="解码/NMS" value={formatNumber(statistics?.stage_decode_ms, 1)} width={34} />
+                <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
                 <Event label="Control" value={formatNumber(statistics?.stage_control_ms, 1)} width={14} />
               </div>
             </div>
