@@ -199,14 +199,35 @@ def _detect_onnx_input_shape(model_file: Path) -> str | None:
         for dim in shape.dim:
             dims.append(int(dim.dim_value) if dim.dim_value > 0 else None)
         return _shape_from_dims(dims)
+    except ModuleNotFoundError as exc:
+        if exc.name == "onnx":
+            logger.debug("ONNX input shape auto-detect unavailable path=%s error=%s", model_file, exc)
+            return None
+        logger.info("ONNX input shape auto-detect skipped path=%s error=%s", model_file, exc)
+        return None
     except Exception as exc:
         logger.info("ONNX input shape auto-detect skipped path=%s error=%s", model_file, exc)
+        return None
+
+
+def _detect_input_shape_from_filename(model_file: Path) -> str | None:
+    match = re.search(r"(?<!\d)(\d{2,5})[xX](\d{2,5})(?!\d)", model_file.stem)
+    if match is None:
+        return None
+    height = int(match.group(1))
+    width = int(match.group(2))
+    try:
+        return str(parse_tensor_input_shape(f"{height}x{width}"))
+    except ValueError:
         return None
 
 
 def _detect_input_shape(model_file: Path, sidecar: dict[str, Any]) -> str:
     if "input_shape" in sidecar:
         return _normalize_input_shape(sidecar.get("input_shape"))
+    detected_from_name = _detect_input_shape_from_filename(model_file)
+    if detected_from_name:
+        return detected_from_name
     if model_file.suffix.lower() == ".onnx":
         detected = _detect_onnx_input_shape(model_file)
         if detected:
