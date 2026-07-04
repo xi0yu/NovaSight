@@ -5,6 +5,7 @@ from typing import Any
 from novasight.config import RuntimeConfig
 from novasight.control import ControlOutput
 from novasight.executors.contracts import ExecutionResult
+from novasight.executors.kmnet_loader import load_kmnet_driver
 
 
 class KmNetExecutor:
@@ -30,13 +31,14 @@ class KmNetExecutor:
         self.last_dx = 0
         self.last_dy = 0
         self.last_error = ""
-        try:
-            import kmNet
-        except Exception as exc:
-            self._driver: Any | None = None
-            self.last_error = f"kmNet driver unavailable: {exc}"
-        else:
-            self._driver = kmNet
+        result = load_kmnet_driver()
+        self._driver: Any | None = result.module
+        self.driver_source = result.source
+        self.driver_platform = result.platform
+        self.driver_machine = result.machine
+        self.driver_python = result.python_tag
+        if not result.available:
+            self.last_error = result.reason
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> KmNetExecutor:
@@ -60,6 +62,10 @@ class KmNetExecutor:
             "last_dx": self.last_dx,
             "last_dy": self.last_dy,
             "last_error": self.last_error,
+            "driver_source": self.driver_source,
+            "driver_platform": self.driver_platform,
+            "driver_machine": self.driver_machine,
+            "driver_python": self.driver_python,
             "host": self.host,
             "port": self.port,
             "monitor_port": self.monitor_port,

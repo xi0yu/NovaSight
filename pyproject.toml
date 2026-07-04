@@ -35,6 +35,9 @@ build-backend = "setuptools.build_meta"
 include = ["novasight*"]
 exclude = ["tests*"]
 
+[tool.setuptools.package-data]
+novasight = ["vendor/kmnet/linux/*.so", "vendor/kmnet/mac/*.so", "vendor/kmnet/win/*.pyd", "vendor/kmnet/win/*.dll"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

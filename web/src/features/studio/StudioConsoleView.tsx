@@ -53,6 +53,12 @@ const navItems: { id: ConsolePage; index: string; label: string }[] = [
 ];
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
+const KMNET_RECOMMENDED = {
+  host: "192.168.2.188",
+  port: 8888,
+  uuid: "12345678",
+  monitor_port: 5001
+};
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -461,7 +467,8 @@ export function StudioConsoleView({
       setLocalError(null);
       next.hardware = {
         ...asRecord(next.hardware),
-        kind
+        kind,
+        ...(kind === "kmnet" ? KMNET_RECOMMENDED : {})
       } as RuntimeConfig[string];
       const control = {
         ...asRecord(next.control)
@@ -484,6 +491,32 @@ export function StudioConsoleView({
     },
     [onRefresh, runtime]
   );
+
+  const applyKmNetRecommended = useCallback(async () => {
+    const next = cloneRuntimeConfig(runtime);
+    if (!next) {
+      return;
+    }
+    setBusy("kmnet.defaults");
+    setLocalError(null);
+    next.hardware = {
+      ...asRecord(next.hardware),
+      kind: "kmnet",
+      ...KMNET_RECOMMENDED
+    } as RuntimeConfig[string];
+    next.control = {
+      ...asRecord(next.control),
+      output_mode: "kmnet"
+    } as RuntimeConfig[string];
+    try {
+      await updateRuntimeConfig(next);
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh, runtime]);
 
   const connectHardware = useCallback(async () => {
     setBusy("kmnet.connect");
@@ -912,9 +945,19 @@ export function StudioConsoleView({
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
               <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
+              <button
+                className="console-button console-full-button"
+                disabled={busy === "kmnet.defaults"}
+                onClick={applyKmNetRecommended}
+                type="button"
+              >
+                应用 kmNet 推荐参数
+              </button>
               <div className="console-kv">
                 <span>kmNet 状态</span><b>{kmnetStatus.connected === true ? "已连接" : "未连接"}</b>
                 <span>按键监听</span><b>{kmnetStatus.monitoring === true ? "已启动" : "未启动"}</b>
+                <span>驱动来源</span><b>{readString(kmnetStatus.driver_source, "-") || "-"}</b>
+                <span>运行平台</span><b>{`${readString(kmnetStatus.driver_platform, "-")}/${readString(kmnetStatus.driver_machine, "-")} · ${readString(kmnetStatus.driver_python, "-")}`}</b>
                 <span>最后错误</span><b>{readString(kmnetStatus.last_error, "-") || "-"}</b>
               </div>
               <div className="console-action-row">
