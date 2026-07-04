@@ -21,19 +21,27 @@ export function StudioShell({
 }: StudioShellProps) {
   return (
     <div className="studio-shell">
-      <aside className="studio-sidebar">
+      <header className="studio-topbar">
         <div className="studio-brand">
-          <span className="brand-mark"><span>NS</span></span>
+          <span className="brand-mark" aria-hidden="true"><span>NS</span></span>
           <div className="studio-brand-copy">
             <strong>NovaSight Studio</strong>
             <span>视觉控制工作台</span>
           </div>
         </div>
 
+        <div className="studio-topbar-copy">
+          <span className="studio-breadcrumb">项目：默认项目 / {title}</span>
+          <h1 className="studio-title">{title}</h1>
+          <p className="studio-subtitle">{subtitle}</p>
+        </div>
+        {status ? <div className="studio-status">{status}</div> : null}
+      </header>
+
+      <aside className="studio-sidebar">
         <div className="studio-sidebar-section">
-          <span className="studio-sidebar-label">工作区</span>
           <nav className="studio-nav" aria-label="工作台导航">
-            {studioNavItems.map((item) => (
+            {studioNavItems.map((item, index) => (
               <button
                 key={item.id}
                 type="button"
@@ -41,6 +49,7 @@ export function StudioShell({
                 aria-current={item.id === activeView ? "page" : undefined}
                 onClick={() => onNavigate(item.id)}
               >
+                <span className="nav-item-index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="nav-item-label">{item.label}</span>
                 <span className="nav-item-hint">{item.hint}</span>
                 {item.feature ? <span className="nav-item-feature">{item.feature}</span> : null}
@@ -57,17 +66,8 @@ export function StudioShell({
       </aside>
 
       <section className="studio-main">
-        <header className="studio-topbar">
-          <div className="studio-topbar-copy">
-            <span className="studio-breadcrumb">工作台 / {title}</span>
-            <h1 className="studio-title">{title}</h1>
-            <p className="studio-subtitle">{subtitle}</p>
-          </div>
-          {status ? <div className="studio-status">{status}</div> : null}
-        </header>
-
         <nav className="mobile-nav" aria-label="移动端工作台导航">
-          {studioNavItems.map((item) => (
+          {studioNavItems.map((item, index) => (
             <button
               key={item.id}
               type="button"
@@ -75,6 +75,7 @@ export function StudioShell({
               aria-current={item.id === activeView ? "page" : undefined}
               onClick={() => onNavigate(item.id)}
             >
+              <span className="mobile-nav-index">{String(index + 1).padStart(2, "0")}</span>
               <span className="mobile-nav-label">{item.label}</span>
               <span className="mobile-nav-hint">{item.hint}</span>
             </button>
