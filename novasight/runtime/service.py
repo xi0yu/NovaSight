@@ -751,6 +751,7 @@ class RuntimeService:
             self._log_box_input_state(state, "diagnostic_auto_trigger")
             return state
         button_reader = getattr(self.executors, "read_buttons", None)
+        buttons: dict[str, Any] | None = None
         if callable(button_reader):
             try:
                 buttons = button_reader()
@@ -769,6 +770,14 @@ class RuntimeService:
                     return merged
                 self._log_box_input_state(hardware_state, "hardware")
                 return hardware_state
+        if str(getattr(getattr(self.config, "hardware", None), "kind", "none")).lower() == "kmnet":
+            if local.active:
+                self._log_box_input_state(local, "local_fallback")
+                return local
+            reason = str((buttons or {}).get("reason") or "kmNet button reader unavailable")
+            state = BoxInputState(raw={"source": "kmnet_executor", "reason": reason})
+            self._log_box_input_state(state, "kmnet_unavailable")
+            return state
         if local.active:
             self._log_box_input_state(local, "local_fallback")
             return local

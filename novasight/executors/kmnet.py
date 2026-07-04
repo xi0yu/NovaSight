@@ -100,7 +100,17 @@ class KmNetExecutor:
         if self._driver is None:
             return self._record_buttons(False, False, False, self.last_error)
         if not self.monitoring:
-            return self._record_buttons(False, False, False, "kmNet monitor is not enabled")
+            if not self.connected:
+                return self._record_buttons(False, False, False, "kmNet is not connected")
+            if self.monitor_port <= 0:
+                return self._record_buttons(False, False, False, "kmNet monitor_port is not configured")
+            try:
+                self._call_driver("monitor", int(self.monitor_port))
+                self.monitoring = True
+                logger.info("kmNet monitor auto-started port=%s", self.monitor_port)
+            except Exception as exc:
+                self.last_error = f"kmNet monitor start failed: {exc}"
+                return self._record_buttons(False, False, False, self.last_error)
         try:
             left_raw = self._read_button_raw("isdown_left")
             right_raw = self._read_button_raw("isdown_right")
