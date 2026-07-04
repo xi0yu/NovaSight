@@ -56,4 +56,4 @@ class ConsoleExecutor:
             f"accepted={output.accepted}",
             file=sys.stdout,
         )
-        return ExecutionResult("console", False, output, "printed")
+        return ExecutionResult("console", True, output, "printed to console")

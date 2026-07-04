@@ -409,6 +409,10 @@ class RuntimeService:
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
                 "sent": False,
+                "accepted": False,
+                "clipped": False,
+                "output_dx": 0.0,
+                "output_dy": 0.0,
                 "message": "等待硬件触发，控制量未发送",
                 "intent": {
                     "dx": float(command.dx),
@@ -780,7 +784,9 @@ class RuntimeService:
     def _trace_execution_stage(execution: dict[str, Any]) -> dict[str, Any]:
         if not execution:
             return {"id": "execution", "label": "执行", "status": "blocked", "message": "没有控制命令", "detail": ""}
-        detail = str(execution.get("executor_id") or "")
+        dx = float(execution.get("output_dx") or 0.0)
+        dy = float(execution.get("output_dy") or 0.0)
+        detail = f"{execution.get('executor_id') or ''} dx={dx:.0f}, dy={dy:.0f}"
         if execution.get("sent") is True:
             return {"id": "execution", "label": "执行", "status": "ok", "message": str(execution.get("message") or "已发送"), "detail": detail}
         message = str(execution.get("message") or "未发送")
@@ -793,6 +799,12 @@ class RuntimeService:
             "executor_id": str(getattr(result, "executor_id", "")),
             "sent": bool(getattr(result, "sent", False)),
             "message": str(getattr(result, "message", "")),
+            "accepted": bool(getattr(intent, "accepted", False)),
+            "clipped": bool(getattr(intent, "clipped", False)),
+            "output_dx": float(getattr(intent, "dx", 0.0)),
+            "output_dy": float(getattr(intent, "dy", 0.0)),
+            "move_kind": str(getattr(intent, "move_kind", "")),
+            "move_ms": int(getattr(intent, "move_ms", 0)),
             "intent": {
                 "dx": float(getattr(intent, "dx", 0.0)),
                 "dy": float(getattr(intent, "dy", 0.0)),

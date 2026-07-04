@@ -1353,8 +1353,8 @@ export function StudioConsoleView({
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
                 <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
-                <span>dx</span><b>{formatNumber(control.dx, 1)}</b>
-                <span>dy</span><b>{formatNumber(control.dy, 1)}</b>
+                <span>策略 dx</span><b>{formatNumber(control.dx, 1)}</b>
+                <span>策略 dy</span><b>{formatNumber(control.dy, 1)}</b>
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
                 <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
                 <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
@@ -1364,9 +1364,11 @@ export function StudioConsoleView({
                 <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
                 <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
+                <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
+                <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
                 <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
                 <span>kmNet 最近</span><b>{`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`}</b>
-                <span>限幅</span><b>{executionIntent.clipped === true ? "已限幅" : executionIntent.clipped === false ? "未限幅" : "-"}</b>
+                <span>限幅</span><b>{(execution.clipped ?? executionIntent.clipped) === true ? "已限幅" : (execution.clipped ?? executionIntent.clipped) === false ? "未限幅" : "-"}</b>
                 <span className="wide">执行信息</span><b className="wide">{readString(execution.message, "-")}</b>
               </div>
             </div>
