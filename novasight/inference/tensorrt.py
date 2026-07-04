@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import InferenceDetection, InferenceResult
-from .input import PreparedTensorInput, TensorInputShape, parse_tensor_input_shape, prepare_tensor_input
+from .input import PreparedTensorInput, TensorInputShape, prepare_tensor_input
 from .onnxruntime_engine import (
     _prepare_numpy_tensor,
     _preprocess_debug,
@@ -115,15 +115,12 @@ class TensorRtInferenceEngine:
             raise ValueError(f"TensorRT artifact must be .engine: {artifact_path}")
         if not classes:
             raise ValueError("TensorRT classes must not be empty")
-        if not input_shape.strip():
-            raise ValueError("TensorRT input shape must not be empty")
-        parsed_shape = parse_tensor_input_shape(input_shape)
         if not self.available():
             raise RuntimeError(self._reason)
         self.close()
         self._classes = list(classes)
         self._last_input = None
-        self._load_engine(artifact_path, parsed_shape)
+        self._load_engine(artifact_path)
         self._loaded = True
         self._warmup()
 
@@ -209,7 +206,7 @@ class TensorRtInferenceEngine:
             self._warmed = False
             logger.warning("TensorRT warmup failed: %s", exc)
 
-    def _load_engine(self, artifact_path: Path, configured_shape: TensorInputShape) -> None:
+    def _load_engine(self, artifact_path: Path) -> None:
         import numpy as np
 
         trt = self._trt
@@ -240,17 +237,10 @@ class TensorRtInferenceEngine:
         engine_input_shape = _shape_tuple(engine.get_tensor_shape(input_name))
         if len(engine_input_shape) != 4:
             raise RuntimeError(f"unsupported TensorRT input shape: {engine_input_shape}")
-        configured_tuple = (
-            configured_shape.batch,
-            configured_shape.channels,
-            configured_shape.height,
-            configured_shape.width,
-        )
         input_shape, input_shape_source, input_profile_shapes = _resolve_input_shape(
             engine,
             input_name=input_name,
             engine_shape=engine_input_shape,
-            configured_shape=configured_tuple,
         )
         if -1 in engine_input_shape:
             context.set_input_shape(input_name, input_shape)
@@ -496,22 +486,19 @@ def _resolve_input_shape(
     *,
     input_name: str,
     engine_shape: tuple[int, ...],
-    configured_shape: tuple[int, ...],
 ) -> tuple[tuple[int, ...], str, dict[str, tuple[int, ...]]]:
     if -1 not in engine_shape:
         return engine_shape, "engine_static", {}
 
     profile_shapes = _read_input_profile_shapes(engine, input_name)
     if profile_shapes:
-        profile_min = profile_shapes.get("min", ())
         profile_opt = profile_shapes.get("opt", ())
-        profile_max = profile_shapes.get("max", ())
         if _shape_is_static(profile_opt):
             return profile_opt, "engine_profile_opt", profile_shapes
-        if _shape_fits_profile(configured_shape, profile_min, profile_max):
-            return configured_shape, "configured_within_profile", profile_shapes
-
-    return configured_shape, "configured_fallback", profile_shapes
+    raise RuntimeError(
+        f"TensorRT dynamic input shape requires a static optimization profile opt shape, "
+        f"got engine_shape={engine_shape} input={input_name} profile={profile_shapes}"
+    )
 
 
 def _read_input_profile_shapes(engine: Any, input_name: str) -> dict[str, tuple[int, ...]]:
@@ -554,16 +541,6 @@ def _shape_tuple(value: Any) -> tuple[int, ...]:
 
 def _shape_is_static(shape: tuple[int, ...]) -> bool:
     return bool(shape) and all(int(item) > 0 for item in shape)
-
-
-def _shape_fits_profile(
-    shape: tuple[int, ...],
-    profile_min: tuple[int, ...],
-    profile_max: tuple[int, ...],
-) -> bool:
-    if not shape or len(shape) != len(profile_min) or len(shape) != len(profile_max):
-        return False
-    return all(low <= item <= high for item, low, high in zip(shape, profile_min, profile_max))
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> float:

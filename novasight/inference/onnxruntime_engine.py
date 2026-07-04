@@ -29,6 +29,7 @@ class OnnxRuntimeInferenceEngine:
         self._loaded = False
         self._classes: list[str] = []
         self._input_shape: TensorInputShape | None = None
+        self._input_shape_source = ""
         self._session: Any | None = None
         self._input_name = ""
         self._last_input: PreparedTensorInput | None = None
@@ -58,6 +59,7 @@ class OnnxRuntimeInferenceEngine:
             "loaded": self._loaded,
             "reason": self._reason,
             "input_shape": str(self._input_shape) if self._input_shape is not None else "",
+            "input_shape_source": self._input_shape_source,
             "confidence_threshold": self.confidence_threshold,
             "nms_threshold": self.nms_threshold,
             "last_input_mode": self._last_input.mode if self._last_input is not None else "",
@@ -71,7 +73,7 @@ class OnnxRuntimeInferenceEngine:
             raise ValueError(f"ONNX artifact must be .onnx: {artifact_path}")
         if not classes:
             raise ValueError("ONNX classes must not be empty")
-        parsed_shape = parse_tensor_input_shape(input_shape)
+        configured_shape = parse_tensor_input_shape(input_shape) if input_shape.strip() else None
         if not self.available():
             raise RuntimeError(self._reason)
         self._available = True
@@ -79,9 +81,13 @@ class OnnxRuntimeInferenceEngine:
         inputs = self._session.get_inputs()
         if not inputs:
             raise ValueError("ONNX model has no inputs")
-        self._input_name = str(inputs[0].name)
+        model_input = inputs[0]
+        self._input_name = str(model_input.name)
         self._classes = list(classes)
-        self._input_shape = parsed_shape
+        self._input_shape, self._input_shape_source = _resolve_onnx_input_shape(
+            model_input.shape,
+            configured_shape=configured_shape,
+        )
         self._last_input = None
         self._loaded = True
 
@@ -196,6 +202,37 @@ def _prepare_numpy_tensor(prepared: PreparedTensorInput, shape: TensorInputShape
             array = array.astype(np.float32) / 255.0
             return array.transpose(2, 0, 1)[None, ...]
     return np.zeros((shape.batch, shape.channels, shape.height, shape.width), dtype=np.float32)
+
+
+def _resolve_onnx_input_shape(
+    model_shape: Any,
+    *,
+    configured_shape: TensorInputShape | None,
+) -> tuple[TensorInputShape, str]:
+    static_shape = _parse_static_onnx_shape(model_shape)
+    if static_shape is not None:
+        return static_shape, "model_static"
+    if configured_shape is not None:
+        return configured_shape, "configured_dynamic_model"
+    raise ValueError(f"ONNX model input shape is dynamic and no runtime shape was provided: {model_shape}")
+
+
+def _parse_static_onnx_shape(model_shape: Any) -> TensorInputShape | None:
+    try:
+        values = [int(item) for item in model_shape]
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 4 or min(values) <= 0:
+        return None
+    batch, channels, height, width = values
+    if channels not in {1, 3, 4}:
+        return None
+    return TensorInputShape(
+        batch=batch,
+        channels=channels,
+        height=height,
+        width=width,
+    )
 
 
 def _resize_numpy_image(image: Any, *, width: int, height: int, np: Any) -> Any:
