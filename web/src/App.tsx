@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { StudioShell } from "./app/StudioShell";
 import { type StudioViewId } from "./app/navigation";
-import { PermissionGuard } from "./components/studio";
-import { LoadingSkeleton, StatusIndicator } from "./components/ui";
+import { StatusIndicator } from "./components/ui";
 import {
   HealthResponse,
   LicenseStatus,
@@ -15,18 +13,14 @@ import {
   getRuntimeState,
   statusWebSocketUrl,
 } from "./api";
-import { ConfigView } from "./features/config/ConfigView";
-import { DashboardView } from "./features/dashboard/DashboardView";
-import { DevicesView } from "./features/devices/DevicesView";
 import { LicenseGate, LicenseView } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
-import { ModelsView } from "./features/models/ModelsView";
+import { StudioConsoleView } from "./features/studio/StudioConsoleView";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 
 type ErrorKey = "health" | "runtime" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 type GuardedViewId = Exclude<StudioViewId, "license">;
-type DeviceSettingsSection = "capture" | "inference" | "algorithm";
 
 type LoadState = {
   loading: boolean;
@@ -111,7 +105,6 @@ export default function App() {
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
   const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
-  const [deviceSettingsSection, setDeviceSettingsSection] = useState<DeviceSettingsSection>("capture");
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
@@ -271,31 +264,8 @@ export default function App() {
     );
   }
 
-  const activeModel = state.runtime?.active_model ?? null;
   const hasErrors = Object.keys(state.errors).length > 0;
-  const shellCopy: Record<StudioViewId, { title: string; subtitle: string }> = {
-    dashboard: {
-      title: "性能指挥台",
-      subtitle: "采集吞吐、链路延迟、推理状态和控制路径。"
-    },
-    devices: {
-      title: "基础设置",
-      subtitle: "采集设置、推理设置和算法参数统一管理。"
-    },
-    models: {
-      title: "模型仓库",
-      subtitle: "面向使用场景选择模型，而不是管理开发产物。"
-    },
-    config: {
-      title: "运行配置",
-      subtitle: "运行参数、保存差异和硬件配置。"
-    },
-    license: {
-      title: "授权许可",
-      subtitle: "本机授权、功能权益和到期状态。"
-    }
-  };
-  const shellStatus = (
+  const consoleStatus = (
     <>
       <StatusIndicator tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
         {hasErrors ? "后端 部分异常" : state.health?.ok ? "后端 已连接" : "后端 检查中"}
@@ -308,83 +278,26 @@ export default function App() {
   );
 
   return (
-    <StudioShell
-      activeView={activeView}
-      title={shellCopy[activeView].title}
-      subtitle={shellCopy[activeView].subtitle}
-      status={shellStatus}
-      onNavigate={setActiveView}
-    >
-      {hasErrors ? (
-        <div className="alert" role="alert">
-          <strong>后端请求异常</strong>
-          <span>{Object.values(state.errors).join(" / ")}</span>
-          <button className="button compact-button" type="button" onClick={load}>
-            重试
-          </button>
-        </div>
-      ) : null}
-
-      {state.loading && !state.runtime ? (
-        <LoadingSkeleton />
-      ) : null}
-
-      <div className="view-stack">
-        {activeView === "dashboard" ? (
-          <DashboardView
-            health={state.health}
-            loading={state.loading}
-            runtime={state.runtime}
-            errors={state.errors}
-            onRefresh={load}
-          />
-        ) : null}
-        {activeView === "devices" ? (
-          <PermissionGuard feature="capture" license={license}>
-            <DevicesView
-              runtime={state.runtime}
-              error={state.errors.capture}
-              onRuntimeRefresh={load}
-              onOpenModels={() => setActiveView("models")}
-              initialSection={deviceSettingsSection}
-            />
-          </PermissionGuard>
-        ) : null}
-        {activeView === "models" ? (
-          <PermissionGuard feature="models" license={license}>
-            <ModelsView
-              projects={state.projects}
-              activeModel={activeModel}
-              runtimeInference={state.runtime?.inference}
-              error={state.errors.projects}
-              onRuntimeRefresh={load}
-              onOpenInference={() => {
-                setDeviceSettingsSection("inference");
-                setActiveView("devices");
-              }}
-            />
-          </PermissionGuard>
-        ) : null}
-        {activeView === "config" ? (
-          <PermissionGuard feature="config_read" license={license}>
-            <ConfigView
-              runtime={state.runtime}
-              license={license}
-              onRuntimeRefresh={load}
-              onLicenseChange={handleLicenseChange}
-            />
-          </PermissionGuard>
-        ) : null}
-        {activeView === "license" ? (
-          <LicenseView
-            license={license}
-            loading={licenseLoading}
-            error={licenseError}
-            onRefresh={() => void loadLicense()}
-            onLicenseChange={handleLicenseChange}
-          />
-        ) : null}
-      </div>
-    </StudioShell>
+    <>
+      {activeView === "license" ? (
+        <LicenseView
+          license={license}
+          loading={licenseLoading}
+          error={licenseError}
+          onRefresh={() => void loadLicense()}
+          onLicenseChange={handleLicenseChange}
+        />
+      ) : (
+        <StudioConsoleView
+          health={state.health}
+          runtime={state.runtime}
+          projects={state.projects}
+          errors={state.errors}
+          lastUpdated={state.lastUpdated}
+          onRefresh={load}
+        />
+      )}
+      <div className="visually-hidden">{consoleStatus}</div>
+    </>
   );
 }
