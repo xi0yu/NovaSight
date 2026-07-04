@@ -220,20 +220,22 @@ def decode_nx6_detections(
     if array.size == 0:
         return []
     array = np.squeeze(array)
-    if array.ndim == 2 and array.shape[1] >= 16 and array.shape[0] > array.shape[1]:
-        array = array.T
-    if array.ndim == 2 and array.shape[0] >= 6 and array.shape[1] != 6:
-        return _decode_yolov8_scores(
-            array,
+    if array.ndim == 1:
+        array = array.reshape(1, -1)
+    if array.ndim != 2:
+        return []
+
+    candidates_first = array.T if array.shape[0] < array.shape[1] else array
+    if candidates_first.shape[1] >= 5 and candidates_first.shape[1] != 6:
+        return _decode_yolo_scores(
+            candidates_first,
             confidence_threshold=confidence_threshold,
             nms_threshold=nms_threshold,
         )
-    if array.ndim == 1:
-        array = array.reshape(1, -1)
-    if array.ndim != 2 or array.shape[1] < 6:
+    if candidates_first.shape[1] < 6:
         return []
     candidates: list[InferenceDetection] = []
-    for row in array:
+    for row in candidates_first:
         score = float(row[4])
         if score < confidence_threshold:
             continue
@@ -253,7 +255,7 @@ def decode_nx6_detections(
     return _nms(candidates, nms_threshold)
 
 
-def _decode_yolov8_scores(
+def _decode_yolo_scores(
     array: Any,
     *,
     confidence_threshold: float,
@@ -262,17 +264,17 @@ def _decode_yolov8_scores(
     import numpy as np
 
     candidates: list[InferenceDetection] = []
-    boxes = array[:4, :]
-    scores = array[4:, :]
+    boxes = array[:, :4]
+    scores = array[:, 4:]
     if scores.size == 0:
         return []
-    cls_ids = np.argmax(scores, axis=0)
-    cls_scores = np.max(scores, axis=0)
+    cls_ids = np.argmax(scores, axis=1)
+    cls_scores = np.max(scores, axis=1)
     for index, score_value in enumerate(cls_scores):
         score = float(score_value)
         if score < confidence_threshold:
             continue
-        cx, cy, w, h = [float(value) for value in boxes[:, index]]
+        cx, cy, w, h = [float(value) for value in boxes[index]]
         if w <= 0 or h <= 0:
             continue
         candidates.append(

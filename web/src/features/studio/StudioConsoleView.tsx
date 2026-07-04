@@ -216,6 +216,15 @@ function choiceLabel(choice: CapabilityChoice): string {
   return `${choice.pixel_format} / ${choice.width}x${choice.height} / ${choice.fps} FPS`;
 }
 
+function choiceMatchesConfig(choice: CapabilityChoice, config: Record<string, unknown>): boolean {
+  return (
+    readString(config.pixel_format, "").toUpperCase() === choice.pixel_format.toUpperCase() &&
+    readNumber(config.width, 0) === choice.width &&
+    readNumber(config.height, 0) === choice.height &&
+    readNumber(config.fps, 0) === choice.fps
+  );
+}
+
 function nearestRoiSize(value: number): number {
   return ROI_SIZE_CHOICES.reduce((best, current) =>
     Math.abs(current - value) < Math.abs(best - value) ? current : best
@@ -240,7 +249,9 @@ export function StudioConsoleView({
   onRefresh
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>("capture");
-  const [device, setDevice] = useState(runtime?.capture?.device ?? "/dev/video0");
+  const [device, setDevice] = useState(
+    readString(nestedRecord(runtime?.config, "capture").device, runtime?.capture?.device ?? "/dev/video0")
+  );
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
   const [selectedChoiceId, setSelectedChoiceId] = useState("");
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
@@ -258,6 +269,12 @@ export function StudioConsoleView({
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
   const config = runtime?.config;
+  const captureConfig = nestedRecord(config, "capture");
+  const configuredCaptureDevice = readString(captureConfig.device, "");
+  const configuredCapturePixelFormat = readString(captureConfig.pixel_format, "");
+  const configuredCaptureWidth = readNumber(captureConfig.width, 0);
+  const configuredCaptureHeight = readNumber(captureConfig.height, 0);
+  const configuredCaptureFps = readNumber(captureConfig.fps, 0);
   const roiConfig = nestedRecord(config, "roi");
   const inferenceConfig = nestedRecord(config, "inference");
   const controlConfig = nestedRecord(config, "control");
@@ -271,6 +288,10 @@ export function StudioConsoleView({
   const executors = asRecord(executorStatus.executors);
   const kmnetStatus = asRecord(executors.kmnet);
   const selectedProfile = capture?.profile;
+  const runningPixelFormat = selectedProfile?.pixel_format ?? "";
+  const runningWidth = selectedProfile?.width ?? 0;
+  const runningHeight = selectedProfile?.height ?? 0;
+  const runningFps = selectedProfile?.fps ?? 0;
   const choices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
   const selectedChoice =
     choices.find((choice) => choiceId(choice) === selectedChoiceId) ?? choices[0];
@@ -340,10 +361,12 @@ export function StudioConsoleView({
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
 
   useEffect(() => {
-    if (runtime?.capture?.device) {
+    if (configuredCaptureDevice) {
+      setDevice(configuredCaptureDevice);
+    } else if (runtime?.capture?.device) {
       setDevice(runtime.capture.device);
     }
-  }, [runtime?.capture?.device]);
+  }, [configuredCaptureDevice, runtime?.capture?.device]);
 
   useEffect(() => {
     if (!selectedChoiceId && selectedProfile) {
@@ -465,16 +488,39 @@ export function StudioConsoleView({
       if (!result.available) {
         setLocalError(result.reason || "设备不可用");
       }
-      const first = groupCapabilities(result.capabilities)[0];
-      if (first) {
-        setSelectedChoiceId(choiceId(first));
+      const grouped = groupCapabilities(result.capabilities);
+      const configured = grouped.find((choice) => choiceMatchesConfig(choice, {
+        pixel_format: configuredCapturePixelFormat,
+        width: configuredCaptureWidth,
+        height: configuredCaptureHeight,
+        fps: configuredCaptureFps
+      }));
+      const running = grouped.find((choice) => runningPixelFormat && (
+        choice.pixel_format.toUpperCase() === runningPixelFormat.toUpperCase() &&
+        choice.width === runningWidth &&
+        choice.height === runningHeight &&
+        choice.fps === runningFps
+      ));
+      const next = configured ?? running ?? grouped[0];
+      if (next) {
+        setSelectedChoiceId(choiceId(next));
       }
     } catch (err) {
       setLocalError(getErrorMessage(err));
     } finally {
       setBusy(null);
     }
-  }, [device]);
+  }, [
+    configuredCaptureFps,
+    configuredCaptureHeight,
+    configuredCapturePixelFormat,
+    configuredCaptureWidth,
+    device,
+    runningFps,
+    runningHeight,
+    runningPixelFormat,
+    runningWidth
+  ]);
 
   useEffect(() => {
     void refreshCapabilities();
