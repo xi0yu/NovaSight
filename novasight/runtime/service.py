@@ -107,11 +107,8 @@ class RuntimeService:
         intent = self._control_intent_from_context(context)
         control_intents = [intent] if intent is not None else []
         execution_results = [self.executors.execute(intent) for intent in control_intents]
-        self.last_execution = (
-            self._execution_result_payload(execution_results[-1])
-            if execution_results
-            else None
-        )
+        if execution_results:
+            self.last_execution = self._execution_result_payload(execution_results[-1])
         return RuntimeFrameResult(
             control_intents=control_intents,
             execution_results=execution_results,
@@ -291,13 +288,21 @@ class RuntimeService:
                 "lost_count": selection.lost_count,
                 "will_emit": False,
             }
+            self.last_execution = None
             return None
 
         center = (context.width / 2, context.height / 2)
         box_input = self._box_input_state()
+        strategy_input = (
+            box_input
+            if box_input.active
+            else BoxInputState(left=True, raw={"mode": "telemetry_control_calculation"})
+        )
         aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
         aim_x, aim_y = aim_point(target, aim_ratio)
-        command = self.control_strategy.calculate(target, center, box_input)
+        command = self.control_strategy.calculate(target, center, strategy_input)
+        if not box_input.active:
+            self._reset_control_motion_state()
         pipeline_debug = dict(command.debug)
         strategy_aim_x = pipeline_debug.get("aim_x")
         strategy_aim_y = pipeline_debug.get("aim_y")
@@ -369,6 +374,19 @@ class RuntimeService:
             "output_mode": output_mode,
             "will_emit": can_emit,
         }
+        if not can_emit:
+            self.last_execution = {
+                "executor_id": str(getattr(self.executors, "selected", "")),
+                "sent": False,
+                "message": "等待硬件触发，控制量未发送",
+                "intent": {
+                    "dx": float(command.dx),
+                    "dy": float(command.dy),
+                    "accepted": False,
+                    "clipped": False,
+                    "reason": command.reason,
+                },
+            }
         return intent if can_emit else None
 
     def _select_control_target(self, context: FrameContext) -> TargetSelection:
@@ -473,6 +491,19 @@ class RuntimeService:
             trace_ms=config.control.trace_ms,
             bezier_curvature=config.control.bezier_curvature,
         )
+
+    def _reset_control_motion_state(self) -> None:
+        reset = getattr(self.control_strategy, "_reset_motion_state", None)
+        if callable(reset):
+            reset()
+            return
+        for name, value in (
+            ("_last_center", None),
+            ("_ema_x", 0.0),
+            ("_ema_y", 0.0),
+        ):
+            if hasattr(self.control_strategy, name):
+                setattr(self.control_strategy, name, value)
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
         class_name = self._class_display_name(int(target.cls), context)
