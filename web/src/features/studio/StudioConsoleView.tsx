@@ -414,8 +414,6 @@ export function StudioConsoleView({
   const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 3);
   const dynamicPidSmoothingFactor = readNumber(controlConfig.dynamic_pid_smoothing_factor, 1);
   const dynamicPidAimRatio = readNumber(controlConfig.dynamic_pid_aim_ratio, 40);
-  const dynamicPidMaxX = readNumber(controlConfig.dynamic_pid_max_x, 120);
-  const dynamicPidMaxY = readNumber(controlConfig.dynamic_pid_max_y, 120);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1552,12 +1550,6 @@ export function StudioConsoleView({
                   <NumberControl label="error_change_tolerance" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
                   <NumberControl label="smoothing_factor" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
                   <NumberControl label="适配 aim_y_ratio" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
-                  <label>动态 PID 输出保护</label>
-                  <p className="console-field-hint">
-                    这不是原 PID 公式参数，而是该算法在输出 MoveCommand 前自己的单帧安全边界；全局输出层只做最后硬件兜底。
-                  </p>
-                  <NumberControl label="X 单帧最大输出" value={dynamicPidMaxX} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_x", value)} />
-                  <NumberControl label="Y 单帧最大输出" value={dynamicPidMaxY} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_y", value)} />
                 </>
               ) : isolatedMode ? (
                 <>

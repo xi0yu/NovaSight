@@ -163,8 +163,6 @@ class ControlConfig:
     dynamic_pid_error_change_tolerance: float = 3.0
     dynamic_pid_smoothing_factor: float = 1.0
     dynamic_pid_aim_ratio: float = 40.0
-    dynamic_pid_max_x: float = 120.0
-    dynamic_pid_max_y: float = 120.0
 
 
 @dataclass
@@ -280,6 +278,8 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
             "dynamic_pid_error_mode",
             "dynamic_pid_target_extent_mode",
             "dynamic_pid_y_sign",
+            "dynamic_pid_max_x",
+            "dynamic_pid_max_y",
         ):
             control.pop(key, None)
         normalized["control"] = control
@@ -388,8 +388,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "dynamic_pid_error_change_tolerance",
         "dynamic_pid_smoothing_factor",
         "dynamic_pid_aim_ratio",
-        "dynamic_pid_max_x",
-        "dynamic_pid_max_y",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")

@@ -892,8 +892,6 @@ class RuntimeService:
                     error_change_tolerance=config.control.dynamic_pid_error_change_tolerance,
                     smoothing_factor=config.control.dynamic_pid_smoothing_factor,
                     aim_ratio=config.control.dynamic_pid_aim_ratio,
-                    max_x=config.control.dynamic_pid_max_x,
-                    max_y=config.control.dynamic_pid_max_y,
                     move_kind=config.control.move_kind,
                     move_ms=config.control.move_ms,
                     trace_ms=config.control.trace_ms,
