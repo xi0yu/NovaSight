@@ -83,6 +83,75 @@ class _AnglePidAxis:
         self.d_term = 0.0
 
 
+@dataclass(slots=True)
+class _KalmanAxis:
+    position: float
+    velocity: float = 0.0
+    p00: float = 20.0
+    p01: float = 0.0
+    p10: float = 0.0
+    p11: float = 20.0
+
+    def predict(self, dt: float, process_noise: float) -> float:
+        dt = max(1e-6, float(dt))
+        q = max(1e-6, float(process_noise))
+        self.position += self.velocity * dt
+        p00 = self.p00 + dt * (self.p10 + self.p01) + dt * dt * self.p11 + q
+        p01 = self.p01 + dt * self.p11
+        p10 = self.p10 + dt * self.p11
+        p11 = self.p11 + q
+        self.p00, self.p01, self.p10, self.p11 = p00, p01, p10, p11
+        return self.position
+
+    def update(self, measurement: float, measurement_noise: float) -> float:
+        r = max(1e-6, float(measurement_noise))
+        innovation = float(measurement) - self.position
+        s = self.p00 + r
+        k0 = self.p00 / s
+        k1 = self.p10 / s
+        self.position += k0 * innovation
+        self.velocity += k1 * innovation
+        p00 = (1.0 - k0) * self.p00
+        p01 = (1.0 - k0) * self.p01
+        p10 = self.p10 - k1 * self.p00
+        p11 = self.p11 - k1 * self.p01
+        self.p00, self.p01, self.p10, self.p11 = p00, p01, p10, p11
+        return self.position
+
+
+@dataclass(slots=True)
+class _KalmanCenterTrack:
+    track_id: int
+    cls: int
+    source_index: int | None
+    kx: _KalmanAxis
+    ky: _KalmanAxis
+    w: float
+    h: float
+    score: float
+    missed: int = 0
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return self.kx.position, self.ky.position
+
+    def predict(self, dt: float, process_noise: float) -> None:
+        self.kx.predict(dt, process_noise)
+        self.ky.predict(dt, process_noise)
+        self.missed += 1
+
+    def update(self, detection: dict[str, float], measurement_noise: float) -> None:
+        self.kx.update(float(detection["cx"]), measurement_noise)
+        self.ky.update(float(detection["cy"]), measurement_noise)
+        self.w = float(detection["w"])
+        self.h = float(detection["h"])
+        self.score = float(detection["score"])
+        self.cls = int(detection["cls"])
+        raw_index = detection.get("index")
+        self.source_index = int(raw_index) if isinstance(raw_index, (int, float)) else None
+        self.missed = 0
+
+
 class ExperimentalAnglePidStrategy:
     def __init__(
         self,
@@ -98,6 +167,12 @@ class ExperimentalAnglePidStrategy:
         control_hz: float = 60.0,
         sign_x: float = 1.0,
         sign_y: float = 1.0,
+        kalman_enabled: bool = True,
+        kalman_process_noise: float = 2.0,
+        kalman_measurement_noise: float = 16.0,
+        hungarian_enabled: bool = True,
+        matching_distance_px: float = 140.0,
+        max_extrapolate_frames: int = 3,
         capture_width: float = 0.0,
         capture_height: float = 0.0,
         move_kind: str = "raw",
@@ -113,12 +188,20 @@ class ExperimentalAnglePidStrategy:
         self.control_hz = max(1.0, control_hz)
         self.sign_x = -1.0 if sign_x < 0 else 1.0
         self.sign_y = -1.0 if sign_y < 0 else 1.0
+        self.kalman_enabled = bool(kalman_enabled)
+        self.kalman_process_noise = max(1e-6, kalman_process_noise)
+        self.kalman_measurement_noise = max(1e-6, kalman_measurement_noise)
+        self.hungarian_enabled = bool(hungarian_enabled)
+        self.matching_distance_px = max(1.0, matching_distance_px)
+        self.max_extrapolate_frames = max(0, int(max_extrapolate_frames))
         self.capture_width = max(0.0, capture_width)
         self.capture_height = max(0.0, capture_height)
         self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
         self.bezier_curvature = max(0.0, bezier_curvature)
+        self._tracks: dict[int, _KalmanCenterTrack] = {}
+        self._next_track_id = 1
 
     def calculate(
         self,
@@ -130,8 +213,9 @@ class ExperimentalAnglePidStrategy:
         roi_width = _positive_number(raw.get("roi_width"), current_pos[0] * 2.0)
         roi_height = _positive_number(raw.get("roi_height"), current_pos[1] * 2.0)
         capture_width, capture_height, capture_source = self._capture_dimensions(raw, roi_width, roi_height)
-        aim_x = (float(target.x1) + float(target.x2)) * 0.5
-        aim_y = (float(target.y1) + float(target.y2)) * 0.5
+        raw_aim_x = (float(target.x1) + float(target.x2)) * 0.5
+        raw_aim_y = (float(target.y1) + float(target.y2)) * 0.5
+        aim_x, aim_y, tracker_debug = self._stable_aim_point(target, raw, raw_aim_x, raw_aim_y)
         roi_center_x = roi_width * 0.5
         roi_center_y = roi_height * 0.5
         error_x_px = aim_x - roi_center_x
@@ -168,8 +252,11 @@ class ExperimentalAnglePidStrategy:
                 "algorithm": "experimental_angle_pid",
                 "unit_pipeline": "bbox_center_px_to_angle_rad_to_counts",
                 "coordinate_y": "cartesian_up_positive_before_executor_flip",
+                "raw_aim_x": raw_aim_x,
+                "raw_aim_y": raw_aim_y,
                 "aim_x": aim_x,
                 "aim_y": aim_y,
+                "tracker": tracker_debug,
                 "roi_center_x": roi_center_x,
                 "roi_center_y": roi_center_y,
                 "roi_width": roi_width,
@@ -214,6 +301,7 @@ class ExperimentalAnglePidStrategy:
     def reset(self) -> None:
         self.pid_x.reset()
         self.pid_y.reset()
+        self._tracks.clear()
 
     def _capture_dimensions(self, raw: dict[str, object], roi_width: float, roi_height: float) -> tuple[float, float, str]:
         raw_capture_width = _positive_number(raw.get("capture_width"), 0.0)
@@ -223,6 +311,156 @@ class ExperimentalAnglePidStrategy:
         if self.capture_width > 0 and self.capture_height > 0:
             return self.capture_width, self.capture_height, "runtime_config"
         return roi_width, roi_height, "roi_fallback"
+
+    def _stable_aim_point(
+        self,
+        target: Target,
+        raw: dict[str, object],
+        fallback_x: float,
+        fallback_y: float,
+    ) -> tuple[float, float, dict[str, Any]]:
+        if not self.kalman_enabled:
+            return fallback_x, fallback_y, {"enabled": False, "reason": "disabled"}
+        detections = _coerce_detection_items(raw.get("detections"))
+        if not detections:
+            detections = [_target_detection_item(target, raw)]
+        dt = 1.0 / self.control_hz
+        for track in self._tracks.values():
+            track.predict(dt, self.kalman_process_noise)
+
+        assignments = self._assign_tracks(detections) if self.hungarian_enabled else self._greedy_assign_tracks(detections)
+        assigned_detection_indexes: set[int] = set()
+        for track_id, detection_index, _cost in assignments:
+            track = self._tracks.get(track_id)
+            if track is None:
+                continue
+            track.update(detections[detection_index], self.kalman_measurement_noise)
+            assigned_detection_indexes.add(detection_index)
+
+        for index, detection in enumerate(detections):
+            if index in assigned_detection_indexes:
+                continue
+            track = self._new_track(detection)
+            self._tracks[track.track_id] = track
+
+        stale = [track_id for track_id, track in self._tracks.items() if track.missed > self.max_extrapolate_frames]
+        for track_id in stale:
+            self._tracks.pop(track_id, None)
+
+        selected = self._select_track_for_target(raw, target, detections)
+        if selected is None:
+            return fallback_x, fallback_y, {
+                "enabled": True,
+                "used": False,
+                "reason": "no matched track",
+                "tracks": len(self._tracks),
+                "detections": len(detections),
+                "assignments": len(assignments),
+            }
+        x, y = selected.center
+        return x, y, {
+            "enabled": True,
+            "used": True,
+            "track_id": selected.track_id,
+            "source_index": selected.source_index,
+            "missed": selected.missed,
+            "tracks": len(self._tracks),
+            "detections": len(detections),
+            "assignments": len(assignments),
+            "hungarian": self.hungarian_enabled,
+            "kalman_process_noise": self.kalman_process_noise,
+            "kalman_measurement_noise": self.kalman_measurement_noise,
+            "matching_distance_px": self.matching_distance_px,
+        }
+
+    def _assign_tracks(self, detections: list[dict[str, float]]) -> list[tuple[int, int, float]]:
+        tracks = list(self._tracks.values())
+        if not tracks or not detections:
+            return []
+        if len(tracks) > 10 or len(detections) > 10:
+            return self._greedy_assign_tracks(detections)
+        det_count = len(detections)
+        memo: dict[tuple[int, int], tuple[float, list[tuple[int, int, float]]]] = {}
+
+        def solve(track_pos: int, used_mask: int) -> tuple[float, list[tuple[int, int, float]]]:
+            key = (track_pos, used_mask)
+            cached = memo.get(key)
+            if cached is not None:
+                return cached
+            if track_pos >= len(tracks):
+                return 0.0, []
+            best_cost, best_pairs = solve(track_pos + 1, used_mask)
+            track = tracks[track_pos]
+            for det_index, detection in enumerate(detections):
+                if used_mask & (1 << det_index):
+                    continue
+                cost = _center_distance(track.center, (float(detection["cx"]), float(detection["cy"])))
+                if cost > self.matching_distance_px:
+                    continue
+                rest_cost, rest_pairs = solve(track_pos + 1, used_mask | (1 << det_index))
+                candidate_cost = cost + rest_cost
+                if not best_pairs or candidate_cost < best_cost:
+                    best_cost = candidate_cost
+                    best_pairs = [(track.track_id, det_index, cost), *rest_pairs]
+            memo[key] = (best_cost, best_pairs)
+            return memo[key]
+
+        return solve(0, 0)[1]
+
+    def _greedy_assign_tracks(self, detections: list[dict[str, float]]) -> list[tuple[int, int, float]]:
+        pairs: list[tuple[float, int, int]] = []
+        for track in self._tracks.values():
+            for det_index, detection in enumerate(detections):
+                cost = _center_distance(track.center, (float(detection["cx"]), float(detection["cy"])))
+                if cost <= self.matching_distance_px:
+                    pairs.append((cost, track.track_id, det_index))
+        result: list[tuple[int, int, float]] = []
+        used_tracks: set[int] = set()
+        used_detections: set[int] = set()
+        for cost, track_id, det_index in sorted(pairs, key=lambda item: item[0]):
+            if track_id in used_tracks or det_index in used_detections:
+                continue
+            used_tracks.add(track_id)
+            used_detections.add(det_index)
+            result.append((track_id, det_index, cost))
+        return result
+
+    def _new_track(self, detection: dict[str, float]) -> _KalmanCenterTrack:
+        track = _KalmanCenterTrack(
+            track_id=self._next_track_id,
+            cls=int(detection["cls"]),
+            source_index=int(detection["index"]) if isinstance(detection.get("index"), (int, float)) else None,
+            kx=_KalmanAxis(float(detection["cx"])),
+            ky=_KalmanAxis(float(detection["cy"])),
+            w=float(detection["w"]),
+            h=float(detection["h"]),
+            score=float(detection["score"]),
+        )
+        self._next_track_id += 1
+        return track
+
+    def _select_track_for_target(self, raw: dict[str, object], target: Target, detections: list[dict[str, float]]) -> _KalmanCenterTrack | None:
+        target_key = str(raw.get("target_key") or "")
+        target_index: int | None = None
+        if target_key.startswith("det:"):
+            parts = target_key.split(":")
+            if len(parts) > 1:
+                try:
+                    target_index = int(parts[1])
+                except ValueError:
+                    target_index = None
+        if target_index is not None:
+            for track in self._tracks.values():
+                if track.source_index == target_index:
+                    return track
+        target_center = ((float(target.x1) + float(target.x2)) * 0.5, (float(target.y1) + float(target.y2)) * 0.5)
+        compatible = [
+            track for track in self._tracks.values()
+            if int(track.cls) == int(target.cls) and track.missed <= self.max_extrapolate_frames
+        ]
+        if not compatible:
+            return None
+        return min(compatible, key=lambda track: _center_distance(track.center, target_center))
 
     @staticmethod
     def _clamp(value: float, limit: float) -> float:
@@ -1056,6 +1294,72 @@ def _positive_number(value: object, fallback: float) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
         return float(value)
     return max(0.0, float(fallback))
+
+
+def _center_distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _target_detection_item(target: Target, raw: dict[str, object]) -> dict[str, float]:
+    target_key = str(raw.get("target_key") or "")
+    index = -1
+    if target_key.startswith("det:"):
+        parts = target_key.split(":")
+        if len(parts) > 1:
+            try:
+                index = int(parts[1])
+            except ValueError:
+                index = -1
+    return {
+        "index": float(index),
+        "cls": float(target.cls),
+        "score": float(target.score),
+        "x1": float(target.x1),
+        "y1": float(target.y1),
+        "x2": float(target.x2),
+        "y2": float(target.y2),
+        "cx": (float(target.x1) + float(target.x2)) * 0.5,
+        "cy": (float(target.y1) + float(target.y2)) * 0.5,
+        "w": max(1.0, float(target.w)),
+        "h": max(1.0, float(target.h)),
+    }
+
+
+def _coerce_detection_items(value: object) -> list[dict[str, float]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, float]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        x1 = _number_or_none(item.get("x1"))
+        y1 = _number_or_none(item.get("y1"))
+        x2 = _number_or_none(item.get("x2"))
+        y2 = _number_or_none(item.get("y2"))
+        if x1 is None or y1 is None or x2 is None or y2 is None:
+            continue
+        w = max(1.0, x2 - x1)
+        h = max(1.0, y2 - y1)
+        result.append({
+            "index": float(_number_or_none(item.get("index")) if _number_or_none(item.get("index")) is not None else index),
+            "cls": float(_number_or_none(item.get("cls")) or 0.0),
+            "score": float(_number_or_none(item.get("score")) or 0.0),
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+            "cx": (x1 + x2) * 0.5,
+            "cy": (y1 + y2) * 0.5,
+            "w": w,
+            "h": h,
+        })
+    return result
+
+
+def _number_or_none(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return None
 
 
 def _project_pixels_to_counts(

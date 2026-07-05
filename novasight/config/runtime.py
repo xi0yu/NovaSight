@@ -160,6 +160,12 @@ class ControlConfig:
     experimental_angle_control_hz: float = 60.0
     experimental_angle_sign_x: float = 1.0
     experimental_angle_sign_y: float = 1.0
+    experimental_angle_kalman_enabled: bool = True
+    experimental_angle_kalman_process_noise: float = 2.0
+    experimental_angle_kalman_measurement_noise: float = 16.0
+    experimental_angle_hungarian_enabled: bool = True
+    experimental_angle_matching_distance_px: float = 140.0
+    experimental_angle_max_extrapolate_frames: int = 3
     dynamic_pid_kp_x: float = 0.35
     dynamic_pid_kp_y: float = 0.24
     dynamic_pid_ki: float = 0.0
@@ -396,6 +402,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "experimental_angle_counts_per_360",
         "experimental_angle_max_step_counts",
         "experimental_angle_control_hz",
+        "experimental_angle_kalman_process_noise",
+        "experimental_angle_kalman_measurement_noise",
+        "experimental_angle_matching_distance_px",
         "dynamic_pid_kp_x",
         "dynamic_pid_kp_y",
         "dynamic_pid_ki",
@@ -441,6 +450,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.experimental_angle_max_step_counts' must be >= 1")
     if cfg.control.experimental_angle_control_hz < 1:
         raise ValueError("runtime config key 'control.experimental_angle_control_hz' must be >= 1")
+    if cfg.control.experimental_angle_max_extrapolate_frames < 0:
+        raise ValueError("runtime config key 'control.experimental_angle_max_extrapolate_frames' must be >= 0")
     if cfg.control.experimental_angle_sign_x not in {-1, 1, -1.0, 1.0}:
         raise ValueError("runtime config key 'control.experimental_angle_sign_x' must be -1 or 1")
     if cfg.control.experimental_angle_sign_y not in {-1, 1, -1.0, 1.0}:

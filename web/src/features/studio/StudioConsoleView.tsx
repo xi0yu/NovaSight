@@ -113,7 +113,13 @@ const EXPERIMENTAL_ANGLE_DEFAULTS = {
   experimental_angle_max_step_counts: 80,
   experimental_angle_control_hz: 60,
   experimental_angle_sign_x: 1,
-  experimental_angle_sign_y: 1
+  experimental_angle_sign_y: 1,
+  experimental_angle_kalman_enabled: true,
+  experimental_angle_kalman_process_noise: 2,
+  experimental_angle_kalman_measurement_noise: 16,
+  experimental_angle_hungarian_enabled: true,
+  experimental_angle_matching_distance_px: 140,
+  experimental_angle_max_extrapolate_frames: 3
 };
 
 const TRIGGER_BINDING_OPTIONS = [
@@ -153,6 +159,10 @@ function recordList(value: unknown): Record<string, string[]> {
 
 function readNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readBoolean(value: unknown, fallback = false): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function readNullableNumber(value: unknown): number | null {
@@ -467,6 +477,12 @@ export function StudioConsoleView({
   const experimentalAngleControlHz = readNumber(controlConfig.experimental_angle_control_hz, 60);
   const experimentalAngleSignX = readNumber(controlConfig.experimental_angle_sign_x, 1);
   const experimentalAngleSignY = readNumber(controlConfig.experimental_angle_sign_y, 1);
+  const experimentalAngleKalmanEnabled = readBoolean(controlConfig.experimental_angle_kalman_enabled, true);
+  const experimentalAngleKalmanProcessNoise = readNumber(controlConfig.experimental_angle_kalman_process_noise, 2);
+  const experimentalAngleKalmanMeasurementNoise = readNumber(controlConfig.experimental_angle_kalman_measurement_noise, 16);
+  const experimentalAngleHungarianEnabled = readBoolean(controlConfig.experimental_angle_hungarian_enabled, true);
+  const experimentalAngleMatchingDistance = readNumber(controlConfig.experimental_angle_matching_distance_px, 140);
+  const experimentalAngleMaxExtrapolateFrames = readNumber(controlConfig.experimental_angle_max_extrapolate_frames, 3);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1691,6 +1707,23 @@ export function StudioConsoleView({
                   <NumberControl label="控制频率 Hz" value={experimentalAngleControlHz} min={1} max={240} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_control_hz", value)} />
                   <NumberControl label="X 输出方向" value={experimentalAngleSignX < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("control", "experimental_angle_sign_x", value < 0 ? -1 : 1)} />
                   <NumberControl label="Y 输出方向" value={experimentalAngleSignY < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("control", "experimental_angle_sign_y", value < 0 ? -1 : 1)} />
+                  <label>目标稳定</label>
+                  <ModuleSwitch
+                    label="启用 Kalman"
+                    detail="稳定并预测检测框中心"
+                    enabled={experimentalAngleKalmanEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_kalman_enabled", enabled)}
+                  />
+                  <NumberControl label="Kalman 过程噪声" value={experimentalAngleKalmanProcessNoise} min={0.001} max={200} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_process_noise", value)} />
+                  <NumberControl label="Kalman 测量噪声" value={experimentalAngleKalmanMeasurementNoise} min={0.001} max={500} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_measurement_noise", value)} />
+                  <ModuleSwitch
+                    label="启用匈牙利匹配"
+                    detail="多目标时保持 track 与 detection 对应关系"
+                    enabled={experimentalAngleHungarianEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_hungarian_enabled", enabled)}
+                  />
+                  <NumberControl label="匹配距离 px" value={experimentalAngleMatchingDistance} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_matching_distance_px", value)} />
+                  <NumberControl label="最大外推帧" value={experimentalAngleMaxExtrapolateFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_extrapolate_frames", Math.round(value))} />
                 </>
               ) : dynamicPidMode ? (
                 <>

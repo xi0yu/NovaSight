@@ -890,6 +890,12 @@ class RuntimeService:
                 control_hz=config.control.experimental_angle_control_hz,
                 sign_x=config.control.experimental_angle_sign_x,
                 sign_y=config.control.experimental_angle_sign_y,
+                kalman_enabled=config.control.experimental_angle_kalman_enabled,
+                kalman_process_noise=config.control.experimental_angle_kalman_process_noise,
+                kalman_measurement_noise=config.control.experimental_angle_kalman_measurement_noise,
+                hungarian_enabled=config.control.experimental_angle_hungarian_enabled,
+                matching_distance_px=config.control.experimental_angle_matching_distance_px,
+                max_extrapolate_frames=config.control.experimental_angle_max_extrapolate_frames,
                 capture_width=config.capture.width,
                 capture_height=config.capture.height,
                 move_kind=config.control.move_kind,
@@ -1045,6 +1051,18 @@ class RuntimeService:
             "capture_height": getattr(self.config.capture, "height", 0),
             "model_width": preprocess.get("model_width") if isinstance(preprocess, dict) else None,
             "model_height": preprocess.get("model_height") if isinstance(preprocess, dict) else None,
+            "detections": [
+                {
+                    "index": index,
+                    "cls": int(detection.cls),
+                    "score": float(detection.score),
+                    "x1": float(detection.x1),
+                    "y1": float(detection.y1),
+                    "x2": float(detection.x2),
+                    "y2": float(detection.y2),
+                }
+                for index, detection in enumerate(context.detections)
+            ],
         }
 
     @staticmethod
