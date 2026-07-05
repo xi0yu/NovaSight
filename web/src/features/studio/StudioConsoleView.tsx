@@ -80,6 +80,23 @@ const KMNET_RECOMMENDED = {
   monitor_port: 5001
 };
 
+const DYNAMIC_PID_DEFAULTS = {
+  dynamic_pid_kp_x: 0.35,
+  dynamic_pid_kp_y: 0.24,
+  dynamic_pid_ki: 0,
+  dynamic_pid_kd: 0.1,
+  dynamic_pid_target_error_threshold: 4,
+  dynamic_pid_speed_multiplier: 1,
+  dynamic_pid_min_coefficient: 1.6,
+  dynamic_pid_max_coefficient: 2.7,
+  dynamic_pid_transition_sharpness: 5,
+  dynamic_pid_transition_midpoint: 0,
+  dynamic_pid_minimum_data_count: 2,
+  dynamic_pid_error_change_tolerance: 3,
+  dynamic_pid_smoothing_factor: 1,
+  dynamic_pid_aim_ratio: 40
+};
+
 const TRIGGER_BINDING_OPTIONS = [
   { value: "", label: "未设置" },
   { value: "MouseLeft", label: "鼠标左键" },
@@ -786,6 +803,47 @@ export function StudioConsoleView({
     [onRefresh, runtime]
   );
 
+  const resetDynamicPidDefaults = useCallback(async () => {
+    const base = configDraftRef.current ?? cloneRuntimeConfig(runtime);
+    const next = base ? normalizeRuntimeConfig(base) : null;
+    if (!next) {
+      return;
+    }
+    const writeSeq = ++configWriteSeqRef.current;
+    pendingConfigWritesRef.current += 1;
+    setBusy("control.dynamic_pid_reset");
+    setLocalError(null);
+    const control = {
+      ...asRecord(next.control),
+      ...DYNAMIC_PID_DEFAULTS
+    };
+    next.control = control as RuntimeConfig[string];
+    configDraftRef.current = next;
+    setConfigDraft(next);
+    try {
+      const result = await updateRuntimeConfig(next);
+      if (writeSeq === configWriteSeqRef.current) {
+        const applied = normalizeRuntimeConfig(result.config);
+        configDraftRef.current = applied;
+        setConfigDraft(applied);
+      }
+    } catch (err) {
+      setLocalError(`动态 PID 重置失败：${getErrorMessage(err)}`);
+      if (writeSeq === configWriteSeqRef.current) {
+        configDraftRef.current = null;
+        setConfigDraft(null);
+      }
+    } finally {
+      pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+      if (writeSeq === configWriteSeqRef.current) {
+        setBusy(null);
+      }
+      if (pendingConfigWritesRef.current === 0) {
+        await onRefresh();
+      }
+    }
+  }, [onRefresh, runtime]);
+
   const setTriggerBinding = useCallback(
     async (slot: number, binding: string) => {
       const next = [...activeTriggerBindings];
@@ -886,7 +944,7 @@ export function StudioConsoleView({
       } else {
         commit(false, [], true);
       }
-    }, 150);
+    }, 100);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("mousedown", onMouseDown, true);
@@ -1536,6 +1594,14 @@ export function StudioConsoleView({
                   <p className="console-field-hint">
                     该模式按给定 PID 控制循环接入；不使用旧 PID、旧预测、D 开关或 Y 下压补偿。
                   </p>
+                  <button
+                    className="console-button"
+                    disabled={busy === "control.dynamic_pid_reset"}
+                    onClick={() => void resetDynamicPidDefaults()}
+                    type="button"
+                  >
+                    重置动态 PID 默认值
+                  </button>
                   <NumberControl label="X 轴比例系数" value={dynamicPidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_x", value)} />
                   <NumberControl label="Y 轴比例系数" value={dynamicPidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_y", value)} />
                   <NumberControl label="积分系数" value={dynamicPidKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_ki", value)} />
