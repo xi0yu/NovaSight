@@ -84,6 +84,8 @@ control:
   dynamic_pid_error_change_tolerance: 3
   dynamic_pid_smoothing_factor: 1
   dynamic_pid_aim_ratio: 40
+  dynamic_pid_max_x: 120
+  dynamic_pid_max_y: 120
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.
   output_mode: silent
