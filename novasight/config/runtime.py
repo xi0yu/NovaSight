@@ -158,8 +158,8 @@ class ControlConfig:
     experimental_angle_counts_per_360: float = 9980.0
     experimental_angle_max_step_counts: float = 80.0
     experimental_angle_control_hz: float = 60.0
-    experimental_angle_sign_x: float = -1.0
-    experimental_angle_sign_y: float = -1.0
+    experimental_angle_sign_x: float = 1.0
+    experimental_angle_sign_y: float = 1.0
     dynamic_pid_kp_x: float = 0.35
     dynamic_pid_kp_y: float = 0.24
     dynamic_pid_ki: float = 0.0

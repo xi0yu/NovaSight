@@ -112,8 +112,8 @@ const EXPERIMENTAL_ANGLE_DEFAULTS = {
   experimental_angle_counts_per_360: 9980,
   experimental_angle_max_step_counts: 80,
   experimental_angle_control_hz: 60,
-  experimental_angle_sign_x: -1,
-  experimental_angle_sign_y: -1
+  experimental_angle_sign_x: 1,
+  experimental_angle_sign_y: 1
 };
 
 const TRIGGER_BINDING_OPTIONS = [
@@ -465,8 +465,8 @@ export function StudioConsoleView({
   const experimentalAngleC360 = readNumber(controlConfig.experimental_angle_counts_per_360, 9980);
   const experimentalAngleMaxStep = readNumber(controlConfig.experimental_angle_max_step_counts, 80);
   const experimentalAngleControlHz = readNumber(controlConfig.experimental_angle_control_hz, 60);
-  const experimentalAngleSignX = readNumber(controlConfig.experimental_angle_sign_x, -1);
-  const experimentalAngleSignY = readNumber(controlConfig.experimental_angle_sign_y, -1);
+  const experimentalAngleSignX = readNumber(controlConfig.experimental_angle_sign_x, 1);
+  const experimentalAngleSignY = readNumber(controlConfig.experimental_angle_sign_y, 1);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");

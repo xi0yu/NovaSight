@@ -96,8 +96,8 @@ class ExperimentalAnglePidStrategy:
         counts_per_360: float = 9980.0,
         max_step_counts: float = 80.0,
         control_hz: float = 60.0,
-        sign_x: float = -1.0,
-        sign_y: float = -1.0,
+        sign_x: float = 1.0,
+        sign_y: float = 1.0,
         capture_width: float = 0.0,
         capture_height: float = 0.0,
         move_kind: str = "raw",
@@ -135,7 +135,8 @@ class ExperimentalAnglePidStrategy:
         roi_center_x = roi_width * 0.5
         roi_center_y = roi_height * 0.5
         error_x_px = aim_x - roi_center_x
-        error_y_px = aim_y - roi_center_y
+        error_y_image_down_px = aim_y - roi_center_y
+        error_y_px = roi_center_y - aim_y
         fov_x_rad = math.radians(self.fov_x_deg)
         focal_x = (capture_width * 0.5) / math.tan(fov_x_rad * 0.5)
         fov_y_rad = 2.0 * math.atan((capture_height / capture_width) * math.tan(fov_x_rad * 0.5))
@@ -166,7 +167,7 @@ class ExperimentalAnglePidStrategy:
                 "stage": "experimental_angle_pid",
                 "algorithm": "experimental_angle_pid",
                 "unit_pipeline": "bbox_center_px_to_angle_rad_to_counts",
-                "coordinate_y": "image_down_positive_before_executor_flip",
+                "coordinate_y": "cartesian_up_positive_before_executor_flip",
                 "aim_x": aim_x,
                 "aim_y": aim_y,
                 "roi_center_x": roi_center_x,
@@ -178,6 +179,7 @@ class ExperimentalAnglePidStrategy:
                 "capture_size_source": capture_source,
                 "error_x_px": error_x_px,
                 "error_y_px": error_y_px,
+                "error_y_image_down_px": error_y_image_down_px,
                 "fov_x_deg": self.fov_x_deg,
                 "fov_x_rad": fov_x_rad,
                 "fov_y_rad": fov_y_rad,
