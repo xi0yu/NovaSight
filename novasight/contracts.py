@@ -222,6 +222,7 @@ class FrameContext:
     detections: list[Detection] = field(default_factory=list)
     tracks: list[Track] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
+    capture_ts_ns: int | None = None
 
 
 @dataclass(frozen=True)

@@ -114,8 +114,10 @@ class PIDStrategy:
         self._last_smoothed_error: tuple[float, float] | None = None
         self._last_derivative = (0.0, 0.0)
         self._last_center: tuple[float, float] | None = None
+        self._last_center_s: float | None = None
         self._last_target_key: str | None = None
         self._last_s: float | None = None
+        self._last_prediction_debug: dict[str, float] = {}
 
     def calculate(
         self,
@@ -128,8 +130,10 @@ class PIDStrategy:
             self._reset_motion_state()
         if target_key:
             self._last_target_key = target_key
+        raw_frame_age_ms = box_input.raw.get("frame_age_ms")
+        frame_age_ms = float(raw_frame_age_ms) if isinstance(raw_frame_age_ms, (int, float)) else 0.0
         aim_center = aim_point(target, self.aim_ratio)
-        predicted_center, prediction_weight = self._predict_center(aim_center)
+        predicted_center, prediction_weight = self._predict_center(aim_center, frame_age_ms=frame_age_ms)
         ex_px = predicted_center[0] - current_pos[0]
         ey_px = current_pos[1] - predicted_center[1]
         err_px = math.hypot(ex_px, ey_px)
@@ -196,6 +200,12 @@ class PIDStrategy:
             "fov_deg": self.fov_deg,
             "dt": dt,
             "target_key": target_key,
+            "frame_age_ms": frame_age_ms,
+            "prediction_lead_ms": self._last_prediction_debug.get("lead_ms", 0.0),
+            "prediction_velocity_x_px_s": self._last_prediction_debug.get("velocity_x_px_s", 0.0),
+            "prediction_velocity_y_px_s": self._last_prediction_debug.get("velocity_y_px_s", 0.0),
+            "prediction_lead_x_px": self._last_prediction_debug.get("lead_x_px", 0.0),
+            "prediction_lead_y_px": self._last_prediction_debug.get("lead_y_px", 0.0),
             "p_x": px,
             "p_y": py,
             "i_x": ix,
@@ -240,17 +250,58 @@ class PIDStrategy:
             return value
         return max(-limit, min(limit, value))
 
-    def _predict_center(self, center: tuple[float, float]) -> tuple[tuple[float, float], float]:
+    def _predict_center(
+        self,
+        center: tuple[float, float],
+        *,
+        frame_age_ms: float,
+    ) -> tuple[tuple[float, float], float]:
+        now_s = time.monotonic()
         if self._last_center is None or self.prediction_factor <= 0:
             self._last_center = center
+            self._last_center_s = now_s
+            self._last_prediction_debug = {
+                "lead_ms": 0.0,
+                "velocity_x_px_s": 0.0,
+                "velocity_y_px_s": 0.0,
+                "lead_x_px": 0.0,
+                "lead_y_px": 0.0,
+            }
             return center, 0.0
 
-        vx = center[0] - self._last_center[0]
+        dt_s = now_s - self._last_center_s if self._last_center_s is not None else 1.0 / 60.0
+        if dt_s <= 0 or dt_s > 0.1:
+            dt_s = 1.0 / 60.0
+        dt_s = max(1.0 / 240.0, min(1.0 / 20.0, dt_s))
+        delta_x = center[0] - self._last_center[0]
+        delta_y = center[1] - self._last_center[1]
         self._last_center = center
-        if abs(vx) <= self.prediction_stationary_px:
+        self._last_center_s = now_s
+        if abs(delta_x) <= self.prediction_stationary_px and abs(delta_y) <= self.prediction_stationary_px:
+            self._last_prediction_debug = {
+                "lead_ms": 0.0,
+                "velocity_x_px_s": 0.0,
+                "velocity_y_px_s": 0.0,
+                "lead_x_px": 0.0,
+                "lead_y_px": 0.0,
+            }
             return center, 0.0
-        lead_x = vx * self.prediction_factor
-        return (center[0] + lead_x, center[1]), self.prediction_factor
+
+        vx_px_s = delta_x / dt_s
+        vy_px_s = delta_y / dt_s
+        # The prediction factor is a lead multiplier over measured frame age.
+        # Clamp the lead window so a stalled frame cannot create a wild jump.
+        lead_s = max(0.0, min(0.08, frame_age_ms / 1000.0)) * self.prediction_factor
+        lead_x = vx_px_s * lead_s
+        lead_y = vy_px_s * lead_s
+        self._last_prediction_debug = {
+            "lead_ms": lead_s * 1000.0,
+            "velocity_x_px_s": vx_px_s,
+            "velocity_y_px_s": vy_px_s,
+            "lead_x_px": lead_x,
+            "lead_y_px": lead_y,
+        }
+        return (center[0] + lead_x, center[1] + lead_y), self.prediction_factor
 
     def _reset_motion_state(self) -> None:
         self._ix = 0.0
@@ -259,8 +310,10 @@ class PIDStrategy:
         self._last_smoothed_error = None
         self._last_derivative = (0.0, 0.0)
         self._last_center = None
+        self._last_center_s = None
         self._last_target_key = None
         self._last_s = None
+        self._last_prediction_debug = {}
 
     def _pixel_error_to_counts(self, ex_px: float, ey_px: float, frame_width: float) -> dict[str, float]:
         focal = (frame_width * 0.5) / math.tan(math.radians(self.fov_deg) * 0.5) if frame_width > 0 else 0.0

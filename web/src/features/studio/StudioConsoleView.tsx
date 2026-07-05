@@ -1423,7 +1423,7 @@ export function StudioConsoleView({
               <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
               <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
               <p className="console-field-hint">
-                预测只补 X 轴：当前帧与上一帧目标 X 偏移差值 × 预测系数，再叠加到当前偏移。
+                预测按真实帧龄补偿：目标速度 × 当前帧龄 × 预测系数。帧龄越高，补偿越明显；目标切换会重置预测状态。
               </p>
               <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
               <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
@@ -1440,8 +1440,12 @@ export function StudioConsoleView({
                 <span>raw dx</span><b>{formatNumber(control.raw_error_x, 1)}</b>
                 <span>raw dy</span><b>{formatNumber(control.raw_error_y, 1)}</b>
                 <span>aim y ratio</span><b>{formatNumber(control.aim_y_ratio ?? control.aim_ratio, 0)}%</b>
+                <span>控制帧龄</span><b>{formatNumber(control.frame_age_ms, 1)} ms</b>
                 <span>aim point</span><b>{`${formatNumber(control.aim_x, 1)}, ${formatNumber(control.aim_y, 1)}`}</b>
                 <span>预测点</span><b>{`${formatNumber(controlPipeline.predicted_x, 1)}, ${formatNumber(controlPipeline.predicted_y, 1)}`}</b>
+                <span>预测提前</span><b>{formatNumber(controlPipeline.prediction_lead_ms, 1)} ms</b>
+                <span>预测速度</span><b>{`${formatNumber(controlPipeline.prediction_velocity_x_px_s, 0)} / ${formatNumber(controlPipeline.prediction_velocity_y_px_s, 0)} px/s`}</b>
+                <span>预测补偿</span><b>{`${formatNumber(controlPipeline.prediction_lead_x_px, 1)} / ${formatNumber(controlPipeline.prediction_lead_y_px, 1)} px`}</b>
                 <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
                 <span>FOV / c360</span><b>{`${formatNumber(controlPipeline.fov_deg, 0)} / ${formatNumber(controlPipeline.c360, 0)}`}</b>
                 <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>

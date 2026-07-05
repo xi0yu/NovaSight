@@ -316,6 +316,7 @@ class RuntimeService:
             height=roi_frame.height,
             detections=detections,
             classes=classes,
+            capture_ts_ns=frame.ts_ns,
         )
         control_start_ns = time.monotonic_ns()
         result = self.process_frame(context)
@@ -366,6 +367,7 @@ class RuntimeService:
             frame_id=frame.frame_id,
             width=self._source_width(frame),
             height=self._source_height(frame),
+            capture_ts_ns=frame.ts_ns,
         )
 
     def _record_inference_status(
@@ -392,6 +394,8 @@ class RuntimeService:
         input_pixel_ratio = self._debug_float(preprocess_debug, "pixel_ratio")
         self.last_inference_status = {
             "frame_id": frame.frame_id,
+            "capture_ts_ns": frame.ts_ns,
+            "frame_age_ms": max(0.0, (time.monotonic_ns() - int(frame.ts_ns)) / 1e6),
             "ran": ran,
             "available": available,
             "reason": reason,
@@ -437,6 +441,7 @@ class RuntimeService:
         return float(value) if isinstance(value, (int, float)) else 0.0
 
     def _control_intent_from_context(self, context: FrameContext) -> ControlIntent | None:
+        frame_age_ms = self._frame_age_ms(context)
         selection = self._select_control_target(context)
         target = selection.target
         if target is None:
@@ -451,6 +456,8 @@ class RuntimeService:
                 "lost_count": selection.lost_count,
                 "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
                 "will_emit": False,
+                "frame_age_ms": frame_age_ms,
+                "capture_ts_ns": context.capture_ts_ns,
             }
             self.last_execution = None
             return None
@@ -459,9 +466,17 @@ class RuntimeService:
         box_input = self._box_input_state()
         target_key = self._control_target_key(target, context)
         strategy_input = (
-            self._with_strategy_target(box_input, target_key)
+            self._with_strategy_target(box_input, target_key, frame_age_ms=frame_age_ms, frame_id=context.frame_id)
             if box_input.active
-            else BoxInputState(left=True, raw={"mode": "telemetry_control_calculation", "target_key": target_key})
+            else BoxInputState(
+                left=True,
+                raw={
+                    "mode": "telemetry_control_calculation",
+                    "target_key": target_key,
+                    "frame_age_ms": frame_age_ms,
+                    "frame_id": context.frame_id,
+                },
+            )
         )
         aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
         aim_x, aim_y = aim_point(target, aim_ratio)
@@ -524,9 +539,13 @@ class RuntimeService:
             "bbox_age_ms": 0.0,
             "is_stale": False,
             "target_key": target_key,
+            "frame_age_ms": frame_age_ms,
+            "capture_ts_ns": context.capture_ts_ns,
         }
         self.last_control = {
             "frame_id": context.frame_id,
+            "capture_ts_ns": context.capture_ts_ns,
+            "frame_age_ms": frame_age_ms,
             "aim_error_x": aim_error_x,
             "aim_error_y": aim_error_y,
             "raw_error_x": raw_error_x,
@@ -622,8 +641,9 @@ class RuntimeService:
         self._last_control_log_signature = signature
         self._last_control_log_s = now
         logger.info(
-            "control decision frame=%s target_cls=%s score=%.3f dx=%.1f dy=%.1f emit=%s output=%s hardware=%s trigger=%s trigger_source=%s trigger_raw=%s reason=%s",
+            "control decision frame=%s age_ms=%.1f target_cls=%s score=%.3f dx=%.1f dy=%.1f emit=%s output=%s hardware=%s trigger=%s trigger_source=%s trigger_raw=%s reason=%s",
             context.frame_id,
+            self._frame_age_ms(context),
             int(getattr(target, "cls", -1)),
             float(getattr(target, "score", 0.0)),
             float(getattr(command, "dx", 0.0)),
@@ -646,8 +666,9 @@ class RuntimeService:
         if not self._should_log("_last_control_log_signature", "_last_control_log_s", signature, interval_s=1.0):
             return
         logger.info(
-            "control trace frame=%s stage=target state=%s reason=%s detections=%s tracks=%s candidates=%s inside_fov=%s class_filter=%s min_conf=%.3f fov_ratio=%.3f",
+            "control trace frame=%s age_ms=%.1f stage=target state=%s reason=%s detections=%s tracks=%s candidates=%s inside_fov=%s class_filter=%s min_conf=%.3f fov_ratio=%.3f",
             context.frame_id,
+            self._frame_age_ms(context),
             selection.state,
             selection.reason,
             len(context.detections),
@@ -909,13 +930,30 @@ class RuntimeService:
         return f"class:{int(target.cls)}"
 
     @staticmethod
-    def _with_strategy_target(state: BoxInputState, target_key: str) -> BoxInputState:
+    def _with_strategy_target(
+        state: BoxInputState,
+        target_key: str,
+        *,
+        frame_age_ms: float,
+        frame_id: int,
+    ) -> BoxInputState:
         return BoxInputState(
             left=state.left,
             right=state.right,
             side=state.side,
-            raw={**(state.raw or {}), "target_key": target_key},
+            raw={
+                **(state.raw or {}),
+                "target_key": target_key,
+                "frame_age_ms": frame_age_ms,
+                "frame_id": frame_id,
+            },
         )
+
+    @staticmethod
+    def _frame_age_ms(context: FrameContext) -> float:
+        if context.capture_ts_ns is None:
+            return 0.0
+        return max(0.0, (time.monotonic_ns() - int(context.capture_ts_ns)) / 1e6)
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
         class_name = self._class_display_name(int(target.cls), context)
@@ -1080,7 +1118,8 @@ class RuntimeService:
             return {"id": "control", "label": "控制量", "status": "blocked", "message": "没有目标，未计算控制量", "detail": ""}
         dx = float(control.get("dx") or 0.0)
         dy = float(control.get("dy") or 0.0)
-        detail = f"dx={dx:.1f}, dy={dy:.1f}"
+        frame_age_ms = float(control.get("frame_age_ms") or 0.0)
+        detail = f"dx={dx:.1f}, dy={dy:.1f}, age={frame_age_ms:.1f}ms"
         if control.get("will_emit") is not True:
             return {
                 "id": "control",
