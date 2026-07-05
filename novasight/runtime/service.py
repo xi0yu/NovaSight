@@ -472,6 +472,7 @@ class RuntimeService:
         center = (context.width / 2, context.height / 2)
         box_input = self._box_input_state()
         target_key = self._control_target_key(target, context)
+        strategy_metadata = self._strategy_frame_metadata(context)
         strategy_input = (
             self._with_strategy_target(
                 box_input,
@@ -479,6 +480,7 @@ class RuntimeService:
                 frame_age_ms=frame_age_ms,
                 frame_id=context.frame_id,
                 capture_ts_ns=context.capture_ts_ns,
+                metadata=strategy_metadata,
             )
             if box_input.active
             else BoxInputState(
@@ -489,6 +491,7 @@ class RuntimeService:
                     "frame_age_ms": frame_age_ms,
                     "frame_id": context.frame_id,
                     "capture_ts_ns": context.capture_ts_ns,
+                    **strategy_metadata,
                 },
             )
         )
@@ -889,6 +892,12 @@ class RuntimeService:
                     error_change_tolerance=config.control.dynamic_pid_error_change_tolerance,
                     smoothing_factor=config.control.dynamic_pid_smoothing_factor,
                     aim_ratio=config.control.dynamic_pid_aim_ratio,
+                    error_mode=config.control.dynamic_pid_error_mode,
+                    target_extent_mode=config.control.dynamic_pid_target_extent_mode,
+                    y_sign=config.control.dynamic_pid_y_sign,
+                    fov_deg=config.control.dynamic_pid_fov_deg,
+                    counts_per_revolution_x=config.control.dynamic_pid_counts_per_revolution_x,
+                    counts_per_revolution_y=config.control.dynamic_pid_counts_per_revolution_y,
                     max_x=config.control.dynamic_pid_max_x,
                     max_y=config.control.dynamic_pid_max_y,
                     move_kind=config.control.move_kind,
@@ -991,6 +1000,7 @@ class RuntimeService:
         frame_age_ms: float,
         frame_id: int,
         capture_ts_ns: int | None,
+        metadata: dict[str, Any] | None = None,
     ) -> BoxInputState:
         return BoxInputState(
             left=state.left,
@@ -1002,8 +1012,19 @@ class RuntimeService:
                 "frame_age_ms": frame_age_ms,
                 "frame_id": frame_id,
                 "capture_ts_ns": capture_ts_ns,
+                **(metadata or {}),
             },
         )
+
+    def _strategy_frame_metadata(self, context: FrameContext) -> dict[str, Any]:
+        inference_debug = self.last_inference_status.get("debug", {})
+        preprocess = inference_debug.get("preprocess", {}) if isinstance(inference_debug, dict) else {}
+        return {
+            "roi_width": context.width,
+            "roi_height": context.height,
+            "model_width": preprocess.get("model_width") if isinstance(preprocess, dict) else None,
+            "model_height": preprocess.get("model_height") if isinstance(preprocess, dict) else None,
+        }
 
     @staticmethod
     def _frame_age_ms(context: FrameContext) -> float:

@@ -414,6 +414,12 @@ export function StudioConsoleView({
   const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 3);
   const dynamicPidSmoothingFactor = readNumber(controlConfig.dynamic_pid_smoothing_factor, 1);
   const dynamicPidAimRatio = readNumber(controlConfig.dynamic_pid_aim_ratio, 40);
+  const dynamicPidErrorMode = readString(controlConfig.dynamic_pid_error_mode, "roi_px");
+  const dynamicPidTargetExtentMode = readString(controlConfig.dynamic_pid_target_extent_mode, "max_wh");
+  const dynamicPidYSign = readString(controlConfig.dynamic_pid_y_sign, "up_positive");
+  const dynamicPidFovDeg = readNumber(controlConfig.dynamic_pid_fov_deg, 105);
+  const dynamicPidC360X = readNumber(controlConfig.dynamic_pid_counts_per_revolution_x, 9980);
+  const dynamicPidC360Y = readNumber(controlConfig.dynamic_pid_counts_per_revolution_y, 9980);
   const dynamicPidMaxX = readNumber(controlConfig.dynamic_pid_max_x, 120);
   const dynamicPidMaxY = readNumber(controlConfig.dynamic_pid_max_y, 120);
   const hardwareKind = readString(hardwareConfig.kind, "none");
@@ -1552,6 +1558,29 @@ export function StudioConsoleView({
                   <NumberControl label="error_change_tolerance" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
                   <NumberControl label="smoothing_factor" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
                   <NumberControl label="适配 aim_y_ratio" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
+                  <label>动态 PID 输入语义</label>
+                  <p className="console-field-hint">
+                    这里只决定喂给原 PID 的 current_error、target_extent、imgsize 单位，方便实机比对原项目调用方式。
+                  </p>
+                  <select value={dynamicPidErrorMode} onChange={(event) => void updateConfigField("control", "dynamic_pid_error_mode", event.target.value)}>
+                    <option value="roi_px">ROI 像素误差</option>
+                    <option value="model_px">模型输入像素误差</option>
+                    <option value="normalized">归一化误差</option>
+                    <option value="fov_counts">FOV / counts 误差</option>
+                  </select>
+                  <select value={dynamicPidTargetExtentMode} onChange={(event) => void updateConfigField("control", "dynamic_pid_target_extent_mode", event.target.value)}>
+                    <option value="width">目标宽度</option>
+                    <option value="height">目标高度</option>
+                    <option value="max_wh">宽高较大值</option>
+                    <option value="mean_wh">宽高平均值</option>
+                  </select>
+                  <select value={dynamicPidYSign} onChange={(event) => void updateConfigField("control", "dynamic_pid_y_sign", event.target.value)}>
+                    <option value="up_positive">Y 向上为正</option>
+                    <option value="down_positive">Y 向下为正</option>
+                  </select>
+                  <NumberControl label="动态 PID FOV" value={dynamicPidFovDeg} min={1} max={179} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_fov_deg", value)} />
+                  <NumberControl label="动态 PID X c360" value={dynamicPidC360X} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "dynamic_pid_counts_per_revolution_x", value)} />
+                  <NumberControl label="动态 PID Y c360" value={dynamicPidC360Y} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "dynamic_pid_counts_per_revolution_y", value)} />
                   <label>动态 PID 输出保护</label>
                   <p className="console-field-hint">
                     这不是原 PID 公式参数，而是该算法在输出 MoveCommand 前自己的单帧安全边界；全局输出层只做最后硬件兜底。
