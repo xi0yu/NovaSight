@@ -170,8 +170,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.dynamic_pid_error_change_tolerance", "label": "动态PID 误差变化容限", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.dynamic_pid_smoothing_factor", "label": "动态PID 平滑因子", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "control.dynamic_pid_aim_ratio", "label": "动态PID 瞄准高度", "type": "float", "min": 0, "max": 100, "restart_required": False},
-                    {"path": "control.dynamic_pid_max_x", "label": "动态PID X 上限", "type": "float", "min": 0, "restart_required": False},
-                    {"path": "control.dynamic_pid_max_y", "label": "动态PID Y 上限", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.output_mode", "label": "输出模式", "type": "select", "options": ["", "silent", "console", "dry_run", "kmnet"], "restart_required": False},
                 ],
             },

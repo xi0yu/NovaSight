@@ -404,18 +404,16 @@ export function StudioConsoleView({
   const dynamicPidKpY = readNumber(controlConfig.dynamic_pid_kp_y, 0.24);
   const dynamicPidKi = readNumber(controlConfig.dynamic_pid_ki, 0);
   const dynamicPidKd = readNumber(controlConfig.dynamic_pid_kd, 0.1);
-  const dynamicPidTargetErrorThreshold = readNumber(controlConfig.dynamic_pid_target_error_threshold, 2);
-  const dynamicPidSpeedMultiplier = readNumber(controlConfig.dynamic_pid_speed_multiplier, 0);
-  const dynamicPidMinCoefficient = readNumber(controlConfig.dynamic_pid_min_coefficient, 0.2);
-  const dynamicPidMaxCoefficient = readNumber(controlConfig.dynamic_pid_max_coefficient, 1);
-  const dynamicPidTransitionSharpness = readNumber(controlConfig.dynamic_pid_transition_sharpness, 12);
-  const dynamicPidTransitionMidpoint = readNumber(controlConfig.dynamic_pid_transition_midpoint, 0.08);
-  const dynamicPidMinimumDataCount = readNumber(controlConfig.dynamic_pid_minimum_data_count, 3);
-  const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 1);
+  const dynamicPidTargetErrorThreshold = readNumber(controlConfig.dynamic_pid_target_error_threshold, 4);
+  const dynamicPidSpeedMultiplier = readNumber(controlConfig.dynamic_pid_speed_multiplier, 1);
+  const dynamicPidMinCoefficient = readNumber(controlConfig.dynamic_pid_min_coefficient, 1.6);
+  const dynamicPidMaxCoefficient = readNumber(controlConfig.dynamic_pid_max_coefficient, 2.7);
+  const dynamicPidTransitionSharpness = readNumber(controlConfig.dynamic_pid_transition_sharpness, 5);
+  const dynamicPidTransitionMidpoint = readNumber(controlConfig.dynamic_pid_transition_midpoint, 0);
+  const dynamicPidMinimumDataCount = readNumber(controlConfig.dynamic_pid_minimum_data_count, 2);
+  const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 3);
   const dynamicPidSmoothingFactor = readNumber(controlConfig.dynamic_pid_smoothing_factor, 1);
   const dynamicPidAimRatio = readNumber(controlConfig.dynamic_pid_aim_ratio, 40);
-  const dynamicPidMaxX = readNumber(controlConfig.dynamic_pid_max_x, 120);
-  const dynamicPidMaxY = readNumber(controlConfig.dynamic_pid_max_y, 120);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1551,9 +1549,7 @@ export function StudioConsoleView({
                   <NumberControl label="minimum_data_count" value={dynamicPidMinimumDataCount} min={0} max={60} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_minimum_data_count", value)} />
                   <NumberControl label="error_change_tolerance" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
                   <NumberControl label="smoothing_factor" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
-                  <NumberControl label="dynamic aim_y_ratio" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
-                  <NumberControl label="dynamic max_x" value={dynamicPidMaxX} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_x", value)} />
-                  <NumberControl label="dynamic max_y" value={dynamicPidMaxY} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_y", value)} />
+                  <NumberControl label="适配 aim_y_ratio" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
                 </>
               ) : isolatedMode ? (
                 <>
