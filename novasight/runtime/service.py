@@ -7,7 +7,7 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
-from novasight.control import PIDStrategy, aim_point
+from novasight.control import IsolatedMouseConfig, IsolatedMouseStrategy, PIDStrategy, aim_point
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
@@ -478,7 +478,7 @@ class RuntimeService:
                 },
             )
         )
-        aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
+        aim_ratio = self._active_aim_ratio()
         aim_x, aim_y = aim_point(target, aim_ratio)
         command = self.control_strategy.calculate(target, center, strategy_input)
         pipeline_debug = dict(command.debug)
@@ -712,13 +712,20 @@ class RuntimeService:
             context,
             min_confidence=float(getattr(self.config.control, "min_confidence", 0.0)),
             fov_ratio=float(getattr(self.config.control, "fov_ratio", 0.28)),
-            aim_ratio=float(getattr(self.config.control, "aim_ratio", 40.0)),
+            aim_ratio=self._active_aim_ratio(),
             class_filter=str(getattr(self.config.inference, "detection_class_filter", "all")),
             class_priority=self._class_priority(),
             sticky_bias=float(getattr(self.config.control, "target_sticky_bias", 0.25)),
             lock_enabled=bool(getattr(self.config.control, "target_lock_enabled", True)),
             lost_grace_frames=int(getattr(self.config.control, "target_lost_grace_frames", 5)),
         )
+
+    def _active_aim_ratio(self) -> float:
+        if str(getattr(self.config.control, "strategy", "pid")) == "isolated_mouse":
+            value = getattr(self.config.control, "isolated_aim_ratio", 40.0)
+        else:
+            value = getattr(self.config.control, "aim_ratio", 40.0)
+        return max(0.0, min(100.0, float(value)))
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
         selected = str(getattr(self.config.inference, "detection_class_filter", "all"))
@@ -848,6 +855,25 @@ class RuntimeService:
         return result
 
     def _create_control_strategy(self, config: RuntimeConfig):
+        if config.control.strategy == "isolated_mouse":
+            return IsolatedMouseStrategy(
+                IsolatedMouseConfig(
+                    kp_x=config.control.isolated_kp_x,
+                    kp_y=config.control.isolated_kp_y,
+                    max_x=config.control.isolated_max_x,
+                    max_y=config.control.isolated_max_y,
+                    deadzone_px=config.control.isolated_deadzone_px,
+                    aim_ratio=config.control.isolated_aim_ratio,
+                    smoothing=config.control.isolated_smoothing,
+                    prediction=config.control.isolated_prediction,
+                    fov_deg=config.control.isolated_fov_deg,
+                    counts_per_revolution_x=config.control.isolated_counts_per_revolution_x,
+                    counts_per_revolution_y=config.control.isolated_counts_per_revolution_y,
+                    move_kind=config.control.move_kind,
+                    move_ms=config.control.move_ms,
+                    trace_ms=config.control.trace_ms,
+                )
+            )
         return PIDStrategy(
             kp_x=config.control.pid_kp_x,
             kp_y=config.control.pid_kp_y,
@@ -875,6 +901,10 @@ class RuntimeService:
         )
 
     def _reset_control_motion_state(self) -> None:
+        reset_strategy = getattr(self.control_strategy, "reset", None)
+        if callable(reset_strategy):
+            reset_strategy()
+            return
         reset = getattr(self.control_strategy, "_reset_motion_state", None)
         if callable(reset):
             reset()

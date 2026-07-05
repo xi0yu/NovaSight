@@ -153,7 +153,7 @@ class YAxisWindowLimiter:
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> YAxisWindowLimiter:
         return cls(
-            enabled=bool(config.control.y_down_enabled),
+            enabled=bool(config.control.y_down_enabled) and config.control.strategy != "isolated_mouse",
             window_s=max(0.0, config.control.y_rate_window_ms / 1000.0),
             max_counts=max(0.0, config.control.y_rate_max_counts),
         )
@@ -166,6 +166,8 @@ class YAxisWindowLimiter:
 
     def configure_from_config(self, config: RuntimeConfig) -> None:
         next_enabled = bool(config.control.y_down_enabled)
+        if config.control.strategy == "isolated_mouse":
+            next_enabled = False
         was_enabled = self.enabled
         self.enabled = next_enabled
         self.window_s = max(0.0, config.control.y_rate_window_ms / 1000.0)

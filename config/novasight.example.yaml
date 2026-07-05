@@ -36,6 +36,7 @@ control:
   max_abs_dy: 200
   min_confidence: 0
   fov_ratio: 0.28
+  strategy: pid
   # Y-axis aim point inside target box: 0=head/top, 50=center, 100=feet/bottom.
   aim_ratio: 40
   # hardware: kmNet hardware button gates output.
@@ -58,6 +59,17 @@ control:
   y_rate_max_counts: 0
   move_kind: bezier
   move_ms: 12
+  isolated_kp_x: 0.35
+  isolated_kp_y: 0.24
+  isolated_max_x: 80
+  isolated_max_y: 60
+  isolated_deadzone_px: 2
+  isolated_aim_ratio: 40
+  isolated_smoothing: 0
+  isolated_prediction: 0
+  isolated_fov_deg: 105
+  isolated_counts_per_revolution_x: 9980
+  isolated_counts_per_revolution_y: 9980
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.
   output_mode: silent

@@ -138,6 +138,17 @@ class ControlConfig:
     straight_pred_gain: float = 0.0
     straight_pred_consistency_frames: int = 3
     straight_gain_y: float = 1.0
+    isolated_kp_x: float = 0.35
+    isolated_kp_y: float = 0.24
+    isolated_max_x: float = 80.0
+    isolated_max_y: float = 60.0
+    isolated_deadzone_px: float = 2.0
+    isolated_aim_ratio: float = 40.0
+    isolated_smoothing: float = 0.0
+    isolated_prediction: float = 0.0
+    isolated_fov_deg: float = 105.0
+    isolated_counts_per_revolution_x: float = 9980.0
+    isolated_counts_per_revolution_y: float = 9980.0
 
 
 @dataclass
@@ -273,8 +284,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
-    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive"}:
-        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, or predictive")
+    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive", "isolated_mouse"}:
+        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, predictive, or isolated_mouse")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
@@ -320,6 +331,16 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "straight_pred_gain",
         "straight_pred_consistency_frames",
         "straight_gain_y",
+        "isolated_kp_x",
+        "isolated_kp_y",
+        "isolated_max_x",
+        "isolated_max_y",
+        "isolated_deadzone_px",
+        "isolated_aim_ratio",
+        "isolated_smoothing",
+        "isolated_prediction",
+        "isolated_counts_per_revolution_x",
+        "isolated_counts_per_revolution_y",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
@@ -329,6 +350,14 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.ema_alpha' must be <= 1")
     if cfg.control.prediction_factor > 1:
         raise ValueError("runtime config key 'control.prediction_factor' must be <= 1")
+    if cfg.control.isolated_aim_ratio > 100:
+        raise ValueError("runtime config key 'control.isolated_aim_ratio' must be <= 100")
+    if cfg.control.isolated_smoothing > 0.95:
+        raise ValueError("runtime config key 'control.isolated_smoothing' must be <= 0.95")
+    if cfg.control.isolated_prediction > 2:
+        raise ValueError("runtime config key 'control.isolated_prediction' must be <= 2")
+    if cfg.control.isolated_fov_deg <= 0 or cfg.control.isolated_fov_deg >= 180:
+        raise ValueError("runtime config key 'control.isolated_fov_deg' must be > 0 and < 180")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:

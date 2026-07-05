@@ -371,6 +371,8 @@ export function StudioConsoleView({
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
+  const controlStrategy = readString(controlConfig.strategy, "pid");
+  const isolatedMode = controlStrategy === "isolated_mouse";
   const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
   const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
   const pidKd = readNumber(controlConfig.pid_kd, 0.1);
@@ -386,6 +388,17 @@ export function StudioConsoleView({
   const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
   const moveKind = readString(controlConfig.move_kind, "bezier");
   const moveMs = readNumber(controlConfig.move_ms, 12);
+  const isolatedKpX = readNumber(controlConfig.isolated_kp_x, 0.35);
+  const isolatedKpY = readNumber(controlConfig.isolated_kp_y, 0.24);
+  const isolatedMaxX = readNumber(controlConfig.isolated_max_x, 80);
+  const isolatedMaxY = readNumber(controlConfig.isolated_max_y, 60);
+  const isolatedDeadzonePx = readNumber(controlConfig.isolated_deadzone_px, 2);
+  const isolatedAimRatio = readNumber(controlConfig.isolated_aim_ratio, 40);
+  const isolatedSmoothing = readNumber(controlConfig.isolated_smoothing, 0);
+  const isolatedPrediction = readNumber(controlConfig.isolated_prediction, 0);
+  const isolatedFovDeg = readNumber(controlConfig.isolated_fov_deg, 105);
+  const isolatedC360X = readNumber(controlConfig.isolated_counts_per_revolution_x, 9980);
+  const isolatedC360Y = readNumber(controlConfig.isolated_counts_per_revolution_y, 9980);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1437,16 +1450,24 @@ export function StudioConsoleView({
 
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="主算法" value="Kp / Kd" small="control" />
+            <Metric title="主算法" value={isolatedMode ? "隔离算法" : "Legacy PID"} small="control" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-            <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
-            <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
-            <Metric title="预测" value={predictionFactor.toFixed(2)} small="lead x" />
-            <Metric title="瞄准高度" value={`${aimYRatio.toFixed(0)}%`} small="aim y" />
+            <Metric title="Kp X" value={(isolatedMode ? isolatedKpX : pidKpX).toFixed(2)} small="axis x" />
+            <Metric title="Kp Y" value={(isolatedMode ? isolatedKpY : pidKpY).toFixed(2)} small="axis y" />
+            <Metric title="预测" value={(isolatedMode ? isolatedPrediction : predictionFactor).toFixed(2)} small="lead" />
+            <Metric title="瞄准高度" value={`${(isolatedMode ? isolatedAimRatio : aimYRatio).toFixed(0)}%`} small="aim y" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
               <h2 className="console-title">鼠标移动算法</h2>
+              <label>算法模式</label>
+              <select
+                value={controlStrategy}
+                onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
+              >
+                <option value="pid">Legacy PID</option>
+                <option value="isolated_mouse">隔离鼠标算法</option>
+              </select>
               <label>触发方式</label>
               <select
                 value={triggerMode}
@@ -1491,45 +1512,68 @@ export function StudioConsoleView({
               </p>
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
 
-              <label>基础追踪</label>
-              <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
-              <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
-              <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
-              <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
-              <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
+              {isolatedMode ? (
+                <>
+                  <label>隔离算法参数</label>
+                  <p className="console-field-hint">
+                    该模式不使用 Legacy PID、D 项、旧预测、Y 下压补偿；只使用下方 isolated_* 参数。
+                  </p>
+                  <NumberControl label="isolated aim_y_ratio" value={isolatedAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "isolated_aim_ratio", Math.round(value))} />
+                  <NumberControl label="isolated kp_x" value={isolatedKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "isolated_kp_x", value)} />
+                  <NumberControl label="isolated kp_y" value={isolatedKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "isolated_kp_y", value)} />
+                  <NumberControl label="isolated max_x" value={isolatedMaxX} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "isolated_max_x", value)} />
+                  <NumberControl label="isolated max_y" value={isolatedMaxY} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "isolated_max_y", value)} />
+                  <NumberControl label="isolated deadzone px" value={isolatedDeadzonePx} min={0} max={80} step={1} onCommit={(value) => updateConfigField("control", "isolated_deadzone_px", value)} />
+                  <NumberControl label="isolated smoothing" value={isolatedSmoothing} min={0} max={0.95} step={0.01} onCommit={(value) => updateConfigField("control", "isolated_smoothing", value)} />
+                  <NumberControl label="isolated prediction" value={isolatedPrediction} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "isolated_prediction", value)} />
+                  <NumberControl label="isolated fov_deg" value={isolatedFovDeg} min={1} max={179} step={1} onCommit={(value) => updateConfigField("control", "isolated_fov_deg", value)} />
+                  <NumberControl label="isolated c360 x" value={isolatedC360X} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "isolated_counts_per_revolution_x", value)} />
+                  <NumberControl label="isolated c360 y" value={isolatedC360Y} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "isolated_counts_per_revolution_y", value)} />
+                </>
+              ) : (
+                <>
+                  <label>基础追踪</label>
+                  <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
+                  <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
+                  <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
+                  <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
+                  <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
 
-              <label>预测补偿</label>
-              <ModuleSwitch
-                label="启用预测"
-                detail="目标速度 × 帧龄 × 预测系数"
-                enabled={predictionEnabled}
-                onToggle={(enabled) => updateConfigField("control", "prediction_enabled", enabled)}
-              />
-              <NumberControl label="预测系数" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
+                  <label>预测补偿</label>
+                  <ModuleSwitch
+                    label="启用预测"
+                    detail="目标速度 × 帧龄 × 预测系数"
+                    enabled={predictionEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "prediction_enabled", enabled)}
+                  />
+                  <NumberControl label="预测系数" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
 
-              <label>D 阻尼</label>
-              <ModuleSwitch
-                label="启用 D 项"
-                detail="抑制过冲；排查抖动时可关闭"
-                enabled={derivativeEnabled}
-                onToggle={(enabled) => updateConfigField("control", "derivative_enabled", enabled)}
-              />
-              <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
+                  <label>D 阻尼</label>
+                  <ModuleSwitch
+                    label="启用 D 项"
+                    detail="抑制过冲；排查抖动时可关闭"
+                    enabled={derivativeEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "derivative_enabled", enabled)}
+                  />
+                  <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
 
-              <label>Y 下压补偿</label>
-              <ModuleSwitch
-                label="启用 Y 下压"
-                detail="按间隔给最终 dy 追加下压 counts"
-                enabled={yDownEnabled}
-                onToggle={(enabled) => updateConfigField("control", "y_down_enabled", enabled)}
-              />
-              <NumberControl label="Y 下压间隔 ms" value={yRateWindowMs} min={0} max={1000} step={1} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
-              <NumberControl label="Y 每次下压 counts" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
+                  <label>Y 下压补偿</label>
+                  <ModuleSwitch
+                    label="启用 Y 下压"
+                    detail="按间隔给最终 dy 追加下压 counts"
+                    enabled={yDownEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "y_down_enabled", enabled)}
+                  />
+                  <NumberControl label="Y 下压间隔 ms" value={yRateWindowMs} min={0} max={1000} step={1} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
+                  <NumberControl label="Y 每次下压 counts" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
+                </>
+              )}
             </div>
             <div className="console-card">
               <h2 className="console-title">控制量反馈</h2>
               <div className="console-kv control-feedback-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
+                <span>算法模式</span><b>{isolatedMode ? "隔离鼠标算法" : "Legacy PID"}</b>
                 <span>目标序号</span><b>{formatNumber(control.target_detection_index ?? target.target_detection_index, 0)}</b>
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
@@ -1575,7 +1619,7 @@ export function StudioConsoleView({
                 <span>Driver rc</span><b>{String(executionMeta.driver_rc ?? "-")}</b>
                 <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
                 <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
-                <span>Y 下压</span><b>{readNumber(yRateLimiterMeta.max_counts, 0) > 0 ? `${formatNumber(yRateLimiterMeta.drop_counts, 0)} -> ${formatNumber(yRateLimiterMeta.final_dy, 0)}` : "关闭"}</b>
+                <span>Y 下压</span><b>{yRateLimiterMeta.enabled === true ? `${formatNumber(yRateLimiterMeta.drop_counts, 0)} -> ${formatNumber(yRateLimiterMeta.final_dy, 0)}` : "关闭"}</b>
                 <span>Driver dx</span><b>{formatNumber(executionMeta.driver_dx, 1)}</b>
                 <span>Driver dy</span><b>{formatNumber(executionMeta.driver_dy, 1)}</b>
                 <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
