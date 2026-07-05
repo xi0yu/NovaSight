@@ -473,7 +473,13 @@ class RuntimeService:
         box_input = self._box_input_state()
         target_key = self._control_target_key(target, context)
         strategy_input = (
-            self._with_strategy_target(box_input, target_key, frame_age_ms=frame_age_ms, frame_id=context.frame_id)
+            self._with_strategy_target(
+                box_input,
+                target_key,
+                frame_age_ms=frame_age_ms,
+                frame_id=context.frame_id,
+                capture_ts_ns=context.capture_ts_ns,
+            )
             if box_input.active
             else BoxInputState(
                 left=True,
@@ -482,6 +488,7 @@ class RuntimeService:
                     "target_key": target_key,
                     "frame_age_ms": frame_age_ms,
                     "frame_id": context.frame_id,
+                    "capture_ts_ns": context.capture_ts_ns,
                 },
             )
         )
@@ -983,6 +990,7 @@ class RuntimeService:
         *,
         frame_age_ms: float,
         frame_id: int,
+        capture_ts_ns: int | None,
     ) -> BoxInputState:
         return BoxInputState(
             left=state.left,
@@ -993,6 +1001,7 @@ class RuntimeService:
                 "target_key": target_key,
                 "frame_age_ms": frame_age_ms,
                 "frame_id": frame_id,
+                "capture_ts_ns": capture_ts_ns,
             },
         )
 

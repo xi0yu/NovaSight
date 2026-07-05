@@ -210,6 +210,8 @@ class DynamicPidMouseStrategy:
         self.axis_x = _axis_from_config(self.config, axis="x")
         self.axis_y = _axis_from_config(self.config, axis="y")
         self._last_s = 0.0
+        self._last_capture_ts_ns: int | None = None
+        self._last_target_key = ""
 
     def calculate(
         self,
@@ -217,9 +219,17 @@ class DynamicPidMouseStrategy:
         current_pos: tuple[float, float],
         box_input: BoxInputState,
     ) -> MoveCommand:
-        now_s = time.monotonic()
-        dt = now_s - self._last_s if self._last_s > 0 else 1.0 / 120.0
-        self._last_s = now_s
+        raw = box_input.raw or {}
+        target_key = str(raw.get("target_key") or "")
+        target_changed = bool(target_key and self._last_target_key and target_key != self._last_target_key)
+        if target_changed:
+            self.axis_x.reset()
+            self.axis_y.reset()
+            self._last_capture_ts_ns = None
+            self._last_s = 0.0
+        if target_key:
+            self._last_target_key = target_key
+        dt, dt_source = self._resolve_delta_time(raw)
         center_x, center_y = current_pos
         aim_x, aim_y = _aim_point(target, self.config.aim_ratio)
         error_x = float(aim_x - center_x)
@@ -247,6 +257,11 @@ class DynamicPidMouseStrategy:
                 "raw_px_x": error_x,
                 "raw_px_y": error_y,
                 "dt_ms": dt * 1000.0,
+                "dt_source": dt_source,
+                "frame_id": raw.get("frame_id"),
+                "capture_ts_ns": raw.get("capture_ts_ns"),
+                "target_key": target_key,
+                "target_changed": target_changed,
                 "target_width": target_width,
                 "image_size": image_size,
                 "x_axis": self.axis_x.debug(),
@@ -265,6 +280,25 @@ class DynamicPidMouseStrategy:
         self.axis_x.reset()
         self.axis_y.reset()
         self._last_s = 0.0
+        self._last_capture_ts_ns = None
+        self._last_target_key = ""
+
+    def _resolve_delta_time(self, raw: dict[str, object]) -> tuple[float, str]:
+        capture_ts_ns = raw.get("capture_ts_ns")
+        if isinstance(capture_ts_ns, (int, float)) and capture_ts_ns > 0:
+            current_ts_ns = int(capture_ts_ns)
+            if self._last_capture_ts_ns is not None:
+                delta_ns = current_ts_ns - self._last_capture_ts_ns
+                self._last_capture_ts_ns = current_ts_ns
+                if delta_ns > 0:
+                    return max(1e-6, delta_ns / 1e9), "capture_ts_ns"
+            self._last_capture_ts_ns = current_ts_ns
+            return 1.0 / 120.0, "capture_ts_ns:first"
+
+        now_s = time.monotonic()
+        dt = now_s - self._last_s if self._last_s > 0 else 1.0 / 120.0
+        self._last_s = now_s
+        return max(1e-6, dt), "monotonic_fallback"
 
 
 def _axis_from_config(config: DynamicPidConfig, *, axis: str) -> DynamicPidAxis:
