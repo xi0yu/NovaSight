@@ -99,10 +99,10 @@ class ControlConfig:
     trigger_mode: str = "hardware"
     trigger_bindings: list[str] = field(default_factory=lambda: ["MouseRight"])
     output_mode: str = ""
-    strategy: str = "straight"
+    strategy: str = "pid"
     pid_kp_x: float = 0.35
     pid_kp_y: float = 0.24
-    pid_ki: float = 0.1
+    pid_ki: float = 0.0
     pid_kd: float = 0.1
     pid_integral_limit: float = 250.0
     pid_move_limit: float = 120.0
@@ -112,7 +112,7 @@ class ControlConfig:
     command_interval_ms: float = 1.0
     y_rate_window_ms: float = 10.0
     y_rate_max_counts: float = 0.0
-    move_kind: str = "raw"
+    move_kind: str = "bezier"
     move_ms: int = 12
     trace_ms: int = 0
     deadzone_counts: int = 1
@@ -285,6 +285,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.target_lost_grace_frames' must be >= 0")
     if cfg.control.move_kind not in {"raw", "enc_raw", "auto", "enc_auto", "bezier", "enc_bezier"}:
         raise ValueError("runtime config key 'control.move_kind' must be raw, enc_raw, auto, enc_auto, bezier, or enc_bezier")
+    if cfg.control.pid_kd < -1 or cfg.control.pid_kd > 1:
+        raise ValueError("runtime config key 'control.pid_kd' must be >= -1 and <= 1")
     for key in (
         "pid_integral_limit",
         "pid_move_limit",

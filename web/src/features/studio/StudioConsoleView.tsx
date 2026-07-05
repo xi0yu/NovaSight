@@ -325,35 +325,18 @@ export function StudioConsoleView({
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
-  const controlStrategy = readString(controlConfig.strategy, "straight");
   const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
   const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
-  const pidKi = readNumber(controlConfig.pid_ki, 0.1);
   const pidKd = readNumber(controlConfig.pid_kd, 0.1);
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
-  const commandIntervalMs = readNumber(controlConfig.command_interval_ms, 1);
   const yRateWindowMs = readNumber(controlConfig.y_rate_window_ms, 10);
   const yRateMaxCounts = readNumber(controlConfig.y_rate_max_counts, 0);
   const aimYRatio = readNumber(controlConfig.aim_ratio, 40);
-  const targetLockEnabled = controlConfig.target_lock_enabled !== false;
-  const targetStickyBias = readNumber(controlConfig.target_sticky_bias, 0.25);
   const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
-  const moveKind = readString(controlConfig.move_kind, "raw");
+  const moveKind = readString(controlConfig.move_kind, "bezier");
   const moveMs = readNumber(controlConfig.move_ms, 12);
-  const straightFovDeg = readNumber(controlConfig.straight_fov_deg, 105);
-  const straightC360 = readNumber(controlConfig.straight_c360, 9980);
-  const straightKpX = readNumber(controlConfig.straight_kp_x, 0.3);
-  const straightKpY = readNumber(controlConfig.straight_kp_y, 0.3);
-  const straightFirstFrameGain = readNumber(controlConfig.straight_first_frame_gain, 1);
-  const straightFirstMaxStep = readNumber(controlConfig.straight_first_max_step, 200);
-  const straightMaxStep = readNumber(controlConfig.straight_max_step, 80);
-  const straightInDeadzone = readNumber(controlConfig.straight_in_deadzone, 8);
-  const straightJumpThreshold = readNumber(controlConfig.straight_jump_threshold, 40);
-  const straightPredGain = readNumber(controlConfig.straight_pred_gain, 0);
-  const straightPredConsistencyFrames = readNumber(controlConfig.straight_pred_consistency_frames, 3);
-  const straightGainY = readNumber(controlConfig.straight_gain_y, 1);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1378,29 +1361,16 @@ export function StudioConsoleView({
 
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="控制策略" value={controlStrategy} small="strategy" />
+            <Metric title="主算法" value="Kp / Kd" small="control" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-            <Metric title="Kp X" value={(controlStrategy === "straight" ? straightKpX : pidKpX).toFixed(2)} small="axis x" />
-            <Metric title="Kp Y" value={(controlStrategy === "straight" ? straightKpY : pidKpY).toFixed(2)} small="axis y" />
-            <Metric title="预测" value={(controlStrategy === "straight" ? straightPredGain : predictionFactor).toFixed(2)} small="lead" />
+            <Metric title="Kp X" value={pidKpX.toFixed(2)} small="axis x" />
+            <Metric title="Kp Y" value={pidKpY.toFixed(2)} small="axis y" />
+            <Metric title="预测" value={predictionFactor.toFixed(2)} small="lead x" />
             <Metric title="瞄准高度" value={`${aimYRatio.toFixed(0)}%`} small="aim y" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
               <h2 className="console-title">鼠标移动算法</h2>
-              <label>算法模式</label>
-              <select
-                value={controlStrategy}
-                onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
-              >
-                <option value="straight">推荐：FOV/c360 直线跟随</option>
-                <option value="pid">调试：PID 平滑追踪</option>
-                <option value="proportional">实验：比例速度</option>
-                <option value="predictive">实验：预测追踪</option>
-              </select>
-              <p className="console-field-hint">
-                主链路优先使用推荐模式；实验模式保留用于对比手感，不作为默认产品模式。
-              </p>
               <label>触发方式</label>
               <select
                 value={triggerMode}
@@ -1439,63 +1409,24 @@ export function StudioConsoleView({
               <div className={localTriggerActive ? "trigger-state active" : "trigger-state"}>
                 {localTriggerActive ? "本地触发已按下 · 正在续期" : "本地触发未按下"}
               </div>
-              <label>目标锁定</label>
-              <select
-                value={targetLockEnabled ? "true" : "false"}
-                onChange={(event) => void updateConfigField("control", "target_lock_enabled", event.target.value === "true")}
-              >
-                <option value="true">开启：保持当前目标</option>
-                <option value="false">关闭：每帧重新选择</option>
-              </select>
+              <label>目标保持</label>
               <p className="console-field-hint">
-                目标锁定偏好只影响“多个候选目标选谁”，不改变鼠标移动速度。数值越高，越不容易从当前目标切到旁边的新目标。
+                检测短暂丢失时继续沿用最近目标；超过容忍帧数后释放目标，避免误跟踪。
               </p>
-              <NumberControl label="锁定偏好" value={targetStickyBias} min={0} max={0.9} step={0.05} onCommit={(value) => updateConfigField("control", "target_sticky_bias", value)} />
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
-              <label>kmNet 移动 API</label>
-              <select
-                value={moveKind}
-                onChange={(event) => void updateConfigField("control", "move_kind", event.target.value)}
-              >
-                <option value="raw">move</option>
-                <option value="enc_raw">enc_move</option>
-                <option value="auto">move_auto</option>
-                <option value="enc_auto">enc_move_auto</option>
-                <option value="bezier">move_beizer</option>
-                <option value="enc_bezier">enc_move_beizer</option>
-              </select>
-              <NumberControl label="移动铺展 ms" value={moveMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "move_ms", Math.round(value))} />
-              <NumberControl label="指令合并间隔 ms" value={commandIntervalMs} min={0} max={50} step={0.5} onCommit={(value) => updateConfigField("control", "command_interval_ms", value)} />
+              <label>鼠标移动算法</label>
               <NumberControl label="Y 压制窗口 ms" value={yRateWindowMs} min={0} max={50} step={0.5} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
               <NumberControl label="Y 窗口 counts 上限" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
               <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
-              {controlStrategy === "straight" ? (
-                <>
-                  <NumberControl label="Straight FOV" value={straightFovDeg} min={30} max={140} step={1} onCommit={(value) => updateConfigField("control", "straight_fov_deg", Math.round(value))} />
-                  <NumberControl label="Straight c360" value={straightC360} min={500} max={50000} step={20} onCommit={(value) => updateConfigField("control", "straight_c360", Math.round(value))} />
-                  <NumberControl label="Straight kp_x" value={straightKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_x", value)} />
-                  <NumberControl label="Straight kp_y" value={straightKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "straight_kp_y", value)} />
-                  <NumberControl label="首帧增益 gain_first" value={straightFirstFrameGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_first_frame_gain", value)} />
-                  <NumberControl label="首帧上限 first_max_step" value={straightFirstMaxStep} min={1} max={2000} step={10} onCommit={(value) => updateConfigField("control", "straight_first_max_step", value)} />
-                  <NumberControl label="精修上限 max_step" value={straightMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_max_step", value)} />
-                  <NumberControl label="输入死区 px" value={straightInDeadzone} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "straight_in_deadzone", value)} />
-                  <NumberControl label="跳变重锁 px" value={straightJumpThreshold} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "straight_jump_threshold", value)} />
-                  <NumberControl label="前馈预测 pred_gain" value={straightPredGain} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "straight_pred_gain", value)} />
-                  <NumberControl label="动作判定帧" value={straightPredConsistencyFrames} min={1} max={15} step={1} onCommit={(value) => updateConfigField("control", "straight_pred_consistency_frames", Math.round(value))} />
-                  <NumberControl label="首帧 Y 增益" value={straightGainY} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "straight_gain_y", value)} />
-                </>
-              ) : null}
-              {controlStrategy === "pid" ? (
-                <>
-                  <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
-                  <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
-                  <NumberControl label="ki" value={pidKi} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_ki", value)} />
-                  <NumberControl label="kd" value={pidKd} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
-                  <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
-                  <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
-                  <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
-                </>
-              ) : null}
+              <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
+              <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
+              <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
+              <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
+              <p className="console-field-hint">
+                预测只补 X 轴：当前帧与上一帧目标 X 偏移差值 × 预测系数，再叠加到当前偏移。
+              </p>
+              <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
+              <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
             </div>
             <div className="console-card">
               <h2 className="console-title">控制量反馈</h2>
@@ -1517,11 +1448,9 @@ export function StudioConsoleView({
                 <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
                 <span>动作门控</span><b>{`${formatNumber(controlPipeline.motion_coef_x, 2)} / ${formatNumber(controlPipeline.motion_coef_y, 2)}`}</b>
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
-                <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
                 <span>策略 dx</span><b>{formatNumber(control.dx, 1)}</b>
                 <span>策略 dy</span><b>{formatNumber(control.dy, 1)}</b>
-                <span>策略模式</span><b>{readString(controlConfig.strategy, "straight")}</b>
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
                 <span>FOV 半径</span><b>{formatNumber(selectorDebug.fov_radius, 1)}</b>
                 <span>过滤后候选</span><b>{formatNumber(selectorDebug.filtered_candidates, 0)}</b>
@@ -1613,6 +1542,19 @@ export function StudioConsoleView({
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
               <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
+              <label>移动 API</label>
+              <select
+                value={moveKind}
+                onChange={(event) => void updateConfigField("control", "move_kind", event.target.value)}
+              >
+                <option value="raw">move：最快直移</option>
+                <option value="enc_raw">enc_move：加密直移</option>
+                <option value="auto">move_auto：模拟移动</option>
+                <option value="enc_auto">enc_move_auto：加密模拟移动</option>
+                <option value="bezier">move_beizer：贝塞尔曲线</option>
+                <option value="enc_bezier">enc_move_beizer：加密贝塞尔曲线</option>
+              </select>
+              <NumberControl label="移动耗时 ms" value={moveMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "move_ms", Math.round(value))} />
               <div className="console-action-row">
                 <button
                   className={kmnetConnected ? "console-button danger" : "console-button primary"}

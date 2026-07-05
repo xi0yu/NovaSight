@@ -79,7 +79,7 @@ class PIDStrategy:
     ) -> None:
         self.kp_x = kp if kp_x is None else kp_x
         self.kp_y = kp if kp_y is None else kp_y
-        self.ki = ki
+        self.ki = 0.0
         self.kd = kd
         self.integral_limit = abs(integral_limit)
         self.move_limit = None if move_limit is None else abs(move_limit)
@@ -159,8 +159,8 @@ class PIDStrategy:
         self._last_derivative = (dx_d, dy_d)
         px = self.kp_x * ex
         py = self.kp_y * ey
-        ix = self.ki * self._ix
-        iy = self.ki * self._iy
+        ix = 0.0
+        iy = 0.0
         dx_term = self.kd * dx_d
         dy_term = self.kd * dy_d
         dx = px + ix + dx_term
@@ -205,7 +205,7 @@ class PIDStrategy:
         dy = self._minimum_effective_step(dy, ey)
         dx = self._clamp_axis(dx, self.move_limit_x)
         dy = self._clamp_axis(dy, self.move_limit_y)
-        bezier_ctrl = _bezier_ctrl(int(round(dx)), int(round(dy)), self.bezier_curvature) if self.move_kind == "bezier" else None
+        bezier_ctrl = _bezier_ctrl(int(round(dx)), int(round(dy)), self.bezier_curvature) if self.move_kind in {"bezier", "enc_bezier"} else None
         debug["final_dx"] = dx
         debug["final_dy"] = dy
         return MoveCommand(
@@ -236,16 +236,11 @@ class PIDStrategy:
             return center, 0.0
 
         vx = center[0] - self._last_center[0]
-        vy = center[1] - self._last_center[1]
         self._last_center = center
-
-        speed = math.hypot(vx, vy)
-        if speed <= self.prediction_stationary_px:
+        if abs(vx) <= self.prediction_stationary_px:
             return center, 0.0
-        span = self.prediction_moving_px - self.prediction_stationary_px
-        motion_weight = min(1.0, (speed - self.prediction_stationary_px) / span)
-        lead = self.prediction_factor * motion_weight
-        return (center[0] + vx * lead, center[1] + vy * lead), motion_weight
+        lead_x = vx * self.prediction_factor
+        return (center[0] + lead_x, center[1]), self.prediction_factor
 
     def _reset_motion_state(self) -> None:
         self._ix = 0.0
@@ -401,7 +396,7 @@ class StraightStrategy:
             self._last_output_counts = (0.0, 0.0)
         dx = int(round(out_x))
         dy = int(round(out_y))
-        bezier_ctrl = _bezier_ctrl(dx, dy, self.bezier_curvature) if self.move_kind == "bezier" else None
+        bezier_ctrl = _bezier_ctrl(dx, dy, self.bezier_curvature) if self.move_kind in {"bezier", "enc_bezier"} else None
         return MoveCommand(
             dx=dx,
             dy=dy,
@@ -737,7 +732,7 @@ class ProportionalStrategy:
                 },
             )
 
-        bezier_ctrl = _bezier_ctrl(dx, dy, self.bezier_curvature) if self.move_kind == "bezier" else None
+        bezier_ctrl = _bezier_ctrl(dx, dy, self.bezier_curvature) if self.move_kind in {"bezier", "enc_bezier"} else None
         return MoveCommand(
             dx=dx,
             dy=dy,

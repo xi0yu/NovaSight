@@ -7,7 +7,7 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
-from novasight.control import PIDStrategy, PredictiveStrategy, ProportionalStrategy, StraightStrategy, aim_point
+from novasight.control import PIDStrategy, aim_point
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
@@ -845,55 +845,10 @@ class RuntimeService:
         return result
 
     def _create_control_strategy(self, config: RuntimeConfig):
-        strategy = getattr(config.control, "strategy", "pid")
-        if strategy == "straight":
-            return StraightStrategy(
-                aim_y_ratio=config.control.aim_ratio,
-                fov_deg=config.control.straight_fov_deg,
-                counts_per_revolution=config.control.straight_c360,
-                kp_x=config.control.straight_kp_x,
-                kp_y=config.control.straight_kp_y,
-                first_frame_gain=config.control.straight_first_frame_gain,
-                first_frame_max_step=config.control.straight_first_max_step,
-                refine_max_step=config.control.straight_max_step,
-                in_deadzone_px=config.control.straight_in_deadzone,
-                jump_threshold_px=config.control.straight_jump_threshold,
-                pred_gain=config.control.straight_pred_gain,
-                pred_consistency_frames=config.control.straight_pred_consistency_frames,
-                gain_y=config.control.straight_gain_y,
-                move_kind=config.control.move_kind,
-                move_ms=config.control.move_ms,
-                trace_ms=config.control.trace_ms,
-                bezier_curvature=config.control.bezier_curvature,
-            )
-        if strategy == "predictive":
-            return PredictiveStrategy(
-                lead_factor=config.control.prediction_factor,
-                aim_ratio=config.control.aim_ratio,
-                fov_deg=config.control.straight_fov_deg,
-                counts_per_revolution=config.control.straight_c360,
-            )
-        if strategy == "proportional":
-            return ProportionalStrategy(
-                fov_ratio=config.control.fov_ratio,
-                aim_ratio=config.control.aim_ratio,
-                near_px=config.control.near_px,
-                near_speed=config.control.near_speed,
-                far_speed=config.control.far_speed,
-                ema_alpha=config.control.ema_alpha,
-                deadzone_counts=config.control.deadzone_counts,
-                counts_per_revolution_x=config.control.counts_per_revolution_x,
-                counts_per_revolution_y=config.control.counts_per_revolution_y,
-                fov_deg=config.control.straight_fov_deg,
-                move_kind=config.control.move_kind,
-                move_ms=config.control.move_ms,
-                trace_ms=config.control.trace_ms,
-                bezier_curvature=config.control.bezier_curvature,
-            )
         return PIDStrategy(
             kp_x=config.control.pid_kp_x,
             kp_y=config.control.pid_kp_y,
-            ki=config.control.pid_ki,
+            ki=0.0,
             kd=config.control.pid_kd,
             integral_limit=config.control.pid_integral_limit,
             move_limit=config.control.pid_move_limit,

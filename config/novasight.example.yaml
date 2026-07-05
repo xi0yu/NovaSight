@@ -44,33 +44,16 @@ control:
   trigger_mode: hardware
   trigger_bindings:
     - MouseRight
-  strategy: straight
-  straight_fov_deg: 105
-  straight_c360: 9980
-  straight_kp_x: 0.3
-  straight_kp_y: 0.3
-  straight_first_frame_gain: 1.0
-  straight_first_max_step: 200
-  straight_max_step: 80
-  straight_in_deadzone: 8
-  straight_jump_threshold: 40
-  straight_pred_gain: 0
-  straight_pred_consistency_frames: 3
-  straight_gain_y: 1.0
   pid_kp_x: 0.35
   pid_kp_y: 0.24
-  pid_ki: 0.1
   pid_kd: 0.1
-  pid_integral_limit: 250
-  pid_move_limit: 120
   kp_x_move_max: 150
   kp_y_move_max: 30
   prediction_factor: 0.1
-  command_interval_ms: 1
   # 0 disables Y-axis window limiter. Example: window=10, max=8 means at most 8 Y counts per 10ms.
   y_rate_window_ms: 10
   y_rate_max_counts: 0
-  move_kind: raw
+  move_kind: bezier
   move_ms: 12
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.
