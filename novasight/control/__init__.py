@@ -1,4 +1,5 @@
 from novasight.control.output import ControlOutput, ControlOutputPolicy
+from novasight.control.dynamic_pid import DynamicPidConfig, DynamicPidMouseStrategy
 from novasight.control.isolated_mouse import IsolatedMouseConfig, IsolatedMouseStrategy
 from novasight.control.strategy import (
     ControlCommandCoalescer,
@@ -15,6 +16,8 @@ __all__ = [
     "ControlCommandCoalescer",
     "ControlOutput",
     "ControlOutputPolicy",
+    "DynamicPidConfig",
+    "DynamicPidMouseStrategy",
     "IControlStrategy",
     "IsolatedMouseConfig",
     "IsolatedMouseStrategy",

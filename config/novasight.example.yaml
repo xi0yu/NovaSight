@@ -70,6 +70,22 @@ control:
   isolated_fov_deg: 105
   isolated_counts_per_revolution_x: 9980
   isolated_counts_per_revolution_y: 9980
+  dynamic_pid_kp_x: 0.35
+  dynamic_pid_kp_y: 0.24
+  dynamic_pid_ki: 0
+  dynamic_pid_kd: 0.1
+  dynamic_pid_target_error_threshold: 2
+  dynamic_pid_speed_multiplier: 0
+  dynamic_pid_min_coefficient: 0.2
+  dynamic_pid_max_coefficient: 1
+  dynamic_pid_transition_sharpness: 12
+  dynamic_pid_transition_midpoint: 0.08
+  dynamic_pid_minimum_data_count: 3
+  dynamic_pid_error_change_tolerance: 1
+  dynamic_pid_smoothing_factor: 1
+  dynamic_pid_aim_ratio: 40
+  dynamic_pid_max_x: 120
+  dynamic_pid_max_y: 120
   # Set to silent, console, dry_run, or kmnet to override executor.default.
   # Leave empty or omit to use executor.default.
   output_mode: silent

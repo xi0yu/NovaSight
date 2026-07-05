@@ -7,7 +7,14 @@ from typing import Any
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
-from novasight.control import IsolatedMouseConfig, IsolatedMouseStrategy, PIDStrategy, aim_point
+from novasight.control import (
+    DynamicPidConfig,
+    DynamicPidMouseStrategy,
+    IsolatedMouseConfig,
+    IsolatedMouseStrategy,
+    PIDStrategy,
+    aim_point,
+)
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
@@ -721,8 +728,11 @@ class RuntimeService:
         )
 
     def _active_aim_ratio(self) -> float:
-        if str(getattr(self.config.control, "strategy", "pid")) == "isolated_mouse":
+        strategy = str(getattr(self.config.control, "strategy", "pid"))
+        if strategy == "isolated_mouse":
             value = getattr(self.config.control, "isolated_aim_ratio", 40.0)
+        elif strategy == "dynamic_pid":
+            value = getattr(self.config.control, "dynamic_pid_aim_ratio", 40.0)
         else:
             value = getattr(self.config.control, "aim_ratio", 40.0)
         return max(0.0, min(100.0, float(value)))
@@ -855,6 +865,30 @@ class RuntimeService:
         return result
 
     def _create_control_strategy(self, config: RuntimeConfig):
+        if config.control.strategy == "dynamic_pid":
+            return DynamicPidMouseStrategy(
+                DynamicPidConfig(
+                    kp_x=config.control.dynamic_pid_kp_x,
+                    kp_y=config.control.dynamic_pid_kp_y,
+                    ki=config.control.dynamic_pid_ki,
+                    kd=config.control.dynamic_pid_kd,
+                    target_error_threshold=config.control.dynamic_pid_target_error_threshold,
+                    speed_multiplier=config.control.dynamic_pid_speed_multiplier,
+                    min_coefficient=config.control.dynamic_pid_min_coefficient,
+                    max_coefficient=config.control.dynamic_pid_max_coefficient,
+                    transition_sharpness=config.control.dynamic_pid_transition_sharpness,
+                    dynamic_transition_midpoint=config.control.dynamic_pid_transition_midpoint,
+                    minimum_data_count=config.control.dynamic_pid_minimum_data_count,
+                    error_change_tolerance=config.control.dynamic_pid_error_change_tolerance,
+                    smoothing_factor=config.control.dynamic_pid_smoothing_factor,
+                    aim_ratio=config.control.dynamic_pid_aim_ratio,
+                    max_x=config.control.dynamic_pid_max_x,
+                    max_y=config.control.dynamic_pid_max_y,
+                    move_kind=config.control.move_kind,
+                    move_ms=config.control.move_ms,
+                    trace_ms=config.control.trace_ms,
+                )
+            )
         if config.control.strategy == "isolated_mouse":
             return IsolatedMouseStrategy(
                 IsolatedMouseConfig(

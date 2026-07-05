@@ -373,6 +373,7 @@ export function StudioConsoleView({
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
   const controlStrategy = readString(controlConfig.strategy, "pid");
   const isolatedMode = controlStrategy === "isolated_mouse";
+  const dynamicPidMode = controlStrategy === "dynamic_pid";
   const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
   const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
   const pidKd = readNumber(controlConfig.pid_kd, 0.1);
@@ -399,6 +400,22 @@ export function StudioConsoleView({
   const isolatedFovDeg = readNumber(controlConfig.isolated_fov_deg, 105);
   const isolatedC360X = readNumber(controlConfig.isolated_counts_per_revolution_x, 9980);
   const isolatedC360Y = readNumber(controlConfig.isolated_counts_per_revolution_y, 9980);
+  const dynamicPidKpX = readNumber(controlConfig.dynamic_pid_kp_x, 0.35);
+  const dynamicPidKpY = readNumber(controlConfig.dynamic_pid_kp_y, 0.24);
+  const dynamicPidKi = readNumber(controlConfig.dynamic_pid_ki, 0);
+  const dynamicPidKd = readNumber(controlConfig.dynamic_pid_kd, 0.1);
+  const dynamicPidTargetErrorThreshold = readNumber(controlConfig.dynamic_pid_target_error_threshold, 2);
+  const dynamicPidSpeedMultiplier = readNumber(controlConfig.dynamic_pid_speed_multiplier, 0);
+  const dynamicPidMinCoefficient = readNumber(controlConfig.dynamic_pid_min_coefficient, 0.2);
+  const dynamicPidMaxCoefficient = readNumber(controlConfig.dynamic_pid_max_coefficient, 1);
+  const dynamicPidTransitionSharpness = readNumber(controlConfig.dynamic_pid_transition_sharpness, 12);
+  const dynamicPidTransitionMidpoint = readNumber(controlConfig.dynamic_pid_transition_midpoint, 0.08);
+  const dynamicPidMinimumDataCount = readNumber(controlConfig.dynamic_pid_minimum_data_count, 3);
+  const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 1);
+  const dynamicPidSmoothingFactor = readNumber(controlConfig.dynamic_pid_smoothing_factor, 1);
+  const dynamicPidAimRatio = readNumber(controlConfig.dynamic_pid_aim_ratio, 40);
+  const dynamicPidMaxX = readNumber(controlConfig.dynamic_pid_max_x, 120);
+  const dynamicPidMaxY = readNumber(controlConfig.dynamic_pid_max_y, 120);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -464,6 +481,8 @@ export function StudioConsoleView({
   const businessTrace = asRecord(vision.trace);
   const businessTraceStages = readTraceStages(vision.trace);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
+  const dynamicPidXAxis = asRecord(controlPipeline.x_axis);
+  const dynamicPidYAxis = asRecord(controlPipeline.y_axis);
   const rawDetections = readNumber(inferenceTrace.raw_detections, 0);
   const mappedDetections = readNumber(inferenceTrace.mapped_detections, 0);
   const inferenceRan = inferenceTrace.ran === true;
@@ -1450,12 +1469,12 @@ export function StudioConsoleView({
 
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="主算法" value={isolatedMode ? "隔离算法" : "Legacy PID"} small="control" />
+            <Metric title="主算法" value={dynamicPidMode ? "动态 PID" : isolatedMode ? "隔离算法" : "Legacy PID"} small="control" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-            <Metric title="Kp X" value={(isolatedMode ? isolatedKpX : pidKpX).toFixed(2)} small="axis x" />
-            <Metric title="Kp Y" value={(isolatedMode ? isolatedKpY : pidKpY).toFixed(2)} small="axis y" />
-            <Metric title="预测" value={(isolatedMode ? isolatedPrediction : predictionFactor).toFixed(2)} small="lead" />
-            <Metric title="瞄准高度" value={`${(isolatedMode ? isolatedAimRatio : aimYRatio).toFixed(0)}%`} small="aim y" />
+            <Metric title="Kp X" value={(dynamicPidMode ? dynamicPidKpX : isolatedMode ? isolatedKpX : pidKpX).toFixed(2)} small="axis x" />
+            <Metric title="Kp Y" value={(dynamicPidMode ? dynamicPidKpY : isolatedMode ? isolatedKpY : pidKpY).toFixed(2)} small="axis y" />
+            <Metric title="预测" value={(dynamicPidMode ? dynamicPidSpeedMultiplier : isolatedMode ? isolatedPrediction : predictionFactor).toFixed(2)} small={dynamicPidMode ? "speed" : "lead"} />
+            <Metric title="瞄准高度" value={`${(dynamicPidMode ? dynamicPidAimRatio : isolatedMode ? isolatedAimRatio : aimYRatio).toFixed(0)}%`} small="aim y" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
@@ -1467,6 +1486,7 @@ export function StudioConsoleView({
               >
                 <option value="pid">Legacy PID</option>
                 <option value="isolated_mouse">隔离鼠标算法</option>
+                <option value="dynamic_pid">动态 PID 原义算法</option>
               </select>
               <label>触发方式</label>
               <select
@@ -1512,7 +1532,30 @@ export function StudioConsoleView({
               </p>
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
 
-              {isolatedMode ? (
+              {dynamicPidMode ? (
+                <>
+                  <label>动态 PID 原义算法参数</label>
+                  <p className="console-field-hint">
+                    该模式按给定 PID 控制循环英文命名直译接入；不使用 Legacy PID、旧预测、D 开关或 Y 下压补偿。
+                  </p>
+                  <NumberControl label="dynamic kp_x" value={dynamicPidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_x", value)} />
+                  <NumberControl label="dynamic kp_y" value={dynamicPidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_y", value)} />
+                  <NumberControl label="dynamic ki" value={dynamicPidKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_ki", value)} />
+                  <NumberControl label="dynamic kd" value={dynamicPidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kd", value)} />
+                  <NumberControl label="target_error_threshold" value={dynamicPidTargetErrorThreshold} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_target_error_threshold", value)} />
+                  <NumberControl label="speed_multiplier" value={dynamicPidSpeedMultiplier} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_speed_multiplier", value)} />
+                  <NumberControl label="min_coefficient" value={dynamicPidMinCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_min_coefficient", value)} />
+                  <NumberControl label="max_coefficient" value={dynamicPidMaxCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_coefficient", value)} />
+                  <NumberControl label="transition_sharpness" value={dynamicPidTransitionSharpness} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_sharpness", value)} />
+                  <NumberControl label="transition_midpoint" value={dynamicPidTransitionMidpoint} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_midpoint", value)} />
+                  <NumberControl label="minimum_data_count" value={dynamicPidMinimumDataCount} min={0} max={60} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_minimum_data_count", value)} />
+                  <NumberControl label="error_change_tolerance" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
+                  <NumberControl label="smoothing_factor" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
+                  <NumberControl label="dynamic aim_y_ratio" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
+                  <NumberControl label="dynamic max_x" value={dynamicPidMaxX} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_x", value)} />
+                  <NumberControl label="dynamic max_y" value={dynamicPidMaxY} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_y", value)} />
+                </>
+              ) : isolatedMode ? (
                 <>
                   <label>隔离算法参数</label>
                   <p className="console-field-hint">
@@ -1573,7 +1616,7 @@ export function StudioConsoleView({
               <h2 className="console-title">控制量反馈</h2>
               <div className="console-kv control-feedback-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
-                <span>算法模式</span><b>{isolatedMode ? "隔离鼠标算法" : "Legacy PID"}</b>
+                <span>算法模式</span><b>{dynamicPidMode ? "动态 PID" : isolatedMode ? "隔离鼠标算法" : "Legacy PID"}</b>
                 <span>目标序号</span><b>{formatNumber(control.target_detection_index ?? target.target_detection_index, 0)}</b>
                 <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
                 <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
@@ -1595,7 +1638,11 @@ export function StudioConsoleView({
                 <span>动作门控</span><b>{`${formatNumber(controlPipeline.motion_coef_x, 2)} / ${formatNumber(controlPipeline.motion_coef_y, 2)}`}</b>
                 <span>预测开关</span><b>{controlPipeline.prediction_enabled === false ? "关闭" : "开启"}</b>
                 <span>D 开关</span><b>{controlPipeline.derivative_enabled === false ? "关闭" : "开启"}</b>
+                <span>动态达标</span><b>{`${dynamicPidXAxis.target_reached === true ? "X达标" : "X未达"} / ${dynamicPidYAxis.target_reached === true ? "Y达标" : "Y未达"}`}</b>
+                <span>动态阈值</span><b>{`${formatNumber(dynamicPidXAxis.dynamic_judgement_threshold, 1)} / ${formatNumber(dynamicPidYAxis.dynamic_judgement_threshold, 1)}`}</b>
+                <span>稳定计数</span><b>{`${formatNumber(dynamicPidXAxis.stable_count, 0)} / ${formatNumber(dynamicPidYAxis.stable_count, 0)}`}</b>
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
+                <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
                 <span>D 原始值</span><b>{`${formatNumber(controlPipeline.raw_d_x, 1)} / ${formatNumber(controlPipeline.raw_d_y, 1)}`}</b>
                 <span>D 限幅</span><b>{controlPipeline.d_limited_x || controlPipeline.d_limited_y ? "已触发" : "未触发"}</b>

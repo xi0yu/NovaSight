@@ -149,6 +149,22 @@ class ControlConfig:
     isolated_fov_deg: float = 105.0
     isolated_counts_per_revolution_x: float = 9980.0
     isolated_counts_per_revolution_y: float = 9980.0
+    dynamic_pid_kp_x: float = 0.35
+    dynamic_pid_kp_y: float = 0.24
+    dynamic_pid_ki: float = 0.0
+    dynamic_pid_kd: float = 0.1
+    dynamic_pid_target_error_threshold: float = 2.0
+    dynamic_pid_speed_multiplier: float = 0.0
+    dynamic_pid_min_coefficient: float = 0.2
+    dynamic_pid_max_coefficient: float = 1.0
+    dynamic_pid_transition_sharpness: float = 12.0
+    dynamic_pid_transition_midpoint: float = 0.08
+    dynamic_pid_minimum_data_count: float = 3.0
+    dynamic_pid_error_change_tolerance: float = 1.0
+    dynamic_pid_smoothing_factor: float = 1.0
+    dynamic_pid_aim_ratio: float = 40.0
+    dynamic_pid_max_x: float = 120.0
+    dynamic_pid_max_y: float = 120.0
 
 
 @dataclass
@@ -284,8 +300,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
-    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive", "isolated_mouse"}:
-        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, predictive, or isolated_mouse")
+    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive", "isolated_mouse", "dynamic_pid"}:
+        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, predictive, isolated_mouse, or dynamic_pid")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
@@ -341,6 +357,21 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "isolated_prediction",
         "isolated_counts_per_revolution_x",
         "isolated_counts_per_revolution_y",
+        "dynamic_pid_kp_x",
+        "dynamic_pid_kp_y",
+        "dynamic_pid_ki",
+        "dynamic_pid_target_error_threshold",
+        "dynamic_pid_speed_multiplier",
+        "dynamic_pid_min_coefficient",
+        "dynamic_pid_max_coefficient",
+        "dynamic_pid_transition_sharpness",
+        "dynamic_pid_transition_midpoint",
+        "dynamic_pid_minimum_data_count",
+        "dynamic_pid_error_change_tolerance",
+        "dynamic_pid_smoothing_factor",
+        "dynamic_pid_aim_ratio",
+        "dynamic_pid_max_x",
+        "dynamic_pid_max_y",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
@@ -358,6 +389,12 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.isolated_prediction' must be <= 2")
     if cfg.control.isolated_fov_deg <= 0 or cfg.control.isolated_fov_deg >= 180:
         raise ValueError("runtime config key 'control.isolated_fov_deg' must be > 0 and < 180")
+    if cfg.control.dynamic_pid_kd < -1 or cfg.control.dynamic_pid_kd > 1:
+        raise ValueError("runtime config key 'control.dynamic_pid_kd' must be >= -1 and <= 1")
+    if cfg.control.dynamic_pid_smoothing_factor > 1:
+        raise ValueError("runtime config key 'control.dynamic_pid_smoothing_factor' must be <= 1")
+    if cfg.control.dynamic_pid_aim_ratio > 100:
+        raise ValueError("runtime config key 'control.dynamic_pid_aim_ratio' must be <= 100")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
