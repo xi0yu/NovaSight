@@ -114,6 +114,7 @@ class PIDStrategy:
         self._last_smoothed_error: tuple[float, float] | None = None
         self._last_derivative = (0.0, 0.0)
         self._last_center: tuple[float, float] | None = None
+        self._last_target_key: str | None = None
         self._last_s: float | None = None
 
     def calculate(
@@ -122,6 +123,11 @@ class PIDStrategy:
         current_pos: tuple[float, float],
         box_input: BoxInputState,
     ) -> MoveCommand:
+        target_key = str(box_input.raw.get("target_key") or "")
+        if target_key and self._last_target_key is not None and target_key != self._last_target_key:
+            self._reset_motion_state()
+        if target_key:
+            self._last_target_key = target_key
         aim_center = aim_point(target, self.aim_ratio)
         predicted_center, prediction_weight = self._predict_center(aim_center)
         ex_px = predicted_center[0] - current_pos[0]
@@ -136,8 +142,9 @@ class PIDStrategy:
         now_s = time.monotonic()
         dt = now_s - self._last_s if self._last_s is not None else 1.0 / 60.0
         self._last_s = now_s
-        if not (0.001 < dt < 0.5):
+        if dt <= 0 or dt > 0.1:
             dt = 1.0 / 60.0
+        dt = max(1.0 / 240.0, min(1.0 / 20.0, dt))
         self._ix = max(-self.integral_limit, min(self.integral_limit, self._ix + ex * dt))
         self._iy = max(-self.integral_limit, min(self.integral_limit, self._iy + ey * dt))
         if self._last_smoothed_error is None:
@@ -188,6 +195,7 @@ class PIDStrategy:
             "c360_y": self.counts_per_revolution_y,
             "fov_deg": self.fov_deg,
             "dt": dt,
+            "target_key": target_key,
             "p_x": px,
             "p_y": py,
             "i_x": ix,
@@ -251,6 +259,7 @@ class PIDStrategy:
         self._last_smoothed_error = None
         self._last_derivative = (0.0, 0.0)
         self._last_center = None
+        self._last_target_key = None
         self._last_s = None
 
     def _pixel_error_to_counts(self, ex_px: float, ey_px: float, frame_width: float) -> dict[str, float]:

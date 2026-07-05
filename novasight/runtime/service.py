@@ -457,10 +457,11 @@ class RuntimeService:
 
         center = (context.width / 2, context.height / 2)
         box_input = self._box_input_state()
+        target_key = self._control_target_key(target, context)
         strategy_input = (
-            box_input
+            self._with_strategy_target(box_input, target_key)
             if box_input.active
-            else BoxInputState(left=True, raw={"mode": "telemetry_control_calculation"})
+            else BoxInputState(left=True, raw={"mode": "telemetry_control_calculation", "target_key": target_key})
         )
         aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
         aim_x, aim_y = aim_point(target, aim_ratio)
@@ -522,6 +523,7 @@ class RuntimeService:
             "candidates": selection.candidates,
             "bbox_age_ms": 0.0,
             "is_stale": False,
+            "target_key": target_key,
         }
         self.last_control = {
             "frame_id": context.frame_id,
@@ -555,6 +557,7 @@ class RuntimeService:
             "will_emit": can_emit,
             "bbox_age_ms": 0.0,
             "is_stale": False,
+            "target_key": target_key,
         }
         self._log_control_decision(
             context=context,
@@ -895,6 +898,24 @@ class RuntimeService:
             ):
                 return index
         return None
+
+    def _control_target_key(self, target: Track | Detection, context: FrameContext) -> str:
+        track_id = getattr(target, "track_id", None)
+        if track_id is not None:
+            return f"track:{int(track_id)}"
+        detection_index = self._target_detection_index(context, target)
+        if detection_index is not None:
+            return f"det:{detection_index}:class:{int(target.cls)}"
+        return f"class:{int(target.cls)}"
+
+    @staticmethod
+    def _with_strategy_target(state: BoxInputState, target_key: str) -> BoxInputState:
+        return BoxInputState(
+            left=state.left,
+            right=state.right,
+            side=state.side,
+            raw={**(state.raw or {}), "target_key": target_key},
+        )
 
     def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
         class_name = self._class_display_name(int(target.cls), context)
