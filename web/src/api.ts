@@ -284,6 +284,7 @@ export const API_PATHS = {
   kmnetDiagnosticCircle: "/api/executors/kmnet/diagnostic-circle",
   modelProjects: "/api/models/projects",
   modelJobs: "/api/models/jobs",
+  modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
   licenseActivate: "/api/license/activate",
   statusWs: "/ws/status"
@@ -460,7 +461,7 @@ export function sanitizeRuntimeConfigForUpdate(config: RuntimeConfig): RuntimeCo
 export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdateResponse> {
   const payload = sanitizeRuntimeConfigForUpdate(config);
   return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
-    method: "PUT",
+    method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
@@ -468,12 +469,30 @@ export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdate
   });
 }
 
+export function updateRuntimeConfigField(
+  section: string,
+  key: string,
+  value: RuntimeConfigValue
+): Promise<ConfigUpdateResponse> {
+  return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ section, key, value })
+  });
+}
+
 export function getCaptureCapabilities(
   device: string
 ): Promise<CaptureCapabilitiesResponse> {
-  return requestJson<CaptureCapabilitiesResponse>(
-    `${API_PATHS.captureCapabilities}?device=${encodeURIComponent(device)}`
-  );
+  return requestJson<CaptureCapabilitiesResponse>(API_PATHS.captureCapabilities, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ device })
+  });
 }
 
 export function selectCaptureProfile(payload: CaptureSelectPayload): Promise<CaptureState> {
@@ -519,9 +538,16 @@ export function getModelArtifacts(versionId: number): Promise<ModelArtifact[]> {
 }
 
 export function getConversionJobs(versionId?: number): Promise<ConversionJob[]> {
-  const suffix =
-    typeof versionId === "number" ? `?version_id=${encodeURIComponent(versionId)}` : "";
-  return requestJson<ConversionJob[]>(`${API_PATHS.modelJobs}${suffix}`);
+  if (typeof versionId !== "number") {
+    return requestJson<ConversionJob[]>(API_PATHS.modelJobs);
+  }
+  return requestJson<ConversionJob[]>(API_PATHS.modelJobsList, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ version_id: versionId })
+  });
 }
 
 export function publishModel(projectId: number, artifactId: number): Promise<ModelPublishResponse> {

@@ -23,11 +23,15 @@ import {
   stopCapture,
   streamUrl,
   updateLocalTrigger,
-  updateRuntimeConfig
+  updateRuntimeConfig,
+  updateRuntimeConfigField
 } from "../../api";
 import { getErrorMessage } from "../shared/format";
 
 type ConsolePage = "capture" | "infer" | "params" | "stats" | "latency";
+
+const DEFAULT_CONSOLE_PAGE: ConsolePage = "capture";
+const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "params", "stats", "latency"]);
 
 type StudioConsoleViewProps = {
   health: HealthResponse | null;
@@ -52,6 +56,21 @@ const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "stats", index: "04", label: "统计" },
   { id: "latency", index: "05", label: "采集延迟" }
 ];
+
+function pageFromUrl(): ConsolePage {
+  const raw = new URLSearchParams(window.location.search).get("page");
+  return CONSOLE_PAGES.has(raw as ConsolePage) ? (raw as ConsolePage) : DEFAULT_CONSOLE_PAGE;
+}
+
+function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
+  const url = new URL(window.location.href);
+  url.searchParams.set("page", page);
+  if (mode === "replace") {
+    window.history.replaceState({ page }, "", url);
+  } else {
+    window.history.pushState({ page }, "", url);
+  }
+}
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
 const KMNET_RECOMMENDED = {
@@ -258,7 +277,7 @@ export function StudioConsoleView({
   lastUpdated,
   onRefresh
 }: StudioConsoleViewProps) {
-  const [activePage, setActivePage] = useState<ConsolePage>("capture");
+  const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
   const [device, setDevice] = useState(
     readString(nestedRecord(runtime?.config, "capture").device, runtime?.capture?.device ?? "/dev/video0")
   );
@@ -290,6 +309,18 @@ export function StudioConsoleView({
   const configWriteSeqRef = useRef(0);
   const pressedBindingsRef = useRef<Set<string>>(new Set());
   const localTriggerActiveRef = useRef(false);
+
+  useEffect(() => {
+    writePageToUrl(activePage, "replace");
+    const onPopState = () => setActivePage(pageFromUrl());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const navigatePage = useCallback((page: ConsolePage) => {
+    setActivePage(page);
+    writePageToUrl(page);
+  }, []);
 
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
@@ -700,7 +731,7 @@ export function StudioConsoleView({
       configDraftRef.current = next;
       setConfigDraft(next);
       try {
-        const result = await updateRuntimeConfig(next);
+        const result = await updateRuntimeConfigField(section, key, value);
         if (writeSeq === configWriteSeqRef.current) {
           const applied = normalizeRuntimeConfig(result.config);
           configDraftRef.current = applied;
@@ -1079,7 +1110,7 @@ export function StudioConsoleView({
           <button
             className={activePage === item.id ? "console-nav active" : "console-nav"}
             key={item.id}
-            onClick={() => setActivePage(item.id)}
+            onClick={() => navigatePage(item.id)}
             type="button"
           >
             <span>{item.index}</span>

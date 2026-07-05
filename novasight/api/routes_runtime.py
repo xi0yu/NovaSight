@@ -30,15 +30,35 @@ def get_config_schema(request: Request) -> dict[str, Any]:
 
 @router.put("/api/config")
 async def put_config(request: Request) -> dict[str, Any]:
+    return await post_config(request)
+
+
+@router.post("/api/config")
+async def post_config(request: Request) -> dict[str, Any]:
     payload = await request.json()
     try:
-        config = parse_runtime_config(payload)
+        config = _config_from_payload(request, payload)
         report = RuntimeReconfigurator(request.app).apply(config)
     except ValueError as exc:
         logger.warning("runtime config update rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info("runtime config updated restart_required=%s", bool(request.app.state.runtime.running))
     return report.asdict()
+
+
+def _config_from_payload(request: Request, payload: dict[str, Any]) -> Any:
+    if not isinstance(payload, dict):
+        raise ValueError("runtime config update payload must be a mapping")
+    if {"section", "key", "value"}.issubset(payload.keys()):
+        section = str(payload["section"])
+        key = str(payload["key"])
+        current = asdict(request.app.state.runtime.config_store.snapshot())
+        section_value = current.get(section)
+        if not isinstance(section_value, dict):
+            raise ValueError(f"unknown runtime config section: {section}")
+        section_value[key] = payload["value"]
+        return parse_runtime_config(current)
+    return parse_runtime_config(payload)
 
 
 @router.get("/api/license")

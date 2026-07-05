@@ -83,6 +83,12 @@ class ConversionJobFinishRequest(BaseModel):
     log: StrictStr = ""
 
 
+class ConversionJobListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version_id: StrictInt | None = None
+
+
 class PublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -780,6 +786,22 @@ def create_artifact(
 def list_conversion_jobs(
     request: Request,
     version_id: int | None = None,
+) -> list[dict[str, Any]]:
+    return _list_conversion_jobs(request, version_id=version_id)
+
+
+@router.post("/jobs/list")
+def post_list_conversion_jobs(
+    request: Request,
+    payload: ConversionJobListRequest,
+) -> list[dict[str, Any]]:
+    return _list_conversion_jobs(request, version_id=payload.version_id)
+
+
+def _list_conversion_jobs(
+    request: Request,
+    *,
+    version_id: int | None,
 ) -> list[dict[str, Any]]:
     registry = _registry(request)
     if version_id is not None:

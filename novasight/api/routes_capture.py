@@ -39,6 +39,18 @@ class CaptureSelectRequest(BaseModel):
         return stripped
 
 
+class CaptureCapabilitiesRequest(BaseModel):
+    device: str = "/dev/video0"
+
+    @field_validator("device")
+    @classmethod
+    def device_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("device must not be blank")
+        return stripped
+
+
 class ImageSourceRequest(BaseModel):
     path: str
     fps: int = 30
@@ -55,6 +67,11 @@ class ImageSourceRequest(BaseModel):
 @router.get("/capabilities")
 def capabilities(request: Request, device: str = "/dev/video0") -> dict:
     return asdict(request.app.state.capture.capabilities(device))
+
+
+@router.post("/capabilities")
+def post_capabilities(payload: CaptureCapabilitiesRequest, request: Request) -> dict:
+    return asdict(request.app.state.capture.capabilities(payload.device))
 
 
 @router.get("/state")
