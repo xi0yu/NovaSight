@@ -194,8 +194,16 @@ class RuntimeReconfigurator:
         )
 
     def _install_config(self, config: RuntimeConfig) -> None:
-        next_executors = ExecutorRegistry.from_config(config)
-        next_hardware = create_hardware_box(config)
+        previous_config = getattr(self.app.state, "config", None)
+        hardware_changed = self._hardware_changed(previous_config, config)
+        current_executors = getattr(self.app.state, "executors", None)
+        if current_executors is not None and not hardware_changed:
+            current_executors.update_runtime_config(config)
+            next_executors = current_executors
+            next_hardware = getattr(self.app.state, "hardware", None)
+        else:
+            next_executors = ExecutorRegistry.from_config(config)
+            next_hardware = create_hardware_box(config)
         self.app.state.config = config
         self.app.state.capture.config = config.capture
         self.app.state.capture.roi_size = config.roi.size
@@ -234,6 +242,19 @@ class RuntimeReconfigurator:
             previous_config.roi.size != config.roi.size
             or previous_config.roi.offset_x != config.roi.offset_x
             or previous_config.roi.offset_y != config.roi.offset_y
+        )
+
+    @staticmethod
+    def _hardware_changed(previous_config: RuntimeConfig | None, config: RuntimeConfig) -> bool:
+        if previous_config is None:
+            return True
+        return (
+            previous_config.hardware.kind != config.hardware.kind
+            or previous_config.hardware.host != config.hardware.host
+            or previous_config.hardware.port != config.hardware.port
+            or previous_config.hardware.uuid != config.hardware.uuid
+            or previous_config.hardware.monitor_port != config.hardware.monitor_port
+            or previous_config.hardware.flip_dy != config.hardware.flip_dy
         )
 
     def _reconfigure_live_capture_for_roi(self) -> None:

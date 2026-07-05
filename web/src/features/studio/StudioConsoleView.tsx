@@ -1434,7 +1434,7 @@ export function StudioConsoleView({
                 label="启用预测"
                 detail="目标速度 × 帧龄 × 预测系数"
                 enabled={predictionEnabled}
-                onToggle={(enabled) => void updateConfigField("control", "prediction_enabled", enabled)}
+                onToggle={(enabled) => updateConfigField("control", "prediction_enabled", enabled)}
               />
               <NumberControl label="预测系数" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
 
@@ -1443,7 +1443,7 @@ export function StudioConsoleView({
                 label="启用 D 项"
                 detail="抑制过冲；排查抖动时可关闭"
                 enabled={derivativeEnabled}
-                onToggle={(enabled) => void updateConfigField("control", "derivative_enabled", enabled)}
+                onToggle={(enabled) => updateConfigField("control", "derivative_enabled", enabled)}
               />
               <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
 
@@ -1452,7 +1452,7 @@ export function StudioConsoleView({
                 label="启用 Y 下压"
                 detail="按间隔给最终 dy 追加下压 counts"
                 enabled={yDownEnabled}
-                onToggle={(enabled) => void updateConfigField("control", "y_down_enabled", enabled)}
+                onToggle={(enabled) => updateConfigField("control", "y_down_enabled", enabled)}
               />
               <NumberControl label="Y 下压间隔 ms" value={yRateWindowMs} min={0} max={1000} step={1} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
               <NumberControl label="Y 每次下压 counts" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
@@ -1863,17 +1863,22 @@ function CommitNumberControl({
   onCommit: (value: number) => Promise<void> | void;
 }) {
   const [draft, setDraft] = useState(value);
+  const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
-    setDraft(value);
-  }, [value]);
+    if (!isEditing) {
+      setDraft(value);
+    }
+  }, [isEditing, value]);
 
   const commit = useCallback(() => {
     const next = clampNumber(Number(draft.toFixed(digits)), min, max);
     if (Math.abs(next - value) >= step / 2) {
-      void onCommit(next);
+      setDraft(next);
+      void Promise.resolve(onCommit(next)).finally(() => setIsEditing(false));
     } else {
       setDraft(value);
+      setIsEditing(false);
     }
   }, [draft, digits, max, min, onCommit, step, value]);
 
@@ -1886,7 +1891,12 @@ function CommitNumberControl({
         step={step}
         value={draft}
         onBlur={commit}
-        onChange={(event) => setDraft(clampNumber(Number(event.target.value), min, max))}
+        onChange={(event) => {
+          setIsEditing(true);
+          setDraft(clampNumber(Number(event.target.value), min, max));
+        }}
+        onFocus={() => setIsEditing(true)}
+        onPointerDown={() => setIsEditing(true)}
         onMouseUp={commit}
         onPointerUp={commit}
         onTouchEnd={commit}
@@ -1898,9 +1908,11 @@ function CommitNumberControl({
         step={step}
         value={Number.isInteger(draft) ? String(draft) : draft.toFixed(digits)}
         onBlur={commit}
+        onFocus={() => setIsEditing(true)}
         onChange={(event) => {
           const next = Number(event.target.value);
           if (Number.isFinite(next)) {
+            setIsEditing(true);
             setDraft(clampNumber(next, min, max));
           }
         }}
@@ -1966,19 +1978,39 @@ function ModuleSwitch({
   label: string;
   detail: string;
   enabled: boolean;
-  onToggle: (enabled: boolean) => void;
+  onToggle: (enabled: boolean) => Promise<void> | void;
 }) {
+  const [visualEnabled, setVisualEnabled] = useState(enabled);
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    if (!pending) {
+      setVisualEnabled(enabled);
+    }
+  }, [enabled, pending]);
+
+  const toggle = useCallback(async () => {
+    const next = !visualEnabled;
+    setVisualEnabled(next);
+    setPending(true);
+    try {
+      await onToggle(next);
+    } finally {
+      setPending(false);
+    }
+  }, [onToggle, visualEnabled]);
+
   return (
     <button
-      className={enabled ? "module-switch on" : "module-switch"}
-      onClick={() => onToggle(!enabled)}
+      className={visualEnabled ? "module-switch on" : "module-switch"}
+      onClick={() => void toggle()}
       type="button"
     >
       <span>
         <b>{label}</b>
         <small>{detail}</small>
       </span>
-      <i>{enabled ? "开" : "关"}</i>
+      <i>{visualEnabled ? "开" : "关"}</i>
     </button>
   );
 }

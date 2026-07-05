@@ -658,27 +658,7 @@ class RuntimeService:
         )
 
     def _log_no_control_target(self, context: FrameContext, selection: TargetSelection) -> None:
-        signature = (
-            f"no_target|state={selection.state}|reason={selection.reason}|"
-            f"dets={len(context.detections)}|tracks={len(context.tracks)}|"
-            f"candidates={selection.candidates}|inside={selection.inside_fov}"
-        )
-        if not self._should_log("_last_control_log_signature", "_last_control_log_s", signature, interval_s=1.0):
-            return
-        logger.info(
-            "control trace frame=%s age_ms=%.1f stage=target state=%s reason=%s detections=%s tracks=%s candidates=%s inside_fov=%s class_filter=%s min_conf=%.3f fov_ratio=%.3f",
-            context.frame_id,
-            self._frame_age_ms(context),
-            selection.state,
-            selection.reason,
-            len(context.detections),
-            len(context.tracks),
-            selection.candidates,
-            selection.inside_fov,
-            str(getattr(self.config.inference, "detection_class_filter", "all")),
-            float(getattr(self.config.control, "min_confidence", 0.0)),
-            float(getattr(self.config.control, "fov_ratio", 0.28)),
-        )
+        return
 
     def _log_local_trigger_update(
         self,

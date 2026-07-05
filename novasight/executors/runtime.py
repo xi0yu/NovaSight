@@ -55,27 +55,25 @@ class ExecutorRegistry:
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
-        default = config.control.output_mode or config.executor.default
-        move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
-        move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
-        movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
         return cls.with_builtin_executors(
             config=config,
-            default=default,
-            policy=ControlOutputPolicy(
-                max_abs_dx=config.control.max_abs_dx,
-                max_abs_dy=config.control.max_abs_dy,
-                min_confidence=config.control.min_confidence,
-            ),
-            coalescer=ControlCommandCoalescer(
-                min_interval_s=max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
-            ),
-            y_limiter=YAxisWindowLimiter(
-                enabled=bool(config.control.y_down_enabled),
-                window_s=max(0.0, config.control.y_rate_window_ms / 1000.0),
-                max_counts=max(0.0, config.control.y_rate_max_counts),
-            ),
+            default=config.control.output_mode or config.executor.default,
+            policy=policy_from_config(config),
+            coalescer=coalescer_from_config(config),
+            y_limiter=YAxisWindowLimiter.from_config(config),
         )
+
+    def update_runtime_config(self, config: RuntimeConfig) -> None:
+        selected = config.control.output_mode or config.executor.default
+        if selected not in self.executors:
+            raise ValueError(f"unknown executor: {selected}")
+        self.selected = selected
+        self.policy = policy_from_config(config)
+        self.coalescer = coalescer_from_config(config)
+        if self.y_limiter is None:
+            self.y_limiter = YAxisWindowLimiter.from_config(config)
+        else:
+            self.y_limiter.configure_from_config(config)
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
         if self.coalescer is not None:
@@ -152,11 +150,30 @@ class ExecutorRegistry:
 
 
 class YAxisWindowLimiter:
+    @classmethod
+    def from_config(cls, config: RuntimeConfig) -> YAxisWindowLimiter:
+        return cls(
+            enabled=bool(config.control.y_down_enabled),
+            window_s=max(0.0, config.control.y_rate_window_ms / 1000.0),
+            max_counts=max(0.0, config.control.y_rate_max_counts),
+        )
+
     def __init__(self, *, enabled: bool, window_s: float, max_counts: float) -> None:
         self.enabled = bool(enabled)
         self.window_s = max(0.0, window_s)
         self.max_counts = max(0.0, max_counts)
-        self._last_drop_s = 0.0
+        self._last_drop_s = time.monotonic() if self.enabled else 0.0
+
+    def configure_from_config(self, config: RuntimeConfig) -> None:
+        next_enabled = bool(config.control.y_down_enabled)
+        was_enabled = self.enabled
+        self.enabled = next_enabled
+        self.window_s = max(0.0, config.control.y_rate_window_ms / 1000.0)
+        self.max_counts = max(0.0, config.control.y_rate_max_counts)
+        if next_enabled and not was_enabled:
+            self._last_drop_s = time.monotonic()
+        elif not next_enabled:
+            self._last_drop_s = 0.0
 
     def apply(self, output: ControlOutput, now_s: float | None = None) -> tuple[ControlOutput, dict[str, Any]]:
         now = time.monotonic() if now_s is None else now_s
@@ -186,3 +203,20 @@ class YAxisWindowLimiter:
             "applied": should_drop,
             "elapsed_ms": elapsed_s * 1000.0,
         }
+
+
+def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
+    return ControlOutputPolicy(
+        max_abs_dx=config.control.max_abs_dx,
+        max_abs_dy=config.control.max_abs_dy,
+        min_confidence=config.control.min_confidence,
+    )
+
+
+def coalescer_from_config(config: RuntimeConfig) -> ControlCommandCoalescer:
+    move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
+    move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
+    movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
+    return ControlCommandCoalescer(
+        min_interval_s=max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
+    )
