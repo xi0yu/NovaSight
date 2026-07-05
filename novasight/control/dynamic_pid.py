@@ -38,7 +38,7 @@ class DynamicPidAxis:
     error_rate: float = 0.0
     previous_frame_speed: float = 0.0
     target_reached: bool = False
-    dynamic_judgement_threshold: float = 0.0
+    dynamic_judgement_threshold: float = 0.5
     stable_count: int = 0
     proportional: float = 0.0
     integral: float = 0.0

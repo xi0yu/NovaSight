@@ -1534,22 +1534,22 @@ export function StudioConsoleView({
                 <>
                   <label>动态 PID 原义算法参数</label>
                   <p className="console-field-hint">
-                    该模式按给定 PID 控制循环英文命名直译接入；不使用 Legacy PID、旧预测、D 开关或 Y 下压补偿。
+                    该模式按给定 PID 控制循环接入；不使用旧 PID、旧预测、D 开关或 Y 下压补偿。
                   </p>
-                  <NumberControl label="dynamic kp_x" value={dynamicPidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_x", value)} />
-                  <NumberControl label="dynamic kp_y" value={dynamicPidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_y", value)} />
-                  <NumberControl label="dynamic ki" value={dynamicPidKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_ki", value)} />
-                  <NumberControl label="dynamic kd" value={dynamicPidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kd", value)} />
-                  <NumberControl label="target_error_threshold" value={dynamicPidTargetErrorThreshold} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_target_error_threshold", value)} />
-                  <NumberControl label="speed_multiplier" value={dynamicPidSpeedMultiplier} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_speed_multiplier", value)} />
-                  <NumberControl label="min_coefficient" value={dynamicPidMinCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_min_coefficient", value)} />
-                  <NumberControl label="max_coefficient" value={dynamicPidMaxCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_coefficient", value)} />
-                  <NumberControl label="transition_sharpness" value={dynamicPidTransitionSharpness} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_sharpness", value)} />
-                  <NumberControl label="transition_midpoint" value={dynamicPidTransitionMidpoint} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_midpoint", value)} />
-                  <NumberControl label="minimum_data_count" value={dynamicPidMinimumDataCount} min={0} max={60} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_minimum_data_count", value)} />
-                  <NumberControl label="error_change_tolerance" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
-                  <NumberControl label="smoothing_factor" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
-                  <NumberControl label="适配 aim_y_ratio" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
+                  <NumberControl label="X 轴比例系数" value={dynamicPidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_x", value)} />
+                  <NumberControl label="Y 轴比例系数" value={dynamicPidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_y", value)} />
+                  <NumberControl label="积分系数" value={dynamicPidKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_ki", value)} />
+                  <NumberControl label="微分系数" value={dynamicPidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kd", value)} />
+                  <NumberControl label="达标误差阈值" value={dynamicPidTargetErrorThreshold} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_target_error_threshold", value)} />
+                  <NumberControl label="速度倍率" value={dynamicPidSpeedMultiplier} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_speed_multiplier", value)} />
+                  <NumberControl label="最小系数" value={dynamicPidMinCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_min_coefficient", value)} />
+                  <NumberControl label="最大系数" value={dynamicPidMaxCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_coefficient", value)} />
+                  <NumberControl label="过渡锐度" value={dynamicPidTransitionSharpness} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_sharpness", value)} />
+                  <NumberControl label="动态过渡中点" value={dynamicPidTransitionMidpoint} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_midpoint", value)} />
+                  <NumberControl label="最小数据量" value={dynamicPidMinimumDataCount} min={0} max={60} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_minimum_data_count", value)} />
+                  <NumberControl label="误差变化容限" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
+                  <NumberControl label="平滑因子" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
+                  <NumberControl label="瞄准高度比例" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
                 </>
               ) : isolatedMode ? (
                 <>
