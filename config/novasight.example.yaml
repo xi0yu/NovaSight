@@ -70,6 +70,15 @@ control:
   isolated_fov_deg: 105
   isolated_counts_per_revolution_x: 9980
   isolated_counts_per_revolution_y: 9980
+  experimental_angle_kp_x: 0.35
+  experimental_angle_kp_y: 0.24
+  experimental_angle_ki: 0
+  experimental_angle_kd: 0
+  experimental_angle_integral_limit: 0
+  experimental_angle_fov_x_deg: 105
+  experimental_angle_counts_per_360: 9980
+  experimental_angle_max_step_counts: 80
+  experimental_angle_control_hz: 60
   dynamic_pid_kp_x: 0.35
   dynamic_pid_kp_y: 0.24
   dynamic_pid_ki: 0

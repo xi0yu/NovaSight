@@ -47,6 +47,176 @@ class IControlStrategy(Protocol):
         ...
 
 
+@dataclass(slots=True)
+class _AnglePidAxis:
+    kp: float = 0.35
+    ki: float = 0.0
+    kd: float = 0.0
+    integral_limit: float = 0.0
+
+    integral: float = 0.0
+    prev_error: float | None = None
+    p_term: float = 0.0
+    i_term: float = 0.0
+    d_term: float = 0.0
+
+    def update(self, error_rad: float, dt: float) -> float:
+        dt = max(1e-6, float(dt))
+        self.p_term = self.kp * error_rad
+        self.integral += error_rad * dt
+        if self.integral_limit > 0:
+            self.integral = max(-self.integral_limit, min(self.integral_limit, self.integral))
+        self.i_term = self.ki * self.integral
+        if self.prev_error is None:
+            derivative = 0.0
+        else:
+            derivative = (error_rad - self.prev_error) / dt
+        self.d_term = self.kd * derivative
+        self.prev_error = error_rad
+        return self.p_term + self.i_term + self.d_term
+
+    def reset(self) -> None:
+        self.integral = 0.0
+        self.prev_error = None
+        self.p_term = 0.0
+        self.i_term = 0.0
+        self.d_term = 0.0
+
+
+class ExperimentalAnglePidStrategy:
+    def __init__(
+        self,
+        *,
+        kp_x: float = 0.35,
+        kp_y: float = 0.24,
+        ki: float = 0.0,
+        kd: float = 0.0,
+        integral_limit: float = 0.0,
+        fov_x_deg: float = 105.0,
+        counts_per_360: float = 9980.0,
+        max_step_counts: float = 80.0,
+        control_hz: float = 60.0,
+        capture_width: float = 0.0,
+        capture_height: float = 0.0,
+        move_kind: str = "raw",
+        move_ms: int = 0,
+        trace_ms: int = 0,
+        bezier_curvature: float = 0.18,
+    ) -> None:
+        self.pid_x = _AnglePidAxis(kp=max(0.0, kp_x), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit))
+        self.pid_y = _AnglePidAxis(kp=max(0.0, kp_y), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit))
+        self.fov_x_deg = max(1.0, min(179.0, fov_x_deg))
+        self.counts_per_360 = max(1.0, counts_per_360)
+        self.max_step_counts = max(1.0, max_step_counts)
+        self.control_hz = max(1.0, control_hz)
+        self.capture_width = max(0.0, capture_width)
+        self.capture_height = max(0.0, capture_height)
+        self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
+        self.move_ms = max(0, int(move_ms))
+        self.trace_ms = max(0, int(trace_ms))
+        self.bezier_curvature = max(0.0, bezier_curvature)
+
+    def calculate(
+        self,
+        target: Target,
+        current_pos: tuple[float, float],
+        box_input: BoxInputState,
+    ) -> MoveCommand:
+        raw = box_input.raw or {}
+        roi_width = _positive_number(raw.get("roi_width"), current_pos[0] * 2.0)
+        roi_height = _positive_number(raw.get("roi_height"), current_pos[1] * 2.0)
+        capture_width, capture_height, capture_source = self._capture_dimensions(raw, roi_width, roi_height)
+        aim_x = (float(target.x1) + float(target.x2)) * 0.5
+        aim_y = (float(target.y1) + float(target.y2)) * 0.5
+        roi_center_x = roi_width * 0.5
+        roi_center_y = roi_height * 0.5
+        error_x_px = aim_x - roi_center_x
+        error_y_px = aim_y - roi_center_y
+        fov_x_rad = math.radians(self.fov_x_deg)
+        focal_x = (capture_width * 0.5) / math.tan(fov_x_rad * 0.5)
+        fov_y_rad = 2.0 * math.atan((capture_height / capture_width) * math.tan(fov_x_rad * 0.5))
+        focal_y = (capture_height * 0.5) / math.tan(fov_y_rad * 0.5)
+        error_x_rad = math.atan(error_x_px / focal_x)
+        error_y_rad = math.atan(error_y_px / focal_y)
+        dt = 1.0 / self.control_hz
+        out_x_rad = self.pid_x.update(error_x_rad, dt)
+        out_y_rad = self.pid_y.update(error_y_rad, dt)
+        counts_per_rad = self.counts_per_360 / (2.0 * math.pi)
+        dx = self._clamp(out_x_rad * counts_per_rad, self.max_step_counts)
+        dy = self._clamp(out_y_rad * counts_per_rad, self.max_step_counts)
+        dx_i = int(round(dx))
+        dy_i = int(round(dy))
+        bezier_ctrl = _bezier_ctrl(dx_i, dy_i, self.bezier_curvature) if self.move_kind in {"bezier", "enc_bezier"} else None
+        return MoveCommand(
+            dx=dx_i,
+            dy=dy_i,
+            confidence=float(target.score),
+            reason=f"experimental angle pid px={math.hypot(error_x_px, error_y_px):.1f}",
+            move_kind=self.move_kind,
+            move_ms=self.move_ms,
+            trace_ms=self.trace_ms,
+            bezier_ctrl=bezier_ctrl,
+            debug={
+                "stage": "experimental_angle_pid",
+                "algorithm": "experimental_angle_pid",
+                "unit_pipeline": "bbox_center_px_to_angle_rad_to_counts",
+                "coordinate_y": "image_down_positive_before_executor_flip",
+                "aim_x": aim_x,
+                "aim_y": aim_y,
+                "roi_center_x": roi_center_x,
+                "roi_center_y": roi_center_y,
+                "roi_width": roi_width,
+                "roi_height": roi_height,
+                "capture_width": capture_width,
+                "capture_height": capture_height,
+                "capture_size_source": capture_source,
+                "error_x_px": error_x_px,
+                "error_y_px": error_y_px,
+                "fov_x_deg": self.fov_x_deg,
+                "fov_x_rad": fov_x_rad,
+                "fov_y_rad": fov_y_rad,
+                "focal_x": focal_x,
+                "focal_y": focal_y,
+                "error_x_rad": error_x_rad,
+                "error_y_rad": error_y_rad,
+                "error_x_deg": math.degrees(error_x_rad),
+                "error_y_deg": math.degrees(error_y_rad),
+                "out_x_rad": out_x_rad,
+                "out_y_rad": out_y_rad,
+                "counts_per_360": self.counts_per_360,
+                "counts_per_rad": counts_per_rad,
+                "max_step_counts": self.max_step_counts,
+                "dt": dt,
+                "control_hz": self.control_hz,
+                "p_x": self.pid_x.p_term,
+                "p_y": self.pid_y.p_term,
+                "i_x": self.pid_x.i_term,
+                "i_y": self.pid_y.i_term,
+                "d_x": self.pid_x.d_term,
+                "d_y": self.pid_y.d_term,
+                "final_dx": dx_i,
+                "final_dy": dy_i,
+            },
+        )
+
+    def reset(self) -> None:
+        self.pid_x.reset()
+        self.pid_y.reset()
+
+    def _capture_dimensions(self, raw: dict[str, object], roi_width: float, roi_height: float) -> tuple[float, float, str]:
+        raw_capture_width = _positive_number(raw.get("capture_width"), 0.0)
+        raw_capture_height = _positive_number(raw.get("capture_height"), 0.0)
+        if raw_capture_width > 0 and raw_capture_height > 0:
+            return raw_capture_width, raw_capture_height, "frame_metadata"
+        if self.capture_width > 0 and self.capture_height > 0:
+            return self.capture_width, self.capture_height, "runtime_config"
+        return roi_width, roi_height, "roi_fallback"
+
+    @staticmethod
+    def _clamp(value: float, limit: float) -> float:
+        return max(-limit, min(limit, value))
+
+
 class PIDStrategy:
     def __init__(
         self,
@@ -868,6 +1038,12 @@ def _bezier_ctrl(dx: int, dy: int, curvature: float) -> tuple[int, int, int, int
         int(round(dx * 2.0 / 3.0 + nx * bow)),
         int(round(dy * 2.0 / 3.0 + ny * bow)),
     )
+
+
+def _positive_number(value: object, fallback: float) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        return float(value)
+    return max(0.0, float(fallback))
 
 
 def _project_pixels_to_counts(

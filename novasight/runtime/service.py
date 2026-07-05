@@ -10,6 +10,7 @@ from novasight.config import RuntimeConfig
 from novasight.control import (
     DynamicPidConfig,
     DynamicPidMouseStrategy,
+    ExperimentalAnglePidStrategy,
     IsolatedMouseConfig,
     IsolatedMouseStrategy,
     PIDStrategy,
@@ -876,6 +877,24 @@ class RuntimeService:
         return result
 
     def _create_control_strategy(self, config: RuntimeConfig):
+        if config.control.strategy == "experimental_angle_pid":
+            return ExperimentalAnglePidStrategy(
+                kp_x=config.control.experimental_angle_kp_x,
+                kp_y=config.control.experimental_angle_kp_y,
+                ki=config.control.experimental_angle_ki,
+                kd=config.control.experimental_angle_kd,
+                integral_limit=config.control.experimental_angle_integral_limit,
+                fov_x_deg=config.control.experimental_angle_fov_x_deg,
+                counts_per_360=config.control.experimental_angle_counts_per_360,
+                max_step_counts=config.control.experimental_angle_max_step_counts,
+                control_hz=config.control.experimental_angle_control_hz,
+                capture_width=config.capture.width,
+                capture_height=config.capture.height,
+                move_kind=config.control.move_kind,
+                move_ms=config.control.move_ms,
+                trace_ms=config.control.trace_ms,
+                bezier_curvature=config.control.bezier_curvature,
+            )
         if config.control.strategy == "dynamic_pid":
             return DynamicPidMouseStrategy(
                 DynamicPidConfig(
@@ -1020,6 +1039,8 @@ class RuntimeService:
         return {
             "roi_width": context.width,
             "roi_height": context.height,
+            "capture_width": getattr(self.config.capture, "width", 0),
+            "capture_height": getattr(self.config.capture, "height", 0),
             "model_width": preprocess.get("model_width") if isinstance(preprocess, dict) else None,
             "model_height": preprocess.get("model_height") if isinstance(preprocess, dict) else None,
         }

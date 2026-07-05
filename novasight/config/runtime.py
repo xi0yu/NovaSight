@@ -149,6 +149,15 @@ class ControlConfig:
     isolated_fov_deg: float = 105.0
     isolated_counts_per_revolution_x: float = 9980.0
     isolated_counts_per_revolution_y: float = 9980.0
+    experimental_angle_kp_x: float = 0.35
+    experimental_angle_kp_y: float = 0.24
+    experimental_angle_ki: float = 0.0
+    experimental_angle_kd: float = 0.0
+    experimental_angle_integral_limit: float = 0.0
+    experimental_angle_fov_x_deg: float = 105.0
+    experimental_angle_counts_per_360: float = 9980.0
+    experimental_angle_max_step_counts: float = 80.0
+    experimental_angle_control_hz: float = 60.0
     dynamic_pid_kp_x: float = 0.35
     dynamic_pid_kp_y: float = 0.24
     dynamic_pid_ki: float = 0.0
@@ -320,8 +329,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
-    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive", "isolated_mouse", "dynamic_pid"}:
-        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, predictive, isolated_mouse, or dynamic_pid")
+    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive", "isolated_mouse", "dynamic_pid", "experimental_angle_pid"}:
+        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, predictive, isolated_mouse, dynamic_pid, or experimental_angle_pid")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
@@ -377,6 +386,14 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "isolated_prediction",
         "isolated_counts_per_revolution_x",
         "isolated_counts_per_revolution_y",
+        "experimental_angle_kp_x",
+        "experimental_angle_kp_y",
+        "experimental_angle_ki",
+        "experimental_angle_integral_limit",
+        "experimental_angle_fov_x_deg",
+        "experimental_angle_counts_per_360",
+        "experimental_angle_max_step_counts",
+        "experimental_angle_control_hz",
         "dynamic_pid_kp_x",
         "dynamic_pid_kp_y",
         "dynamic_pid_ki",
@@ -412,6 +429,16 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.isolated_prediction' must be <= 2")
     if cfg.control.isolated_fov_deg <= 0 or cfg.control.isolated_fov_deg >= 180:
         raise ValueError("runtime config key 'control.isolated_fov_deg' must be > 0 and < 180")
+    if cfg.control.experimental_angle_kd < -1 or cfg.control.experimental_angle_kd > 1:
+        raise ValueError("runtime config key 'control.experimental_angle_kd' must be >= -1 and <= 1")
+    if cfg.control.experimental_angle_fov_x_deg <= 0 or cfg.control.experimental_angle_fov_x_deg >= 180:
+        raise ValueError("runtime config key 'control.experimental_angle_fov_x_deg' must be > 0 and < 180")
+    if cfg.control.experimental_angle_counts_per_360 < 1:
+        raise ValueError("runtime config key 'control.experimental_angle_counts_per_360' must be >= 1")
+    if cfg.control.experimental_angle_max_step_counts < 1:
+        raise ValueError("runtime config key 'control.experimental_angle_max_step_counts' must be >= 1")
+    if cfg.control.experimental_angle_control_hz < 1:
+        raise ValueError("runtime config key 'control.experimental_angle_control_hz' must be >= 1")
     if cfg.control.dynamic_pid_kd < -1 or cfg.control.dynamic_pid_kd > 1:
         raise ValueError("runtime config key 'control.dynamic_pid_kd' must be >= -1 and <= 1")
     if cfg.control.dynamic_pid_smoothing_factor > 1:

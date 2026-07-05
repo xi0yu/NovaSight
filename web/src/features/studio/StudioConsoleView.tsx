@@ -102,6 +102,18 @@ const DYNAMIC_PID_DEFAULTS = {
   dynamic_pid_ema_alpha: 0.45
 };
 
+const EXPERIMENTAL_ANGLE_DEFAULTS = {
+  experimental_angle_kp_x: 0.35,
+  experimental_angle_kp_y: 0.24,
+  experimental_angle_ki: 0,
+  experimental_angle_kd: 0,
+  experimental_angle_integral_limit: 0,
+  experimental_angle_fov_x_deg: 105,
+  experimental_angle_counts_per_360: 9980,
+  experimental_angle_max_step_counts: 80,
+  experimental_angle_control_hz: 60
+};
+
 const TRIGGER_BINDING_OPTIONS = [
   { value: "", label: "未设置" },
   { value: "MouseLeft", label: "鼠标左键" },
@@ -396,6 +408,7 @@ export function StudioConsoleView({
   const controlStrategy = readString(controlConfig.strategy, "pid");
   const isolatedMode = controlStrategy === "isolated_mouse";
   const dynamicPidMode = controlStrategy === "dynamic_pid";
+  const experimentalAngleMode = controlStrategy === "experimental_angle_pid";
   const pidKpX = readNumber(controlConfig.pid_kp_x, 0.35);
   const pidKpY = readNumber(controlConfig.pid_kp_y, 0.24);
   const pidKd = readNumber(controlConfig.pid_kd, 0.1);
@@ -441,6 +454,15 @@ export function StudioConsoleView({
   const dynamicPidC360Y = readNumber(controlConfig.dynamic_pid_counts_per_revolution_y, 9980);
   const dynamicPidControlHz = readNumber(controlConfig.dynamic_pid_control_hz, 60);
   const dynamicPidEmaAlpha = readNumber(controlConfig.dynamic_pid_ema_alpha, 0.45);
+  const experimentalAngleKpX = readNumber(controlConfig.experimental_angle_kp_x, 0.35);
+  const experimentalAngleKpY = readNumber(controlConfig.experimental_angle_kp_y, 0.24);
+  const experimentalAngleKi = readNumber(controlConfig.experimental_angle_ki, 0);
+  const experimentalAngleKd = readNumber(controlConfig.experimental_angle_kd, 0);
+  const experimentalAngleIntegralLimit = readNumber(controlConfig.experimental_angle_integral_limit, 0);
+  const experimentalAngleFovX = readNumber(controlConfig.experimental_angle_fov_x_deg, 105);
+  const experimentalAngleC360 = readNumber(controlConfig.experimental_angle_counts_per_360, 9980);
+  const experimentalAngleMaxStep = readNumber(controlConfig.experimental_angle_max_step_counts, 80);
+  const experimentalAngleControlHz = readNumber(controlConfig.experimental_angle_control_hz, 60);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -839,6 +861,47 @@ export function StudioConsoleView({
       }
     } catch (err) {
       setLocalError(`动态 PID 重置失败：${getErrorMessage(err)}`);
+      if (writeSeq === configWriteSeqRef.current) {
+        configDraftRef.current = null;
+        setConfigDraft(null);
+      }
+    } finally {
+      pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+      if (writeSeq === configWriteSeqRef.current) {
+        setBusy(null);
+      }
+      if (pendingConfigWritesRef.current === 0) {
+        await onRefresh();
+      }
+    }
+  }, [onRefresh, runtime]);
+
+  const resetExperimentalAngleDefaults = useCallback(async () => {
+    const base = configDraftRef.current ?? cloneRuntimeConfig(runtime);
+    const next = base ? normalizeRuntimeConfig(base) : null;
+    if (!next) {
+      return;
+    }
+    const writeSeq = ++configWriteSeqRef.current;
+    pendingConfigWritesRef.current += 1;
+    setBusy("control.experimental_angle_reset");
+    setLocalError(null);
+    const control = {
+      ...asRecord(next.control),
+      ...EXPERIMENTAL_ANGLE_DEFAULTS
+    };
+    next.control = control as RuntimeConfig[string];
+    configDraftRef.current = next;
+    setConfigDraft(next);
+    try {
+      const result = await updateRuntimeConfig(next);
+      if (writeSeq === configWriteSeqRef.current) {
+        const applied = normalizeRuntimeConfig(result.config);
+        configDraftRef.current = applied;
+        setConfigDraft(applied);
+      }
+    } catch (err) {
+      setLocalError(`实验角度 PID 重置失败：${getErrorMessage(err)}`);
       if (writeSeq === configWriteSeqRef.current) {
         configDraftRef.current = null;
         setConfigDraft(null);
@@ -1535,12 +1598,12 @@ export function StudioConsoleView({
 
         <section className={activePage === "params" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="主算法" value={dynamicPidMode ? "动态 PID" : isolatedMode ? "隔离算法" : "Legacy PID"} small="control" />
+            <Metric title="主算法" value={experimentalAngleMode ? "实验角度 PID" : dynamicPidMode ? "动态 PID" : isolatedMode ? "隔离算法" : "Legacy PID"} small="control" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-            <Metric title="Kp X" value={(dynamicPidMode ? dynamicPidKpX : isolatedMode ? isolatedKpX : pidKpX).toFixed(2)} small="axis x" />
-            <Metric title="Kp Y" value={(dynamicPidMode ? dynamicPidKpY : isolatedMode ? isolatedKpY : pidKpY).toFixed(2)} small="axis y" />
-            <Metric title="预测" value={(dynamicPidMode ? dynamicPidSpeedMultiplier : isolatedMode ? isolatedPrediction : predictionFactor).toFixed(2)} small={dynamicPidMode ? "speed" : "lead"} />
-            <Metric title="瞄准高度" value={`${(dynamicPidMode ? dynamicPidAimRatio : isolatedMode ? isolatedAimRatio : aimYRatio).toFixed(0)}%`} small="aim y" />
+            <Metric title="Kp X" value={(experimentalAngleMode ? experimentalAngleKpX : dynamicPidMode ? dynamicPidKpX : isolatedMode ? isolatedKpX : pidKpX).toFixed(2)} small="axis x" />
+            <Metric title="Kp Y" value={(experimentalAngleMode ? experimentalAngleKpY : dynamicPidMode ? dynamicPidKpY : isolatedMode ? isolatedKpY : pidKpY).toFixed(2)} small="axis y" />
+            <Metric title="角度/FOV" value={(experimentalAngleMode ? experimentalAngleFovX : dynamicPidMode ? dynamicPidFovDeg : isolatedMode ? isolatedFovDeg : readNumber(controlConfig.straight_fov_deg, 105)).toFixed(0)} small="deg" />
+            <Metric title="限幅" value={(experimentalAngleMode ? experimentalAngleMaxStep : dynamicPidMode ? dynamicPidSpeedMultiplier : isolatedMode ? isolatedMaxX : kpXMoveMax).toFixed(0)} small={experimentalAngleMode ? "counts" : "limit"} />
           </div>
           <div className="console-grid2">
             <div className="console-card">
@@ -1553,6 +1616,7 @@ export function StudioConsoleView({
                 <option value="pid">Legacy PID</option>
                 <option value="isolated_mouse">隔离鼠标算法</option>
                 <option value="dynamic_pid">动态 PID 原义算法</option>
+                <option value="experimental_angle_pid">实验角度 PID</option>
               </select>
               <label>触发方式</label>
               <select
@@ -1598,7 +1662,31 @@ export function StudioConsoleView({
               </p>
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
 
-              {dynamicPidMode ? (
+              {experimentalAngleMode ? (
+                <>
+                  <label>实验角度 PID 参数</label>
+                  <p className="console-field-hint">
+                    bbox 中心给 ROI 像素误差；整张采集画面计算焦距；PID 控制角度；最后换算 kmNet counts。Y 方向只交给执行层统一翻转。
+                  </p>
+                  <button
+                    className="console-button"
+                    disabled={busy === "control.experimental_angle_reset"}
+                    onClick={() => void resetExperimentalAngleDefaults()}
+                    type="button"
+                  >
+                    重置实验角度 PID 默认值
+                  </button>
+                  <NumberControl label="Kp X" value={experimentalAngleKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kp_x", value)} />
+                  <NumberControl label="Kp Y" value={experimentalAngleKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kp_y", value)} />
+                  <NumberControl label="Ki" value={experimentalAngleKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_ki", value)} />
+                  <NumberControl label="Kd" value={experimentalAngleKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kd", value)} />
+                  <NumberControl label="积分限幅 rad·s" value={experimentalAngleIntegralLimit} min={0} max={2} step={0.001} onCommit={(value) => updateConfigField("control", "experimental_angle_integral_limit", value)} />
+                  <NumberControl label="游戏水平 FOV" value={experimentalAngleFovX} min={1} max={179} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_fov_x_deg", value)} />
+                  <NumberControl label="每圈 counts" value={experimentalAngleC360} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "experimental_angle_counts_per_360", value)} />
+                  <NumberControl label="单帧限幅 counts" value={experimentalAngleMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_step_counts", value)} />
+                  <NumberControl label="控制频率 Hz" value={experimentalAngleControlHz} min={1} max={240} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_control_hz", value)} />
+                </>
+              ) : dynamicPidMode ? (
                 <>
                   <label>动态 PID 原义算法参数</label>
                   <p className="console-field-hint">
