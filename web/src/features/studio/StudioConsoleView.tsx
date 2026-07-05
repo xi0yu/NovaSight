@@ -119,7 +119,19 @@ const EXPERIMENTAL_ANGLE_DEFAULTS = {
   experimental_angle_kalman_measurement_noise: 16,
   experimental_angle_hungarian_enabled: true,
   experimental_angle_matching_distance_px: 140,
-  experimental_angle_max_extrapolate_frames: 3
+  experimental_angle_max_extrapolate_frames: 3,
+  experimental_angle_target_filter_enabled: true,
+  experimental_angle_target_filter_min_score: 0,
+  experimental_angle_target_filter_fov_ratio: 1,
+  experimental_angle_target_filter_same_class: false,
+  experimental_angle_prediction_lead_ms: 0,
+  experimental_angle_extrapolate_confidence_decay: 1,
+  experimental_angle_magnet_enabled: false,
+  experimental_angle_magnet_radius_px: 120,
+  experimental_angle_magnet_strength: 0.25,
+  experimental_angle_magnet_curve: 1,
+  experimental_angle_magnet_deadzone_px: 0,
+  experimental_angle_magnet_max_counts: 20
 };
 
 const TRIGGER_BINDING_OPTIONS = [
@@ -483,6 +495,18 @@ export function StudioConsoleView({
   const experimentalAngleHungarianEnabled = readBoolean(controlConfig.experimental_angle_hungarian_enabled, true);
   const experimentalAngleMatchingDistance = readNumber(controlConfig.experimental_angle_matching_distance_px, 140);
   const experimentalAngleMaxExtrapolateFrames = readNumber(controlConfig.experimental_angle_max_extrapolate_frames, 3);
+  const experimentalAngleTargetFilterEnabled = readBoolean(controlConfig.experimental_angle_target_filter_enabled, true);
+  const experimentalAngleTargetFilterMinScore = readNumber(controlConfig.experimental_angle_target_filter_min_score, 0);
+  const experimentalAngleTargetFilterFovRatio = readNumber(controlConfig.experimental_angle_target_filter_fov_ratio, 1);
+  const experimentalAngleTargetFilterSameClass = readBoolean(controlConfig.experimental_angle_target_filter_same_class, false);
+  const experimentalAnglePredictionLeadMs = readNumber(controlConfig.experimental_angle_prediction_lead_ms, 0);
+  const experimentalAngleExtrapolateConfidenceDecay = readNumber(controlConfig.experimental_angle_extrapolate_confidence_decay, 1);
+  const experimentalAngleMagnetEnabled = readBoolean(controlConfig.experimental_angle_magnet_enabled, false);
+  const experimentalAngleMagnetRadiusPx = readNumber(controlConfig.experimental_angle_magnet_radius_px, 120);
+  const experimentalAngleMagnetStrength = readNumber(controlConfig.experimental_angle_magnet_strength, 0.25);
+  const experimentalAngleMagnetCurve = readNumber(controlConfig.experimental_angle_magnet_curve, 1);
+  const experimentalAngleMagnetDeadzonePx = readNumber(controlConfig.experimental_angle_magnet_deadzone_px, 0);
+  const experimentalAngleMagnetMaxCounts = readNumber(controlConfig.experimental_angle_magnet_max_counts, 20);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1696,6 +1720,65 @@ export function StudioConsoleView({
                   >
                     重置实验角度 PID 默认值
                   </button>
+                  <label>目标过滤</label>
+                  <p className="console-field-hint">
+                    先决定哪些检测框可以进入实验算法自己的稳定和预测链路；默认不额外筛掉目标。
+                  </p>
+                  <ModuleSwitch
+                    label="启用目标过滤"
+                    detail="过滤进入 Kalman / 匈牙利的候选框"
+                    enabled={experimentalAngleTargetFilterEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_target_filter_enabled", enabled)}
+                  />
+                  <NumberControl label="过滤置信度" value={experimentalAngleTargetFilterMinScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_target_filter_min_score", value)} />
+                  <NumberControl label="过滤 FOV 比例" value={experimentalAngleTargetFilterFovRatio} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_target_filter_fov_ratio", value)} />
+                  <ModuleSwitch
+                    label="只保留同类目标"
+                    detail="只让当前目标同类别 detection 进入 tracker"
+                    enabled={experimentalAngleTargetFilterSameClass}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_target_filter_same_class", enabled)}
+                  />
+
+                  <label>Kalman 预测 / 匈牙利匹配</label>
+                  <p className="console-field-hint">
+                    匈牙利负责多目标匹配，Kalman 负责稳定中心点；预测提前量为 0 时只滤波不提前瞄。
+                  </p>
+                  <ModuleSwitch
+                    label="卡尔曼滤波"
+                    detail="稳定并预测检测框中心"
+                    enabled={experimentalAngleKalmanEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_kalman_enabled", enabled)}
+                  />
+                  <NumberControl label="过程噪声" value={experimentalAngleKalmanProcessNoise} min={0.001} max={200} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_process_noise", value)} />
+                  <NumberControl label="测量噪声" value={experimentalAngleKalmanMeasurementNoise} min={0.001} max={500} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_measurement_noise", value)} />
+                  <ModuleSwitch
+                    label="匈牙利匹配"
+                    detail="多目标时保持 track 与 detection 对应关系"
+                    enabled={experimentalAngleHungarianEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_hungarian_enabled", enabled)}
+                  />
+                  <NumberControl label="匹配距离 px" value={experimentalAngleMatchingDistance} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_matching_distance_px", value)} />
+                  <NumberControl label="最大外推帧" value={experimentalAngleMaxExtrapolateFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_extrapolate_frames", Math.round(value))} />
+                  <NumberControl label="预测提前 ms" value={experimentalAnglePredictionLeadMs} min={0} max={120} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_prediction_lead_ms", value)} />
+                  <NumberControl label="外推置信衰减" value={experimentalAngleExtrapolateConfidenceDecay} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_extrapolate_confidence_decay", value)} />
+
+                  <label>磁性吸附</label>
+                  <p className="console-field-hint">
+                    在 PID 输出后追加一个有上限的吸附补偿，用于测试近目标时是否需要更强的收敛感；默认关闭。
+                  </p>
+                  <ModuleSwitch
+                    label="启用磁性吸附"
+                    detail="按目标距离补充 counts，方便单独排查磁性手感"
+                    enabled={experimentalAngleMagnetEnabled}
+                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_magnet_enabled", enabled)}
+                  />
+                  <NumberControl label="磁性半径 px" value={experimentalAngleMagnetRadiusPx} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_radius_px", value)} />
+                  <NumberControl label="磁性强度" value={experimentalAngleMagnetStrength} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_strength", value)} />
+                  <NumberControl label="磁性曲线" value={experimentalAngleMagnetCurve} min={0.1} max={5} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_curve", value)} />
+                  <NumberControl label="磁性死区 px" value={experimentalAngleMagnetDeadzonePx} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_deadzone_px", value)} />
+                  <NumberControl label="磁性限幅 counts" value={experimentalAngleMagnetMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_max_counts", value)} />
+
+                  <label>角度 PID / 输出换算</label>
                   <NumberControl label="Kp X" value={experimentalAngleKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kp_x", value)} />
                   <NumberControl label="Kp Y" value={experimentalAngleKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kp_y", value)} />
                   <NumberControl label="Ki" value={experimentalAngleKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_ki", value)} />
@@ -1707,23 +1790,6 @@ export function StudioConsoleView({
                   <NumberControl label="控制频率 Hz" value={experimentalAngleControlHz} min={1} max={240} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_control_hz", value)} />
                   <NumberControl label="X 输出方向" value={experimentalAngleSignX < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("control", "experimental_angle_sign_x", value < 0 ? -1 : 1)} />
                   <NumberControl label="Y 输出方向" value={experimentalAngleSignY < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("control", "experimental_angle_sign_y", value < 0 ? -1 : 1)} />
-                  <label>目标稳定</label>
-                  <ModuleSwitch
-                    label="启用 Kalman"
-                    detail="稳定并预测检测框中心"
-                    enabled={experimentalAngleKalmanEnabled}
-                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_kalman_enabled", enabled)}
-                  />
-                  <NumberControl label="Kalman 过程噪声" value={experimentalAngleKalmanProcessNoise} min={0.001} max={200} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_process_noise", value)} />
-                  <NumberControl label="Kalman 测量噪声" value={experimentalAngleKalmanMeasurementNoise} min={0.001} max={500} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_measurement_noise", value)} />
-                  <ModuleSwitch
-                    label="启用匈牙利匹配"
-                    detail="多目标时保持 track 与 detection 对应关系"
-                    enabled={experimentalAngleHungarianEnabled}
-                    onToggle={(enabled) => updateConfigField("control", "experimental_angle_hungarian_enabled", enabled)}
-                  />
-                  <NumberControl label="匹配距离 px" value={experimentalAngleMatchingDistance} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_matching_distance_px", value)} />
-                  <NumberControl label="最大外推帧" value={experimentalAngleMaxExtrapolateFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_extrapolate_frames", Math.round(value))} />
                 </>
               ) : dynamicPidMode ? (
                 <>

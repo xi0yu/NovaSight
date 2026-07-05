@@ -166,6 +166,18 @@ class ControlConfig:
     experimental_angle_hungarian_enabled: bool = True
     experimental_angle_matching_distance_px: float = 140.0
     experimental_angle_max_extrapolate_frames: int = 3
+    experimental_angle_target_filter_enabled: bool = True
+    experimental_angle_target_filter_min_score: float = 0.0
+    experimental_angle_target_filter_fov_ratio: float = 1.0
+    experimental_angle_target_filter_same_class: bool = False
+    experimental_angle_prediction_lead_ms: float = 0.0
+    experimental_angle_extrapolate_confidence_decay: float = 1.0
+    experimental_angle_magnet_enabled: bool = False
+    experimental_angle_magnet_radius_px: float = 120.0
+    experimental_angle_magnet_strength: float = 0.25
+    experimental_angle_magnet_curve: float = 1.0
+    experimental_angle_magnet_deadzone_px: float = 0.0
+    experimental_angle_magnet_max_counts: float = 20.0
     dynamic_pid_kp_x: float = 0.35
     dynamic_pid_kp_y: float = 0.24
     dynamic_pid_ki: float = 0.0
@@ -405,6 +417,15 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "experimental_angle_kalman_process_noise",
         "experimental_angle_kalman_measurement_noise",
         "experimental_angle_matching_distance_px",
+        "experimental_angle_target_filter_min_score",
+        "experimental_angle_target_filter_fov_ratio",
+        "experimental_angle_prediction_lead_ms",
+        "experimental_angle_extrapolate_confidence_decay",
+        "experimental_angle_magnet_radius_px",
+        "experimental_angle_magnet_strength",
+        "experimental_angle_magnet_curve",
+        "experimental_angle_magnet_deadzone_px",
+        "experimental_angle_magnet_max_counts",
         "dynamic_pid_kp_x",
         "dynamic_pid_kp_y",
         "dynamic_pid_ki",
@@ -452,6 +473,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.experimental_angle_control_hz' must be >= 1")
     if cfg.control.experimental_angle_max_extrapolate_frames < 0:
         raise ValueError("runtime config key 'control.experimental_angle_max_extrapolate_frames' must be >= 0")
+    if cfg.control.experimental_angle_target_filter_fov_ratio > 1:
+        raise ValueError("runtime config key 'control.experimental_angle_target_filter_fov_ratio' must be <= 1")
+    if cfg.control.experimental_angle_extrapolate_confidence_decay > 1:
+        raise ValueError("runtime config key 'control.experimental_angle_extrapolate_confidence_decay' must be <= 1")
     if cfg.control.experimental_angle_sign_x not in {-1, 1, -1.0, 1.0}:
         raise ValueError("runtime config key 'control.experimental_angle_sign_x' must be -1 or 1")
     if cfg.control.experimental_angle_sign_y not in {-1, 1, -1.0, 1.0}:

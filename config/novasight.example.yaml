@@ -87,6 +87,18 @@ control:
   experimental_angle_hungarian_enabled: true
   experimental_angle_matching_distance_px: 140
   experimental_angle_max_extrapolate_frames: 3
+  experimental_angle_target_filter_enabled: true
+  experimental_angle_target_filter_min_score: 0
+  experimental_angle_target_filter_fov_ratio: 1
+  experimental_angle_target_filter_same_class: false
+  experimental_angle_prediction_lead_ms: 0
+  experimental_angle_extrapolate_confidence_decay: 1
+  experimental_angle_magnet_enabled: false
+  experimental_angle_magnet_radius_px: 120
+  experimental_angle_magnet_strength: 0.25
+  experimental_angle_magnet_curve: 1
+  experimental_angle_magnet_deadzone_px: 0
+  experimental_angle_magnet_max_counts: 20
   dynamic_pid_kp_x: 0.35
   dynamic_pid_kp_y: 0.24
   dynamic_pid_ki: 0

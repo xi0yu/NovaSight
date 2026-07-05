@@ -173,6 +173,18 @@ class ExperimentalAnglePidStrategy:
         hungarian_enabled: bool = True,
         matching_distance_px: float = 140.0,
         max_extrapolate_frames: int = 3,
+        target_filter_enabled: bool = True,
+        target_filter_min_score: float = 0.0,
+        target_filter_fov_ratio: float = 1.0,
+        target_filter_same_class: bool = False,
+        prediction_lead_ms: float = 0.0,
+        extrapolate_confidence_decay: float = 1.0,
+        magnet_enabled: bool = False,
+        magnet_radius_px: float = 120.0,
+        magnet_strength: float = 0.25,
+        magnet_curve: float = 1.0,
+        magnet_deadzone_px: float = 0.0,
+        magnet_max_counts: float = 20.0,
         capture_width: float = 0.0,
         capture_height: float = 0.0,
         move_kind: str = "raw",
@@ -194,6 +206,18 @@ class ExperimentalAnglePidStrategy:
         self.hungarian_enabled = bool(hungarian_enabled)
         self.matching_distance_px = max(1.0, matching_distance_px)
         self.max_extrapolate_frames = max(0, int(max_extrapolate_frames))
+        self.target_filter_enabled = bool(target_filter_enabled)
+        self.target_filter_min_score = max(0.0, target_filter_min_score)
+        self.target_filter_fov_ratio = max(0.0, min(1.0, target_filter_fov_ratio))
+        self.target_filter_same_class = bool(target_filter_same_class)
+        self.prediction_lead_ms = max(0.0, prediction_lead_ms)
+        self.extrapolate_confidence_decay = max(0.0, min(1.0, extrapolate_confidence_decay))
+        self.magnet_enabled = bool(magnet_enabled)
+        self.magnet_radius_px = max(1.0, magnet_radius_px)
+        self.magnet_strength = max(0.0, magnet_strength)
+        self.magnet_curve = max(0.1, magnet_curve)
+        self.magnet_deadzone_px = max(0.0, magnet_deadzone_px)
+        self.magnet_max_counts = max(0.0, magnet_max_counts)
         self.capture_width = max(0.0, capture_width)
         self.capture_height = max(0.0, capture_height)
         self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
@@ -231,8 +255,23 @@ class ExperimentalAnglePidStrategy:
         out_x_rad = self.pid_x.update(error_x_rad, dt)
         out_y_rad = self.pid_y.update(error_y_rad, dt)
         counts_per_rad = self.counts_per_360 / (2.0 * math.pi)
-        raw_dx_counts = out_x_rad * counts_per_rad
-        raw_dy_counts = out_y_rad * counts_per_rad
+        pid_dx_counts = out_x_rad * counts_per_rad
+        pid_dy_counts = out_y_rad * counts_per_rad
+        magnet_dx_counts, magnet_dy_counts, magnet_debug = self._magnet_counts(
+            error_x_px=error_x_px,
+            error_y_px=error_y_px,
+            error_x_rad=error_x_rad,
+            error_y_rad=error_y_rad,
+            counts_per_rad=counts_per_rad,
+        )
+        raw_tracker_decay = tracker_debug.get("extrapolate_confidence_decay")
+        tracker_confidence_decay = (
+            max(0.0, min(1.0, float(raw_tracker_decay)))
+            if isinstance(raw_tracker_decay, (int, float)) and not isinstance(raw_tracker_decay, bool)
+            else 1.0
+        )
+        raw_dx_counts = (pid_dx_counts + magnet_dx_counts) * tracker_confidence_decay
+        raw_dy_counts = (pid_dy_counts + magnet_dy_counts) * tracker_confidence_decay
         dx = self._clamp(raw_dx_counts * self.sign_x, self.max_step_counts)
         dy = self._clamp(raw_dy_counts * self.sign_y, self.max_step_counts)
         dx_i = int(round(dx))
@@ -280,6 +319,12 @@ class ExperimentalAnglePidStrategy:
                 "out_y_rad": out_y_rad,
                 "counts_per_360": self.counts_per_360,
                 "counts_per_rad": counts_per_rad,
+                "pid_dx_counts": pid_dx_counts,
+                "pid_dy_counts": pid_dy_counts,
+                "magnet": magnet_debug,
+                "magnet_dx_counts": magnet_dx_counts,
+                "magnet_dy_counts": magnet_dy_counts,
+                "tracker_confidence_decay": tracker_confidence_decay,
                 "raw_dx_counts": raw_dx_counts,
                 "raw_dy_counts": raw_dy_counts,
                 "sign_x": self.sign_x,
@@ -324,9 +369,25 @@ class ExperimentalAnglePidStrategy:
         detections = _coerce_detection_items(raw.get("detections"))
         if not detections:
             detections = [_target_detection_item(target, raw)]
+        raw_detection_count = len(detections)
+        detections, filter_debug = self._filter_detections_for_tracking(detections, target, raw)
         dt = 1.0 / self.control_hz
         for track in self._tracks.values():
             track.predict(dt, self.kalman_process_noise)
+
+        if not detections:
+            stale = [track_id for track_id, track in self._tracks.items() if track.missed > self.max_extrapolate_frames]
+            for track_id in stale:
+                self._tracks.pop(track_id, None)
+            return fallback_x, fallback_y, {
+                "enabled": True,
+                "used": False,
+                "reason": "no detection after target filter",
+                "tracks": len(self._tracks),
+                "raw_detections": raw_detection_count,
+                "detections": 0,
+                "filter": filter_debug,
+            }
 
         assignments = self._assign_tracks(detections) if self.hungarian_enabled else self._greedy_assign_tracks(detections)
         assigned_detection_indexes: set[int] = set()
@@ -354,10 +415,13 @@ class ExperimentalAnglePidStrategy:
                 "used": False,
                 "reason": "no matched track",
                 "tracks": len(self._tracks),
+                "raw_detections": raw_detection_count,
                 "detections": len(detections),
                 "assignments": len(assignments),
+                "filter": filter_debug,
             }
-        x, y = selected.center
+        x, y = self._predicted_track_center(selected, dt)
+        confidence_decay = self.extrapolate_confidence_decay ** max(0, selected.missed)
         return x, y, {
             "enabled": True,
             "used": True,
@@ -365,12 +429,111 @@ class ExperimentalAnglePidStrategy:
             "source_index": selected.source_index,
             "missed": selected.missed,
             "tracks": len(self._tracks),
+            "raw_detections": raw_detection_count,
             "detections": len(detections),
             "assignments": len(assignments),
+            "filter": filter_debug,
             "hungarian": self.hungarian_enabled,
+            "prediction_lead_ms": self.prediction_lead_ms,
+            "predicted_x": x,
+            "predicted_y": y,
+            "velocity_x_px_s": selected.kx.velocity,
+            "velocity_y_px_s": selected.ky.velocity,
+            "extrapolate_confidence_decay": confidence_decay,
             "kalman_process_noise": self.kalman_process_noise,
             "kalman_measurement_noise": self.kalman_measurement_noise,
             "matching_distance_px": self.matching_distance_px,
+        }
+
+    def _filter_detections_for_tracking(
+        self,
+        detections: list[dict[str, float]],
+        target: Target,
+        raw: dict[str, object],
+    ) -> tuple[list[dict[str, float]], dict[str, Any]]:
+        if not self.target_filter_enabled:
+            return detections, {"enabled": False, "input": len(detections), "output": len(detections)}
+        roi_width = _positive_number(raw.get("roi_width"), 0.0)
+        roi_height = _positive_number(raw.get("roi_height"), 0.0)
+        center_x = roi_width * 0.5
+        center_y = roi_height * 0.5
+        radius = min(roi_width, roi_height) * self.target_filter_fov_ratio if roi_width > 0 and roi_height > 0 else 0.0
+        filtered: list[dict[str, float]] = []
+        rejected_score = 0
+        rejected_class = 0
+        rejected_fov = 0
+        for detection in detections:
+            if float(detection.get("score", 0.0)) < self.target_filter_min_score:
+                rejected_score += 1
+                continue
+            if self.target_filter_same_class and int(detection.get("cls", -1)) != int(target.cls):
+                rejected_class += 1
+                continue
+            if radius > 0:
+                distance = _center_distance((float(detection["cx"]), float(detection["cy"])), (center_x, center_y))
+                if distance > radius:
+                    rejected_fov += 1
+                    continue
+            filtered.append(detection)
+        return filtered, {
+            "enabled": True,
+            "input": len(detections),
+            "output": len(filtered),
+            "min_score": self.target_filter_min_score,
+            "fov_ratio": self.target_filter_fov_ratio,
+            "same_class": self.target_filter_same_class,
+            "rejected_score": rejected_score,
+            "rejected_class": rejected_class,
+            "rejected_fov": rejected_fov,
+        }
+
+    def _predicted_track_center(self, track: _KalmanCenterTrack, dt: float) -> tuple[float, float]:
+        lead_s = self.prediction_lead_ms / 1000.0
+        if lead_s <= 0:
+            return track.center
+        lead_s = min(lead_s, max(dt, 1.0 / self.control_hz) * (1 + self.max_extrapolate_frames))
+        return track.kx.position + track.kx.velocity * lead_s, track.ky.position + track.ky.velocity * lead_s
+
+    def _magnet_counts(
+        self,
+        *,
+        error_x_px: float,
+        error_y_px: float,
+        error_x_rad: float,
+        error_y_rad: float,
+        counts_per_rad: float,
+    ) -> tuple[float, float, dict[str, Any]]:
+        distance_px = math.hypot(error_x_px, error_y_px)
+        if (
+            not self.magnet_enabled
+            or self.magnet_strength <= 0
+            or self.magnet_max_counts <= 0
+            or distance_px <= self.magnet_deadzone_px
+            or distance_px >= self.magnet_radius_px
+        ):
+            return 0.0, 0.0, {
+                "enabled": self.magnet_enabled,
+                "used": False,
+                "distance_px": distance_px,
+                "radius_px": self.magnet_radius_px,
+                "deadzone_px": self.magnet_deadzone_px,
+            }
+        proximity = max(0.0, min(1.0, 1.0 - distance_px / self.magnet_radius_px))
+        gain = self.magnet_strength * (proximity ** self.magnet_curve)
+        dx = self._clamp(error_x_rad * counts_per_rad * gain, self.magnet_max_counts)
+        dy = self._clamp(error_y_rad * counts_per_rad * gain, self.magnet_max_counts)
+        return dx, dy, {
+            "enabled": True,
+            "used": True,
+            "distance_px": distance_px,
+            "radius_px": self.magnet_radius_px,
+            "deadzone_px": self.magnet_deadzone_px,
+            "strength": self.magnet_strength,
+            "curve": self.magnet_curve,
+            "gain": gain,
+            "max_counts": self.magnet_max_counts,
+            "dx_counts": dx,
+            "dy_counts": dy,
         }
 
     def _assign_tracks(self, detections: list[dict[str, float]]) -> list[tuple[int, int, float]]:
