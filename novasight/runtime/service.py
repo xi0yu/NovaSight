@@ -493,11 +493,7 @@ class RuntimeService:
         trigger_mode = str(getattr(self.config.control, "trigger_mode", "hardware") or "hardware")
         if trigger_mode not in {"hardware", "telemetry", "always"}:
             trigger_mode = "hardware"
-        requires_trigger = (
-            output_mode == "kmnet"
-            and hardware_kind not in {"", "none", "silent"}
-            and trigger_mode != "always"
-        )
+        requires_trigger = trigger_mode != "always"
         can_emit = box_input.active or not requires_trigger
         trigger_raw = getattr(box_input, "raw", {}) or {}
         trigger_requirement = self._trigger_requirement_label(
@@ -747,8 +743,8 @@ class RuntimeService:
             if local.active:
                 self._log_box_input_state(local, "local_no_hardware")
                 return local
-            state = BoxInputState(left=True, raw={"mode": "diagnostic_auto_trigger"})
-            self._log_box_input_state(state, "diagnostic_auto_trigger")
+            state = BoxInputState(raw={"source": "local_trigger", "active": False, "reason": "no local trigger"})
+            self._log_box_input_state(state, "local_no_trigger")
             return state
         button_reader = getattr(self.executors, "read_buttons", None)
         buttons: dict[str, Any] | None = None

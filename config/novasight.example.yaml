@@ -50,7 +50,7 @@ control:
   kp_x_move_max: 150
   kp_y_move_max: 30
   prediction_factor: 0.1
-  # 0 disables Y-axis window limiter. Example: window=10, max=8 means at most 8 Y counts per 10ms.
+  # 0 disables Y-axis down compensation. Example: window=10, counts=8 means add -8 Y counts every 10ms.
   y_rate_window_ms: 10
   y_rate_max_counts: 0
   move_kind: bezier

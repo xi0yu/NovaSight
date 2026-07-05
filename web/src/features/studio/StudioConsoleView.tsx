@@ -145,7 +145,7 @@ function triggerModeLabel(value: string): string {
   if (value === "telemetry") {
     return "本地或硬件按键触发";
   }
-  return "硬件按键触发";
+  return "绑定按键触发";
 }
 
 function clampPercent(value: number): number {
@@ -1376,7 +1376,7 @@ export function StudioConsoleView({
                 value={triggerMode}
                 onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}
               >
-                <option value="hardware">硬件按键触发</option>
+                <option value="hardware">绑定按键触发</option>
                 <option value="telemetry">本地或硬件按键触发</option>
                 <option value="always">调试直出</option>
               </select>
@@ -1415,8 +1415,8 @@ export function StudioConsoleView({
               </p>
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
               <label>鼠标移动算法</label>
-              <NumberControl label="Y 压制窗口 ms" value={yRateWindowMs} min={0} max={50} step={0.5} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
-              <NumberControl label="Y 窗口 counts 上限" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
+              <NumberControl label="Y 下压间隔 ms" value={yRateWindowMs} min={0} max={1000} step={1} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
+              <NumberControl label="Y 每次下压 counts" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
               <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
               <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
               <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
@@ -1469,7 +1469,7 @@ export function StudioConsoleView({
                 <span>Driver rc</span><b>{String(executionMeta.driver_rc ?? "-")}</b>
                 <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
                 <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
-                <span>Y 压制</span><b>{readNumber(yRateLimiterMeta.max_counts, 0) > 0 ? `${formatNumber(yRateLimiterMeta.limited_dy, 0)} / ${formatNumber(yRateLimiterMeta.max_counts, 0)}` : "关闭"}</b>
+                <span>Y 下压</span><b>{readNumber(yRateLimiterMeta.max_counts, 0) > 0 ? `${formatNumber(yRateLimiterMeta.drop_counts, 0)} -> ${formatNumber(yRateLimiterMeta.final_dy, 0)}` : "关闭"}</b>
                 <span>Driver dx</span><b>{formatNumber(executionMeta.driver_dx, 1)}</b>
                 <span>Driver dy</span><b>{formatNumber(executionMeta.driver_dy, 1)}</b>
                 <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>

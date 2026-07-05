@@ -98,18 +98,6 @@ class ExecutorRegistry:
         limiter_metadata: dict[str, Any] | None = None
         if self.y_limiter is not None:
             bounded, limiter_metadata = self.y_limiter.apply(bounded)
-            if bounded.accepted and bounded.dx == 0 and bounded.dy == 0 and limiter_metadata.get("limited"):
-                return ExecutionResult(
-                    executor_id=self.selected,
-                    sent=False,
-                    intent=bounded,
-                    message="Y axis command suppressed by rate limiter",
-                    metadata={
-                        "stage": "y_rate_limiter",
-                        "selected_executor": self.selected,
-                        **limiter_metadata,
-                    },
-                )
         result = self.executors[self.selected].execute(bounded)
         if result.metadata is not None:
             if limiter_metadata is not None:
@@ -162,8 +150,7 @@ class YAxisWindowLimiter:
     def __init__(self, *, window_s: float, max_counts: float) -> None:
         self.window_s = max(0.0, window_s)
         self.max_counts = max(0.0, max_counts)
-        self._window_start_s = 0.0
-        self._used_counts = 0.0
+        self._last_drop_s = 0.0
 
     def apply(self, output: ControlOutput, now_s: float | None = None) -> tuple[ControlOutput, dict[str, Any]]:
         now = time.monotonic() if now_s is None else now_s
@@ -172,24 +159,24 @@ class YAxisWindowLimiter:
                 "enabled": False,
                 "window_ms": self.window_s * 1000.0,
                 "max_counts": self.max_counts,
-                "limited": False,
+                "applied": False,
+                "drop_counts": 0,
             }
-        if self._window_start_s <= 0 or now - self._window_start_s >= self.window_s:
-            self._window_start_s = now
-            self._used_counts = 0.0
-        requested_dy = int(output.dy)
-        remaining = max(0.0, self.max_counts - self._used_counts)
-        limited_dy = int(max(-remaining, min(remaining, requested_dy)))
-        self._used_counts += abs(limited_dy)
-        limited = limited_dy != requested_dy
-        reason = "Y axis rate limited" if limited else output.reason
-        return replace(output, dy=limited_dy, clipped=output.clipped or limited, reason=reason), {
+        elapsed_s = now - self._last_drop_s if self._last_drop_s > 0 else self.window_s
+        should_drop = self._last_drop_s <= 0 or elapsed_s >= self.window_s
+        drop_counts = -int(round(self.max_counts)) if should_drop else 0
+        if should_drop:
+            self._last_drop_s = now
+        requested_dy = int(round(output.dy))
+        final_dy = requested_dy + drop_counts
+        reason = "Y axis periodic down compensation" if should_drop else output.reason
+        return replace(output, dy=final_dy, reason=reason), {
             "enabled": True,
             "window_ms": self.window_s * 1000.0,
             "max_counts": self.max_counts,
-            "used_counts": self._used_counts,
-            "remaining_counts": max(0.0, self.max_counts - self._used_counts),
             "requested_dy": requested_dy,
-            "limited_dy": limited_dy,
-            "limited": limited,
+            "drop_counts": drop_counts,
+            "final_dy": final_dy,
+            "applied": should_drop,
+            "elapsed_ms": elapsed_s * 1000.0,
         }
