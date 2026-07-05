@@ -163,9 +163,6 @@ class ControlConfig:
     dynamic_pid_error_change_tolerance: float = 3.0
     dynamic_pid_smoothing_factor: float = 1.0
     dynamic_pid_aim_ratio: float = 40.0
-    dynamic_pid_error_mode: str = "roi_px"
-    dynamic_pid_target_extent_mode: str = "width"
-    dynamic_pid_y_sign: str = "up_positive"
     dynamic_pid_max_x: float = 120.0
     dynamic_pid_max_y: float = 120.0
 
@@ -280,10 +277,11 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
             "dynamic_pid_fov_deg",
             "dynamic_pid_counts_per_revolution_x",
             "dynamic_pid_counts_per_revolution_y",
+            "dynamic_pid_error_mode",
+            "dynamic_pid_target_extent_mode",
+            "dynamic_pid_y_sign",
         ):
             control.pop(key, None)
-        if control.get("dynamic_pid_error_mode") == "fov_counts":
-            control["dynamic_pid_error_mode"] = "roi_px"
         normalized["control"] = control
     return normalized
 
@@ -415,13 +413,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.dynamic_pid_smoothing_factor' must be <= 1")
     if cfg.control.dynamic_pid_aim_ratio > 100:
         raise ValueError("runtime config key 'control.dynamic_pid_aim_ratio' must be <= 100")
-    if cfg.control.dynamic_pid_error_mode not in {"roi_px", "model_px", "normalized"}:
-        raise ValueError("runtime config key 'control.dynamic_pid_error_mode' must be roi_px, model_px, or normalized")
-    if cfg.control.dynamic_pid_target_extent_mode not in {"width", "height", "max_wh", "mean_wh"}:
-        raise ValueError("runtime config key 'control.dynamic_pid_target_extent_mode' must be width, height, max_wh, or mean_wh")
-    if cfg.control.dynamic_pid_y_sign not in {"up_positive", "down_positive"}:
-        raise ValueError("runtime config key 'control.dynamic_pid_y_sign' must be up_positive or down_positive")
-
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     cfg_path = Path(path)

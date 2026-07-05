@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from novasight.contracts import Detection, Track
@@ -196,9 +196,6 @@ class DynamicPidConfig:
     error_change_tolerance: int = 3
     smoothing_factor: float = 1.0
     aim_ratio: float = 40.0
-    error_mode: str = "roi_px"
-    target_extent_mode: str = "width"
-    y_sign: str = "up_positive"
     max_x: float = 120.0
     max_y: float = 120.0
     move_kind: str = "raw"
@@ -236,17 +233,10 @@ class DynamicPidMouseStrategy:
         aim_x, aim_y = _aim_point(target, self.config.aim_ratio)
         roi_error_x = float(aim_x - center_x)
         roi_error_y_up_positive = float(center_y - aim_y)
-        error_x, error_y = self._resolve_error(
-            roi_error_x=roi_error_x,
-            roi_error_y_up_positive=roi_error_y_up_positive,
-            roi_width=max(1.0, center_x * 2.0),
-            roi_height=max(1.0, center_y * 2.0),
-            raw=raw,
-        )
-        target_extent = self._resolve_target_extent(target)
-        image_size = self._resolve_image_size(raw=raw, roi_width=max(1.0, center_x * 2.0))
-        raw_output_x = self.axis_x.control_loop(error_x, dt, target_extent, image_size)
-        raw_output_y = self.axis_y.control_loop(error_y, dt, target_extent, image_size)
+        recent_target_width = max(1.0, float(target.w))
+        image_size = max(1.0, center_x * 2.0)
+        raw_output_x = self.axis_x.control_loop(roi_error_x, dt, recent_target_width, image_size)
+        raw_output_y = self.axis_y.control_loop(roi_error_y_up_positive, dt, recent_target_width, image_size)
         output_x = _clamp(raw_output_x, -abs(self.config.max_x), abs(self.config.max_x))
         output_y = _clamp(raw_output_y, -abs(self.config.max_y), abs(self.config.max_y))
         move_kind = self.config.move_kind if self.config.move_kind in MOVE_KINDS else "raw"
@@ -267,18 +257,16 @@ class DynamicPidMouseStrategy:
                 "aim_y": aim_y,
                 "raw_px_x": roi_error_x,
                 "raw_px_y": roi_error_y_up_positive,
-                "pid_error_x": error_x,
-                "pid_error_y": error_y,
-                "error_mode": self.config.error_mode,
-                "target_extent_mode": self.config.target_extent_mode,
-                "y_sign": self.config.y_sign,
+                "pid_error_x": roi_error_x,
+                "pid_error_y": roi_error_y_up_positive,
+                "recent_target_width": recent_target_width,
                 "dt_ms": dt * 1000.0,
                 "dt_source": dt_source,
                 "frame_id": raw.get("frame_id"),
                 "capture_ts_ns": raw.get("capture_ts_ns"),
                 "target_key": target_key,
                 "target_changed": target_changed,
-                "target_extent": target_extent,
+                "target_extent": recent_target_width,
                 "image_size": image_size,
                 "raw_output_x": raw_output_x,
                 "raw_output_y": raw_output_y,
@@ -323,53 +311,6 @@ class DynamicPidMouseStrategy:
         self._last_s = now_s
         return max(1e-6, dt), "monotonic_fallback"
 
-    def _resolve_error(
-        self,
-        *,
-        roi_error_x: float,
-        roi_error_y_up_positive: float,
-        roi_width: float,
-        roi_height: float,
-        raw: dict[str, object],
-    ) -> tuple[float, float]:
-        error_y = roi_error_y_up_positive
-        if self.config.y_sign == "down_positive":
-            error_y = -error_y
-
-        mode = self.config.error_mode
-        if mode == "model_px":
-            model_width = _positive_float(raw.get("model_width"), roi_width)
-            model_height = _positive_float(raw.get("model_height"), roi_height)
-            return (
-                roi_error_x * (model_width / max(1.0, roi_width)),
-                error_y * (model_height / max(1.0, roi_height)),
-            )
-        if mode == "normalized":
-            return (
-                roi_error_x / max(1.0, roi_width),
-                error_y / max(1.0, roi_height),
-            )
-        return roi_error_x, error_y
-
-    def _resolve_target_extent(self, target: Target) -> float:
-        width = max(1.0, float(target.w))
-        height = max(1.0, float(target.h))
-        mode = self.config.target_extent_mode
-        if mode == "width":
-            return width
-        if mode == "height":
-            return height
-        if mode == "mean_wh":
-            return (width + height) * 0.5
-        return max(width, height)
-
-    def _resolve_image_size(self, *, raw: dict[str, object], roi_width: float) -> float:
-        if self.config.error_mode == "model_px":
-            return _positive_float(raw.get("model_width"), roi_width)
-        if self.config.error_mode == "normalized":
-            return 1.0
-        return roi_width
-
 
 def _axis_from_config(config: DynamicPidConfig, *, axis: str) -> DynamicPidAxis:
     gain = config.kp_x if axis == "x" else config.kp_y
@@ -392,12 +333,6 @@ def _axis_from_config(config: DynamicPidConfig, *, axis: str) -> DynamicPidAxis:
 def _aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
     ratio = max(0.0, min(100.0, float(aim_ratio))) / 100.0
     return float(target.cx), float(target.y) + float(target.h) * ratio
-
-
-def _positive_float(value: object, default: float) -> float:
-    if isinstance(value, (int, float)) and value > 0:
-        return float(value)
-    return max(1.0, float(default))
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:

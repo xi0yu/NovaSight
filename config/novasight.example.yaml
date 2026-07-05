@@ -84,9 +84,6 @@ control:
   dynamic_pid_error_change_tolerance: 3
   dynamic_pid_smoothing_factor: 1
   dynamic_pid_aim_ratio: 40
-  dynamic_pid_error_mode: roi_px
-  dynamic_pid_target_extent_mode: width
-  dynamic_pid_y_sign: up_positive
   dynamic_pid_max_x: 120
   dynamic_pid_max_y: 120
   # Set to silent, console, dry_run, or kmnet to override executor.default.
