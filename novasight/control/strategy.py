@@ -15,7 +15,9 @@ MOVE_KINDS = {"raw", "enc_raw", "auto", "enc_auto", "bezier", "enc_bezier"}
 
 def aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
     ratio = max(0.0, min(100.0, aim_ratio)) / 100.0
-    return (float(target.x) + float(target.w) / 2.0, float(target.y) + float(target.h) * ratio)
+    point_y = getattr(target, "point_y", None)
+    y = point_y(ratio) if callable(point_y) else float(target.y) + float(target.h) * ratio
+    return (float(target.cx), float(y))
 
 
 def aim_point_y_ratio(target: Target, aim_y_ratio: float) -> tuple[float, float]:

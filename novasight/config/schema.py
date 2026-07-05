@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from novasight.config.params import param_schema_for
 from novasight.config.runtime import RuntimeConfig
 
 
 def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]:
     cfg = config or RuntimeConfig()
-    return {
+    schema = {
         "version": 1,
         "values": asdict(cfg),
         "sections": [
@@ -201,3 +202,18 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
             },
         ],
     }
+    for section in schema["sections"]:
+        for field in section["fields"]:
+            spec = param_schema_for(str(field.get("path", "")))
+            if not spec:
+                continue
+            field["label"] = spec["label"]
+            field["default"] = spec["default"]
+            field["min"] = spec["minimum"]
+            field["max"] = spec["maximum"]
+            field["recommended_min"] = spec["recommended_min"]
+            field["recommended_max"] = spec["recommended_max"]
+            field["step"] = spec["step"]
+            field["unit"] = spec["unit"]
+            field["description"] = spec["description"]
+    return schema

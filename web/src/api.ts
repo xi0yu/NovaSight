@@ -196,6 +196,12 @@ export type ConfigFieldSchema = {
   options?: string[];
   min?: number;
   max?: number;
+  default?: number;
+  recommended_min?: number;
+  recommended_max?: number;
+  step?: number;
+  unit?: string;
+  description?: string;
   restart_required: boolean;
 };
 

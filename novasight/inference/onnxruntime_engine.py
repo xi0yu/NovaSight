@@ -454,13 +454,13 @@ def _decode_xyxy_score_cls(
         if x2 <= x1 or y2 <= y1:
             continue
         candidates.append(
-            InferenceDetection(
-                cls=int(round(float(row[5]))),
+            InferenceDetection.from_xyxy(
+                cls_id=int(round(float(row[5]))),
                 score=score,
-                x=x1,
-                y=y1,
-                w=x2 - x1,
-                h=y2 - y1,
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
             )
         )
     kept = _nms(candidates, nms_threshold)
@@ -510,11 +510,11 @@ def _decode_yolo_scores(
         if w <= 0 or h <= 0:
             continue
         candidates.append(
-            InferenceDetection(
-                cls=int(cls_ids[int(index)]),
+            InferenceDetection.from_cxcywh(
+                cls_id=int(cls_ids[int(index)]),
                 score=score,
-                x=cx - w / 2,
-                y=cy - h / 2,
+                cx=cx,
+                cy=cy,
                 w=w,
                 h=h,
             )
