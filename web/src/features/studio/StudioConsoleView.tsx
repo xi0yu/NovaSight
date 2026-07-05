@@ -243,6 +243,13 @@ function cloneRuntimeConfig(runtime: RuntimeState | null): RuntimeConfig | null 
   return next;
 }
 
+function normalizeRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
+  const next = structuredClone(config) as RuntimeConfig;
+  delete next.version;
+  delete next.roi_size;
+  return next;
+}
+
 export function StudioConsoleView({
   health,
   runtime,
@@ -276,13 +283,17 @@ export function StudioConsoleView({
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
+  const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtime));
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtime));
+  const pendingConfigWritesRef = useRef(0);
+  const configWriteSeqRef = useRef(0);
   const pressedBindingsRef = useRef<Set<string>>(new Set());
   const localTriggerActiveRef = useRef(false);
 
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
-  const config = runtime?.config;
+  const config = configDraft ?? runtime?.config;
   const captureConfig = nestedRecord(config, "capture");
   const configuredCaptureDevice = readString(captureConfig.device, "");
   const configuredCapturePixelFormat = readString(captureConfig.pixel_format, "");
@@ -358,6 +369,15 @@ export function StudioConsoleView({
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
+
+  useEffect(() => {
+    if (!runtime?.config || pendingConfigWritesRef.current > 0) {
+      return;
+    }
+    const next = normalizeRuntimeConfig(runtime.config as RuntimeConfig);
+    configDraftRef.current = next;
+    setConfigDraft(next);
+  }, [runtime?.config]);
   const kmnetConnected = kmnetStatus.connected === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
   const kmnetButtonLeft = kmnetStatus.button_left === true;
@@ -663,10 +683,13 @@ export function StudioConsoleView({
 
   const updateConfigField = useCallback(
     async (section: string, key: string, value: number | string | boolean | string[]) => {
-      const next = cloneRuntimeConfig(runtime);
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtime);
+      const next = base ? normalizeRuntimeConfig(base) : null;
       if (!next) {
         return;
       }
+      const writeSeq = ++configWriteSeqRef.current;
+      pendingConfigWritesRef.current += 1;
       setBusy(`${section}.${key}`);
       setLocalError(null);
       const sectionValue = {
@@ -674,14 +697,29 @@ export function StudioConsoleView({
       };
       sectionValue[key] = value;
       next[section] = sectionValue as RuntimeConfig[string];
+      configDraftRef.current = next;
+      setConfigDraft(next);
       try {
-        await updateRuntimeConfig(next);
-        await onRefresh();
+        const result = await updateRuntimeConfig(next);
+        if (writeSeq === configWriteSeqRef.current) {
+          const applied = normalizeRuntimeConfig(result.config);
+          configDraftRef.current = applied;
+          setConfigDraft(applied);
+        }
       } catch (err) {
         setLocalError(`配置同步失败：${getErrorMessage(err)}`);
-        await onRefresh();
+        if (writeSeq === configWriteSeqRef.current) {
+          configDraftRef.current = null;
+          setConfigDraft(null);
+        }
       } finally {
-        setBusy(null);
+        pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+        if (writeSeq === configWriteSeqRef.current) {
+          setBusy(null);
+        }
+        if (pendingConfigWritesRef.current === 0) {
+          await onRefresh();
+        }
       }
     },
     [onRefresh, runtime]
@@ -1864,6 +1902,7 @@ function CommitNumberControl({
 }) {
   const [draft, setDraft] = useState(value);
   const [isEditing, setIsEditing] = useState(false);
+  const committingRef = useRef(false);
 
   useEffect(() => {
     if (!isEditing) {
@@ -1872,10 +1911,17 @@ function CommitNumberControl({
   }, [isEditing, value]);
 
   const commit = useCallback(() => {
+    if (committingRef.current) {
+      return;
+    }
     const next = clampNumber(Number(draft.toFixed(digits)), min, max);
     if (Math.abs(next - value) >= step / 2) {
+      committingRef.current = true;
       setDraft(next);
-      void Promise.resolve(onCommit(next)).finally(() => setIsEditing(false));
+      void Promise.resolve(onCommit(next)).finally(() => {
+        committingRef.current = false;
+        setIsEditing(false);
+      });
     } else {
       setDraft(value);
       setIsEditing(false);
@@ -1990,6 +2036,9 @@ function ModuleSwitch({
   }, [enabled, pending]);
 
   const toggle = useCallback(async () => {
+    if (pending) {
+      return;
+    }
     const next = !visualEnabled;
     setVisualEnabled(next);
     setPending(true);
@@ -1998,12 +2047,13 @@ function ModuleSwitch({
     } finally {
       setPending(false);
     }
-  }, [onToggle, visualEnabled]);
+  }, [onToggle, pending, visualEnabled]);
 
   return (
     <button
       className={visualEnabled ? "module-switch on" : "module-switch"}
       onClick={() => void toggle()}
+      disabled={pending}
       type="button"
     >
       <span>
