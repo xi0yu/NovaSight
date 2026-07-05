@@ -17,7 +17,12 @@ class DiagnosticMoveRequest(BaseModel):
     dy: int = 0
     repeat: int = Field(default=1, ge=1, le=200)
     interval_ms: int = Field(default=0, ge=0, le=50)
+    move_ms: int = Field(default=12, ge=0, le=5000)
     move_kind: str | None = None
+    ctrl_x1: int | None = None
+    ctrl_y1: int | None = None
+    ctrl_x2: int | None = None
+    ctrl_y2: int | None = None
 
 
 class DiagnosticCircleRequest(BaseModel):
@@ -70,6 +75,29 @@ def diagnostic_move_kmnet(
     move = getattr(executor, "diagnostic_move", None)
     if not callable(move):
         raise HTTPException(status_code=400, detail="kmNet executor does not support diagnostic move")
+    if payload.repeat == 1 and payload.interval_ms == 0:
+        result = move(
+            payload.dx,
+            payload.dy,
+            move_kind=payload.move_kind,
+            move_ms=payload.move_ms,
+            bezier_ctrl=_bezier_ctrl_from_payload(payload),
+        )
+        logger.info(
+            "kmNet diagnostic move sent dx=%s dy=%s kind=%s move_ms=%s result=%s",
+            payload.dx,
+            payload.dy,
+            payload.move_kind,
+            payload.move_ms,
+            result,
+        )
+        return {
+            **_execution_result_payload(result),
+            "queued": False,
+            "steps_requested": 1,
+            "steps_sent": 1 if bool(getattr(result, "sent", False)) else 0,
+            "status": executor.status() if callable(getattr(executor, "status", None)) else {},
+        }
     background_tasks.add_task(_run_diagnostic_move, executor, payload)
     logger.info(
         "kmNet diagnostic move queued dx=%s dy=%s repeat=%s interval_ms=%s kind=%s",
@@ -85,6 +113,7 @@ def diagnostic_move_kmnet(
         "message": "queued diagnostic move",
         "steps_requested": payload.repeat,
         "steps_sent": 0,
+        "move_ms": payload.move_ms,
         "failed": None,
         "status": executor.status() if callable(getattr(executor, "status", None)) else {},
     }
@@ -99,7 +128,13 @@ def _run_diagnostic_move(executor: Any, payload: DiagnosticMoveRequest) -> None:
     sent = 0
     failed: dict[str, Any] | None = None
     for index in range(payload.repeat):
-        result = move(payload.dx, payload.dy, move_kind=payload.move_kind)
+        result = move(
+            payload.dx,
+            payload.dy,
+            move_kind=payload.move_kind,
+            move_ms=payload.move_ms,
+            bezier_ctrl=_bezier_ctrl_from_payload(payload),
+        )
         if bool(getattr(result, "sent", False)):
             sent += 1
         else:
@@ -128,6 +163,17 @@ def _run_diagnostic_move(executor: Any, payload: DiagnosticMoveRequest) -> None:
             failed,
             payload.move_kind,
         )
+
+
+def _bezier_ctrl_from_payload(payload: DiagnosticMoveRequest) -> tuple[int, int, int, int] | None:
+    if payload.ctrl_x1 is None or payload.ctrl_y1 is None or payload.ctrl_x2 is None or payload.ctrl_y2 is None:
+        return None
+    return (
+        int(payload.ctrl_x1),
+        int(payload.ctrl_y1),
+        int(payload.ctrl_x2),
+        int(payload.ctrl_y2),
+    )
 
 
 @router.post("/api/executors/kmnet/diagnostic-circle")
@@ -214,6 +260,7 @@ def _execution_result_payload(result: Any) -> dict[str, Any]:
         "executor_id": getattr(result, "executor_id", "unknown"),
         "sent": bool(getattr(result, "sent", False)),
         "message": str(getattr(result, "message", "")),
+        "metadata": getattr(result, "metadata", None) or {},
         "intent": {
             "dx": getattr(intent, "dx", 0),
             "dy": getattr(intent, "dy", 0),

@@ -260,6 +260,11 @@ export function StudioConsoleView({
   const [modelArtifacts, setModelArtifacts] = useState<ModelArtifact[]>([]);
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
+  const [kmnetTestMs, setKmnetTestMs] = useState(300);
+  const [kmnetBezierX1, setKmnetBezierX1] = useState(-50);
+  const [kmnetBezierY1, setKmnetBezierY1] = useState(-60);
+  const [kmnetBezierX2, setKmnetBezierX2] = useState(70);
+  const [kmnetBezierY2, setKmnetBezierY2] = useState(80);
   const [kmnetTestMessage, setKmnetTestMessage] = useState("");
   const [captureBindingSlot, setCaptureBindingSlot] = useState<number | null>(null);
   const [bindingDrafts, setBindingDrafts] = useState<string[] | null>(null);
@@ -895,29 +900,45 @@ export function StudioConsoleView({
     dy = kmnetTestDy,
     repeat = 1,
     intervalMs = 0,
-    moveKindOverride?: string
+    moveKindOverride?: string,
+    moveMsOverride = kmnetTestMs,
+    bezierCtrl?: { x1: number; y1: number; x2: number; y2: number }
   ) => {
+    setBusy("kmnet.diagnostic");
     setLocalError(null);
     setKmnetTestMessage("");
     try {
       const effectiveMoveKind = moveKindOverride ?? moveKind;
-      const result = await diagnosticMoveKmNet(Math.round(dx), Math.round(dy), repeat, intervalMs, effectiveMoveKind);
+      const result = await diagnosticMoveKmNet(
+        Math.round(dx),
+        Math.round(dy),
+        repeat,
+        intervalMs,
+        effectiveMoveKind,
+        Math.round(moveMsOverride),
+        bezierCtrl
+      );
       const status = asRecord(result.status);
+      const metadata = asRecord(result.metadata);
       const stepsSent = readNumber(result.steps_sent, result.sent === true ? repeat : 0);
       const queued = result.queued === true;
+      const apiName = readString(metadata.api_name, effectiveMoveKind);
+      const driverRc = String(metadata.driver_rc ?? "-");
       setKmnetTestMessage(
         queued
-          ? `已下发 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${repeat} 步 · 后端后台执行`
+          ? `已下发 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${repeat} 步 · ${Math.round(moveMsOverride)}ms · 后端后台执行`
           : result.sent === true
-          ? `已发送 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
+          ? `已发送 ${apiName} rc=${driverRc} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${Math.round(moveMsOverride)}ms · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
           : `未发送 ${effectiveMoveKind}：${readString(result.message, "未知原因")} · ${stepsSent}/${repeat} 步`
       );
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet 诊断移动失败：${getErrorMessage(err)}`);
       await onRefresh();
+    } finally {
+      setBusy(null);
     }
-  }, [kmnetTestDx, kmnetTestDy, moveKind, onRefresh]);
+  }, [kmnetTestDx, kmnetTestDy, kmnetTestMs, moveKind, onRefresh]);
 
   const diagnosticCircleHardware = useCallback(async () => {
     setBusy("kmnet.circle");
@@ -1628,66 +1649,124 @@ export function StudioConsoleView({
                       onChange={(event) => setKmnetTestDy(Number(event.target.value))}
                     />
                   </label>
+                  <label>
+                    <span>ms</span>
+                    <input
+                      type="number"
+                      value={kmnetTestMs}
+                      onChange={(event) => setKmnetTestMs(Number(event.target.value))}
+                    />
+                  </label>
                 </div>
                 <div className="kmnet-pad">
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, -10)}>↑</button>
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(-10, 0)}>←</button>
-                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}>发送</button>
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(10, 0)}>→</button>
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
+                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, -10, 1, 0, "raw", 0)}>↑</button>
+                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(-10, 0, 1, 0, "raw", 0)}>←</button>
+                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)} disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}>发送</button>
+                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(10, 0, 1, 0, "raw", 0)}>→</button>
+                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, 10, 1, 0, "raw", 0)}>↓</button>
                 </div>
-                <div className="console-action-row">
+                <div className="kmnet-test-section">
+                  <h3>最快直移</h3>
+                  <p>调用 move / enc_move，只传 x、y。适合验证最底层驱动是否能立即移动。</p>
+                  <div className="console-action-row">
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)}
+                      type="button"
+                    >
+                      move
+                    </button>
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_raw", 0)}
+                      type="button"
+                    >
+                      enc_move
+                    </button>
+                  </div>
+                </div>
+                <div className="kmnet-test-section">
+                  <h3>自动模拟</h3>
+                  <p>调用 move_auto / enc_move_auto，指定 ms，按最小步进逼近目标。</p>
+                  <div className="console-action-row">
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "auto", kmnetTestMs)}
+                      type="button"
+                    >
+                      move_auto
+                    </button>
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_auto", kmnetTestMs)}
+                      type="button"
+                    >
+                      enc_move_auto
+                    </button>
+                  </div>
+                </div>
+                <div className="kmnet-test-section">
+                  <h3>贝塞尔曲线</h3>
+                  <p>调用 move_beizer / enc_move_beizer，参数为 x、y、ms、x1、y1、x2、y2。</p>
+                  <div className="kmnet-test-inputs bezier">
+                    <label><span>x1</span><input type="number" value={kmnetBezierX1} onChange={(event) => setKmnetBezierX1(Number(event.target.value))} /></label>
+                    <label><span>y1</span><input type="number" value={kmnetBezierY1} onChange={(event) => setKmnetBezierY1(Number(event.target.value))} /></label>
+                    <label><span>x2</span><input type="number" value={kmnetBezierX2} onChange={(event) => setKmnetBezierX2(Number(event.target.value))} /></label>
+                    <label><span>y2</span><input type="number" value={kmnetBezierY2} onChange={(event) => setKmnetBezierY2(Number(event.target.value))} /></label>
+                  </div>
+                  <div className="console-action-row">
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "bezier", kmnetTestMs, { x1: kmnetBezierX1, y1: kmnetBezierY1, x2: kmnetBezierX2, y2: kmnetBezierY2 })}
+                      type="button"
+                    >
+                      move_beizer
+                    </button>
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_bezier", kmnetTestMs, { x1: kmnetBezierX1, y1: kmnetBezierY1, x2: kmnetBezierX2, y2: kmnetBezierY2 })}
+                      type="button"
+                    >
+                      enc_move_beizer
+                    </button>
+                  </div>
+                </div>
+                <div className="kmnet-test-section">
+                  <h3>辅助诊断</h3>
+                  <p>连续发送用于检查频率响应；右移大步和画圆用于确认肉眼可见移动。</p>
+                  <div className="console-action-row">
+                    <button
+                      className="console-button"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 3, 4, "raw", 0)}
+                      type="button"
+                    >
+                      连续发送
+                    </button>
+                    <button
+                      className="console-button primary"
+                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "raw", 0)}
+                      type="button"
+                    >
+                      右移大步测试
+                    </button>
+                  </div>
                   <button
-                    className="console-button"
+                    className="kmnet-circle-button"
                     disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 3, 4)}
+                    onClick={() => void diagnosticCircleHardware()}
                     type="button"
                   >
-                    连续发送
-                  </button>
-                  <button
-                    className="console-button primary"
-                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0)}
-                    type="button"
-                  >
-                    右移大步测试
+                    {busy === "kmnet.circle" ? "画圆中" : "画圆测试"}
                   </button>
                 </div>
-                <div className="console-action-row">
-                  <button
-                    className="console-button"
-                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "raw")}
-                    type="button"
-                  >
-                    测 move
-                  </button>
-                  <button
-                    className="console-button"
-                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "enc_raw")}
-                    type="button"
-                  >
-                    测 enc_move
-                  </button>
-                  <button
-                    className="console-button"
-                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                    onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "auto")}
-                    type="button"
-                  >
-                    测 move_auto
-                  </button>
-                </div>
-                <button
-                  className="kmnet-circle-button"
-                  disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
-                  onClick={() => void diagnosticCircleHardware()}
-                  type="button"
-                >
-                  {busy === "kmnet.circle" ? "画圆中" : "画圆测试"}
-                </button>
                 <div className="kmnet-test-result">
                   <span>最近移动</span>
                   <b>{`${readNumber(kmnetStatus.last_dx, 0)} / ${readNumber(kmnetStatus.last_dy, 0)} · ${readNumber(kmnetStatus.move_count, 0)} 次`}</b>

@@ -404,14 +404,27 @@ export function diagnosticMoveKmNet(
   dy = 0,
   repeat = 1,
   intervalMs = 0,
-  moveKind?: string
+  moveKind?: string,
+  moveMs = 12,
+  bezierCtrl?: { x1: number; y1: number; x2: number; y2: number }
 ): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticMove, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ dx, dy, repeat, interval_ms: intervalMs, move_kind: moveKind })
+    body: JSON.stringify({
+      dx,
+      dy,
+      repeat,
+      interval_ms: intervalMs,
+      move_kind: moveKind,
+      move_ms: moveMs,
+      ctrl_x1: bezierCtrl?.x1,
+      ctrl_y1: bezierCtrl?.y1,
+      ctrl_x2: bezierCtrl?.x2,
+      ctrl_y2: bezierCtrl?.y2
+    })
   });
 }
 

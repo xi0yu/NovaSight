@@ -4538,8 +4538,12 @@ tbody tr:hover {
 
 .kmnet-test-inputs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.kmnet-test-inputs.bezier {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .kmnet-test-inputs label {
@@ -4552,6 +4556,30 @@ tbody tr:hover {
   color: var(--muted);
   font-size: 12px;
   font-weight: 850;
+}
+
+.kmnet-test-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(20, 24, 32, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.kmnet-test-section h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.kmnet-test-section p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .kmnet-pad {
@@ -4864,6 +4892,10 @@ tbody tr:hover {
 
   .kmnet-status-grid,
   .kmnet-test-inputs {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .kmnet-test-inputs.bezier {
     grid-template-columns: 1fr 1fr;
   }
 

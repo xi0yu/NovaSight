@@ -160,7 +160,14 @@ class KmNetExecutor:
             "raw": self.last_button_raw,
         }
 
-    def diagnostic_move(self, dx: int, dy: int, move_kind: str | None = None) -> ExecutionResult:
+    def diagnostic_move(
+        self,
+        dx: int,
+        dy: int,
+        move_kind: str | None = None,
+        move_ms: int = 12,
+        bezier_ctrl: tuple[int, int, int, int] | None = None,
+    ) -> ExecutionResult:
         output = ControlOutput(
             dx=int(dx),
             dy=int(dy),
@@ -171,7 +178,8 @@ class KmNetExecutor:
             clipped=False,
             reason="kmNet diagnostic move",
             move_kind=move_kind or "raw",
-            move_ms=12,
+            move_ms=max(0, int(move_ms)),
+            bezier_ctrl=bezier_ctrl,
         )
         return self.execute(output)
 
