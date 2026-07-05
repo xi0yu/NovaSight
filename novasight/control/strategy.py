@@ -172,8 +172,10 @@ class PIDStrategy:
         py = self.kp_y * ey
         ix = 0.0
         iy = 0.0
-        dx_term = self.kd * dx_d
-        dy_term = self.kd * dy_d
+        raw_dx_term = self.kd * dx_d
+        raw_dy_term = self.kd * dy_d
+        dx_term = self._clamp_derivative_term(raw_dx_term, self.move_limit_x)
+        dy_term = self._clamp_derivative_term(raw_dy_term, self.move_limit_y)
         dx = px + ix + dx_term
         dy = py + iy + dy_term
         debug = {
@@ -210,8 +212,12 @@ class PIDStrategy:
             "p_y": py,
             "i_x": ix,
             "i_y": iy,
+            "raw_d_x": raw_dx_term,
+            "raw_d_y": raw_dy_term,
             "d_x": dx_term,
             "d_y": dy_term,
+            "d_limited_x": raw_dx_term != dx_term,
+            "d_limited_y": raw_dy_term != dy_term,
         }
         if abs(ex) <= self.deadzone_counts and abs(ey) <= self.deadzone_counts:
             return MoveCommand(
@@ -248,6 +254,13 @@ class PIDStrategy:
     def _clamp_axis(value: float, limit: float | None) -> float:
         if limit is None:
             return value
+        return max(-limit, min(limit, value))
+
+    @staticmethod
+    def _clamp_derivative_term(value: float, move_limit: float | None) -> float:
+        # D is only damping. If it can consume the full move budget, one noisy
+        # bbox can reverse the view and look like a sudden vertical jump.
+        limit = 24.0 if move_limit is None else max(2.0, abs(move_limit) * 0.35)
         return max(-limit, min(limit, value))
 
     def _predict_center(

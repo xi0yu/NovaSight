@@ -1453,6 +1453,8 @@ export function StudioConsoleView({
                 <span>动作门控</span><b>{`${formatNumber(controlPipeline.motion_coef_x, 2)} / ${formatNumber(controlPipeline.motion_coef_y, 2)}`}</b>
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
+                <span>D 原始值</span><b>{`${formatNumber(controlPipeline.raw_d_x, 1)} / ${formatNumber(controlPipeline.raw_d_y, 1)}`}</b>
+                <span>D 限幅</span><b>{controlPipeline.d_limited_x || controlPipeline.d_limited_y ? "已触发" : "未触发"}</b>
                 <span>策略 dx</span><b>{formatNumber(control.dx, 1)}</b>
                 <span>策略 dy</span><b>{formatNumber(control.dy, 1)}</b>
                 <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
