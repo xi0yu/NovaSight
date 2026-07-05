@@ -713,9 +713,9 @@ export function StudioConsoleView({
       const active = activeBindings();
       commit(active.length > 0, active);
     };
-    const isTextInputTarget = (target: EventTarget | null) => {
+    const isInteractiveControlTarget = (target: EventTarget | null) => {
       const element = target instanceof HTMLElement ? target : null;
-      return !!element?.closest("input, textarea, select, [contenteditable='true']");
+      return !!element?.closest("button, input, textarea, select, option, label, [contenteditable='true'], [role='button']");
     };
     const isKeyboardControlTarget = (target: EventTarget | null) => {
       const element = target instanceof HTMLElement ? target : null;
@@ -750,7 +750,7 @@ export function StudioConsoleView({
         setCaptureBindingSlot(null);
         return;
       }
-      if (isTextInputTarget(event.target)) {
+      if (isInteractiveControlTarget(event.target)) {
         return;
       }
       if (!allowed.has(binding.toLowerCase())) {
@@ -780,7 +780,7 @@ export function StudioConsoleView({
       } else {
         commit(false, [], true);
       }
-    }, 250);
+    }, 150);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("mousedown", onMouseDown, true);

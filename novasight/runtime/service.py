@@ -795,7 +795,7 @@ class RuntimeService:
     def _local_trigger_state(self) -> BoxInputState:
         if not self._local_trigger_active:
             return BoxInputState(raw={"source": "local_trigger", "active": False})
-        if time.monotonic() - self._local_trigger_updated_s > 0.75:
+        if time.monotonic() - self._local_trigger_updated_s > 0.35:
             self._local_trigger_active = False
             self._local_trigger_bindings = []
             return BoxInputState(raw={"source": "local_trigger", "active": False, "reason": "expired"})
