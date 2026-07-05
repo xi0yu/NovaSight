@@ -164,11 +164,8 @@ class ControlConfig:
     dynamic_pid_smoothing_factor: float = 1.0
     dynamic_pid_aim_ratio: float = 40.0
     dynamic_pid_error_mode: str = "roi_px"
-    dynamic_pid_target_extent_mode: str = "max_wh"
+    dynamic_pid_target_extent_mode: str = "width"
     dynamic_pid_y_sign: str = "up_positive"
-    dynamic_pid_fov_deg: float = 105.0
-    dynamic_pid_counts_per_revolution_x: float = 9980.0
-    dynamic_pid_counts_per_revolution_y: float = 9980.0
     dynamic_pid_max_x: float = 120.0
     dynamic_pid_max_y: float = 120.0
 
@@ -274,6 +271,23 @@ def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
     return cls(**values)
 
 
+def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(raw)
+    control = normalized.get("control")
+    if isinstance(control, dict):
+        control = dict(control)
+        for key in (
+            "dynamic_pid_fov_deg",
+            "dynamic_pid_counts_per_revolution_x",
+            "dynamic_pid_counts_per_revolution_y",
+        ):
+            control.pop(key, None)
+        if control.get("dynamic_pid_error_mode") == "fov_counts":
+            control["dynamic_pid_error_mode"] = "roi_px"
+        normalized["control"] = control
+    return normalized
+
+
 def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.source.default not in {"null", "capture", "image"} and not cfg.source.default.startswith("image:"):
         raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
@@ -376,9 +390,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "dynamic_pid_error_change_tolerance",
         "dynamic_pid_smoothing_factor",
         "dynamic_pid_aim_ratio",
-        "dynamic_pid_fov_deg",
-        "dynamic_pid_counts_per_revolution_x",
-        "dynamic_pid_counts_per_revolution_y",
         "dynamic_pid_max_x",
         "dynamic_pid_max_y",
     ):
@@ -404,14 +415,12 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.dynamic_pid_smoothing_factor' must be <= 1")
     if cfg.control.dynamic_pid_aim_ratio > 100:
         raise ValueError("runtime config key 'control.dynamic_pid_aim_ratio' must be <= 100")
-    if cfg.control.dynamic_pid_error_mode not in {"roi_px", "model_px", "normalized", "fov_counts"}:
-        raise ValueError("runtime config key 'control.dynamic_pid_error_mode' must be roi_px, model_px, normalized, or fov_counts")
+    if cfg.control.dynamic_pid_error_mode not in {"roi_px", "model_px", "normalized"}:
+        raise ValueError("runtime config key 'control.dynamic_pid_error_mode' must be roi_px, model_px, or normalized")
     if cfg.control.dynamic_pid_target_extent_mode not in {"width", "height", "max_wh", "mean_wh"}:
         raise ValueError("runtime config key 'control.dynamic_pid_target_extent_mode' must be width, height, max_wh, or mean_wh")
     if cfg.control.dynamic_pid_y_sign not in {"up_positive", "down_positive"}:
         raise ValueError("runtime config key 'control.dynamic_pid_y_sign' must be up_positive or down_positive")
-    if cfg.control.dynamic_pid_fov_deg <= 0 or cfg.control.dynamic_pid_fov_deg >= 180:
-        raise ValueError("runtime config key 'control.dynamic_pid_fov_deg' must be > 0 and < 180")
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
@@ -423,6 +432,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         raw = {}
     if not isinstance(raw, dict):
         raise ValueError(f"runtime config must be a mapping: {cfg_path}")
+    raw = _drop_legacy_runtime_keys(raw)
     cfg = _build_dataclass(RuntimeConfig, raw)
     _validate_runtime_rules(cfg)
     return cfg
@@ -431,6 +441,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
 def parse_runtime_config(raw: dict[str, Any]) -> RuntimeConfig:
     if not isinstance(raw, dict):
         raise ValueError("runtime config must be a mapping")
+    raw = _drop_legacy_runtime_keys(raw)
     cfg = _build_dataclass(RuntimeConfig, raw)
     _validate_runtime_rules(cfg)
     return cfg

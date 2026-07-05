@@ -197,11 +197,8 @@ class DynamicPidConfig:
     smoothing_factor: float = 1.0
     aim_ratio: float = 40.0
     error_mode: str = "roi_px"
-    target_extent_mode: str = "max_wh"
+    target_extent_mode: str = "width"
     y_sign: str = "up_positive"
-    fov_deg: float = 105.0
-    counts_per_revolution_x: float = 9980.0
-    counts_per_revolution_y: float = 9980.0
     max_x: float = 120.0
     max_y: float = 120.0
     move_kind: str = "raw"
@@ -352,21 +349,6 @@ class DynamicPidMouseStrategy:
                 roi_error_x / max(1.0, roi_width),
                 error_y / max(1.0, roi_height),
             )
-        if mode == "fov_counts":
-            return (
-                _pixels_to_counts(
-                    roi_error_x,
-                    frame_width=roi_width,
-                    fov_deg=self.config.fov_deg,
-                    counts_per_revolution=max(1.0, self.config.counts_per_revolution_x),
-                ),
-                _pixels_to_counts(
-                    error_y,
-                    frame_width=roi_width,
-                    fov_deg=self.config.fov_deg,
-                    counts_per_revolution=max(1.0, self.config.counts_per_revolution_y),
-                ),
-            )
         return roi_error_x, error_y
 
     def _resolve_target_extent(self, target: Target) -> float:
@@ -410,18 +392,6 @@ def _axis_from_config(config: DynamicPidConfig, *, axis: str) -> DynamicPidAxis:
 def _aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
     ratio = max(0.0, min(100.0, float(aim_ratio))) / 100.0
     return float(target.cx), float(target.y) + float(target.h) * ratio
-
-
-def _pixels_to_counts(
-    error_pixels: float,
-    *,
-    frame_width: float,
-    fov_deg: float,
-    counts_per_revolution: float,
-) -> float:
-    focal = (frame_width * 0.5) / math.tan(math.radians(max(1.0, min(179.0, fov_deg))) * 0.5)
-    angle = math.degrees(math.atan(float(error_pixels) / focal)) if focal > 0 else 0.0
-    return angle * (counts_per_revolution / 360.0)
 
 
 def _positive_float(value: object, default: float) -> float:
