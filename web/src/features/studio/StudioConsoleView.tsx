@@ -104,6 +104,10 @@ function readNullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -1926,6 +1930,48 @@ function Metric({ title, value, small }: { title: string; value: string; small: 
   return <div className="console-metric">{title}<br />{value}<small>{small}</small></div>;
 }
 
+type PreviewDetection = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
+  score: number;
+  className: string;
+  index: number;
+};
+
+function readPreviewDetections(value: unknown): PreviewDetection[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map(asRecord).flatMap((item, index) => {
+    const x = finiteNumber(item.x);
+    const y = finiteNumber(item.y);
+    const w = finiteNumber(item.w);
+    const h = finiteNumber(item.h);
+    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) {
+      return [];
+    }
+    return [{
+      x,
+      y,
+      w,
+      h,
+      cx: finiteNumber(item.cx) ?? x + w / 2,
+      cy: finiteNumber(item.cy) ?? y + h / 2,
+      score: finiteNumber(item.score) ?? 0,
+      className: readString(item.class_name, readString(item.className, `类别${readNumber(item.class_id, 0)}`)),
+      index
+    }];
+  });
+}
+
+function percent(value: number, total: number): string {
+  return `${clampNumber(total > 0 ? (value / total) * 100 : 0, 0, 100)}%`;
+}
+
 function PreviewFrame({
   enabled,
   runtime,
@@ -1941,9 +1987,66 @@ function PreviewFrame({
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
+  const detections = readPreviewDetections(vision.detection_items);
+  const target = asRecord(vision.target);
+  const targetDetectionIndex = readNullableNumber(target.target_detection_index);
+  const targetCx = readNullableNumber(target.cx);
+  const targetCy = readNullableNumber(target.cy);
+  const targetAimX = readNullableNumber(target.aim_x) ?? targetCx;
+  const targetAimY = readNullableNumber(target.aim_y) ?? targetCy;
+  const showPreview = enabled && runtime?.capture?.available;
+  const selectedDetection = detections.find((item) => (
+    targetDetectionIndex !== null
+      ? item.index === targetDetectionIndex
+      : targetCx !== null && targetCy !== null && Math.abs(item.cx - targetCx) <= 2 && Math.abs(item.cy - targetCy) <= 2
+  ));
+  const selectedIndex = selectedDetection?.index ?? null;
+  const centerX = previewWidth / 2;
+  const centerY = previewHeight / 2;
   return (
     <div className="console-preview" style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
-      {enabled && runtime?.capture?.available ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
+      <div className="console-preview-frame">
+        {showPreview ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
+        {showPreview && detections.length > 0 ? (
+          <div className="console-detection-layer" aria-hidden="true">
+            <svg className="console-target-lines" viewBox={`0 0 ${previewWidth} ${previewHeight}`} preserveAspectRatio="none">
+              {detections.map((item) => {
+                const selected = item.index === selectedIndex;
+                const endX = selected && targetAimX !== null ? targetAimX : item.cx;
+                const endY = selected && targetAimY !== null ? targetAimY : item.cy;
+                return (
+                  <line
+                    className={selected ? "primary" : "secondary"}
+                    key={`line-${item.index}-${item.x}-${item.y}`}
+                    x1={centerX}
+                    y1={centerY}
+                    x2={clampNumber(endX, 0, previewWidth)}
+                    y2={clampNumber(endY, 0, previewHeight)}
+                  />
+                );
+              })}
+            </svg>
+            <span className="console-roi-center" />
+            {detections.map((item) => {
+              const selected = item.index === selectedIndex;
+              return (
+                <span
+                  className={selected ? "console-detection-box primary" : "console-detection-box secondary"}
+                  key={`box-${item.index}-${item.x}-${item.y}`}
+                  style={{
+                    left: percent(item.x, previewWidth),
+                    top: percent(item.y, previewHeight),
+                    width: percent(item.w, previewWidth),
+                    height: percent(item.h, previewHeight)
+                  }}
+                >
+                  <b>{selected ? "主要目标" : "其他目标"} · {item.className} {item.score.toFixed(2)}</b>
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
