@@ -84,17 +84,22 @@ const DYNAMIC_PID_DEFAULTS = {
   dynamic_pid_kp_x: 0.35,
   dynamic_pid_kp_y: 0.24,
   dynamic_pid_ki: 0,
-  dynamic_pid_kd: 0.1,
-  dynamic_pid_target_error_threshold: 4,
+  dynamic_pid_kd: 0,
+  dynamic_pid_target_error_threshold: 0.016,
   dynamic_pid_speed_multiplier: 1,
   dynamic_pid_min_coefficient: 1.6,
   dynamic_pid_max_coefficient: 2.7,
   dynamic_pid_transition_sharpness: 5,
   dynamic_pid_transition_midpoint: 0,
   dynamic_pid_minimum_data_count: 2,
-  dynamic_pid_error_change_tolerance: 3,
+  dynamic_pid_error_change_tolerance: 0.012,
   dynamic_pid_smoothing_factor: 1,
-  dynamic_pid_aim_ratio: 40
+  dynamic_pid_aim_ratio: 40,
+  dynamic_pid_fov_deg: 105,
+  dynamic_pid_counts_per_revolution_x: 9980,
+  dynamic_pid_counts_per_revolution_y: 9980,
+  dynamic_pid_control_hz: 60,
+  dynamic_pid_ema_alpha: 0.45
 };
 
 const TRIGGER_BINDING_OPTIONS = [
@@ -420,17 +425,22 @@ export function StudioConsoleView({
   const dynamicPidKpX = readNumber(controlConfig.dynamic_pid_kp_x, 0.35);
   const dynamicPidKpY = readNumber(controlConfig.dynamic_pid_kp_y, 0.24);
   const dynamicPidKi = readNumber(controlConfig.dynamic_pid_ki, 0);
-  const dynamicPidKd = readNumber(controlConfig.dynamic_pid_kd, 0.1);
-  const dynamicPidTargetErrorThreshold = readNumber(controlConfig.dynamic_pid_target_error_threshold, 4);
+  const dynamicPidKd = readNumber(controlConfig.dynamic_pid_kd, 0);
+  const dynamicPidTargetErrorThreshold = readNumber(controlConfig.dynamic_pid_target_error_threshold, 0.016);
   const dynamicPidSpeedMultiplier = readNumber(controlConfig.dynamic_pid_speed_multiplier, 1);
   const dynamicPidMinCoefficient = readNumber(controlConfig.dynamic_pid_min_coefficient, 1.6);
   const dynamicPidMaxCoefficient = readNumber(controlConfig.dynamic_pid_max_coefficient, 2.7);
   const dynamicPidTransitionSharpness = readNumber(controlConfig.dynamic_pid_transition_sharpness, 5);
   const dynamicPidTransitionMidpoint = readNumber(controlConfig.dynamic_pid_transition_midpoint, 0);
   const dynamicPidMinimumDataCount = readNumber(controlConfig.dynamic_pid_minimum_data_count, 2);
-  const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 3);
+  const dynamicPidErrorChangeTolerance = readNumber(controlConfig.dynamic_pid_error_change_tolerance, 0.012);
   const dynamicPidSmoothingFactor = readNumber(controlConfig.dynamic_pid_smoothing_factor, 1);
   const dynamicPidAimRatio = readNumber(controlConfig.dynamic_pid_aim_ratio, 40);
+  const dynamicPidFovDeg = readNumber(controlConfig.dynamic_pid_fov_deg, 105);
+  const dynamicPidC360X = readNumber(controlConfig.dynamic_pid_counts_per_revolution_x, 9980);
+  const dynamicPidC360Y = readNumber(controlConfig.dynamic_pid_counts_per_revolution_y, 9980);
+  const dynamicPidControlHz = readNumber(controlConfig.dynamic_pid_control_hz, 60);
+  const dynamicPidEmaAlpha = readNumber(controlConfig.dynamic_pid_ema_alpha, 0.45);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1592,7 +1602,7 @@ export function StudioConsoleView({
                 <>
                   <label>动态 PID 原义算法参数</label>
                   <p className="console-field-hint">
-                    该模式按给定 PID 控制循环接入；不使用旧 PID、旧预测、D 开关或 Y 下压补偿。
+                    该模式先把 ROI 像素误差换算为角度误差，PID 输出角度后再按每圈 counts 换算为 kmNet 控制量。
                   </p>
                   <button
                     className="console-button"
@@ -1606,16 +1616,21 @@ export function StudioConsoleView({
                   <NumberControl label="Y 轴比例系数" value={dynamicPidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kp_y", value)} />
                   <NumberControl label="积分系数" value={dynamicPidKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_ki", value)} />
                   <NumberControl label="微分系数" value={dynamicPidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_kd", value)} />
-                  <NumberControl label="达标误差阈值" value={dynamicPidTargetErrorThreshold} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_target_error_threshold", value)} />
+                  <NumberControl label="达标误差阈值 rad" value={dynamicPidTargetErrorThreshold} min={0} max={0.2} step={0.001} onCommit={(value) => updateConfigField("control", "dynamic_pid_target_error_threshold", value)} />
                   <NumberControl label="速度倍率" value={dynamicPidSpeedMultiplier} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_speed_multiplier", value)} />
                   <NumberControl label="最小系数" value={dynamicPidMinCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_min_coefficient", value)} />
                   <NumberControl label="最大系数" value={dynamicPidMaxCoefficient} min={0} max={5} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_max_coefficient", value)} />
                   <NumberControl label="过渡锐度" value={dynamicPidTransitionSharpness} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_sharpness", value)} />
                   <NumberControl label="动态过渡中点" value={dynamicPidTransitionMidpoint} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_transition_midpoint", value)} />
                   <NumberControl label="最小数据量" value={dynamicPidMinimumDataCount} min={0} max={60} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_minimum_data_count", value)} />
-                  <NumberControl label="误差变化容限" value={dynamicPidErrorChangeTolerance} min={0} max={100} step={0.5} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
+                  <NumberControl label="误差变化容限 rad" value={dynamicPidErrorChangeTolerance} min={0} max={0.2} step={0.001} onCommit={(value) => updateConfigField("control", "dynamic_pid_error_change_tolerance", value)} />
                   <NumberControl label="平滑因子" value={dynamicPidSmoothingFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_smoothing_factor", value)} />
                   <NumberControl label="瞄准高度比例" value={dynamicPidAimRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_aim_ratio", Math.round(value))} />
+                  <NumberControl label="FOV 角度" value={dynamicPidFovDeg} min={1} max={179} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_fov_deg", value)} />
+                  <NumberControl label="X 每圈 counts" value={dynamicPidC360X} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "dynamic_pid_counts_per_revolution_x", value)} />
+                  <NumberControl label="Y 每圈 counts" value={dynamicPidC360Y} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "dynamic_pid_counts_per_revolution_y", value)} />
+                  <NumberControl label="控制频率 Hz" value={dynamicPidControlHz} min={1} max={240} step={1} onCommit={(value) => updateConfigField("control", "dynamic_pid_control_hz", value)} />
+                  <NumberControl label="目标中心滤波" value={dynamicPidEmaAlpha} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "dynamic_pid_ema_alpha", value)} />
                 </>
               ) : isolatedMode ? (
                 <>

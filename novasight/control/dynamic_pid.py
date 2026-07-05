@@ -19,14 +19,14 @@ class DynamicPidAxis:
     proportional_gain: float
     integral_gain: float
     derivative_gain: float
-    target_error_threshold: float = 4.0
+    target_error_threshold: float = 0.016
     speed_multiplier: float = 1.0
     min_coefficient: float = 1.6
     max_coefficient: float = 2.7
     transition_sharpness: float = 5.0
     dynamic_transition_midpoint: float = 0.0
     minimum_data_count: int = 2
-    error_change_tolerance: int = 3
+    error_change_tolerance: float = 0.012
     smoothing_factor: float = 1.0
 
     total_output: float = 0.0
@@ -185,17 +185,22 @@ class DynamicPidConfig:
     kp_x: float = 0.35
     kp_y: float = 0.24
     ki: float = 0.0
-    kd: float = 0.1
-    target_error_threshold: float = 4.0
+    kd: float = 0.0
+    target_error_threshold: float = 0.016
     speed_multiplier: float = 1.0
     min_coefficient: float = 1.6
     max_coefficient: float = 2.7
     transition_sharpness: float = 5.0
     dynamic_transition_midpoint: float = 0.0
     minimum_data_count: int = 2
-    error_change_tolerance: int = 3
+    error_change_tolerance: float = 0.012
     smoothing_factor: float = 1.0
     aim_ratio: float = 40.0
+    fov_deg: float = 105.0
+    counts_per_revolution_x: float = 9980.0
+    counts_per_revolution_y: float = 9980.0
+    control_hz: float = 60.0
+    ema_alpha: float = 0.45
     move_kind: str = "raw"
     move_ms: int = 0
     trace_ms: int = 0
@@ -208,6 +213,7 @@ class DynamicPidMouseStrategy:
         self.axis_y = _axis_from_config(self.config, axis="y")
         self._last_s = 0.0
         self._last_capture_ts_ns: int | None = None
+        self._last_filtered_aim: tuple[float, float] | None = None
 
     def calculate(
         self,
@@ -217,19 +223,31 @@ class DynamicPidMouseStrategy:
     ) -> MoveCommand:
         raw = box_input.raw or {}
         target_key = str(raw.get("target_key") or "")
-        dt, dt_source = self._resolve_delta_time(raw)
+        observed_dt, observed_dt_source = self._resolve_delta_time(raw)
+        control_hz = max(1.0, float(self.config.control_hz))
+        dt = 1.0 / control_hz
         center_x, center_y = current_pos
-        aim_x, aim_y = _aim_point(target, self.config.aim_ratio)
-        roi_error_x = float(aim_x - center_x)
-        roi_error_y_up_positive = float(center_y - aim_y)
-        recent_target_width = max(1.0, float(target.w))
-        image_size = max(1.0, center_x * 2.0)
-        raw_output_x = self.axis_x.control_loop(roi_error_x, dt, recent_target_width, image_size)
-        raw_output_y = self.axis_y.control_loop(roi_error_y_up_positive, dt, recent_target_width, image_size)
+        raw_aim_x, raw_aim_y = _aim_point(target, self.config.aim_ratio)
+        aim_x, aim_y = self._filter_aim(raw_aim_x, raw_aim_y)
+        error_x_px = float(aim_x - center_x)
+        error_y_px = float(aim_y - center_y)
+        fov_deg = min(179.0, max(1.0, float(self.config.fov_deg)))
+        fov_rad = math.radians(fov_deg)
+        roi_width_px = max(1.0, center_x * 2.0)
+        focal_px = max(1e-6, (roi_width_px * 0.5) / math.tan(fov_rad * 0.5))
+        error_x_rad = math.atan(error_x_px / focal_px)
+        error_y_rad = math.atan(error_y_px / focal_px)
+        target_width_rad = max(1e-6, 2.0 * math.atan(max(1.0, float(target.w)) * 0.5 / focal_px))
+        pid_output_x_rad = self.axis_x.control_loop(error_x_rad, dt, target_width_rad, fov_rad)
+        pid_output_y_rad = self.axis_y.control_loop(error_y_rad, dt, target_width_rad, fov_rad)
+        counts_per_revolution_x = max(1.0, float(self.config.counts_per_revolution_x))
+        counts_per_revolution_y = max(1.0, float(self.config.counts_per_revolution_y))
+        output_x_counts = pid_output_x_rad / (2.0 * math.pi) * counts_per_revolution_x
+        output_y_counts = pid_output_y_rad / (2.0 * math.pi) * counts_per_revolution_y
         move_kind = self.config.move_kind if self.config.move_kind in MOVE_KINDS else "raw"
         return MoveCommand(
-            dx=raw_output_x,
-            dy=raw_output_y,
+            dx=output_x_counts,
+            dy=output_y_counts,
             confidence=float(getattr(target, "score", 1.0)),
             reason="dynamic pid mouse strategy",
             move_kind=move_kind,
@@ -238,24 +256,43 @@ class DynamicPidMouseStrategy:
             debug={
                 "stage": "dynamic_pid_pipeline",
                 "algorithm": "dynamic_pid",
-                "coordinate_y": "cartesian_up_positive",
+                "unit_pipeline": "bbox_px_to_angle_rad_to_counts",
+                "coordinate_y": "image_down_positive_before_executor",
                 "aim_ratio": self.config.aim_ratio,
+                "raw_aim_x": raw_aim_x,
+                "raw_aim_y": raw_aim_y,
                 "aim_x": aim_x,
                 "aim_y": aim_y,
-                "raw_px_x": roi_error_x,
-                "raw_px_y": roi_error_y_up_positive,
-                "pid_error_x": roi_error_x,
-                "pid_error_y": roi_error_y_up_positive,
-                "recent_target_width": recent_target_width,
+                "ema_alpha": self.config.ema_alpha,
+                "error_x_px": error_x_px,
+                "error_y_px": error_y_px,
+                "error_x_rad": error_x_rad,
+                "error_y_rad": error_y_rad,
+                "pid_error_x": error_x_rad,
+                "pid_error_y": error_y_rad,
+                "recent_target_width_px": max(1.0, float(target.w)),
+                "recent_target_width_rad": target_width_rad,
+                "fov_deg": fov_deg,
+                "fov_rad": fov_rad,
+                "focal_px": focal_px,
+                "counts_per_revolution_x": counts_per_revolution_x,
+                "counts_per_revolution_y": counts_per_revolution_y,
+                "control_hz": control_hz,
                 "dt_ms": dt * 1000.0,
-                "dt_source": dt_source,
+                "dt_source": "fixed_control_hz",
+                "observed_dt_ms": observed_dt * 1000.0,
+                "observed_dt_source": observed_dt_source,
                 "frame_id": raw.get("frame_id"),
                 "capture_ts_ns": raw.get("capture_ts_ns"),
                 "target_key": target_key,
-                "target_extent": recent_target_width,
-                "image_size": image_size,
-                "raw_output_x": raw_output_x,
-                "raw_output_y": raw_output_y,
+                "target_extent": target_width_rad,
+                "image_size": fov_rad,
+                "pid_output_x_rad": pid_output_x_rad,
+                "pid_output_y_rad": pid_output_y_rad,
+                "output_x_counts": output_x_counts,
+                "output_y_counts": output_y_counts,
+                "raw_output_x": output_x_counts,
+                "raw_output_y": output_y_counts,
                 "x_axis": self.axis_x.debug(),
                 "y_axis": self.axis_y.debug(),
                 "p_x": self.axis_x.proportional,
@@ -273,6 +310,20 @@ class DynamicPidMouseStrategy:
         self.axis_y.reset()
         self._last_s = 0.0
         self._last_capture_ts_ns = None
+        self._last_filtered_aim = None
+
+    def _filter_aim(self, aim_x: float, aim_y: float) -> tuple[float, float]:
+        alpha = max(0.0, min(1.0, float(self.config.ema_alpha)))
+        previous = self._last_filtered_aim
+        if previous is None or alpha <= 0.0:
+            filtered = (float(aim_x), float(aim_y))
+        else:
+            filtered = (
+                alpha * float(aim_x) + (1.0 - alpha) * previous[0],
+                alpha * float(aim_y) + (1.0 - alpha) * previous[1],
+            )
+        self._last_filtered_aim = filtered
+        return filtered
 
     def _resolve_delta_time(self, raw: dict[str, object]) -> tuple[float, str]:
         capture_ts_ns = raw.get("capture_ts_ns")
@@ -305,7 +356,7 @@ def _axis_from_config(config: DynamicPidConfig, *, axis: str) -> DynamicPidAxis:
         transition_sharpness=config.transition_sharpness,
         dynamic_transition_midpoint=config.dynamic_transition_midpoint,
         minimum_data_count=int(config.minimum_data_count),
-        error_change_tolerance=int(config.error_change_tolerance),
+        error_change_tolerance=float(config.error_change_tolerance),
         smoothing_factor=config.smoothing_factor,
     )
 

@@ -152,17 +152,22 @@ class ControlConfig:
     dynamic_pid_kp_x: float = 0.35
     dynamic_pid_kp_y: float = 0.24
     dynamic_pid_ki: float = 0.0
-    dynamic_pid_kd: float = 0.1
-    dynamic_pid_target_error_threshold: float = 4.0
+    dynamic_pid_kd: float = 0.0
+    dynamic_pid_target_error_threshold: float = 0.016
     dynamic_pid_speed_multiplier: float = 1.0
     dynamic_pid_min_coefficient: float = 1.6
     dynamic_pid_max_coefficient: float = 2.7
     dynamic_pid_transition_sharpness: float = 5.0
     dynamic_pid_transition_midpoint: float = 0.0
     dynamic_pid_minimum_data_count: float = 2.0
-    dynamic_pid_error_change_tolerance: float = 3.0
+    dynamic_pid_error_change_tolerance: float = 0.012
     dynamic_pid_smoothing_factor: float = 1.0
     dynamic_pid_aim_ratio: float = 40.0
+    dynamic_pid_fov_deg: float = 105.0
+    dynamic_pid_counts_per_revolution_x: float = 9980.0
+    dynamic_pid_counts_per_revolution_y: float = 9980.0
+    dynamic_pid_control_hz: float = 60.0
+    dynamic_pid_ema_alpha: float = 0.45
 
 
 @dataclass
@@ -272,9 +277,6 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(control, dict):
         control = dict(control)
         for key in (
-            "dynamic_pid_fov_deg",
-            "dynamic_pid_counts_per_revolution_x",
-            "dynamic_pid_counts_per_revolution_y",
             "dynamic_pid_error_mode",
             "dynamic_pid_target_extent_mode",
             "dynamic_pid_y_sign",
@@ -388,6 +390,11 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "dynamic_pid_error_change_tolerance",
         "dynamic_pid_smoothing_factor",
         "dynamic_pid_aim_ratio",
+        "dynamic_pid_fov_deg",
+        "dynamic_pid_counts_per_revolution_x",
+        "dynamic_pid_counts_per_revolution_y",
+        "dynamic_pid_control_hz",
+        "dynamic_pid_ema_alpha",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
@@ -411,6 +418,16 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.dynamic_pid_smoothing_factor' must be <= 1")
     if cfg.control.dynamic_pid_aim_ratio > 100:
         raise ValueError("runtime config key 'control.dynamic_pid_aim_ratio' must be <= 100")
+    if cfg.control.dynamic_pid_fov_deg <= 0 or cfg.control.dynamic_pid_fov_deg >= 180:
+        raise ValueError("runtime config key 'control.dynamic_pid_fov_deg' must be > 0 and < 180")
+    if cfg.control.dynamic_pid_counts_per_revolution_x < 1:
+        raise ValueError("runtime config key 'control.dynamic_pid_counts_per_revolution_x' must be >= 1")
+    if cfg.control.dynamic_pid_counts_per_revolution_y < 1:
+        raise ValueError("runtime config key 'control.dynamic_pid_counts_per_revolution_y' must be >= 1")
+    if cfg.control.dynamic_pid_control_hz < 1:
+        raise ValueError("runtime config key 'control.dynamic_pid_control_hz' must be >= 1")
+    if cfg.control.dynamic_pid_ema_alpha > 1:
+        raise ValueError("runtime config key 'control.dynamic_pid_ema_alpha' must be <= 1")
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     cfg_path = Path(path)
