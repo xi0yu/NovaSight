@@ -56,6 +56,9 @@ class ExecutorRegistry:
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
         default = config.control.output_mode or config.executor.default
+        move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
+        move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
+        movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
         return cls.with_builtin_executors(
             config=config,
             default=default,
@@ -65,7 +68,7 @@ class ExecutorRegistry:
                 min_confidence=config.control.min_confidence,
             ),
             coalescer=ControlCommandCoalescer(
-                min_interval_s=max(0.0, config.control.command_interval_ms / 1000.0)
+                min_interval_s=max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
             ),
             y_limiter=YAxisWindowLimiter(
                 window_s=max(0.0, config.control.y_rate_window_ms / 1000.0),
@@ -88,8 +91,9 @@ class ExecutorRegistry:
                         "selected_executor": self.selected,
                         "requested_dx": float(intent.dx),
                         "requested_dy": float(intent.dy),
-                        "pending_dx": float(getattr(self.coalescer, "_pending_dx", 0.0)),
-                        "pending_dy": float(getattr(self.coalescer, "_pending_dy", 0.0)),
+                        "pending_dx": float(getattr(getattr(self.coalescer, "_pending_intent", None), "dx", 0.0)),
+                        "pending_dy": float(getattr(getattr(self.coalescer, "_pending_intent", None), "dy", 0.0)),
+                        "dropped_since_emit": int(getattr(self.coalescer, "_dropped_since_emit", 0)),
                         "min_interval_ms": float(self.coalescer.min_interval_s * 1000.0),
                     },
                 )

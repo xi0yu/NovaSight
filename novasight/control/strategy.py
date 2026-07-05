@@ -877,28 +877,33 @@ class ControlCommandCoalescer:
     def __init__(self, *, min_interval_s: float = 0.001) -> None:
         self.min_interval_s = min_interval_s
         self._last_emit_s = 0.0
-        self._pending_dx = 0.0
-        self._pending_dy = 0.0
+        self._pending_intent: ControlIntent | None = None
+        self._dropped_since_emit = 0
 
     def push(self, intent: ControlIntent, now_s: float | None = None) -> ControlIntent | None:
         now = time.monotonic() if now_s is None else now_s
-        self._pending_dx += intent.dx
-        self._pending_dy += intent.dy
         if now - self._last_emit_s < self.min_interval_s:
+            self._pending_intent = intent
+            self._dropped_since_emit += 1
             return None
-        merged = ControlIntent(
-            dx=self._pending_dx,
-            dy=self._pending_dy,
-            action=intent.action,
-            confidence=intent.confidence,
-            reason="coalesced control command",
-            source_id=intent.source_id,
-            move_kind=intent.move_kind,
-            move_ms=intent.move_ms,
-            trace_ms=intent.trace_ms,
-            bezier_ctrl=intent.bezier_ctrl,
+        latest = self._pending_intent or intent
+        result = ControlIntent(
+            dx=latest.dx,
+            dy=latest.dy,
+            action=latest.action,
+            confidence=latest.confidence,
+            reason=(
+                f"latest-frame throttled control command; dropped={self._dropped_since_emit}"
+                if self._dropped_since_emit
+                else latest.reason
+            ),
+            source_id=latest.source_id,
+            move_kind=latest.move_kind,
+            move_ms=latest.move_ms,
+            trace_ms=latest.trace_ms,
+            bezier_ctrl=latest.bezier_ctrl,
         )
-        self._pending_dx = 0.0
-        self._pending_dy = 0.0
+        self._pending_intent = None
+        self._dropped_since_emit = 0
         self._last_emit_s = now
-        return merged
+        return result
