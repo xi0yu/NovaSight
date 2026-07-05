@@ -46,6 +46,7 @@ class RuntimeTargetSelector:
         *,
         min_confidence: float,
         fov_ratio: float,
+        aim_ratio: float = 50.0,
         class_filter: str = "all",
         class_priority: Iterable[int] = (),
         sticky_bias: float = 0.25,
@@ -77,7 +78,7 @@ class RuntimeTargetSelector:
                 "min_confidence": float(min_confidence),
                 "class_filter": str(class_filter),
                 "reason": "no candidate after confidence/class filter",
-                "raw": self._candidate_debug(raw_candidates, context),
+                "raw": self._candidate_debug(raw_candidates, context, aim_ratio=aim_ratio),
             }
             return self._lost_or_clear(
                 lost_grace_frames,
@@ -88,11 +89,12 @@ class RuntimeTargetSelector:
 
         center_x = context.width / 2
         center_y = context.height / 2
+        aim_ratio = max(0.0, min(100.0, float(aim_ratio)))
         radius = min(context.width, context.height) * max(0.0, min(1.0, fov_ratio))
         inside_fov = [
             item
             for item in candidates
-            if self._distance(item, center_x, center_y) <= radius
+            if self._aim_distance(item, center_x, center_y, aim_ratio) <= radius
         ]
         if not inside_fov:
             self._lost_count += 1 if self._locked is not None else 0
@@ -102,10 +104,11 @@ class RuntimeTargetSelector:
                 "inside_fov": 0,
                 "fov_radius": float(radius),
                 "fov_ratio": float(fov_ratio),
+                "aim_ratio": float(aim_ratio),
                 "min_confidence": float(min_confidence),
                 "class_filter": str(class_filter),
                 "reason": "no candidate inside fov",
-                "candidates": self._candidate_debug(candidates, context),
+                "candidates": self._candidate_debug(candidates, context, aim_ratio=aim_ratio),
             }
             return self._lost_or_clear(
                 lost_grace_frames,
@@ -120,7 +123,7 @@ class RuntimeTargetSelector:
         best = min(
             inside_fov,
             key=lambda item: (
-                self._selection_distance(item, locked, sticky_bias, center_x, center_y),
+                self._selection_distance(item, locked, sticky_bias, center_x, center_y, aim_ratio),
                 self._priority_rank(item, priority),
                 -float(item.score),
             ),
@@ -134,12 +137,13 @@ class RuntimeTargetSelector:
             "inside_fov": len(inside_fov),
             "fov_radius": float(radius),
             "fov_ratio": float(fov_ratio),
+            "aim_ratio": float(aim_ratio),
             "min_confidence": float(min_confidence),
             "class_filter": str(class_filter),
             "sticky_bias": float(sticky_bias),
             "lock_enabled": bool(lock_enabled),
-            "selected": self._candidate_debug([best], context)[0] if best is not None else None,
-            "candidates": self._candidate_debug(inside_fov, context),
+            "selected": self._candidate_debug([best], context, aim_ratio=aim_ratio)[0] if best is not None else None,
+            "candidates": self._candidate_debug(inside_fov, context, aim_ratio=aim_ratio),
         }
         return TargetSelection(
             target=best,
@@ -149,7 +153,7 @@ class RuntimeTargetSelector:
             inside_fov=len(inside_fov),
             locked=selected_locked,
             priority_rank=self._priority_rank(best, priority),
-            distance_px=self._distance(best, center_x, center_y),
+            distance_px=self._aim_distance(best, center_x, center_y, aim_ratio),
         )
 
     def _lost_or_clear(
@@ -225,8 +229,9 @@ class RuntimeTargetSelector:
         sticky_bias: float,
         center_x: float,
         center_y: float,
+        aim_ratio: float,
     ) -> float:
-        distance = self._distance(target, center_x, center_y)
+        distance = self._aim_distance(target, center_x, center_y, aim_ratio)
         if locked is None or sticky_bias <= 0:
             return distance
         if self._target_key(target) != self._target_key(locked):
@@ -257,7 +262,16 @@ class RuntimeTargetSelector:
     def _distance(target: Target, center_x: float, center_y: float) -> float:
         return ((float(target.cx) - center_x) ** 2 + (float(target.cy) - center_y) ** 2) ** 0.5
 
-    def _candidate_debug(self, candidates: list[Target], context: FrameContext) -> list[dict]:
+    @staticmethod
+    def _aim_y(target: Target, aim_ratio: float) -> float:
+        point_y = getattr(target, "point_y", None)
+        ratio = max(0.0, min(100.0, aim_ratio)) / 100.0
+        return float(point_y(ratio)) if callable(point_y) else float(target.y) + float(target.h) * ratio
+
+    def _aim_distance(self, target: Target, center_x: float, center_y: float, aim_ratio: float) -> float:
+        return ((float(target.cx) - center_x) ** 2 + (self._aim_y(target, aim_ratio) - center_y) ** 2) ** 0.5
+
+    def _candidate_debug(self, candidates: list[Target], context: FrameContext, *, aim_ratio: float) -> list[dict]:
         center_x = context.width / 2
         center_y = context.height / 2
         return [
@@ -267,6 +281,9 @@ class RuntimeTargetSelector:
                 "cx": float(getattr(item, "cx", 0.0)),
                 "cy": float(getattr(item, "cy", 0.0)),
                 "distance_px": self._distance(item, center_x, center_y),
+                "aim_x": float(getattr(item, "cx", 0.0)),
+                "aim_y": self._aim_y(item, aim_ratio),
+                "aim_distance_px": self._aim_distance(item, center_x, center_y, aim_ratio),
             }
             for item in candidates[:12]
         ]

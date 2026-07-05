@@ -732,6 +732,7 @@ class RuntimeService:
             context,
             min_confidence=float(getattr(self.config.control, "min_confidence", 0.0)),
             fov_ratio=float(getattr(self.config.control, "fov_ratio", 0.28)),
+            aim_ratio=float(getattr(self.config.control, "aim_ratio", 40.0)),
             class_filter=str(getattr(self.config.inference, "detection_class_filter", "all")),
             class_priority=self._class_priority(),
             sticky_bias=float(getattr(self.config.control, "target_sticky_bias", 0.25)),
