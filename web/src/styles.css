@@ -4328,6 +4328,65 @@ tbody tr:hover {
   color: #11863b;
 }
 
+.module-switch {
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+  margin: 8px 0 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.module-switch span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.module-switch b {
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
+.module-switch small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.module-switch i {
+  min-width: 34px;
+  border-radius: 999px;
+  background: #e9ebef;
+  color: #5e6672;
+  padding: 5px 8px;
+  font-style: normal;
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-align: center;
+}
+
+.module-switch.on {
+  border-color: rgba(255, 64, 88, 0.34);
+  background: rgba(255, 64, 88, 0.06);
+}
+
+.module-switch.on i {
+  background: var(--accent-red);
+  color: #11151f;
+}
+
 .model-primary-summary {
   display: flex;
   flex-wrap: wrap;

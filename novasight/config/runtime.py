@@ -108,7 +108,10 @@ class ControlConfig:
     pid_move_limit: float = 120.0
     kp_x_move_max: float = 150.0
     kp_y_move_max: float = 30.0
+    prediction_enabled: bool = True
     prediction_factor: float = 0.1
+    derivative_enabled: bool = True
+    y_down_enabled: bool = False
     command_interval_ms: float = 1.0
     y_rate_window_ms: float = 10.0
     y_rate_max_counts: float = 0.0

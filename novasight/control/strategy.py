@@ -61,7 +61,9 @@ class PIDStrategy:
         move_limit_x: float | None = None,
         move_limit_y: float | None = None,
         derivative_alpha: float = 0.35,
+        prediction_enabled: bool = True,
         prediction_factor: float = 0.1,
+        derivative_enabled: bool = True,
         prediction_stationary_px: float = 1.5,
         prediction_moving_px: float = 12.0,
         aim_ratio: float = 40.0,
@@ -90,7 +92,9 @@ class PIDStrategy:
             self.move_limit if move_limit_y is None else abs(move_limit_y)
         )
         self.derivative_alpha = max(0.0, min(1.0, derivative_alpha))
+        self.prediction_enabled = bool(prediction_enabled)
         self.prediction_factor = max(0.0, prediction_factor)
+        self.derivative_enabled = bool(derivative_enabled)
         self.prediction_stationary_px = max(0.0, prediction_stationary_px)
         self.prediction_moving_px = max(
             self.prediction_stationary_px + 1.0,
@@ -172,8 +176,8 @@ class PIDStrategy:
         py = self.kp_y * ey
         ix = 0.0
         iy = 0.0
-        raw_dx_term = self.kd * dx_d
-        raw_dy_term = self.kd * dy_d
+        raw_dx_term = self.kd * dx_d if self.derivative_enabled else 0.0
+        raw_dy_term = self.kd * dy_d if self.derivative_enabled else 0.0
         dx_term = self._clamp_derivative_term(raw_dx_term, self.move_limit_x)
         dy_term = self._clamp_derivative_term(raw_dy_term, self.move_limit_y)
         dx = px + ix + dx_term
@@ -182,6 +186,8 @@ class PIDStrategy:
             **projection,
             "stage": "pid_counts_pipeline",
             "coordinate_y": "cartesian_up_positive",
+            "prediction_enabled": self.prediction_enabled,
+            "derivative_enabled": self.derivative_enabled,
             "raw_px_x": ex_px,
             "raw_px_y": ey_px,
             "aim_ratio": self.aim_ratio,
@@ -270,7 +276,7 @@ class PIDStrategy:
         frame_age_ms: float,
     ) -> tuple[tuple[float, float], float]:
         now_s = time.monotonic()
-        if self._last_center is None or self.prediction_factor <= 0:
+        if self._last_center is None or not self.prediction_enabled or self.prediction_factor <= 0:
             self._last_center = center
             self._last_center_s = now_s
             self._last_prediction_debug = {

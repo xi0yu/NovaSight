@@ -71,6 +71,7 @@ class ExecutorRegistry:
                 min_interval_s=max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
             ),
             y_limiter=YAxisWindowLimiter(
+                enabled=bool(config.control.y_down_enabled),
                 window_s=max(0.0, config.control.y_rate_window_ms / 1000.0),
                 max_counts=max(0.0, config.control.y_rate_max_counts),
             ),
@@ -151,14 +152,15 @@ class ExecutorRegistry:
 
 
 class YAxisWindowLimiter:
-    def __init__(self, *, window_s: float, max_counts: float) -> None:
+    def __init__(self, *, enabled: bool, window_s: float, max_counts: float) -> None:
+        self.enabled = bool(enabled)
         self.window_s = max(0.0, window_s)
         self.max_counts = max(0.0, max_counts)
         self._last_drop_s = 0.0
 
     def apply(self, output: ControlOutput, now_s: float | None = None) -> tuple[ControlOutput, dict[str, Any]]:
         now = time.monotonic() if now_s is None else now_s
-        if self.window_s <= 0 or self.max_counts <= 0 or not output.accepted:
+        if not self.enabled or self.window_s <= 0 or self.max_counts <= 0 or not output.accepted:
             return output, {
                 "enabled": False,
                 "window_ms": self.window_s * 1000.0,

@@ -49,7 +49,10 @@ control:
   pid_kd: 0.1
   kp_x_move_max: 150
   kp_y_move_max: 30
+  prediction_enabled: true
   prediction_factor: 0.1
+  derivative_enabled: true
+  y_down_enabled: false
   # 0 disables Y-axis down compensation. Example: window=10, counts=8 means add -8 Y counts every 10ms.
   y_rate_window_ms: 10
   y_rate_max_counts: 0

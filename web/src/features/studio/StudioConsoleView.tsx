@@ -334,7 +334,10 @@ export function StudioConsoleView({
   const pidKd = readNumber(controlConfig.pid_kd, 0.1);
   const kpXMoveMax = readNumber(controlConfig.kp_x_move_max, 150);
   const kpYMoveMax = readNumber(controlConfig.kp_y_move_max, 30);
+  const predictionEnabled = controlConfig.prediction_enabled !== false;
   const predictionFactor = readNumber(controlConfig.prediction_factor, 0.1);
+  const derivativeEnabled = controlConfig.derivative_enabled !== false;
+  const yDownEnabled = controlConfig.y_down_enabled === true;
   const yRateWindowMs = readNumber(controlConfig.y_rate_window_ms, 10);
   const yRateMaxCounts = readNumber(controlConfig.y_rate_max_counts, 0);
   const aimYRatio = readNumber(controlConfig.aim_ratio, 40);
@@ -1418,19 +1421,41 @@ export function StudioConsoleView({
                 检测短暂丢失时继续沿用最近目标；超过容忍帧数后释放目标，避免误跟踪。
               </p>
               <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
-              <label>鼠标移动算法</label>
-              <NumberControl label="Y 下压间隔 ms" value={yRateWindowMs} min={0} max={1000} step={1} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
-              <NumberControl label="Y 每次下压 counts" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
+
+              <label>基础追踪</label>
               <NumberControl label="瞄准高度 aim_y_ratio" value={aimYRatio} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "aim_ratio", Math.round(value))} />
               <NumberControl label="kp_x" value={pidKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_x", value)} />
               <NumberControl label="kp_y" value={pidKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kp_y", value)} />
-              <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
-              <NumberControl label="预测" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
-              <p className="console-field-hint">
-                预测按真实帧龄补偿：目标速度 × 当前帧龄 × 预测系数。帧龄越高，补偿越明显；目标切换会重置预测状态。
-              </p>
               <NumberControl label="kp_x_move_max" value={kpXMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_x_move_max", value)} />
               <NumberControl label="kp_y_move_max" value={kpYMoveMax} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "kp_y_move_max", value)} />
+
+              <label>预测补偿</label>
+              <ModuleSwitch
+                label="启用预测"
+                detail="目标速度 × 帧龄 × 预测系数"
+                enabled={predictionEnabled}
+                onToggle={(enabled) => void updateConfigField("control", "prediction_enabled", enabled)}
+              />
+              <NumberControl label="预测系数" value={predictionFactor} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_factor", value)} />
+
+              <label>D 阻尼</label>
+              <ModuleSwitch
+                label="启用 D 项"
+                detail="抑制过冲；排查抖动时可关闭"
+                enabled={derivativeEnabled}
+                onToggle={(enabled) => void updateConfigField("control", "derivative_enabled", enabled)}
+              />
+              <NumberControl label="kd" value={pidKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "pid_kd", value)} />
+
+              <label>Y 下压补偿</label>
+              <ModuleSwitch
+                label="启用 Y 下压"
+                detail="按间隔给最终 dy 追加下压 counts"
+                enabled={yDownEnabled}
+                onToggle={(enabled) => void updateConfigField("control", "y_down_enabled", enabled)}
+              />
+              <NumberControl label="Y 下压间隔 ms" value={yRateWindowMs} min={0} max={1000} step={1} onCommit={(value) => updateConfigField("control", "y_rate_window_ms", value)} />
+              <NumberControl label="Y 每次下压 counts" value={yRateMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "y_rate_max_counts", value)} />
             </div>
             <div className="console-card">
               <h2 className="console-title">控制量反馈</h2>
@@ -1455,6 +1480,8 @@ export function StudioConsoleView({
                 <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
                 <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
                 <span>动作门控</span><b>{`${formatNumber(controlPipeline.motion_coef_x, 2)} / ${formatNumber(controlPipeline.motion_coef_y, 2)}`}</b>
+                <span>预测开关</span><b>{controlPipeline.prediction_enabled === false ? "关闭" : "开启"}</b>
+                <span>D 开关</span><b>{controlPipeline.derivative_enabled === false ? "关闭" : "开启"}</b>
                 <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
                 <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
                 <span>D 原始值</span><b>{`${formatNumber(controlPipeline.raw_d_x, 1)} / ${formatNumber(controlPipeline.raw_d_y, 1)}`}</b>
@@ -1928,6 +1955,32 @@ function TextControl({
 
 function Metric({ title, value, small }: { title: string; value: string; small: string }) {
   return <div className="console-metric">{title}<br />{value}<small>{small}</small></div>;
+}
+
+function ModuleSwitch({
+  label,
+  detail,
+  enabled,
+  onToggle
+}: {
+  label: string;
+  detail: string;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+}) {
+  return (
+    <button
+      className={enabled ? "module-switch on" : "module-switch"}
+      onClick={() => onToggle(!enabled)}
+      type="button"
+    >
+      <span>
+        <b>{label}</b>
+        <small>{detail}</small>
+      </span>
+      <i>{enabled ? "开" : "关"}</i>
+    </button>
+  );
 }
 
 type PreviewDetection = {
