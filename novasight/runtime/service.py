@@ -888,6 +888,8 @@ class RuntimeService:
                 counts_per_360=config.control.experimental_angle_counts_per_360,
                 max_step_counts=config.control.experimental_angle_max_step_counts,
                 control_hz=config.control.experimental_angle_control_hz,
+                sign_x=config.control.experimental_angle_sign_x,
+                sign_y=config.control.experimental_angle_sign_y,
                 capture_width=config.capture.width,
                 capture_height=config.capture.height,
                 move_kind=config.control.move_kind,

@@ -158,6 +158,8 @@ class ControlConfig:
     experimental_angle_counts_per_360: float = 9980.0
     experimental_angle_max_step_counts: float = 80.0
     experimental_angle_control_hz: float = 60.0
+    experimental_angle_sign_x: float = -1.0
+    experimental_angle_sign_y: float = -1.0
     dynamic_pid_kp_x: float = 0.35
     dynamic_pid_kp_y: float = 0.24
     dynamic_pid_ki: float = 0.0
@@ -439,6 +441,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.experimental_angle_max_step_counts' must be >= 1")
     if cfg.control.experimental_angle_control_hz < 1:
         raise ValueError("runtime config key 'control.experimental_angle_control_hz' must be >= 1")
+    if cfg.control.experimental_angle_sign_x not in {-1, 1, -1.0, 1.0}:
+        raise ValueError("runtime config key 'control.experimental_angle_sign_x' must be -1 or 1")
+    if cfg.control.experimental_angle_sign_y not in {-1, 1, -1.0, 1.0}:
+        raise ValueError("runtime config key 'control.experimental_angle_sign_y' must be -1 or 1")
     if cfg.control.dynamic_pid_kd < -1 or cfg.control.dynamic_pid_kd > 1:
         raise ValueError("runtime config key 'control.dynamic_pid_kd' must be >= -1 and <= 1")
     if cfg.control.dynamic_pid_smoothing_factor > 1:

@@ -111,7 +111,9 @@ const EXPERIMENTAL_ANGLE_DEFAULTS = {
   experimental_angle_fov_x_deg: 105,
   experimental_angle_counts_per_360: 9980,
   experimental_angle_max_step_counts: 80,
-  experimental_angle_control_hz: 60
+  experimental_angle_control_hz: 60,
+  experimental_angle_sign_x: -1,
+  experimental_angle_sign_y: -1
 };
 
 const TRIGGER_BINDING_OPTIONS = [
@@ -463,6 +465,8 @@ export function StudioConsoleView({
   const experimentalAngleC360 = readNumber(controlConfig.experimental_angle_counts_per_360, 9980);
   const experimentalAngleMaxStep = readNumber(controlConfig.experimental_angle_max_step_counts, 80);
   const experimentalAngleControlHz = readNumber(controlConfig.experimental_angle_control_hz, 60);
+  const experimentalAngleSignX = readNumber(controlConfig.experimental_angle_sign_x, -1);
+  const experimentalAngleSignY = readNumber(controlConfig.experimental_angle_sign_y, -1);
   const hardwareKind = readString(hardwareConfig.kind, "none");
   const outputMode = readString(controlConfig.output_mode, "");
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -1685,6 +1689,8 @@ export function StudioConsoleView({
                   <NumberControl label="每圈 counts" value={experimentalAngleC360} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("control", "experimental_angle_counts_per_360", value)} />
                   <NumberControl label="单帧限幅 counts" value={experimentalAngleMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_step_counts", value)} />
                   <NumberControl label="控制频率 Hz" value={experimentalAngleControlHz} min={1} max={240} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_control_hz", value)} />
+                  <NumberControl label="X 输出方向" value={experimentalAngleSignX < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("control", "experimental_angle_sign_x", value < 0 ? -1 : 1)} />
+                  <NumberControl label="Y 输出方向" value={experimentalAngleSignY < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("control", "experimental_angle_sign_y", value < 0 ? -1 : 1)} />
                 </>
               ) : dynamicPidMode ? (
                 <>

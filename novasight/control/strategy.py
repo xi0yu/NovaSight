@@ -96,6 +96,8 @@ class ExperimentalAnglePidStrategy:
         counts_per_360: float = 9980.0,
         max_step_counts: float = 80.0,
         control_hz: float = 60.0,
+        sign_x: float = -1.0,
+        sign_y: float = -1.0,
         capture_width: float = 0.0,
         capture_height: float = 0.0,
         move_kind: str = "raw",
@@ -109,6 +111,8 @@ class ExperimentalAnglePidStrategy:
         self.counts_per_360 = max(1.0, counts_per_360)
         self.max_step_counts = max(1.0, max_step_counts)
         self.control_hz = max(1.0, control_hz)
+        self.sign_x = -1.0 if sign_x < 0 else 1.0
+        self.sign_y = -1.0 if sign_y < 0 else 1.0
         self.capture_width = max(0.0, capture_width)
         self.capture_height = max(0.0, capture_height)
         self.move_kind = move_kind if move_kind in MOVE_KINDS else "raw"
@@ -142,8 +146,10 @@ class ExperimentalAnglePidStrategy:
         out_x_rad = self.pid_x.update(error_x_rad, dt)
         out_y_rad = self.pid_y.update(error_y_rad, dt)
         counts_per_rad = self.counts_per_360 / (2.0 * math.pi)
-        dx = self._clamp(out_x_rad * counts_per_rad, self.max_step_counts)
-        dy = self._clamp(out_y_rad * counts_per_rad, self.max_step_counts)
+        raw_dx_counts = out_x_rad * counts_per_rad
+        raw_dy_counts = out_y_rad * counts_per_rad
+        dx = self._clamp(raw_dx_counts * self.sign_x, self.max_step_counts)
+        dy = self._clamp(raw_dy_counts * self.sign_y, self.max_step_counts)
         dx_i = int(round(dx))
         dy_i = int(round(dy))
         bezier_ctrl = _bezier_ctrl(dx_i, dy_i, self.bezier_curvature) if self.move_kind in {"bezier", "enc_bezier"} else None
@@ -185,6 +191,10 @@ class ExperimentalAnglePidStrategy:
                 "out_y_rad": out_y_rad,
                 "counts_per_360": self.counts_per_360,
                 "counts_per_rad": counts_per_rad,
+                "raw_dx_counts": raw_dx_counts,
+                "raw_dy_counts": raw_dy_counts,
+                "sign_x": self.sign_x,
+                "sign_y": self.sign_y,
                 "max_step_counts": self.max_step_counts,
                 "dt": dt,
                 "control_hz": self.control_hz,

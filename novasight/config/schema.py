@@ -165,6 +165,8 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.experimental_angle_counts_per_360", "label": "实验角度PID 每圈counts", "type": "float", "min": 1, "restart_required": False},
                     {"path": "control.experimental_angle_max_step_counts", "label": "实验角度PID 单帧限幅", "type": "float", "min": 1, "restart_required": False},
                     {"path": "control.experimental_angle_control_hz", "label": "实验角度PID 控制频率", "type": "float", "min": 1, "restart_required": False},
+                    {"path": "control.experimental_angle_sign_x", "label": "实验角度PID X方向", "type": "float", "restart_required": False},
+                    {"path": "control.experimental_angle_sign_y", "label": "实验角度PID Y方向", "type": "float", "restart_required": False},
                     {"path": "control.dynamic_pid_kp_x", "label": "动态PID Kp X", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.dynamic_pid_kp_y", "label": "动态PID Kp Y", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.dynamic_pid_ki", "label": "动态PID Ki", "type": "float", "min": 0, "restart_required": False},
