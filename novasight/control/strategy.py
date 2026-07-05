@@ -111,6 +111,7 @@ class PIDStrategy:
         self._ix = 0.0
         self._iy = 0.0
         self._last_error: tuple[float, float] | None = None
+        self._last_smoothed_error: tuple[float, float] | None = None
         self._last_derivative = (0.0, 0.0)
         self._last_center: tuple[float, float] | None = None
         self._last_s: float | None = None
@@ -121,15 +122,6 @@ class PIDStrategy:
         current_pos: tuple[float, float],
         box_input: BoxInputState,
     ) -> MoveCommand:
-        if not box_input.active:
-            self._reset_motion_state()
-            return MoveCommand(
-                0,
-                0,
-                0,
-                "hardware trigger inactive",
-                debug={"stage": "trigger", "coordinate_y": "cartesian_up_positive"},
-            )
         aim_center = aim_point(target, self.aim_ratio)
         predicted_center, prediction_weight = self._predict_center(aim_center)
         ex_px = predicted_center[0] - current_pos[0]
@@ -148,14 +140,22 @@ class PIDStrategy:
             dt = 1.0 / 60.0
         self._ix = max(-self.integral_limit, min(self.integral_limit, self._ix + ex * dt))
         self._iy = max(-self.integral_limit, min(self.integral_limit, self._iy + ey * dt))
+        if self._last_smoothed_error is None:
+            smooth_ex = ex
+            smooth_ey = ey
+        else:
+            alpha = self.derivative_alpha
+            smooth_ex = alpha * ex + (1 - alpha) * self._last_smoothed_error[0]
+            smooth_ey = alpha * ey + (1 - alpha) * self._last_smoothed_error[1]
         if self._last_error is None:
             raw_dx = raw_dy = 0.0
         else:
-            raw_dx = (ex - self._last_error[0]) / dt
-            raw_dy = (ey - self._last_error[1]) / dt
+            raw_dx = (smooth_ex - self._last_error[0]) / dt
+            raw_dy = (smooth_ey - self._last_error[1]) / dt
         dx_d = self.derivative_alpha * raw_dx + (1 - self.derivative_alpha) * self._last_derivative[0]
         dy_d = self.derivative_alpha * raw_dy + (1 - self.derivative_alpha) * self._last_derivative[1]
-        self._last_error = (ex, ey)
+        self._last_error = (smooth_ex, smooth_ey)
+        self._last_smoothed_error = (smooth_ex, smooth_ey)
         self._last_derivative = (dx_d, dy_d)
         px = self.kp_x * ex
         py = self.kp_y * ey
@@ -182,6 +182,8 @@ class PIDStrategy:
             "speed_note": "disabled: PID gain is the only intentional movement scale",
             "work_counts_x": ex,
             "work_counts_y": ey,
+            "smoothed_counts_x": smooth_ex,
+            "smoothed_counts_y": smooth_ey,
             "c360_x": self.counts_per_revolution_x,
             "c360_y": self.counts_per_revolution_y,
             "fov_deg": self.fov_deg,
@@ -246,6 +248,7 @@ class PIDStrategy:
         self._ix = 0.0
         self._iy = 0.0
         self._last_error = None
+        self._last_smoothed_error = None
         self._last_derivative = (0.0, 0.0)
         self._last_center = None
         self._last_s = None

@@ -465,8 +465,6 @@ class RuntimeService:
         aim_ratio = max(0.0, min(100.0, float(getattr(self.config.control, "aim_ratio", 40.0))))
         aim_x, aim_y = aim_point(target, aim_ratio)
         command = self.control_strategy.calculate(target, center, strategy_input)
-        if not box_input.active:
-            self._reset_control_motion_state()
         pipeline_debug = dict(command.debug)
         strategy_aim_x = pipeline_debug.get("aim_x")
         strategy_aim_y = pipeline_debug.get("aim_y")
@@ -522,6 +520,8 @@ class RuntimeService:
             "distance_px": selection.distance_px,
             "inside_fov": selection.inside_fov,
             "candidates": selection.candidates,
+            "bbox_age_ms": 0.0,
+            "is_stale": False,
         }
         self.last_control = {
             "frame_id": context.frame_id,
@@ -553,6 +553,8 @@ class RuntimeService:
             "trigger_raw": trigger_raw,
             "output_mode": output_mode,
             "will_emit": can_emit,
+            "bbox_age_ms": 0.0,
+            "is_stale": False,
         }
         self._log_control_decision(
             context=context,
