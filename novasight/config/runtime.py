@@ -154,6 +154,11 @@ class ControlConfig:
     experimental_angle_ki: float = 0.0
     experimental_angle_kd: float = 0.0
     experimental_angle_integral_limit: float = 0.0
+    experimental_angle_config_level: str = "basic"
+    experimental_angle_speed: float = 1.0
+    experimental_angle_smooth_factor: float = 0.0
+    experimental_angle_deadzone_px: float = 0.0
+    experimental_angle_derivative_filter: float = 1.0
     experimental_angle_fov_x_deg: float = 105.0
     experimental_angle_counts_per_360: float = 9980.0
     experimental_angle_max_step_counts: float = 80.0
@@ -410,6 +415,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "experimental_angle_kp_y",
         "experimental_angle_ki",
         "experimental_angle_integral_limit",
+        "experimental_angle_speed",
+        "experimental_angle_smooth_factor",
+        "experimental_angle_deadzone_px",
+        "experimental_angle_derivative_filter",
         "experimental_angle_fov_x_deg",
         "experimental_angle_counts_per_360",
         "experimental_angle_max_step_counts",
@@ -463,6 +472,12 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.isolated_fov_deg' must be > 0 and < 180")
     if cfg.control.experimental_angle_kd < -1 or cfg.control.experimental_angle_kd > 1:
         raise ValueError("runtime config key 'control.experimental_angle_kd' must be >= -1 and <= 1")
+    if cfg.control.experimental_angle_config_level not in {"basic", "advanced", "developer"}:
+        raise ValueError("runtime config key 'control.experimental_angle_config_level' must be basic, advanced, or developer")
+    if cfg.control.experimental_angle_smooth_factor > 0.95:
+        raise ValueError("runtime config key 'control.experimental_angle_smooth_factor' must be <= 0.95")
+    if cfg.control.experimental_angle_derivative_filter > 1:
+        raise ValueError("runtime config key 'control.experimental_angle_derivative_filter' must be <= 1")
     if cfg.control.experimental_angle_fov_x_deg <= 0 or cfg.control.experimental_angle_fov_x_deg >= 180:
         raise ValueError("runtime config key 'control.experimental_angle_fov_x_deg' must be > 0 and < 180")
     if cfg.control.experimental_angle_counts_per_360 < 1:

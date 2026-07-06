@@ -75,6 +75,11 @@ control:
   experimental_angle_ki: 0
   experimental_angle_kd: 0
   experimental_angle_integral_limit: 0
+  experimental_angle_config_level: basic
+  experimental_angle_speed: 1
+  experimental_angle_smooth_factor: 0
+  experimental_angle_deadzone_px: 0
+  experimental_angle_derivative_filter: 1
   experimental_angle_fov_x_deg: 105
   experimental_angle_counts_per_360: 9980
   experimental_angle_max_step_counts: 80

@@ -53,9 +53,11 @@ class _AnglePidAxis:
     ki: float = 0.0
     kd: float = 0.0
     integral_limit: float = 0.0
+    derivative_filter: float = 1.0
 
     integral: float = 0.0
     prev_error: float | None = None
+    prev_derivative: float = 0.0
     p_term: float = 0.0
     i_term: float = 0.0
     d_term: float = 0.0
@@ -71,6 +73,9 @@ class _AnglePidAxis:
             derivative = 0.0
         else:
             derivative = (error_rad - self.prev_error) / dt
+        alpha = max(0.0, min(1.0, self.derivative_filter))
+        derivative = alpha * derivative + (1.0 - alpha) * self.prev_derivative
+        self.prev_derivative = derivative
         self.d_term = self.kd * derivative
         self.prev_error = error_rad
         return self.p_term + self.i_term + self.d_term
@@ -78,6 +83,7 @@ class _AnglePidAxis:
     def reset(self) -> None:
         self.integral = 0.0
         self.prev_error = None
+        self.prev_derivative = 0.0
         self.p_term = 0.0
         self.i_term = 0.0
         self.d_term = 0.0
@@ -140,9 +146,12 @@ class _KalmanCenterTrack:
         self.ky.predict(dt, process_noise)
         self.missed += 1
 
-    def update(self, detection: dict[str, float], measurement_noise: float) -> None:
-        self.kx.update(float(detection["cx"]), measurement_noise)
-        self.ky.update(float(detection["cy"]), measurement_noise)
+    def update(self, detection: dict[str, float], measurement_noise: float, smooth_factor: float = 0.0) -> None:
+        alpha = 1.0 - max(0.0, min(0.95, smooth_factor))
+        measurement_x = alpha * float(detection["cx"]) + (1.0 - alpha) * self.kx.position
+        measurement_y = alpha * float(detection["cy"]) + (1.0 - alpha) * self.ky.position
+        self.kx.update(measurement_x, measurement_noise)
+        self.ky.update(measurement_y, measurement_noise)
         self.w = float(detection["w"])
         self.h = float(detection["h"])
         self.score = float(detection["score"])
@@ -161,6 +170,10 @@ class ExperimentalAnglePidStrategy:
         ki: float = 0.0,
         kd: float = 0.0,
         integral_limit: float = 0.0,
+        speed: float = 1.0,
+        smooth_factor: float = 0.0,
+        deadzone_px: float = 0.0,
+        derivative_filter: float = 1.0,
         fov_x_deg: float = 105.0,
         counts_per_360: float = 9980.0,
         max_step_counts: float = 80.0,
@@ -192,8 +205,11 @@ class ExperimentalAnglePidStrategy:
         trace_ms: int = 0,
         bezier_curvature: float = 0.18,
     ) -> None:
-        self.pid_x = _AnglePidAxis(kp=max(0.0, kp_x), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit))
-        self.pid_y = _AnglePidAxis(kp=max(0.0, kp_y), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit))
+        self.pid_x = _AnglePidAxis(kp=max(0.0, kp_x), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit), derivative_filter=derivative_filter)
+        self.pid_y = _AnglePidAxis(kp=max(0.0, kp_y), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit), derivative_filter=derivative_filter)
+        self.speed = max(0.0, speed)
+        self.smooth_factor = max(0.0, min(0.95, smooth_factor))
+        self.deadzone_px = max(0.0, deadzone_px)
         self.fov_x_deg = max(1.0, min(179.0, fov_x_deg))
         self.counts_per_360 = max(1.0, counts_per_360)
         self.max_step_counts = max(1.0, max_step_counts)
@@ -254,12 +270,14 @@ class ExperimentalAnglePidStrategy:
         focal_y = (capture_height * 0.5) / math.tan(fov_y_rad * 0.5)
         error_x_rad = math.atan(error_x_px / focal_x)
         error_y_rad = math.atan(error_y_px / focal_y)
-        dt = 1.0 / self.control_hz
+        dt = self._debug_dt(tracker_debug)
         out_x_rad = self.pid_x.update(error_x_rad, dt)
         out_y_rad = self.pid_y.update(error_y_rad, dt)
         counts_per_rad = self.counts_per_360 / (2.0 * math.pi)
-        pid_dx_counts = out_x_rad * counts_per_rad
-        pid_dy_counts = out_y_rad * counts_per_rad
+        error_distance_px = math.hypot(error_x_px, error_y_px)
+        in_deadzone = self.deadzone_px > 0 and error_distance_px <= self.deadzone_px
+        pid_dx_counts = 0.0 if in_deadzone else out_x_rad * counts_per_rad * self.speed
+        pid_dy_counts = 0.0 if in_deadzone else out_y_rad * counts_per_rad * self.speed
         magnet_dx_counts, magnet_dy_counts, magnet_debug = self._magnet_counts(
             error_x_px=error_x_px,
             error_y_px=error_y_px,
@@ -273,8 +291,8 @@ class ExperimentalAnglePidStrategy:
             if isinstance(raw_tracker_decay, (int, float)) and not isinstance(raw_tracker_decay, bool)
             else 1.0
         )
-        raw_dx_counts = (pid_dx_counts + magnet_dx_counts) * tracker_confidence_decay
-        raw_dy_counts = (pid_dy_counts + magnet_dy_counts) * tracker_confidence_decay
+        raw_dx_counts = 0.0 if in_deadzone else (pid_dx_counts + magnet_dx_counts) * tracker_confidence_decay
+        raw_dy_counts = 0.0 if in_deadzone else (pid_dy_counts + magnet_dy_counts) * tracker_confidence_decay
         dx = self._clamp(raw_dx_counts * self.sign_x, self.max_step_counts)
         dy = self._clamp(raw_dy_counts * self.sign_y, self.max_step_counts)
         dx_i = int(round(dx))
@@ -322,6 +340,9 @@ class ExperimentalAnglePidStrategy:
                 "out_y_rad": out_y_rad,
                 "counts_per_360": self.counts_per_360,
                 "counts_per_rad": counts_per_rad,
+                "speed": self.speed,
+                "deadzone_px": self.deadzone_px,
+                "in_deadzone": in_deadzone,
                 "pid_dx_counts": pid_dx_counts,
                 "pid_dy_counts": pid_dy_counts,
                 "magnet": magnet_debug,
@@ -408,7 +429,7 @@ class ExperimentalAnglePidStrategy:
                 track = self._tracks.get(track_id)
                 if track is None:
                     continue
-                track.update(detections[detection_index], self.kalman_measurement_noise)
+                track.update(detections[detection_index], self.kalman_measurement_noise, self.smooth_factor)
                 assigned_detection_indexes.add(detection_index)
 
             for index, detection in enumerate(detections):
@@ -520,6 +541,12 @@ class ExperimentalAnglePidStrategy:
             return track.center
         lead_s = min(lead_s, max(dt, 1.0 / self.control_hz) * (1 + self.max_extrapolate_frames))
         return track.kx.position + track.kx.velocity * lead_s, track.ky.position + track.ky.velocity * lead_s
+
+    def _debug_dt(self, debug: dict[str, Any]) -> float:
+        value = debug.get("dt")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return self._clamp_dt(float(value))
+        return 1.0 / self.control_hz
 
     def _raw_frame_id(self, raw: dict[str, object]) -> int | None:
         value = raw.get("frame_id")
