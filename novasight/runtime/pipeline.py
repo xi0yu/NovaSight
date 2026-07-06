@@ -119,11 +119,6 @@ class RuntimePipeline:
                 after_frame_id=self._last_consumed_frame_id,
                 timeout_s=0.1,
             )
-            if frame is None and self._last_consumed_frame_id > 0:
-                latest = wait_frame(after_frame_id=None, timeout_s=0.0)
-                if latest is not None and int(latest.frame_id) <= int(self._last_consumed_frame_id):
-                    self._last_consumed_frame_id = 0
-                    frame = latest
             if frame is None:
                 continue
             skipped = max(0, int(frame.frame_id) - int(self._last_consumed_frame_id) - 1)

@@ -259,6 +259,23 @@ class ExperimentalAnglePidStrategy:
         raw_aim_x = (float(target.x1) + float(target.x2)) * 0.5
         raw_aim_y = (float(target.y1) + float(target.y2)) * 0.5
         aim_x, aim_y, tracker_debug = self._stable_aim_point(target, raw, raw_aim_x, raw_aim_y)
+        if self.kalman_enabled and tracker_debug.get("enabled") is True and tracker_debug.get("used") is False:
+            return MoveCommand(
+                dx=0,
+                dy=0,
+                confidence=0.0,
+                reason=str(tracker_debug.get("reason") or "tracker unavailable"),
+                move_kind=self.move_kind,
+                move_ms=self.move_ms,
+                trace_ms=self.trace_ms,
+                debug={
+                    "stage": "experimental_angle_pid",
+                    "algorithm": "experimental_angle_pid",
+                    "tracker": tracker_debug,
+                    "final_dx": 0,
+                    "final_dy": 0,
+                },
+            )
         roi_center_x = roi_width * 0.5
         roi_center_y = roi_height * 0.5
         error_x_px = aim_x - roi_center_x
@@ -366,6 +383,18 @@ class ExperimentalAnglePidStrategy:
                 "final_dy": dy_i,
             },
         )
+
+    def observe(
+        self,
+        target: Target,
+        current_pos: tuple[float, float],
+        box_input: BoxInputState,
+    ) -> dict[str, Any]:
+        raw = box_input.raw or {}
+        fallback_x = (float(target.x1) + float(target.x2)) * 0.5
+        fallback_y = (float(target.y1) + float(target.y2)) * 0.5
+        _x, _y, debug = self._stable_aim_point(target, raw, fallback_x, fallback_y)
+        return debug
 
     def reset(self) -> None:
         self.pid_x.reset()

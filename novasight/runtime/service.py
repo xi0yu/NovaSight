@@ -195,6 +195,65 @@ class RuntimeService:
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
         return RuntimeFrameResult(control_intents=[], execution_results=[])
 
+    def update_control_observation(self, context: FrameContext) -> RuntimeFrameResult:
+        if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
+            return self.process_frame(context)
+        with self._control_lock:
+            selection = self._select_control_target(context)
+            target = selection.target
+            if target is None:
+                prediction_context_available = self.last_frame_context is not None
+                if not prediction_context_available:
+                    self.last_frame_context = context
+                    self.last_target = None
+                self.last_control = {
+                    "frame_id": context.frame_id,
+                    "capture_ts_ns": context.capture_ts_ns,
+                    "selector_state": selection.state,
+                    "selection_reason": selection.reason,
+                    "candidates": selection.candidates,
+                    "inside_fov": selection.inside_fov,
+                    "lost_count": selection.lost_count,
+                    "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
+                    "will_emit": False,
+                    "frame_age_ms": self._frame_age_ms(context),
+                    "observation_only": True,
+                    "prediction_context_available": prediction_context_available,
+                }
+                return self._empty_runtime_frame_result()
+            self.last_frame_context = context
+            center = (context.width / 2, context.height / 2)
+            target_key = self._control_target_key(target, context)
+            strategy_input = self._with_strategy_target(
+                BoxInputState(left=True, raw={"mode": "observation_update"}),
+                target_key,
+                frame_age_ms=self._frame_age_ms(context),
+                frame_id=context.frame_id,
+                capture_ts_ns=context.capture_ts_ns,
+                metadata=self._strategy_frame_metadata(context),
+            )
+            observe = getattr(self.control_strategy, "observe", None)
+            observer_debug = observe(target, center, strategy_input) if callable(observe) else {}
+            self.last_target = {
+                **self._target_payload(target, context),
+                "target_detection_index": self._target_detection_index(context, target),
+                "target_key": target_key,
+                "capture_ts_ns": context.capture_ts_ns,
+                "frame_age_ms": self._frame_age_ms(context),
+            }
+            self.last_control = {
+                "frame_id": context.frame_id,
+                "capture_ts_ns": context.capture_ts_ns,
+                "selector_state": selection.state,
+                "selection_reason": selection.reason,
+                "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
+                "target_key": target_key,
+                "pipeline": {"tracker": observer_debug},
+                "will_emit": False,
+                "observation_only": True,
+            }
+        return self._empty_runtime_frame_result()
+
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
         total_start_ns = time.monotonic_ns()
         if self.inference is None:
@@ -204,7 +263,7 @@ class RuntimeService:
                 available=False,
                 reason="推理运行时未初始化",
             )
-            result = self.process_frame(self._empty_frame_context(frame))
+            result = self.update_control_observation(self._empty_frame_context(frame))
             self._record_pipeline_timings(total_start_ns, control_start_ns=total_start_ns)
             return result
 
@@ -216,7 +275,7 @@ class RuntimeService:
                 available=False,
                 reason="推理运行时没有 infer 方法",
             )
-            result = self.process_frame(self._empty_frame_context(frame))
+            result = self.update_control_observation(self._empty_frame_context(frame))
             self._record_pipeline_timings(total_start_ns, control_start_ns=total_start_ns)
             return result
 
@@ -241,7 +300,7 @@ class RuntimeService:
                 reason=str(exc),
             )
             control_start_ns = time.monotonic_ns()
-            result = self.process_frame(self._empty_frame_context(frame))
+            result = self.update_control_observation(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=locals().get("roi_start_ns"),
@@ -261,7 +320,7 @@ class RuntimeService:
                 reason=self.last_inference_reason,
             )
             control_start_ns = time.monotonic_ns()
-            result = self.process_frame(self._empty_frame_context(frame))
+            result = self.update_control_observation(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -283,7 +342,7 @@ class RuntimeService:
                 debug=inference_result.debug,
             )
             control_start_ns = time.monotonic_ns()
-            result = self.process_frame(self._empty_frame_context(frame))
+            result = self.update_control_observation(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -319,7 +378,7 @@ class RuntimeService:
                 debug=inference_result.debug,
             )
             control_start_ns = time.monotonic_ns()
-            result = self.process_frame(self._empty_frame_context(frame))
+            result = self.update_control_observation(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -350,7 +409,7 @@ class RuntimeService:
             capture_ts_ns=frame.ts_ns,
         )
         control_start_ns = time.monotonic_ns()
-        result = self.process_frame(context)
+        result = self.update_control_observation(context)
         self._record_pipeline_timings(
             total_start_ns,
             roi_start_ns=roi_start_ns,

@@ -103,9 +103,6 @@ class CaptureSession:
         stop_event = self._stop_event
         if stop_event is not None:
             stop_event.set()
-        with self._condition:
-            close_error = self._close_source_locked()
-            self._condition.notify_all()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(self.stop_timeout_s)
@@ -120,15 +117,12 @@ class CaptureSession:
                     self.state = replace(
                         self.state,
                         available=False,
-                        last_error=(
-                            f"{reason_text}; {close_error}"
-                            if close_error
-                            else reason_text
-                        ),
+                        last_error=reason_text,
                     )
                     self._condition.notify_all()
                     return self.state
         with self._condition:
+            close_error = self._close_source_locked()
             self._thread = None
             self._stop_event = None
             self.state = replace(
