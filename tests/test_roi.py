@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from novasight.capture.source import CapturedFrame
-from novasight.plugins import Detection
+from novasight.contracts import Detection
 from novasight.roi import (
     ROI_SIZE_CHOICES,
     center_roi_frame,

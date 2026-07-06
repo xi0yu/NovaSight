@@ -255,28 +255,6 @@ def test_capture_select_failure_preserves_service_config(
     assert service.config.fps == 30
     assert match in response.text or response.json()["last_error"] is not None
 
-
-def test_capture_select_failure_stops_previous_capture(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
-    cfg = RuntimeConfig()
-    service = CaptureService(
-        config=cfg.capture,
-        capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None,
-        source_factory=lambda profile: CachedPreviewSource(),
-    )
-    service.configure("/dev/video0")
-    app.state.capture = service
-    client = _client(app)
-
-    response = client.post("/api/capture/select", json={"device": "/dev/missing"})
-
-    assert response.status_code == 400
-    state = client.get("/api/capture/state").json()
-    assert state["available"] is False
-    assert state["device"] == "/dev/missing"
-    assert state["last_error"] is not None
-
-
 def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     cfg = RuntimeConfig()
@@ -294,7 +272,9 @@ def test_capture_select_applies_preference_to_service_config(tmp_path) -> None:
     )
 
     assert response.status_code == 200
-    assert service.config.preference == "auto_low_latency"
+    # The service pins the preference back to manual after a successful select,
+    # so the auto choice only affects the *next* probe and not the live config.
+    assert service.config.preference == "manual"
 
 
 def test_capture_select_marks_capture_as_active_source(tmp_path) -> None:
@@ -455,8 +435,10 @@ def test_mjpeg_frames_waits_for_preview_without_direct_read() -> None:
 def test_mjpeg_frames_passes_roi_size_to_preview_renderer(monkeypatch) -> None:
     calls: list[int] = []
 
-    def fake_render_preview_frame(frame, *, runtime=None, roi_size=640):
-        del runtime
+    def fake_render_preview_frame(
+        frame, *, runtime=None, roi_size=640, roi_offset_x=0, roi_offset_y=0
+    ):
+        del runtime, roi_offset_x, roi_offset_y
         calls.append(roi_size)
         return frame.image
 

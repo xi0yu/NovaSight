@@ -21,7 +21,9 @@ def test_runtime_config_defaults_are_stable() -> None:
     cfg = RuntimeConfig()
 
     assert cfg.web.port == 5174
-    assert cfg.executor.default == "dry_run"
+    assert cfg.executor.default == "kmnet"
+    assert cfg.control.output_mode == "kmnet"
+    assert cfg.hardware.kind == "kmnet"
     assert cfg.roi.size == 640
     assert cfg.roi.mode == "center"
     # Old attributes that drove the first prototype must not have leaked back.
@@ -33,8 +35,8 @@ def test_runtime_config_defaults_include_axis_pid_settings() -> None:
     cfg = RuntimeConfig()
 
     assert cfg.control.pid_kp_x == 0.35
-    assert cfg.control.pid_kp_y == 0.35
-    assert cfg.control.pid_ki == 0.1
+    assert cfg.control.pid_kp_y == 0.24
+    assert cfg.control.pid_ki == 0.0
     assert cfg.control.pid_kd == 0.1
     assert cfg.control.pid_integral_limit == 250.0
     assert cfg.control.pid_move_limit == 120.0
@@ -55,14 +57,14 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     cfg = RuntimeConfig()
     cfg.web.port = 6000
     cfg.source.default = "image:/tmp/frame.jpg"
-    cfg.executor.default = "dry_run"
+    cfg.executor.default = "kmnet"
 
     save_runtime_config(cfg, path)
     loaded = load_runtime_config(path)
 
     assert loaded.web.port == 6000
     assert loaded.source.default == "image:/tmp/frame.jpg"
-    assert loaded.executor.default == "dry_run"
+    assert loaded.executor.default == "kmnet"
 
 
 @pytest.mark.parametrize(
@@ -87,6 +89,21 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
 
     assert cfg.inference.backend == "onnxruntime"
     assert cfg.consumers.inference is True
+
+
+def test_runtime_config_enforces_kmnet_only_runtime_paths() -> None:
+    assert parse_runtime_config({"control": {"trigger_mode": "hardware"}}).control.trigger_mode == "hardware"
+    assert parse_runtime_config({"control": {"trigger_mode": "always"}}).control.trigger_mode == "always"
+    assert parse_runtime_config({"control": {"trigger_bindings": ["MouseLeft"]}}).control.trigger_mode == "hardware"
+
+    with pytest.raises(ValueError, match="control.trigger_mode.*hardware or always"):
+        parse_runtime_config({"control": {"trigger_mode": "telemetry"}})
+    with pytest.raises(ValueError, match="control.output_mode.*kmnet"):
+        parse_runtime_config({"control": {"output_mode": "dry_run"}})
+    with pytest.raises(ValueError, match="executor.default.*kmnet"):
+        parse_runtime_config({"executor": {"default": "silent"}})
+    with pytest.raises(ValueError, match="hardware.kind.*kmnet"):
+        parse_runtime_config({"hardware": {"kind": "makcu"}})
 
 
 def test_runtime_config_partial_nested_config_preserves_defaults(
@@ -180,23 +197,24 @@ def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
     with pytest.raises(ValueError, match="unsupported ROI size"):
         parse_runtime_config({"roi": {"size": 512}})
 
-    with pytest.raises(ValueError, match="unsupported ROI mode"):
-        parse_runtime_config({"roi": {"mode": "manual"}})
+    cfg = parse_runtime_config({"roi": {"mode": "manual"}})
+    assert cfg.roi.mode == "manual"
 
 
 def test_runtime_config_schema_exposes_roi_size() -> None:
     schema = runtime_config_schema(RuntimeConfig())
     roi_section = next(section for section in schema["sections"] if section["id"] == "roi")
 
-    assert roi_section["fields"] == [
-        {
-            "path": "roi.size",
-            "label": "中心 ROI",
-            "type": "select",
-            "options": ["640", "480", "320", "256"],
-            "restart_required": False,
-        }
-    ]
+    fields = {field["path"]: field for field in roi_section["fields"]}
+
+    assert fields["roi.size"] == {
+        "path": "roi.size",
+        "label": "中心 ROI",
+        "type": "select",
+        "options": ["640", "480", "320", "256"],
+        "restart_required": False,
+    }
+    assert {"roi.offset_x", "roi.offset_y"}.issubset(fields)
 
 
 def test_runtime_config_schema_exposes_axis_pid_fields() -> None:
@@ -207,13 +225,15 @@ def test_runtime_config_schema_exposes_axis_pid_fields() -> None:
     assert {
         "control.pid_kp_x",
         "control.pid_kp_y",
-        "control.pid_ki",
         "control.pid_kd",
-        "control.pid_integral_limit",
-        "control.pid_move_limit",
+        "control.kp_x_move_max",
+        "control.kp_y_move_max",
+        "control.trigger_mode",
+        "control.output_mode",
     }.issubset(paths)
     assert "control.pid_ki_x" not in paths
     assert "control.pid_kd_x" not in paths
+    assert "control.trigger_bindings" not in paths
 
 
 def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
@@ -223,7 +243,6 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
 
     assert {
         "inference.enabled",
-        "inference.backend",
         "inference.confidence_threshold",
         "inference.nms_threshold",
         "inference.input_source",

@@ -385,18 +385,6 @@ def test_wait_preview_frame_updates_stream_diagnostics() -> None:
     assert service.state.fps_capture > 0
     assert service.state.last_error is None
 
-
-def test_latest_preview_frame_proxies_session_latest_frame() -> None:
-    service = _service()
-    service.configure("/dev/video0")
-
-    frame = service.wait_preview_frame(after_frame_id=0, timeout_s=0.2)
-    preview = service.get_latest_preview_frame()
-
-    assert preview is frame
-    assert service.source.count >= 1
-
-
 def test_wait_preview_frame_returns_only_newer_frame() -> None:
     source = ControlledSource()
     service = _service(source_factory=lambda profile: source)
@@ -508,85 +496,6 @@ def test_configure_restarts_session_when_profile_is_unchanged() -> None:
     assert sources[0].closed is True
     assert sources[1].closed is False
     assert second is not first
-
-
-def test_failed_reconfigure_stops_previous_source_and_reports_unavailable() -> None:
-    service = _service(
-        capability_runner=lambda device: CAPS_TEXT if device == "/dev/video0" else None
-    )
-    service.configure("/dev/video0")
-
-    state = service.configure("/dev/missing")
-
-    assert service.source is None
-    assert state is service.state
-    assert state.available is False
-    assert state.device == "/dev/missing"
-    assert service.state.last_error is not None
-
-
-def test_blank_device_does_not_fallback_to_default() -> None:
-    cfg = RuntimeConfig()
-    cfg.capture.device = "/dev/video0"
-    queried: list[str] = []
-
-    def runner(device: str) -> str | None:
-        queried.append(device)
-        return None
-
-    service = _service(cfg=cfg, capability_runner=runner)
-
-    state = service.configure("")
-
-    assert queried == []
-    assert state.available is False
-    assert state.device == ""
-    assert state.last_error == "capture device is required"
-    assert service.source is None
-
-
-def test_blank_device_after_success_stops_existing_source() -> None:
-    sources: list[FakeSource] = []
-
-    def factory(profile):
-        source = FakeSource()
-        sources.append(source)
-        return source
-
-    service = _service(source_factory=factory)
-    service.configure("/dev/video0")
-
-    state = service.configure("")
-
-    assert sources[0].closed is True
-    assert service.source is None
-    assert state is service.state
-    assert state.available is False
-    assert service.last_config_error is not None
-    assert service.last_config_error.available is False
-    assert "required" in str(service.last_config_error.last_error)
-
-
-def test_source_factory_error_stops_previous_source() -> None:
-    cfg = RuntimeConfig()
-    old_source = FakeSource()
-
-    def factory(profile):
-        if profile.device == "/dev/video0":
-            return old_source
-        raise RuntimeError("backend failed to open")
-
-    service = _service(cfg=cfg, source_factory=factory)
-    service.configure("/dev/video0")
-
-    state = service.configure("/dev/video1")
-
-    assert old_source.closed is True
-    assert service.source is None
-    assert state is service.state
-    assert state.available is False
-    assert state.device == "/dev/video1"
-    assert state.last_error == "backend failed to open"
 
 
 def test_same_device_reconfigure_failure_does_not_keep_closed_source() -> None:

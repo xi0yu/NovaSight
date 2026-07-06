@@ -1,11 +1,16 @@
 import pytest
 
+from novasight.contracts import ControlIntent
 from novasight.control import ControlOutputPolicy
-from novasight.plugins import ControlIntent
 
 
-def _intent(dx=500, dy=-300, confidence=0.9):
-    return ControlIntent(dx, dy, "move", confidence, "test", "control.test")
+def _intent(
+    dx: float = 500, dy: float = -300, confidence: float = 0.9
+) -> ControlIntent:
+    return ControlIntent(
+        dx=dx, dy=dy, action="move", confidence=confidence,
+        reason="test", source_id="control.test",
+    )
 
 
 def test_policy_clamps_dx_dy() -> None:

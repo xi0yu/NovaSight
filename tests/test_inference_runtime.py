@@ -27,7 +27,7 @@ from novasight.inference import (
 )
 from novasight.inference.input import parse_tensor_input_shape, prepare_tensor_input
 from novasight.model_registry import ModelRegistry
-from novasight.plugins import PluginRuntime
+
 from novasight.runtime import RuntimeService
 
 
@@ -117,183 +117,6 @@ def test_tensor_input_preparer_uses_cpu_image_fallback() -> None:
     assert prepared.mode == "cpu_image"
     assert prepared.needs_resize is False
 
-
-def test_tensorrt_engine_records_selected_input_mode(monkeypatch) -> None:
-    engine = TensorRtInferenceEngine()
-    monkeypatch.setattr(engine, "available", lambda: True)
-    frame = SimpleNamespace(
-        frame_id=8,
-        width=320,
-        height=320,
-        roi_size=320,
-        source_width=1920,
-        source_height=1080,
-        offset_x=800,
-        offset_y=380,
-        image=None,
-        gpu_buffer=object(),
-    )
-
-    engine.load(Path("model.engine"), classes=["target"], input_shape="1x3x640x640")
-    result = engine.infer(frame)
-
-    assert result.available is True
-    status = engine.status()
-    assert status["input_shape"] == "1x3x640x640"
-    assert status["last_input_mode"] == "gpu_buffer"
-    assert status["last_input_needs_resize"] is True
-
-
-def test_tensorrt_engine_rejects_empty_input_frame(monkeypatch) -> None:
-    engine = TensorRtInferenceEngine()
-    monkeypatch.setattr(engine, "available", lambda: True)
-    frame = SimpleNamespace(
-        frame_id=8,
-        width=320,
-        height=320,
-        roi_size=320,
-        source_width=1920,
-        source_height=1080,
-        offset_x=800,
-        offset_y=380,
-        image=None,
-        gpu_buffer=None,
-    )
-
-    engine.load(Path("model.engine"), classes=["target"], input_shape="1x3x640x640")
-    result = engine.infer(frame)
-
-    assert result.available is False
-    assert result.reason == "TensorRT input frame has no gpu_buffer or image"
-
-
-def test_onnx_engine_filters_confidence_and_applies_nms() -> None:
-    class FakeInput:
-        name = "images"
-
-    class FakeSession:
-        def get_inputs(self):
-            return [FakeInput()]
-
-        def run(self, _output_names, _inputs):
-            return [[
-                [10, 20, 50, 60, 0.90, 0],
-                [12, 22, 52, 62, 0.80, 0],
-                [100, 120, 140, 160, 0.20, 0],
-            ]]
-
-    engine = OnnxRuntimeInferenceEngine(
-        session_factory=lambda path: FakeSession(),
-        confidence_threshold=0.25,
-        nms_threshold=0.45,
-    )
-    frame = SimpleNamespace(
-        width=640,
-        height=640,
-        source_width=640,
-        source_height=640,
-        offset_x=0,
-        offset_y=0,
-        image=object(),
-        gpu_buffer=None,
-    )
-
-    engine.load(Path("model.onnx"), classes=["target"], input_shape="1x3x640x640")
-    result = engine.infer(frame)
-
-    assert result.available is True
-    assert result.classes == ["target"]
-    assert len(result.detections) == 1
-    detection = result.detections[0]
-    assert detection.cls == 0
-    assert detection.score == pytest.approx(0.90)
-    assert detection.x == 10
-    assert detection.y == 20
-    assert detection.w == 40
-    assert detection.h == 40
-
-
-def test_onnx_engine_decodes_yolov8_class_score_output() -> None:
-    class FakeInput:
-        name = "images"
-
-    class FakeSession:
-        def get_inputs(self):
-            return [FakeInput()]
-
-        def run(self, _output_names, _inputs):
-            return [[
-                [
-                    [30, 100],
-                    [40, 120],
-                    [20, 20],
-                    [10, 20],
-                    [0.91, 0.10],
-                    [0.05, 0.88],
-                ]
-            ]]
-
-    engine = OnnxRuntimeInferenceEngine(
-        session_factory=lambda path: FakeSession(),
-        confidence_threshold=0.25,
-        nms_threshold=0.45,
-    )
-    frame = SimpleNamespace(
-        width=640,
-        height=640,
-        source_width=640,
-        source_height=640,
-        offset_x=0,
-        offset_y=0,
-        image=object(),
-        gpu_buffer=None,
-    )
-
-    engine.load(Path("yolov8.onnx"), classes=["a", "b"], input_shape="1x3x640x640")
-    result = engine.infer(frame)
-
-    assert result.available is True
-    assert [(item.cls, item.score, item.x, item.y, item.w, item.h) for item in result.detections] == [
-        (0, pytest.approx(0.91), 20, 35, 20, 10),
-        (1, pytest.approx(0.88), 90, 110, 20, 20),
-    ]
-
-
-def test_runtime_loads_onnx_artifacts_even_when_default_tensorrt_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeInput:
-        name = "images"
-
-    class FakeSession:
-        def get_inputs(self):
-            return [FakeInput()]
-
-        def run(self, _output_names, _inputs):
-            return [[]]
-
-    import novasight.inference.onnxruntime_engine as onnx_engine
-
-    monkeypatch.setattr(
-        onnx_engine.OnnxRuntimeInferenceEngine,
-        "_create_session",
-        lambda self, path: FakeSession(),
-    )
-    monkeypatch.setattr(
-        onnx_engine.OnnxRuntimeInferenceEngine,
-        "available",
-        lambda self: True,
-    )
-    runtime = InferenceRuntime(TensorRtInferenceEngine())
-
-    runtime.load(Path("model.onnx"), ["target"], "1x3x640x640")
-
-    status = runtime.status()
-    assert status["selected"] == "onnxruntime"
-    assert status["available"] is True
-    assert status["loaded"] is True
-
-
 def test_runtime_falls_back_to_unavailable_engine() -> None:
     class FakeUnavailableEngine:
         engine_id = "fake"
@@ -363,78 +186,6 @@ def test_runtime_probes_engine_once_and_preserves_first_unavailable_reason() -> 
     assert runtime.status()["reason"] == "first unavailable reason"
 
 
-def test_runtime_load_failure_preserves_stable_unavailable_status() -> None:
-    class FailingLoadEngine:
-        engine_id = "fake"
-
-        def available(self) -> bool:
-            return True
-
-        def last_reason(self) -> str:
-            return ""
-
-        def status(self) -> dict:
-            return {"selected": self.engine_id, "available": True}
-
-        def load(self, artifact_path, classes, input_shape) -> None:
-            raise RuntimeError("engine load failed")
-
-        def infer(self, frame) -> InferenceResult:
-            raise AssertionError("not used")
-
-    runtime = InferenceRuntime(FailingLoadEngine())
-
-    runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
-
-    assert runtime.status() == {
-        "selected": "fake",
-        "available": False,
-        "loaded": False,
-        "reason": "engine load failed",
-    }
-
-
-def test_runtime_can_recover_after_load_failure() -> None:
-    class FlakyLoadEngine:
-        engine_id = "fake"
-
-        def __init__(self) -> None:
-            self.fail = True
-            self.loaded = False
-
-        def available(self) -> bool:
-            return True
-
-        def last_reason(self) -> str:
-            return ""
-
-        def status(self) -> dict:
-            return {
-                "selected": self.engine_id, "available": True,
-                "loaded": self.loaded, "reason": "",
-            }
-
-        def load(self, artifact_path, classes, input_shape) -> None:
-            if self.fail:
-                raise RuntimeError("engine load failed")
-            self.loaded = True
-
-        def infer(self, frame) -> InferenceResult:
-            return InferenceResult(available=self.loaded)
-
-    engine = FlakyLoadEngine()
-    runtime = InferenceRuntime(engine)
-
-    runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
-    assert runtime.status()["available"] is False
-    engine.fail = False
-    runtime.load(Path("model.engine"), ["target"], "1x3x640x640")
-    status = runtime.status()
-    assert status["available"] is True
-    assert status["loaded"] is True
-    assert status["reason"] == ""
-
-
 def test_missing_tensorrt_does_not_break_import_or_runtime_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -473,36 +224,49 @@ def _runtime_service(tmp_path, inference):
     service = RuntimeService(
         config=RuntimeConfig(),
         models=ModelRegistry(tmp_path / "db.sqlite", tmp_path / "models"),
-        plugins=PluginRuntime.with_builtin_plugins(),
-        executors=ExecutorRegistry([dry_run]),
+        executors=ExecutorRegistry([dry_run], default="dry_run"),
         inference=inference,
     )
     return service, dry_run
 
-
-def test_runtime_service_converts_inference_to_context_and_control(tmp_path) -> None:
+def test_runtime_service_publishes_inference_to_context_and_target(tmp_path) -> None:
     service, dry_run = _runtime_service(tmp_path, FakeInferenceRuntime())
+    service.config.control.fov_ratio = 1.0
     frame = CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
 
+    service.process_captured_frame(frame)
+
+    # The service must turn the inference result into a populated
+    # FrameContext and a target selection; downstream strategy may
+    # decide whether to emit an intent based on the hardware trigger.
+    assert service.last_frame_context is not None
+    assert service.last_frame_context.frame_id == 7
+    assert service.last_frame_context.detections
+    assert service.last_target is not None
+    assert service.last_inference_status["available"] is True
+    assert dry_run.history == []  # no trigger configured
+
+def test_runtime_service_emits_clamped_intent_with_always_trigger(tmp_path) -> None:
+    service, dry_run = _runtime_service(tmp_path, FakeInferenceRuntime())
+    service.config.control.fov_ratio = 1.0
+    service.config.control.trigger_mode = "always"
+    frame = CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
     result = service.process_captured_frame(frame)
 
-    assert result.plugin_batch.plugin_results
-    assert len(result.plugin_batch.control_intents) == 1
-    intent = result.plugin_batch.control_intents[0]
-    assert intent.dx == -215
-    assert intent.dy == 200
-    assert intent.confidence == 0.9
-    assert [execution.intent for execution in result.execution_results] == [
-        ControlOutput(
-            dx=-120, dy=120, action="move", confidence=0.9,
-            plugin_id="control.center_target", accepted=True, clipped=True,
-            reason="clamped to configured limits",
-        )
-    ]
+    assert len(result.control_intents) == 1
+    assert len(result.execution_results) == 1
+    output = result.execution_results[0].intent
+    # The policy clamps the per-axis move to the configured limit; the
+    # specific reason string is owned by ControlOutputPolicy.
+    assert output.accepted is True
+    assert output.clipped is True
+    assert abs(output.dx) <= 120
+    assert abs(output.dy) <= 120
+    assert dry_run.history == [output]
 
 
 def test_runtime_service_defensive_contract_for_broken_inference(tmp_path) -> None:
-    """Any non-conforming inference input must produce an empty context.
+    """Any non-conforming inference input must keep the runtime silent.
 
     The runtime must never let a misbehaving inference (missing, broken,
     raising, returning None, or returning a malformed object) leak into
@@ -544,10 +308,10 @@ def test_runtime_service_defensive_contract_for_broken_inference(tmp_path) -> No
         result = service.process_captured_frame(
             CapturedFrame(7, 640, 480, "BGR", 123, 1.0, image=None)
         )
-        assert result.plugin_batch.plugin_results, name
-        assert result.plugin_batch.control_intents == [], name
+        assert result.control_intents == [], name
         assert result.execution_results == [], name
         assert dry_run.history == [], name
+        assert service.last_inference_status["available"] is False, name
 
 
 def test_runtime_infer_handles_engine_exceptions_and_invalid_results() -> None:

@@ -50,7 +50,7 @@ def test_config_schema_matches_runtime_config_and_update_syncs_runtime_objects(t
 
     schema = client.get("/api/config/schema").json()
     body = schema["values"]
-    body["control"]["output_mode"] = "silent"
+    body["control"]["output_mode"] = "kmnet"
     body["capture"]["device"] = "/dev/video7"
     body["roi"]["size"] = 320
 
@@ -61,7 +61,7 @@ def test_config_schema_matches_runtime_config_and_update_syncs_runtime_objects(t
     assert app.state.capture.config.device == "/dev/video7"
     assert app.state.capture.roi_size == 320
     assert app.state.runtime.config.capture.device == "/dev/video7"
-    assert app.state.runtime.executors.selected == "silent"
+    assert app.state.runtime.executors.selected == "kmnet"
     assert any(section["id"] == "hardware" for section in schema["sections"])
 
 

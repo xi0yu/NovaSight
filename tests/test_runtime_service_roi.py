@@ -1,91 +1,79 @@
+"""Tests for the ROI handling the runtime service performs on every
+captured frame.
+
+The service contract is:
+- inference receives the center-cropped ROI frame, not the raw source;
+- a pre-cropped source ROI is reused without a second crop;
+- the ROI metadata (offset, source dimensions) is exposed via
+  `last_inference_status` for the UI to display.
+"""
 import numpy as np
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.inference import InferenceDetection, InferenceResult
-from novasight.plugins import FrameContext, PluginBatchResult
 from novasight.runtime import RuntimeService
 
 
 class CapturingInference:
-    def __init__(self) -> None:
+    def __init__(self) -> InferenceDetection | None:
         self.frame = None
+        self._detection = InferenceDetection(0, 0.9, 10, 20, 30, 40)
 
     def infer(self, frame) -> InferenceResult:
         self.frame = frame
         return InferenceResult(
             available=True,
-            detections=[InferenceDetection(0, 0.9, 10, 20, 30, 40)],
+            detections=[self._detection],
             classes=["target"],
         )
 
 
-class CapturingPlugins:
-    def __init__(self) -> None:
-        self.context: FrameContext | None = None
-
-    def process(self, context: FrameContext) -> PluginBatchResult:
-        self.context = context
-        return PluginBatchResult()
-
-
-class NoopExecutors:
-    def status(self) -> dict:
-        return {}
-
-    def execute(self, intent):
-        raise AssertionError("no control intent should be emitted")
-
-
-def test_runtime_service_feeds_roi_to_inference_and_maps_detections_to_source() -> None:
-    config = RuntimeConfig()
-    config.roi.size = 320
-    inference = CapturingInference()
-    plugins = CapturingPlugins()
-    frame = CapturedFrame(
+def _make_frame(width: int, height: int) -> CapturedFrame:
+    return CapturedFrame(
         frame_id=7,
-        width=1920,
-        height=1080,
+        width=width,
+        height=height,
         pixel_format="BGR",
         ts_ns=123,
         capture_wait_ms=1.5,
-        image=np.zeros((1080, 1920, 3), dtype=np.uint8),
+        image=np.zeros((height, width, 3), dtype=np.uint8),
     )
+
+
+def test_runtime_service_feeds_center_roi_to_inference() -> None:
+    config = RuntimeConfig()
+    config.roi.size = 320
+    inference = CapturingInference()
     service = RuntimeService(
-        config=config,
-        models=None,
-        plugins=plugins,
-        executors=NoopExecutors(),
-        inference=inference,
+        config=config, models=None, executors=None, inference=inference,
     )
 
-    service.process_captured_frame(frame)
+    service.process_captured_frame(_make_frame(1920, 1080))
 
-    assert inference.frame is not None
-    assert inference.frame.width == 320
-    assert inference.frame.height == 320
-    assert inference.frame.source_width == 1920
-    assert inference.frame.source_height == 1080
-    assert inference.frame.offset_x == 800
-    assert inference.frame.offset_y == 380
-    assert inference.frame.image.shape == (320, 320, 3)
+    roi_frame = inference.frame
+    assert roi_frame.width == 320
+    assert roi_frame.height == 320
+    assert roi_frame.source_width == 1920
+    assert roi_frame.source_height == 1080
+    assert roi_frame.offset_x == 800
+    assert roi_frame.offset_y == 380
+    assert roi_frame.image.shape == (320, 320, 3)
 
-    assert plugins.context is not None
-    assert plugins.context.frame_id == 7
-    assert plugins.context.width == 1920
-    assert plugins.context.height == 1080
-    assert plugins.context.classes == ["target"]
-    assert plugins.context.detections[0].x == 810
-    assert plugins.context.detections[0].y == 400
-    assert plugins.context.detections[0].w == 30
-    assert plugins.context.detections[0].h == 40
+    status = service.last_inference_status
+    assert status["input_width"] == 320
+    assert status["input_height"] == 320
+    assert status["source_width"] == 1920
+    assert status["source_height"] == 1080
+    assert status["roi_offset_x"] == 800
+    assert status["roi_offset_y"] == 380
+    assert status["detection_coordinate_space"] == "roi"
 
 
 def test_runtime_service_reuses_capture_roi_without_second_crop() -> None:
     config = RuntimeConfig()
     config.roi.size = 320
     inference = CapturingInference()
-    plugins = CapturingPlugins()
     image = np.zeros((320, 320, 3), dtype=np.uint8)
     frame = CapturedFrame(
         frame_id=8,
@@ -102,23 +90,13 @@ def test_runtime_service_reuses_capture_roi_without_second_crop() -> None:
         roi_offset_y=380,
     )
     service = RuntimeService(
-        config=config,
-        models=None,
-        plugins=plugins,
-        executors=NoopExecutors(),
-        inference=inference,
+        config=config, models=None, executors=None, inference=inference,
     )
 
     service.process_captured_frame(frame)
 
-    assert inference.frame is not None
     assert inference.frame.image is image
     assert inference.frame.source_width == 1920
     assert inference.frame.source_height == 1080
     assert inference.frame.offset_x == 800
     assert inference.frame.offset_y == 380
-    assert plugins.context is not None
-    assert plugins.context.width == 1920
-    assert plugins.context.height == 1080
-    assert plugins.context.detections[0].x == 810
-    assert plugins.context.detections[0].y == 400

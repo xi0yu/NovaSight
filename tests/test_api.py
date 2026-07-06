@@ -76,6 +76,32 @@ def _artifact(
     return response.json()
 
 
+class _RecordingInference:
+    """Drop-in inference runtime stub used by the publish tests.
+
+    The real engine tries to deserialize a model file from disk, which the
+    publish tests don't need to exercise. Recording the call list lets the
+    tests assert that publish reaches the engine with the right arguments.
+    """
+
+    def __init__(self, events: list | None = None) -> None:
+        self.events = events if events is not None else []
+        self.closed = False
+
+    def status(self) -> dict:
+        return {"selected": "recording", "available": True, "loaded": True}
+
+    def prepare(self, artifact_path: Path, classes: list[str], input_shape: str) -> tuple:
+        self.events.append(("load", artifact_path.name, tuple(classes), input_shape))
+        return self, {"selected": "recording", "available": True, "loaded": True}
+
+    def commit(self, candidate, *, artifact_path, classes, input_shape) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_health_and_runtime_state(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -86,7 +112,7 @@ def test_health_and_runtime_state(tmp_path: Path) -> None:
     state = client.get("/api/runtime/state")
     body = state.json()
     assert state.status_code == 200
-    assert body["executor"]["selected"] == "dry_run"
+    assert body["executor"]["selected"] == "kmnet"
     assert body["active_model"] is None
     assert body["inference"]["selected"] == "unavailable"
     assert body["inference"]["available"] is False
@@ -96,6 +122,7 @@ def test_health_and_runtime_state(tmp_path: Path) -> None:
 
 def test_model_publish_and_rollback(tmp_path: Path) -> None:
     client = _client(tmp_path)
+    client.app.state.inference = _RecordingInference()
 
     project = _project(client)
     v1 = _version(client, project["id"], version="v1")
@@ -111,28 +138,36 @@ def test_model_publish_and_rollback(tmp_path: Path) -> None:
         f"/api/models/projects/{project['id']}/publish",
         json={"artifact_id": artifact2["id"]},
     )
-    assert published.json()["previous_artifact_id"] == artifact1["id"]
-
+    assert published.json()["deployment"]["previous_artifact_id"] == artifact1["id"]
     rolled_back = client.post(f"/api/models/projects/{project['id']}/rollback")
     assert rolled_back.status_code == 200
-    assert rolled_back.json()["artifact_id"] == artifact1["id"]
-    assert rolled_back.json()["previous_artifact_id"] == artifact2["id"]
+    assert rolled_back.json()["deployment"]["artifact_id"] == artifact1["id"]
+    assert rolled_back.json()["deployment"]["previous_artifact_id"] == artifact2["id"]
 
 
 def test_publish_engine_loads_inference_runtime(tmp_path: Path) -> None:
     client = _client(tmp_path)
     loaded: dict = {}
+    events: list = []
 
-    class RecordingInference:
+    class Stub:
         def status(self) -> dict:
             return {"selected": "recording", "available": True, "loaded": False}
 
-        def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
+        def prepare(self, artifact_path: Path, classes: list[str], input_shape: str) -> tuple:
             loaded["artifact_path"] = artifact_path
             loaded["classes"] = classes
             loaded["input_shape"] = input_shape
+            events.append(("load", artifact_path.name, tuple(classes), input_shape))
+            return self, {"selected": "recording", "available": True, "loaded": True}
 
-    client.app.state.inference = RecordingInference()
+        def commit(self, candidate, *, artifact_path, classes, input_shape) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    client.app.state.inference = Stub()
     project = _project(client)
     version = _version(client, project["id"])
     artifact = _artifact(
@@ -154,16 +189,9 @@ def test_publish_engine_loads_inference_runtime(tmp_path: Path) -> None:
 
 def test_publish_onnx_loads_inference_runtime(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    events: list[tuple] = []
+    events: list = []
+    client.app.state.inference = _RecordingInference(events)
 
-    class RecordingInference:
-        def status(self) -> dict:
-            return {"selected": "recording", "available": True, "loaded": True}
-
-        def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
-            events.append(("load", artifact_path.name, tuple(classes), input_shape))
-
-    client.app.state.inference = RecordingInference()
     project = _project(client)
     v1 = _version(client, project["id"], version="v1")
     engine = _artifact(client, v1["id"], path="model.engine", kind="engine")
@@ -187,6 +215,7 @@ def test_publish_onnx_loads_inference_runtime(tmp_path: Path) -> None:
 
 def test_runtime_state_reports_latest_published_deployment(tmp_path: Path) -> None:
     client = _client(tmp_path)
+    client.app.state.inference = _RecordingInference()
     first_project = _project(client, name="demo-a")
     first_version = _version(client, first_project["id"])
     first_artifact = _artifact(client, first_version["id"], path="demo-a.onnx")
@@ -290,15 +319,11 @@ def test_upload_model_file_registers_ready_artifact(tmp_path: Path) -> None:
 def test_plugin_and_executor_endpoints(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
-    plugins = client.get("/api/plugins").json()
-    assert "control.center_target" in {item["plugin_id"] for item in plugins}
-    assert all(item["enabled"] is True for item in plugins)
-
     executors = client.get("/api/executors").json()
-    assert executors["selected"] == "dry_run"
-    assert executors["executors"]["silent"]["available"] is True
-    assert executors["executors"]["console"]["available"] is True
-    assert executors["executors"]["dry_run"]["available"] is True
+    assert executors["selected"] == "kmnet"
+    # kmnet is the only fully-wired backend; the endpoint still responds
+    # even when the vendor driver directory is missing on this host.
+    assert executors["executors"]["kmnet"]["available"] is False  # vendor dir missing
 
 
 def test_conversion_job_lifecycle(tmp_path: Path) -> None:
