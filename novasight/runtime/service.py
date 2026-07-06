@@ -180,16 +180,20 @@ class RuntimeService:
 
     def process_control_tick(self) -> RuntimeFrameResult:
         if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
-            return RuntimeFrameResult()
+            return self._empty_runtime_frame_result()
         context = self.last_frame_context
         if context is None:
-            return RuntimeFrameResult()
+            return self._empty_runtime_frame_result()
         control_hz = max(1.0, float(getattr(self.config.control, "experimental_angle_control_hz", 60.0)))
         now_ns = time.monotonic_ns()
         min_interval_ns = int(1_000_000_000 / control_hz)
         if self._last_control_tick_ns and now_ns - self._last_control_tick_ns < min_interval_ns:
-            return RuntimeFrameResult()
+            return self._empty_runtime_frame_result()
         return self.process_frame(context)
+
+    @staticmethod
+    def _empty_runtime_frame_result() -> RuntimeFrameResult:
+        return RuntimeFrameResult(control_intents=[], execution_results=[])
 
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
         total_start_ns = time.monotonic_ns()
