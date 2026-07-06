@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-import time
 import math
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
+from novasight.control.angular import (
+    AngularErrorMapper,
+    AngularPDConfig,
+    AngularPDController,
+    CalibrationProfile,
+)
 from novasight.hardware import BoxInputState
 from novasight.contracts import ControlIntent, Detection, Track
 
@@ -205,8 +211,6 @@ class ExperimentalAnglePidStrategy:
         trace_ms: int = 0,
         bezier_curvature: float = 0.18,
     ) -> None:
-        self.pid_x = _AnglePidAxis(kp=max(0.0, kp_x), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit), derivative_filter=derivative_filter)
-        self.pid_y = _AnglePidAxis(kp=max(0.0, kp_y), ki=max(0.0, ki), kd=kd, integral_limit=max(0.0, integral_limit), derivative_filter=derivative_filter)
         self.speed = max(0.0, speed)
         self.smooth_factor = max(0.0, min(0.95, smooth_factor))
         self.deadzone_px = max(0.0, deadzone_px)
@@ -240,6 +244,27 @@ class ExperimentalAnglePidStrategy:
         self.move_ms = max(0, int(move_ms))
         self.trace_ms = max(0, int(trace_ms))
         self.bezier_curvature = max(0.0, bezier_curvature)
+        self.calibration = CalibrationProfile(
+            fov_x_deg=self.fov_x_deg,
+            counts_per_360_x=self.counts_per_360,
+            counts_per_360_y=self.counts_per_360,
+            axis_sign_x=self.sign_x,
+            axis_sign_y=self.sign_y,
+        ).normalized()
+        self.error_mapper = AngularErrorMapper(self.calibration)
+        self.angular_controller = AngularPDController(
+            AngularPDConfig(
+                kp_x=max(0.0, kp_x) * self.speed,
+                kp_y=max(0.0, kp_y) * self.speed,
+                kd_x_s=kd,
+                kd_y_s=kd,
+                derivative_ema_alpha=derivative_filter,
+                max_step_counts=self.max_step_counts,
+                dt_min_s=1.0 / 240.0,
+                dt_max_s=1.0 / 15.0,
+            ),
+            self.calibration,
+        )
         self._tracks: dict[int, _KalmanCenterTrack] = {}
         self._next_track_id = 1
         self._last_observation_frame_id: int | None = None
@@ -256,6 +281,8 @@ class ExperimentalAnglePidStrategy:
         roi_width = _positive_number(raw.get("roi_width"), current_pos[0] * 2.0)
         roi_height = _positive_number(raw.get("roi_height"), current_pos[1] * 2.0)
         capture_width, capture_height, capture_source = self._capture_dimensions(raw, roi_width, roi_height)
+        roi_offset_x = _number(raw.get("roi_offset_x"), 0.0)
+        roi_offset_y = _number(raw.get("roi_offset_y"), 0.0)
         raw_aim_x = (float(target.x1) + float(target.x2)) * 0.5
         raw_aim_y = (float(target.y1) + float(target.y2)) * 0.5
         aim_x, aim_y, tracker_debug = self._stable_aim_point(target, raw, raw_aim_x, raw_aim_y)
@@ -278,48 +305,70 @@ class ExperimentalAnglePidStrategy:
             )
         roi_center_x = roi_width * 0.5
         roi_center_y = roi_height * 0.5
-        error_x_px = aim_x - roi_center_x
-        error_y_image_down_px = aim_y - roi_center_y
-        error_y_px = roi_center_y - aim_y
-        fov_x_rad = math.radians(self.fov_x_deg)
-        focal_x = (capture_width * 0.5) / math.tan(fov_x_rad * 0.5)
-        fov_y_rad = 2.0 * math.atan((capture_height / capture_width) * math.tan(fov_x_rad * 0.5))
-        focal_y = (capture_height * 0.5) / math.tan(fov_y_rad * 0.5)
-        error_x_rad = math.atan(error_x_px / focal_x)
-        error_y_rad = math.atan(error_y_px / focal_y)
         dt = self._debug_dt(tracker_debug)
-        out_x_rad = self.pid_x.update(error_x_rad, dt)
-        out_y_rad = self.pid_y.update(error_y_rad, dt)
-        counts_per_rad = self.counts_per_360 / (2.0 * math.pi)
-        error_distance_px = math.hypot(error_x_px, error_y_px)
-        in_deadzone = self.deadzone_px > 0 and error_distance_px <= self.deadzone_px
-        pid_dx_counts = 0.0 if in_deadzone else out_x_rad * counts_per_rad * self.speed
-        pid_dy_counts = 0.0 if in_deadzone else out_y_rad * counts_per_rad * self.speed
-        magnet_dx_counts, magnet_dy_counts, magnet_debug = self._magnet_counts(
-            error_x_px=error_x_px,
-            error_y_px=error_y_px,
-            error_x_rad=error_x_rad,
-            error_y_rad=error_y_rad,
-            counts_per_rad=counts_per_rad,
+        comp_x = roi_offset_x + aim_x
+        comp_y = roi_offset_y + aim_y
+        source_frame_id = self._raw_frame_id(raw)
+        raw_target_key = raw.get("target_key")
+        track_id = _stable_int(raw_target_key) if raw_target_key is not None else None
+        angular_error = self.error_mapper.map(
+            comp_x=comp_x,
+            comp_y=comp_y,
+            control_width_px=capture_width,
+            control_height_px=capture_height,
+            dt_s=dt,
+            source_frame_id=source_frame_id,
+            track_id=track_id,
+            predicted_source=bool(tracker_debug.get("new_observation") is False),
+            prediction_confidence=float(tracker_debug.get("extrapolate_confidence_decay") or 1.0),
         )
+        if not angular_error.control_allowed:
+            self.angular_controller.reset()
+            return MoveCommand(
+                dx=0,
+                dy=0,
+                confidence=0.0,
+                reason=angular_error.invalid_reason or "angular control invalid",
+                move_kind=self.move_kind,
+                move_ms=self.move_ms,
+                trace_ms=self.trace_ms,
+                debug={
+                    "stage": "experimental_angle_pid",
+                    "algorithm": "experimental_angle_pid",
+                    "unit_pipeline": "compensated_control_px_to_angle_rad_to_counts",
+                    "tracker": tracker_debug,
+                    "roi_width": roi_width,
+                    "roi_height": roi_height,
+                    "capture_width": capture_width,
+                    "capture_height": capture_height,
+                    "capture_size_source": capture_source,
+                    "invalid_reason": angular_error.invalid_reason,
+                    "final_dx": 0,
+                    "final_dy": 0,
+                },
+            )
+        deadzone_rad = (
+            math.atan(self.deadzone_px / max(1e-6, min(angular_error.focal_x_px, angular_error.focal_y_px)))
+            if self.deadzone_px > 0
+            else 0.0
+        )
+        if deadzone_rad != self.angular_controller.config.deadzone_rad:
+            self.angular_controller.config = replace(self.angular_controller.config, deadzone_rad=deadzone_rad)
         raw_tracker_decay = tracker_debug.get("extrapolate_confidence_decay")
         tracker_confidence_decay = (
             max(0.0, min(1.0, float(raw_tracker_decay)))
             if isinstance(raw_tracker_decay, (int, float)) and not isinstance(raw_tracker_decay, bool)
             else 1.0
         )
-        raw_dx_counts = 0.0 if in_deadzone else (pid_dx_counts + magnet_dx_counts) * tracker_confidence_decay
-        raw_dy_counts = 0.0 if in_deadzone else (pid_dy_counts + magnet_dy_counts) * tracker_confidence_decay
-        dx = self._clamp(raw_dx_counts * self.sign_x, self.max_step_counts)
-        dy = self._clamp(raw_dy_counts * self.sign_y, self.max_step_counts)
-        dx_i = int(round(dx))
-        dy_i = int(round(dy))
+        output = self.angular_controller.update(angular_error)
+        dx_i = output.dx
+        dy_i = output.dy
         bezier_ctrl = _bezier_ctrl(dx_i, dy_i, self.bezier_curvature) if self.move_kind in {"bezier", "enc_bezier"} else None
         return MoveCommand(
             dx=dx_i,
             dy=dy_i,
             confidence=float(target.score),
-            reason=f"experimental angle pid px={math.hypot(error_x_px, error_y_px):.1f}",
+            reason=f"experimental angle pid px={angular_error.error_norm_px:.1f}",
             move_kind=self.move_kind,
             move_ms=self.move_ms,
             trace_ms=self.trace_ms,
@@ -327,12 +376,16 @@ class ExperimentalAnglePidStrategy:
             debug={
                 "stage": "experimental_angle_pid",
                 "algorithm": "experimental_angle_pid",
-                "unit_pipeline": "bbox_center_px_to_angle_rad_to_counts",
-                "coordinate_y": "cartesian_up_positive_before_executor_flip",
+                "unit_pipeline": "compensated_control_px_to_angle_rad_to_counts",
+                "coordinate_y": "image_down_positive_until_calibration_axis_sign",
                 "raw_aim_x": raw_aim_x,
                 "raw_aim_y": raw_aim_y,
                 "aim_x": aim_x,
                 "aim_y": aim_y,
+                "comp_x": comp_x,
+                "comp_y": comp_y,
+                "roi_offset_x": roi_offset_x,
+                "roi_offset_y": roi_offset_y,
                 "tracker": tracker_debug,
                 "roi_center_x": roi_center_x,
                 "roi_center_y": roi_center_y,
@@ -341,44 +394,50 @@ class ExperimentalAnglePidStrategy:
                 "capture_width": capture_width,
                 "capture_height": capture_height,
                 "capture_size_source": capture_source,
-                "error_x_px": error_x_px,
-                "error_y_px": error_y_px,
-                "error_y_image_down_px": error_y_image_down_px,
+                "error_x_px": angular_error.error_x_px,
+                "error_y_px": angular_error.error_y_px,
+                "error_y_image_down_px": angular_error.error_y_px,
                 "fov_x_deg": self.fov_x_deg,
-                "fov_x_rad": fov_x_rad,
-                "fov_y_rad": fov_y_rad,
-                "focal_x": focal_x,
-                "focal_y": focal_y,
-                "error_x_rad": error_x_rad,
-                "error_y_rad": error_y_rad,
-                "error_x_deg": math.degrees(error_x_rad),
-                "error_y_deg": math.degrees(error_y_rad),
-                "out_x_rad": out_x_rad,
-                "out_y_rad": out_y_rad,
+                "fov_x_rad": angular_error.fov_x_rad,
+                "fov_y_rad": angular_error.fov_y_rad,
+                "focal_x": angular_error.focal_x_px,
+                "focal_y": angular_error.focal_y_px,
+                "error_x_rad": angular_error.error_x_rad,
+                "error_y_rad": angular_error.error_y_rad,
+                "error_x_deg": math.degrees(angular_error.error_x_rad),
+                "error_y_deg": math.degrees(angular_error.error_y_rad),
+                "out_x_rad": output.out_x_rad,
+                "out_y_rad": output.out_y_rad,
                 "counts_per_360": self.counts_per_360,
-                "counts_per_rad": counts_per_rad,
+                "counts_per_rad": output.counts_per_rad_x,
                 "speed": self.speed,
                 "deadzone_px": self.deadzone_px,
-                "in_deadzone": in_deadzone,
-                "pid_dx_counts": pid_dx_counts,
-                "pid_dy_counts": pid_dy_counts,
-                "magnet": magnet_debug,
-                "magnet_dx_counts": magnet_dx_counts,
-                "magnet_dy_counts": magnet_dy_counts,
+                "deadzone_rad": deadzone_rad,
+                "in_deadzone": abs(angular_error.error_x_rad) <= deadzone_rad and abs(angular_error.error_y_rad) <= deadzone_rad,
+                "pid_dx_counts": output.raw_x_counts,
+                "pid_dy_counts": output.raw_y_counts,
+                "magnet": {"enabled": self.magnet_enabled, "applied": False, "reason": "disabled by angular control contract"},
+                "magnet_dx_counts": 0.0,
+                "magnet_dy_counts": 0.0,
                 "tracker_confidence_decay": tracker_confidence_decay,
-                "raw_dx_counts": raw_dx_counts,
-                "raw_dy_counts": raw_dy_counts,
+                "raw_dx_counts": output.raw_x_counts,
+                "raw_dy_counts": output.raw_y_counts,
+                "accum_x_counts": output.accum_x_counts,
+                "accum_y_counts": output.accum_y_counts,
+                "residual_x_counts": output.residual_x_counts,
+                "residual_y_counts": output.residual_y_counts,
+                "angular_controller": output.debug,
                 "sign_x": self.sign_x,
                 "sign_y": self.sign_y,
                 "max_step_counts": self.max_step_counts,
                 "dt": dt,
                 "control_hz": self.control_hz,
-                "p_x": self.pid_x.p_term,
-                "p_y": self.pid_y.p_term,
-                "i_x": self.pid_x.i_term,
-                "i_y": self.pid_y.i_term,
-                "d_x": self.pid_x.d_term,
-                "d_y": self.pid_y.d_term,
+                "p_x": output.p_x_rad,
+                "p_y": output.p_y_rad,
+                "i_x": 0.0,
+                "i_y": 0.0,
+                "d_x": output.d_x_rad,
+                "d_y": output.d_y_rad,
                 "final_dx": dx_i,
                 "final_dy": dy_i,
             },
@@ -397,8 +456,7 @@ class ExperimentalAnglePidStrategy:
         return debug
 
     def reset(self) -> None:
-        self.pid_x.reset()
-        self.pid_y.reset()
+        self.angular_controller.reset()
         self._tracks.clear()
         self._last_observation_frame_id = None
         self._last_observation_ts_ns = None
@@ -411,7 +469,7 @@ class ExperimentalAnglePidStrategy:
             return raw_capture_width, raw_capture_height, "frame_metadata"
         if self.capture_width > 0 and self.capture_height > 0:
             return self.capture_width, self.capture_height, "runtime_config"
-        return roi_width, roi_height, "roi_fallback"
+        return 0.0, 0.0, "missing_control_geometry"
 
     def _stable_aim_point(
         self,
@@ -1580,6 +1638,24 @@ def _positive_number(value: object, fallback: float) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
         return float(value)
     return max(0.0, float(fallback))
+
+
+def _number(value: object, fallback: float = 0.0) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return float(fallback)
+
+
+def _stable_int(value: object) -> int | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str):
+        for part in value.split(":"):
+            try:
+                return int(part)
+            except ValueError:
+                continue
+    return None
 
 
 def _center_distance(a: tuple[float, float], b: tuple[float, float]) -> float:

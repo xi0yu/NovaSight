@@ -1141,11 +1141,19 @@ class RuntimeService:
     def _strategy_frame_metadata(self, context: FrameContext) -> dict[str, Any]:
         inference_debug = self.last_inference_status.get("debug", {})
         preprocess = inference_debug.get("preprocess", {}) if isinstance(inference_debug, dict) else {}
+        source_width = self._status_int("source_width", getattr(self.config.capture, "width", 0))
+        source_height = self._status_int("source_height", getattr(self.config.capture, "height", 0))
+        roi_offset_x = self._status_int("roi_offset_x", 0)
+        roi_offset_y = self._status_int("roi_offset_y", 0)
         return {
             "roi_width": context.width,
             "roi_height": context.height,
-            "capture_width": getattr(self.config.capture, "width", 0),
-            "capture_height": getattr(self.config.capture, "height", 0),
+            "capture_width": source_width,
+            "capture_height": source_height,
+            "control_width": source_width,
+            "control_height": source_height,
+            "roi_offset_x": roi_offset_x,
+            "roi_offset_y": roi_offset_y,
             "model_width": preprocess.get("model_width") if isinstance(preprocess, dict) else None,
             "model_height": preprocess.get("model_height") if isinstance(preprocess, dict) else None,
             "detections": [
@@ -1161,6 +1169,12 @@ class RuntimeService:
                 for index, detection in enumerate(context.detections)
             ],
         }
+
+    def _status_int(self, key: str, fallback: int) -> int:
+        value = self.last_inference_status.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+        return int(fallback)
 
     @staticmethod
     def _frame_age_ms(context: FrameContext) -> float:

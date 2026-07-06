@@ -1,3 +1,12 @@
+from novasight.control.angular import (
+    AngularControlOutput,
+    AngularErrorMapper,
+    AngularErrorState,
+    AngularPDConfig,
+    AngularPDController,
+    CalibrationProfile,
+    ControllerMemory,
+)
 from novasight.control.output import ControlOutput, ControlOutputPolicy
 from novasight.control.dynamic_pid import DynamicPidConfig, DynamicPidMouseStrategy
 from novasight.control.isolated_mouse import IsolatedMouseConfig, IsolatedMouseStrategy
@@ -14,6 +23,13 @@ from novasight.control.strategy import (
 )
 
 __all__ = [
+    "AngularControlOutput",
+    "AngularErrorMapper",
+    "AngularErrorState",
+    "AngularPDConfig",
+    "AngularPDController",
+    "CalibrationProfile",
+    "ControllerMemory",
     "ControlCommandCoalescer",
     "ControlOutput",
     "ControlOutputPolicy",
