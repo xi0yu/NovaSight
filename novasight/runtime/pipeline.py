@@ -71,6 +71,11 @@ class RuntimePipeline:
                 name="novasight-inference-control",
                 daemon=True,
             ),
+            threading.Thread(
+                target=lambda: self.failfast.run("continuous_control", self._control_loop),
+                name="novasight-continuous-control",
+                daemon=True,
+            ),
         ]
         for thread in self._threads:
             thread.start()
@@ -144,6 +149,17 @@ class RuntimePipeline:
             self.stats.e2e_latency_ms = max(0.0, (done_ns - int(frame.ts_ns)) / 1e6)
             self.stats.skipped_frames = len(self._skipped_window_ts_ns)
 
+    def _control_loop(self) -> None:
+        process_control_tick = getattr(self.runtime, "process_control_tick", None)
+        if not callable(process_control_tick):
+            return
+        while not self._stop.is_set():
+            if not self._continuous_control_enabled():
+                time.sleep(0.05)
+                continue
+            process_control_tick()
+            time.sleep(self._control_interval_s())
+
     def _inference_enabled(self) -> bool:
         config = getattr(self.runtime, "config", None)
         consumers = getattr(config, "consumers", None)
@@ -151,6 +167,17 @@ class RuntimePipeline:
         return bool(getattr(consumers, "inference", True)) and bool(
             getattr(inference, "enabled", True)
         )
+
+    def _continuous_control_enabled(self) -> bool:
+        config = getattr(self.runtime, "config", None)
+        control = getattr(config, "control", None)
+        return str(getattr(control, "strategy", "")) == "experimental_angle_pid"
+
+    def _control_interval_s(self) -> float:
+        config = getattr(self.runtime, "config", None)
+        control = getattr(config, "control", None)
+        hz = max(1.0, float(getattr(control, "experimental_angle_control_hz", 60.0)))
+        return max(0.001, min(0.05, 1.0 / hz))
 
     def _record_skipped(self, now_ns: int, skipped: int) -> None:
         for _ in range(skipped):

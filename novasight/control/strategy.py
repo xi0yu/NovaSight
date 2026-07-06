@@ -226,6 +226,9 @@ class ExperimentalAnglePidStrategy:
         self.bezier_curvature = max(0.0, bezier_curvature)
         self._tracks: dict[int, _KalmanCenterTrack] = {}
         self._next_track_id = 1
+        self._last_observation_frame_id: int | None = None
+        self._last_observation_ts_ns: int | None = None
+        self._last_tracker_tick_ns: int | None = None
 
     def calculate(
         self,
@@ -347,6 +350,9 @@ class ExperimentalAnglePidStrategy:
         self.pid_x.reset()
         self.pid_y.reset()
         self._tracks.clear()
+        self._last_observation_frame_id = None
+        self._last_observation_ts_ns = None
+        self._last_tracker_tick_ns = None
 
     def _capture_dimensions(self, raw: dict[str, object], roi_width: float, roi_height: float) -> tuple[float, float, str]:
         raw_capture_width = _positive_number(raw.get("capture_width"), 0.0)
@@ -371,7 +377,9 @@ class ExperimentalAnglePidStrategy:
             detections = [_target_detection_item(target, raw)]
         raw_detection_count = len(detections)
         detections, filter_debug = self._filter_detections_for_tracking(detections, target, raw)
-        dt = 1.0 / self.control_hz
+        frame_id = self._raw_frame_id(raw)
+        is_new_observation = frame_id is None or frame_id != self._last_observation_frame_id
+        dt, dt_source = self._tracker_dt(raw, is_new_observation)
         for track in self._tracks.values():
             track.predict(dt, self.kalman_process_noise)
 
@@ -386,23 +394,34 @@ class ExperimentalAnglePidStrategy:
                 "tracks": len(self._tracks),
                 "raw_detections": raw_detection_count,
                 "detections": 0,
+                "frame_id": frame_id,
+                "new_observation": is_new_observation,
+                "dt": dt,
+                "dt_source": dt_source,
                 "filter": filter_debug,
             }
 
-        assignments = self._assign_tracks(detections) if self.hungarian_enabled else self._greedy_assign_tracks(detections)
+        assignments = self._assign_tracks(detections) if is_new_observation and self.hungarian_enabled else self._greedy_assign_tracks(detections) if is_new_observation else []
         assigned_detection_indexes: set[int] = set()
-        for track_id, detection_index, _cost in assignments:
-            track = self._tracks.get(track_id)
-            if track is None:
-                continue
-            track.update(detections[detection_index], self.kalman_measurement_noise)
-            assigned_detection_indexes.add(detection_index)
+        if is_new_observation:
+            for track_id, detection_index, _cost in assignments:
+                track = self._tracks.get(track_id)
+                if track is None:
+                    continue
+                track.update(detections[detection_index], self.kalman_measurement_noise)
+                assigned_detection_indexes.add(detection_index)
 
-        for index, detection in enumerate(detections):
-            if index in assigned_detection_indexes:
+            for index, detection in enumerate(detections):
+                if index in assigned_detection_indexes:
+                    continue
+                track = self._new_track(detection)
+                self._tracks[track.track_id] = track
+            self._remember_observation(raw, frame_id)
+        else:
+            for track in self._tracks.values():
+                if track.source_index is not None:
+                    assigned_detection_indexes.add(track.source_index)
                 continue
-            track = self._new_track(detection)
-            self._tracks[track.track_id] = track
 
         stale = [track_id for track_id, track in self._tracks.items() if track.missed > self.max_extrapolate_frames]
         for track_id in stale:
@@ -418,6 +437,10 @@ class ExperimentalAnglePidStrategy:
                 "raw_detections": raw_detection_count,
                 "detections": len(detections),
                 "assignments": len(assignments),
+                "frame_id": frame_id,
+                "new_observation": is_new_observation,
+                "dt": dt,
+                "dt_source": dt_source,
                 "filter": filter_debug,
             }
         x, y = self._predicted_track_center(selected, dt)
@@ -432,6 +455,10 @@ class ExperimentalAnglePidStrategy:
             "raw_detections": raw_detection_count,
             "detections": len(detections),
             "assignments": len(assignments),
+            "frame_id": frame_id,
+            "new_observation": is_new_observation,
+            "dt": dt,
+            "dt_source": dt_source,
             "filter": filter_debug,
             "hungarian": self.hungarian_enabled,
             "prediction_lead_ms": self.prediction_lead_ms,
@@ -493,6 +520,46 @@ class ExperimentalAnglePidStrategy:
             return track.center
         lead_s = min(lead_s, max(dt, 1.0 / self.control_hz) * (1 + self.max_extrapolate_frames))
         return track.kx.position + track.kx.velocity * lead_s, track.ky.position + track.ky.velocity * lead_s
+
+    def _raw_frame_id(self, raw: dict[str, object]) -> int | None:
+        value = raw.get("frame_id")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+        return None
+
+    def _raw_capture_ts_ns(self, raw: dict[str, object]) -> int | None:
+        value = raw.get("capture_ts_ns")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return int(value)
+        return None
+
+    def _tracker_dt(self, raw: dict[str, object], is_new_observation: bool) -> tuple[float, str]:
+        now_ns = time.monotonic_ns()
+        default_dt = 1.0 / self.control_hz
+        capture_ts_ns = self._raw_capture_ts_ns(raw)
+        if is_new_observation and capture_ts_ns is not None and self._last_observation_ts_ns is not None:
+            delta_ns = capture_ts_ns - self._last_observation_ts_ns
+            if delta_ns > 0:
+                self._last_tracker_tick_ns = now_ns
+                return self._clamp_dt(delta_ns / 1e9), "capture_ts_ns"
+        if self._last_tracker_tick_ns is not None:
+            delta_ns = now_ns - self._last_tracker_tick_ns
+            if delta_ns > 0:
+                self._last_tracker_tick_ns = now_ns
+                return self._clamp_dt(delta_ns / 1e9), "control_tick"
+        self._last_tracker_tick_ns = now_ns
+        return default_dt, "default_control_hz"
+
+    def _remember_observation(self, raw: dict[str, object], frame_id: int | None) -> None:
+        if frame_id is not None:
+            self._last_observation_frame_id = frame_id
+        capture_ts_ns = self._raw_capture_ts_ns(raw)
+        if capture_ts_ns is not None:
+            self._last_observation_ts_ns = capture_ts_ns
+
+    @staticmethod
+    def _clamp_dt(dt: float) -> float:
+        return max(1.0 / 240.0, min(1.0 / 15.0, float(dt)))
 
     def _magnet_counts(
         self,

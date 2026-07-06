@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import logging
+import threading
 import time
 from typing import Any
 
@@ -71,6 +72,8 @@ class RuntimeService:
         self._last_trigger_log_s = 0.0
         self._last_box_input_log_signature = ""
         self._last_box_input_log_s = 0.0
+        self._control_lock = threading.Lock()
+        self._last_control_tick_ns = 0
         self.control_strategy = self._create_control_strategy(config)
         self.target_selector = RuntimeTargetSelector()
 
@@ -152,8 +155,10 @@ class RuntimeService:
         }
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
-        self.last_frame_context = context
-        intent = self._control_intent_from_context(context)
+        with self._control_lock:
+            self.last_frame_context = context
+            intent = self._control_intent_from_context(context)
+            self._last_control_tick_ns = time.monotonic_ns()
         control_intents = [intent] if intent is not None else []
         execution_results = [self.executors.execute(intent) for intent in control_intents]
         if execution_results:
@@ -172,6 +177,19 @@ class RuntimeService:
             control_intents=control_intents,
             execution_results=execution_results,
         )
+
+    def process_control_tick(self) -> RuntimeFrameResult:
+        if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
+            return RuntimeFrameResult()
+        context = self.last_frame_context
+        if context is None:
+            return RuntimeFrameResult()
+        control_hz = max(1.0, float(getattr(self.config.control, "experimental_angle_control_hz", 60.0)))
+        now_ns = time.monotonic_ns()
+        min_interval_ns = int(1_000_000_000 / control_hz)
+        if self._last_control_tick_ns and now_ns - self._last_control_tick_ns < min_interval_ns:
+            return RuntimeFrameResult()
+        return self.process_frame(context)
 
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
         total_start_ns = time.monotonic_ns()
