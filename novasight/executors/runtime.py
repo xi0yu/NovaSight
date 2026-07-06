@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from novasight.config import RuntimeConfig
-from novasight.control import ControlCommandCoalescer, ControlOutput, ControlOutputPolicy
+from novasight.control import CommandScheduler, ControlCommandCoalescer, ControlOutput, ControlOutputPolicy
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.dry_run import ConsoleExecutor, DryRunExecutor, SilentExecutor
 from novasight.executors.kmnet import KmNetExecutor
@@ -20,6 +20,7 @@ class ExecutorRegistry:
         default: str = "dry_run",
         policy: ControlOutputPolicy | None = None,
         coalescer: ControlCommandCoalescer | None = None,
+        scheduler: CommandScheduler | None = None,
         y_limiter: YAxisWindowLimiter | None = None,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
@@ -28,6 +29,7 @@ class ExecutorRegistry:
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
         self.coalescer = coalescer
+        self.scheduler = scheduler
         self.y_limiter = y_limiter
 
     @classmethod
@@ -37,6 +39,7 @@ class ExecutorRegistry:
         default: str = "dry_run",
         policy: ControlOutputPolicy | None = None,
         coalescer: ControlCommandCoalescer | None = None,
+        scheduler: CommandScheduler | None = None,
         y_limiter: YAxisWindowLimiter | None = None,
     ) -> ExecutorRegistry:
         kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
@@ -50,6 +53,7 @@ class ExecutorRegistry:
             default=default,
             policy=policy,
             coalescer=coalescer,
+            scheduler=scheduler,
             y_limiter=y_limiter,
         )
 
@@ -59,7 +63,7 @@ class ExecutorRegistry:
             config=config,
             default=config.control.output_mode or config.executor.default,
             policy=policy_from_config(config),
-            coalescer=coalescer_from_config(config),
+            scheduler=scheduler_from_config(config),
             y_limiter=YAxisWindowLimiter.from_config(config),
         )
 
@@ -69,14 +73,15 @@ class ExecutorRegistry:
             raise ValueError(f"unknown executor: {selected}")
         self.selected = selected
         self.policy = policy_from_config(config)
-        self.coalescer = coalescer_from_config(config)
+        self.coalescer = None
+        self.scheduler = scheduler_from_config(config)
         if self.y_limiter is None:
             self.y_limiter = YAxisWindowLimiter.from_config(config)
         else:
             self.y_limiter.configure_from_config(config)
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
-        if self.coalescer is not None:
+        if self.scheduler is None and self.coalescer is not None:
             merged = self.coalescer.push(intent)
             if merged is None:
                 bounded = self.policy.apply(intent)
@@ -101,11 +106,32 @@ class ExecutorRegistry:
         limiter_metadata: dict[str, Any] | None = None
         if self.y_limiter is not None:
             bounded, limiter_metadata = self.y_limiter.apply(bounded)
+        scheduler_metadata: dict[str, Any] | None = None
+        if self.scheduler is not None:
+            decision = self.scheduler.submit(bounded)
+            scheduler_metadata = decision.metadata
+            if decision.output is None:
+                return ExecutionResult(
+                    executor_id=self.selected,
+                    sent=False,
+                    intent=bounded,
+                    message="control command scheduled",
+                    metadata={
+                        "stage": "scheduler",
+                        "selected_executor": self.selected,
+                        **scheduler_metadata,
+                        **({"y_rate_limiter": limiter_metadata} if limiter_metadata is not None else {}),
+                    },
+                )
+            bounded = decision.output
         result = self.executors[self.selected].execute(bounded)
         if result.metadata is not None:
-            if limiter_metadata is not None:
+            if limiter_metadata is not None or scheduler_metadata is not None:
                 metadata = dict(result.metadata)
-                metadata["y_rate_limiter"] = limiter_metadata
+                if limiter_metadata is not None:
+                    metadata["y_rate_limiter"] = limiter_metadata
+                if scheduler_metadata is not None:
+                    metadata["scheduler"] = scheduler_metadata
                 return replace(result, metadata=metadata)
             return result
         return ExecutionResult(
@@ -120,6 +146,7 @@ class ExecutorRegistry:
                 "clipped": bool(bounded.clipped),
                 "policy_reason": str(bounded.reason),
                 **({"y_rate_limiter": limiter_metadata} if limiter_metadata is not None else {}),
+                **({"scheduler": scheduler_metadata} if scheduler_metadata is not None else {}),
             },
         )
 
@@ -135,6 +162,7 @@ class ExecutorRegistry:
 
         return {
             "selected": self.selected,
+            "scheduler": self.scheduler.status() if self.scheduler is not None else {"enabled": False},
             "executors": {
                 executor_id: executor_status(executor)
                 for executor_id, executor in self.executors.items()
@@ -223,3 +251,12 @@ def coalescer_from_config(config: RuntimeConfig) -> ControlCommandCoalescer:
     return ControlCommandCoalescer(
         min_interval_s=max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
     )
+
+
+def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler:
+    move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
+    move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
+    movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
+    interval_s = max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
+    ttl_s = max(0.050, interval_s * 3.0)
+    return CommandScheduler(min_interval_s=interval_s, ttl_s=ttl_s)

@@ -8,6 +8,7 @@ from novasight.control.angular import (
     ControllerMemory,
 )
 from novasight.control.output import ControlOutput, ControlOutputPolicy
+from novasight.control.scheduler import CommandScheduler, ScheduleDecision
 from novasight.control.dynamic_pid import DynamicPidConfig, DynamicPidMouseStrategy
 from novasight.control.isolated_mouse import IsolatedMouseConfig, IsolatedMouseStrategy
 from novasight.control.strategy import (
@@ -29,6 +30,7 @@ __all__ = [
     "AngularPDConfig",
     "AngularPDController",
     "CalibrationProfile",
+    "CommandScheduler",
     "ControllerMemory",
     "ControlCommandCoalescer",
     "ControlOutput",
@@ -44,5 +46,6 @@ __all__ = [
     "PredictiveStrategy",
     "ProportionalStrategy",
     "StraightStrategy",
+    "ScheduleDecision",
     "aim_point",
 ]
