@@ -171,6 +171,29 @@ class RuntimePipeline:
                 return status
         return None
 
+    def _capture_is_still_available(self) -> bool:
+        state = getattr(self.capture, "state", None)
+        if getattr(state, "available", False) is not True:
+            return False
+        session = getattr(self.capture, "session", None)
+        if session is not None and getattr(session, "running", False) is not True:
+            return False
+        if getattr(self.capture, "source", None) is None:
+            return False
+        return True
+
+    def _capture_unavailable_reason(self) -> str:
+        state = getattr(self.capture, "state", None)
+        reason = str(getattr(state, "last_error", "") or "").strip()
+        if reason:
+            return reason
+        session = getattr(self.capture, "session", None)
+        if session is not None and getattr(session, "running", False) is not True:
+            return "capture session stopped"
+        if getattr(self.capture, "source", None) is None:
+            return "capture source unavailable"
+        return "capture unavailable"
+
     def _runtime_loop(self) -> None:
         wait_frame = getattr(self.capture, "wait_preview_frame", None)
         if not callable(wait_frame):
@@ -181,6 +204,11 @@ class RuntimePipeline:
                 timeout_s=0.1,
             )
             if frame is None:
+                if not self._capture_is_still_available():
+                    self.stats.last_error = self._capture_unavailable_reason()
+                    self.runtime.running = False
+                    self._stop.set()
+                    break
                 continue
             skipped = max(0, int(frame.frame_id) - int(self._last_consumed_frame_id) - 1)
             self.stats.consumed_frames += 1

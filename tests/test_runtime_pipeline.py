@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from novasight.capture.session import CaptureSession
 from novasight.capture.source import CapturedFrame
+from novasight.capture.state import CaptureProfile
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch
 from novasight.runtime import (
@@ -231,6 +233,110 @@ def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
     pipeline.stop()
 
     assert processed == [10, 1]
+
+
+def test_runtime_pipeline_stops_when_capture_becomes_unavailable() -> None:
+    cfg = RuntimeConfig()
+    observed = threading.Event()
+    capture_state = SimpleNamespace(available=True, last_error=None)
+    capture = SimpleNamespace(
+        source=object(),
+        state=capture_state,
+        session=SimpleNamespace(running=True),
+    )
+
+    def wait_preview_frame(*, after_frame_id: int | None = None, timeout_s: float = 0.0):
+        del after_frame_id, timeout_s
+        capture_state.available = False
+        capture_state.last_error = "capture read failed: boom"
+        observed.set()
+        return None
+
+    capture.wait_preview_frame = wait_preview_frame
+    runtime = SimpleNamespace(
+        running=False,
+        config=cfg,
+        process_captured_frame=lambda _frame: pytest.fail("unavailable capture must not process inference"),
+        process_control_tick=lambda: None,
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    pipeline.start()
+    try:
+        assert observed.wait(1.0)
+        deadline = threading.Event()
+        assert deadline.wait(0.05) is False
+        assert runtime.running is False
+        assert pipeline.running is False
+        assert "capture read failed" in (pipeline.stats.last_error or "")
+    finally:
+        pipeline.stop()
+
+
+def test_runtime_pipeline_consumes_frames_from_capture_session_thread() -> None:
+    class ThreadedSource:
+        backend_label = "test:threaded"
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.frame_id = 0
+
+        def read(self) -> CapturedFrame | None:
+            if self.closed:
+                return None
+            time_sleep.wait(0.005)
+            self.frame_id += 1
+            return CapturedFrame(
+                frame_id=self.frame_id,
+                width=2,
+                height=2,
+                pixel_format="BGR",
+                ts_ns=1_000_000_000 + self.frame_id * 1_000_000,
+                capture_wait_ms=0.1,
+                image=None,
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    time_sleep = threading.Event()
+    source = ThreadedSource()
+    profile = CaptureProfile(
+        device="/dev/test",
+        pixel_format="BGR",
+        width=2,
+        height=2,
+        fps=120,
+        preference="manual",
+        selection_reason="threaded test",
+    )
+    capture = CaptureSession(source_factory=lambda _profile: source)
+    capture.start(profile)
+    processed: list[int] = []
+    processed_two = threading.Event()
+
+    def process_captured_frame(frame: CapturedFrame) -> None:
+        processed.append(frame.frame_id)
+        if len(processed) >= 2:
+            processed_two.set()
+
+    runtime = SimpleNamespace(
+        running=False,
+        config=RuntimeConfig(),
+        process_captured_frame=process_captured_frame,
+        process_control_tick=lambda: None,
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    try:
+        pipeline.start()
+        assert processed_two.wait(1.0)
+        assert runtime.running is True
+        assert pipeline.status()["processed_frames"] >= 2
+        assert processed == sorted(processed)
+    finally:
+        pipeline.stop()
+        capture.stop("test complete")
 
 
 def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
