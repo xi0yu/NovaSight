@@ -14,12 +14,21 @@ from urllib.request import urlretrieve
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
+from novasight.deepstream import DeepStreamPipelineConfig, build_deepstream_pipeline
 from novasight.model_registry import (
+    TensorSpec,
+    ModelArtifactScanResult,
     ModelRegistry,
     RegistryConflictError,
     RegistryError,
     RegistryNotFoundError,
     RegistryValidationError,
+    build_engine_manifest,
+    generate_nvinfer_config,
+    inspect_model_artifact,
+    read_manifest,
+    scan_model_artifacts,
+    write_manifest,
 )
 from novasight.inference import parse_tensor_input_shape
 
@@ -93,6 +102,34 @@ class PublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: StrictInt
+
+
+class DeepStreamPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: StrictStr
+    display_name: StrictStr
+    input_name: StrictStr = "images"
+    input_shape: list[StrictInt]
+    output_name: StrictStr = "output0"
+    output_shape: list[StrictInt]
+    class_count: StrictInt
+    confidence_threshold: float = 0.25
+    nms_iou_threshold: float = 0.45
+
+
+class DeepStreamPipelineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device: StrictStr = "/dev/video0"
+    capture_width: StrictInt = 1920
+    capture_height: StrictInt = 1080
+    fps: StrictInt = 120
+    roi_left: StrictInt = 720
+    roi_top: StrictInt = 300
+    roi_size: StrictInt = 480
+    io_mode: StrictInt = 2
+    batched_push_timeout_us: StrictInt = 0
 
 
 def _download_file(url: str, path: Path) -> None:
@@ -338,6 +375,66 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
         return
 
 
+def _relative_registry_path(registry: ModelRegistry, path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        return Path(path).resolve(strict=False).relative_to(
+            Path(registry.data_dir).resolve(strict=False)
+        ).as_posix()
+    except ValueError:
+        return Path(path).as_posix()
+
+
+def _artifact_scan_payload(
+    registry: ModelRegistry,
+    result: ModelArtifactScanResult,
+) -> dict[str, Any]:
+    return {
+        "path": _relative_registry_path(registry, result.path),
+        "kind": result.kind,
+        "status": result.status,
+        "reason": result.reason,
+        "sha256": result.sha256,
+        "size_bytes": result.size_bytes,
+        "manifest_path": _relative_registry_path(registry, result.manifest_path),
+        "deepstream_config_path": _relative_registry_path(
+            registry,
+            result.deepstream_config_path,
+        ),
+        "model_fingerprint": result.model_fingerprint,
+    }
+
+
+def _artifact_scan_counts(results: list[ModelArtifactScanResult]) -> dict[str, int]:
+    counts = {
+        "ready": 0,
+        "need_confirm": 0,
+        "invalid": 0,
+        "unsupported": 0,
+    }
+    for result in results:
+        counts[result.status] = counts.get(result.status, 0) + 1
+    return counts
+
+
+def _artifact_asset_context(
+    registry: ModelRegistry,
+    artifact_id: int,
+) -> tuple[Any, Any, Any, Path]:
+    artifact = registry.get_artifact(artifact_id)
+    if artifact is None:
+        raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
+    version = registry.get_version(artifact.version_id)
+    if version is None:
+        raise RegistryNotFoundError(f"unknown version id: {artifact.version_id}")
+    project = registry.get_project(version.project_id)
+    if project is None:
+        raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
+    artifact_path = Path(registry.data_dir) / project.name / version.version / artifact.path
+    return artifact, version, project, artifact_path
+
+
 def _registry(request: Request) -> ModelRegistry:
     return request.app.state.models
 
@@ -577,13 +674,155 @@ def list_projects(request: Request) -> list[dict[str, Any]]:
     return [asdict(project) for project in registry.list_projects()]
 
 
+@router.get("/scan")
 @router.post("/scan")
 def scan_models(request: Request) -> dict[str, Any]:
     registry = _registry(request)
     before = len(registry.list_projects())
     _sync_models_directory(registry)
     projects = registry.list_projects()
-    return {"projects": [asdict(project) for project in projects], "project_count": len(projects), "previous_project_count": before}
+    artifacts = scan_model_artifacts(Path(registry.data_dir))
+    return {
+        "projects": [asdict(project) for project in projects],
+        "project_count": len(projects),
+        "previous_project_count": before,
+        "artifacts": [
+            _artifact_scan_payload(registry, artifact)
+            for artifact in artifacts
+        ],
+        "artifact_status_counts": _artifact_scan_counts(artifacts),
+    }
+
+
+@router.post("/artifacts/{artifact_id}/deepstream/prepare")
+def prepare_deepstream_artifact(
+    request: Request,
+    artifact_id: int,
+    payload: DeepStreamPrepareRequest,
+) -> dict[str, Any]:
+    registry = _registry(request)
+    try:
+        artifact, _version, _project, artifact_path = _artifact_asset_context(
+            registry,
+            artifact_id,
+        )
+        if artifact.kind != "engine":
+            raise RegistryValidationError("DeepStream prepare currently requires a TensorRT .engine artifact")
+        if not artifact_path.exists():
+            raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
+        manifest = build_engine_manifest(
+            model_id=payload.model_id,
+            display_name=payload.display_name,
+            engine_path=artifact_path,
+            input_spec=TensorSpec(
+                name=payload.input_name,
+                shape=[int(item) for item in payload.input_shape],
+                dtype="float32",
+                layout="NCHW",
+            ),
+            output_spec=TensorSpec(
+                name=payload.output_name,
+                shape=[int(item) for item in payload.output_shape],
+                dtype="float32",
+                layout="NCHW",
+            ),
+            class_count=int(payload.class_count),
+            confidence_threshold=float(payload.confidence_threshold),
+            nms_iou_threshold=float(payload.nms_iou_threshold),
+            validated=True,
+        )
+        manifest_path = artifact_path.with_name("model.manifest.json")
+        deepstream_config_path = artifact_path.with_name("deepstream.ini")
+        write_manifest(manifest, manifest_path)
+        config_text, config_fingerprint = generate_nvinfer_config(
+            manifest,
+            engine_path=artifact_path,
+        )
+        deepstream_config_path.write_text(config_text, encoding="utf-8")
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = inspect_model_artifact(artifact_path)
+    return {
+        "status": result.status,
+        "reason": result.reason,
+        "manifest_path": _relative_registry_path(registry, result.manifest_path),
+        "deepstream_config_path": _relative_registry_path(
+            registry,
+            result.deepstream_config_path,
+        ),
+        "model_fingerprint": result.model_fingerprint,
+        "config_fingerprint": config_fingerprint,
+    }
+
+
+@router.post("/artifacts/{artifact_id}/deepstream/pipeline")
+def build_deepstream_artifact_pipeline(
+    request: Request,
+    artifact_id: int,
+    payload: DeepStreamPipelineRequest,
+) -> dict[str, Any]:
+    registry = _registry(request)
+    try:
+        _artifact, _version, _project, artifact_path = _artifact_asset_context(
+            registry,
+            artifact_id,
+        )
+        manifest_path = artifact_path.with_name("model.manifest.json")
+        deepstream_config_path = artifact_path.with_name("deepstream.ini")
+        if not manifest_path.exists():
+            raise RegistryValidationError("model manifest is missing; prepare DeepStream config first")
+        if not deepstream_config_path.exists():
+            raise RegistryValidationError("DeepStream config is missing; prepare DeepStream config first")
+        manifest = read_manifest(manifest_path)
+        if len(manifest.input.shape) != 4:
+            raise RegistryValidationError("DeepStream pipeline requires a 4D NCHW input shape")
+        model_height = int(manifest.input.shape[2])
+        model_width = int(manifest.input.shape[3])
+        pipeline_config = DeepStreamPipelineConfig(
+            device=str(payload.device),
+            capture_width=int(payload.capture_width),
+            capture_height=int(payload.capture_height),
+            fps=int(payload.fps),
+            roi_left=int(payload.roi_left),
+            roi_top=int(payload.roi_top),
+            roi_size=int(payload.roi_size),
+            model_width=model_width,
+            model_height=model_height,
+            nvinfer_config_path=deepstream_config_path,
+            io_mode=int(payload.io_mode),
+            batched_push_timeout_us=int(payload.batched_push_timeout_us),
+        )
+        pipeline = build_deepstream_pipeline(pipeline_config)
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "pipeline": pipeline,
+        "model_input": {
+            "width": model_width,
+            "height": model_height,
+            "shape": list(manifest.input.shape),
+        },
+        "roi": {
+            "left": int(payload.roi_left),
+            "top": int(payload.roi_top),
+            "right": int(payload.roi_left) + int(payload.roi_size),
+            "bottom": int(payload.roi_top) + int(payload.roi_size),
+            "size": int(payload.roi_size),
+        },
+        "capture": {
+            "device": str(payload.device),
+            "width": int(payload.capture_width),
+            "height": int(payload.capture_height),
+            "fps": int(payload.fps),
+            "io_mode": int(payload.io_mode),
+        },
+        "manifest_path": _relative_registry_path(registry, manifest_path),
+        "deepstream_config_path": _relative_registry_path(registry, deepstream_config_path),
+    }
 
 
 @router.post("/examples/yolov8n/prepare")

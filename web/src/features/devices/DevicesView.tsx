@@ -7,6 +7,7 @@ import {
   type RuntimeConfig,
   type RuntimeState,
   getCaptureCapabilities,
+  getRuntimeConfig,
   selectCaptureProfile,
   selectImageSource,
   updateRuntimeConfig,
@@ -30,6 +31,7 @@ type CapabilityGroup = {
 
 type DevicesViewProps = {
   runtime: RuntimeState | null;
+  runtimeConfig?: RuntimeConfig | null;
   error: string | undefined;
   onRuntimeRefresh: () => Promise<void>;
   onOpenModels: () => void;
@@ -261,14 +263,17 @@ function formatThreshold(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
-function readConfiguredCapture(runtime: RuntimeState | null): {
+function readConfiguredCapture(
+  runtime: RuntimeState | null,
+  runtimeConfig?: RuntimeConfig | null
+): {
   device: string;
   pixelFormat: string;
   width: number;
   height: number;
   fps: number;
 } {
-  const captureConfig = getNestedRecord(runtime?.config, "capture");
+  const captureConfig = getNestedRecord(runtimeConfig ?? runtime?.config, "capture");
   const configuredDevice = captureConfig?.device;
   const configuredPixelFormat = captureConfig?.pixel_format;
   const configuredWidth = captureConfig?.width;
@@ -291,12 +296,13 @@ function readConfiguredCapture(runtime: RuntimeState | null): {
 
 export function DevicesView({
   runtime,
+  runtimeConfig,
   error,
   onRuntimeRefresh,
   onOpenModels,
   initialSection
 }: DevicesViewProps) {
-  const configuredCapture = readConfiguredCapture(runtime);
+  const configuredCapture = readConfiguredCapture(runtime, runtimeConfig);
   const [device, setDevice] = useState(configuredCapture.device);
   const [capabilities, setCapabilities] = useState<CaptureCapabilitiesResponse | null>(null);
   const [captureError, setCaptureError] = useState<string | undefined>(error);
@@ -426,19 +432,18 @@ export function DevicesView({
 
   const updateRuntimeField = useCallback(
     async (section: string, key: string, value: string | number | boolean) => {
-      if (!runtime?.config || configBusy) {
+      if (configBusy) {
         return;
       }
       setConfigBusy(`${section}.${key}`);
-      const nextConfig = structuredClone(runtime.config) as RuntimeConfig;
-      delete nextConfig.version;
-      const sectionValue =
-        typeof nextConfig[section] === "object" && nextConfig[section] !== null
-          ? { ...(nextConfig[section] as Record<string, unknown>) }
-          : {};
-      sectionValue[key] = value;
-      nextConfig[section] = sectionValue as RuntimeConfig[string];
       try {
+        const nextConfig = await getRuntimeConfig();
+        const sectionValue =
+          typeof nextConfig[section] === "object" && nextConfig[section] !== null
+            ? { ...(nextConfig[section] as Record<string, unknown>) }
+            : {};
+        sectionValue[key] = value;
+        nextConfig[section] = sectionValue as RuntimeConfig[string];
         await updateRuntimeConfig(nextConfig);
         await onRuntimeRefresh();
       } catch (err) {
@@ -448,18 +453,19 @@ export function DevicesView({
         setConfigBusy(null);
       }
     },
-    [configBusy, onRuntimeRefresh, runtime?.config]
+    [configBusy, onRuntimeRefresh]
   );
 
   const applyPreference = (preference: CaptureSelectPayload["preference"], label: string) =>
     applySelection({ device, preference }, label);
 
   const capture = runtime?.capture;
-  const roiConfig = getNestedRecord(runtime?.config, "roi");
-  const inferenceConfig = getNestedRecord(runtime?.config, "inference");
-  const controlConfig = getNestedRecord(runtime?.config, "control");
+  const configSource = runtimeConfig ?? runtime?.config;
+  const roiConfig = getNestedRecord(configSource, "roi");
+  const inferenceConfig = getNestedRecord(configSource, "inference");
+  const controlConfig = getNestedRecord(configSource, "control");
   const roiSize = typeof roiConfig?.size === "number" ? roiConfig.size : 640;
-  const sourceConfig = getNestedRecord(runtime?.config, "source");
+  const sourceConfig = getNestedRecord(configSource, "source");
   const activeSource = String(sourceConfig?.default ?? runtime?.source ?? "null");
   const normalizedActiveSource: CaptureInputSource =
     activeSource === "image" || activeSource.startsWith("image:") ? "image" : "capture";
@@ -520,17 +526,17 @@ export function DevicesView({
       tone: inferenceEnabled ? "ready" : "blocked"
     }
   ];
-  const controlStrategy = readString(controlConfig, "strategy", "straight");
+  const controlStrategy = "experimental_angle_pid";
   const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
   const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
   const maxAbsDy = readNumber(controlConfig, "max_abs_dy", 120);
   const minConfidence = readNumber(controlConfig, "min_confidence", 0);
-  const pidKpX = readNumber(controlConfig, "pid_kp_x", 0.35);
-  const pidKpY = readNumber(controlConfig, "pid_kp_y", 0.35);
-  const pidKi = readNumber(controlConfig, "pid_ki", 0.1);
-  const pidKd = readNumber(controlConfig, "pid_kd", 0.1);
-  const pidIntegralLimit = readNumber(controlConfig, "pid_integral_limit", 250);
-  const pidMoveLimit = readNumber(controlConfig, "pid_move_limit", 120);
+  const experimentalAngleKpX = readNumber(controlConfig, "experimental_angle_kp_x", 0.35);
+  const experimentalAngleKpY = readNumber(controlConfig, "experimental_angle_kp_y", 0.24);
+  const experimentalAngleKi = readNumber(controlConfig, "experimental_angle_ki", 0);
+  const experimentalAngleKd = readNumber(controlConfig, "experimental_angle_kd", 0);
+  const experimentalAngleIntegralLimit = readNumber(controlConfig, "experimental_angle_integral_limit", 0);
+  const experimentalAngleMaxStep = readNumber(controlConfig, "experimental_angle_max_step_counts", 80);
 
   useEffect(() => {
     setSelectedSource(normalizedActiveSource);
@@ -598,7 +604,7 @@ export function DevicesView({
             {
               id: "algorithm",
               label: "控制输出",
-              value: controlStrategy === "straight" ? "FOV/c360 跟随" : controlStrategy === "pid" ? "PID 平滑追踪" : "实验算法",
+              value: "实验角度 PID",
               detail: `X/Y 限幅 ${maxAbsDx}/${maxAbsDy}`,
               ready: maxAbsDx > 0 && maxAbsDy > 0
             }
@@ -1089,29 +1095,29 @@ export function DevicesView({
             <aside className="settings-console-sidebar">
               <div className="settings-side-head">
                 <strong>控制量调整</strong>
-                <span>把检测结果变成可控范围内的输出，核心是 FOV、PID 和限幅。</span>
+                <span>把补偿目标点转换成角度误差，再由角度 PID 和标定 Profile 输出 counts。</span>
               </div>
               <dl className="settings-summary-list">
                 <div>
                   <dt>策略</dt>
-                  <dd>{controlStrategy === "pid" ? "PID 平滑追踪" : "预测追踪"}</dd>
+                  <dd>实验角度 PID</dd>
                 </div>
                 <div>
                   <dt>FOV</dt>
-                  <dd>{formatThreshold(fovRatio)}</dd>
+                  <dd>Selection {formatThreshold(fovRatio)}</dd>
                 </div>
                 <div>
                   <dt>限幅</dt>
                   <dd>X {maxAbsDx} / Y {maxAbsDy}</dd>
                 </div>
                 <div>
-                  <dt>PID</dt>
-                  <dd>Kp {pidKpX}/{pidKpY} · Ki {pidKi} · Kd {pidKd} · 积分 {pidIntegralLimit}</dd>
+                  <dt>角度 PID</dt>
+                  <dd>Kp {experimentalAngleKpX}/{experimentalAngleKpY} · Ki {experimentalAngleKi} · Kd {experimentalAngleKd} · 积分 {experimentalAngleIntegralLimit}</dd>
                 </div>
               </dl>
               <div className="control-safety-note">
                 <strong>安全顺序</strong>
-                <span>先缩小输出上限，再提高 Kp；如果抖动明显，优先降低 Kd 或提高置信度门槛。</span>
+                <span>先确认标定 Profile，再逐步提高 Kp；如果抖动明显，优先降低 Kd 或提高目标过滤质量。</span>
               </div>
             </aside>
 
@@ -1123,11 +1129,11 @@ export function DevicesView({
                 </div>
                 <div>
                   <span>Kp X/Y</span>
-                  <strong>{pidKpX} / {pidKpY}</strong>
+                  <strong>{experimentalAngleKpX} / {experimentalAngleKpY}</strong>
                 </div>
                 <div>
-                  <span>PID 上限</span>
-                  <strong>{pidMoveLimit}</strong>
+                  <span>单帧限幅</span>
+                  <strong>{experimentalAngleMaxStep}</strong>
                 </div>
                 <div>
                   <span>输出上限</span>
@@ -1144,17 +1150,10 @@ export function DevicesView({
                 </div>
 
                 <div className="algorithm-choice-row">
-                  {["straight", "pid"].map((strategy) => (
-                    <button
-                      className={controlStrategy === strategy ? "algorithm-choice active" : "algorithm-choice"}
-                      key={strategy}
-                      type="button"
-                      onClick={() => void updateRuntimeField("control", "strategy", strategy)}
-                    >
-                      <strong>{strategy === "straight" ? "推荐：FOV/c360 跟随" : "调试：PID 平滑追踪"}</strong>
-                      <span>{strategy === "straight" ? "按 FOV 和 c360 将像素误差换算成 kmNet counts" : "Kp X/Y 分轴，Ki/Kd 共用"}</span>
-                    </button>
-                  ))}
+                  <button className="algorithm-choice active" type="button">
+                    <strong>实验角度 PID</strong>
+                    <span>CompensatedTarget → 角度误差 → Angular PD → 标定 counts → kmNet</span>
+                  </button>
                 </div>
 
                 <div className="commercial-grid">
@@ -1196,17 +1195,17 @@ export function DevicesView({
 
                 <div className="control-block">
                   <div className="control-block-head">
-                    <strong>PID 参数</strong>
-                    <span>Kp 分 X/Y，Ki 和 Kd 共用；控制量上限会截断 PID 计算结果。</span>
+                    <strong>实验角度 PID</strong>
+                    <span>控制器只处理角度误差；FOV、每圈 counts 和轴方向来自标定 Profile。</span>
                   </div>
                   <div className="commercial-grid dense">
                     {[
-                      ["pid_kp_x", "Kp X", 0.35],
-                      ["pid_kp_y", "Kp Y", 0.35],
-                      ["pid_ki", "Ki", 0.1],
-                      ["pid_kd", "Kd", 0.1],
-                      ["pid_integral_limit", "积分上限", 250],
-                      ["pid_move_limit", "控制量上限", 120],
+                      ["experimental_angle_kp_x", "Kp X", 0.35],
+                      ["experimental_angle_kp_y", "Kp Y", 0.24],
+                      ["experimental_angle_ki", "Ki", 0],
+                      ["experimental_angle_kd", "Kd", 0],
+                      ["experimental_angle_integral_limit", "积分限幅", 0],
+                      ["experimental_angle_max_step_counts", "单帧限幅", 80],
                     ].map(([key, label, fallback]) => (
                       <NumberField
                         key={key}

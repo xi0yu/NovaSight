@@ -23,6 +23,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+parquet = [
+    "pyarrow>=15.0",
+]
 
 [project.scripts]
 novasight = "novasight.main:main"
@@ -32,11 +35,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["novasight*"]
+include = ["novasight*", "novasight_jetson_preprocess*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
 novasight = ["vendor/kmnet/linux/*.so", "vendor/kmnet/mac/*.so", "vendor/kmnet/win/*.pyd", "vendor/kmnet/win/*.dll"]
+novasight_jetson_preprocess_native = ["include/*.h", "native/CMakeLists.txt", "native/src/*.cpp", "native/src/jetson/*.cpp", "native/src/jetson/*.cu", "native/src/jetson/*.h", "native/README.md", "native/IMPLEMENTATION.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

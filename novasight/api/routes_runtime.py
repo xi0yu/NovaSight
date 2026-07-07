@@ -122,13 +122,19 @@ def stop_runtime(request: Request) -> dict[str, Any]:
     return {"running": False}
 
 
-@router.post("/api/runtime/local-trigger")
-async def update_local_trigger(request: Request) -> dict[str, Any]:
+@router.post("/api/runtime/calibration/fingerprint")
+async def post_runtime_calibration_fingerprint(request: Request) -> dict[str, Any]:
     payload = await request.json()
-    active = bool(payload.get("active", False))
-    raw_bindings = payload.get("bindings", [])
-    bindings = [str(item) for item in raw_bindings[:2]] if isinstance(raw_bindings, list) else []
-    return request.app.state.runtime.update_local_trigger(active=active, bindings=bindings)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a mapping")
+    try:
+        status = request.app.state.runtime.update_external_sensitivity_fingerprint(
+            str(payload.get("fingerprint", "")),
+            source=str(payload.get("source", "external")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return status
 
 
 @router.websocket("/ws/status")

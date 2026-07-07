@@ -6,10 +6,12 @@ import {
   HealthResponse,
   LicenseStatus,
   ModelProject,
+  RuntimeConfig,
   RuntimeState,
   getHealth,
   getLicenseStatus,
   getModelProjects,
+  getRuntimeConfig,
   getRuntimeState,
   statusWebSocketUrl,
 } from "./api";
@@ -18,7 +20,7 @@ import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { StudioConsoleView } from "./features/studio/StudioConsoleView";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 
-type ErrorKey = "health" | "runtime" | "projects" | "capture";
+type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 type GuardedViewId = Exclude<StudioViewId, "license">;
 
@@ -27,6 +29,7 @@ type LoadState = {
   errors: Partial<Record<ErrorKey, string>>;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
+  config: RuntimeConfig | null;
   projects: ModelProject[];
   lastUpdated: Date | null;
 };
@@ -36,6 +39,7 @@ const initialState: LoadState = {
   errors: {},
   health: null,
   runtime: null,
+  config: null,
   projects: [],
   lastUpdated: null
 };
@@ -145,9 +149,10 @@ export default function App() {
 
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, errors: {} }));
-    const [health, runtime, projects] = await Promise.allSettled([
+    const [health, runtime, config, projects] = await Promise.allSettled([
       getHealth(),
       getRuntimeState(),
+      getRuntimeConfig(),
       getModelProjects()
     ]);
     setState((current) => {
@@ -158,6 +163,9 @@ export default function App() {
       if (runtime.status === "rejected") {
         errors.runtime = getErrorMessage(runtime.reason);
       }
+      if (config.status === "rejected") {
+        errors.config = getErrorMessage(config.reason);
+      }
       if (projects.status === "rejected") {
         errors.projects = getErrorMessage(projects.reason);
       }
@@ -166,6 +174,7 @@ export default function App() {
         errors,
         health: health.status === "fulfilled" ? health.value : current.health,
         runtime: runtime.status === "fulfilled" ? runtime.value : current.runtime,
+        config: config.status === "fulfilled" ? config.value : current.config,
         projects: projects.status === "fulfilled" ? projects.value : current.projects,
         lastUpdated: new Date()
       };
@@ -291,6 +300,7 @@ export default function App() {
         <StudioConsoleView
           health={state.health}
           runtime={state.runtime}
+          runtimeConfig={state.config}
           projects={state.projects}
           errors={state.errors}
           lastUpdated={state.lastUpdated}

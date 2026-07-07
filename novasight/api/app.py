@@ -11,11 +11,13 @@ from novasight.config import RuntimeConfig, load_runtime_config
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import create_hardware_box
 from novasight.inference import InferenceRuntime
+from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.license import LicenseStore
 from novasight.model_registry import ModelRegistry
-from novasight.runtime import RuntimeService
+from novasight.runtime import ControlFrameCsvRecorder, ControlFrameParquetRecorder, RuntimeService
 
 from .routes_capture import router as capture_router
+from .routes_device import router as device_router
 from .routes_executors import router as executors_router
 from .routes_health import router as health_router
 from .routes_models import router as models_router
@@ -58,7 +60,9 @@ def create_app(
         roi_offset_x=config.roi.offset_x,
         roi_offset_y=config.roi.offset_y,
     )
-    inference = InferenceRuntime()
+    inference = InferenceRuntime(
+        gpu_preprocessor=create_gpu_resource_preprocessor(config),
+    )
     inference.configure(
         confidence_threshold=config.inference.confidence_threshold,
         nms_threshold=config.inference.nms_threshold,
@@ -71,6 +75,7 @@ def create_app(
         hardware=hardware,
         capture=capture,
         inference=inference,
+        recorder=_create_control_frame_recorder(config, data_path),
     )
 
     app.state.config = config
@@ -99,11 +104,33 @@ def create_app(
         return await call_next(request)
 
     app.include_router(health_router)
+    app.include_router(device_router)
     app.include_router(capture_router)
     app.include_router(runtime_router)
     app.include_router(models_router)
     app.include_router(executors_router)
     return app
+
+
+def _create_control_frame_recorder(config: RuntimeConfig, data_path: Path):
+    consumers = config.consumers
+    recording_format = str(consumers.recording_format or "csv").lower()
+    path = _recording_path(data_path, format=recording_format, configured=consumers.recording_path)
+    if recording_format == "csv":
+        return ControlFrameCsvRecorder(path)
+    if recording_format == "parquet":
+        return ControlFrameParquetRecorder(path)
+    raise ValueError("runtime config key 'consumers.recording_format' must be csv or parquet")
+
+
+def _recording_path(data_path: Path, *, format: str, configured: str) -> Path:
+    if configured.strip():
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return data_path / candidate
+    suffix = "parquet" if format == "parquet" else "csv"
+    return data_path / "recordings" / f"control_frames.{suffix}"
 
 
 def _load_active_model(models: ModelRegistry, inference: InferenceRuntime) -> None:

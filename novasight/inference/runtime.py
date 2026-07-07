@@ -8,6 +8,7 @@ from typing import Any
 from .contracts import InferenceEngine
 from .contracts import InferenceResult
 from .onnxruntime_engine import OnnxRuntimeInferenceEngine
+from .preprocess import GpuResourcePreprocessor
 from .tensorrt import TensorRtInferenceEngine
 from .unavailable import UnavailableInferenceEngine
 
@@ -16,12 +17,20 @@ logger = logging.getLogger("novasight.inference.runtime")
 
 
 class InferenceRuntime:
-    def __init__(self, engine: InferenceEngine | None = None) -> None:
+    _UNSET = object()
+
+    def __init__(
+        self,
+        engine: InferenceEngine | None = None,
+        *,
+        gpu_preprocessor: GpuResourcePreprocessor | None = None,
+    ) -> None:
         self._load_error = ""
         self._last_switch_error = ""
         self.confidence_threshold = 0.25
         self.nms_threshold = 0.45
         self._last_infer_error_logged = ""
+        self._gpu_preprocessor = gpu_preprocessor
         self._engine_lock = threading.RLock()
         self.engine = engine or TensorRtInferenceEngine()
         if not self.engine.available():
@@ -34,11 +43,14 @@ class InferenceRuntime:
         *,
         confidence_threshold: float | None = None,
         nms_threshold: float | None = None,
+        gpu_preprocessor: GpuResourcePreprocessor | None | object = _UNSET,
     ) -> None:
         if confidence_threshold is not None:
             self.confidence_threshold = confidence_threshold
         if nms_threshold is not None:
             self.nms_threshold = nms_threshold
+        if gpu_preprocessor is not self._UNSET:
+            self._gpu_preprocessor = gpu_preprocessor  # type: ignore[assignment]
         with self._engine_lock:
             for name, value in (
                 ("confidence_threshold", self.confidence_threshold),
@@ -46,10 +58,14 @@ class InferenceRuntime:
             ):
                 if hasattr(self.engine, name):
                     setattr(self.engine, name, value)
+            setter = getattr(self.engine, "set_gpu_preprocessor", None)
+            if gpu_preprocessor is not self._UNSET and callable(setter):
+                setter(self._gpu_preprocessor)
 
     def status(self) -> dict:
         with self._engine_lock:
             status = dict(self.engine.status())
+        status["gpu_preprocessor"] = self._gpu_preprocessor_status()
         if self._load_error:
             status["available"] = False
             status["loaded"] = False
@@ -57,6 +73,24 @@ class InferenceRuntime:
         if self._last_switch_error:
             status["last_switch_error"] = self._last_switch_error
         return status
+
+    def _gpu_preprocessor_status(self) -> dict[str, Any]:
+        if self._gpu_preprocessor is None:
+            return {
+                "selected": "",
+                "enabled": False,
+                "available": False,
+                "reason": "disabled",
+            }
+        status = getattr(self._gpu_preprocessor, "status", None)
+        if callable(status):
+            return dict(status())
+        return {
+            "selected": type(self._gpu_preprocessor).__name__,
+            "enabled": True,
+            "available": True,
+            "reason": "",
+        }
 
     def disable(self, reason: str) -> None:
         self._load_error = reason
@@ -179,6 +213,7 @@ class InferenceRuntime:
             return TensorRtInferenceEngine(
                 confidence_threshold=self.confidence_threshold,
                 nms_threshold=self.nms_threshold,
+                gpu_preprocessor=self._gpu_preprocessor,
             )
         return UnavailableInferenceEngine(
             f"unsupported inference artifact suffix: {artifact_path.suffix}"

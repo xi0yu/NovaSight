@@ -6,6 +6,7 @@ import {
   type RuntimeConfig,
   type RuntimeState,
   type Statistics,
+  getRuntimeConfig,
   streamUrl,
   updateRuntimeConfig
 } from "../../api";
@@ -15,6 +16,7 @@ import { statusTone } from "../shared/format";
 type DashboardViewProps = {
   health: HealthResponse | null;
   runtime: RuntimeState | null;
+  runtimeConfig?: RuntimeConfig | null;
   loading: boolean;
   errors: {
     health?: string;
@@ -145,22 +147,22 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function readNestedBoolean(
-  config: Record<string, unknown> | undefined,
+  config: unknown,
   section: string,
   key: string,
   fallback: boolean
 ): boolean {
-  const value = asRecord(config?.[section])[key];
+  const value = asRecord(asRecord(config)[section])[key];
   return typeof value === "boolean" ? value : fallback;
 }
 
 function readNestedNumber(
-  config: Record<string, unknown> | undefined,
+  config: unknown,
   section: string,
   key: string,
   fallback: number
 ): number {
-  const value = asRecord(config?.[section])[key];
+  const value = asRecord(asRecord(config)[section])[key];
   return typeof value === "number" ? value : fallback;
 }
 
@@ -181,13 +183,21 @@ function readDetectionItems(value: unknown): DetectionOverlay[] {
 
   return value.flatMap((item) => {
     const record = asRecord(item);
-    const x = readNumberRecord(record, "x");
-    const y = readNumberRecord(record, "y");
-    const w = readNumberRecord(record, "w");
-    const h = readNumberRecord(record, "h");
+    const displayBox = asRecord(record.display_box);
+    const roiBox = asRecord(record.roi_box);
+    const box =
+      Object.keys(displayBox).length > 0
+        ? displayBox
+        : Object.keys(roiBox).length > 0
+          ? roiBox
+          : record;
+    const x = readNumberRecord(box, "x");
+    const y = readNumberRecord(box, "y");
+    const w = readNumberRecord(box, "w");
+    const h = readNumberRecord(box, "h");
     const score = readNumberRecord(record, "score");
-    const cx = readNumberRecord(record, "cx");
-    const cy = readNumberRecord(record, "cy");
+    const cx = readNumberRecord(box, "cx");
+    const cy = readNumberRecord(box, "cy");
     if (
       x === null ||
       y === null ||
@@ -272,6 +282,7 @@ function isSelectedDetection(
 export function DashboardView({
   health,
   runtime,
+  runtimeConfig,
   loading,
   errors,
   onRefresh
@@ -280,15 +291,16 @@ export function DashboardView({
   const capture = runtime?.capture;
   const stats = useMemo(() => readStatistics(runtime), [runtime, displayTick]);
   const targetFps = capture?.profile?.fps ?? 120;
-  const roiSize = readNestedNumber(runtime?.config, "roi", "size", 640);
+  const configSource = runtimeConfig ?? runtime?.config;
+  const roiSize = readNestedNumber(configSource, "roi", "size", 640);
   const configVersion =
     typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const modelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const e2eText = stats.e2e_latency > 0 ? `${formatNumber(stats.e2e_latency, 1)}ms` : "--";
   const [consumerBusy, setConsumerBusy] = useState<string | null>(null);
-  const previewEnabled = readNestedBoolean(runtime?.config, "consumers", "preview", true);
-  const inferenceEnabled = readNestedBoolean(runtime?.config, "consumers", "inference", true);
-  const recordingEnabled = readNestedBoolean(runtime?.config, "consumers", "recording", false);
+  const previewEnabled = readNestedBoolean(configSource, "consumers", "preview", true);
+  const inferenceEnabled = readNestedBoolean(configSource, "consumers", "inference", true);
+  const recordingEnabled = readNestedBoolean(configSource, "consumers", "recording", false);
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
   const target = asRecord(vision.target);
@@ -334,17 +346,16 @@ export function DashboardView({
   const aimPointStyle = pointStyle(aimX, aimY, overlayWidth, overlayHeight);
 
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
-    if (!runtime?.config || consumerBusy) {
+    if (consumerBusy) {
       return;
     }
     setConsumerBusy(key);
-    const nextConfig = structuredClone(runtime.config) as RuntimeConfig;
-    delete nextConfig.version;
-    (nextConfig as Record<string, unknown>).consumers = {
-      ...asRecord(nextConfig.consumers),
-      [key]: enabled
-    };
     try {
+      const nextConfig = await getRuntimeConfig();
+      (nextConfig as Record<string, unknown>).consumers = {
+        ...asRecord(nextConfig.consumers),
+        [key]: enabled
+      };
       await updateRuntimeConfig(nextConfig);
       await onRefresh();
     } finally {

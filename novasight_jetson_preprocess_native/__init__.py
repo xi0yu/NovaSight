@@ -1,0 +1,691 @@
+from __future__ import annotations
+
+import ctypes
+import json
+import os
+from typing import Any, Mapping
+
+
+ABI_VERSION = 1
+LIBRARY_ENV = "NOVASIGHT_JETSON_NATIVE_LIBRARY"
+ABI_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_ABI_SYMBOL"
+PREPARE_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_PREPARE_SYMBOL"
+STATUS_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_STATUS_SYMBOL"
+RELEASE_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_RELEASE_SYMBOL"
+RESULT_BUFFER_BYTES_ENV = "NOVASIGHT_JETSON_NATIVE_RESULT_BUFFER_BYTES"
+DEFAULT_ABI_SYMBOL = "novasight_abi_version"
+DEFAULT_PREPARE_SYMBOL = "novasight_prepare_tensor_json"
+DEFAULT_STATUS_SYMBOL = "novasight_status_json"
+DEFAULT_RELEASE_SYMBOL = "novasight_release_tensor"
+DEFAULT_RESULT_BUFFER_BYTES = 64 * 1024
+
+CAPABILITIES = {
+    "memory": ["nvmm", "dmabuf"],
+    "resource_kind": ["gstreamer_sample"],
+    "resource_source": ["appsink"],
+    "formats": ["NV12"],
+    "dtypes": ["float32", "float16"],
+}
+
+CONTRACT = {
+    "abi_version": ABI_VERSION,
+    "callable": "prepare_tensor(payload) or prepare_nvmm_tensor(payload)",
+    "payload_required_fields": [
+        "resource_handle",
+        "frame_id",
+        "capture_ts_ns",
+        "resource_kind",
+        "resource_memory",
+        "resource_source",
+        "dmabuf_fd",
+        "resource_metadata",
+        "resource_width",
+        "resource_height",
+        "resource_pixel_format",
+        "width",
+        "height",
+        "pixel_format",
+        "source_width",
+        "source_height",
+        "roi_offset_x",
+        "roi_offset_y",
+        "needs_resize",
+        "model_shape",
+        "nchw",
+        "dtype",
+    ],
+    "ctypes_library_env": LIBRARY_ENV,
+    "ctypes_abi_symbol_env": ABI_SYMBOL_ENV,
+    "ctypes_prepare_symbol_env": PREPARE_SYMBOL_ENV,
+    "ctypes_status_symbol_env": STATUS_SYMBOL_ENV,
+    "ctypes_release_symbol_env": RELEASE_SYMBOL_ENV,
+    "ctypes_abi": "uint32_t abi_version(void)",
+    "ctypes_prepare_abi": (
+        "int prepare(const char* payload_json, char* result_json, "
+        "size_t result_json_size)"
+    ),
+    "ctypes_status_abi": "int status(char* status_json, size_t status_json_size)",
+    "ctypes_release_abi": "int release(uint64_t release_token)",
+    "payload_json_notes": (
+        "The ctypes bridge serializes JSON-safe payload fields only. "
+        "resource_handle is not passed to C; a valid dmabuf_fd is required."
+    ),
+    "result_required_fields": [
+        "device_ptr",
+        "nbytes",
+        "release_token",
+        "zero_copy",
+        "memory_space",
+    ],
+    "result_optional_fields": [
+        "shape",
+        "dtype",
+        "stream",
+        "backend",
+        "reason",
+    ],
+    "result_semantics": (
+        "Return an existing GPU device pointer containing a model-ready NCHW "
+        "tensor. The native result must explicitly report zero_copy=true and "
+        "memory_space=device/cuda/cuda_device/gpu/gpu_device. This module is "
+        "unavailable until NOVASIGHT_JETSON_NATIVE_LIBRARY points at a Jetson "
+        "shared library implementing the ctypes ABI."
+    ),
+}
+
+_LIBRARY: Any | None = None
+_LIBRARY_PATH = ""
+_LIBRARY_ERROR = ""
+
+
+def status() -> dict[str, Any]:
+    library = _load_library()
+    if library is None:
+        reason = "native_implementation_missing"
+        detail = (
+            f"Set {LIBRARY_ENV} to a Jetson shared library that converts "
+            "DMABUF/NvBufSurface/EGL/CUDA resources into a TensorRT DeviceTensor."
+        )
+        if _LIBRARY_ERROR:
+            reason = "native_library_unavailable"
+            detail = _LIBRARY_ERROR
+        return {
+            "available": False,
+            "ready": False,
+            "reason": reason,
+            "detail": detail,
+            "backend": "novasight_jetson_preprocess_native",
+            "library": _library_path(),
+            "required_abi_version": ABI_VERSION,
+            "abi_version": None,
+            "abi_compatible": False,
+            "abi_symbol": _abi_symbol_name(),
+            "prepare_symbol": _prepare_symbol_name(),
+            "status_symbol": _status_symbol_name(),
+            "release_symbol": _release_symbol_name(),
+            "contract": CONTRACT,
+        }
+    prepare = _library_prepare(library)
+    if prepare is None:
+        return {
+            "available": False,
+            "ready": False,
+            "reason": "native_prepare_symbol_missing",
+            "detail": f"{_library_path()} does not export {_prepare_symbol_name()}",
+            "backend": "novasight_jetson_preprocess_native",
+            "library": _library_path(),
+            "required_abi_version": ABI_VERSION,
+            "abi_version": None,
+            "abi_compatible": False,
+            "abi_symbol": _abi_symbol_name(),
+            "prepare_symbol": _prepare_symbol_name(),
+            "status_symbol": _status_symbol_name(),
+            "release_symbol": _release_symbol_name(),
+            "contract": CONTRACT,
+        }
+    try:
+        native_status = _call_status(library)
+    except Exception as exc:
+        return {
+            "available": False,
+            "ready": False,
+            "reason": "native_status_failed",
+            "detail": str(exc),
+            "backend": "novasight_jetson_preprocess_native",
+            "library": _library_path(),
+            "required_abi_version": ABI_VERSION,
+            "abi_version": None,
+            "abi_compatible": False,
+            "abi_symbol": _abi_symbol_name(),
+            "prepare_symbol": _prepare_symbol_name(),
+            "status_symbol": _status_symbol_name(),
+            "release_symbol": _release_symbol_name(),
+            "contract": CONTRACT,
+        }
+    abi_version, abi_reason, abi_detail = _library_abi_check(
+        library,
+        native_status=native_status,
+    )
+    if abi_reason:
+        return {
+            "available": False,
+            "ready": False,
+            "reason": abi_reason,
+            "detail": abi_detail,
+            "backend": "novasight_jetson_preprocess_native",
+            "library": _library_path(),
+            "required_abi_version": ABI_VERSION,
+            "abi_version": abi_version,
+            "abi_compatible": False,
+            "abi_symbol": _abi_symbol_name(),
+            "prepare_symbol": _prepare_symbol_name(),
+            "status_symbol": _status_symbol_name(),
+            "release_symbol": _release_symbol_name(),
+            "contract": CONTRACT,
+        }
+    if native_status is not None:
+        result = dict(native_status)
+        result.setdefault("available", bool(result.get("ready", True)))
+        result.setdefault("ready", bool(result.get("available", True)))
+        result.setdefault("backend", "novasight_jetson_preprocess_native")
+        result.setdefault("library", _library_path())
+        result.setdefault("required_abi_version", ABI_VERSION)
+        result.setdefault("abi_version", abi_version)
+        result.setdefault("abi_compatible", True)
+        result.setdefault("abi_symbol", _abi_symbol_name())
+        result.setdefault("prepare_symbol", _prepare_symbol_name())
+        result.setdefault("status_symbol", _status_symbol_name())
+        result.setdefault("release_symbol", _release_symbol_name())
+        result.setdefault("contract", CONTRACT)
+        contract_error = _ready_output_contract_error(result)
+        if contract_error:
+            result["available"] = False
+            result["ready"] = False
+            result["reason"] = "native_output_contract_invalid"
+            result["detail"] = contract_error
+        return result
+    return {
+        "available": False,
+        "ready": False,
+        "backend": "novasight_jetson_preprocess_native",
+        "library": _library_path(),
+        "required_abi_version": ABI_VERSION,
+        "abi_version": abi_version,
+        "abi_compatible": True,
+        "abi_symbol": _abi_symbol_name(),
+        "prepare_symbol": _prepare_symbol_name(),
+        "status_symbol": _status_symbol_name(),
+        "release_symbol": _release_symbol_name(),
+        "contract": CONTRACT,
+        "reason": "native_readiness_status_required",
+        "detail": (
+            f"{_library_path()} must export {_status_symbol_name()} and report "
+            "ready/available plus zero_copy=true and device memory_space before "
+            "NVMM inference can start"
+        ),
+    }
+
+
+def prepare_tensor(payload: Mapping[str, Any]) -> Any:
+    payload_json = _payload_json(payload)
+    library = _load_library()
+    if library is None:
+        raise RuntimeError(status()["detail"])
+    prepare = _library_prepare(library)
+    if prepare is None:
+        raise RuntimeError(f"{_library_path()} does not export {_prepare_symbol_name()}")
+    try:
+        native_status = _call_status(library)
+    except Exception as exc:
+        raise RuntimeError(f"native status failed: {exc}") from exc
+    abi_version, abi_reason, abi_detail = _library_abi_check(
+        library,
+        native_status=native_status,
+    )
+    if abi_reason:
+        raise RuntimeError(abi_detail)
+    readiness_error = _native_readiness_error(
+        native_status=native_status,
+        abi_version=abi_version,
+    )
+    if readiness_error:
+        raise RuntimeError(readiness_error)
+    result_json = _call_json_function(prepare, payload_json)
+    result = json.loads(result_json)
+    if not isinstance(result, dict):
+        raise RuntimeError("native prepare result JSON must be an object")
+    _validate_prepare_result_contract(result)
+    release = _library_release(library)
+    release_token = result.get("release_token")
+    if release_token is not None and release is None:
+        raise RuntimeError(
+            "native prepare result returned release_token but "
+            f"{_release_symbol_name()} is not exported"
+        )
+    if release is not None and release_token is not None:
+        result.setdefault("owner", _NativeTensorOwner(release, int(release_token)))
+    result.setdefault("backend", "novasight_jetson_preprocess_native:ctypes")
+    return result
+
+
+def prepare_nvmm_tensor(payload: Mapping[str, Any]) -> Any:
+    return prepare_tensor(payload)
+
+
+def _payload_json(payload: Mapping[str, Any]) -> bytes:
+    _validate_payload_contract(payload)
+    dmabuf_fd = _required_nonnegative_int(payload, "dmabuf_fd")
+    serializable = {
+        "frame_id": _required_positive_int(payload, "frame_id"),
+        "capture_ts_ns": _required_positive_int(payload, "capture_ts_ns"),
+        "resource_kind": _required_text(payload, "resource_kind"),
+        "resource_memory": _required_text(payload, "resource_memory"),
+        "resource_source": _required_text(payload, "resource_source"),
+        "dmabuf_fd": dmabuf_fd,
+        "resource_metadata": _json_safe(payload.get("resource_metadata", {})),
+        "resource_width": _required_positive_int(payload, "resource_width"),
+        "resource_height": _required_positive_int(payload, "resource_height"),
+        "resource_pixel_format": _required_text(payload, "resource_pixel_format"),
+        "width": _required_positive_int(payload, "width"),
+        "height": _required_positive_int(payload, "height"),
+        "pixel_format": _required_text(payload, "pixel_format"),
+        "source_width": _required_positive_int(payload, "source_width"),
+        "source_height": _required_positive_int(payload, "source_height"),
+        "roi_offset_x": _required_nonnegative_int(payload, "roi_offset_x"),
+        "roi_offset_y": _required_nonnegative_int(payload, "roi_offset_y"),
+        "needs_resize": _required_bool(payload, "needs_resize"),
+        "model_shape": _json_safe(_required_mapping(payload, "model_shape")),
+        "nchw": _required_nchw(payload),
+        "dtype": _required_text(payload, "dtype"),
+    }
+    return json.dumps(serializable, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _validate_payload_contract(payload: Mapping[str, Any]) -> None:
+    required = CONTRACT["payload_required_fields"]
+    missing = [field for field in required if field != "resource_handle" and field not in payload]
+    if missing:
+        raise RuntimeError(
+            "ctypes Jetson native backend payload missing required field(s): "
+            + ", ".join(missing)
+        )
+    _required_positive_int(payload, "frame_id")
+    _required_positive_int(payload, "capture_ts_ns")
+    if _required_text(payload, "resource_kind") != "gstreamer_sample":
+        raise RuntimeError("ctypes Jetson native backend requires resource_kind=gstreamer_sample")
+    if _required_text(payload, "resource_memory").lower() not in {"nvmm", "dmabuf"}:
+        raise RuntimeError("ctypes Jetson native backend requires resource_memory=nvmm or dmabuf")
+    if _required_text(payload, "resource_source") != "appsink":
+        raise RuntimeError("ctypes Jetson native backend requires resource_source=appsink")
+    _required_nonnegative_int(payload, "dmabuf_fd")
+    if not isinstance(payload.get("resource_metadata"), Mapping):
+        raise RuntimeError("ctypes Jetson native backend requires resource_metadata to be an object")
+    resource_width = _required_positive_int(payload, "resource_width")
+    resource_height = _required_positive_int(payload, "resource_height")
+    if _required_text(payload, "resource_pixel_format").upper() != "NV12":
+        raise RuntimeError("ctypes Jetson native backend requires resource_pixel_format=NV12")
+    _required_positive_int(payload, "width")
+    _required_positive_int(payload, "height")
+    if _required_text(payload, "pixel_format").upper() != "NV12":
+        raise RuntimeError("ctypes Jetson native backend requires pixel_format=NV12")
+    if resource_width != int(payload["width"]):
+        raise RuntimeError("ctypes Jetson native backend requires resource_width to match width")
+    if resource_height != int(payload["height"]):
+        raise RuntimeError("ctypes Jetson native backend requires resource_height to match height")
+    _required_positive_int(payload, "source_width")
+    _required_positive_int(payload, "source_height")
+    _required_nonnegative_int(payload, "roi_offset_x")
+    _required_nonnegative_int(payload, "roi_offset_y")
+    _required_bool(payload, "needs_resize")
+    model_shape = _required_mapping(payload, "model_shape")
+    for key in ("batch", "channels", "height", "width"):
+        _required_positive_int(model_shape, key, prefix="model_shape.")
+    nchw = _required_nchw(payload)
+    if nchw[1] not in {1, 3, 4}:
+        raise RuntimeError("ctypes Jetson native backend requires nchw channels to be 1, 3, or 4")
+    if _required_text(payload, "dtype") not in {"float32", "float16"}:
+        raise RuntimeError("ctypes Jetson native backend requires dtype=float32 or float16")
+
+
+def _required_text(payload: Mapping[str, Any], key: str) -> str:
+    value = str(payload.get(key) or "").strip()
+    if not value:
+        raise RuntimeError(f"ctypes Jetson native backend requires non-empty {key}")
+    return value
+
+
+def _required_bool(payload: Mapping[str, Any], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"ctypes Jetson native backend requires {key} to be boolean")
+    return value
+
+
+def _required_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, Mapping):
+        raise RuntimeError(f"ctypes Jetson native backend requires {key} to be an object")
+    return value
+
+
+def _required_positive_int(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    prefix: str = "",
+) -> int:
+    try:
+        value = int(payload.get(key))
+    except Exception as exc:
+        raise RuntimeError(
+            f"ctypes Jetson native backend requires {prefix}{key} to be a positive integer"
+        ) from exc
+    if value <= 0:
+        raise RuntimeError(
+            f"ctypes Jetson native backend requires {prefix}{key} to be a positive integer"
+        )
+    return value
+
+
+def _required_nonnegative_int(payload: Mapping[str, Any], key: str) -> int:
+    if payload.get(key) is None and key == "dmabuf_fd":
+        raise RuntimeError(
+            "ctypes Jetson native backend requires dmabuf_fd; "
+            "Python Gst.Sample handles are not passed to C"
+        )
+    try:
+        value = int(payload.get(key))
+    except Exception as exc:
+        raise RuntimeError(
+            f"ctypes Jetson native backend requires {key} to be a non-negative integer"
+        ) from exc
+    if value < 0:
+        raise RuntimeError(
+            f"ctypes Jetson native backend requires {key} to be a non-negative integer"
+        )
+    return value
+
+
+def _required_nchw(payload: Mapping[str, Any]) -> list[int]:
+    raw = payload.get("nchw")
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        raise RuntimeError("ctypes Jetson native backend requires nchw=[N,C,H,W]")
+    values = []
+    for index, item in enumerate(raw):
+        try:
+            value = int(item)
+        except Exception as exc:
+            raise RuntimeError(
+                f"ctypes Jetson native backend requires nchw[{index}] to be a positive integer"
+            ) from exc
+        if value <= 0:
+            raise RuntimeError(
+                f"ctypes Jetson native backend requires nchw[{index}] to be a positive integer"
+            )
+        values.append(value)
+    return values
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value)
+    except TypeError:
+        if isinstance(value, Mapping):
+            return {str(key): _json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [_json_safe(item) for item in value]
+        return str(value)
+    return value
+
+
+def _call_status(library: Any) -> dict[str, Any] | None:
+    status_fn = _library_symbol(library, _status_symbol_name())
+    if status_fn is None:
+        return None
+    status_fn.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    status_fn.restype = ctypes.c_int
+    result = _call_json_function(status_fn, b"")
+    value = json.loads(result)
+    if not isinstance(value, dict):
+        raise RuntimeError("native status result JSON must be an object")
+    return value
+
+
+def _library_abi_check(
+    library: Any,
+    *,
+    native_status: Mapping[str, Any] | None,
+) -> tuple[int | None, str, str]:
+    versions: list[tuple[str, int]] = []
+    if isinstance(native_status, Mapping) and native_status.get("abi_version") is not None:
+        try:
+            versions.append(("status", int(native_status["abi_version"])))
+        except Exception:
+            return (
+                None,
+                "native_abi_incompatible",
+                f"{_library_path()} status abi_version is not an integer: "
+                f"{native_status.get('abi_version')!r}",
+            )
+    abi_fn = _library_symbol(library, _abi_symbol_name())
+    if abi_fn is not None:
+        try:
+            abi_fn.argtypes = []
+            abi_fn.restype = ctypes.c_uint32
+            versions.append(("symbol", int(abi_fn())))
+        except Exception as exc:
+            return (
+                None,
+                "native_abi_incompatible",
+                f"{_library_path()} {_abi_symbol_name()} failed: {exc}",
+            )
+    if not versions:
+        return (
+            None,
+            "native_abi_version_missing",
+            f"{_library_path()} must export {_abi_symbol_name()} or report "
+            f"abi_version={ABI_VERSION} from {_status_symbol_name()}",
+        )
+    mismatched = [
+        f"{source}={version}" for source, version in versions if version != ABI_VERSION
+    ]
+    if mismatched:
+        return (
+            versions[0][1],
+            "native_abi_incompatible",
+            f"{_library_path()} ABI mismatch: expected {ABI_VERSION}, got "
+            + ", ".join(mismatched),
+        )
+    distinct = {version for _, version in versions}
+    if len(distinct) > 1:
+        return (
+            versions[0][1],
+            "native_abi_incompatible",
+            f"{_library_path()} reports inconsistent ABI versions: {versions}",
+        )
+    return versions[0][1], "", ""
+
+
+def _call_json_function(function: Any, payload_json: bytes) -> str:
+    buffer = ctypes.create_string_buffer(_result_buffer_bytes())
+    if payload_json:
+        function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
+        function.restype = ctypes.c_int
+        rc = int(function(ctypes.c_char_p(payload_json), buffer, ctypes.sizeof(buffer)))
+    else:
+        rc = int(function(buffer, ctypes.sizeof(buffer)))
+    result = buffer.value.decode("utf-8", errors="replace")
+    if rc != 0:
+        raise RuntimeError(result or f"native function returned rc={rc}")
+    if not result:
+        raise RuntimeError("native function returned an empty JSON result")
+    return result
+
+
+def _validate_prepare_result_contract(result: Mapping[str, Any]) -> None:
+    for key in ("device_ptr", "nbytes", "release_token"):
+        value = result.get(key)
+        try:
+            parsed = int(value)
+        except Exception as exc:
+            raise RuntimeError(
+                f"native prepare result field {key} must be a positive integer: {value!r}"
+            ) from exc
+        if parsed <= 0:
+            raise RuntimeError(
+                f"native prepare result field {key} must be a positive integer: {value!r}"
+            )
+    if result.get("zero_copy") is not True:
+        raise RuntimeError("native prepare result must include zero_copy=true")
+    memory_space = str(result.get("memory_space", "")).strip().lower().replace("-", "_")
+    accepted = {"device", "cuda", "cuda_device", "gpu", "gpu_device"}
+    if memory_space not in accepted:
+        raise RuntimeError(
+            "native prepare result must include memory_space=device/cuda/cuda_device/"
+            f"gpu/gpu_device, got {result.get('memory_space')!r}"
+        )
+
+
+def _native_readiness_error(
+    *,
+    native_status: Mapping[str, Any] | None,
+    abi_version: int | None,
+) -> str:
+    if native_status is None:
+        return (
+            f"{_library_path()} must export {_status_symbol_name()} and report "
+            "ready/available plus zero_copy=true and device memory_space before "
+            "prepare can be called"
+        )
+    status_payload = dict(native_status)
+    status_payload.setdefault("available", bool(status_payload.get("ready", True)))
+    status_payload.setdefault("ready", bool(status_payload.get("available", True)))
+    status_payload.setdefault("backend", "novasight_jetson_preprocess_native")
+    status_payload.setdefault("abi_version", abi_version)
+    if not (
+        bool(status_payload.get("available", False))
+        or bool(status_payload.get("ready", False))
+    ):
+        detail = status_payload.get("detail") or status_payload.get("reason")
+        return str(detail or "native library is not ready")
+    return _ready_output_contract_error(status_payload)
+
+
+def _ready_output_contract_error(status_payload: Mapping[str, Any]) -> str:
+    if not (
+        bool(status_payload.get("available", False))
+        or bool(status_payload.get("ready", False))
+    ):
+        return ""
+    backend = str(status_payload.get("backend", "")).lower()
+    if "reference" in backend or "scaffold" in backend:
+        return f"backend={status_payload.get('backend')!r} is not a production Jetson backend"
+    if status_payload.get("zero_copy") is not True:
+        return "ready native library status must include zero_copy=true"
+    memory_space = str(status_payload.get("memory_space", "")).strip().lower().replace("-", "_")
+    accepted = {"device", "cuda", "cuda_device", "gpu", "gpu_device"}
+    if memory_space not in accepted:
+        return (
+            "ready native library status must include memory_space=device/"
+            f"cuda/cuda_device/gpu/gpu_device, got {status_payload.get('memory_space')!r}"
+        )
+    return ""
+
+
+def _load_library() -> Any | None:
+    global _LIBRARY, _LIBRARY_ERROR, _LIBRARY_PATH
+    path = _library_path()
+    if _LIBRARY is not None and _LIBRARY_PATH == path:
+        return _LIBRARY
+    if _LIBRARY_PATH != path:
+        _LIBRARY = None
+        _LIBRARY_ERROR = ""
+        _LIBRARY_PATH = path
+    if not path:
+        return None
+    try:
+        _LIBRARY = ctypes.CDLL(path)
+    except Exception as exc:
+        _LIBRARY_ERROR = f"{path}: {exc}"
+        return None
+    _LIBRARY_ERROR = ""
+    return _LIBRARY
+
+
+def _reset_library_cache() -> None:
+    global _LIBRARY, _LIBRARY_ERROR, _LIBRARY_PATH
+    _LIBRARY = None
+    _LIBRARY_ERROR = ""
+    _LIBRARY_PATH = ""
+
+
+def _library_prepare(library: Any) -> Any | None:
+    return _library_symbol(library, _prepare_symbol_name())
+
+
+def _library_release(library: Any) -> Any | None:
+    release = _library_symbol(library, _release_symbol_name())
+    if release is not None:
+        release.argtypes = [ctypes.c_uint64]
+        release.restype = ctypes.c_int
+    return release
+
+
+def _library_symbol(library: Any, name: str) -> Any | None:
+    try:
+        return getattr(library, name)
+    except AttributeError:
+        return None
+
+
+def _library_path() -> str:
+    return os.environ.get(LIBRARY_ENV, "").strip()
+
+
+def _abi_symbol_name() -> str:
+    return os.environ.get(ABI_SYMBOL_ENV, DEFAULT_ABI_SYMBOL).strip()
+
+
+def _prepare_symbol_name() -> str:
+    return os.environ.get(PREPARE_SYMBOL_ENV, DEFAULT_PREPARE_SYMBOL).strip()
+
+
+def _status_symbol_name() -> str:
+    return os.environ.get(STATUS_SYMBOL_ENV, DEFAULT_STATUS_SYMBOL).strip()
+
+
+def _release_symbol_name() -> str:
+    return os.environ.get(RELEASE_SYMBOL_ENV, DEFAULT_RELEASE_SYMBOL).strip()
+
+
+def _result_buffer_bytes() -> int:
+    try:
+        value = int(os.environ.get(RESULT_BUFFER_BYTES_ENV, DEFAULT_RESULT_BUFFER_BYTES))
+    except Exception:
+        return DEFAULT_RESULT_BUFFER_BYTES
+    return max(1024, value)
+
+
+class _NativeTensorOwner:
+    def __init__(self, release: Any, token: int) -> None:
+        self._release = release
+        self._token = int(token)
+        self._released = False
+
+    @property
+    def release_token(self) -> int:
+        return self._token
+
+    def release(self) -> None:
+        if self._released:
+            return
+        rc = int(self._release(self._token))
+        if rc != 0:
+            raise RuntimeError(f"native release failed for token={self._token} rc={rc}")
+        self._released = True
+
+    def __del__(self) -> None:
+        try:
+            self.release()
+        except Exception:
+            pass

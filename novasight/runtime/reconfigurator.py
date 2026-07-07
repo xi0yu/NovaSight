@@ -8,6 +8,7 @@ from novasight.config import RuntimeConfig, save_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import create_hardware_box
+from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.runtime.pipeline import RuntimePipeline
 
 
@@ -214,6 +215,7 @@ class RuntimeReconfigurator:
         self.app.state.inference.configure(
             confidence_threshold=config.inference.confidence_threshold,
             nms_threshold=config.inference.nms_threshold,
+            gpu_preprocessor=create_gpu_resource_preprocessor(config),
         )
         self.app.state.runtime.executors = self.app.state.executors
         self.app.state.runtime.hardware = self.app.state.hardware
@@ -254,7 +256,6 @@ class RuntimeReconfigurator:
             or previous_config.hardware.port != config.hardware.port
             or previous_config.hardware.uuid != config.hardware.uuid
             or previous_config.hardware.monitor_port != config.hardware.monitor_port
-            or previous_config.hardware.flip_dy != config.hardware.flip_dy
         )
 
     def _reconfigure_live_capture_for_roi(self) -> None:

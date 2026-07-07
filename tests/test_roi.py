@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
 
-from novasight.capture.source import CapturedFrame
+from novasight.capture.source import CapturedFrame, FrameResource
 from novasight.contracts import Detection
+from novasight.coordinates import CoordinateTransform
 from novasight.roi import (
     ROI_SIZE_CHOICES,
     center_roi_frame,
@@ -34,6 +35,7 @@ def test_center_roi_frame_crops_requested_square() -> None:
     roi = center_roi_frame(frame, requested_size=640)
 
     assert roi.frame_id == 7
+    assert roi.capture_ts_ns == frame.capture_ts_ns
     assert roi.source_width == 1920
     assert roi.source_height == 1080
     assert roi.roi_size == 640
@@ -51,8 +53,61 @@ def test_center_roi_region_returns_source_center_crop() -> None:
     assert region == (800, 380, 320)
 
 
+def test_coordinate_transform_round_trips_model_roi_capture_control_display() -> None:
+    transform = CoordinateTransform(
+        model_width=320,
+        model_height=320,
+        roi_x=640,
+        roi_y=60,
+        roi_width=960,
+        roi_height=960,
+        capture_width=1920,
+        capture_height=1080,
+        display_scale_x=0.5,
+        display_scale_y=0.5,
+    )
+
+    roi_point = transform.model_to_roi_point(160, 160)
+    capture_point = transform.roi_to_capture_point(roi_point.x, roi_point.y)
+    control_point = transform.capture_to_control_point(capture_point.x, capture_point.y)
+    display_point = transform.control_to_display_point(control_point.x, control_point.y)
+    control_roundtrip = transform.display_to_control_point(display_point.x, display_point.y)
+    capture_roundtrip = transform.control_to_capture_point(control_roundtrip.x, control_roundtrip.y)
+    roi_roundtrip = transform.capture_to_roi_point(capture_roundtrip.x, capture_roundtrip.y)
+    model_roundtrip = transform.roi_to_model_point(roi_roundtrip.x, roi_roundtrip.y)
+    roi_box = Detection(cls=0, score=0.8, x=10, y=20, w=30, h=40).box
+    control_box = transform.roi_to_control_box(roi_box)
+    display_box = transform.roi_to_display_box(roi_box)
+
+    assert roi_point.x == pytest.approx(480)
+    assert roi_point.y == pytest.approx(480)
+    assert capture_point.x == pytest.approx(1120)
+    assert capture_point.y == pytest.approx(540)
+    assert control_point.x == pytest.approx(1120)
+    assert control_point.y == pytest.approx(540)
+    assert control_box.x1 == pytest.approx(650)
+    assert control_box.y1 == pytest.approx(80)
+    assert control_box.x2 == pytest.approx(680)
+    assert control_box.y2 == pytest.approx(120)
+    assert display_box.x1 == pytest.approx(325)
+    assert display_box.y1 == pytest.approx(40)
+    assert display_box.x2 == pytest.approx(340)
+    assert display_box.y2 == pytest.approx(60)
+    assert model_roundtrip.x == pytest.approx(160, abs=1)
+    assert model_roundtrip.y == pytest.approx(160, abs=1)
+
+
 def test_center_roi_frame_reuses_pre_cropped_capture_roi() -> None:
     image = np.zeros((320, 320, 3), dtype=np.uint8)
+    resource = FrameResource(
+        kind="gstreamer_sample",
+        handle=object(),
+        memory="nvmm",
+        width=320,
+        height=320,
+        pixel_format="BGR",
+        source="appsink",
+    )
     frame = CapturedFrame(
         frame_id=9,
         width=320,
@@ -61,6 +116,9 @@ def test_center_roi_frame_reuses_pre_cropped_capture_roi() -> None:
         ts_ns=456,
         capture_wait_ms=0.8,
         image=image,
+        frame_resource=resource,
+        source_ts_ns=123_456,
+        source_ts_kind="gstreamer_pts",
         source_width=1920,
         source_height=1080,
         roi_size=320,
@@ -76,6 +134,12 @@ def test_center_roi_frame_reuses_pre_cropped_capture_roi() -> None:
     assert roi.offset_x == 800
     assert roi.offset_y == 380
     assert roi.image is image
+    assert roi.frame_resource is resource
+    assert roi.gpu_buffer is resource.handle
+    assert roi.resource_memory == "nvmm"
+    assert roi.receive_ts_ns == frame.receive_ts_ns
+    assert roi.source_ts_ns == 123_456
+    assert roi.source_ts_kind == "gstreamer_pts"
 
 
 def test_center_roi_frame_reuses_pre_cropped_clamped_roi() -> None:

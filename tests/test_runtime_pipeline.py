@@ -1,6 +1,4 @@
-"""Tests for the core runtime primitives: latest-frame queue, config
-snapshots, the fail-fast crash handler, and logging setup.
-"""
+"""Tests for core runtime primitives and pipeline behavior."""
 import threading
 from types import SimpleNamespace
 
@@ -8,11 +6,12 @@ import pytest
 
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
+from novasight.contracts import Detection, DetectionBatch
 from novasight.runtime import (
     FailFastHandler,
-    LatestFrameQueue,
     RuntimeConfigStore,
     RuntimePipeline,
+    RuntimeService,
     configure_logging,
 )
 
@@ -27,17 +26,6 @@ def _frame(frame_id: int) -> CapturedFrame:
         capture_wait_ms=1.0,
         image=None,
     )
-
-
-def test_latest_frame_queue_overwrites_old_frame() -> None:
-    queue = LatestFrameQueue[int]()
-
-    queue.put(1)
-    queue.put(2)
-
-    assert queue.get(timeout=0) == 2
-    assert queue.status()["capacity"] == 1
-    assert queue.status()["dropped"] == 1
 
 
 def test_runtime_config_store_returns_isolated_snapshots() -> None:
@@ -102,6 +90,71 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
     assert pipeline.running is False
 
 
+def test_runtime_pipeline_requires_ready_gpu_bridge_for_nvmm_inference() -> None:
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "nvmm"
+    capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+        config=cfg.capture,
+    )
+    runtime = SimpleNamespace(
+        running=False,
+        config=cfg,
+        status=lambda: {
+            "gpu_preprocessor": {
+                "available": False,
+                "reason": "JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE",
+                "detail": "native backend unavailable",
+                "native_status": {
+                    "available": False,
+                    "reason": "native_backend_unavailable",
+                },
+            }
+        },
+        process_captured_frame=lambda frame: pytest.fail("inference must not start"),
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    with pytest.raises(RuntimeError, match="capture.memory=nvmm 需要可用的 Jetson native bridge"):
+        pipeline.start()
+
+    assert runtime.running is False
+    assert pipeline.running is False
+    assert "native backend unavailable" in (pipeline.stats.last_error or "")
+
+
+def test_runtime_pipeline_allows_nvmm_capture_when_inference_is_disabled() -> None:
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "nvmm"
+    cfg.inference.enabled = False
+    capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+        config=cfg.capture,
+        wait_preview_frame=lambda *, after_frame_id=None, timeout_s=0.0: None,
+    )
+    runtime = SimpleNamespace(
+        running=False,
+        config=cfg,
+        status=lambda: {
+            "gpu_preprocessor": {
+                "available": False,
+                "reason": "JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE",
+            }
+        },
+        process_captured_frame=lambda frame: pytest.fail("inference is disabled"),
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    pipeline.start()
+    pipeline.stop()
+
+    assert runtime.running is False
+
+
 def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     frames = [_frame(1), _frame(2)]
     wait_calls: list[tuple[int | None, float]] = []
@@ -137,6 +190,7 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     assert wait_calls[:2] == [(0, 0.1), (1, 0.1)]
     status = pipeline.status()
     assert status["consumed_frames"] == 2
+    assert "queue" not in status
     assert "capture_frames" not in status
 
 
@@ -177,3 +231,62 @@ def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
     pipeline.stop()
 
     assert processed == [10, 1]
+
+
+def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
+    cfg = RuntimeConfig()
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("default hardware trigger should not emit in this seam test"),
+        ),
+    )
+    batch = DetectionBatch(
+        frame_id=7,
+        capture_ts_ns=1_000_000_000,
+        inference_start_ts_ns=1_000_001_000,
+        inference_end_ts_ns=1_000_002_000,
+        detections=[Detection(cls=0, score=0.9, x1=10, y1=20, x2=40, y2=80)],
+        classes=["0"],
+        coordinate_space="roi",
+    )
+
+    service.process_detection_batch(batch, width=480, height=480)
+
+    assert service.last_frame_context is not None
+    assert service.last_frame_context.frame_id == 7
+    assert service.last_frame_context.width == 480
+    assert service.last_frame_context.height == 480
+    assert len(service.last_frame_context.detections) == 1
+
+
+def test_runtime_service_rejects_non_roi_detection_batch() -> None:
+    cfg = RuntimeConfig()
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("invalid DetectionBatch must not execute"),
+        ),
+    )
+    batch = DetectionBatch(
+        frame_id=7,
+        capture_ts_ns=1_000_000_000,
+        inference_start_ts_ns=1_000_001_000,
+        inference_end_ts_ns=1_000_002_000,
+        detections=[Detection(cls=0, score=0.9, x1=10, y1=20, x2=40, y2=80)],
+        classes=["0"],
+        coordinate_space="model",
+    )
+
+    result = service.process_detection_batch(batch, width=480, height=480)
+
+    assert result.control_intents == []
+    assert service.last_frame_context is None

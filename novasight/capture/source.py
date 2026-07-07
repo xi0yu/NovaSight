@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
 
 from .pipeline import CaptureCandidate
 from .state import CaptureProfile
+
+
+FrameResourceMemory = Literal["cpu", "gstreamer", "nvmm", "dmabuf", "cuda", "unknown"]
+
+
+@dataclass(frozen=True)
+class FrameResource:
+    """Opaque frame resource carried with CaptureFrame/RoiFrame.
+
+    `image` remains the CPU view used by the current inference fallback. This
+    resource is the ownership hook for NVMM/DMABUF/CUDA-style paths and should
+    not be interpreted as pixel data by generic runtime code.
+    """
+
+    kind: str
+    handle: Any
+    memory: FrameResourceMemory
+    width: int
+    height: int
+    pixel_format: str
+    source: str = ""
+    dmabuf_fd: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def gpu_accessible(self) -> bool:
+        return self.memory in {"nvmm", "dmabuf", "cuda"}
 
 
 @dataclass(frozen=True)
@@ -17,11 +44,78 @@ class CapturedFrame:
     ts_ns: int
     capture_wait_ms: float
     image: Any
+    frame_resource: FrameResource | None = None
+    userspace_process_ms: float = 0.0
+    source_ts_ns: int | None = None
+    source_ts_kind: str = ""
     source_width: int | None = None
     source_height: int | None = None
     roi_size: int | None = None
     roi_offset_x: int = 0
     roi_offset_y: int = 0
+
+    @property
+    def capture_ts_ns(self) -> int:
+        """Design-contract name for the monotonic timestamp attached at capture."""
+        return self.ts_ns
+
+    @property
+    def capture_ts_source(self) -> str:
+        return "userspace_monotonic_receive"
+
+    @property
+    def receive_ts_ns(self) -> int:
+        """Application monotonic timestamp captured when the frame reached userspace."""
+        return self.ts_ns
+
+    @property
+    def capture_width(self) -> int:
+        return int(self.source_width or self.width)
+
+    @property
+    def capture_height(self) -> int:
+        return int(self.source_height or self.height)
+
+    @property
+    def roi_x(self) -> int:
+        return int(self.roi_offset_x)
+
+    @property
+    def roi_y(self) -> int:
+        return int(self.roi_offset_y)
+
+    @property
+    def roi_width(self) -> int:
+        return int(self.roi_size or self.width)
+
+    @property
+    def roi_height(self) -> int:
+        return int(self.roi_size or self.height)
+
+    @property
+    def image_ref(self) -> Any:
+        if self.image is not None:
+            return self.image
+        if self.frame_resource is not None:
+            return self.frame_resource.handle
+        return None
+
+    @property
+    def gpu_buffer(self) -> Any | None:
+        if self.frame_resource is not None and self.frame_resource.gpu_accessible:
+            return self.frame_resource.handle
+        return None
+
+    @property
+    def resource_memory(self) -> str:
+        return self.frame_resource.memory if self.frame_resource is not None else "cpu"
+
+    @property
+    def dmabuf_fd(self) -> int | None:
+        return self.frame_resource.dmabuf_fd if self.frame_resource is not None else None
+
+
+CaptureFrame = CapturedFrame
 
 
 class FrameSource(Protocol):
@@ -75,6 +169,8 @@ class ImageFrameSource:
             ts_ns=t1,
             capture_wait_ms=(t1 - t0) / 1e6,
             image=self._image.copy(),
+            source_ts_ns=t1,
+            source_ts_kind="synthetic_monotonic",
         )
 
     def close(self) -> None:
@@ -135,6 +231,8 @@ class OpenCvFrameSource:
             ts_ns=t1,
             capture_wait_ms=(t1 - t0) / 1e6,
             image=image,
+            source_ts_ns=None,
+            source_ts_kind="",
             source_width=self._candidate.source_width,
             source_height=self._candidate.source_height,
             roi_size=self._candidate.roi_size,
@@ -181,7 +279,7 @@ class GstAppSinkFrameSource:
             self._stop_pipeline()
             raise RuntimeError("appsink element not found")
         self._frame_id = 0
-        self._first_frame: CapturedFrame | None = None
+        self._opened_readable = False
         ret = self._pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
             diagnostics = _drain_bus_diagnostics(self._pipeline, Gst)
@@ -201,16 +299,13 @@ class GstAppSinkFrameSource:
         except Exception:
             self._stop_pipeline()
             raise
-        self._first_frame = first
+        self._frame_id = 0
+        self._opened_readable = True
 
     def opened_and_readable(self) -> bool:
-        return self._first_frame is not None
+        return bool(self._opened_readable)
 
     def read(self) -> CapturedFrame | None:
-        if self._first_frame is not None:
-            frame = self._first_frame
-            self._first_frame = None
-            return frame
         return self._pull_frame(timeout_ns=100 * self._Gst.MSECOND)
 
     def close(self) -> None:
@@ -226,19 +321,75 @@ class GstAppSinkFrameSource:
     def _pull_frame(self, *, timeout_ns: int) -> CapturedFrame | None:
         t0 = time.monotonic_ns()
         sample = self._appsink.try_pull_sample(timeout_ns)
-        t1 = time.monotonic_ns()
+        receive_ts_ns = time.monotonic_ns()
         if sample is None:
             return None
-        image, width, height = _sample_to_bgr(sample, self._Gst)
+        source_ts_ns, source_ts_kind = _sample_source_timestamp(sample, self._Gst)
+        image, width, height, fmt = _sample_to_bgr(sample, self._Gst)
+        frame_resource = _sample_frame_resource(
+            sample,
+            self._Gst,
+            width=width,
+            height=height,
+            pixel_format=fmt,
+        )
+        ready_ts_ns = time.monotonic_ns()
         self._frame_id += 1
         return CapturedFrame(
             frame_id=self._frame_id,
             width=width,
             height=height,
             pixel_format="BGR",
-            ts_ns=t1,
-            capture_wait_ms=(t1 - t0) / 1e6,
+            ts_ns=receive_ts_ns,
+            capture_wait_ms=(receive_ts_ns - t0) / 1e6,
             image=image,
+            frame_resource=frame_resource,
+            userspace_process_ms=(ready_ts_ns - receive_ts_ns) / 1e6,
+            source_ts_ns=source_ts_ns,
+            source_ts_kind=source_ts_kind,
+            source_width=self._candidate.source_width,
+            source_height=self._candidate.source_height,
+            roi_size=self._candidate.roi_size,
+            roi_offset_x=self._candidate.roi_offset_x,
+            roi_offset_y=self._candidate.roi_offset_y,
+        )
+
+
+class GstResourceFrameSource(GstAppSinkFrameSource):
+    def _pull_frame(self, *, timeout_ns: int) -> CapturedFrame | None:
+        t0 = time.monotonic_ns()
+        sample = self._appsink.try_pull_sample(timeout_ns)
+        receive_ts_ns = time.monotonic_ns()
+        if sample is None:
+            return None
+        source_ts_ns, source_ts_kind = _sample_source_timestamp(sample, self._Gst)
+        width, height, fmt = _sample_geometry(sample)
+        frame_resource = _sample_frame_resource(
+            sample,
+            self._Gst,
+            width=width,
+            height=height,
+            pixel_format=fmt,
+        )
+        if frame_resource is None or not frame_resource.gpu_accessible:
+            memory = getattr(frame_resource, "memory", "none")
+            raise RuntimeError(
+                f"GStreamer resource appsink produced non GPU-accessible memory: {memory}"
+            )
+        ready_ts_ns = time.monotonic_ns()
+        self._frame_id += 1
+        return CapturedFrame(
+            frame_id=self._frame_id,
+            width=width,
+            height=height,
+            pixel_format=str(fmt or "").upper(),
+            ts_ns=receive_ts_ns,
+            capture_wait_ms=(receive_ts_ns - t0) / 1e6,
+            image=None,
+            frame_resource=frame_resource,
+            userspace_process_ms=(ready_ts_ns - receive_ts_ns) / 1e6,
+            source_ts_ns=source_ts_ns,
+            source_ts_kind=source_ts_kind,
             source_width=self._candidate.source_width,
             source_height=self._candidate.source_height,
             roi_size=self._candidate.roi_size,
@@ -297,18 +448,184 @@ def _format_bus_message(message: Any) -> str:
     return f"{source}: {message}"
 
 
-def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int]:
+def _sample_source_timestamp(sample: Any, Gst: Any) -> tuple[int | None, str]:
+    try:
+        buffer = sample.get_buffer()
+    except Exception:
+        return None, ""
+    none_value = getattr(Gst, "CLOCK_TIME_NONE", None)
+    for attr, kind in (("pts", "gstreamer_pts"), ("dts", "gstreamer_dts")):
+        try:
+            value = getattr(buffer, attr)
+        except Exception:
+            continue
+        if not isinstance(value, int):
+            continue
+        if value < 0:
+            continue
+        if none_value is not None and value == none_value:
+            continue
+        return int(value), kind
+    return None, ""
+
+
+def _sample_frame_resource(
+    sample: Any,
+    Gst: Any,
+    *,
+    width: int,
+    height: int,
+    pixel_format: str,
+) -> FrameResource | None:
+    try:
+        buffer = sample.get_buffer()
+    except Exception:
+        return None
+    features = _sample_caps_features(sample)
+    memory_types = _buffer_memory_types(buffer)
+    memory = _classify_frame_memory(features, memory_types)
+    dmabuf_fd = _extract_dmabuf_fd(buffer)
+    return FrameResource(
+        kind="gstreamer_sample",
+        handle=sample,
+        memory=memory,
+        width=int(width),
+        height=int(height),
+        pixel_format=str(pixel_format or "").upper(),
+        source="appsink",
+        dmabuf_fd=dmabuf_fd,
+        metadata={
+            "caps_features": features,
+            "memory_types": memory_types,
+            "gst_buffer_pts": _safe_int_attr(buffer, "pts"),
+            "gst_buffer_dts": _safe_int_attr(buffer, "dts"),
+            "dmabuf_fd": dmabuf_fd,
+        },
+    )
+
+
+def _sample_caps_features(sample: Any) -> str:
+    try:
+        caps = sample.get_caps()
+        features = caps.get_features(0)
+        return str(features.to_string())
+    except Exception:
+        return ""
+
+
+def _buffer_memory_types(buffer: Any) -> list[str]:
+    try:
+        count = int(buffer.n_memory())
+    except Exception:
+        return []
+    result: list[str] = []
+    for index in range(max(0, count)):
+        try:
+            memory = buffer.peek_memory(index)
+        except Exception:
+            continue
+        detected: list[str] = []
+        for name in ("NVMM", "DMABuf", "DmaBuf", "CUDA", "GLMemory", "SystemMemory"):
+            try:
+                if memory.is_type(name):
+                    detected.append(name)
+            except Exception:
+                continue
+        result.append(",".join(detected) if detected else type(memory).__name__)
+    return result
+
+
+def _classify_frame_memory(features: str, memory_types: list[str]) -> FrameResourceMemory:
+    text = " ".join([features, *memory_types]).lower()
+    if "nvmm" in text:
+        return "nvmm"
+    if "dmabuf" in text or "dmabuf" in text.replace("-", ""):
+        return "dmabuf"
+    if "cuda" in text or "glmemory" in text:
+        return "cuda"
+    if "systemmemory" in text or not text.strip():
+        return "cpu"
+    if memory_types or features:
+        return "gstreamer"
+    return "unknown"
+
+
+def _extract_dmabuf_fd(buffer: Any) -> int | None:
+    allocators = _gst_allocators_module()
+    try:
+        count = int(buffer.n_memory())
+    except Exception:
+        return None
+    for index in range(max(0, count)):
+        try:
+            memory = buffer.peek_memory(index)
+        except Exception:
+            continue
+        fd = _memory_dmabuf_fd(memory, allocators)
+        if fd is not None:
+            return fd
+    return None
+
+
+def _gst_allocators_module() -> Any | None:
+    try:
+        from gi.repository import GstAllocators
+
+        return GstAllocators
+    except Exception:
+        return None
+
+
+def _memory_dmabuf_fd(memory: Any, allocators: Any | None) -> int | None:
+    if allocators is not None:
+        try:
+            is_dmabuf = allocators.is_dmabuf_memory(memory)
+        except Exception:
+            is_dmabuf = False
+        if is_dmabuf:
+            try:
+                fd = allocators.dmabuf_memory_get_fd(memory)
+            except Exception:
+                fd = None
+            result = _valid_fd(fd)
+            if result is not None:
+                return result
+    for attr in ("get_fd", "fd", "fileno"):
+        try:
+            value = getattr(memory, attr)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        result = _valid_fd(value)
+        if result is not None:
+            return result
+    return None
+
+
+def _valid_fd(value: Any) -> int | None:
+    try:
+        fd = int(value)
+    except Exception:
+        return None
+    return fd if fd >= 0 else None
+
+
+def _safe_int_attr(obj: Any, name: str) -> int | None:
+    try:
+        value = getattr(obj, name)
+    except Exception:
+        return None
+    return int(value) if isinstance(value, int) and value >= 0 else None
+
+
+def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int, str]:
     import numpy as np
 
-    caps = sample.get_caps()
-    structure = caps.get_structure(0) if caps is not None and caps.get_size() > 0 else None
-    if structure is None:
-        raise RuntimeError("GStreamer sample has no caps")
-    ok_width, width = structure.get_int("width")
-    ok_height, height = structure.get_int("height")
-    fmt = structure.get_string("format")
-    if not ok_width or not ok_height:
-        raise RuntimeError("GStreamer sample caps missing width or height")
+    width, height, fmt = _sample_geometry(sample)
     buffer = sample.get_buffer()
     ok, info = buffer.map(Gst.MapFlags.READ)
     if not ok:
@@ -324,9 +641,22 @@ def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int]:
             image = _nv12_to_bgr(raw, width=width, height=height, np=np)
         else:
             raise RuntimeError(f"unsupported GStreamer sample format: {fmt}")
-        return image, width, height
+        return image, width, height, str(fmt or "")
     finally:
         buffer.unmap(info)
+
+
+def _sample_geometry(sample: Any) -> tuple[int, int, str]:
+    caps = sample.get_caps()
+    structure = caps.get_structure(0) if caps is not None and caps.get_size() > 0 else None
+    if structure is None:
+        raise RuntimeError("GStreamer sample has no caps")
+    ok_width, width = structure.get_int("width")
+    ok_height, height = structure.get_int("height")
+    fmt = structure.get_string("format")
+    if not ok_width or not ok_height:
+        raise RuntimeError("GStreamer sample caps missing width or height")
+    return int(width), int(height), str(fmt or "")
 
 
 def _nv12_to_bgr(raw: Any, *, width: int, height: int, np: Any) -> Any:

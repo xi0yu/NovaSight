@@ -9,7 +9,6 @@ from typing import Any
 from novasight.capture.source import CapturedFrame
 
 from .failfast import FailFastHandler
-from .queue import LatestFrameQueue
 
 
 @dataclass
@@ -31,18 +30,19 @@ class PipelineStats:
 
 class RuntimePipeline:
     CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法运行推理链路。"
+    GPU_BRIDGE_NOT_READY_ERROR = (
+        "capture.memory=nvmm 需要可用的 Jetson native bridge，当前未就绪。"
+    )
 
     def __init__(
         self,
         *,
         capture: Any,
         runtime: Any,
-        frame_queue: LatestFrameQueue[CapturedFrame] | None = None,
         failfast: FailFastHandler | None = None,
     ) -> None:
         self.capture = capture
         self.runtime = runtime
-        self.frame_queue = frame_queue or LatestFrameQueue[CapturedFrame]()
         self.failfast = failfast or FailFastHandler(
             on_fatal=getattr(runtime, "record_fatal_error", None)
         )
@@ -57,11 +57,11 @@ class RuntimePipeline:
         if self.running:
             return
         self._require_running_capture()
+        self._require_ready_gpu_preprocessor_if_needed()
         self._stop.clear()
         self._last_consumed_frame_id = 0
         self._processed_window_ts_ns.clear()
         self._skipped_window_ts_ns.clear()
-        self.frame_queue = LatestFrameQueue[CapturedFrame]()
         self.stats.started_at = time.time()
         self.stats.stopped_at = None
         self.runtime.running = True
@@ -82,7 +82,6 @@ class RuntimePipeline:
 
     def stop(self) -> None:
         self._stop.set()
-        self.frame_queue.close()
         for thread in self._threads:
             thread.join(timeout=1.0)
         self.runtime.running = False
@@ -96,7 +95,6 @@ class RuntimePipeline:
         self.stats.threads = {thread.name: thread.is_alive() for thread in self._threads}
         return {
             **self.stats.__dict__,
-            "queue": self.frame_queue.status(),
             "running": self.running,
         }
 
@@ -109,6 +107,69 @@ class RuntimePipeline:
             or (session is not None and getattr(session, "running", False) is not True)
         ):
             raise RuntimeError(self.CAPTURE_NOT_STARTED_ERROR)
+
+    def _require_ready_gpu_preprocessor_if_needed(self) -> None:
+        if not self._inference_enabled():
+            return
+        if self._capture_memory() != "nvmm":
+            return
+        status = self._gpu_preprocessor_status()
+        if status is not None and bool(status.get("available", False)):
+            return
+        reason = ""
+        detail = ""
+        if status is None:
+            reason = "gpu preprocessor status unavailable"
+        else:
+            reason = str(status.get("reason") or "gpu preprocessor unavailable")
+            detail = str(status.get("detail") or "")
+            native_status = status.get("native_status")
+            if not detail and isinstance(native_status, dict):
+                detail = str(native_status.get("detail") or native_status.get("reason") or "")
+        message = f"{self.GPU_BRIDGE_NOT_READY_ERROR} reason={reason}"
+        if detail:
+            message = f"{message}; detail={detail}"
+        self.stats.last_error = message
+        raise RuntimeError(message)
+
+    def _capture_memory(self) -> str:
+        config = getattr(self.runtime, "config", None)
+        capture_config = getattr(config, "capture", None)
+        memory = getattr(capture_config, "memory", None)
+        if memory is None:
+            capture_config = getattr(self.capture, "config", None)
+            memory = getattr(capture_config, "memory", None)
+        return str(memory or "cpu").lower()
+
+    def _gpu_preprocessor_status(self) -> dict[str, Any] | None:
+        runtime_status = getattr(self.runtime, "status", None)
+        if callable(runtime_status):
+            try:
+                status = runtime_status()
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "reason": "runtime status failed",
+                    "detail": str(exc),
+                }
+            if isinstance(status, dict):
+                bridge = status.get("gpu_preprocessor")
+                if isinstance(bridge, dict):
+                    return bridge
+        preprocessor = getattr(self.runtime, "_gpu_preprocessor", None)
+        status_fn = getattr(preprocessor, "status", None)
+        if callable(status_fn):
+            try:
+                status = status_fn()
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "reason": "gpu preprocessor status failed",
+                    "detail": str(exc),
+                }
+            if isinstance(status, dict):
+                return status
+        return None
 
     def _runtime_loop(self) -> None:
         wait_frame = getattr(self.capture, "wait_preview_frame", None)
@@ -139,9 +200,9 @@ class RuntimePipeline:
             self._prune_window(self._skipped_window_ts_ns, done_ns)
             self.stats.window_processed_frames = len(self._processed_window_ts_ns)
             self.stats.inference_fps = self._window_fps(self._processed_window_ts_ns)
-            self.stats.queue_latency_ms = max(0.0, (process_start_ns - int(frame.ts_ns)) / 1e6)
+            self.stats.queue_latency_ms = max(0.0, (process_start_ns - int(frame.capture_ts_ns)) / 1e6)
             self.stats.inference_latency_ms = max(0.0, (done_ns - process_start_ns) / 1e6)
-            self.stats.e2e_latency_ms = max(0.0, (done_ns - int(frame.ts_ns)) / 1e6)
+            self.stats.e2e_latency_ms = max(0.0, (done_ns - int(frame.capture_ts_ns)) / 1e6)
             self.stats.skipped_frames = len(self._skipped_window_ts_ns)
 
     def _control_loop(self) -> None:

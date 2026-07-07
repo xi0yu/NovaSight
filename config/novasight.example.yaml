@@ -10,8 +10,9 @@ consumers:
   preview: true
   inference: true
   recording: false
+  recording_format: csv
+  recording_path: ""
 limits:
-  max_frame_queue: 1
   stream_fps: 30
 roi:
   size: 640
@@ -27,49 +28,92 @@ inference:
 capture:
   device: /dev/video0
   preference: auto_high_fps
+  memory: cpu
   pixel_format: ""
   width: 0
   height: 0
   fps: 0
+calibration:
+  profile_id: default
+  profile_version: 1
+  fov_semantics: horizontal
+  fov_x_deg: 105
+  counts_per_360_x: 9980
+  counts_per_360_y: 9980
+  axis_sign_x: 1
+  axis_sign_y: 1
+  game_sensitivity_fingerprint: unverified-default
+  projection_profile: fixed_horizontal_fov
 control:
   max_abs_dx: 200
   max_abs_dy: 200
   min_confidence: 0
   fov_ratio: 0.28
-  strategy: pid
+  target_lock_enabled: true
+  target_sticky_bias: 0.25
+  target_lost_grace_frames: 5
+  candidate_ratio_max_aspect: 6
+  candidate_quality_confidence_weight: 0.7
+  candidate_quality_area_weight: 0.3
+  class_priority_quality_margin: 0.08
+  tracker_confirm_frames: 2
+  target_switch_min_preference_advantage: 0.08
+  target_switch_min_continuity_score: 0.7
+  target_switch_confirm_frames: 3
+  tracker_matching_distance_px: 140
+  tracker_ambiguity_margin: 0.08
+  tracker_missing_timeout_ms: 120
+  tracker_delete_timeout_ms: 250
+  tracker_match_threshold: 0.65
+  tracker_mahalanobis_gate: 9.21
+  kalman_enabled: true
+  kalman_acceleration_noise: 1200
+  kalman_measurement_noise_x: 16
+  kalman_measurement_noise_y: 16
+  kalman_max_predict_missing_ms: 80
+  kalman_max_predict_steps: 5
+  kalman_max_predict_dt_ms: 35
+  kalman_max_position_sigma_px: 45
+  kalman_max_covariance_trace: 5000
+  kalman_nis_threshold: 9.21
+  kalman_nis_hard_reject: 16
+  kalman_min_identity_confidence: 0.7
+  kalman_min_prediction_confidence: 0.35
+  kalman_prediction_decay_tau_ms: 45
+  strategy: experimental_angle_pid
+  aim_horizontal_percent: 50
   # Y-axis aim point inside target box: 0=head/top, 50=center, 100=feet/bottom.
   aim_ratio: 40
+  aim_offset_x_px: 0
+  aim_offset_y_px: 0
+  aim_ema_enabled: true
+  aim_ema_alpha: 0.65
+  aim_max_anchor_jump_ratio: 0.15
+  latency_compensation_enabled: true
+  latency_compensation_scale: 0.7
+  latency_max_compensation_ms: 35
+  latency_reject_if_age_exceeds_ms: 55
+  latency_max_compensation_px: 80
+  latency_min_velocity_px_s: 30
+  latency_max_velocity_px_s: 2500
+  latency_min_velocity_measurements: 3
+  latency_min_velocity_confidence: 0.65
+  latency_estimated_actuation_delay_ms: 2
   # hardware: kmNet hardware button gates output.
-  # telemetry: always calculate telemetry, hardware button gates output.
-  # always: debug direct output without hardware trigger gate.
+  # always: bypasses the button trigger gate, while keeping safety gates active.
   trigger_mode: hardware
-  trigger_bindings:
-    - MouseRight
-  pid_kp_x: 0.35
-  pid_kp_y: 0.24
-  pid_kd: 0.1
-  kp_x_move_max: 150
-  kp_y_move_max: 30
-  prediction_enabled: true
-  prediction_factor: 0.1
-  derivative_enabled: true
-  y_down_enabled: false
-  # 0 disables Y-axis down compensation. Example: window=10, counts=8 means add -8 Y counts every 10ms.
-  y_rate_window_ms: 10
-  y_rate_max_counts: 0
+  command_interval_ms: 1
+  scheduler_command_ttl_ms: 35
+  scheduler_predicted_command_ttl_ms: 18
+  scheduler_cancel_on_new_frame: true
+  scheduler_cancel_on_direction_change: true
+  scheduler_cancel_on_track_change: true
+  scheduler_max_step_x: 20
+  scheduler_max_step_y: 20
+  scheduler_queue_hard_limit: 64
+  scheduler_device_error_cooldown_ms: 50
   move_kind: bezier
   move_ms: 12
-  isolated_kp_x: 0.35
-  isolated_kp_y: 0.24
-  isolated_max_x: 80
-  isolated_max_y: 60
-  isolated_deadzone_px: 2
-  isolated_aim_ratio: 40
-  isolated_smoothing: 0
-  isolated_prediction: 0
-  isolated_fov_deg: 105
-  isolated_counts_per_revolution_x: 9980
-  isolated_counts_per_revolution_y: 9980
   experimental_angle_kp_x: 0.35
   experimental_angle_kp_y: 0.24
   experimental_angle_ki: 0
@@ -80,12 +124,21 @@ control:
   experimental_angle_smooth_factor: 0
   experimental_angle_deadzone_px: 0
   experimental_angle_derivative_filter: 1
-  experimental_angle_fov_x_deg: 105
-  experimental_angle_counts_per_360: 9980
+  experimental_angle_near_error_deg: 0.35
+  experimental_angle_far_error_deg: 2.5
+  experimental_angle_near_kp_scale: 0.35
+  experimental_angle_middle_kp_scale: 0.7
+  experimental_angle_far_kp_scale: 1
+  experimental_angle_near_kd_scale: 1
+  experimental_angle_middle_kd_scale: 0.8
+  experimental_angle_far_kd_scale: 0.5
+  experimental_angle_prediction_gain_min: 0.35
+  experimental_angle_prediction_d_gain_min: 0.25
+  experimental_angle_max_control_angle_deg: 3
   experimental_angle_max_step_counts: 80
+  experimental_angle_max_counts_delta_x: 35
+  experimental_angle_max_counts_delta_y: 35
   experimental_angle_control_hz: 60
-  experimental_angle_sign_x: 1
-  experimental_angle_sign_y: 1
   experimental_angle_kalman_enabled: true
   experimental_angle_kalman_process_noise: 2
   experimental_angle_kalman_measurement_noise: 16
@@ -104,35 +157,15 @@ control:
   experimental_angle_magnet_curve: 1
   experimental_angle_magnet_deadzone_px: 0
   experimental_angle_magnet_max_counts: 20
-  dynamic_pid_kp_x: 0.35
-  dynamic_pid_kp_y: 0.24
-  dynamic_pid_ki: 0
-  dynamic_pid_kd: 0
-  dynamic_pid_target_error_threshold: 0.016
-  dynamic_pid_speed_multiplier: 1
-  dynamic_pid_min_coefficient: 1.6
-  dynamic_pid_max_coefficient: 2.7
-  dynamic_pid_transition_sharpness: 5
-  dynamic_pid_transition_midpoint: 0
-  dynamic_pid_minimum_data_count: 2
-  dynamic_pid_error_change_tolerance: 0.012
-  dynamic_pid_smoothing_factor: 1
-  dynamic_pid_aim_ratio: 40
-  dynamic_pid_fov_deg: 105
-  dynamic_pid_counts_per_revolution_x: 9980
-  dynamic_pid_counts_per_revolution_y: 9980
-  dynamic_pid_control_hz: 60
-  dynamic_pid_ema_alpha: 0.45
-  # Set to silent, console, dry_run, or kmnet to override executor.default.
-  # Leave empty or omit to use executor.default.
-  output_mode: silent
+  # Current runtime output is kmNet-only.
+  output_mode: kmnet
 executor:
-  default: dry_run
+  default: kmnet
 logging:
   level: INFO
   dir: logs
 hardware:
-  kind: none
+  kind: kmnet
   host: 192.168.2.188
   port: 8888
   uuid: "12345678"

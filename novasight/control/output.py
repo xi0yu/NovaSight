@@ -20,6 +20,9 @@ class ControlOutput:
     move_ms: int = 0
     trace_ms: int = 0
     bezier_ctrl: tuple[int, int, int, int] | None = None
+    source_frame_id: int | None = None
+    source_track_id: int | None = None
+    predicted_source: bool = False
 
 
 class ControlOutputPolicy:
@@ -57,6 +60,9 @@ class ControlOutputPolicy:
                 intent.move_ms,
                 intent.trace_ms,
                 intent.bezier_ctrl,
+                intent.source_frame_id,
+                intent.source_track_id,
+                intent.predicted_source,
             )
         if intent.confidence < self.min_confidence:
             return ControlOutput(
@@ -72,6 +78,9 @@ class ControlOutputPolicy:
                 intent.move_ms,
                 intent.trace_ms,
                 intent.bezier_ctrl,
+                intent.source_frame_id,
+                intent.source_track_id,
+                intent.predicted_source,
             )
         requested_dx = int(round(intent.dx))
         requested_dy = int(round(intent.dy))
@@ -92,4 +101,7 @@ class ControlOutputPolicy:
             intent.move_ms,
             intent.trace_ms,
             intent.bezier_ctrl,
+            intent.source_frame_id,
+            intent.source_track_id,
+            intent.predicted_source,
         )

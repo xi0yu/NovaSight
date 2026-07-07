@@ -21,6 +21,9 @@ class RoiFrame:
     pixel_format: str
     image: Any | None
     gpu_buffer: Any | None = None
+    frame_resource: Any | None = None
+    source_ts_ns: int | None = None
+    source_ts_kind: str = ""
 
     @property
     def width(self) -> int:
@@ -29,6 +32,19 @@ class RoiFrame:
     @property
     def height(self) -> int:
         return self.roi_size
+
+    @property
+    def capture_ts_ns(self) -> int:
+        return self.ts_ns
+
+    @property
+    def receive_ts_ns(self) -> int:
+        return self.ts_ns
+
+    @property
+    def resource_memory(self) -> str:
+        resource = self.frame_resource
+        return str(getattr(resource, "memory", "cpu") or "cpu")
 
 
 def normalize_roi_size(value: int) -> int:
@@ -62,6 +78,14 @@ def center_roi_frame(
     offset_x: int = 0,
     offset_y: int = 0,
 ) -> RoiFrame:
+    capture_ts_value = getattr(frame, "capture_ts_ns", None)
+    if capture_ts_value is None:
+        capture_ts_value = getattr(frame, "ts_ns")
+    capture_ts_ns = int(capture_ts_value)
+    source_ts_value = getattr(frame, "source_ts_ns", None)
+    source_ts_ns = int(source_ts_value) if isinstance(source_ts_value, int) else None
+    source_ts_kind = str(getattr(frame, "source_ts_kind", "") or "")
+    frame_resource = getattr(frame, "frame_resource", None)
     configured_size = normalize_roi_size(requested_size)
     frame_roi_size = getattr(frame, "roi_size", None)
     source_width = int(getattr(frame, "source_width", None) or frame.width)
@@ -104,10 +128,13 @@ def center_roi_frame(
                 roi_size=desired_roi_size,
                 offset_x=desired_offset_x,
                 offset_y=desired_offset_y,
-                ts_ns=frame.ts_ns,
+                ts_ns=capture_ts_ns,
                 pixel_format=frame.pixel_format,
                 image=frame.image,
                 gpu_buffer=getattr(frame, "gpu_buffer", None),
+                frame_resource=frame_resource,
+                source_ts_ns=source_ts_ns,
+                source_ts_kind=source_ts_kind,
             )
 
         inner_x = desired_offset_x - existing_offset_x
@@ -125,7 +152,7 @@ def center_roi_frame(
                 roi_size=desired_roi_size,
                 offset_x=desired_offset_x,
                 offset_y=desired_offset_y,
-                ts_ns=frame.ts_ns,
+                ts_ns=capture_ts_ns,
                 pixel_format=frame.pixel_format,
                 image=_crop_image(
                     frame.image,
@@ -134,6 +161,9 @@ def center_roi_frame(
                     size=desired_roi_size,
                 ),
                 gpu_buffer=None,
+                frame_resource=None,
+                source_ts_ns=source_ts_ns,
+                source_ts_kind=source_ts_kind,
             )
 
         return RoiFrame(
@@ -143,10 +173,13 @@ def center_roi_frame(
             roi_size=existing_roi_size,
             offset_x=existing_offset_x,
             offset_y=existing_offset_y,
-            ts_ns=frame.ts_ns,
+            ts_ns=capture_ts_ns,
             pixel_format=frame.pixel_format,
             image=frame.image,
             gpu_buffer=getattr(frame, "gpu_buffer", None),
+            frame_resource=frame_resource,
+            source_ts_ns=source_ts_ns,
+            source_ts_kind=source_ts_kind,
         )
 
     if (
@@ -163,10 +196,13 @@ def center_roi_frame(
             roi_size=desired_roi_size,
             offset_x=desired_offset_x,
             offset_y=desired_offset_y,
-            ts_ns=frame.ts_ns,
+            ts_ns=capture_ts_ns,
             pixel_format=frame.pixel_format,
             image=frame.image,
             gpu_buffer=getattr(frame, "gpu_buffer", None),
+            frame_resource=frame_resource,
+            source_ts_ns=source_ts_ns,
+            source_ts_kind=source_ts_kind,
         )
 
     offset_x, offset_y, roi_size = center_roi_region(
@@ -184,9 +220,12 @@ def center_roi_frame(
         roi_size=roi_size,
         offset_x=offset_x,
         offset_y=offset_y,
-        ts_ns=frame.ts_ns,
+        ts_ns=capture_ts_ns,
         pixel_format=frame.pixel_format,
         image=image,
+        frame_resource=None,
+        source_ts_ns=source_ts_ns,
+        source_ts_kind=source_ts_kind,
     )
 
 

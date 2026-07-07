@@ -22,13 +22,13 @@ class KmNetExecutor:
         port: int = 0,
         uuid: str = "",
         monitor_port: int = 0,
-        flip_dy: bool = True,
+        flip_dy: bool = False,
     ) -> None:
         self.host = host
         self.port = port
         self.uuid = uuid
         self.monitor_port = monitor_port
-        self.flip_dy = flip_dy
+        self.flip_dy = False
         self.connected = False
         self.monitoring = False
         self.move_count = 0
@@ -58,7 +58,6 @@ class KmNetExecutor:
             port=config.hardware.port,
             uuid=config.hardware.uuid,
             monitor_port=config.hardware.monitor_port,
-            flip_dy=config.hardware.flip_dy,
         )
 
     def available(self) -> bool:
@@ -217,7 +216,7 @@ class KmNetExecutor:
             )
 
         dx = int(output.dx)
-        dy = int(-output.dy if self.flip_dy else output.dy)
+        dy = int(output.dy)
         api_name = "move"
         driver_rc: Any | None = None
         try:
@@ -276,7 +275,6 @@ class KmNetExecutor:
                     "stage": "driver",
                     "api_name": api_name,
                     "driver_rc": None,
-                    "flipped_dy": dy,
                     "driver_dx": dx,
                     "driver_dy": dy,
                     "error": str(exc),
@@ -291,7 +289,6 @@ class KmNetExecutor:
                 "stage": "driver",
                 "api_name": api_name,
                 "driver_rc": driver_rc,
-                "flipped_dy": dy,
                 "driver_dx": dx,
                 "driver_dy": dy,
                 "move_count": self.move_count,
@@ -363,9 +360,6 @@ class KmNetExecutor:
             rc = self._call_driver(fallback, dx, dy)
             return fallback, rc
         x1, y1, x2, y2 = ctrl
-        if self.flip_dy:
-            y1 = -y1
-            y2 = -y2
         rc = self._call_driver(name, dx, dy, int(move_ms), int(x1), int(y1), int(x2), int(y2))
         return name, rc
 

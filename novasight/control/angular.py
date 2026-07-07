@@ -6,21 +6,32 @@ import math
 
 @dataclass(frozen=True, slots=True)
 class CalibrationProfile:
+    profile_id: str = "default"
+    profile_version: int = 1
+    fov_semantics: str = "horizontal"
     fov_x_deg: float = 105.0
     counts_per_360_x: float = 9980.0
     counts_per_360_y: float = 9980.0
     axis_sign_x: float = 1.0
     axis_sign_y: float = 1.0
+    game_sensitivity_fingerprint: str = "unverified-default"
+    projection_profile: str = "fixed_horizontal_fov"
 
     def normalized(self) -> CalibrationProfile:
         sign_x = -1.0 if self.axis_sign_x < 0 else 1.0
         sign_y = -1.0 if self.axis_sign_y < 0 else 1.0
         return CalibrationProfile(
+            profile_id=str(self.profile_id).strip() or "default",
+            profile_version=max(1, int(self.profile_version)),
+            fov_semantics=str(self.fov_semantics).strip() or "horizontal",
             fov_x_deg=max(1.0, min(179.0, float(self.fov_x_deg))),
             counts_per_360_x=max(1.0, float(self.counts_per_360_x)),
             counts_per_360_y=max(1.0, float(self.counts_per_360_y)),
             axis_sign_x=sign_x,
             axis_sign_y=sign_y,
+            game_sensitivity_fingerprint=str(self.game_sensitivity_fingerprint).strip()
+            or "unverified-default",
+            projection_profile=str(self.projection_profile).strip() or "fixed_horizontal_fov",
         )
 
 
@@ -60,8 +71,21 @@ class AngularPDConfig:
     kd_x_s: float = 0.0
     kd_y_s: float = 0.0
     deadzone_rad: float = 0.0
+    near_error_rad: float = math.radians(0.35)
+    far_error_rad: float = math.radians(2.50)
+    near_kp_scale: float = 0.35
+    middle_kp_scale: float = 0.70
+    far_kp_scale: float = 1.00
+    near_kd_scale: float = 1.00
+    middle_kd_scale: float = 0.80
+    far_kd_scale: float = 0.50
+    prediction_gain_min: float = 0.35
+    prediction_d_gain_min: float = 0.25
     derivative_ema_alpha: float = 1.0
+    max_control_angle_rad: float = math.radians(3.0)
     max_step_counts: float = 80.0
+    max_counts_delta_x: float = 35.0
+    max_counts_delta_y: float = 35.0
     dt_min_s: float = 1.0 / 240.0
     dt_max_s: float = 1.0 / 15.0
 
@@ -75,6 +99,11 @@ class ControllerMemory:
     residual_x_counts: float = 0.0
     residual_y_counts: float = 0.0
     initialized: bool = False
+    active_track_id: int | None = None
+    calibration_signature: tuple[str, int, str, float, float, float, float, float, str, str] | None = None
+    control_geometry_signature: tuple[float, float] | None = None
+    last_emit_x_counts: int = 0
+    last_emit_y_counts: int = 0
 
     def reset(self) -> None:
         self.prev_error_x_rad = 0.0
@@ -84,6 +113,11 @@ class ControllerMemory:
         self.residual_x_counts = 0.0
         self.residual_y_counts = 0.0
         self.initialized = False
+        self.active_track_id = None
+        self.calibration_signature = None
+        self.control_geometry_signature = None
+        self.last_emit_x_counts = 0
+        self.last_emit_y_counts = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,9 +269,13 @@ class AngularPDController:
             return self._zero(err, err.invalid_reason or "CONTROL_NOT_ALLOWED")
 
         cfg = self.config
+        reset_reason = self._context_reset_reason(err)
+        if reset_reason:
+            self.memory.reset()
         dt = max(float(cfg.dt_min_s), min(float(cfg.dt_max_s), float(err.dt_s)))
         ex = 0.0 if abs(err.error_x_rad) <= cfg.deadzone_rad else err.error_x_rad
         ey = 0.0 if abs(err.error_y_rad) <= cfg.deadzone_rad else err.error_y_rad
+        zone, kp_scale, kd_scale = self._zone_scales(math.hypot(ex, ey))
 
         if not self.memory.initialized:
             raw_dx = 0.0
@@ -251,21 +289,43 @@ class AngularPDController:
         self.memory.derivative_x_ema = alpha * raw_dx + (1.0 - alpha) * self.memory.derivative_x_ema
         self.memory.derivative_y_ema = alpha * raw_dy + (1.0 - alpha) * self.memory.derivative_y_ema
 
-        prediction_gain = err.prediction_confidence if err.predicted_source else 1.0
-        prediction_gain = max(0.0, min(1.0, float(prediction_gain)))
-        p_x = max(0.0, cfg.kp_x) * ex * prediction_gain
-        p_y = max(0.0, cfg.kp_y) * ey * prediction_gain
-        d_x = cfg.kd_x_s * self.memory.derivative_x_ema * prediction_gain
-        d_y = cfg.kd_y_s * self.memory.derivative_y_ema * prediction_gain
+        prediction_confidence = max(0.0, min(1.0, float(err.prediction_confidence)))
+        if err.predicted_source:
+            prediction_gain = _lerp(max(0.0, min(1.0, cfg.prediction_gain_min)), 1.0, prediction_confidence)
+            prediction_d_gain = _lerp(
+                max(0.0, min(1.0, cfg.prediction_d_gain_min)),
+                1.0,
+                prediction_confidence,
+            )
+        else:
+            prediction_gain = 1.0
+            prediction_d_gain = 1.0
+        p_x = max(0.0, cfg.kp_x) * kp_scale * ex * prediction_gain
+        p_y = max(0.0, cfg.kp_y) * kp_scale * ey * prediction_gain
+        d_x = cfg.kd_x_s * kd_scale * self.memory.derivative_x_ema * prediction_d_gain
+        d_y = cfg.kd_y_s * kd_scale * self.memory.derivative_y_ema * prediction_d_gain
         out_x_rad = p_x + d_x
         out_y_rad = p_y + d_y
+        unclamped_out_x_rad = out_x_rad
+        unclamped_out_y_rad = out_y_rad
+        out_x_rad, out_y_rad, angular_vector_clipped = _clamp_vector(
+            out_x_rad,
+            out_y_rad,
+            cfg.max_control_angle_rad,
+        )
 
         counts_per_rad_x = self.calibration.counts_per_360_x / (2.0 * math.pi)
         counts_per_rad_y = self.calibration.counts_per_360_y / (2.0 * math.pi)
         raw_x = out_x_rad * counts_per_rad_x * self.calibration.axis_sign_x
         raw_y = out_y_rad * counts_per_rad_y * self.calibration.axis_sign_y
-        raw_x = _clamp(raw_x, cfg.max_step_counts)
-        raw_y = _clamp(raw_y, cfg.max_step_counts)
+        mapped_x = raw_x
+        mapped_y = raw_y
+        prediction_counts_limit = cfg.max_step_counts * prediction_gain if err.predicted_source else math.inf
+        raw_x, raw_y, prediction_counts_clipped = _clamp_vector(
+            raw_x,
+            raw_y,
+            prediction_counts_limit,
+        )
 
         accum_x = raw_x + self.memory.residual_x_counts
         accum_y = raw_y + self.memory.residual_y_counts
@@ -273,11 +333,34 @@ class AngularPDController:
         emit_y = math.trunc(accum_y)
         self.memory.residual_x_counts = accum_x - emit_x
         self.memory.residual_y_counts = accum_y - emit_y
-        emit_x = int(_clamp(float(emit_x), cfg.max_step_counts))
-        emit_y = int(_clamp(float(emit_y), cfg.max_step_counts))
+        vector_limited_x, vector_limited_y, counts_vector_clipped = _clamp_vector(
+            float(emit_x),
+            float(emit_y),
+            cfg.max_step_counts,
+        )
+        emit_x = int(math.trunc(vector_limited_x))
+        emit_y = int(math.trunc(vector_limited_y))
+        slew_limited_x = _clamp_delta(
+            emit_x,
+            self.memory.last_emit_x_counts,
+            cfg.max_counts_delta_x,
+        )
+        slew_limited_y = _clamp_delta(
+            emit_y,
+            self.memory.last_emit_y_counts,
+            cfg.max_counts_delta_y,
+        )
+        slew_rate_limited = slew_limited_x != emit_x or slew_limited_y != emit_y
+        emit_x = slew_limited_x
+        emit_y = slew_limited_y
 
         self.memory.prev_error_x_rad = ex
         self.memory.prev_error_y_rad = ey
+        self.memory.active_track_id = err.track_id
+        self.memory.calibration_signature = self._calibration_signature()
+        self.memory.control_geometry_signature = self._control_geometry_signature(err)
+        self.memory.last_emit_x_counts = emit_x
+        self.memory.last_emit_y_counts = emit_y
 
         return AngularControlOutput(
             dx=emit_x,
@@ -299,11 +382,78 @@ class AngularPDController:
             debug={
                 "control_allowed": True,
                 "dt": dt,
+                "derivative_reset_reason": reset_reason,
+                "derivative_ema_alpha": alpha,
+                "zone": zone,
+                "zone_kp_scale": kp_scale,
+                "zone_kd_scale": kd_scale,
+                "prediction_confidence": prediction_confidence,
                 "prediction_gain": prediction_gain,
+                "prediction_d_gain": prediction_d_gain,
+                "derivative_x_raw_rad_s": raw_dx,
+                "derivative_y_raw_rad_s": raw_dy,
                 "derivative_x_rad_s": self.memory.derivative_x_ema,
                 "derivative_y_rad_s": self.memory.derivative_y_ema,
+                "unclamped_out_x_rad": unclamped_out_x_rad,
+                "unclamped_out_y_rad": unclamped_out_y_rad,
+                "angular_vector_clipped": angular_vector_clipped,
+                "mapped_x_counts": mapped_x,
+                "mapped_y_counts": mapped_y,
+                "prediction_counts_limit": prediction_counts_limit,
+                "prediction_counts_clipped": prediction_counts_clipped,
+                "counts_vector_clipped": counts_vector_clipped,
+                "slew_rate_limited": slew_rate_limited,
+                "max_counts_delta_x": max(0.0, float(cfg.max_counts_delta_x)),
+                "max_counts_delta_y": max(0.0, float(cfg.max_counts_delta_y)),
             },
         )
+
+    def _zone_scales(self, error_norm_rad: float) -> tuple[str, float, float]:
+        cfg = self.config
+        near = max(0.0, float(cfg.near_error_rad))
+        far = max(near, float(cfg.far_error_rad))
+        if error_norm_rad <= near:
+            return "near", max(0.0, cfg.near_kp_scale), max(0.0, cfg.near_kd_scale)
+        if error_norm_rad >= far:
+            return "far", max(0.0, cfg.far_kp_scale), max(0.0, cfg.far_kd_scale)
+        return "middle", max(0.0, cfg.middle_kp_scale), max(0.0, cfg.middle_kd_scale)
+
+    def _context_reset_reason(self, err: AngularErrorState) -> str:
+        signature = self._calibration_signature()
+        geometry_signature = self._control_geometry_signature(err)
+        if self.memory.calibration_signature is not None and self.memory.calibration_signature != signature:
+            return "CALIBRATION_CHANGED"
+        if (
+            self.memory.control_geometry_signature is not None
+            and self.memory.control_geometry_signature != geometry_signature
+        ):
+            return "CONTROL_GEOMETRY_CHANGED"
+        if (
+            self.memory.initialized
+            and self.memory.active_track_id != err.track_id
+            and (self.memory.active_track_id is not None or err.track_id is not None)
+        ):
+            return "SWITCH_COMMITTED"
+        return ""
+
+    def _calibration_signature(self) -> tuple[str, int, str, float, float, float, float, float, str, str]:
+        calibration = self.calibration.normalized()
+        return (
+            calibration.profile_id,
+            calibration.profile_version,
+            calibration.fov_semantics,
+            calibration.fov_x_deg,
+            calibration.counts_per_360_x,
+            calibration.counts_per_360_y,
+            calibration.axis_sign_x,
+            calibration.axis_sign_y,
+            calibration.game_sensitivity_fingerprint,
+            calibration.projection_profile,
+        )
+
+    @staticmethod
+    def _control_geometry_signature(err: AngularErrorState) -> tuple[float, float]:
+        return (float(err.control_width_px), float(err.control_height_px))
 
     def _zero(self, err: AngularErrorState, reason: str) -> AngularControlOutput:
         return AngularControlOutput(
@@ -334,3 +484,29 @@ class AngularPDController:
 def _clamp(value: float, limit: float) -> float:
     lim = abs(float(limit))
     return max(-lim, min(lim, float(value)))
+
+
+def _clamp_vector(x: float, y: float, limit: float) -> tuple[float, float, bool]:
+    lim = abs(float(limit))
+    if lim <= 0.0:
+        return 0.0, 0.0, bool(x or y)
+    norm = math.hypot(float(x), float(y))
+    if norm <= lim or norm <= 0.0:
+        return float(x), float(y), False
+    scale = lim / norm
+    return float(x) * scale, float(y) * scale, True
+
+
+def _clamp_delta(value: int, previous: int, limit: float) -> int:
+    lim = max(0, int(abs(float(limit))))
+    delta = int(value) - int(previous)
+    if delta > lim:
+        return int(previous) + lim
+    if delta < -lim:
+        return int(previous) - lim
+    return int(value)
+
+
+def _lerp(start: float, end: float, t: float) -> float:
+    clamped_t = max(0.0, min(1.0, float(t)))
+    return float(start) + (float(end) - float(start)) * clamped_t

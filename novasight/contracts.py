@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +139,34 @@ class Detection:
         return self.box.point_y(ratio)
 
 
+DetectionCoordinateSpace = Literal["model", "roi", "capture", "control", "display"]
+
+
+@dataclass(frozen=True)
+class DetectionBatch:
+    frame_id: int
+    capture_ts_ns: int
+    inference_start_ts_ns: int
+    inference_end_ts_ns: int
+    detections: list[Detection] = field(default_factory=list)
+    classes: list[str] = field(default_factory=list)
+    coordinate_space: DetectionCoordinateSpace = "roi"
+
+    def __post_init__(self) -> None:
+        if int(self.frame_id) < 0:
+            raise ValueError("DetectionBatch.frame_id must be >= 0")
+        if int(self.capture_ts_ns) <= 0:
+            raise ValueError("DetectionBatch.capture_ts_ns must be positive")
+        if int(self.inference_start_ts_ns) <= 0:
+            raise ValueError("DetectionBatch.inference_start_ts_ns must be positive")
+        if int(self.inference_end_ts_ns) < int(self.inference_start_ts_ns):
+            raise ValueError("DetectionBatch.inference_end_ts_ns must be >= inference_start_ts_ns")
+
+    @property
+    def inference_latency_ms(self) -> float:
+        return (int(self.inference_end_ts_ns) - int(self.inference_start_ts_ns)) / 1e6
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class Track:
     track_id: int
@@ -237,6 +266,9 @@ class ControlIntent:
     move_ms: int = 0
     trace_ms: int = 0
     bezier_ctrl: tuple[int, int, int, int] | None = None
+    source_frame_id: int | None = None
+    source_track_id: int | None = None
+    predicted_source: bool = False
 
 
 def _coerce_box(

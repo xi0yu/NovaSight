@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
-import time
 from typing import Any
 
 from novasight.config import RuntimeConfig
-from novasight.control import CommandScheduler, ControlCommandCoalescer, ControlOutput, ControlOutputPolicy
+from novasight.control import CommandScheduler, ControlOutputPolicy
 from novasight.executors.contracts import ExecutionResult, Executor
-from novasight.executors.dry_run import ConsoleExecutor, DryRunExecutor, SilentExecutor
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.contracts import ControlIntent
 
@@ -17,44 +15,33 @@ class ExecutorRegistry:
     def __init__(
         self,
         executors: Iterable[Executor],
-        default: str = "dry_run",
+        default: str = "kmnet",
         policy: ControlOutputPolicy | None = None,
-        coalescer: ControlCommandCoalescer | None = None,
         scheduler: CommandScheduler | None = None,
-        y_limiter: YAxisWindowLimiter | None = None,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
         if default not in self.executors:
             raise ValueError(f"unknown executor: {default}")
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
-        self.coalescer = coalescer
         self.scheduler = scheduler
-        self.y_limiter = y_limiter
 
     @classmethod
     def with_builtin_executors(
         cls,
         config: RuntimeConfig | None = None,
-        default: str = "dry_run",
+        default: str = "kmnet",
         policy: ControlOutputPolicy | None = None,
-        coalescer: ControlCommandCoalescer | None = None,
         scheduler: CommandScheduler | None = None,
-        y_limiter: YAxisWindowLimiter | None = None,
     ) -> ExecutorRegistry:
         kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
         return cls(
             executors=[
-                SilentExecutor(),
-                ConsoleExecutor(),
-                DryRunExecutor(),
                 kmnet,
             ],
             default=default,
             policy=policy,
-            coalescer=coalescer,
             scheduler=scheduler,
-            y_limiter=y_limiter,
         )
 
     @classmethod
@@ -64,7 +51,6 @@ class ExecutorRegistry:
             default=config.control.output_mode or config.executor.default,
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
-            y_limiter=YAxisWindowLimiter.from_config(config),
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
@@ -73,65 +59,56 @@ class ExecutorRegistry:
             raise ValueError(f"unknown executor: {selected}")
         self.selected = selected
         self.policy = policy_from_config(config)
-        self.coalescer = None
         self.scheduler = scheduler_from_config(config)
-        if self.y_limiter is None:
-            self.y_limiter = YAxisWindowLimiter.from_config(config)
-        else:
-            self.y_limiter.configure_from_config(config)
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
-        if self.scheduler is None and self.coalescer is not None:
-            merged = self.coalescer.push(intent)
-            if merged is None:
-                bounded = self.policy.apply(intent)
-                return ExecutionResult(
-                    executor_id=self.selected,
-                    sent=False,
-                    intent=bounded,
-                    message="control command coalesced",
-                    metadata={
-                        "stage": "coalescer",
-                        "selected_executor": self.selected,
-                        "requested_dx": float(intent.dx),
-                        "requested_dy": float(intent.dy),
-                        "pending_dx": float(getattr(getattr(self.coalescer, "_pending_intent", None), "dx", 0.0)),
-                        "pending_dy": float(getattr(getattr(self.coalescer, "_pending_intent", None), "dy", 0.0)),
-                        "dropped_since_emit": int(getattr(self.coalescer, "_dropped_since_emit", 0)),
-                        "min_interval_ms": float(self.coalescer.min_interval_s * 1000.0),
-                    },
-                )
-            intent = merged
         bounded = self.policy.apply(intent)
-        limiter_metadata: dict[str, Any] | None = None
-        if self.y_limiter is not None:
-            bounded, limiter_metadata = self.y_limiter.apply(bounded)
+        if self.scheduler is None:
+            return ExecutionResult(
+                executor_id=self.selected,
+                sent=False,
+                intent=bounded,
+                message="command scheduler required",
+                metadata={
+                    "stage": "scheduler_required",
+                    "selected_executor": self.selected,
+                    "accepted": bool(bounded.accepted),
+                    "clipped": bool(bounded.clipped),
+                    "policy_reason": str(bounded.reason),
+                },
+            )
         scheduler_metadata: dict[str, Any] | None = None
-        if self.scheduler is not None:
-            decision = self.scheduler.submit(bounded)
-            scheduler_metadata = decision.metadata
-            if decision.output is None:
-                return ExecutionResult(
-                    executor_id=self.selected,
-                    sent=False,
-                    intent=bounded,
-                    message="control command scheduled",
-                    metadata={
-                        "stage": "scheduler",
-                        "selected_executor": self.selected,
-                        **scheduler_metadata,
-                        **({"y_rate_limiter": limiter_metadata} if limiter_metadata is not None else {}),
-                    },
-                )
-            bounded = decision.output
+        decision = self.scheduler.submit(bounded)
+        scheduler_metadata = decision.metadata
+        if decision.output is None:
+            return ExecutionResult(
+                executor_id=self.selected,
+                sent=False,
+                intent=bounded,
+                message="control command scheduled",
+                metadata={
+                    "stage": "scheduler",
+                    "selected_executor": self.selected,
+                    **scheduler_metadata,
+                },
+            )
+        bounded = decision.output
         result = self.executors[self.selected].execute(bounded)
+        scheduler_execution_metadata: dict[str, Any] | None = None
+        scheduler_execution_metadata = self.scheduler.record_execution_result(
+            sent=bool(result.sent),
+            message=str(result.message),
+        )
         if result.metadata is not None:
-            if limiter_metadata is not None or scheduler_metadata is not None:
+            if scheduler_metadata is not None or scheduler_execution_metadata is not None:
                 metadata = dict(result.metadata)
-                if limiter_metadata is not None:
-                    metadata["y_rate_limiter"] = limiter_metadata
                 if scheduler_metadata is not None:
-                    metadata["scheduler"] = scheduler_metadata
+                    metadata["scheduler"] = {
+                        **scheduler_metadata,
+                        **({"execution": scheduler_execution_metadata} if scheduler_execution_metadata is not None else {}),
+                    }
+                elif scheduler_execution_metadata is not None:
+                    metadata["scheduler"] = {"execution": scheduler_execution_metadata}
                 return replace(result, metadata=metadata)
             return result
         return ExecutionResult(
@@ -145,8 +122,16 @@ class ExecutorRegistry:
                 "accepted": bool(bounded.accepted),
                 "clipped": bool(bounded.clipped),
                 "policy_reason": str(bounded.reason),
-                **({"y_rate_limiter": limiter_metadata} if limiter_metadata is not None else {}),
-                **({"scheduler": scheduler_metadata} if scheduler_metadata is not None else {}),
+                **(
+                    {
+                        "scheduler": {
+                            **(scheduler_metadata or {}),
+                            **({"execution": scheduler_execution_metadata} if scheduler_execution_metadata is not None else {}),
+                        }
+                    }
+                    if scheduler_metadata is not None or scheduler_execution_metadata is not None
+                    else {}
+                ),
             },
         )
 
@@ -177,65 +162,6 @@ class ExecutorRegistry:
         return reader()
 
 
-class YAxisWindowLimiter:
-    @classmethod
-    def from_config(cls, config: RuntimeConfig) -> YAxisWindowLimiter:
-        return cls(
-            enabled=bool(config.control.y_down_enabled)
-            and config.control.strategy not in {"isolated_mouse", "dynamic_pid", "experimental_angle_pid"},
-            window_s=max(0.0, config.control.y_rate_window_ms / 1000.0),
-            max_counts=max(0.0, config.control.y_rate_max_counts),
-        )
-
-    def __init__(self, *, enabled: bool, window_s: float, max_counts: float) -> None:
-        self.enabled = bool(enabled)
-        self.window_s = max(0.0, window_s)
-        self.max_counts = max(0.0, max_counts)
-        self._last_drop_s = time.monotonic() if self.enabled else 0.0
-
-    def configure_from_config(self, config: RuntimeConfig) -> None:
-        next_enabled = bool(config.control.y_down_enabled)
-        if config.control.strategy in {"isolated_mouse", "dynamic_pid", "experimental_angle_pid"}:
-            next_enabled = False
-        was_enabled = self.enabled
-        self.enabled = next_enabled
-        self.window_s = max(0.0, config.control.y_rate_window_ms / 1000.0)
-        self.max_counts = max(0.0, config.control.y_rate_max_counts)
-        if next_enabled and not was_enabled:
-            self._last_drop_s = time.monotonic()
-        elif not next_enabled:
-            self._last_drop_s = 0.0
-
-    def apply(self, output: ControlOutput, now_s: float | None = None) -> tuple[ControlOutput, dict[str, Any]]:
-        now = time.monotonic() if now_s is None else now_s
-        if not self.enabled or self.window_s <= 0 or self.max_counts <= 0 or not output.accepted:
-            return output, {
-                "enabled": False,
-                "window_ms": self.window_s * 1000.0,
-                "max_counts": self.max_counts,
-                "applied": False,
-                "drop_counts": 0,
-            }
-        elapsed_s = now - self._last_drop_s if self._last_drop_s > 0 else self.window_s
-        should_drop = self._last_drop_s <= 0 or elapsed_s >= self.window_s
-        drop_counts = -int(round(self.max_counts)) if should_drop else 0
-        if should_drop:
-            self._last_drop_s = now
-        requested_dy = int(round(output.dy))
-        final_dy = requested_dy + drop_counts
-        reason = "Y axis periodic down compensation" if should_drop else output.reason
-        return replace(output, dy=final_dy, reason=reason), {
-            "enabled": True,
-            "window_ms": self.window_s * 1000.0,
-            "max_counts": self.max_counts,
-            "requested_dy": requested_dy,
-            "drop_counts": drop_counts,
-            "final_dy": final_dy,
-            "applied": should_drop,
-            "elapsed_ms": elapsed_s * 1000.0,
-        }
-
-
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
     return ControlOutputPolicy(
         max_abs_dx=config.control.max_abs_dx,
@@ -244,19 +170,20 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
     )
 
 
-def coalescer_from_config(config: RuntimeConfig) -> ControlCommandCoalescer:
-    move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
-    move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
-    movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
-    return ControlCommandCoalescer(
-        min_interval_s=max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
-    )
-
-
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler:
     move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
     move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
     movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
     interval_s = max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
-    ttl_s = max(0.050, interval_s * 3.0)
-    return CommandScheduler(min_interval_s=interval_s, ttl_s=ttl_s)
+    return CommandScheduler(
+        min_interval_s=interval_s,
+        ttl_s=max(0.001, float(config.control.scheduler_command_ttl_ms) / 1000.0),
+        predicted_ttl_s=max(0.001, float(config.control.scheduler_predicted_command_ttl_ms) / 1000.0),
+        cancel_on_new_frame=bool(config.control.scheduler_cancel_on_new_frame),
+        cancel_on_direction_change=bool(config.control.scheduler_cancel_on_direction_change),
+        cancel_on_track_change=bool(config.control.scheduler_cancel_on_track_change),
+        max_step_x=int(config.control.scheduler_max_step_x),
+        max_step_y=int(config.control.scheduler_max_step_y),
+        queue_hard_limit=int(config.control.scheduler_queue_hard_limit),
+        device_error_cooldown_s=max(0.0, float(config.control.scheduler_device_error_cooldown_ms) / 1000.0),
+    )

@@ -6,13 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import InferenceDetection, InferenceResult
-from .input import PreparedTensorInput, TensorInputShape, prepare_tensor_input
-from .onnxruntime_engine import (
-    _prepare_numpy_tensor,
-    _preprocess_debug,
-    _scale_detections_to_input_frame,
-    decode_nx6_detections,
+from .input import (
+    PreparedTensorInput,
+    TensorInputShape,
+    normalize_tensor_dtype,
+    prepare_tensor_input,
 )
+from .onnxruntime_engine import _preprocess_debug, map_model_detections_to_roi_frame
+from .postprocess.yolo import decode_nx6_detections
+from .preprocess import DeviceTensor, GpuResourcePreprocessor, prepare_tensor
 
 
 logger = logging.getLogger("novasight.inference.tensorrt")
@@ -26,9 +28,11 @@ class TensorRtInferenceEngine:
         *,
         confidence_threshold: float = 0.25,
         nms_threshold: float = 0.45,
+        gpu_preprocessor: GpuResourcePreprocessor | None = None,
     ) -> None:
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
+        self._gpu_preprocessor = gpu_preprocessor
         self._reason = ""
         self._available = False
         self._loaded = False
@@ -51,11 +55,14 @@ class TensorRtInferenceEngine:
         self._output_dtypes: dict[str, str] = {}
         self._output_shape: tuple[int, ...] = ()
         self._output_dtype = ""
+        self._input_dtype = "float32"
         self._last_failure_logged = ""
         self._engine_input_shape: tuple[int, ...] = ()
         self._input_profile_shapes: dict[str, tuple[int, ...]] = {}
         self._input_shape_source = ""
         self._last_slow_log_ns = 0
+        self._last_preprocess_backend = ""
+        self._last_preprocess_reason = ""
 
     def available(self) -> bool:
         try:
@@ -86,6 +93,7 @@ class TensorRtInferenceEngine:
             "supports_execution": True,
             "reason": self._reason,
             "input_shape": str(self._input_shape) if self._input_shape is not None else "",
+            "input_dtype": self._input_dtype,
             "output_shape": "x".join(str(item) for item in self._output_shape),
             "output_name": self._output_name,
             "output_dtype": self._output_dtype,
@@ -105,9 +113,59 @@ class TensorRtInferenceEngine:
             "confidence_threshold": self.confidence_threshold,
             "nms_threshold": self.nms_threshold,
             "last_input_mode": self._last_input.mode if self._last_input is not None else "",
+            "last_input_frame_id": (
+                self._last_input.frame_id if self._last_input is not None else 0
+            ),
+            "last_input_capture_ts_ns": (
+                self._last_input.capture_ts_ns if self._last_input is not None else 0
+            ),
+            "last_input_resource_kind": (
+                self._last_input.resource_kind if self._last_input is not None else ""
+            ),
+            "last_input_resource_memory": (
+                self._last_input.resource_memory if self._last_input is not None else ""
+            ),
+            "last_input_resource_source": (
+                self._last_input.resource_source if self._last_input is not None else ""
+            ),
+            "last_input_resource_size": (
+                f"{self._last_input.resource_width}x{self._last_input.resource_height}"
+                if self._last_input is not None
+                and self._last_input.resource_width > 0
+                and self._last_input.resource_height > 0
+                else ""
+            ),
+            "last_input_resource_format": (
+                self._last_input.resource_pixel_format if self._last_input is not None else ""
+            ),
+            "last_input_dmabuf_fd": (
+                self._last_input.dmabuf_fd if self._last_input is not None else None
+            ),
             "last_input_needs_resize": (
                 self._last_input.needs_resize if self._last_input is not None else False
             ),
+            "last_preprocess_backend": self._last_preprocess_backend,
+            "last_preprocess_reason": self._last_preprocess_reason,
+            "gpu_preprocessor": self._gpu_preprocessor_status(),
+        }
+
+    def set_gpu_preprocessor(self, gpu_preprocessor: GpuResourcePreprocessor | None) -> None:
+        self._gpu_preprocessor = gpu_preprocessor
+
+    def _gpu_preprocessor_status(self) -> dict[str, Any]:
+        if self._gpu_preprocessor is None:
+            return {
+                "selected": "",
+                "available": False,
+                "reason": "disabled",
+            }
+        status = getattr(self._gpu_preprocessor, "status", None)
+        if callable(status):
+            return dict(status())
+        return {
+            "selected": type(self._gpu_preprocessor).__name__,
+            "available": True,
+            "reason": "",
         }
 
     def load(self, artifact_path: Path, classes: list[str], input_shape: str) -> None:
@@ -120,6 +178,8 @@ class TensorRtInferenceEngine:
         self.close()
         self._classes = list(classes)
         self._last_input = None
+        self._last_preprocess_backend = ""
+        self._last_preprocess_reason = ""
         self._load_engine(artifact_path)
         self._loaded = True
         self._warmup()
@@ -135,16 +195,27 @@ class TensorRtInferenceEngine:
             prepare_start_ns = time.monotonic_ns()
             self._last_input = prepare_tensor_input(frame, self._input_shape)
             tensor_start_ns = time.monotonic_ns()
-            tensor = _prepare_numpy_tensor(self._last_input, self._input_shape)
+            preprocess_result = prepare_tensor(
+                self._last_input,
+                self._input_shape,
+                gpu_preprocessor=self._gpu_preprocessor,
+            )
+            self._last_preprocess_backend = preprocess_result.backend
+            self._last_preprocess_reason = preprocess_result.reason
+            tensor = preprocess_result.tensor
             execute_start_ns = time.monotonic_ns()
             detections, decode_debug = self._execute(tensor)
             scale_start_ns = time.monotonic_ns()
-            detections = _scale_detections_to_input_frame(
+            detections = map_model_detections_to_roi_frame(
                 detections,
                 prepared=self._last_input,
                 shape=self._input_shape,
             )
-            preprocess_debug = _preprocess_debug(self._last_input, self._input_shape)
+            preprocess_debug = _preprocess_debug(
+                self._last_input,
+                self._input_shape,
+                preprocess_result=preprocess_result,
+            )
             done_ns = time.monotonic_ns()
             timings.update(
                 {
@@ -157,9 +228,13 @@ class TensorRtInferenceEngine:
             )
             self._log_slow_inference(timings, decode_debug)
         except ValueError as exc:
+            self._last_preprocess_backend = "unavailable"
+            self._last_preprocess_reason = getattr(exc, "reason", "")
             self._log_failure_once(f"input rejected: {exc}")
             return InferenceResult(available=False, reason=str(exc))
         except Exception as exc:
+            self._last_preprocess_backend = "unavailable"
+            self._last_preprocess_reason = getattr(exc, "reason", "")
             self._log_failure_once(str(exc), with_trace=True)
             return InferenceResult(available=False, reason=str(exc), classes=self._classes)
         return InferenceResult(
@@ -242,6 +317,7 @@ class TensorRtInferenceEngine:
             input_name=input_name,
             engine_shape=engine_input_shape,
         )
+        input_dtype = np.dtype(trt.nptype(engine.get_tensor_dtype(input_name)))
         if -1 in engine_input_shape:
             context.set_input_shape(input_name, input_shape)
             resolved_context_shape = _shape_tuple(context.get_tensor_shape(input_name))
@@ -262,12 +338,14 @@ class TensorRtInferenceEngine:
             channels=channels,
             height=height,
             width=width,
+            dtype=str(input_dtype),
         )
+        self._input_dtype = self._input_shape.dtype
 
         self._engine = engine
         self._context = context
         self._input_name = input_name
-        self._host_input = np.empty((batch, channels, height, width), dtype=np.float32)
+        self._host_input = np.empty((batch, channels, height, width), dtype=input_dtype)
         err, device_input = cudart.cudaMalloc(self._host_input.nbytes)
         _cuda_check(err, "cudaMalloc input")
         err, stream = cudart.cudaStreamCreate()
@@ -320,6 +398,11 @@ class TensorRtInferenceEngine:
         )
 
     def _execute(self, tensor: Any) -> tuple[list[InferenceDetection], dict[str, Any]]:
+        if isinstance(tensor, DeviceTensor):
+            return self._execute_device_tensor(tensor)
+        return self._execute_host_tensor(tensor)
+
+    def _execute_host_tensor(self, tensor: Any) -> tuple[list[InferenceDetection], dict[str, Any]]:
         import numpy as np
 
         if (
@@ -338,7 +421,7 @@ class TensorRtInferenceEngine:
             raise RuntimeError(f"TensorRT selected output buffer is not initialized: {self._output_name}")
         timings: dict[str, float] = {}
         prepare_host_start_ns = time.monotonic_ns()
-        host_input = np.ascontiguousarray(tensor, dtype=np.float32)
+        host_input = np.ascontiguousarray(tensor, dtype=self._host_input.dtype)
         if host_input.shape != self._host_input.shape:
             raise RuntimeError(
                 f"TensorRT input tensor shape mismatch: got {host_input.shape}, "
@@ -388,6 +471,7 @@ class TensorRtInferenceEngine:
         done_ns = time.monotonic_ns()
         timings.update(
             {
+                "input_location": "host",
                 "host_prepare_ms": _elapsed_ms(prepare_host_start_ns, h2d_start_ns),
                 "h2d_enqueue_ms": _elapsed_ms(h2d_start_ns, execute_start_ns),
                 "execute_enqueue_ms": _elapsed_ms(execute_start_ns, d2h_start_ns),
@@ -397,6 +481,115 @@ class TensorRtInferenceEngine:
                 "total_ms": _elapsed_ms(prepare_host_start_ns, done_ns),
             }
         )
+        decode_debug["timings"] = timings
+        return detections, decode_debug
+
+    def _execute_device_tensor(self, tensor: DeviceTensor) -> tuple[list[InferenceDetection], dict[str, Any]]:
+        if (
+            self._cudart is None
+            or self._context is None
+            or self._host_input is None
+            or not self._host_outputs
+            or self._device_input is None
+            or self._stream is None
+            or not self._input_name
+            or not self._output_name
+        ):
+            raise RuntimeError("TensorRT execution buffers are not initialized")
+        expected_shape = tuple(int(item) for item in self._host_input.shape)
+        if tuple(int(item) for item in tensor.shape) != expected_shape:
+            raise RuntimeError(
+                f"TensorRT device tensor shape mismatch: got {tensor.shape}, "
+                f"expected {expected_shape}"
+            )
+        expected_dtype = normalize_tensor_dtype(getattr(self._host_input, "dtype", self._input_dtype))
+        try:
+            actual_dtype = normalize_tensor_dtype(tensor.dtype)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if actual_dtype != expected_dtype:
+            raise RuntimeError(
+                f"TensorRT device tensor dtype mismatch: got {tensor.dtype}, expected {expected_dtype}"
+            )
+        if int(tensor.nbytes) < int(self._host_input.nbytes):
+            raise RuntimeError(
+                f"TensorRT device tensor is too small: got {tensor.nbytes} bytes, "
+                f"expected at least {self._host_input.nbytes}"
+            )
+        bind_start_ns = time.monotonic_ns()
+        self._context.set_tensor_address(self._input_name, int(tensor.device_ptr))
+        bind_done_ns = time.monotonic_ns()
+        owner_release_status = "not_present"
+        owner_release_token = _device_tensor_owner_release_token(tensor)
+        try:
+            detections, decode_debug = self._execute_bound_input(bind_start_ns)
+        finally:
+            try:
+                self._context.set_tensor_address(self._input_name, int(self._device_input))
+            finally:
+                owner_release_status = _release_device_tensor_owner(tensor)
+        timings = decode_debug.setdefault("timings", {})
+        timings["input_location"] = "device"
+        timings["device_bind_ms"] = _elapsed_ms(bind_start_ns, bind_done_ns)
+        timings["h2d_enqueue_ms"] = 0.0
+        timings["host_prepare_ms"] = 0.0
+        timings["device_owner_release"] = owner_release_status
+        timings["device_owner_release_token"] = owner_release_token
+        return detections, decode_debug
+
+    def _execute_bound_input(self, start_ns: int) -> tuple[list[InferenceDetection], dict[str, Any]]:
+        import numpy as np
+
+        if (
+            self._cudart is None
+            or self._context is None
+            or not self._host_outputs
+            or self._stream is None
+            or not self._output_name
+        ):
+            raise RuntimeError("TensorRT execution buffers are not initialized")
+        cudart = self._cudart
+        host_output = self._host_outputs.get(self._output_name)
+        if host_output is None:
+            raise RuntimeError(f"TensorRT selected output buffer is not initialized: {self._output_name}")
+        if self._output_name not in self._device_outputs:
+            raise RuntimeError(f"TensorRT selected device output is not initialized: {self._output_name}")
+        d2h = cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost
+        execute_start_ns = time.monotonic_ns()
+        ok = self._context.execute_async_v3(int(self._stream))
+        if ok is False:
+            raise RuntimeError("TensorRT execute_async_v3 returned false")
+        d2h_start_ns = time.monotonic_ns()
+        _cuda_check(
+            cudart.cudaMemcpyAsync(
+                host_output.ctypes.data,
+                self._device_outputs[self._output_name],
+                host_output.nbytes,
+                d2h,
+                self._stream,
+            ),
+            "D2H",
+        )
+        sync_start_ns = time.monotonic_ns()
+        _cuda_check(cudart.cudaStreamSynchronize(self._stream), "stream synchronize")
+        decode_start_ns = time.monotonic_ns()
+        output = host_output.reshape(self._output_shape).astype(np.float32, copy=False)
+        decode_debug: dict[str, Any] = {}
+        detections = decode_nx6_detections(
+            output,
+            confidence_threshold=self.confidence_threshold,
+            nms_threshold=self.nms_threshold,
+            class_count=len(self._classes),
+            debug=decode_debug,
+        )
+        done_ns = time.monotonic_ns()
+        timings = {
+            "execute_enqueue_ms": _elapsed_ms(execute_start_ns, d2h_start_ns),
+            "d2h_enqueue_ms": _elapsed_ms(d2h_start_ns, sync_start_ns),
+            "stream_sync_ms": _elapsed_ms(sync_start_ns, decode_start_ns),
+            "decode_ms": _elapsed_ms(decode_start_ns, done_ns),
+            "total_ms": _elapsed_ms(start_ns, done_ns),
+        }
         decode_debug["timings"] = timings
         return detections, decode_debug
 
@@ -434,6 +627,7 @@ class TensorRtInferenceEngine:
         self._output_dtypes = {}
         self._output_shape = ()
         self._output_dtype = ""
+        self._input_dtype = "float32"
         self._output_name = ""
         self._engine_input_shape = ()
         self._input_profile_shapes = {}
@@ -545,3 +739,36 @@ def _shape_is_static(shape: tuple[int, ...]) -> bool:
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> float:
     return max(0.0, (end_ns - start_ns) / 1e6)
+
+
+def _release_device_tensor_owner(tensor: DeviceTensor) -> str:
+    owner = getattr(tensor, "owner", None)
+    release = getattr(owner, "release", None)
+    if not callable(release):
+        return "not_present"
+    try:
+        release()
+    except Exception as exc:
+        logger.warning("TensorRT device tensor owner release failed: %s", exc)
+        return "failed"
+    return "released"
+
+
+def _device_tensor_owner_release_token(tensor: DeviceTensor) -> int | None:
+    owner = getattr(tensor, "owner", None)
+    if owner is None:
+        return None
+    for attr in ("release_token", "token", "_token"):
+        value = getattr(owner, attr, None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None

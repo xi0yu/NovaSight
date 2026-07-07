@@ -28,11 +28,12 @@ class ConsumerConfig:
     preview: bool = True
     inference: bool = True
     recording: bool = False
+    recording_format: str = "csv"
+    recording_path: str = ""
 
 
 @dataclass
 class RuntimeLimitsConfig:
-    max_frame_queue: int = 1
     stream_fps: int = 30
 
 
@@ -80,10 +81,25 @@ class InferenceConfig:
 class CaptureConfig:
     device: str = "/dev/video0"
     preference: str = "auto_high_fps"
+    memory: str = "cpu"
     pixel_format: str = ""
     width: int = 0
     height: int = 0
     fps: int = 0
+
+
+@dataclass
+class CalibrationConfig:
+    profile_id: str = "default"
+    profile_version: int = 1
+    fov_semantics: str = "horizontal"
+    fov_x_deg: float = 105.0
+    counts_per_360_x: float = 9980.0
+    counts_per_360_y: float = 9980.0
+    axis_sign_x: float = 1.0
+    axis_sign_y: float = 1.0
+    game_sensitivity_fingerprint: str = "unverified-default"
+    projection_profile: str = "fixed_horizontal_fov"
 
 
 @dataclass
@@ -95,60 +111,68 @@ class ControlConfig:
     target_lock_enabled: bool = True
     target_sticky_bias: float = 0.25
     target_lost_grace_frames: int = 5
+    candidate_ratio_max_aspect: float = 6.0
+    candidate_quality_confidence_weight: float = 0.7
+    candidate_quality_area_weight: float = 0.3
+    class_priority_quality_margin: float = 0.08
+    tracker_confirm_frames: int = 2
+    target_switch_min_preference_advantage: float = 0.08
+    target_switch_min_continuity_score: float = 0.70
+    target_switch_confirm_frames: int = 3
+    tracker_matching_distance_px: float = 140.0
+    tracker_ambiguity_margin: float = 0.08
+    tracker_missing_timeout_ms: float = 120.0
+    tracker_delete_timeout_ms: float = 250.0
+    tracker_match_threshold: float = 0.65
+    tracker_mahalanobis_gate: float = 9.21
+    kalman_enabled: bool = True
+    kalman_acceleration_noise: float = 1200.0
+    kalman_measurement_noise_x: float = 16.0
+    kalman_measurement_noise_y: float = 16.0
+    kalman_max_predict_missing_ms: float = 80.0
+    kalman_max_predict_steps: int = 5
+    kalman_max_predict_dt_ms: float = 35.0
+    kalman_max_position_sigma_px: float = 45.0
+    kalman_max_covariance_trace: float = 5000.0
+    kalman_nis_threshold: float = 9.21
+    kalman_nis_hard_reject: float = 16.0
+    kalman_min_identity_confidence: float = 0.70
+    kalman_min_prediction_confidence: float = 0.35
+    kalman_prediction_decay_tau_ms: float = 45.0
+    aim_horizontal_percent: float = 50.0
     aim_ratio: float = 40.0
+    aim_offset_x_px: float = 0.0
+    aim_offset_y_px: float = 0.0
+    aim_ema_enabled: bool = True
+    aim_ema_alpha: float = 0.65
+    aim_max_anchor_jump_ratio: float = 0.15
+    latency_compensation_enabled: bool = True
+    latency_compensation_scale: float = 0.70
+    latency_max_compensation_ms: float = 35.0
+    latency_reject_if_age_exceeds_ms: float = 55.0
+    latency_max_compensation_px: float = 80.0
+    latency_min_velocity_px_s: float = 30.0
+    latency_max_velocity_px_s: float = 2500.0
+    latency_min_velocity_measurements: int = 3
+    latency_min_velocity_confidence: float = 0.65
+    latency_estimated_actuation_delay_ms: float = 2.0
     trigger_mode: str = "hardware"
-    trigger_bindings: list[str] = field(default_factory=lambda: ["MouseRight"])
-    output_mode: str = ""
-    strategy: str = "pid"
-    pid_kp_x: float = 0.35
-    pid_kp_y: float = 0.24
-    pid_ki: float = 0.0
-    pid_kd: float = 0.1
-    pid_integral_limit: float = 250.0
-    pid_move_limit: float = 120.0
-    kp_x_move_max: float = 150.0
-    kp_y_move_max: float = 30.0
-    prediction_enabled: bool = True
-    prediction_factor: float = 0.1
-    derivative_enabled: bool = True
-    y_down_enabled: bool = False
+    output_mode: str = "kmnet"
+    strategy: str = "experimental_angle_pid"
     command_interval_ms: float = 1.0
-    y_rate_window_ms: float = 10.0
-    y_rate_max_counts: float = 0.0
+    scheduler_command_ttl_ms: float = 35.0
+    scheduler_predicted_command_ttl_ms: float = 18.0
+    scheduler_cancel_on_new_frame: bool = True
+    scheduler_cancel_on_direction_change: bool = True
+    scheduler_cancel_on_track_change: bool = True
+    scheduler_max_step_x: int = 20
+    scheduler_max_step_y: int = 20
+    scheduler_queue_hard_limit: int = 64
+    scheduler_device_error_cooldown_ms: float = 50.0
     move_kind: str = "bezier"
     move_ms: int = 12
     trace_ms: int = 0
-    deadzone_counts: int = 1
-    near_px: float = 24.0
-    near_speed: float = 0.16
-    far_speed: float = 0.42
-    ema_alpha: float = 0.45
-    counts_per_revolution_x: float = 9980.0
-    counts_per_revolution_y: float = 9980.0
     bezier_curvature: float = 0.18
-    straight_fov_deg: float = 105.0
-    straight_c360: float = 9980.0
-    straight_kp_x: float = 0.3
-    straight_kp_y: float = 0.3
-    straight_first_frame_gain: float = 1.0
-    straight_first_max_step: float = 200.0
-    straight_max_step: float = 80.0
-    straight_in_deadzone: float = 8.0
-    straight_jump_threshold: float = 40.0
-    straight_pred_gain: float = 0.0
-    straight_pred_consistency_frames: int = 3
-    straight_gain_y: float = 1.0
-    isolated_kp_x: float = 0.35
-    isolated_kp_y: float = 0.24
-    isolated_max_x: float = 80.0
-    isolated_max_y: float = 60.0
-    isolated_deadzone_px: float = 2.0
-    isolated_aim_ratio: float = 40.0
-    isolated_smoothing: float = 0.0
-    isolated_prediction: float = 0.0
-    isolated_fov_deg: float = 105.0
-    isolated_counts_per_revolution_x: float = 9980.0
-    isolated_counts_per_revolution_y: float = 9980.0
     experimental_angle_kp_x: float = 0.35
     experimental_angle_kp_y: float = 0.24
     experimental_angle_ki: float = 0.0
@@ -159,12 +183,21 @@ class ControlConfig:
     experimental_angle_smooth_factor: float = 0.0
     experimental_angle_deadzone_px: float = 0.0
     experimental_angle_derivative_filter: float = 1.0
-    experimental_angle_fov_x_deg: float = 105.0
-    experimental_angle_counts_per_360: float = 9980.0
+    experimental_angle_near_error_deg: float = 0.35
+    experimental_angle_far_error_deg: float = 2.50
+    experimental_angle_near_kp_scale: float = 0.35
+    experimental_angle_middle_kp_scale: float = 0.70
+    experimental_angle_far_kp_scale: float = 1.00
+    experimental_angle_near_kd_scale: float = 1.00
+    experimental_angle_middle_kd_scale: float = 0.80
+    experimental_angle_far_kd_scale: float = 0.50
+    experimental_angle_prediction_gain_min: float = 0.35
+    experimental_angle_prediction_d_gain_min: float = 0.25
+    experimental_angle_max_control_angle_deg: float = 3.0
     experimental_angle_max_step_counts: float = 80.0
+    experimental_angle_max_counts_delta_x: float = 35.0
+    experimental_angle_max_counts_delta_y: float = 35.0
     experimental_angle_control_hz: float = 60.0
-    experimental_angle_sign_x: float = 1.0
-    experimental_angle_sign_y: float = 1.0
     experimental_angle_kalman_enabled: bool = True
     experimental_angle_kalman_process_noise: float = 2.0
     experimental_angle_kalman_measurement_noise: float = 16.0
@@ -183,30 +216,11 @@ class ControlConfig:
     experimental_angle_magnet_curve: float = 1.0
     experimental_angle_magnet_deadzone_px: float = 0.0
     experimental_angle_magnet_max_counts: float = 20.0
-    dynamic_pid_kp_x: float = 0.35
-    dynamic_pid_kp_y: float = 0.24
-    dynamic_pid_ki: float = 0.0
-    dynamic_pid_kd: float = 0.0
-    dynamic_pid_target_error_threshold: float = 0.016
-    dynamic_pid_speed_multiplier: float = 1.0
-    dynamic_pid_min_coefficient: float = 1.6
-    dynamic_pid_max_coefficient: float = 2.7
-    dynamic_pid_transition_sharpness: float = 5.0
-    dynamic_pid_transition_midpoint: float = 0.0
-    dynamic_pid_minimum_data_count: float = 2.0
-    dynamic_pid_error_change_tolerance: float = 0.012
-    dynamic_pid_smoothing_factor: float = 1.0
-    dynamic_pid_aim_ratio: float = 40.0
-    dynamic_pid_fov_deg: float = 105.0
-    dynamic_pid_counts_per_revolution_x: float = 9980.0
-    dynamic_pid_counts_per_revolution_y: float = 9980.0
-    dynamic_pid_control_hz: float = 60.0
-    dynamic_pid_ema_alpha: float = 0.45
 
 
 @dataclass
 class ExecutorConfig:
-    default: str = "dry_run"
+    default: str = "kmnet"
 
 
 @dataclass
@@ -217,12 +231,12 @@ class LoggingConfig:
 
 @dataclass
 class HardwareConfig:
-    kind: str = "none"
+    kind: str = "kmnet"
     host: str = "192.168.2.188"
     port: int = 8888
     uuid: str = "12345678"
     monitor_port: int = 5001
-    flip_dy: bool = True
+    flip_dy: bool = False
     serial_port: str = ""
     heartbeat_timeout_ms: float = 50.0
 
@@ -236,6 +250,7 @@ class RuntimeConfig:
     roi: RoiConfig = field(default_factory=RoiConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -310,12 +325,35 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     control = normalized.get("control")
     if isinstance(control, dict):
         control = dict(control)
+        calibration = normalized.get("calibration")
+        if calibration is None:
+            calibration = {}
+        if isinstance(calibration, dict):
+            calibration = dict(calibration)
+            if (
+                "experimental_angle_fov_x_deg" in control
+                and "fov_x_deg" not in calibration
+            ):
+                calibration["fov_x_deg"] = control["experimental_angle_fov_x_deg"]
+            if "experimental_angle_counts_per_360" in control:
+                if "counts_per_360_x" not in calibration:
+                    calibration["counts_per_360_x"] = control[
+                        "experimental_angle_counts_per_360"
+                    ]
+                if "counts_per_360_y" not in calibration:
+                    calibration["counts_per_360_y"] = control[
+                        "experimental_angle_counts_per_360"
+                    ]
+            if "experimental_angle_sign_x" in control and "axis_sign_x" not in calibration:
+                calibration["axis_sign_x"] = control["experimental_angle_sign_x"]
+            if "experimental_angle_sign_y" in control and "axis_sign_y" not in calibration:
+                calibration["axis_sign_y"] = control["experimental_angle_sign_y"]
+            normalized["calibration"] = calibration
         for key in (
-            "dynamic_pid_error_mode",
-            "dynamic_pid_target_extent_mode",
-            "dynamic_pid_y_sign",
-            "dynamic_pid_max_x",
-            "dynamic_pid_max_y",
+            "experimental_angle_fov_x_deg",
+            "experimental_angle_counts_per_360",
+            "experimental_angle_sign_x",
+            "experimental_angle_sign_y",
         ):
             control.pop(key, None)
         normalized["control"] = control
@@ -327,8 +365,12 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
     if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
         raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
+    if cfg.capture.memory not in {"cpu", "nvmm"}:
+        raise ValueError("runtime config key 'capture.memory' must be cpu or nvmm")
     if cfg.limits.stream_fps not in {15, 30, 60}:
         raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
+    if cfg.consumers.recording_format not in {"csv", "parquet"}:
+        raise ValueError("runtime config key 'consumers.recording_format' must be csv or parquet")
     try:
         cfg.roi.size = normalize_roi_size(cfg.roi.size)
     except ValueError as exc:
@@ -354,63 +396,157 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
-    if cfg.control.strategy not in {"straight", "pid", "proportional", "predictive", "isolated_mouse", "dynamic_pid", "experimental_angle_pid"}:
-        raise ValueError("runtime config key 'control.strategy' must be straight, pid, proportional, predictive, isolated_mouse, dynamic_pid, or experimental_angle_pid")
+    if not cfg.calibration.profile_id.strip():
+        raise ValueError("runtime config key 'calibration.profile_id' must be non-empty")
+    if cfg.calibration.profile_version < 1:
+        raise ValueError("runtime config key 'calibration.profile_version' must be >= 1")
+    if cfg.calibration.fov_semantics != "horizontal":
+        raise ValueError("runtime config key 'calibration.fov_semantics' must be horizontal")
+    if cfg.calibration.fov_x_deg <= 0 or cfg.calibration.fov_x_deg >= 180:
+        raise ValueError("runtime config key 'calibration.fov_x_deg' must be > 0 and < 180")
+    if cfg.calibration.counts_per_360_x < 1:
+        raise ValueError("runtime config key 'calibration.counts_per_360_x' must be >= 1")
+    if cfg.calibration.counts_per_360_y < 1:
+        raise ValueError("runtime config key 'calibration.counts_per_360_y' must be >= 1")
+    if cfg.calibration.axis_sign_x not in {-1, 1, -1.0, 1.0}:
+        raise ValueError("runtime config key 'calibration.axis_sign_x' must be -1 or 1")
+    if cfg.calibration.axis_sign_y not in {-1, 1, -1.0, 1.0}:
+        raise ValueError("runtime config key 'calibration.axis_sign_y' must be -1 or 1")
+    if not cfg.calibration.game_sensitivity_fingerprint.strip():
+        raise ValueError("runtime config key 'calibration.game_sensitivity_fingerprint' must be non-empty")
+    if cfg.calibration.projection_profile != "fixed_horizontal_fov":
+        raise ValueError("runtime config key 'calibration.projection_profile' must be fixed_horizontal_fov")
+    if cfg.control.strategy != "experimental_angle_pid":
+        raise ValueError("runtime config key 'control.strategy' must be experimental_angle_pid")
     if cfg.control.fov_ratio <= 0 or cfg.control.fov_ratio > 1:
         raise ValueError("runtime config key 'control.fov_ratio' must be > 0 and <= 1")
     if cfg.control.target_sticky_bias < 0 or cfg.control.target_sticky_bias > 0.9:
         raise ValueError("runtime config key 'control.target_sticky_bias' must be >= 0 and <= 0.9")
     if cfg.control.aim_ratio < 0 or cfg.control.aim_ratio > 100:
         raise ValueError("runtime config key 'control.aim_ratio' must be >= 0 and <= 100")
-    cfg.control.trigger_bindings = _normalize_trigger_bindings(cfg.control.trigger_bindings)
-    if cfg.control.trigger_mode not in {"hardware", "telemetry", "always"}:
-        raise ValueError("runtime config key 'control.trigger_mode' must be hardware, telemetry, or always")
+    if cfg.control.aim_horizontal_percent < 0 or cfg.control.aim_horizontal_percent > 100:
+        raise ValueError("runtime config key 'control.aim_horizontal_percent' must be >= 0 and <= 100")
+    for key in ("aim_offset_x_px", "aim_offset_y_px"):
+        value = getattr(cfg.control, key)
+        if value < -200 or value > 200:
+            raise ValueError(f"runtime config key 'control.{key}' must be >= -200 and <= 200")
+    if cfg.control.aim_ema_alpha < 0 or cfg.control.aim_ema_alpha > 1:
+        raise ValueError("runtime config key 'control.aim_ema_alpha' must be >= 0 and <= 1")
+    if cfg.control.aim_max_anchor_jump_ratio < 0 or cfg.control.aim_max_anchor_jump_ratio > 1:
+        raise ValueError("runtime config key 'control.aim_max_anchor_jump_ratio' must be >= 0 and <= 1")
+    if cfg.control.latency_compensation_scale < 0 or cfg.control.latency_compensation_scale > 1.5:
+        raise ValueError("runtime config key 'control.latency_compensation_scale' must be >= 0 and <= 1.5")
+    for key in (
+        "latency_max_compensation_ms",
+        "latency_reject_if_age_exceeds_ms",
+        "latency_max_compensation_px",
+        "latency_max_velocity_px_s",
+    ):
+        if getattr(cfg.control, key) <= 0:
+            raise ValueError(f"runtime config key 'control.{key}' must be > 0")
+    if cfg.control.latency_min_velocity_px_s < 0:
+        raise ValueError("runtime config key 'control.latency_min_velocity_px_s' must be >= 0")
+    if cfg.control.latency_estimated_actuation_delay_ms < 0:
+        raise ValueError("runtime config key 'control.latency_estimated_actuation_delay_ms' must be >= 0")
+    if cfg.control.latency_min_velocity_measurements < 1:
+        raise ValueError("runtime config key 'control.latency_min_velocity_measurements' must be >= 1")
+    if cfg.control.latency_min_velocity_confidence < 0 or cfg.control.latency_min_velocity_confidence > 1:
+        raise ValueError("runtime config key 'control.latency_min_velocity_confidence' must be >= 0 and <= 1")
+    if cfg.control.latency_max_velocity_px_s < cfg.control.latency_min_velocity_px_s:
+        raise ValueError("runtime config key 'control.latency_max_velocity_px_s' must be >= control.latency_min_velocity_px_s")
+    if cfg.control.trigger_mode not in {"hardware", "always"}:
+        raise ValueError("runtime config key 'control.trigger_mode' must be hardware or always")
+    if cfg.control.output_mode not in {"", "kmnet"}:
+        raise ValueError("runtime config key 'control.output_mode' must be kmnet")
+    if cfg.executor.default != "kmnet":
+        raise ValueError("runtime config key 'executor.default' must be kmnet")
+    if cfg.hardware.kind != "kmnet":
+        raise ValueError("runtime config key 'hardware.kind' must be kmnet")
     if cfg.control.target_lost_grace_frames < 0:
         raise ValueError("runtime config key 'control.target_lost_grace_frames' must be >= 0")
+    if cfg.control.candidate_ratio_max_aspect < 1:
+        raise ValueError("runtime config key 'control.candidate_ratio_max_aspect' must be >= 1")
+    if cfg.control.class_priority_quality_margin > 1:
+        raise ValueError("runtime config key 'control.class_priority_quality_margin' must be <= 1")
+    if cfg.control.tracker_confirm_frames < 1:
+        raise ValueError("runtime config key 'control.tracker_confirm_frames' must be >= 1")
+    if cfg.control.target_switch_min_preference_advantage < 0 or cfg.control.target_switch_min_preference_advantage > 1:
+        raise ValueError("runtime config key 'control.target_switch_min_preference_advantage' must be >= 0 and <= 1")
+    if cfg.control.target_switch_min_continuity_score < 0 or cfg.control.target_switch_min_continuity_score > 1:
+        raise ValueError("runtime config key 'control.target_switch_min_continuity_score' must be >= 0 and <= 1")
+    if cfg.control.target_switch_confirm_frames < 1:
+        raise ValueError("runtime config key 'control.target_switch_confirm_frames' must be >= 1")
+    if cfg.control.tracker_match_threshold < 0 or cfg.control.tracker_match_threshold > 1:
+        raise ValueError("runtime config key 'control.tracker_match_threshold' must be >= 0 and <= 1")
+    for key in (
+        "tracker_mahalanobis_gate",
+        "kalman_acceleration_noise",
+        "kalman_measurement_noise_x",
+        "kalman_measurement_noise_y",
+        "kalman_max_predict_missing_ms",
+        "kalman_max_predict_dt_ms",
+        "kalman_max_position_sigma_px",
+        "kalman_max_covariance_trace",
+        "kalman_nis_threshold",
+        "kalman_nis_hard_reject",
+        "kalman_prediction_decay_tau_ms",
+    ):
+        if getattr(cfg.control, key) <= 0:
+            raise ValueError(f"runtime config key 'control.{key}' must be > 0")
+    if cfg.control.kalman_max_predict_steps < 1:
+        raise ValueError("runtime config key 'control.kalman_max_predict_steps' must be >= 1")
+    for key in (
+        "kalman_min_identity_confidence",
+        "kalman_min_prediction_confidence",
+    ):
+        value = getattr(cfg.control, key)
+        if value < 0 or value > 1:
+            raise ValueError(f"runtime config key 'control.{key}' must be >= 0 and <= 1")
+    if cfg.control.kalman_nis_hard_reject < cfg.control.kalman_nis_threshold:
+        raise ValueError("runtime config key 'control.kalman_nis_hard_reject' must be >= control.kalman_nis_threshold")
     if cfg.control.move_kind not in {"raw", "enc_raw", "auto", "enc_auto", "bezier", "enc_bezier"}:
         raise ValueError("runtime config key 'control.move_kind' must be raw, enc_raw, auto, enc_auto, bezier, or enc_bezier")
-    if cfg.control.pid_kd < -1 or cfg.control.pid_kd > 1:
-        raise ValueError("runtime config key 'control.pid_kd' must be >= -1 and <= 1")
+    if cfg.control.scheduler_command_ttl_ms <= 0:
+        raise ValueError("runtime config key 'control.scheduler_command_ttl_ms' must be > 0")
+    if cfg.control.scheduler_predicted_command_ttl_ms <= 0:
+        raise ValueError("runtime config key 'control.scheduler_predicted_command_ttl_ms' must be > 0")
+    if cfg.control.scheduler_max_step_x <= 0:
+        raise ValueError("runtime config key 'control.scheduler_max_step_x' must be > 0")
+    if cfg.control.scheduler_max_step_y <= 0:
+        raise ValueError("runtime config key 'control.scheduler_max_step_y' must be > 0")
+    if cfg.control.scheduler_queue_hard_limit <= 0:
+        raise ValueError("runtime config key 'control.scheduler_queue_hard_limit' must be > 0")
     for key in (
-        "pid_integral_limit",
-        "pid_move_limit",
-        "kp_x_move_max",
-        "kp_y_move_max",
-        "prediction_factor",
         "move_ms",
         "trace_ms",
         "command_interval_ms",
-        "y_rate_window_ms",
-        "y_rate_max_counts",
-        "deadzone_counts",
-        "near_px",
-        "near_speed",
-        "far_speed",
-        "ema_alpha",
-        "counts_per_revolution_x",
-        "counts_per_revolution_y",
+        "scheduler_command_ttl_ms",
+        "scheduler_predicted_command_ttl_ms",
+        "scheduler_max_step_x",
+        "scheduler_max_step_y",
+        "scheduler_queue_hard_limit",
+        "scheduler_device_error_cooldown_ms",
+        "candidate_quality_confidence_weight",
+        "candidate_quality_area_weight",
+        "class_priority_quality_margin",
+        "target_switch_min_preference_advantage",
+        "target_switch_min_continuity_score",
+        "tracker_matching_distance_px",
+        "tracker_ambiguity_margin",
+        "tracker_missing_timeout_ms",
+        "tracker_delete_timeout_ms",
+        "tracker_mahalanobis_gate",
+        "kalman_acceleration_noise",
+        "kalman_measurement_noise_x",
+        "kalman_measurement_noise_y",
+        "kalman_max_predict_missing_ms",
+        "kalman_max_predict_dt_ms",
+        "kalman_max_position_sigma_px",
+        "kalman_max_covariance_trace",
+        "kalman_nis_threshold",
+        "kalman_nis_hard_reject",
+        "kalman_prediction_decay_tau_ms",
         "bezier_curvature",
-        "straight_c360",
-        "straight_kp_x",
-        "straight_kp_y",
-        "straight_first_frame_gain",
-        "straight_first_max_step",
-        "straight_max_step",
-        "straight_in_deadzone",
-        "straight_jump_threshold",
-        "straight_pred_gain",
-        "straight_pred_consistency_frames",
-        "straight_gain_y",
-        "isolated_kp_x",
-        "isolated_kp_y",
-        "isolated_max_x",
-        "isolated_max_y",
-        "isolated_deadzone_px",
-        "isolated_aim_ratio",
-        "isolated_smoothing",
-        "isolated_prediction",
-        "isolated_counts_per_revolution_x",
-        "isolated_counts_per_revolution_y",
         "experimental_angle_kp_x",
         "experimental_angle_kp_y",
         "experimental_angle_ki",
@@ -419,9 +555,20 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "experimental_angle_smooth_factor",
         "experimental_angle_deadzone_px",
         "experimental_angle_derivative_filter",
-        "experimental_angle_fov_x_deg",
-        "experimental_angle_counts_per_360",
+        "experimental_angle_near_error_deg",
+        "experimental_angle_far_error_deg",
+        "experimental_angle_near_kp_scale",
+        "experimental_angle_middle_kp_scale",
+        "experimental_angle_far_kp_scale",
+        "experimental_angle_near_kd_scale",
+        "experimental_angle_middle_kd_scale",
+        "experimental_angle_far_kd_scale",
+        "experimental_angle_prediction_gain_min",
+        "experimental_angle_prediction_d_gain_min",
+        "experimental_angle_max_control_angle_deg",
         "experimental_angle_max_step_counts",
+        "experimental_angle_max_counts_delta_x",
+        "experimental_angle_max_counts_delta_y",
         "experimental_angle_control_hz",
         "experimental_angle_kalman_process_noise",
         "experimental_angle_kalman_measurement_noise",
@@ -435,41 +582,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "experimental_angle_magnet_curve",
         "experimental_angle_magnet_deadzone_px",
         "experimental_angle_magnet_max_counts",
-        "dynamic_pid_kp_x",
-        "dynamic_pid_kp_y",
-        "dynamic_pid_ki",
-        "dynamic_pid_target_error_threshold",
-        "dynamic_pid_speed_multiplier",
-        "dynamic_pid_min_coefficient",
-        "dynamic_pid_max_coefficient",
-        "dynamic_pid_transition_sharpness",
-        "dynamic_pid_transition_midpoint",
-        "dynamic_pid_minimum_data_count",
-        "dynamic_pid_error_change_tolerance",
-        "dynamic_pid_smoothing_factor",
-        "dynamic_pid_aim_ratio",
-        "dynamic_pid_fov_deg",
-        "dynamic_pid_counts_per_revolution_x",
-        "dynamic_pid_counts_per_revolution_y",
-        "dynamic_pid_control_hz",
-        "dynamic_pid_ema_alpha",
     ):
         if getattr(cfg.control, key) < 0:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0")
-    if cfg.control.straight_fov_deg <= 0 or cfg.control.straight_fov_deg >= 180:
-        raise ValueError("runtime config key 'control.straight_fov_deg' must be > 0 and < 180")
-    if cfg.control.ema_alpha > 1:
-        raise ValueError("runtime config key 'control.ema_alpha' must be <= 1")
-    if cfg.control.prediction_factor > 1:
-        raise ValueError("runtime config key 'control.prediction_factor' must be <= 1")
-    if cfg.control.isolated_aim_ratio > 100:
-        raise ValueError("runtime config key 'control.isolated_aim_ratio' must be <= 100")
-    if cfg.control.isolated_smoothing > 0.95:
-        raise ValueError("runtime config key 'control.isolated_smoothing' must be <= 0.95")
-    if cfg.control.isolated_prediction > 2:
-        raise ValueError("runtime config key 'control.isolated_prediction' must be <= 2")
-    if cfg.control.isolated_fov_deg <= 0 or cfg.control.isolated_fov_deg >= 180:
-        raise ValueError("runtime config key 'control.isolated_fov_deg' must be > 0 and < 180")
     if cfg.control.experimental_angle_kd < -1 or cfg.control.experimental_angle_kd > 1:
         raise ValueError("runtime config key 'control.experimental_angle_kd' must be >= -1 and <= 1")
     if cfg.control.experimental_angle_config_level not in {"basic", "advanced", "developer"}:
@@ -478,12 +593,20 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.experimental_angle_smooth_factor' must be <= 0.95")
     if cfg.control.experimental_angle_derivative_filter > 1:
         raise ValueError("runtime config key 'control.experimental_angle_derivative_filter' must be <= 1")
-    if cfg.control.experimental_angle_fov_x_deg <= 0 or cfg.control.experimental_angle_fov_x_deg >= 180:
-        raise ValueError("runtime config key 'control.experimental_angle_fov_x_deg' must be > 0 and < 180")
-    if cfg.control.experimental_angle_counts_per_360 < 1:
-        raise ValueError("runtime config key 'control.experimental_angle_counts_per_360' must be >= 1")
+    if cfg.control.experimental_angle_prediction_gain_min > 1:
+        raise ValueError("runtime config key 'control.experimental_angle_prediction_gain_min' must be <= 1")
+    if cfg.control.experimental_angle_prediction_d_gain_min > 1:
+        raise ValueError("runtime config key 'control.experimental_angle_prediction_d_gain_min' must be <= 1")
+    if cfg.control.experimental_angle_far_error_deg < cfg.control.experimental_angle_near_error_deg:
+        raise ValueError("runtime config key 'control.experimental_angle_far_error_deg' must be >= control.experimental_angle_near_error_deg")
+    if cfg.control.experimental_angle_max_control_angle_deg <= 0:
+        raise ValueError("runtime config key 'control.experimental_angle_max_control_angle_deg' must be > 0")
     if cfg.control.experimental_angle_max_step_counts < 1:
         raise ValueError("runtime config key 'control.experimental_angle_max_step_counts' must be >= 1")
+    if cfg.control.experimental_angle_max_counts_delta_x <= 0:
+        raise ValueError("runtime config key 'control.experimental_angle_max_counts_delta_x' must be > 0")
+    if cfg.control.experimental_angle_max_counts_delta_y <= 0:
+        raise ValueError("runtime config key 'control.experimental_angle_max_counts_delta_y' must be > 0")
     if cfg.control.experimental_angle_control_hz < 1:
         raise ValueError("runtime config key 'control.experimental_angle_control_hz' must be >= 1")
     if cfg.control.experimental_angle_max_extrapolate_frames < 0:
@@ -492,26 +615,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.experimental_angle_target_filter_fov_ratio' must be <= 1")
     if cfg.control.experimental_angle_extrapolate_confidence_decay > 1:
         raise ValueError("runtime config key 'control.experimental_angle_extrapolate_confidence_decay' must be <= 1")
-    if cfg.control.experimental_angle_sign_x not in {-1, 1, -1.0, 1.0}:
-        raise ValueError("runtime config key 'control.experimental_angle_sign_x' must be -1 or 1")
-    if cfg.control.experimental_angle_sign_y not in {-1, 1, -1.0, 1.0}:
-        raise ValueError("runtime config key 'control.experimental_angle_sign_y' must be -1 or 1")
-    if cfg.control.dynamic_pid_kd < -1 or cfg.control.dynamic_pid_kd > 1:
-        raise ValueError("runtime config key 'control.dynamic_pid_kd' must be >= -1 and <= 1")
-    if cfg.control.dynamic_pid_smoothing_factor > 1:
-        raise ValueError("runtime config key 'control.dynamic_pid_smoothing_factor' must be <= 1")
-    if cfg.control.dynamic_pid_aim_ratio > 100:
-        raise ValueError("runtime config key 'control.dynamic_pid_aim_ratio' must be <= 100")
-    if cfg.control.dynamic_pid_fov_deg <= 0 or cfg.control.dynamic_pid_fov_deg >= 180:
-        raise ValueError("runtime config key 'control.dynamic_pid_fov_deg' must be > 0 and < 180")
-    if cfg.control.dynamic_pid_counts_per_revolution_x < 1:
-        raise ValueError("runtime config key 'control.dynamic_pid_counts_per_revolution_x' must be >= 1")
-    if cfg.control.dynamic_pid_counts_per_revolution_y < 1:
-        raise ValueError("runtime config key 'control.dynamic_pid_counts_per_revolution_y' must be >= 1")
-    if cfg.control.dynamic_pid_control_hz < 1:
-        raise ValueError("runtime config key 'control.dynamic_pid_control_hz' must be >= 1")
-    if cfg.control.dynamic_pid_ema_alpha > 1:
-        raise ValueError("runtime config key 'control.dynamic_pid_ema_alpha' must be <= 1")
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     cfg_path = Path(path)
@@ -559,20 +662,6 @@ def _parse_class_priority(value: str) -> list[int]:
         if class_id not in seen:
             seen.add(class_id)
             result.append(class_id)
-    return result
-
-
-def _normalize_trigger_bindings(value: list[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        normalized = item.strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        result.append(normalized)
-        if len(result) >= 2:
-            break
     return result
 
 

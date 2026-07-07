@@ -4,11 +4,20 @@ from .pipeline import (
     SelectedCaptureBackend,
     build_appsink_candidates,
     build_pipeline_candidates,
+    build_resource_appsink_candidates,
     select_open_source,
 )
 from .profile import select_capture_profile
 from .service import CaptureService
-from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, OpenCvFrameSource
+from .source import (
+    CaptureFrame,
+    CapturedFrame,
+    FrameResource,
+    FrameSource,
+    GstAppSinkFrameSource,
+    GstResourceFrameSource,
+    OpenCvFrameSource,
+)
 from .state import (
     CaptureCapabilities,
     CaptureCapability,
@@ -21,9 +30,12 @@ __all__ = [
     "CaptureCapabilities",
     "CaptureCapability",
     "CaptureCandidate",
+    "CaptureFrame",
     "CapturedFrame",
+    "FrameResource",
     "FrameSource",
     "GstAppSinkFrameSource",
+    "GstResourceFrameSource",
     "OpenCvFrameSource",
     "CapturePreference",
     "CaptureProfile",
@@ -32,6 +44,7 @@ __all__ = [
     "SelectedCaptureBackend",
     "build_appsink_candidates",
     "build_pipeline_candidates",
+    "build_resource_appsink_candidates",
     "parse_v4l2_formats",
     "query_capabilities",
     "run_v4l2_ctl",

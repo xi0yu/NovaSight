@@ -16,6 +16,26 @@ from .schema import (
     ModelVersion,
     SourceKind,
 )
+from .manifest import (
+    ArtifactInfo,
+    DeepStreamSpec,
+    InputSpec,
+    ModelManifest,
+    OutputSpec,
+    PostprocessSpec,
+    RuntimeInfo,
+    TensorSpec,
+    build_engine_manifest,
+    read_manifest,
+    write_manifest,
+)
+from .deepstream_config import generate_nvinfer_config
+from .scanner import (
+    ModelArtifactScanResult,
+    ModelScanStatus,
+    inspect_model_artifact,
+    scan_model_artifacts,
+)
 from .store import ModelRegistry
 
 __all__ = [
@@ -34,4 +54,20 @@ __all__ = [
     "ModelRegistry",
     "ModelVersion",
     "SourceKind",
+    "ArtifactInfo",
+    "DeepStreamSpec",
+    "InputSpec",
+    "ModelManifest",
+    "OutputSpec",
+    "PostprocessSpec",
+    "RuntimeInfo",
+    "TensorSpec",
+    "build_engine_manifest",
+    "read_manifest",
+    "write_manifest",
+    "generate_nvinfer_config",
+    "ModelArtifactScanResult",
+    "ModelScanStatus",
+    "inspect_model_artifact",
+    "scan_model_artifacts",
 ]

@@ -62,3 +62,23 @@ def test_policy_rejects_non_finite_confidence(confidence: float) -> None:
     assert output.dx == 0
     assert output.dy == 0
     assert "non-finite" in output.reason
+
+
+def test_policy_preserves_scheduler_metadata() -> None:
+    intent = ControlIntent(
+        dx=10,
+        dy=20,
+        action="move",
+        confidence=1.0,
+        reason="test",
+        source_id="control.test",
+        source_frame_id=42,
+        source_track_id=7,
+        predicted_source=True,
+    )
+
+    output = ControlOutputPolicy().apply(intent)
+
+    assert output.source_frame_id == 42
+    assert output.source_track_id == 7
+    assert output.predicted_source is True

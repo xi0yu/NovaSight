@@ -193,21 +193,47 @@ class CaptureSession:
         with self._condition:
             if stop_event.is_set() or self._source is not source:
                 return
+            timestamp_error = self._frame_timestamp_error(frame)
+            if timestamp_error:
+                self._mark_unavailable(
+                    timestamp_error,
+                    source=source,
+                    stop_event=stop_event,
+                )
+                stop_event.set()
+                return
             self.state.available = True
             self.state.capture_wait_ms = frame.capture_wait_ms
             if self._last_frame_ts_ns is not None:
-                self.state.frame_period_ms = (frame.ts_ns - self._last_frame_ts_ns) / 1e6
-            self._capture_window_ts_ns.append(frame.ts_ns)
-            self._prune_window(self._capture_window_ts_ns, frame.ts_ns)
-            self._prune_window(self._drop_window_ts_ns, frame.ts_ns)
+                self.state.frame_period_ms = (frame.capture_ts_ns - self._last_frame_ts_ns) / 1e6
+            self._capture_window_ts_ns.append(frame.capture_ts_ns)
+            self._prune_window(self._capture_window_ts_ns, frame.capture_ts_ns)
+            self._prune_window(self._drop_window_ts_ns, frame.capture_ts_ns)
             self.state.statistics.capture_counter = len(self._capture_window_ts_ns)
             self.state.statistics.dropped_counter = len(self._drop_window_ts_ns)
             self.state.fps_capture = self._window_fps(self._capture_window_ts_ns)
             self.state.statistics.capture_fps = self.state.fps_capture
-            self._last_frame_ts_ns = frame.ts_ns
+            self._last_frame_ts_ns = frame.capture_ts_ns
             self._latest_frame = frame
             self.state.last_error = None
             self._condition.notify_all()
+
+    def _frame_timestamp_error(self, frame: CapturedFrame) -> str:
+        try:
+            capture_ts_ns = int(frame.capture_ts_ns)
+        except Exception:
+            return "capture frame timestamp invalid: capture_ts_ns is not an integer"
+        if capture_ts_ns <= 0:
+            return (
+                "capture frame timestamp invalid: "
+                f"capture_ts_ns must be positive, got {capture_ts_ns}"
+            )
+        if self._last_frame_ts_ns is not None and capture_ts_ns < self._last_frame_ts_ns:
+            return (
+                "capture frame timestamp went backwards: "
+                f"previous={self._last_frame_ts_ns} current={capture_ts_ns}"
+            )
+        return ""
 
     def _window_fps(self, timestamps_ns: deque[int]) -> float:
         if len(timestamps_ns) < 2:

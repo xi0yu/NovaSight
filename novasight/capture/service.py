@@ -10,10 +10,16 @@ from typing import Any
 from novasight.config.runtime import CaptureConfig
 
 from .caps import query_capabilities, run_v4l2_ctl
-from .pipeline import CaptureCandidate, build_appsink_candidates
+from .pipeline import CaptureCandidate, build_appsink_candidates, build_resource_appsink_candidates
 from .profile import select_capture_profile
 from .session import CaptureSession
-from .source import CapturedFrame, FrameSource, GstAppSinkFrameSource, ImageFrameSource
+from .source import (
+    CapturedFrame,
+    FrameSource,
+    GstAppSinkFrameSource,
+    GstResourceFrameSource,
+    ImageFrameSource,
+)
 from .state import CaptureCapabilities, CaptureProfile, CaptureRuntimeState
 
 logger = logging.getLogger("novasight.capture.service")
@@ -70,7 +76,19 @@ def _open_default_source(
     roi_size: int | None = None,
     roi_offset_x: int = 0,
     roi_offset_y: int = 0,
+    memory: str = "cpu",
 ) -> FrameSource:
+    if memory == "nvmm":
+        return _open_first_readable_source(
+            profile,
+            candidates=build_resource_appsink_candidates(
+                profile,
+                roi_size=roi_size,
+                roi_offset_x=roi_offset_x,
+                roi_offset_y=roi_offset_y,
+            ),
+            source_cls=GstResourceFrameSource,
+        )
     return _open_first_readable_source(
         profile,
         candidates=build_appsink_candidates(
@@ -119,6 +137,7 @@ class CaptureService:
             roi_size=self.roi_size,
             roi_offset_x=self.roi_offset_x,
             roi_offset_y=self.roi_offset_y,
+            memory=self.config.memory,
         )
 
     @property
