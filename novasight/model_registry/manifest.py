@@ -46,6 +46,7 @@ class InputSpec(TensorSpec):
 class OutputSpec(TensorSpec):
     format: str = "yolo_cxcywh_class_scores"
     class_count: int = 0
+    class_names: list[str] = field(default_factory=list)
     has_objectness: bool = False
     scores_are_sigmoid: bool = True
     coordinate_mode: str = "pixel"
@@ -97,8 +98,14 @@ def build_engine_manifest(
     input_spec: TensorSpec,
     output_spec: TensorSpec,
     class_count: int,
+    class_names: list[str] | None = None,
     confidence_threshold: float = 0.25,
     nms_iou_threshold: float = 0.45,
+    runtime_precision: str = "fp16",
+    input_color_format: str = "RGB",
+    input_scale_factor: float = 1.0 / 255.0,
+    maintain_aspect_ratio: bool = False,
+    symmetric_padding: bool = False,
     validated: bool = False,
 ) -> ModelManifest:
     engine_path = Path(engine_path)
@@ -112,12 +119,16 @@ def build_engine_manifest(
         model_id=_require_non_empty(model_id, "model_id"),
         display_name=_require_non_empty(display_name, "display_name"),
         artifact=artifact,
-        runtime=RuntimeInfo(),
+        runtime=RuntimeInfo(precision=_require_non_empty(runtime_precision, "runtime.precision")),
         input=InputSpec(
             name=_require_non_empty(input_spec.name, "input.name"),
             shape=_validate_shape(input_spec.shape, "input.shape"),
             dtype=_require_non_empty(input_spec.dtype, "input.dtype"),
             layout=_require_non_empty(input_spec.layout, "input.layout"),
+            color_format=_require_non_empty(input_color_format, "input.color_format"),
+            scale_factor=float(input_scale_factor),
+            maintain_aspect_ratio=bool(maintain_aspect_ratio),
+            symmetric_padding=bool(symmetric_padding),
         ),
         output=OutputSpec(
             name=_require_non_empty(output_spec.name, "output.name"),
@@ -125,6 +136,7 @@ def build_engine_manifest(
             dtype=_require_non_empty(output_spec.dtype, "output.dtype"),
             layout=_require_non_empty(output_spec.layout, "output.layout"),
             class_count=max(0, int(class_count)),
+            class_names=_normalize_class_names(class_names, max(0, int(class_count))),
         ),
         postprocess=PostprocessSpec(
             confidence_threshold=float(confidence_threshold),
@@ -137,6 +149,26 @@ def build_engine_manifest(
 
 
 def compute_model_fingerprint(manifest: ModelManifest) -> str:
+    return _compute_model_fingerprint(manifest, include_class_names=True)
+
+
+def _compute_model_fingerprint(
+    manifest: ModelManifest,
+    *,
+    include_class_names: bool,
+) -> str:
+    output_payload = {
+        "name": manifest.output.name,
+        "shape": list(manifest.output.shape),
+        "dtype": manifest.output.dtype,
+        "layout": manifest.output.layout,
+        "format": manifest.output.format,
+        "class_count": manifest.output.class_count,
+        "has_objectness": manifest.output.has_objectness,
+        "coordinate_mode": manifest.output.coordinate_mode,
+    }
+    if include_class_names:
+        output_payload["class_names"] = list(manifest.output.class_names)
     payload = {
         "artifact_sha256": manifest.artifact.sha256,
         "input": {
@@ -145,16 +177,7 @@ def compute_model_fingerprint(manifest: ModelManifest) -> str:
             "dtype": manifest.input.dtype,
             "layout": manifest.input.layout,
         },
-        "output": {
-            "name": manifest.output.name,
-            "shape": list(manifest.output.shape),
-            "dtype": manifest.output.dtype,
-            "layout": manifest.output.layout,
-            "format": manifest.output.format,
-            "class_count": manifest.output.class_count,
-            "has_objectness": manifest.output.has_objectness,
-            "coordinate_mode": manifest.output.coordinate_mode,
-        },
+        "output": output_payload,
         "parser_schema": MODEL_PARSER_SCHEMA_VERSION,
     }
     return sha256_text(stable_json(payload))
@@ -174,11 +197,29 @@ def read_manifest(path: Path) -> ModelManifest:
     return manifest_from_dict(raw)
 
 
+def validate_manifest_engine_artifact(manifest: ModelManifest, engine_path: Path) -> None:
+    engine_path = Path(engine_path)
+    if manifest.artifact.engine_path != engine_path.name:
+        raise ValueError("model manifest artifact does not match engine file name")
+    if not engine_path.is_file():
+        raise ValueError(f"model engine file is missing: {engine_path}")
+    actual_size = engine_path.stat().st_size
+    if int(manifest.artifact.size_bytes) != int(actual_size):
+        raise ValueError(
+            "model manifest artifact size does not match engine file "
+            f"(manifest={manifest.artifact.size_bytes}, actual={actual_size})"
+        )
+    actual_sha256 = sha256_file(engine_path)
+    if manifest.artifact.sha256 != actual_sha256:
+        raise ValueError("model manifest artifact checksum does not match engine file")
+
+
 def manifest_from_dict(raw: dict[str, Any]) -> ModelManifest:
+    raw_output = dict(raw["output"])
     artifact = ArtifactInfo(**dict(raw["artifact"]))
     runtime = RuntimeInfo(**dict(raw.get("runtime", {})))
     input_spec = InputSpec(**dict(raw["input"]))
-    output_spec = OutputSpec(**dict(raw["output"]))
+    output_spec = OutputSpec(**raw_output)
     postprocess = PostprocessSpec(**dict(raw.get("postprocess", {})))
     deepstream = DeepStreamSpec(**dict(raw.get("deepstream", {})))
     manifest = ModelManifest(
@@ -196,7 +237,11 @@ def manifest_from_dict(raw: dict[str, Any]) -> ModelManifest:
     )
     expected = compute_model_fingerprint(manifest)
     if manifest.model_fingerprint and manifest.model_fingerprint != expected:
-        raise ValueError("model manifest fingerprint does not match manifest content")
+        legacy_expected = ""
+        if "class_names" not in raw_output:
+            legacy_expected = _compute_model_fingerprint(manifest, include_class_names=False)
+        if manifest.model_fingerprint != legacy_expected:
+            raise ValueError("model manifest fingerprint does not match manifest content")
     if not manifest.model_fingerprint:
         return replace(manifest, model_fingerprint=expected)
     return manifest
@@ -214,3 +259,12 @@ def _validate_shape(value: list[int], label: str) -> list[int]:
     if not shape or any(item <= 0 for item in shape):
         raise ValueError(f"{label} must contain positive dimensions")
     return shape
+
+
+def _normalize_class_names(value: list[str] | None, class_count: int) -> list[str]:
+    count = max(0, int(class_count))
+    names = [str(item).strip() for item in (value or []) if str(item).strip()]
+    normalized = names[:count]
+    while len(normalized) < count:
+        normalized.append(str(len(normalized)))
+    return normalized

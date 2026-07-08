@@ -141,6 +141,14 @@ function recordArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(asRecord) : [];
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0)
+    : [];
+}
+
 function readNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -196,6 +204,22 @@ function formatPercent(value: unknown, digits = 1): string {
 
 function formatShape(value: unknown): string {
   return Array.isArray(value) && value.length > 0 ? value.map((item) => String(item)).join("x") : "-";
+}
+
+function shortTimestampSource(value: string): string {
+  if (value === "gst_clock_base_time_pts") {
+    return "GstClock";
+  }
+  if (value === "first_probe_offset_pts") {
+    return "Probe校准";
+  }
+  if (value === "observed_probe_time_invalid_pts") {
+    return "Probe时间";
+  }
+  if (!value || value === "uninitialized") {
+    return "-";
+  }
+  return value.length > 12 ? `${value.slice(0, 12)}...` : value;
 }
 
 function formatDate(value: Date | null): string {
@@ -326,6 +350,11 @@ export function StudioConsoleView({
 
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
+  const captureToTensorMetaMs = readNumber(statistics?.stage_capture_to_tensor_meta_ms, Number.NaN);
+  const hasCaptureToTensorMetaMs = Number.isFinite(captureToTensorMetaMs);
+  const inferenceLatencyDisplay = hasCaptureToTensorMetaMs
+    ? captureToTensorMetaMs
+    : (statistics?.stage_engine_ms ?? statistics?.inference_latency);
   const config = configDraft ?? runtimeConfig;
   const captureConfig = nestedRecord(config, "capture");
   const configuredCaptureDevice = readString(captureConfig.device, "");
@@ -344,6 +373,32 @@ export function StudioConsoleView({
   const executionIntent = asRecord(execution.intent);
   const executionMeta = asRecord(execution.metadata);
   const inferenceTrace = asRecord(vision.inference);
+  const runtimeInference = asRecord(runtime?.inference);
+  const deepstreamRuntimeSelected = readString(runtimeInference.selected, "") === "deepstream";
+  const deepstreamTerminalError = readBoolean(runtimeInference.terminal_error, false);
+  const runtimeInferenceConfigured = runtimeInference.configured === true;
+  const runtimeInferenceLoaded = runtimeInference.loaded === true;
+  const runtimeInferenceReason = readString(runtimeInference.reason, "");
+  const runtimeInferenceDetail = readString(runtimeInference.detail, "");
+  const captureMainRunning = deepstreamRuntimeSelected ? runtime?.running === true : capture?.available === true;
+  const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
+  const engineStatusLabel = deepstreamTerminalError
+    ? "管线故障"
+    : runtimeInferenceLoaded
+      ? "已加载"
+      : runtimeInferenceConfigured
+        ? "待启动"
+        : "未配置";
+  const deepstreamStatusLabel = deepstreamTerminalError
+    ? "管线故障"
+    : runtimeInferenceLoaded
+      ? "运行中"
+      : runtimeInferenceConfigured
+        ? "待启动"
+        : "未配置";
+  const runtimeModelOutput = asRecord(runtimeInference.model_output);
+  const runtimePostprocess = asRecord(runtimeInference.postprocess);
+  const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
   const pipeline = asRecord(runtime?.pipeline);
   const executorStatus = asRecord(runtime?.executor);
   const executors = asRecord(executorStatus.executors);
@@ -480,6 +535,15 @@ export function StudioConsoleView({
   const runtimeInputShape = readString(runtime?.inference?.input_shape, "");
   const registeredInputShape = version?.input_shape ?? "";
   const displayedInputShape = runtimeInputShape || registeredInputShape;
+  const deepstreamModelOutputSummary = formatShape(runtimeModelOutput.shape);
+  const deepstreamClassNamesSummary =
+    runtimeModelOutputClassNames.length > 0
+      ? runtimeModelOutputClassNames.slice(0, 8).join(", ") +
+        (runtimeModelOutputClassNames.length > 8 ? ` +${runtimeModelOutputClassNames.length - 8}` : "")
+      : "-";
+  const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
+  const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
+  const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.status === "ready" &&
@@ -754,14 +818,6 @@ export function StudioConsoleView({
     }
   }, [onRefresh]);
 
-  const toggleCapture = useCallback(async () => {
-    if (capture?.available) {
-      await stopCurrentCapture();
-      return;
-    }
-    await applyCapture();
-  }, [applyCapture, capture?.available, stopCurrentCapture]);
-
   const startInferenceThread = useCallback(async () => {
     setBusy("runtime.start");
     setLocalError(null);
@@ -775,6 +831,17 @@ export function StudioConsoleView({
       setBusy(null);
     }
   }, [onRefresh]);
+
+  const toggleCapture = useCallback(async () => {
+    if (captureMainRunning) {
+      await stopCurrentCapture();
+      return;
+    }
+    await applyCapture();
+    if (deepstreamRuntimeSelected) {
+      await startInferenceThread();
+    }
+  }, [applyCapture, captureMainRunning, deepstreamRuntimeSelected, startInferenceThread, stopCurrentCapture]);
 
   const updateConfigField = useCallback(
     async (section: string, key: string, value: number | string | boolean | string[]) => {
@@ -1104,17 +1171,17 @@ export function StudioConsoleView({
         <section className="console-process">
           <div className="console-process-state">
             <span className="console-dot" />
-            采集：{capture?.available ? "运行中" : "已停止"} · 推理：{runtime?.running ? "运行中" : "已停止"}
+            采集：{captureMainRunning ? "运行中" : captureMainConfigured ? "已配置" : "已停止"} · 推理：{runtime?.running ? "运行中" : "已停止"}
           </div>
           <button
-            className={capture?.available ? "console-button danger" : "console-button primary"}
-            disabled={busy === "capture" || busy === "stop"}
+            className={captureMainRunning ? "console-button danger" : "console-button primary"}
+            disabled={busy === "capture" || busy === "stop" || busy === "runtime.start"}
             onClick={() => void toggleCapture()}
             type="button"
           >
-            {capture?.available ? "▪ 停止采集" : "▶ 启动采集"}
+            {captureMainRunning ? "▪ 停止采集" : deepstreamRuntimeSelected ? "▶ 启动主链" : "▶ 启动采集"}
           </button>
-          {!runtime?.running && capture?.available ? (
+          {!deepstreamRuntimeSelected && !runtime?.running && capture?.available ? (
             <button
               className="console-button"
               disabled={busy === "runtime.start"}
@@ -1206,9 +1273,9 @@ export function StudioConsoleView({
           </div>
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
-            <Metric title="推理延迟" value={formatNumber(statistics?.stage_engine_ms ?? statistics?.inference_latency, 1)} small="ms" />
+            <Metric title={hasCaptureToTensorMetaMs ? "Tensor Meta延迟" : "推理延迟"} value={formatNumber(inferenceLatencyDisplay, 1)} small="ms" />
             <Metric title="目标数量" value={String(detections)} small="objects" />
-            <Metric title="引擎状态" value={readString(runtime?.inference?.loaded, "") ? "已加载" : runtime?.inference?.loaded === true ? "已加载" : "未加载"} small={readString(runtime?.inference?.selected, "engine")} />
+            <Metric title="引擎状态" value={engineStatusLabel} small={readString(runtime?.inference?.selected, "engine")} />
           </div>
           <div className="console-grid2">
             <div className="console-card">
@@ -1349,15 +1416,27 @@ export function StudioConsoleView({
                   <span>当前产物</span><b>{selectedSwitchArtifact ? `${selectedSwitchArtifact.kind} · ${selectedSwitchArtifact.path}` : "-"}</b>
                   <span>运行输入</span><b>{runtimeInputShape || "-"}</b>
                   <span>登记输入</span><b>{registeredInputShape || "-"}</b>
+                  <span>运行输出</span><b>{deepstreamModelOutputSummary}</b>
+                  <span>输出层</span><b>{readString(runtimeModelOutput.name, "-")}</b>
+                  <span>运行类别</span><b>{formatNumber(runtimeModelOutput.class_count, 0)}</b>
+                  <span>解析器</span><b>{runtimePostprocessParser}</b>
+                  <span>运行置信度</span><b>{formatNumber(runtimePostprocessConfidence, 2)}</b>
+                  <span>运行 NMS</span><b>{formatNumber(runtimePostprocessNms, 2)}</b>
                   <span>ROI</span><b>{roiSize} · 自动缩放</b>
                   <span>后端</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
                   <span>类别数量</span><b>{String(version?.classes.length ?? 0)}</b>
+                  <span className="wide">类别名</span><b className="wide">{deepstreamClassNamesSummary}</b>
                 </div>
               </details>
             </div>
             <div className="console-card">
               <h2 className="console-title">推理输出</h2>
-              <PreviewFrame enabled={activePage === "infer" && previewEnabled} runtime={runtime} roiSize={roiSize} />
+              <PreviewFrame
+                enabled={activePage === "infer" && previewEnabled}
+                imageEnabled={!deepstreamRuntimeSelected}
+                runtime={runtime}
+                roiSize={roiSize}
+              />
               <div className="business-trace">
                 <div className="business-trace-head">
                   <span>主营链路诊断</span>
@@ -1383,6 +1462,9 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
                 <span>推理原因</span><b>{inferenceReason || "-"}</b>
+                <span>DeepStream 状态</span><b>{deepstreamStatusLabel}</b>
+                <span>DeepStream 原因</span><b>{runtimeInferenceReason || "-"}</b>
+                <span className="wide">DeepStream 详情</span><b className="wide">{runtimeInferenceDetail || "-"}</b>
                 <span>raw 检测</span><b>{String(rawDetections)}</b>
                 <span>前端检测</span><b>{String(mappedDetections)}</b>
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
@@ -1390,6 +1472,12 @@ export function StudioConsoleView({
                 <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
                 <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio, 1) : "-"}</b>
                 <span>输出形状</span><b>{formatShape(decodeDebug.output_shape ?? inferenceDebug.output_shape)}</b>
+                <span>运行输出</span><b>{deepstreamModelOutputSummary}</b>
+                <span>运行类别</span><b>{formatNumber(runtimeModelOutput.class_count, 0)}</b>
+                <span>运行解析器</span><b>{runtimePostprocessParser}</b>
+                <span>运行置信度</span><b>{formatNumber(runtimePostprocessConfidence, 2)}</b>
+                <span>运行 NMS</span><b>{formatNumber(runtimePostprocessNms, 2)}</b>
+                <span className="wide">运行类别名</span><b className="wide">{deepstreamClassNamesSummary}</b>
                 <span>输入准备</span><b>{formatNumber(inferenceTimings.numpy_tensor_ms, 1)} ms</b>
                 <span>推理总耗时</span><b>{formatNumber(inferenceTimings.execute_total_ms, 1)} ms</b>
                 <span>GPU 等待</span><b>{formatNumber(trtTimings.stream_sync_ms, 1)} ms</b>
@@ -1884,11 +1972,27 @@ export function StudioConsoleView({
             <KvCard title="采集统计" rows={[["成功帧", String(statistics?.capture_counter ?? 0)], ["丢弃帧", String(statistics?.dropped_counter ?? 0)], ["抖动", formatNumber(capture?.frame_period_ms, 2)]]} />
             <KvCard title="推理统计" rows={[
               ["完成帧", String(statistics?.inference_counter ?? 0)],
+              ["TensorMeta FPS", formatNumber(statistics?.tensor_meta_fps, 1)],
+              ["Postprocess FPS", formatNumber(statistics?.postprocess_fps, 1)],
+              ["Batch 消费 FPS", formatNumber(statistics?.detection_batch_fps, 1)],
+              ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
+              ["累计批次", formatNumber(statistics?.published_batches, 0)],
+              ["窗口批次", formatNumber(statistics?.window_published_batches, 0)],
+              ["窗口 TensorMeta", formatNumber(statistics?.window_tensor_meta_frames, 0)],
+              ["窗口后处理", formatNumber(statistics?.window_postprocess_frames, 0)],
+              ["时间戳", shortTimestampSource(readString(statistics?.timestamp_source, "-"))],
+              ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
               ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
-              ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
-              ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
+              hasCaptureToTensorMetaMs
+                ? ["Tensor Meta", formatNumber(captureToTensorMetaMs, 1)]
+                : ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
+              hasCaptureToTensorMetaMs
+                ? ["延迟来源", "采集到tensor"]
+                : ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
               ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],
-              ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
+              hasCaptureToTensorMetaMs
+                ? ["交接等待", formatNumber(statistics?.stage_handoff_ms, 1)]
+                : ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
             ]} />
             <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
@@ -1916,10 +2020,20 @@ export function StudioConsoleView({
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
                 <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
                 <Event label="ROI" value={formatNumber(statistics?.stage_roi_ms, 1)} width={18} />
-                <Event label="推理总耗时" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
-                <Event label="TRT执行" value={formatNumber(statistics?.stage_engine_execute_ms, 1)} width={18} />
+                {hasCaptureToTensorMetaMs ? (
+                  <Event label="Tensor Meta" value={formatNumber(captureToTensorMetaMs, 1)} width={56} />
+                ) : (
+                  <>
+                    <Event label="推理总耗时" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
+                    <Event label="TRT执行" value={formatNumber(statistics?.stage_engine_execute_ms, 1)} width={18} />
+                  </>
+                )}
                 <Event label="解码/NMS" value={formatNumber(statistics?.stage_decode_ms, 1)} width={34} />
-                <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
+                {hasCaptureToTensorMetaMs ? (
+                  <Event label="交接等待" value={formatNumber(statistics?.stage_handoff_ms, 1)} width={20} />
+                ) : (
+                  <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
+                )}
                 <Event label="Control" value={formatNumber(statistics?.stage_control_ms, 1)} width={14} />
               </div>
             </div>
@@ -2192,10 +2306,12 @@ function percent(value: number, total: number): string {
 
 function PreviewFrame({
   enabled,
+  imageEnabled = true,
   runtime,
   roiSize
 }: {
   enabled: boolean;
+  imageEnabled?: boolean;
   runtime: RuntimeState | null;
   roiSize: number;
 }) {
@@ -2212,7 +2328,8 @@ function PreviewFrame({
   const targetCy = readNullableNumber(target.cy);
   const targetAimX = readNullableNumber(target.aim_x) ?? targetCx;
   const targetAimY = readNullableNumber(target.aim_y) ?? targetCy;
-  const showPreview = enabled && runtime?.capture?.available;
+  const showImage = enabled && imageEnabled && runtime?.capture?.available;
+  const showOverlay = enabled && detections.length > 0;
   const selectedDetection = detections.find((item) => (
     targetDetectionIndex !== null
       ? item.index === targetDetectionIndex
@@ -2222,10 +2339,10 @@ function PreviewFrame({
   const centerX = previewWidth / 2;
   const centerY = previewHeight / 2;
   return (
-    <div className="console-preview" style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
+    <div className={showOverlay ? "console-preview has-overlay" : "console-preview"} style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
       <div className="console-preview-frame">
-        {showPreview ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
-        {showPreview && detections.length > 0 ? (
+        {showImage ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
+        {showOverlay ? (
           <div className="console-detection-layer" aria-hidden="true">
             <svg className="console-target-lines" viewBox={`0 0 ${previewWidth} ${previewHeight}`} preserveAspectRatio="none">
               {detections.map((item) => {

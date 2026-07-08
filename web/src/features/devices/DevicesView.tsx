@@ -500,6 +500,9 @@ export function DevicesView({
     activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
+  const deepstreamRuntimeSelected = inferenceSelected === "deepstream";
+  const captureMainRunning = deepstreamRuntimeSelected ? runtime?.running === true : capture?.available === true;
+  const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
   const inferenceStatusInputShape =
     typeof inferenceStatus.input_shape === "string" ? inferenceStatus.input_shape : "";
   const inferenceStatusOutputShape =
@@ -507,8 +510,16 @@ export function DevicesView({
   const inferenceChecklist: { label: string; detail: string; tone: ReadinessTone }[] = [
     {
       label: "输入帧",
-      detail: capture?.available ? "RoiFrame 已可用" : "先启动采集卡或图片输入",
-      tone: capture?.available ? "ready" : "blocked"
+      detail: deepstreamRuntimeSelected
+        ? captureMainRunning
+          ? "DeepStream 主链正在产出 DetectionBatch"
+          : captureProfileConfigured
+            ? "采集 Profile 已配置，启动主链后由 DeepStream 打开"
+            : "先选择采集卡 Profile"
+        : capture?.available
+          ? "RoiFrame 已可用"
+          : "先启动采集卡或图片输入",
+      tone: captureMainRunning || (!deepstreamRuntimeSelected && capture?.available) ? "ready" : captureProfileConfigured ? "warn" : "blocked"
     },
     {
       label: "运行模型",
@@ -590,9 +601,13 @@ export function DevicesView({
             {
               id: "capture",
               label: "采集输入",
-              value: capture?.available ? formatProfile(capture) : "未启动",
-              detail: normalizedActiveSource === "image" ? "图片输入" : device,
-              ready: Boolean(capture?.available)
+              value: captureProfileConfigured ? formatProfile(capture) : "未启动",
+              detail: deepstreamRuntimeSelected
+                ? captureMainRunning
+                  ? "DeepStream 主链运行中"
+                  : "DeepStream 启动时打开设备"
+                : normalizedActiveSource === "image" ? "图片输入" : device,
+              ready: captureMainRunning || (!deepstreamRuntimeSelected && Boolean(capture?.available))
             },
             {
               id: "inference",
@@ -634,7 +649,15 @@ export function DevicesView({
               </div>
               <div className="source-segmented" role="tablist" aria-label="采集输入源">
                 {[
-                  ["capture", "采集卡", capture?.available ? formatProfile(capture) : "等待启动"],
+                  [
+                    "capture",
+                    "采集卡",
+                    captureProfileConfigured
+                      ? deepstreamRuntimeSelected
+                        ? `${formatProfile(capture)} · 主链启动时打开`
+                        : formatProfile(capture)
+                      : "等待启动",
+                  ],
                   ["image", "图片输入", readString(sourceConfig, "image_path", "未配置图片")],
                 ].map(([id, label, desc]) => (
                   <button
@@ -656,7 +679,7 @@ export function DevicesView({
                 </div>
                 <div>
                   <dt>运行状态</dt>
-                  <dd>{capture?.available ? "采集中" : "未启动"}</dd>
+                  <dd>{captureMainRunning ? "采集中" : captureProfileConfigured ? "已配置" : "未启动"}</dd>
                 </div>
                 <div>
                   <dt>当前 Profile</dt>
@@ -664,7 +687,7 @@ export function DevicesView({
                 </div>
                 <div>
                   <dt>后端</dt>
-                  <dd>{capture?.backend ?? "未打开"}</dd>
+                  <dd>{deepstreamRuntimeSelected ? "deepstream" : capture?.backend ?? "未打开"}</dd>
                 </div>
                 <div>
                   <dt>RoiFrame</dt>
@@ -935,7 +958,7 @@ export function DevicesView({
               <dl className="settings-summary-list">
                 <div>
                   <dt>输入</dt>
-                  <dd>{capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
+                  <dd>{deepstreamRuntimeSelected ? (captureMainRunning ? "DetectionBatch 可用" : "等待主链启动") : capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
                 </div>
                 <div>
                   <dt>模型</dt>

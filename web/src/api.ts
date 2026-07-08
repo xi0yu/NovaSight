@@ -96,6 +96,35 @@ export type ModelPublishResponse = {
   report?: ModelSwitchReport;
 };
 
+export type DeepStreamPreparePayload = {
+  model_id: string;
+  display_name: string;
+  runtime_precision?: string;
+  input_name: string;
+  input_shape: number[];
+  input_dtype?: string;
+  input_color_format?: string;
+  input_scale_factor?: number;
+  maintain_aspect_ratio?: boolean;
+  symmetric_padding?: boolean;
+  output_name: string;
+  output_shape: number[];
+  output_dtype?: string;
+  class_count: number;
+  confidence_threshold?: number;
+  nms_iou_threshold?: number;
+};
+
+export type DeepStreamPrepareResponse = {
+  status: string;
+  reason: string;
+  artifact: ModelArtifact;
+  manifest_path: string;
+  deepstream_config_path: string;
+  model_fingerprint: string;
+  config_fingerprint: string;
+};
+
 export type CaptureState = {
   available: boolean;
   device: string;
@@ -133,13 +162,30 @@ export type Statistics = {
   queue_latency?: number;
   inference_latency?: number;
   stage_roi_ms?: number;
+  stage_capture_to_tensor_meta_ms?: number;
   stage_engine_ms?: number;
   stage_engine_execute_ms?: number;
   stage_decode_ms?: number;
+  stage_handoff_ms?: number;
   stage_postprocess_ms?: number;
   stage_control_ms?: number;
   stage_total_ms?: number;
   e2e_latency: number;
+  detection_batch_fps?: number;
+  control_observation_counter?: number;
+  control_observation_fps?: number;
+  published_batches?: number;
+  window_published_batches?: number;
+  tensor_meta_frames?: number;
+  postprocess_frames?: number;
+  window_tensor_meta_frames?: number;
+  window_postprocess_frames?: number;
+  tensor_meta_fps?: number;
+  postprocess_fps?: number;
+  timestamp_source?: string;
+  last_frame_age_ms?: number;
+  last_inference_latency_ms?: number;
+  last_detection_count?: number;
 };
 
 export type CaptureCapability = {
@@ -553,6 +599,19 @@ export function publishModel(projectId: number, artifactId: number): Promise<Mod
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ artifact_id: artifactId })
+  });
+}
+
+export function prepareDeepStreamArtifact(
+  artifactId: number,
+  payload: DeepStreamPreparePayload
+): Promise<DeepStreamPrepareResponse> {
+  return requestJson<DeepStreamPrepareResponse>(`/api/models/artifacts/${artifactId}/deepstream/prepare`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
   });
 }
 

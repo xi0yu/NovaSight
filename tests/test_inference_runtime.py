@@ -10,6 +10,7 @@ import builtins
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ import pytest
 
 from novasight.capture.source import CapturedFrame, FrameResource
 from novasight.config import RuntimeConfig
-from novasight.contracts import Detection, FrameContext, Track
+from novasight.contracts import Detection, DetectionBatch, FrameContext, Track
 from novasight.coordinates import CoordinateTransform
 from novasight.executors import ExecutorRegistry
 from novasight.control import CommandScheduler, ControlOutput
@@ -26,7 +27,6 @@ from novasight.inference import (
     InferenceDetection,
     InferenceResult,
     InferenceRuntime,
-    OnnxRuntimeInferenceEngine,
     TensorRtInferenceEngine,
     UnavailableInferenceEngine,
 )
@@ -42,13 +42,19 @@ from novasight.inference.onnxruntime_engine import (
 )
 from novasight.inference.postprocess.yolo import decode_nx6_detections
 from novasight.deepstream.backend import DeepStreamDetectionBackend
+from novasight.deepstream.backend import GST_CLOCK_TIME_NONE
+from novasight.deepstream.backend import _tensor_meta_first_output_to_numpy
+from novasight.deepstream.backend import _tensor_meta_output_to_numpy
 from novasight.deepstream.pipeline_builder import DeepStreamPipelineConfig, build_deepstream_pipeline
 from novasight.deepstream.tensor_meta import output_tensor_to_detection_batch
+from novasight.main import _doctor_deepstream_smoke, _doctor_deepstream_smoke_report
 from novasight.model_registry.deepstream_config import (
     DEEPSTREAM_CONFIG_TEMPLATE_VERSION,
     generate_nvinfer_config,
+    validate_nvinfer_config_engine_path,
+    validate_nvinfer_config_properties,
 )
-from novasight.model_registry.fingerprint import sha256_file
+from novasight.model_registry.fingerprint import sha256_file, sha256_text, stable_json
 from novasight.model_registry.manifest import (
     ModelManifest,
     TensorSpec,
@@ -56,7 +62,37 @@ from novasight.model_registry.manifest import (
     read_manifest,
     write_manifest,
 )
+from novasight.model_registry import ModelRegistry
 from novasight.model_registry.scanner import scan_model_artifacts
+from novasight.runtime import RuntimeService
+from novasight.runtime.aim import (
+    AimPointConfig,
+    AimPointGenerator,
+    EstimatedTargetState,
+    LatencyCompensationConfig,
+    LatencyCompensator,
+)
+from novasight.runtime.candidates import (
+    CandidateFilter,
+    CandidateFilterConfig,
+    QualityScoreConfig,
+    QualityScorer,
+    RatioCheckConfig,
+    SelectionFovConfig,
+)
+from novasight.runtime.kalman import KalmanConfig, KalmanEstimator
+from novasight.runtime.recorder import CONTROL_FRAME_FIELDS, ControlFrameCsvRecorder
+from novasight.runtime.replay import (
+    ControlFrameReplay,
+    ReplayAcceptanceCase,
+    ReplayAcceptanceGate,
+    ReplayInjection,
+    build_default_replay_acceptance_cases,
+    compare_replay_metrics,
+    run_replay_acceptance,
+)
+from novasight.runtime.target_selector import RuntimeTargetSelector
+from novasight.runtime.tracker import RuntimeTracker, TrackerConfig
 from novasight.inference.preprocess import (
     DeviceTensor,
     GPU_RESOURCE_PREPROCESS_NOT_IMPLEMENTED,
@@ -104,38 +140,52 @@ def _ctypes_native_payload(**overrides) -> dict[str, object]:
     }
     payload.update(overrides)
     return payload
-from novasight.model_registry import ModelRegistry
 
-from novasight.runtime.aim import (
-    AimPointConfig,
-    AimPointGenerator,
-    EstimatedTargetState,
-    LatencyCompensationConfig,
-    LatencyCompensator,
-)
-from novasight.runtime.candidates import (
-    CandidateFilter,
-    CandidateFilterConfig,
-    QualityScoreConfig,
-    QualityScorer,
-    RatioCheckConfig,
-    SelectionFovConfig,
-)
-from novasight.runtime.kalman import KalmanConfig, KalmanEstimator
-from novasight.runtime.target_selector import RuntimeTargetSelector
-from novasight.runtime.tracker import RuntimeTracker, TrackerConfig
-from novasight.runtime import RuntimeService
-from novasight.runtime.recorder import CONTROL_FRAME_FIELDS, ControlFrameCsvRecorder
-from novasight.runtime.replay import (
-    ControlFrameReplay,
-    ReplayAcceptanceCase,
-    ReplayAcceptanceGate,
-    ReplayInjection,
-    build_default_replay_acceptance_cases,
-    compare_replay_metrics,
-    run_replay_acceptance,
-)
 
+def _deepstream_smoke_model_contract() -> dict[str, object]:
+    model_runtime = {
+        "backend": "deepstream",
+        "precision": "fp16",
+        "batch_size": 1,
+    }
+    model_input = {
+        "name": "images",
+        "shape": [1, 3, 256, 256],
+        "dtype": "float32",
+        "layout": "NCHW",
+        "color_format": "RGB",
+        "scale_factor": 1.0 / 255.0,
+        "maintain_aspect_ratio": False,
+        "symmetric_padding": False,
+        "width": 256,
+        "height": 256,
+    }
+    runtime_model_input = dict(model_input)
+    runtime_model_input.pop("width")
+    runtime_model_input.pop("height")
+    model_output = {
+        "name": "output0",
+        "shape": [1, 8, 1344],
+        "dtype": "float32",
+        "class_count": 4,
+        "class_names": ["0", "1", "2", "3"],
+    }
+    return {
+        "model_runtime": model_runtime,
+        "model_input": model_input,
+        "model_output": model_output,
+        "runtime_model_runtime": dict(model_runtime),
+        "runtime_model_input": runtime_model_input,
+        "runtime_model_output": dict(model_output),
+        "capture_to_tensor_meta_ms_stats": {
+            "count": 120,
+            "avg": 3.0,
+            "p50": 2.8,
+            "p95": 4.2,
+            "p99": 5.0,
+            "max": 5.6,
+        },
+    }
 
 def test_unavailable_engine_reports_reason_and_returns_empty_result() -> None:
     engine = UnavailableInferenceEngine("TensorRT unavailable")
@@ -255,6 +305,52 @@ def test_model_manifest_records_engine_identity_and_roundtrips(tmp_path) -> None
     assert loaded.model_fingerprint == manifest.model_fingerprint
 
 
+def test_model_manifest_accepts_legacy_fingerprint_without_class_names(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="legacy_detector",
+        display_name="Legacy Detector",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    legacy_payload = manifest.to_dict()
+    legacy_payload["output"].pop("class_names", None)
+    legacy_payload["model_fingerprint"] = sha256_text(
+        stable_json(
+            {
+                "artifact_sha256": manifest.artifact.sha256,
+                "input": {
+                    "name": manifest.input.name,
+                    "shape": list(manifest.input.shape),
+                    "dtype": manifest.input.dtype,
+                    "layout": manifest.input.layout,
+                },
+                "output": {
+                    "name": manifest.output.name,
+                    "shape": list(manifest.output.shape),
+                    "dtype": manifest.output.dtype,
+                    "layout": manifest.output.layout,
+                    "format": manifest.output.format,
+                    "class_count": manifest.output.class_count,
+                    "has_objectness": manifest.output.has_objectness,
+                    "coordinate_mode": manifest.output.coordinate_mode,
+                },
+                "parser_schema": "yolo-v1",
+            }
+        )
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    manifest_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    loaded = read_manifest(manifest_path)
+
+    assert loaded.model_fingerprint == legacy_payload["model_fingerprint"]
+    assert loaded.output.class_names == []
+
+
 def test_deepstream_config_is_generated_from_manifest(tmp_path) -> None:
     engine_path = tmp_path / "model.engine"
     engine_path.write_bytes(b"fake engine bytes")
@@ -265,6 +361,7 @@ def test_deepstream_config_is_generated_from_manifest(tmp_path) -> None:
         input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
         output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
         class_count=4,
+        class_names=["body", "head", "team", "bot"],
     )
 
     text, fingerprint = generate_nvinfer_config(manifest, engine_path=engine_path)
@@ -279,6 +376,1125 @@ def test_deepstream_config_is_generated_from_manifest(tmp_path) -> None:
     assert "net-scale-factor=0.00392156862745098" in text
     assert fingerprint
     assert DEEPSTREAM_CONFIG_TEMPLATE_VERSION in fingerprint
+    assert f"# novasight-config-fingerprint={fingerprint}" in text
+    assert "# novasight-model-input=images 1x3x256x256 float32 NCHW" in text
+    assert "# novasight-model-output=output0 1x8x1344 float32 NCHW" in text
+
+
+def test_nvinfer_config_engine_path_validation_accepts_quoted_value(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="player_detector_v1",
+        display_name="Player Detector V1",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+        class_names=["body", "head", "team", "bot"],
+    )
+    text, _fingerprint = generate_nvinfer_config(manifest, engine_path=engine_path)
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(
+        text.replace(
+            f"model-engine-file={engine_path.resolve()}",
+            f'model-engine-file="{engine_path.resolve()}"',
+        ),
+        encoding="utf-8",
+    )
+
+    validate_nvinfer_config_engine_path(config_path, engine_path)
+
+
+def test_nvinfer_config_property_validation_rejects_manual_output_mismatch(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="player_detector_v1",
+        display_name="Player Detector V1",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+        class_names=["body", "head", "team", "bot"],
+    )
+    text, _fingerprint = generate_nvinfer_config(manifest, engine_path=engine_path)
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(
+        text.replace("output-blob-names=output0", "output-blob-names=wrong_output"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="output-blob-names=wrong_output expected output0"):
+        validate_nvinfer_config_properties(config_path, manifest)
+
+
+def test_nvinfer_config_property_validation_rejects_manual_process_mode_mismatch(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="player_detector_v1",
+        display_name="Player Detector V1",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+        class_names=["body", "head", "team", "bot"],
+    )
+    text, _fingerprint = generate_nvinfer_config(manifest, engine_path=engine_path)
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(
+        text.replace("process-mode=1", "process-mode=2"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="process-mode=2 expected 1"):
+        validate_nvinfer_config_properties(config_path, manifest)
+
+
+def test_deepstream_smoke_rejects_stale_nvinfer_config_before_start(tmp_path, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    old_manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    config_text, _fingerprint = generate_nvinfer_config(
+        old_manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    current_manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 320, 320], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 2100], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(current_manifest, manifest_path)
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=4,
+            batched_push_timeout_us=12000,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "nvinfer config does not match model manifest" in output
+    assert "dependency_available" not in output
+
+
+def test_deepstream_smoke_rejects_changed_engine_before_start(tmp_path, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    engine_path.write_bytes(b"changed after manifest")
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=4,
+            batched_push_timeout_us=12000,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "model manifest artifact" in output
+    assert "dependency_available" not in output
+
+
+def test_deepstream_smoke_reports_dependency_unavailable_reason(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    report_path = tmp_path / "deepstream-smoke-report.json"
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(
+            available=False,
+            reason="pyds-unavailable",
+            detail="No module named pyds",
+        ),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=2,
+            batched_push_timeout_us=0,
+            seconds=0.0,
+            poll_interval=0.02,
+            report_json=str(report_path),
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "dependency_available: False" in output
+    assert "dependency_reason: pyds-unavailable" in output
+    assert "dependency_detail: No module named pyds" in output
+    assert "available: False" in output
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["accepted"] is False
+    assert report["reason"] == "pyds-unavailable"
+    assert report["parameters"]["device"] == "/dev/video0"
+    assert report["evidence"]["dependency_available"] is False
+    assert report["evidence"]["pipeline"] == "fake deepstream pipeline"
+    assert report["evidence"]["model_runtime"]["precision"] == "fp16"
+    assert report["evidence"]["model_input"]["color_format"] == "RGB"
+    assert report["evidence"]["model_input"]["scale_factor"] == 1.0 / 255.0
+    assert report["evidence"]["model_output"]["shape"] == [1, 8, 1344]
+    assert "reason: pyds-unavailable" in output
+
+
+def test_deepstream_smoke_report_accepts_complete_report(tmp_path, capsys) -> None:
+    report_path = tmp_path / "deepstream-smoke-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "check": "deepstream-smoke",
+                "accepted": True,
+                "reason": "",
+                "exit_code": 0,
+                "parameters": {"device": "/dev/video0"},
+                "evidence": {
+                    "dependency_available": True,
+                    "model_id": "combat",
+                    "engine": "/models/combat/model.engine",
+                    "model_fingerprint": "model-fp",
+                    "nvinfer_config_fingerprint": "config-fp",
+                    **_deepstream_smoke_model_contract(),
+                    "pipeline": "v4l2src ! nvinfer ! fakesink",
+                    "published_batches": 120,
+                    "observed_batches": 120,
+                    "tensor_meta_frames": 120,
+                    "postprocess_frames": 120,
+                    "tensor_meta_fps": 119.5,
+                    "postprocess_fps": 119.4,
+                    "detection_batch_fps": 119.3,
+                    "last_frame_id": 512,
+                    "last_frame_age_ms": 8.2,
+                    "last_inference_latency_ms": 3.1,
+                    "latency_source": "capture_to_tensor_meta_done",
+                    "timestamp_source": "gst_clock_base_time_pts",
+                    "last_capture_ts_ns": 1_000_000,
+                    "last_detections": 2,
+                    "coordinate_space": "roi",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _doctor_deepstream_smoke_report(
+        SimpleNamespace(report_json=str(report_path))
+    )
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "accepted: True" in output
+    assert "model_id: combat" in output
+    assert "timestamp_source: gst_clock_base_time_pts" in output
+    assert "detection_batch_fps: 119.30" in output
+
+
+def test_deepstream_smoke_report_rejects_fallback_timestamp_source(tmp_path, capsys) -> None:
+    report_path = tmp_path / "deepstream-smoke-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "check": "deepstream-smoke",
+                "accepted": True,
+                "reason": "",
+                "exit_code": 0,
+                "evidence": {
+                    "dependency_available": True,
+                    "model_id": "combat",
+                    "engine": "/models/combat/model.engine",
+                    "model_fingerprint": "model-fp",
+                    "nvinfer_config_fingerprint": "config-fp",
+                    **_deepstream_smoke_model_contract(),
+                    "pipeline": "v4l2src ! nvinfer ! fakesink",
+                    "published_batches": 120,
+                    "observed_batches": 120,
+                    "tensor_meta_frames": 120,
+                    "postprocess_frames": 120,
+                    "tensor_meta_fps": 119.5,
+                    "postprocess_fps": 119.4,
+                    "detection_batch_fps": 119.3,
+                    "last_frame_id": 512,
+                    "last_frame_age_ms": 8.2,
+                    "last_inference_latency_ms": 3.1,
+                    "latency_source": "capture_to_tensor_meta_done",
+                    "timestamp_source": "first_probe_offset_pts",
+                    "last_capture_ts_ns": 1_000_000,
+                    "last_detections": 2,
+                    "coordinate_space": "roi",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _doctor_deepstream_smoke_report(
+        SimpleNamespace(report_json=str(report_path))
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "reason: deepstream_smoke_report_invalid" in output
+    assert "missing: evidence.timestamp_source==gst_clock_base_time_pts" in output
+
+
+def test_deepstream_smoke_report_rejects_untrusted_dependency_or_coordinates(
+    tmp_path,
+    capsys,
+) -> None:
+    report = {
+        "schema_version": 1,
+        "check": "deepstream-smoke",
+        "accepted": True,
+        "reason": "",
+        "exit_code": 0,
+        "evidence": {
+            "dependency_available": True,
+            "model_id": "combat",
+            "engine": "/models/combat/model.engine",
+            "model_fingerprint": "model-fp",
+            "nvinfer_config_fingerprint": "config-fp",
+            **_deepstream_smoke_model_contract(),
+            "pipeline": "v4l2src ! nvinfer ! fakesink",
+            "published_batches": 120,
+            "observed_batches": 120,
+            "tensor_meta_frames": 120,
+            "postprocess_frames": 120,
+            "tensor_meta_fps": 119.5,
+            "postprocess_fps": 119.4,
+            "detection_batch_fps": 119.3,
+            "last_frame_id": 512,
+            "last_frame_age_ms": 8.2,
+            "last_inference_latency_ms": 3.1,
+            "latency_source": "capture_to_tensor_meta_done",
+            "timestamp_source": "gst_clock_base_time_pts",
+            "last_capture_ts_ns": 1_000_000,
+            "last_detections": 2,
+            "coordinate_space": "model",
+        },
+    }
+    report_path = tmp_path / "deepstream-smoke-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    result = _doctor_deepstream_smoke_report(
+        SimpleNamespace(report_json=str(report_path))
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "missing: evidence.coordinate_space==roi" in output
+
+    report["evidence"]["coordinate_space"] = "roi"
+    report["evidence"]["dependency_available"] = False
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    result = _doctor_deepstream_smoke_report(
+        SimpleNamespace(report_json=str(report_path))
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "missing: evidence.dependency_available==true" in output
+
+
+def test_deepstream_smoke_report_rejects_failed_performance_thresholds(
+    tmp_path,
+    capsys,
+) -> None:
+    report_path = tmp_path / "deepstream-smoke-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "check": "deepstream-smoke",
+                "accepted": True,
+                "reason": "",
+                "exit_code": 0,
+                "evidence": {
+                    "dependency_available": True,
+                    "model_id": "combat",
+                    "engine": "/models/combat/model.engine",
+                    "model_fingerprint": "model-fp",
+                    "nvinfer_config_fingerprint": "config-fp",
+                    **_deepstream_smoke_model_contract(),
+                    "pipeline": "v4l2src ! nvinfer ! fakesink",
+                    "published_batches": 120,
+                    "observed_batches": 120,
+                    "tensor_meta_frames": 120,
+                    "postprocess_frames": 120,
+                    "tensor_meta_fps": 90.0,
+                    "postprocess_fps": 89.0,
+                    "detection_batch_fps": 88.0,
+                    "last_frame_id": 512,
+                    "last_frame_age_ms": 31.0,
+                    "last_inference_latency_ms": 3.1,
+                    "latency_source": "capture_to_tensor_meta_done",
+                    "timestamp_source": "gst_clock_base_time_pts",
+                    "last_capture_ts_ns": 1_000_000,
+                    "last_detections": 2,
+                    "coordinate_space": "roi",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _doctor_deepstream_smoke_report(
+        SimpleNamespace(
+            report_json=str(report_path),
+            min_tensor_meta_fps=115.0,
+            min_postprocess_fps=115.0,
+            min_detection_batch_fps=115.0,
+            max_frame_age_ms=20.0,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "missing: evidence.tensor_meta_fps>=115" in output
+    assert "missing: evidence.postprocess_fps>=115" in output
+    assert "missing: evidence.detection_batch_fps>=115" in output
+    assert "missing: evidence.last_frame_age_ms<=20" in output
+
+
+def test_deepstream_smoke_rejects_nvinfer_config_with_wrong_engine_path(tmp_path, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    wrong_engine_path = tmp_path / "old.engine"
+    wrong_engine_path.write_bytes(b"old engine bytes")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(
+        config_text.replace(str(engine_path.resolve()), str(wrong_engine_path.resolve())),
+        encoding="utf-8",
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=4,
+            batched_push_timeout_us=12000,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "model-engine-file does not match artifact" in output
+    assert "dependency_available" not in output
+
+
+def test_deepstream_smoke_rejects_unobserved_latest_batches(tmp_path, monkeypatch, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    constructed: dict[str, object] = {}
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **kwargs) -> None:
+            constructed.update(kwargs)
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def latest_result(self, after_frame_id: int | None = None):
+            del after_frame_id
+            return None
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "running": self.started,
+                "published_batches": 1,
+                "tensor_meta_frames": 1,
+                "postprocess_frames": 1,
+                "tensor_meta_fps": 119.0,
+                "postprocess_fps": 118.0,
+                "detection_batch_fps": 120.0,
+                "last_frame_id": 42,
+                "last_frame_age_ms": 1.0,
+                "last_inference_latency_ms": 2.0,
+                "latency_source": "capture_to_tensor_meta_done",
+                "timestamp_source": "gst_clock_base_time_pts",
+                "last_detection_count": 0,
+                "last_error": "",
+            }
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=4,
+            batched_push_timeout_us=12000,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert f"engine: {engine_path}" in output
+    assert f"model_fingerprint: {manifest.model_fingerprint}" in output
+    assert f"nvinfer_config_fingerprint: {fingerprint}" in output
+    assert "output_class_count: 4" in output
+    assert "output_class_names: 0,1,2,3" in output
+    assert "capture_pixel_format: MJPG" in output
+    assert "io_mode: 4" in output
+    assert "batched_push_timeout_us: 12000" in output
+    pipeline_config = constructed["pipeline_config"]
+    assert pipeline_config.pixel_format == "MJPG"
+    assert pipeline_config.io_mode == 4
+    assert pipeline_config.batched_push_timeout_us == 12000
+    assert "published_batches: 1" in output
+    assert "observed_batches: 0" in output
+    assert "tensor_meta_frames: 1" in output
+    assert "postprocess_frames: 1" in output
+    assert "tensor_meta_fps: 119.00" in output
+    assert "postprocess_fps: 118.00" in output
+    assert "detection_batch_fps: 120.00" in output
+    assert "latency_source: capture_to_tensor_meta_done" in output
+    assert "timestamp_source: gst_clock_base_time_pts" in output
+    assert "capture_to_tensor_meta_ms: 2.00" in output
+    assert "reason: deepstream_no_detection_batches_observed" in output
+
+
+def test_deepstream_smoke_reports_terminal_backend_error(tmp_path, monkeypatch, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **_kwargs) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def latest_result(self, after_frame_id: int | None = None):
+            del after_frame_id
+            return None
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "running": False,
+                "terminal_error": True,
+                "published_batches": 0,
+                "tensor_meta_frames": 0,
+                "postprocess_frames": 0,
+                "tensor_meta_fps": 0.0,
+                "postprocess_fps": 0.0,
+                "detection_batch_fps": 0.0,
+                "last_frame_id": 0,
+                "last_frame_age_ms": 0.0,
+                "last_inference_latency_ms": 0.0,
+                "latency_source": "capture_to_tensor_meta_done",
+                "timestamp_source": "observed_probe_time_invalid_pts",
+                "last_detection_count": 0,
+                "last_error": "DeepStream pipeline error: nvinfer rejected output0",
+            }
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=2,
+            batched_push_timeout_us=0,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "terminal_error: True" in output
+    assert "reason: DeepStream pipeline error: nvinfer rejected output0" in output
+
+
+def test_deepstream_smoke_rejects_batches_without_tensor_meta(tmp_path, monkeypatch, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    batch = DetectionBatch(
+        frame_id=12,
+        capture_ts_ns=1_000,
+        inference_start_ts_ns=1_000,
+        inference_end_ts_ns=2_000,
+        detections=[],
+        classes=["0", "1", "2", "3"],
+        coordinate_space="roi",
+        metadata={"source": "deepstream", "empty_reason": "missing_tensor_meta"},
+    )
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **_kwargs) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def latest_result(self, after_frame_id: int | None = None):
+            if after_frame_id is not None and batch.frame_id <= after_frame_id:
+                return None
+            return batch
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "running": self.started,
+                "terminal_error": False,
+                "published_batches": 1,
+                "tensor_meta_frames": 0,
+                "postprocess_frames": 0,
+                "tensor_meta_fps": 0.0,
+                "postprocess_fps": 0.0,
+                "detection_batch_fps": 120.0,
+                "last_frame_id": batch.frame_id,
+                "last_frame_age_ms": 1.0,
+                "last_inference_latency_ms": 0.001,
+                "latency_source": "capture_to_tensor_meta_done",
+                "timestamp_source": "gst_clock_base_time_pts",
+                "last_detection_count": 0,
+                "last_error": "",
+            }
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=2,
+            batched_push_timeout_us=0,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "published_batches: 1" in output
+    assert "tensor_meta_frames: 0" in output
+    assert "postprocess_frames: 0" in output
+    assert "reason: deepstream_no_tensor_meta_frames" in output
+
+
+def test_deepstream_smoke_rejects_fallback_timestamp_source(tmp_path, monkeypatch, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(manifest, engine_path=engine_path)
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    batch = DetectionBatch(
+        frame_id=12,
+        capture_ts_ns=1_000,
+        inference_start_ts_ns=1_000,
+        inference_end_ts_ns=2_000,
+        detections=[],
+        classes=["0", "1", "2", "3"],
+        coordinate_space="roi",
+    )
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **_kwargs) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def latest_result(self, after_frame_id: int | None = None):
+            if after_frame_id is not None and batch.frame_id <= after_frame_id:
+                return None
+            return batch
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "running": self.started,
+                "terminal_error": False,
+                "published_batches": 1,
+                "tensor_meta_frames": 1,
+                "postprocess_frames": 1,
+                "tensor_meta_fps": 120.0,
+                "postprocess_fps": 120.0,
+                "detection_batch_fps": 120.0,
+                "last_frame_id": batch.frame_id,
+                "last_frame_age_ms": 1.0,
+                "last_inference_latency_ms": 0.001,
+                "latency_source": "capture_to_tensor_meta_done",
+                "timestamp_source": "first_probe_offset_pts",
+                "last_detection_count": 0,
+                "last_error": "",
+            }
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=2,
+            batched_push_timeout_us=0,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "timestamp_source: first_probe_offset_pts" in output
+    assert "reason: deepstream_timestamp_source_not_gst_clock_base_time_pts:first_probe_offset_pts" in output
+
+
+def test_deepstream_smoke_rejects_non_roi_detection_batch(tmp_path, monkeypatch, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    batch = DetectionBatch(
+        frame_id=1,
+        capture_ts_ns=1_000_000,
+        inference_start_ts_ns=1_000_000,
+        inference_end_ts_ns=1_001_000,
+        detections=[],
+        classes=["0", "1", "2", "3"],
+        coordinate_space="model",
+    )
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **_kwargs) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def latest_result(self, after_frame_id: int | None = None):
+            if after_frame_id is not None and batch.frame_id <= after_frame_id:
+                return None
+            return batch
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "running": self.started,
+                "terminal_error": False,
+                "published_batches": 1,
+                "tensor_meta_frames": 1,
+                "postprocess_frames": 1,
+                "tensor_meta_fps": 120.0,
+                "postprocess_fps": 120.0,
+                "detection_batch_fps": 120.0,
+                "last_frame_id": batch.frame_id,
+                "last_frame_age_ms": 1.0,
+                "last_inference_latency_ms": 0.001,
+                "latency_source": "capture_to_tensor_meta_done",
+                "timestamp_source": "gst_clock_base_time_pts",
+                "last_detection_count": 0,
+                "last_error": "",
+            }
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=2,
+            batched_push_timeout_us=0,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "coordinate_space: model" in output
+    assert "reason: deepstream_detection_batch_coordinate_space_not_roi:model" in output
+
+
+def test_deepstream_smoke_rejects_detection_center_outside_roi(tmp_path, monkeypatch, capsys) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"fake engine bytes")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest_path = tmp_path / "model.manifest.json"
+    write_manifest(manifest, manifest_path)
+    config_text, _fingerprint = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+    )
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text(config_text, encoding="utf-8")
+    batch = DetectionBatch(
+        frame_id=1,
+        capture_ts_ns=1_000_000,
+        inference_start_ts_ns=1_000_000,
+        inference_end_ts_ns=1_001_000,
+        detections=[Detection(cls=0, score=0.9, x1=600, y1=20, x2=660, y2=80)],
+        classes=["0", "1", "2", "3"],
+        coordinate_space="roi",
+    )
+
+    class FakeBackend:
+        pipeline_description = "fake deepstream pipeline"
+
+        def __init__(self, **_kwargs) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.started = False
+
+        def latest_result(self, after_frame_id: int | None = None):
+            if after_frame_id is not None and batch.frame_id <= after_frame_id:
+                return None
+            return batch
+
+        def status(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "running": self.started,
+                "terminal_error": False,
+                "published_batches": 1,
+                "tensor_meta_frames": 1,
+                "postprocess_frames": 1,
+                "tensor_meta_fps": 120.0,
+                "postprocess_fps": 120.0,
+                "detection_batch_fps": 120.0,
+                "last_frame_id": batch.frame_id,
+                "last_frame_age_ms": 1.0,
+                "last_inference_latency_ms": 0.001,
+                "latency_source": "capture_to_tensor_meta_done",
+                "timestamp_source": "gst_clock_base_time_pts",
+                "last_detection_count": 1,
+                "last_error": "",
+            }
+
+    import novasight.deepstream as deepstream_module
+
+    monkeypatch.setattr(deepstream_module, "DeepStreamDetectionBackend", FakeBackend)
+    monkeypatch.setattr(
+        deepstream_module,
+        "check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+
+    result = _doctor_deepstream_smoke(
+        SimpleNamespace(
+            manifest=str(manifest_path),
+            nvinfer_config=str(config_path),
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            io_mode=2,
+            batched_push_timeout_us=0,
+            seconds=0.0,
+            poll_interval=0.02,
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert result == 2
+    assert "coordinate_space: roi" in output
+    assert "reason: deepstream_detection_center_out_of_roi:0:630.0,50.0" in output
 
 
 def test_model_scanner_reports_need_confirm_ready_and_invalid(tmp_path) -> None:
@@ -298,6 +1514,8 @@ def test_model_scanner_reports_need_confirm_ready_and_invalid(tmp_path) -> None:
         validated=True,
     )
     write_manifest(manifest, configured_dir / "model.manifest.json")
+    config_text, _fingerprint = generate_nvinfer_config(manifest, engine_path=configured)
+    (configured_dir / "deepstream.ini").write_text(config_text, encoding="utf-8")
     invalid_dir = tmp_path / "invalid"
     invalid_dir.mkdir()
     invalid = invalid_dir / "model.engine"
@@ -312,16 +1530,40 @@ def test_model_scanner_reports_need_confirm_ready_and_invalid(tmp_path) -> None:
     )
     write_manifest(invalid_manifest, invalid_dir / "model.manifest.json")
     invalid.write_bytes(b"changed after manifest")
+    bad_config_dir = tmp_path / "bad_config"
+    bad_config_dir.mkdir()
+    bad_config = bad_config_dir / "model.engine"
+    bad_config.write_bytes(b"bad config")
+    bad_config_manifest = build_engine_manifest(
+        model_id="bad_config",
+        display_name="Bad Config",
+        engine_path=bad_config,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    write_manifest(bad_config_manifest, bad_config_dir / "model.manifest.json")
+    bad_config_text, _fingerprint = generate_nvinfer_config(
+        bad_config_manifest,
+        engine_path=bad_config,
+    )
+    (bad_config_dir / "deepstream.ini").write_text(
+        bad_config_text.replace("output-tensor-meta=1", "output-tensor-meta=0"),
+        encoding="utf-8",
+    )
 
     results = scan_model_artifacts(tmp_path)
     unconfigured_status = next(item for item in results if item.path == unconfigured)
     configured_status = next(item for item in results if item.path == configured)
     invalid_status = next(item for item in results if item.path == invalid)
+    bad_config_status = next(item for item in results if item.path == bad_config)
 
     assert unconfigured_status.status == "need_confirm"
     assert unconfigured_status.reason == "model manifest is missing"
     assert invalid_status.status == "invalid"
     assert invalid_status.reason == "model manifest artifact sha256 does not match file"
+    assert bad_config_status.status == "invalid"
+    assert "output-tensor-meta=0 expected 1" in bad_config_status.reason
     assert configured_status.status == "ready"
     assert configured_status.manifest_path == configured_dir / "model.manifest.json"
     assert configured_status.deepstream_config_path == configured_dir / "deepstream.ini"
@@ -360,6 +1602,99 @@ def test_deepstream_pipeline_builder_uses_nvmm_nvinfer_and_leaky_queues(tmp_path
     assert "videoconvert" not in pipeline
 
 
+def test_deepstream_pipeline_builder_quotes_gst_property_paths_with_spaces(tmp_path) -> None:
+    config_dir = tmp_path / "model with space"
+    config_dir.mkdir()
+    config_path = config_dir / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+
+    pipeline = build_deepstream_pipeline(
+        DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        )
+    )
+
+    assert f'config-file-path="{config_path.resolve()}"' in pipeline
+
+
+def test_deepstream_pipeline_builder_quotes_gst_property_values_with_syntax_chars(tmp_path) -> None:
+    config_dir = tmp_path / "model!syntax"
+    config_dir.mkdir()
+    config_path = config_dir / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+
+    pipeline = build_deepstream_pipeline(
+        DeepStreamPipelineConfig(
+            device="/dev/video0!invalid",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        )
+    )
+
+    assert 'device="/dev/video0!invalid"' in pipeline
+    assert f'config-file-path="{config_path.resolve()}"' in pipeline
+
+
+def test_deepstream_pipeline_builder_rejects_negative_mux_timeout(tmp_path) -> None:
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="batched_push_timeout_us"):
+        build_deepstream_pipeline(
+            DeepStreamPipelineConfig(
+                device="/dev/video0",
+                capture_width=1920,
+                capture_height=1080,
+                fps=120,
+                roi_left=720,
+                roi_top=300,
+                roi_size=480,
+                model_width=256,
+                model_height=256,
+                nvinfer_config_path=config_path,
+                batched_push_timeout_us=-1,
+            )
+        )
+
+
+def test_deepstream_pipeline_builder_rejects_non_mjpeg_capture_format(tmp_path) -> None:
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expects MJPEG capture"):
+        build_deepstream_pipeline(
+            DeepStreamPipelineConfig(
+                device="/dev/video0",
+                capture_width=1920,
+                capture_height=1080,
+                fps=120,
+                roi_left=720,
+                roi_top=300,
+                roi_size=480,
+                model_width=256,
+                model_height=256,
+                nvinfer_config_path=config_path,
+                pixel_format="NV12",
+            )
+        )
+
+
 def test_deepstream_output_tensor_reuses_shared_parser_and_returns_detection_batch(tmp_path) -> None:
     engine_path = tmp_path / "model.engine"
     engine_path.write_bytes(b"engine")
@@ -370,6 +1705,7 @@ def test_deepstream_output_tensor_reuses_shared_parser_and_returns_detection_bat
         input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
         output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
         class_count=4,
+        class_names=["body", "head", "team", "bot"],
     )
     import numpy as np
 
@@ -385,12 +1721,15 @@ def test_deepstream_output_tensor_reuses_shared_parser_and_returns_detection_bat
         inference_end_ts_ns=1800,
         roi_width=480,
         roi_height=480,
+        metadata={"source": "deepstream", "timestamp_source": "gst_clock_base_time_pts"},
     )
 
     assert batch.frame_id == 12
     assert batch.capture_ts_ns == 1000
     assert batch.coordinate_space == "roi"
-    assert batch.classes == ["0", "1", "2", "3"]
+    assert batch.metadata["source"] == "deepstream"
+    assert batch.metadata["timestamp_source"] == "gst_clock_base_time_pts"
+    assert batch.classes == ["body", "head", "team", "bot"]
     assert len(batch.detections) == 1
     detection = batch.detections[0]
     assert detection.cls == 0
@@ -399,6 +1738,143 @@ def test_deepstream_output_tensor_reuses_shared_parser_and_returns_detection_bat
     assert detection.y1 == pytest.approx(180.0)
     assert detection.x2 == pytest.approx(270.0)
     assert detection.y2 == pytest.approx(300.0)
+
+
+def test_deepstream_output_tensor_accepts_layer_dims_without_batch(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    import numpy as np
+
+    output = np.zeros((8, 1344), dtype=np.float32)
+    output[:, 0] = [128, 128, 32, 64, 0.9, 0.1, 0.0, 0.0]
+
+    batch = output_tensor_to_detection_batch(
+        output,
+        manifest=manifest,
+        frame_id=12,
+        capture_ts_ns=1000,
+        inference_start_ts_ns=1200,
+        inference_end_ts_ns=1800,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    assert batch.coordinate_space == "roi"
+    assert len(batch.detections) == 1
+    assert batch.detections[0].x1 == pytest.approx(210.0)
+    assert batch.detections[0].y1 == pytest.approx(180.0)
+
+
+def test_deepstream_tensor_meta_reader_uses_manifest_output_dtype() -> None:
+    import ctypes
+
+    import numpy as np
+
+    values = np.asarray([1.5, 2.25], dtype=np.float16)
+    raw = (ctypes.c_uint16 * 2)(*[int(item) for item in values.view(np.uint16)])
+    dims = SimpleNamespace(numDims=1, d=[2])
+    layer = SimpleNamespace(inferDims=dims, buffer=ctypes.addressof(raw))
+
+    class Pyds:
+        @staticmethod
+        def get_nvds_LayerInfo(_tensor_meta, _index):
+            return layer
+
+        @staticmethod
+        def get_ptr(buffer):
+            return buffer
+
+    output = _tensor_meta_first_output_to_numpy(Pyds, object(), dtype="float16")
+
+    assert output.dtype == np.float32
+    assert output.tolist() == pytest.approx([1.5, 2.25])
+
+
+def test_deepstream_tensor_meta_reader_selects_manifest_output_name() -> None:
+    import ctypes
+
+    import numpy as np
+
+    unused_values = np.asarray([99.0, 98.0], dtype=np.float32)
+    output_values = np.asarray([1.5, 2.25], dtype=np.float32)
+    unused_raw = (ctypes.c_float * 2)(*unused_values.tolist())
+    output_raw = (ctypes.c_float * 2)(*output_values.tolist())
+    layers = [
+        SimpleNamespace(
+            layerName=b"unused",
+            inferDims=SimpleNamespace(numDims=1, d=[2]),
+            buffer=ctypes.addressof(unused_raw),
+        ),
+        SimpleNamespace(
+            layerName=b"output0",
+            inferDims=SimpleNamespace(numDims=1, d=[2]),
+            buffer=ctypes.addressof(output_raw),
+        ),
+    ]
+
+    class Pyds:
+        @staticmethod
+        def get_nvds_LayerInfo(_tensor_meta, index):
+            return layers[index]
+
+        @staticmethod
+        def get_ptr(buffer):
+            return buffer
+
+    output = _tensor_meta_output_to_numpy(
+        Pyds,
+        SimpleNamespace(num_output_layers=2),
+        output_name="output0",
+        dtype="float32",
+    )
+
+    assert output.tolist() == pytest.approx([1.5, 2.25])
+
+
+def test_deepstream_tensor_meta_reader_rejects_missing_named_output() -> None:
+    import ctypes
+
+    import numpy as np
+
+    values = np.asarray([99.0, 98.0], dtype=np.float32)
+    raw = (ctypes.c_float * 2)(*values.tolist())
+    layers = [
+        SimpleNamespace(
+            layerName=b"unused_a",
+            inferDims=SimpleNamespace(numDims=1, d=[2]),
+            buffer=ctypes.addressof(raw),
+        ),
+        SimpleNamespace(
+            layerName=b"unused_b",
+            inferDims=SimpleNamespace(numDims=1, d=[2]),
+            buffer=ctypes.addressof(raw),
+        ),
+    ]
+
+    class Pyds:
+        @staticmethod
+        def get_nvds_LayerInfo(_tensor_meta, index):
+            return layers[index]
+
+        @staticmethod
+        def get_ptr(buffer):
+            return buffer
+
+    with pytest.raises(ValueError, match="output layer not found: output0"):
+        _tensor_meta_output_to_numpy(
+            Pyds,
+            SimpleNamespace(num_output_layers=2),
+            output_name="output0",
+            dtype="float32",
+        )
 
 
 def test_deepstream_output_tensor_rejects_manifest_shape_mismatch(tmp_path) -> None:
@@ -417,6 +1893,66 @@ def test_deepstream_output_tensor_rejects_manifest_shape_mismatch(tmp_path) -> N
     output = np.zeros((1, 7, 10), dtype=np.float32)
 
     with pytest.raises(ValueError, match="tensor shape"):
+        output_tensor_to_detection_batch(
+            output,
+            manifest=manifest,
+            frame_id=12,
+            capture_ts_ns=1000,
+            inference_start_ts_ns=1200,
+            inference_end_ts_ns=1800,
+            roi_width=480,
+            roi_height=480,
+        )
+
+
+def test_deepstream_output_tensor_rejects_unsupported_manifest_parser(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    manifest = replace(
+        manifest,
+        postprocess=replace(manifest.postprocess, parser="custom-parser"),
+    )
+    import numpy as np
+
+    output = np.zeros((1, 8, 1344), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="unsupported DeepStream postprocess parser"):
+        output_tensor_to_detection_batch(
+            output,
+            manifest=manifest,
+            frame_id=12,
+            capture_ts_ns=1000,
+            inference_start_ts_ns=1200,
+            inference_end_ts_ns=1800,
+            roi_width=480,
+            roi_height=480,
+        )
+
+
+def test_deepstream_output_tensor_rejects_class_count_channel_mismatch(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=1,
+    )
+    import numpy as np
+
+    output = np.zeros((1, 8, 1344), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="channels must equal 4 \\+ class_count"):
         output_tensor_to_detection_batch(
             output,
             manifest=manifest,
@@ -474,7 +2010,805 @@ def test_deepstream_backend_reports_missing_runtime_dependencies(tmp_path, monke
         backend.start()
 
 
-def test_deepstream_backend_publishes_latest_detection_batch(tmp_path) -> None:
+def test_deepstream_backend_reports_missing_required_gst_elements(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    class FakeGi:
+        @staticmethod
+        def require_version(_name: str, _version: str) -> None:
+            return None
+
+    class FakeElementFactory:
+        @staticmethod
+        def find(name: str):
+            return object() if name != "nvinfer" else None
+
+    class FakeGst:
+        ElementFactory = FakeElementFactory
+
+    def import_module(name: str):
+        if name == "gi":
+            return FakeGi
+        if name == "gi.repository.Gst":
+            return FakeGst
+        if name == "pyds":
+            return SimpleNamespace()
+        return __import__(name)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+
+    status = backend.dependency_status()
+    assert status.available is False
+    assert status.reason == "deepstream-gst-elements-unavailable"
+    assert "nvinfer" in status.detail
+
+
+def test_deepstream_backend_treats_gst_clock_time_none_as_observed_timestamp(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    assert backend._capture_ts_from_pts(GST_CLOCK_TIME_NONE, observed_ns=123_000) == 123_000
+    assert backend.status()["timestamp_source"] == "observed_probe_time_invalid_pts"
+    assert backend._gst_to_monotonic_offset_ns is None
+    assert backend._gst_base_time_ns is None
+    assert backend._pts_to_monotonic_offset_ns is None
+    assert backend._capture_ts_from_pts(1_000, observed_ns=10_000) == 10_000
+    assert backend._capture_ts_from_pts(1_500, observed_ns=20_000) == 10_500
+    assert backend.status()["timestamp_source"] == "first_probe_offset_pts"
+
+
+def test_deepstream_backend_maps_pts_with_pipeline_clock_base_time(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    class FakeClock:
+        @staticmethod
+        def get_time() -> int:
+            return 1_000_000_000
+
+    class FakePipeline:
+        @staticmethod
+        def get_clock() -> FakeClock:
+            return FakeClock()
+
+        @staticmethod
+        def get_base_time() -> int:
+            return 900_000_000
+
+    with backend._lock:
+        backend._pipeline = FakePipeline()
+
+    assert backend._capture_ts_from_pts(40_000_000, observed_ns=1_080_000_000) == 1_020_000_000
+    assert backend._capture_ts_from_pts(48_333_333, observed_ns=1_090_000_000) == 1_028_333_333
+    assert backend._pts_to_monotonic_offset_ns is None
+    assert backend.status()["timestamp_source"] == "gst_clock_base_time_pts"
+
+
+def test_deepstream_backend_maps_wall_clock_pts_to_monotonic_domain(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    wall_clock_pts = 1_788_000_000_000_000_000
+
+    assert backend._capture_ts_from_pts(wall_clock_pts, observed_ns=50_000_000_000) == 50_000_000_000
+    assert backend._capture_ts_from_pts(wall_clock_pts + 8_333_333, observed_ns=50_020_000_000) == 50_008_333_333
+
+
+def test_deepstream_backend_preserves_explicit_zero_frame_num(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    assert backend._frame_id_from_meta(SimpleNamespace(frame_num=0)) == 0
+    assert backend._frame_id_from_meta(SimpleNamespace()) == 0
+
+
+def test_deepstream_backend_generates_fallback_frame_ids_when_meta_has_no_frame_num(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    assert [backend._frame_id_from_meta(SimpleNamespace()) for _ in range(3)] == [0, 1, 2]
+
+
+def test_deepstream_backend_cleans_pipeline_when_start_probe_fails(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    state_changes: list[str] = []
+
+    class FakeGi:
+        @staticmethod
+        def require_version(_name: str, _version: str) -> None:
+            return None
+
+    class FakePipeline:
+        def get_by_name(self, _name: str):
+            return None
+
+        def set_state(self, state: str):
+            state_changes.append(state)
+            return "success"
+
+    class FakeGst:
+        State = SimpleNamespace(PLAYING="PLAYING", NULL="NULL")
+        StateChangeReturn = SimpleNamespace(FAILURE="FAILURE")
+
+        @staticmethod
+        def init(_args) -> None:
+            return None
+
+        @staticmethod
+        def parse_launch(_description: str):
+            return FakePipeline()
+
+    def import_module(name: str):
+        if name == "gi":
+            return FakeGi
+        if name == "gi.repository.Gst":
+            return FakeGst
+        if name == "pyds":
+            return SimpleNamespace()
+        return __import__(name)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+
+    with pytest.raises(RuntimeError, match="missing primary-infer"):
+        backend.start()
+
+    assert state_changes == ["NULL"]
+    status = backend.status()
+    assert status["running"] is False
+    assert "missing primary-infer" in status["last_error"]
+
+
+def test_deepstream_backend_clears_start_state_when_playing_fails(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    state_changes: list[str] = []
+
+    class FakePad:
+        @staticmethod
+        def add_probe(_probe_type, _callback) -> None:
+            return None
+
+    class FakeInfer:
+        @staticmethod
+        def get_static_pad(_name: str):
+            return FakePad()
+
+    class FakePipeline:
+        @staticmethod
+        def get_by_name(_name: str):
+            return FakeInfer()
+
+        @staticmethod
+        def set_state(state: str):
+            state_changes.append(state)
+            return "FAILURE" if state == "PLAYING" else "success"
+
+    class FakeGi:
+        @staticmethod
+        def require_version(_name: str, _version: str) -> None:
+            return None
+
+    class FakeGst:
+        State = SimpleNamespace(PLAYING="PLAYING", NULL="NULL")
+        StateChangeReturn = SimpleNamespace(FAILURE="FAILURE")
+        PadProbeType = SimpleNamespace(BUFFER="BUFFER")
+
+        @staticmethod
+        def init(_args) -> None:
+            return None
+
+        @staticmethod
+        def parse_launch(_description: str):
+            return FakePipeline()
+
+    def import_module(name: str):
+        if name == "gi":
+            return FakeGi
+        if name == "gi.repository.Gst":
+            return FakeGst
+        if name == "pyds":
+            return SimpleNamespace()
+        return __import__(name)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+
+    with pytest.raises(RuntimeError, match="failed to set DeepStream pipeline to PLAYING"):
+        backend.start()
+
+    assert state_changes == ["PLAYING", "NULL"]
+    status = backend.status()
+    assert status["running"] is False
+    assert status["uptime_ms"] == 0.0
+    assert status["window_published_batches"] == 0
+    assert status["last_error"] == "failed to set DeepStream pipeline to PLAYING"
+
+
+def test_deepstream_backend_records_bus_error_as_terminal_status(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    state_changes: list[str] = []
+
+    class FakePipeline:
+        @staticmethod
+        def set_state(state: str) -> None:
+            state_changes.append(state)
+
+    message_type = SimpleNamespace(ERROR="error", EOS="eos")
+    gst = SimpleNamespace(MessageType=message_type, State=SimpleNamespace(NULL="NULL"))
+
+    def import_module(name: str):
+        if name == "gi.repository.Gst":
+            return gst
+        return __import__(name)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+    with backend._lock:
+        backend._pipeline = FakePipeline()
+        backend._running = True
+
+    class Message:
+        type = message_type.ERROR
+
+        @staticmethod
+        def parse_error():
+            return RuntimeError("nvinfer config rejected"), "missing output0"
+
+    backend._handle_bus_message(gst, Message())
+
+    status = backend.status()
+    assert status["running"] is False
+    assert status["terminal_error"] is True
+    assert state_changes == ["NULL"]
+    assert "nvinfer config rejected" in status["last_error"]
+    assert "missing output0" in status["last_error"]
+
+    import numpy as np
+
+    output = np.zeros((1, 8, 1344), dtype=np.float32)
+    output[0, :, 0] = [128, 128, 32, 64, 0.9, 0.1, 0.0, 0.0]
+    with backend._lock:
+        backend._running = True
+    backend.publish_output_tensor(
+        output,
+        frame_id=12,
+        capture_ts_ns=1000,
+        inference_start_ts_ns=1200,
+        inference_end_ts_ns=1800,
+    )
+
+    assert "nvinfer config rejected" in backend.status()["last_error"]
+    assert backend.latest_result() is None
+
+
+def test_deepstream_backend_tensor_probe_failure_is_terminal(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    class FakeGi:
+        @staticmethod
+        def require_version(_name: str, _version: str) -> None:
+            return None
+
+    class FakeGst:
+        PadProbeReturn = SimpleNamespace(OK="OK")
+
+    class FakeInfo:
+        @staticmethod
+        def get_buffer():
+            return object()
+
+    def import_module(name: str):
+        if name == "gi":
+            return FakeGi
+        if name == "gi.repository.Gst":
+            return FakeGst
+        if name == "pyds":
+            return SimpleNamespace()
+        return __import__(name)
+
+    def iter_output_tensors(_buffer):
+        raise RuntimeError("bad tensor metadata")
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+    monkeypatch.setattr(backend, "_iter_output_tensors", iter_output_tensors)
+    with backend._lock:
+        backend._running = True
+
+    assert backend._tensor_probe(None, FakeInfo()) == "OK"
+
+    status = backend.status()
+    assert status["running"] is False
+    assert status["terminal_error"] is True
+    assert "DeepStream tensor probe failed" in status["last_error"]
+    assert "bad tensor metadata" in status["last_error"]
+
+
+def test_deepstream_tensor_probe_fails_when_tensor_meta_type_is_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+
+    class FakeGst:
+        PadProbeReturn = SimpleNamespace(OK="OK")
+
+    class FakeInfo:
+        @staticmethod
+        def get_buffer():
+            return object()
+
+    class Pyds:
+        NvDsMetaType = SimpleNamespace()
+
+        @staticmethod
+        def gst_buffer_get_nvds_batch_meta(_buffer_hash):
+            frame_meta = SimpleNamespace(
+                frame_num=7,
+                buf_pts=1_000,
+                frame_user_meta_list=None,
+            )
+            return SimpleNamespace(frame_meta_list=SimpleNamespace(data=frame_meta, next=None))
+
+        class NvDsFrameMeta:
+            @staticmethod
+            def cast(data):
+                return data
+
+    def import_module(name: str):
+        if name == "gi.repository.Gst":
+            return FakeGst
+        if name == "pyds":
+            return Pyds
+        return __import__(name)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+    with backend._lock:
+        backend._running = True
+
+    assert backend._tensor_probe(None, FakeInfo()) == "OK"
+
+    status = backend.status()
+    assert status["running"] is False
+    assert status["terminal_error"] is True
+    assert "NVDSINFER_TENSOR_OUTPUT_META" in status["last_error"]
+
+
+def test_deepstream_tensor_probe_reports_capture_to_tensor_meta_latency(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    calls: list[dict[str, int]] = []
+
+    class FakeGst:
+        PadProbeReturn = SimpleNamespace(OK="OK")
+
+    class FakeInfo:
+        @staticmethod
+        def get_buffer():
+            return object()
+
+    def import_module(name: str):
+        if name == "gi.repository.Gst":
+            return FakeGst
+        return __import__(name)
+
+    def publish_output_tensor(_output, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+    monkeypatch.setattr(backend, "_iter_output_tensors", lambda _buffer: [(7, 1_000, object())])
+    monkeypatch.setattr(backend, "_capture_ts_from_pts", lambda pts, *, observed_ns: int(pts))
+    monkeypatch.setattr(backend, "publish_output_tensor", publish_output_tensor)
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 9_000)
+
+    assert backend._tensor_probe(None, FakeInfo()) == "OK"
+
+    assert calls == [
+        {
+            "frame_id": 7,
+            "capture_ts_ns": 1_000,
+            "inference_start_ts_ns": 1_000,
+            "inference_end_ts_ns": 9_000,
+        }
+    ]
+
+
+def test_deepstream_tensor_probe_publishes_empty_batch_when_tensor_meta_missing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    calls: list[dict[str, int]] = []
+
+    class FakeGst:
+        PadProbeReturn = SimpleNamespace(OK="OK")
+
+    class FakeInfo:
+        @staticmethod
+        def get_buffer():
+            return object()
+
+    def import_module(name: str):
+        if name == "gi.repository.Gst":
+            return FakeGst
+        return __import__(name)
+
+    def publish_empty_detection_batch(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+    monkeypatch.setattr(backend, "_iter_output_tensors", lambda _buffer: [(7, 1_000, None)])
+    monkeypatch.setattr(backend, "_capture_ts_from_pts", lambda pts, *, observed_ns: int(pts))
+    monkeypatch.setattr(backend, "publish_empty_detection_batch", publish_empty_detection_batch)
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 9_000)
+
+    assert backend._tensor_probe(None, FakeInfo()) == "OK"
+
+    assert calls == [
+        {
+            "frame_id": 7,
+            "capture_ts_ns": 1_000,
+            "inference_start_ts_ns": 1_000,
+            "inference_end_ts_ns": 9_000,
+        }
+    ]
+
+
+def test_deepstream_backend_start_clears_previous_latest_result(tmp_path, monkeypatch) -> None:
     engine_path = tmp_path / "model.engine"
     engine_path.write_bytes(b"engine")
     config_path = tmp_path / "deepstream.ini"
@@ -508,6 +2842,122 @@ def test_deepstream_backend_publishes_latest_detection_batch(tmp_path) -> None:
 
     output = np.zeros((1, 8, 1344), dtype=np.float32)
     output[0, :, 0] = [128, 128, 32, 64, 0.9, 0.1, 0.0, 0.0]
+    with backend._lock:
+        backend._running = True
+    backend.publish_output_tensor(
+        output,
+        frame_id=12,
+        capture_ts_ns=1000,
+        inference_start_ts_ns=1200,
+        inference_end_ts_ns=1800,
+    )
+
+    class FakeGi:
+        @staticmethod
+        def require_version(_name: str, _version: str) -> None:
+            return None
+
+    class FakePad:
+        @staticmethod
+        def add_probe(_probe_type, _callback) -> None:
+            return None
+
+    class FakeInfer:
+        @staticmethod
+        def get_static_pad(_name: str):
+            return FakePad()
+
+    class FakeBus:
+        @staticmethod
+        def timed_pop_filtered(_timeout, _mask):
+            return None
+
+    class FakePipeline:
+        @staticmethod
+        def get_by_name(_name: str):
+            return FakeInfer()
+
+        @staticmethod
+        def set_state(_state: str):
+            return "success"
+
+        @staticmethod
+        def get_bus():
+            return FakeBus()
+
+    class FakeGst:
+        State = SimpleNamespace(PLAYING="PLAYING", NULL="NULL")
+        StateChangeReturn = SimpleNamespace(FAILURE="FAILURE")
+        PadProbeType = SimpleNamespace(BUFFER="BUFFER")
+        MessageType = SimpleNamespace(ERROR="ERROR", EOS="EOS")
+
+        @staticmethod
+        def init(_args) -> None:
+            return None
+
+        @staticmethod
+        def parse_launch(_description: str):
+            return FakePipeline()
+
+    def import_module(name: str):
+        if name == "gi":
+            return FakeGi
+        if name == "gi.repository.Gst":
+            return FakeGst
+        if name == "pyds":
+            return SimpleNamespace()
+        return __import__(name)
+
+    monkeypatch.setattr("novasight.deepstream.backend.importlib.import_module", import_module)
+
+    backend.start()
+    try:
+        assert backend.latest_result() is None
+        status = backend.status()
+        assert status["published_batches"] == 0
+        assert status["last_frame_id"] == 0
+    finally:
+        backend.stop()
+
+
+def test_deepstream_backend_publishes_latest_detection_batch(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+        confidence_threshold=0.8,
+        nms_threshold=0.4,
+    )
+    import numpy as np
+
+    output = np.zeros((1, 8, 1344), dtype=np.float32)
+    output[0, :, 0] = [128, 128, 32, 64, 0.9, 0.1, 0.0, 0.0]
+    with backend._lock:
+        backend._running = True
 
     batch = backend.publish_output_tensor(
         output,
@@ -520,13 +2970,233 @@ def test_deepstream_backend_publishes_latest_detection_batch(tmp_path) -> None:
     assert batch is backend.latest_result()
     assert backend.latest_result(after_frame_id=11) is batch
     assert backend.latest_result(after_frame_id=12) is None
+    with backend._lock:
+        backend._running = False
+    assert backend.latest_result(after_frame_id=11) is None
+    backend.publish_output_tensor(
+        output,
+        frame_id=13,
+        capture_ts_ns=2000,
+        inference_start_ts_ns=2200,
+        inference_end_ts_ns=2800,
+    )
+    status_after_stopped_publish = backend.status()
+    assert status_after_stopped_publish["published_batches"] == 1
+    assert status_after_stopped_publish["last_frame_id"] == 12
+    assert status_after_stopped_publish["tensor_meta_fps"] == 0.0
+    assert status_after_stopped_publish["postprocess_fps"] == 0.0
+    assert status_after_stopped_publish["detection_batch_fps"] == 0.0
     assert batch.coordinate_space == "roi"
     assert len(batch.detections) == 1
+    with backend._lock:
+        backend._running = True
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 1800)
     status = backend.status()
     assert status["selected"] == "deepstream"
+    assert status["terminal_error"] is False
+    assert status["model_id"] == "combat"
+    assert status["model_fingerprint"] == manifest.model_fingerprint
+    assert status["model_runtime"] == {
+        "backend": "deepstream",
+        "precision": "fp16",
+        "batch_size": 1,
+    }
+    assert status["model_input"] == {
+        "name": "images",
+        "shape": [1, 3, 256, 256],
+        "dtype": "float32",
+        "layout": "NCHW",
+        "color_format": "RGB",
+        "scale_factor": 1.0 / 255.0,
+        "maintain_aspect_ratio": False,
+        "symmetric_padding": False,
+    }
+    assert status["model_output"] == {
+        "name": "output0",
+        "shape": [1, 8, 1344],
+        "dtype": "float32",
+        "class_count": 4,
+        "class_names": ["0", "1", "2", "3"],
+    }
+    assert status["postprocess"] == {
+        "parser": "yolo",
+        "confidence_threshold": 0.8,
+        "nms_threshold": 0.4,
+        "class_aware_nms": True,
+    }
+    assert status["capture"] == {
+        "device": "/dev/video0",
+        "pixel_format": "MJPG",
+        "width": 1920,
+        "height": 1080,
+        "fps": 120,
+        "io_mode": 2,
+        "batched_push_timeout_us": 0,
+    }
+    assert status["roi"] == {
+        "left": 720,
+        "top": 300,
+        "size": 480,
+        "width": 480,
+        "height": 480,
+    }
     assert status["published_batches"] == 1
+    assert status["tensor_meta_frames"] == 1
+    assert status["postprocess_frames"] == 1
+    assert status["tensor_meta_fps"] >= 0.0
+    assert status["postprocess_fps"] >= 0.0
+    assert status["detection_batch_fps"] >= 0.0
     assert status["last_frame_id"] == 12
+    assert status["last_frame_age_ms"] >= 0.0
+    assert status["last_inference_latency_ms"] == pytest.approx(0.0006)
+    assert status["capture_to_tensor_meta_ms_stats"] == {
+        "count": 1,
+        "avg": pytest.approx(0.0006),
+        "p50": pytest.approx(0.0006),
+        "p95": pytest.approx(0.0006),
+        "p99": pytest.approx(0.0006),
+        "max": pytest.approx(0.0006),
+    }
+    assert status["latency_source"] == "capture_to_tensor_meta_done"
+    assert status["timestamp_source"] == "uninitialized"
+    assert status["last_detection_count"] == 1
     assert status["last_error"] == ""
+    with backend._lock:
+        backend._pipeline = object()
+        backend._running = True
+    backend.stop()
+    stopped_status = backend.status()
+    assert backend.latest_result() is None
+    assert stopped_status["published_batches"] == 1
+    assert stopped_status["window_published_batches"] == 0
+    assert stopped_status["last_frame_id"] == 0
+    assert stopped_status["last_detection_count"] == 0
+    assert stopped_status["capture_to_tensor_meta_ms_stats"]["count"] == 0
+
+
+def test_deepstream_backend_reports_sliding_window_detection_fps(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    import numpy as np
+
+    output = np.zeros((1, 8, 1344), dtype=np.float32)
+    output[0, :, 0] = [128, 128, 32, 64, 0.9, 0.1, 0.0, 0.0]
+    with backend._lock:
+        backend._running = True
+        backend._started_at_ns = 1_000_000_000
+
+    for frame_id, end_ts_ns in enumerate((1_000_000_000, 1_250_000_000, 1_500_000_000), start=1):
+        backend.publish_output_tensor(
+            output,
+            frame_id=frame_id,
+            capture_ts_ns=end_ts_ns - 1_000_000,
+            inference_start_ts_ns=end_ts_ns - 1_000_000,
+            inference_end_ts_ns=end_ts_ns,
+        )
+
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 1_600_000_000)
+    status = backend.status()
+    assert status["published_batches"] == 3
+    assert status["window_published_batches"] == 3
+    assert status["tensor_meta_fps"] == pytest.approx(4.0)
+    assert status["postprocess_fps"] == pytest.approx(4.0)
+    assert status["detection_batch_fps"] == pytest.approx(4.0)
+    assert status["capture_to_tensor_meta_ms_stats"]["count"] == 3
+    assert status["capture_to_tensor_meta_ms_stats"]["p50"] == pytest.approx(1.0)
+    assert status["capture_to_tensor_meta_ms_stats"]["p95"] == pytest.approx(1.0)
+
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 2_600_000_000)
+    expired_status = backend.status()
+    assert expired_status["published_batches"] == 3
+    assert expired_status["window_published_batches"] == 0
+    assert expired_status["tensor_meta_fps"] == 0.0
+    assert expired_status["capture_to_tensor_meta_ms_stats"]["count"] == 0
+
+
+def test_deepstream_backend_missing_tensor_meta_does_not_count_as_tensor_or_postprocess(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+    )
+    with backend._lock:
+        backend._running = True
+        backend._started_at_ns = 1_000_000_000
+
+    batch = backend.publish_empty_detection_batch(
+        frame_id=7,
+        capture_ts_ns=1_000_000_000,
+        inference_start_ts_ns=1_000_100_000,
+        inference_end_ts_ns=1_000_200_000,
+    )
+
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 1_000_300_000)
+    status = backend.status()
+    assert batch.metadata["empty_reason"] == "missing_tensor_meta"
+    assert status["published_batches"] == 1
+    assert status["window_published_batches"] == 1
+    assert status["tensor_meta_frames"] == 0
+    assert status["postprocess_frames"] == 0
+    assert status["window_tensor_meta_frames"] == 0
+    assert status["window_postprocess_frames"] == 0
+    assert status["tensor_meta_fps"] == 0.0
+    assert status["postprocess_fps"] == 0.0
+    assert status["last_frame_id"] == 7
+    assert status["last_detection_count"] == 0
 
 
 def test_tensor_input_preparer_prefers_gpu_buffer() -> None:
@@ -2655,6 +5325,92 @@ def test_runtime_probes_engine_once_and_preserves_first_unavailable_reason() -> 
     assert engine.available_calls == 1
     assert engine.status_calls == 0
     assert runtime.status()["reason"] == "first unavailable reason"
+
+
+def test_runtime_service_reports_deepstream_configured_from_explicit_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "novasight.runtime.service.check_deepstream_dependencies",
+        lambda: SimpleNamespace(available=True, reason="", detail=""),
+    )
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "deepstream"
+    cfg.inference.deepstream_manifest_path = "combat/default/model.manifest.json"
+    cfg.inference.deepstream_config_path = "combat/default/deepstream.ini"
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(status=lambda: {}, update_runtime_config=lambda _cfg: None),
+    )
+
+    status = service.state()
+
+    assert status.active_model is None
+    assert status.inference["selected"] == "deepstream"
+    assert status.inference["configured"] is True
+    assert status.inference["loaded"] is False
+    assert "active model deployment" not in status.inference["reason"]
+
+
+def test_runtime_service_reports_deepstream_dependency_reason_before_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "novasight.runtime.service.check_deepstream_dependencies",
+        lambda: SimpleNamespace(
+            available=False,
+            reason="deepstream-gst-elements-unavailable",
+            detail="missing GStreamer elements: nvinfer",
+        ),
+    )
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "deepstream"
+    cfg.inference.deepstream_manifest_path = "combat/default/model.manifest.json"
+    cfg.inference.deepstream_config_path = "combat/default/deepstream.ini"
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(status=lambda: {}, update_runtime_config=lambda _cfg: None),
+    )
+
+    status = service.state()
+
+    assert status.inference["selected"] == "deepstream"
+    assert status.inference["configured"] is True
+    assert status.inference["available"] is False
+    assert status.inference["reason"] == "deepstream-gst-elements-unavailable"
+    assert status.inference["detail"] == "missing GStreamer elements: nvinfer"
+
+
+def test_runtime_service_reports_deepstream_source_last_error() -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "deepstream"
+    cfg.inference.deepstream_manifest_path = "combat/default/model.manifest.json"
+    cfg.inference.deepstream_config_path = "combat/default/deepstream.ini"
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(status=lambda: {}, update_runtime_config=lambda _cfg: None),
+    )
+    service.pipeline = SimpleNamespace(
+        detection_source=SimpleNamespace(
+            status=lambda: {
+                "selected": "deepstream",
+                "available": True,
+                "running": False,
+                "last_error": "DeepStream pipeline error: nvinfer rejected output0",
+            }
+        ),
+        status=lambda: {},
+    )
+
+    status = service.state()
+
+    assert status.inference["selected"] == "deepstream"
+    assert status.inference["configured"] is True
+    assert status.inference["loaded"] is False
+    assert status.inference["reason"] == "DeepStream pipeline error: nvinfer rejected output0"
 
 
 def test_missing_tensorrt_does_not_break_import_or_runtime_status(

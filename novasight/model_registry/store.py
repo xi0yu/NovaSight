@@ -346,6 +346,37 @@ class ModelRegistry:
                 status,
             )
 
+    def update_artifact_status(
+        self,
+        artifact_id: int,
+        status: str,
+        *,
+        checksum: str | None = None,
+    ) -> ModelArtifact:
+        _validate_choice(status, get_args(ArtifactStatus), "artifact status")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+            if row is None:
+                raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
+            if checksum is None:
+                conn.execute(
+                    "UPDATE model_artifacts SET status = ? WHERE id = ?",
+                    (status, artifact_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE model_artifacts SET checksum = ?, status = ? WHERE id = ?",
+                    (checksum, status, artifact_id),
+                )
+            updated = conn.execute(
+                "SELECT * FROM model_artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+            if updated is None:
+                raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
+            return self._artifact_from_row(updated)
+
     def create_conversion_job(
         self, version_id: int, target_kind: str, command: list[str]
     ) -> ConversionJob:

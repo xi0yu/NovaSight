@@ -292,6 +292,10 @@ export function DashboardView({
   const stats = useMemo(() => readStatistics(runtime), [runtime, displayTick]);
   const targetFps = capture?.profile?.fps ?? 120;
   const configSource = runtimeConfig ?? runtime?.config;
+  const runtimeInference = asRecord(runtime?.inference);
+  const deepstreamRuntimeSelected = readStringRecord(runtimeInference, "selected") === "deepstream";
+  const captureMainRunning = deepstreamRuntimeSelected ? runtime?.running === true : capture?.available === true;
+  const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
   const roiSize = readNestedNumber(configSource, "roi", "size", 640);
   const configVersion =
     typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
@@ -378,11 +382,11 @@ export function DashboardView({
             <div className="home-field">
               <div className="home-field-label">
                 <span>采集源</span>
-                <span>{capture?.available ? "运行中" : "未启动"}</span>
+                <span>{captureMainRunning ? "运行中" : captureProfileConfigured ? "已配置" : "未启动"}</span>
               </div>
               <div className="home-selectbox">
                 <span>{capture?.device ?? "/dev/video0"}</span>
-                <span>{capture?.backend ?? "未打开"}</span>
+                <span>{deepstreamRuntimeSelected ? "deepstream" : capture?.backend ?? "未打开"}</span>
               </div>
               <div className="home-tiny">启动、停止、格式和分辨率选择统一在基础设置 / 采集设置。</div>
             </div>
@@ -449,7 +453,7 @@ export function DashboardView({
           <div className="home-mini-node">
             <div className="k">采集输入</div>
             <div className="v">{capture?.profile ? `${capture.profile.width}x${capture.profile.height} · ${capture.profile.fps}fps` : "等待采集"}</div>
-            <div className="s">{capture?.profile?.pixel_format ?? "未选择"} · {capture?.backend ?? "未打开"}</div>
+            <div className="s">{capture?.profile?.pixel_format ?? "未选择"} · {deepstreamRuntimeSelected ? "DeepStream 启动时打开" : capture?.backend ?? "未打开"}</div>
           </div>
           <div className="home-arrow">→</div>
           <div className="home-mini-node">
@@ -485,7 +489,7 @@ export function DashboardView({
             className="home-video"
             style={{ "--roi-display-size": `${roiSize}px` } as CSSProperties}
           >
-            {capture?.available && previewEnabled ? (
+            {capture?.available && previewEnabled && !deepstreamRuntimeSelected ? (
               <img alt="实时采集画面" src={streamUrl(configVersion, configVersion)} />
             ) : null}
             <div className="home-video-grid" />
@@ -515,7 +519,7 @@ export function DashboardView({
               {aimPointStyle ? <div className="home-aim-point" style={aimPointStyle} /> : null}
             </div>
             <div className="home-hud home-hud-left">
-              <span>预览 {previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
+              <span>预览 {deepstreamRuntimeSelected ? "Tensor Overlay" : previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
               <span>{captureMode(capture)}</span>
               <span>ROI {roiSize}</span>
               <span>GPU 路线</span>

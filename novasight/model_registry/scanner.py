@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .deepstream_config import (
+    nvinfer_config_fingerprint,
+    read_nvinfer_config_fingerprint,
+    validate_nvinfer_config_engine_path,
+    validate_nvinfer_config_properties,
+)
 from .fingerprint import sha256_file
 from .manifest import ModelManifest, read_manifest
 
@@ -104,6 +110,30 @@ def inspect_model_artifact(path: Path) -> ModelArtifactScanResult:
             model_fingerprint=manifest.model_fingerprint,
             manifest=manifest,
         )
+    if suffix == ".engine":
+        config_status = _inspect_deepstream_config(
+            path=path,
+            manifest=manifest,
+            deepstream_config_path=deepstream_config_path,
+        )
+        if config_status is not None:
+            status: ModelScanStatus = (
+                "need_confirm"
+                if config_status == "DeepStream nvinfer config is missing"
+                else "invalid"
+            )
+            return ModelArtifactScanResult(
+                path=path,
+                kind=suffix.lstrip("."),
+                status=status,
+                reason=config_status,
+                sha256=artifact_sha256,
+                size_bytes=size_bytes,
+                manifest_path=manifest_path,
+                deepstream_config_path=deepstream_config_path,
+                model_fingerprint=manifest.model_fingerprint,
+                manifest=manifest,
+            )
     return ModelArtifactScanResult(
         path=path,
         kind=suffix.lstrip("."),
@@ -116,3 +146,24 @@ def inspect_model_artifact(path: Path) -> ModelArtifactScanResult:
         model_fingerprint=manifest.model_fingerprint,
         manifest=manifest,
     )
+
+
+def _inspect_deepstream_config(
+    *,
+    path: Path,
+    manifest: ModelManifest,
+    deepstream_config_path: Path,
+) -> str | None:
+    if not deepstream_config_path.is_file():
+        return "DeepStream nvinfer config is missing"
+    expected = nvinfer_config_fingerprint(manifest)
+    actual = read_nvinfer_config_fingerprint(deepstream_config_path)
+    if actual != expected:
+        detail = "missing" if not actual else "mismatch"
+        return f"DeepStream nvinfer config does not match model manifest ({detail})"
+    try:
+        validate_nvinfer_config_engine_path(deepstream_config_path, path)
+        validate_nvinfer_config_properties(deepstream_config_path, manifest)
+    except ValueError as exc:
+        return str(exc)
+    return None

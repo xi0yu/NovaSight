@@ -27,9 +27,17 @@ from .manifest import (
     TensorSpec,
     build_engine_manifest,
     read_manifest,
+    validate_manifest_engine_artifact,
     write_manifest,
 )
-from .deepstream_config import generate_nvinfer_config
+from .deepstream_config import (
+    generate_nvinfer_config,
+    nvinfer_config_fingerprint,
+    read_nvinfer_config_fingerprint,
+    read_nvinfer_config_property,
+    validate_nvinfer_config_engine_path,
+    validate_nvinfer_config_properties,
+)
 from .engine_cache import (
     ENGINE_CACHE_SCHEMA_VERSION,
     EngineBuildInfo,
@@ -70,8 +78,14 @@ __all__ = [
     "TensorSpec",
     "build_engine_manifest",
     "read_manifest",
+    "validate_manifest_engine_artifact",
     "write_manifest",
     "generate_nvinfer_config",
+    "nvinfer_config_fingerprint",
+    "read_nvinfer_config_fingerprint",
+    "read_nvinfer_config_property",
+    "validate_nvinfer_config_engine_path",
+    "validate_nvinfer_config_properties",
     "ENGINE_CACHE_SCHEMA_VERSION",
     "EngineBuildInfo",
     "EngineCache",

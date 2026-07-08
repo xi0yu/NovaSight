@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import logging
+import math
 import threading
 import time
 from typing import Any
@@ -12,12 +13,13 @@ from novasight.coordinates import CoordinateTransform
 from novasight.control import (
     ExperimentalAnglePidStrategy,
 )
+from novasight.deepstream import check_deepstream_dependencies
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
 from novasight.model_registry import ModelRegistry
 from novasight.contracts import BBox, ControlIntent, Detection, DetectionBatch, FrameContext, Track
-from novasight.roi import center_roi_frame
+from novasight.roi import center_roi_frame, center_roi_region
 
 from .config_store import RuntimeConfigStore
 from .aim import (
@@ -29,11 +31,26 @@ from .aim import (
 )
 from .state import RuntimeFrameResult, RuntimeState
 from .candidates import aim_point
-from .recorder import build_control_frame_record
 from .detection_batch import detection_batch_to_frame_context
+from .recorder import build_control_frame_record
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
+
+
+def _status_float(value: object, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+    return number if number == number else float(fallback)
+
+
+def _status_int(value: object, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
 
 
 class RuntimeService:
@@ -89,16 +106,53 @@ class RuntimeService:
     def state(self) -> RuntimeState:
         capture_state = getattr(self, "capture", None)
         inference_state = getattr(self, "inference", None)
+        active_model = self._active_model()
         capture_payload = asdict(capture_state.state) if capture_state is not None else {}
         statistics = dict(capture_payload.get("statistics", {}))
-        pipeline_stats = getattr(getattr(self, "pipeline", None), "stats", None)
+        pipeline = getattr(self, "pipeline", None)
+        pipeline_stats = getattr(pipeline, "stats", None)
         if pipeline_stats is not None:
             statistics["inference_counter"] = getattr(pipeline_stats, "window_processed_frames", 0)
             statistics["skipped_counter"] = getattr(pipeline_stats, "skipped_frames", 0)
             statistics["inference_fps"] = getattr(pipeline_stats, "inference_fps", 0.0)
+            statistics["detection_batch_fps"] = getattr(pipeline_stats, "detection_batch_fps", 0.0)
+            statistics["control_observation_counter"] = getattr(
+                pipeline_stats,
+                "window_control_observations",
+                0,
+            )
+            statistics["control_observation_fps"] = getattr(
+                pipeline_stats,
+                "control_observation_fps",
+                0.0,
+            )
             statistics["queue_latency"] = getattr(pipeline_stats, "queue_latency_ms", 0.0)
             statistics["inference_latency"] = getattr(pipeline_stats, "inference_latency_ms", 0.0)
             statistics["e2e_latency"] = getattr(pipeline_stats, "e2e_latency_ms", 0.0)
+        source_statistics = self._detection_source_statistics(pipeline)
+        for key in (
+            "published_batches",
+            "window_published_batches",
+            "tensor_meta_frames",
+            "postprocess_frames",
+            "window_tensor_meta_frames",
+            "window_postprocess_frames",
+            "tensor_meta_fps",
+            "postprocess_fps",
+            "timestamp_source",
+            "last_frame_age_ms",
+            "last_inference_latency_ms",
+            "last_" + "detection_count",
+        ):
+            if key in source_statistics:
+                statistics[key] = source_statistics[key]
+        if source_statistics:
+            tensor_meta_fps = _status_float(source_statistics.get("tensor_meta_fps"), 0.0)
+            published_batches = _status_int(source_statistics.get("published_batches"), 0)
+            if tensor_meta_fps > 0.0 and _status_float(statistics.get("capture_fps"), 0.0) <= 0.0:
+                statistics["capture_fps"] = tensor_meta_fps
+            if published_batches > 0 and _status_int(statistics.get("capture_counter"), 0) <= 0:
+                statistics["capture_counter"] = published_batches
         for key, value in self.last_pipeline_timings.items():
             statistics[f"stage_{key}"] = value
         if capture_payload:
@@ -106,20 +160,116 @@ class RuntimeService:
         return RuntimeState(
             running=self.running,
             source=self.config.source.default,
-            active_model=self._active_model(),
+            active_model=active_model,
             executor=self.executors.status(),
             capture=capture_payload,
             statistics=statistics,
-            inference=(
-                inference_state.status()
-                if inference_state is not None
-                else {"available": False}
-            ),
+            inference=self._runtime_inference_status(inference_state, active_model),
             config=self.config_store.status(),
             pipeline=self.pipeline.status() if self.pipeline is not None else {},
             vision=self._vision_status(),
             fatal_error=self.fatal_error,
         )
+
+    @staticmethod
+    def _detection_source_statistics(pipeline: Any) -> dict[str, Any]:
+        detection_source = getattr(pipeline, "detection_source", None)
+        status_fn = getattr(detection_source, "status", None)
+        if not callable(status_fn):
+            return {}
+        try:
+            source_status = status_fn()
+        except Exception:
+            return {}
+        return dict(source_status) if isinstance(source_status, dict) else {}
+
+    def _runtime_inference_status(
+        self,
+        inference_state: Any,
+        active_model: dict | None,
+    ) -> dict[str, Any]:
+        backend = str(getattr(self.config.inference, "backend", "")).lower()
+        if backend != "deepstream":
+            return (
+                inference_state.status()
+                if inference_state is not None
+                else {"available": False}
+            )
+        source_status: dict[str, Any] = {}
+        pipeline = getattr(self, "pipeline", None)
+        detection_source = getattr(pipeline, "detection_source", None)
+        status_fn = getattr(detection_source, "status", None)
+        if callable(status_fn):
+            try:
+                raw_status = status_fn()
+                if isinstance(raw_status, dict):
+                    source_status = dict(raw_status)
+            except Exception as exc:
+                source_status = {
+                    "available": False,
+                    "running": False,
+                    "reason": "DeepStream status failed",
+                    "detail": str(exc),
+                }
+        source_status.pop("pipeline", None)
+        dependency_status: Any | None = None
+        if not source_status:
+            try:
+                dependency_status = check_deepstream_dependencies()
+            except Exception as exc:
+                dependency_status = {
+                    "available": False,
+                    "reason": "DeepStream dependency check failed",
+                    "detail": str(exc),
+                }
+        inference_config = getattr(self.config, "inference", None)
+        explicit_deepstream_paths = bool(
+            str(getattr(inference_config, "deepstream_manifest_path", "") or "").strip()
+            and str(getattr(inference_config, "deepstream_config_path", "") or "").strip()
+        )
+        configured = active_model is not None or explicit_deepstream_paths
+        running = bool(source_status.get("running", False))
+        dependency_available = (
+            bool(getattr(dependency_status, "available", False))
+            if dependency_status is not None and not isinstance(dependency_status, dict)
+            else bool((dependency_status or {}).get("available", False))
+        )
+        available = bool(
+            source_status.get(
+                "available",
+                dependency_available if dependency_status is not None else configured,
+            )
+        )
+        reason = str(source_status.get("reason") or source_status.get("last_error") or "")
+        detail = str(source_status.get("detail") or "")
+        if dependency_status is not None and not available:
+            dependency_reason = (
+                str(getattr(dependency_status, "reason", ""))
+                if not isinstance(dependency_status, dict)
+                else str(dependency_status.get("reason") or "")
+            )
+            dependency_detail = (
+                str(getattr(dependency_status, "detail", ""))
+                if not isinstance(dependency_status, dict)
+                else str(dependency_status.get("detail") or "")
+            )
+            reason = reason or dependency_reason
+            detail = detail or dependency_detail
+        if not configured:
+            reason = reason or "DeepStream backend requires an active model deployment"
+        elif not running:
+            reason = reason or "DeepStream nvinfer loads when runtime starts"
+        return {
+            **source_status,
+            "selected": "deepstream",
+            "backend": "deepstream",
+            "available": available,
+            "loaded": running,
+            "running": running,
+            "configured": configured,
+            "reason": reason,
+            "detail": detail,
+        }
 
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
         new_calibration_signature = self._config_calibration_signature(config)
@@ -337,7 +487,7 @@ class RuntimeService:
 
     @staticmethod
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
-        return RuntimeFrameResult(control_intents=[], execution_results=[])
+        return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False)
 
     def process_detection_batch(
         self,
@@ -345,16 +495,440 @@ class RuntimeService:
         *,
         width: int,
         height: int,
+        source_width: int | None = None,
+        source_height: int | None = None,
+        roi_offset_x: int | None = None,
+        roi_offset_y: int | None = None,
     ) -> RuntimeFrameResult:
+        total_start_ns = time.monotonic_ns()
+        (
+            resolved_source_width,
+            resolved_source_height,
+            resolved_roi_offset_x,
+            resolved_roi_offset_y,
+            source_geometry_trusted,
+            source_geometry_source,
+        ) = self._detection_batch_geometry(
+            width=int(width),
+            height=int(height),
+            source_width=source_width,
+            source_height=source_height,
+            roi_offset_x=roi_offset_x,
+            roi_offset_y=roi_offset_y,
+        )
         if detection_batch.coordinate_space != "roi":
-            self._clear_pending_commands("DETECTION_BATCH_COORDINATE_SPACE_INVALID")
+            self._reset_runtime_control_state("DETECTION_BATCH_COORDINATE_SPACE_INVALID")
+            self.last_inference_reason = "DetectionBatch coordinate_space must be roi"
+            self._set_detection_batch_pipeline_timings(
+                detection_batch,
+                total_start_ns=total_start_ns,
+                control_start_ns=None,
+                done_ns=time.monotonic_ns(),
+            )
+            self.last_inference_status = self._detection_batch_status_payload(
+                detection_batch,
+                width=int(width),
+                height=int(height),
+                now_ns=time.monotonic_ns(),
+                reason=self.last_inference_reason,
+                available=False,
+                mapped_detections=0,
+                source_width=resolved_source_width,
+                source_height=resolved_source_height,
+                source_geometry_source=source_geometry_source,
+                source_geometry_trusted=source_geometry_trusted,
+                roi_offset_x=resolved_roi_offset_x,
+                roi_offset_y=resolved_roi_offset_y,
+            )
             return self._empty_runtime_frame_result()
+        contract_reason = self._detection_batch_roi_contract_reason(
+            detection_batch,
+            width=int(width),
+            height=int(height),
+        )
+        if contract_reason:
+            self._reset_runtime_control_state("DETECTION_BATCH_ROI_CONTRACT_INVALID")
+            self.last_inference_reason = contract_reason
+            self._set_detection_batch_pipeline_timings(
+                detection_batch,
+                total_start_ns=total_start_ns,
+                control_start_ns=None,
+                done_ns=time.monotonic_ns(),
+            )
+            self.last_inference_status = self._detection_batch_status_payload(
+                detection_batch,
+                width=int(width),
+                height=int(height),
+                now_ns=time.monotonic_ns(),
+                reason=self.last_inference_reason,
+                available=False,
+                mapped_detections=0,
+                source_width=resolved_source_width,
+                source_height=resolved_source_height,
+                source_geometry_source=source_geometry_source,
+                source_geometry_trusted=source_geometry_trusted,
+                roi_offset_x=resolved_roi_offset_x,
+                roi_offset_y=resolved_roi_offset_y,
+            )
+            return self._empty_runtime_frame_result()
+        timestamp_source_reason = self._detection_batch_timestamp_source_reason(detection_batch)
+        if timestamp_source_reason:
+            self._reset_runtime_control_state("DETECTION_BATCH_TIMESTAMP_SOURCE_INVALID")
+            self.last_inference_reason = timestamp_source_reason
+            self._set_detection_batch_pipeline_timings(
+                detection_batch,
+                total_start_ns=total_start_ns,
+                control_start_ns=None,
+                done_ns=time.monotonic_ns(),
+            )
+            metadata = getattr(detection_batch, "metadata", {}) or {}
+            self.last_inference_status = self._detection_batch_status_payload(
+                detection_batch,
+                width=int(width),
+                height=int(height),
+                now_ns=total_start_ns,
+                reason=self.last_inference_reason,
+                available=False,
+                mapped_detections=0,
+                source_width=resolved_source_width,
+                source_height=resolved_source_height,
+                source_geometry_source=source_geometry_source,
+                source_geometry_trusted=source_geometry_trusted,
+                roi_offset_x=resolved_roi_offset_x,
+                roi_offset_y=resolved_roi_offset_y,
+                extra={
+                    "timestamp_source_invalid": True,
+                    "timestamp_source": str(metadata.get("timestamp_source") or ""),
+                },
+            )
+            return self._empty_runtime_frame_result()
+        stale_reason = self._detection_batch_stale_reason(
+            detection_batch,
+            now_ns=total_start_ns,
+        )
+        if stale_reason:
+            self._reset_runtime_control_state("DETECTION_BATCH_STALE")
+            self.last_inference_reason = stale_reason
+            self._set_detection_batch_pipeline_timings(
+                detection_batch,
+                total_start_ns=total_start_ns,
+                control_start_ns=None,
+                done_ns=time.monotonic_ns(),
+            )
+            self.last_inference_status = self._detection_batch_status_payload(
+                detection_batch,
+                width=int(width),
+                height=int(height),
+                now_ns=total_start_ns,
+                reason=self.last_inference_reason,
+                available=False,
+                mapped_detections=0,
+                source_width=resolved_source_width,
+                source_height=resolved_source_height,
+                source_geometry_source=source_geometry_source,
+                source_geometry_trusted=source_geometry_trusted,
+                roi_offset_x=resolved_roi_offset_x,
+                roi_offset_y=resolved_roi_offset_y,
+                extra={"stale_rejected": True},
+            )
+            return self._empty_runtime_frame_result()
+        missing_tensor_reason = self._detection_batch_missing_tensor_reason(detection_batch)
+        if missing_tensor_reason:
+            self._reset_runtime_control_state("DETECTION_BATCH_MISSING_TENSOR_META")
+            self.last_inference_reason = missing_tensor_reason
+            self._set_detection_batch_pipeline_timings(
+                detection_batch,
+                total_start_ns=total_start_ns,
+                control_start_ns=None,
+                done_ns=time.monotonic_ns(),
+            )
+            self.last_inference_status = self._detection_batch_status_payload(
+                detection_batch,
+                width=int(width),
+                height=int(height),
+                now_ns=total_start_ns,
+                reason=self.last_inference_reason,
+                available=False,
+                mapped_detections=0,
+                source_width=resolved_source_width,
+                source_height=resolved_source_height,
+                source_geometry_source=source_geometry_source,
+                source_geometry_trusted=source_geometry_trusted,
+                roi_offset_x=resolved_roi_offset_x,
+                roi_offset_y=resolved_roi_offset_y,
+                extra={"missing_tensor_meta": True},
+            )
+            return self._empty_runtime_frame_result()
+        self.last_inference_reason = ""
+        self.last_inference_status = self._detection_batch_status_payload(
+            detection_batch,
+            width=int(width),
+            height=int(height),
+            now_ns=total_start_ns,
+            reason="",
+            available=True,
+            mapped_detections=len(detection_batch.detections),
+            source_width=resolved_source_width,
+            source_height=resolved_source_height,
+            source_geometry_source=source_geometry_source,
+            source_geometry_trusted=source_geometry_trusted,
+            roi_offset_x=resolved_roi_offset_x,
+            roi_offset_y=resolved_roi_offset_y,
+            extra={
+                "configured_roi_offset_x": int(getattr(self.config.roi, "offset_x", 0)),
+                "configured_roi_offset_y": int(getattr(self.config.roi, "offset_y", 0)),
+            },
+        )
         context = detection_batch_to_frame_context(
             detection_batch,
             width=int(width),
             height=int(height),
         )
-        return self.update_control_observation(context)
+        control_start_ns = time.monotonic_ns()
+        result = self.update_control_observation(context)
+        done_ns = time.monotonic_ns()
+        self._set_detection_batch_pipeline_timings(
+            detection_batch,
+            total_start_ns=total_start_ns,
+            control_start_ns=control_start_ns,
+            done_ns=done_ns,
+        )
+        self._record_control_frame()
+        return result
+
+    def _set_detection_batch_pipeline_timings(
+        self,
+        detection_batch: DetectionBatch,
+        *,
+        total_start_ns: int,
+        control_start_ns: int | None,
+        done_ns: int,
+    ) -> None:
+        handoff_start_ns = int(control_start_ns if control_start_ns is not None else done_ns)
+        self.last_pipeline_timings = {
+            "roi_ms": 0.0,
+            "engine_ms": detection_batch.inference_latency_ms,
+            "engine_execute_ms": detection_batch.inference_latency_ms,
+            "capture_to_tensor_meta_ms": detection_batch.inference_latency_ms,
+            "decode_ms": 0.0,
+            "handoff_ms": max(
+                0.0,
+                (handoff_start_ns - int(detection_batch.inference_end_ts_ns)) / 1e6,
+            ),
+            "postprocess_ms": 0.0,
+            "control_ms": (
+                max(0.0, (int(done_ns) - int(control_start_ns)) / 1e6)
+                if control_start_ns is not None
+                else 0.0
+            ),
+            "total_ms": max(0.0, (int(done_ns) - int(total_start_ns)) / 1e6),
+        }
+
+    def _detection_batch_status_payload(
+        self,
+        detection_batch: DetectionBatch,
+        *,
+        width: int,
+        height: int,
+        now_ns: int,
+        reason: str,
+        available: bool,
+        mapped_detections: int,
+        source_width: int,
+        source_height: int,
+        source_geometry_source: str,
+        source_geometry_trusted: bool,
+        roi_offset_x: int,
+        roi_offset_y: int,
+        extra: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "frame_id": detection_batch.frame_id,
+            "capture_ts_ns": detection_batch.capture_ts_ns,
+            "frame_age_ms": self._detection_batch_age_ms(detection_batch, now_ns=now_ns),
+            "ran": True,
+            "available": bool(available),
+            "reason": str(reason),
+            "detection_coordinate_space": detection_batch.coordinate_space,
+            "raw_detections": len(detection_batch.detections),
+            "mapped_detections": int(mapped_detections),
+            "detection_batch_frame_id": detection_batch.frame_id,
+            "detection_batch_capture_ts_ns": detection_batch.capture_ts_ns,
+            "inference_start_ts_ns": detection_batch.inference_start_ts_ns,
+            "inference_end_ts_ns": detection_batch.inference_end_ts_ns,
+            "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms,
+            "detection_batch_metadata": dict(getattr(detection_batch, "metadata", {}) or {}),
+            "capture_to_tensor_meta_ms": detection_batch.inference_latency_ms,
+            "latency_source": "capture_to_tensor_meta_done",
+            "classes": list(detection_batch.classes),
+            "input_width": int(width),
+            "input_height": int(height),
+            "model_input_width": int(width),
+            "model_input_height": int(height),
+            "source": "detection_batch",
+            "source_width": int(source_width),
+            "source_height": int(source_height),
+            "source_geometry_source": str(source_geometry_source),
+            "source_geometry_trusted": bool(source_geometry_trusted),
+            "roi_offset_x": int(roi_offset_x),
+            "roi_offset_y": int(roi_offset_y),
+            "roi_region": {
+                "x": int(roi_offset_x),
+                "y": int(roi_offset_y),
+                "w": int(width),
+                "h": int(height),
+            },
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def _detection_batch_geometry(
+        self,
+        *,
+        width: int,
+        height: int,
+        source_width: int | None = None,
+        source_height: int | None = None,
+        roi_offset_x: int | None = None,
+        roi_offset_y: int | None = None,
+    ) -> tuple[int, int, int, int, bool, str]:
+        if source_width is not None and source_height is not None:
+            parsed_source_width = int(source_width or 0)
+            parsed_source_height = int(source_height or 0)
+            if parsed_source_width > 0 and parsed_source_height > 0:
+                return (
+                    parsed_source_width,
+                    parsed_source_height,
+                    max(0, int(roi_offset_x or 0)),
+                    max(0, int(roi_offset_y or 0)),
+                    True,
+                    "detection_source",
+                )
+        capture_config = getattr(self.config, "capture", None)
+        config_source_width = int(getattr(capture_config, "width", 0) or 0)
+        config_source_height = int(getattr(capture_config, "height", 0) or 0)
+        if config_source_width <= 0 or config_source_height <= 0:
+            return 0, 0, 0, 0, False, "missing_source_geometry"
+        roi_config = getattr(self.config, "roi", None)
+        requested_size = max(1, min(int(width), int(height)))
+        roi_x, roi_y, _roi_size = center_roi_region(
+            source_width=config_source_width,
+            source_height=config_source_height,
+            requested_size=requested_size,
+            offset_x=int(getattr(roi_config, "offset_x", 0) or 0),
+            offset_y=int(getattr(roi_config, "offset_y", 0) or 0),
+        )
+        return config_source_width, config_source_height, int(roi_x), int(roi_y), True, "runtime_config"
+
+    @staticmethod
+    def _detection_batch_roi_contract_reason(
+        detection_batch: DetectionBatch,
+        *,
+        width: int,
+        height: int,
+    ) -> str:
+        roi_width = max(1.0, float(width))
+        roi_height = max(1.0, float(height))
+        for index, detection in enumerate(detection_batch.detections):
+            center_x = (float(detection.x1) + float(detection.x2)) * 0.5
+            center_y = (float(detection.y1) + float(detection.y2)) * 0.5
+            values = (
+                float(detection.score),
+                float(detection.x1),
+                float(detection.y1),
+                float(detection.x2),
+                float(detection.y2),
+                center_x,
+                center_y,
+            )
+            if not all(math.isfinite(value) for value in values):
+                return f"DetectionBatch detection contains non-finite value at index {index}"
+            if detection.score < 0.0 or detection.score > 1.0:
+                return (
+                    "DetectionBatch detection score out of range "
+                    f"at index {index}: {float(detection.score):.3f}"
+                )
+            if detection.x2 <= detection.x1 or detection.y2 <= detection.y1:
+                return (
+                    "DetectionBatch detection box must have positive width and height "
+                    f"at index {index}"
+                )
+            if center_x < 0.0 or center_x > roi_width or center_y < 0.0 or center_y > roi_height:
+                return (
+                    "DetectionBatch detection center must be inside ROI "
+                    f"at index {index}: {center_x:.1f},{center_y:.1f}"
+                )
+        return ""
+
+    @staticmethod
+    def _detection_batch_missing_tensor_reason(detection_batch: DetectionBatch) -> str:
+        metadata = getattr(detection_batch, "metadata", {}) or {}
+        if str(metadata.get("empty_reason") or "") == "missing_tensor_meta":
+            return "DeepStream tensor meta missing for frame"
+        return ""
+
+    @staticmethod
+    def _detection_batch_timestamp_source_reason(detection_batch: DetectionBatch) -> str:
+        metadata = getattr(detection_batch, "metadata", {}) or {}
+        if str(metadata.get("source") or "") != "deepstream":
+            return ""
+        timestamp_source = str(metadata.get("timestamp_source") or "")
+        if timestamp_source == "gst_clock_base_time_pts":
+            return ""
+        return (
+            "DeepStream DetectionBatch timestamp_source must be "
+            "gst_clock_base_time_pts for control input "
+            f"(got {timestamp_source or '-'})"
+        )
+
+    def _detection_batch_stale_reason(
+        self,
+        detection_batch: DetectionBatch,
+        *,
+        now_ns: int,
+    ) -> str:
+        threshold_ms = float(
+            getattr(getattr(self.config, "control", None), "latency_reject_if_age_exceeds_ms", 0.0)
+            or 0.0
+        )
+        if threshold_ms <= 0.0:
+            return ""
+        age_ms = self._detection_batch_age_ms(detection_batch, now_ns=now_ns)
+        if not math.isfinite(age_ms):
+            return ""
+        metadata = getattr(detection_batch, "metadata", {}) or {}
+        metadata_source = str(metadata.get("source") or "")
+        timestamp_source = str(metadata.get("timestamp_source") or "")
+        explicit_runtime_clock = metadata_source == "deepstream" or timestamp_source in {
+            "gst_clock_base_time_pts",
+            "first_probe_offset_pts",
+            "observed_probe_time_invalid_pts",
+        }
+        # Some legacy unit seams use tiny synthetic timestamps. Enforce stale
+        # rejection on explicit runtime-clock batches, and otherwise only when
+        # capture_ts_ns is plausibly in this process monotonic domain.
+        max_plausible_age_ms = max(3_600_000.0, threshold_ms * 100.0)
+        if not explicit_runtime_clock and age_ms > max_plausible_age_ms:
+            return ""
+        if age_ms > threshold_ms:
+            return (
+                "DetectionBatch frame age exceeds control latency guard: "
+                f"{age_ms:.1f}ms > {threshold_ms:.1f}ms"
+            )
+        return ""
+
+    @staticmethod
+    def _detection_batch_age_ms(
+        detection_batch: DetectionBatch,
+        *,
+        now_ns: int,
+    ) -> float:
+        try:
+            capture_ts_ns = int(detection_batch.capture_ts_ns)
+        except Exception:
+            return 0.0
+        return max(0.0, (int(now_ns) - capture_ts_ns) / 1e6)
 
     def update_control_observation(self, context: FrameContext) -> RuntimeFrameResult:
         if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
@@ -391,7 +965,7 @@ class RuntimeService:
                     "prediction_context_available": prediction_context_available,
                 }
                 self.last_execution = None
-                return self._empty_runtime_frame_result()
+                return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
             self.last_frame_context = context
             center = (context.width / 2, context.height / 2)
             target_key = self._control_target_key(target, context)
@@ -472,7 +1046,7 @@ class RuntimeService:
                 "observation_only": True,
             }
             self.last_execution = None
-        return self._empty_runtime_frame_result()
+        return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
 
     def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
         total_start_ns = time.monotonic_ns()

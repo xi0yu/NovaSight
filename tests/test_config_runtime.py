@@ -273,9 +273,33 @@ def test_runtime_config_defaults_include_inference_settings() -> None:
 
     assert cfg.inference.enabled is True
     assert cfg.inference.backend == "onnxruntime"
+    assert cfg.inference.deepstream_manifest_path == ""
+    assert cfg.inference.deepstream_config_path == ""
+    assert cfg.inference.deepstream_io_mode == 2
+    assert cfg.inference.deepstream_batched_push_timeout_us == 0
     assert cfg.inference.confidence_threshold == 0.25
     assert cfg.inference.nms_threshold == 0.45
     assert cfg.inference.input_source == "source.default"
+
+
+def test_runtime_config_accepts_deepstream_backend_paths() -> None:
+    cfg = parse_runtime_config(
+        {
+            "inference": {
+                "backend": "deepstream",
+                "deepstream_manifest_path": "combat/default/model.manifest.json",
+                "deepstream_config_path": "combat/default/deepstream.ini",
+                "deepstream_io_mode": 4,
+                "deepstream_batched_push_timeout_us": 12000,
+            }
+        }
+    )
+
+    assert cfg.inference.backend == "deepstream"
+    assert cfg.inference.deepstream_manifest_path == "combat/default/model.manifest.json"
+    assert cfg.inference.deepstream_config_path == "combat/default/deepstream.ini"
+    assert cfg.inference.deepstream_io_mode == 4
+    assert cfg.inference.deepstream_batched_push_timeout_us == 12000
 
 
 def test_runtime_config_round_trip(tmp_path: Path) -> None:
@@ -390,6 +414,11 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"latency_min_velocity_measurements": 0}}, "control.latency_min_velocity_measurements"),
         ({"control": {"latency_min_velocity_confidence": 1.5}}, "control.latency_min_velocity_confidence"),
         ({"control": {"latency_min_velocity_px_s": 100, "latency_max_velocity_px_s": 50}}, "control.latency_max_velocity_px_s"),
+        ({"inference": {"deepstream_io_mode": -1}}, "inference.deepstream_io_mode"),
+        (
+            {"inference": {"deepstream_batched_push_timeout_us": -1}},
+            "inference.deepstream_batched_push_timeout_us",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_path: str) -> None:
@@ -683,6 +712,11 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
 
     assert {
         "inference.enabled",
+        "inference.backend",
+        "inference.deepstream_manifest_path",
+        "inference.deepstream_config_path",
+        "inference.deepstream_io_mode",
+        "inference.deepstream_batched_push_timeout_us",
         "inference.confidence_threshold",
         "inference.nms_threshold",
         "inference.input_source",

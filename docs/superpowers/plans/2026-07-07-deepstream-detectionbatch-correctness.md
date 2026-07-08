@@ -92,7 +92,7 @@ back to CPU or pretend DeepStream is active.
 - Modify: `novasight/model_registry/deepstream_config.py` only if generated config is incomplete.
 - Modify: `novasight/api/routes_models.py` only if API readiness payload hides required state.
 
-- [ ] **Step 1: Verify existing model readiness tests**
+- [x] **Step 1: Verify existing model readiness tests**
 
 Run:
 
@@ -102,7 +102,7 @@ pytest tests/test_inference_runtime.py::test_model_scanner_reports_need_confirm_
 
 Expected: pass.
 
-- [ ] **Step 2: Confirm readiness statuses are operator-usable**
+- [x] **Step 2: Confirm readiness statuses are operator-usable**
 
 The model scan API/status must distinguish:
 
@@ -115,7 +115,7 @@ unsupported  -> artifact suffix or required metadata is unsupported
 
 If these states already exist, do not add another test.
 
-- [ ] **Step 3: Verify generated `deepstream.ini` contains tensor-output requirements**
+- [x] **Step 3: Verify generated `deepstream.ini` contains tensor-output requirements**
 
 Run the existing config generation test:
 
@@ -134,7 +134,7 @@ output-tensor-meta=1
 output-blob-names=output0
 ```
 
-- [ ] **Step 4: Fix only missing readiness behavior**
+- [x] **Step 4: Fix only missing readiness behavior**
 
 If readiness or config generation is incomplete, fix the smallest module that owns the behavior:
 
@@ -146,7 +146,7 @@ operator/API visibility    -> novasight/api/routes_models.py
 
 Do not wire runtime DeepStream selection in this task.
 
-- [ ] **Step 5: Run focused prerequisite verification**
+- [x] **Step 5: Run focused prerequisite verification**
 
 Run:
 
@@ -162,7 +162,7 @@ Expected: pass.
 - Modify: `tests/test_inference_runtime.py`
 - Modify: `novasight/deepstream/pipeline_builder.py`
 
-- [ ] **Step 1: Keep or update the existing ROI pipeline test**
+- [x] **Step 1: Keep or update the existing ROI pipeline test**
 
 Use the existing `test_deepstream_pipeline_builder_uses_nvmm_nvinfer_and_leaky_queues` as the only ROI pipeline unit test. It must assert the exact center ROI crop and model resize sequence.
 
@@ -180,7 +180,7 @@ assert "videoconvert" not in pipeline
 assert "video/x-raw,format=BGR" not in pipeline
 ```
 
-- [ ] **Step 2: Run the ROI pipeline test**
+- [x] **Step 2: Run the ROI pipeline test**
 
 Run:
 
@@ -190,7 +190,7 @@ pytest tests/test_inference_runtime.py::test_deepstream_pipeline_builder_uses_nv
 
 Expected: pass.
 
-- [ ] **Step 3: Fix only if the test fails**
+- [x] **Step 3: Fix only if the test fails**
 
 If crop or resize order is wrong, update `build_deepstream_pipeline()` so the generated order is:
 
@@ -203,7 +203,7 @@ nvv4l2decoder
 -> nvinfer
 ```
 
-- [ ] **Step 4: Re-run the test**
+- [x] **Step 4: Re-run the test**
 
 Run:
 
@@ -219,7 +219,7 @@ Expected: pass.
 - Modify: `novasight/deepstream/tensor_meta.py`
 - Modify: `tests/test_inference_runtime.py`
 
-- [ ] **Step 1: Add one failing test for tensor shape mismatch**
+- [x] **Step 1: Add one failing test for tensor shape mismatch**
 
 Add this test near the existing DeepStream tensor tests:
 
@@ -252,7 +252,7 @@ def test_deepstream_output_tensor_rejects_manifest_shape_mismatch(tmp_path) -> N
         )
 ```
 
-- [ ] **Step 2: Run the failing test**
+- [x] **Step 2: Run the failing test**
 
 Run:
 
@@ -262,7 +262,7 @@ pytest tests/test_inference_runtime.py::test_deepstream_output_tensor_rejects_ma
 
 Expected: fail until validation is added.
 
-- [ ] **Step 3: Implement minimal validation**
+- [x] **Step 3: Implement minimal validation**
 
 In `novasight/deepstream/tensor_meta.py`, add a private validation helper:
 
@@ -284,7 +284,7 @@ def _validate_output_tensor_contract(output: Any, manifest: ModelManifest) -> No
 
 Call it at the top of `output_tensor_to_detection_batch()` before `decode_nx6_detections()`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -300,7 +300,7 @@ Expected: both pass.
 - Modify: `tests/test_inference_runtime.py`
 - Modify: `novasight/deepstream/tensor_meta.py` only if Task 2 reveals coordinate bugs.
 
-- [ ] **Step 1: Keep the existing golden tensor test as the primary correctness test**
+- [x] **Step 1: Keep the existing golden tensor test as the primary correctness test**
 
 The existing `test_deepstream_output_tensor_reuses_shared_parser_and_returns_detection_batch` should remain the single golden tensor gate.
 
@@ -322,7 +322,7 @@ assert detection.y2 == pytest.approx(300.0)
 
 Do not add multiple variations unless a real bug appears.
 
-- [ ] **Step 2: Run the golden test**
+- [x] **Step 2: Run the golden test**
 
 Run:
 
@@ -332,7 +332,7 @@ pytest tests/test_inference_runtime.py::test_deepstream_output_tensor_reuses_sha
 
 Expected: pass.
 
-- [ ] **Step 3: Fix coordinate mapping only if needed**
+- [x] **Step 3: Fix coordinate mapping only if needed**
 
 If the test fails, keep the intended mapping:
 
@@ -350,7 +350,7 @@ Do not map to capture coordinates here. Capture/control/display mapping belongs 
 - Modify: `novasight/deepstream/backend.py`
 - Modify: `tests/test_inference_runtime.py`
 
-- [ ] **Step 1: Add one status assertion to the existing backend publish test**
+- [x] **Step 1: Add one status assertion to the existing backend publish test**
 
 Extend `test_deepstream_backend_publishes_latest_detection_batch` with:
 
@@ -362,7 +362,7 @@ assert status["last_frame_id"] == 12
 assert status["last_error"] == ""
 ```
 
-- [ ] **Step 2: Run the backend publish test**
+- [x] **Step 2: Run the backend publish test**
 
 Run:
 
@@ -372,7 +372,7 @@ pytest tests/test_inference_runtime.py::test_deepstream_backend_publishes_latest
 
 Expected: pass.
 
-- [ ] **Step 3: Add minimal timing/status fields only if needed**
+- [x] **Step 3: Add minimal timing/status fields only if needed**
 
 If status lacks correctness visibility, add fields without changing backend lifecycle:
 
@@ -393,7 +393,7 @@ Do not add extensive telemetry in this task.
 - Modify: `novasight/runtime/service.py`
 - Modify: `tests/test_runtime_pipeline.py`
 
-- [ ] **Step 1: Add a narrow method to `RuntimeService`**
+- [x] **Step 1: Add a narrow method to `RuntimeService`**
 
 Add:
 
@@ -421,7 +421,7 @@ def process_detection_batch(
 
 This method is the seam between DeepStream and algorithms.
 
-- [ ] **Step 2: Add one seam test**
+- [x] **Step 2: Add one seam test**
 
 Add one test that constructs a `DetectionBatch(coordinate_space="roi")`, passes it through `process_detection_batch()`, and asserts `RuntimeService.last_frame_context` receives the same frame id and detections. Keep this test small; do not test all tracking behavior here.
 
@@ -469,7 +469,7 @@ def test_runtime_service_process_detection_batch_uses_roi_contract(tmp_path) -> 
     assert len(service.last_frame_context.detections) == 1
 ```
 
-- [ ] **Step 3: Run the seam test**
+- [x] **Step 3: Run the seam test**
 
 Run:
 
@@ -485,7 +485,7 @@ Expected: pass after method is added.
 - Modify: `novasight/runtime/service.py`
 - Modify: the same test file used in Task 5.
 
-- [ ] **Step 1: Add one negative seam test**
+- [x] **Step 1: Add one negative seam test**
 
 Add only one negative test for wrong coordinate space:
 
@@ -518,7 +518,7 @@ def test_runtime_service_rejects_non_roi_detection_batch(tmp_path) -> None:
     assert service.last_frame_context is None
 ```
 
-- [ ] **Step 2: Run the two seam tests**
+- [x] **Step 2: Run the two seam tests**
 
 Run:
 
@@ -533,7 +533,7 @@ Expected: both pass.
 **Files:**
 - No code changes unless verification exposes a bug.
 
-- [ ] **Step 1: Run prerequisite readiness checks**
+- [x] **Step 1: Run prerequisite readiness checks**
 
 Run:
 
@@ -543,7 +543,7 @@ pytest tests/test_inference_runtime.py::test_deepstream_config_is_generated_from
 
 Expected: pass.
 
-- [ ] **Step 2: Run the focused DeepStream correctness suite**
+- [x] **Step 2: Run the focused DeepStream correctness suite**
 
 Run:
 
@@ -553,7 +553,7 @@ pytest tests/test_inference_runtime.py::test_deepstream_pipeline_builder_uses_nv
 
 Expected: pass.
 
-- [ ] **Step 3: Run runtime seam tests**
+- [x] **Step 3: Run runtime seam tests**
 
 Run:
 
@@ -563,7 +563,7 @@ pytest tests/test_runtime_pipeline.py::test_runtime_service_process_detection_ba
 
 Expected: pass.
 
-- [ ] **Step 4: Run existing related tests**
+- [x] **Step 4: Run existing related tests**
 
 Run:
 

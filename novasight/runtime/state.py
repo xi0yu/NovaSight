@@ -25,3 +25,4 @@ class RuntimeState:
 class RuntimeFrameResult:
     control_intents: list[ControlIntent]
     execution_results: list[ExecutionResult]
+    observation_updated: bool = True

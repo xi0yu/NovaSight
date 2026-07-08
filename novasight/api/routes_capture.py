@@ -195,6 +195,8 @@ def image_source(request: Request, payload: ImageSourceRequest):
         runtime = getattr(request.app.state, "runtime", None)
         if runtime is not None:
             runtime.update_config(config)
+            if _runtime_uses_deepstream(runtime):
+                _clear_runtime_pipeline(runtime, "image source selected")
         config_path = getattr(request.app.state, "config_path", None)
         if config_path is not None:
             save_runtime_config(config, config_path)
@@ -208,9 +210,8 @@ def image_source(request: Request, payload: ImageSourceRequest):
 @router.post("/stop")
 def stop(request: Request) -> dict:
     runtime = getattr(request.app.state, "runtime", None)
-    pipeline = getattr(runtime, "pipeline", None)
-    if pipeline is not None and getattr(pipeline, "running", False):
-        pipeline.stop()
+    if runtime is not None:
+        _clear_runtime_pipeline(runtime, "capture stopped by user")
     state = request.app.state.capture.stop("capture stopped by user")
     config = getattr(request.app.state, "config", None)
     if config is not None:
@@ -243,6 +244,9 @@ def _ensure_runtime_pipeline(request: Request) -> None:
     config = getattr(runtime, "config", None)
     if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
         return
+    backend = str(getattr(getattr(config, "inference", None), "backend", "")).lower()
+    if backend == "deepstream":
+        return
     if runtime.pipeline is None:
         runtime.pipeline = RuntimePipeline(
             capture=request.app.state.capture,
@@ -256,6 +260,24 @@ def _ensure_runtime_pipeline(request: Request) -> None:
         logger.warning("runtime pipeline auto-start after capture failed: %s", exc)
     else:
         logger.info("runtime pipeline auto-started after capture selection")
+
+
+def _runtime_uses_deepstream(runtime) -> bool:
+    config = getattr(runtime, "config", None)
+    inference = getattr(config, "inference", None)
+    return str(getattr(inference, "backend", "")).lower() == "deepstream"
+
+
+def _clear_runtime_pipeline(runtime, reason: str) -> None:
+    pipeline = getattr(runtime, "pipeline", None)
+    if pipeline is not None:
+        try:
+            pipeline.stop()
+        except Exception as exc:
+            logger.warning("runtime pipeline stop after %s failed: %s", reason, exc)
+    runtime.pipeline = None
+    runtime.running = False
+    logger.info("runtime pipeline cleared after %s", reason)
 
 
 def _mjpeg_frames(

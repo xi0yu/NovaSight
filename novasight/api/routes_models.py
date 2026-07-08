@@ -14,6 +14,11 @@ from urllib.request import urlretrieve
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
+from novasight.api.deepstream_runtime import (
+    build_deepstream_detection_source,
+    validate_deepstream_config_matches_manifest,
+)
+from novasight.config import save_runtime_config
 from novasight.deepstream import DeepStreamPipelineConfig, build_deepstream_pipeline
 from novasight.model_registry import (
     TensorSpec,
@@ -28,9 +33,12 @@ from novasight.model_registry import (
     inspect_model_artifact,
     read_manifest,
     scan_model_artifacts,
+    validate_manifest_engine_artifact,
     write_manifest,
 )
 from novasight.inference import parse_tensor_input_shape
+from novasight.inference.input import normalize_tensor_dtype
+from novasight.runtime.pipeline import RuntimePipeline
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
@@ -109,10 +117,17 @@ class DeepStreamPrepareRequest(BaseModel):
 
     model_id: StrictStr
     display_name: StrictStr
+    runtime_precision: StrictStr = "fp16"
     input_name: StrictStr = "images"
     input_shape: list[StrictInt]
+    input_dtype: StrictStr = "float32"
+    input_color_format: StrictStr = "RGB"
+    input_scale_factor: float = 1.0 / 255.0
+    maintain_aspect_ratio: bool = False
+    symmetric_padding: bool = False
     output_name: StrictStr = "output0"
     output_shape: list[StrictInt]
+    output_dtype: StrictStr = "float32"
     class_count: StrictInt
     confidence_threshold: float = 0.25
     nms_iou_threshold: float = 0.45
@@ -122,6 +137,7 @@ class DeepStreamPipelineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device: StrictStr = "/dev/video0"
+    pixel_format: StrictStr = ""
     capture_width: StrictInt = 1920
     capture_height: StrictInt = 1080
     fps: StrictInt = 120
@@ -130,6 +146,7 @@ class DeepStreamPipelineRequest(BaseModel):
     roi_size: StrictInt = 480
     io_mode: StrictInt = 2
     batched_push_timeout_us: StrictInt = 0
+    tracker_config_path: StrictStr = ""
 
 
 def _download_file(url: str, path: Path) -> None:
@@ -362,13 +379,21 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
             asset_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(model_file, asset_path)
         checksum = _sha256(asset_path)
-        if _find_artifact(registry, version.id, filename) is None:
+        artifact_status = _artifact_registry_status(kind, asset_path)
+        existing_artifact = _find_artifact(registry, version.id, filename)
+        if existing_artifact is None:
             registry.create_artifact(
                 version_id=version.id,
                 kind=kind,
                 path=filename,
                 checksum=checksum,
-                status="ready",
+                status=artifact_status,
+            )
+        elif existing_artifact.status != artifact_status or existing_artifact.checksum != checksum:
+            registry.update_artifact_status(
+                existing_artifact.id,
+                artifact_status,
+                checksum=checksum,
             )
     except (OSError, RegistryError) as exc:
         logger.warning("model directory sync skipped path=%s error=%s", model_file, exc)
@@ -384,6 +409,20 @@ def _relative_registry_path(registry: ModelRegistry, path: Path | None) -> str:
         ).as_posix()
     except ValueError:
         return Path(path).as_posix()
+
+
+def _registry_status_from_scan(status: str) -> str:
+    if status == "ready":
+        return "ready"
+    if status == "need_confirm":
+        return "pending"
+    return "failed"
+
+
+def _artifact_registry_status(kind: str, artifact_path: Path) -> str:
+    if str(kind).lower() != "engine":
+        return "ready"
+    return _registry_status_from_scan(inspect_model_artifact(artifact_path).status)
 
 
 def _artifact_scan_payload(
@@ -615,6 +654,164 @@ def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume:
         logger.warning("runtime pipeline resume after model switch failed: %s", exc)
 
 
+def _deepstream_runtime_selected(request: Request) -> bool:
+    config = getattr(getattr(request.app.state, "runtime", None), "config", None)
+    inference = getattr(config, "inference", None)
+    return str(getattr(inference, "backend", "")).lower() == "deepstream"
+
+
+def _clear_runtime_pipeline_after_model_switch(request: Request, reason: str) -> None:
+    runtime = getattr(request.app.state, "runtime", None)
+    pipeline = getattr(runtime, "pipeline", None) if runtime is not None else None
+    if pipeline is not None:
+        try:
+            pipeline.stop()
+        except Exception as exc:
+            logger.warning("runtime pipeline stop after model switch failed: %s", exc)
+    if runtime is not None:
+        runtime.pipeline = None
+        runtime.running = False
+    logger.info("runtime pipeline cleared after model switch: %s", reason)
+
+
+def _require_deepstream_artifact_files(artifact_path: Path) -> tuple[Path, Path]:
+    if artifact_path.suffix.lower() != ".engine":
+        raise RegistryValidationError("DeepStream backend requires a TensorRT .engine artifact")
+    manifest_path = artifact_path.with_name("model.manifest.json")
+    config_path = artifact_path.with_name("deepstream.ini")
+    if not manifest_path.is_file():
+        raise RegistryValidationError(f"DeepStream manifest missing: {manifest_path}")
+    if not config_path.is_file():
+        raise RegistryValidationError(f"DeepStream nvinfer config missing: {config_path}")
+    try:
+        manifest = read_manifest(manifest_path)
+    except Exception as exc:
+        raise RegistryValidationError(f"DeepStream manifest invalid: {exc}") from exc
+    try:
+        validate_manifest_engine_artifact(manifest, artifact_path)
+    except ValueError as exc:
+        raise RegistryValidationError(str(exc)) from exc
+    try:
+        validate_deepstream_config_matches_manifest(
+            manifest,
+            nvinfer_config_path=config_path,
+            engine_path=artifact_path,
+        )
+    except ValueError as exc:
+        raise RegistryValidationError(str(exc)) from exc
+    return manifest_path, config_path
+
+
+def _deepstream_switch_status(
+    *,
+    manifest_path: Path,
+    config_path: Path,
+    artifact_path: Path,
+) -> dict[str, Any]:
+    return {
+        "available": True,
+        "loaded": False,
+        "selected": "deepstream",
+        "reason": "DeepStream model deployment updated; nvinfer loads on runtime start",
+        "artifact_path": str(artifact_path),
+        "manifest_path": str(manifest_path),
+        "deepstream_config_path": str(config_path),
+    }
+
+
+def _resume_deepstream_runtime_after_model_switch(
+    request: Request,
+    *,
+    should_resume: bool,
+    manifest_path: Path,
+    config_path: Path,
+    artifact_path: Path,
+) -> dict[str, Any]:
+    status = _deepstream_switch_status(
+        manifest_path=manifest_path,
+        config_path=config_path,
+        artifact_path=artifact_path,
+    )
+    if not should_resume:
+        return status
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        return {
+            **status,
+            "available": False,
+            "loaded": False,
+            "running": False,
+            "resume_failed": True,
+            "reason": "DeepStream runtime unavailable after model switch",
+        }
+    pipeline: RuntimePipeline | None = None
+    try:
+        detection_source = build_deepstream_detection_source(request)
+        pipeline = RuntimePipeline(
+            capture=request.app.state.capture,
+            runtime=runtime,
+            detection_source=detection_source,
+        )
+        pipeline.start()
+        runtime.pipeline = pipeline
+        source_status = dict(detection_source.status())
+    except Exception as exc:
+        if pipeline is not None:
+            try:
+                pipeline.stop()
+            except Exception as stop_exc:
+                logger.warning(
+                    "DeepStream runtime cleanup after failed model switch resume failed: %s",
+                    stop_exc,
+                )
+        runtime.pipeline = None
+        runtime.running = False
+        logger.warning("DeepStream runtime resume after model switch failed: %s", exc)
+        return {
+            **status,
+            "available": False,
+            "loaded": False,
+            "running": False,
+            "resume_failed": True,
+            "reason": f"DeepStream runtime resume after model switch failed: {exc}",
+        }
+    logger.info("DeepStream runtime resumed after model switch")
+    return {
+        **status,
+        **source_status,
+        "selected": "deepstream",
+        "available": bool(source_status.get("available", True)),
+        "loaded": bool(source_status.get("running", False)),
+        "running": bool(source_status.get("running", False)),
+        "reason": "DeepStream runtime resumed after model switch",
+        "artifact_path": str(artifact_path),
+        "manifest_path": str(manifest_path),
+        "deepstream_config_path": str(config_path),
+    }
+
+
+def _sync_deepstream_runtime_paths(
+    request: Request,
+    registry: ModelRegistry,
+    *,
+    manifest_path: Path,
+    config_path: Path,
+) -> None:
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        return
+    manifest_rel = _relative_registry_path(registry, manifest_path)
+    config_rel = _relative_registry_path(registry, config_path)
+    config.inference.deepstream_manifest_path = manifest_rel
+    config.inference.deepstream_config_path = config_rel
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is not None:
+        runtime.update_config(config)
+    config_path_value = getattr(request.app.state, "config_path", None)
+    if config_path_value is not None:
+        save_runtime_config(config, config_path_value)
+
+
 def _inference_status(request: Request) -> dict[str, Any]:
     inference = getattr(request.app.state, "inference", None)
     status = getattr(inference, "status", None)
@@ -634,14 +831,15 @@ def _model_switch_report(
 ) -> dict[str, Any]:
     loaded = inference_status.get("loaded") is True
     selected = str(inference_status.get("selected") or inference_status.get("engine") or "auto")
+    deepstream_pending = selected == "deepstream" and inference_status.get("available") is True
     message = (
         f"模型已切换：{artifact_path.name} · {selected} · {input_shape}"
-        if loaded
+        if loaded or deepstream_pending
         else f"模型登记完成，但推理运行态未加载：{artifact_path.name}"
     )
     return {
         "action": action,
-        "applied": loaded,
+        "applied": loaded or deepstream_pending,
         "rolled_back": False,
         "message": message,
         "artifact_id": deployment.artifact_id,
@@ -660,8 +858,14 @@ def _model_switch_report(
             {
                 "section": "推理运行态",
                 "impact": "采集 -> 推理 -> 控制",
-                "status": "applied" if loaded else "failed",
-                "message": "候选模型已加载并替换当前模型" if loaded else str(inference_status.get("reason") or "未加载"),
+                "status": "applied" if loaded or deepstream_pending else "failed",
+                "message": (
+                    str(inference_status.get("reason"))
+                    if deepstream_pending
+                    else "候选模型已加载并替换当前模型"
+                    if loaded
+                    else str(inference_status.get("reason") or "未加载")
+                ),
             },
         ],
     }
@@ -702,7 +906,7 @@ def prepare_deepstream_artifact(
 ) -> dict[str, Any]:
     registry = _registry(request)
     try:
-        artifact, _version, _project, artifact_path = _artifact_asset_context(
+        artifact, version, _project, artifact_path = _artifact_asset_context(
             registry,
             artifact_id,
         )
@@ -710,6 +914,13 @@ def prepare_deepstream_artifact(
             raise RegistryValidationError("DeepStream prepare currently requires a TensorRT .engine artifact")
         if not artifact_path.exists():
             raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
+        _validate_deepstream_prepare_payload(payload)
+        class_names = list(version.classes)
+        if int(payload.class_count) != len(class_names):
+            raise RegistryValidationError(
+                "DeepStream class_count must match the model version class definitions "
+                f"(class_count={payload.class_count}, classes={len(class_names)})"
+            )
         manifest = build_engine_manifest(
             model_id=payload.model_id,
             display_name=payload.display_name,
@@ -717,18 +928,24 @@ def prepare_deepstream_artifact(
             input_spec=TensorSpec(
                 name=payload.input_name,
                 shape=[int(item) for item in payload.input_shape],
-                dtype="float32",
+                dtype=normalize_tensor_dtype(payload.input_dtype),
                 layout="NCHW",
             ),
             output_spec=TensorSpec(
                 name=payload.output_name,
                 shape=[int(item) for item in payload.output_shape],
-                dtype="float32",
+                dtype=normalize_tensor_dtype(payload.output_dtype),
                 layout="NCHW",
             ),
             class_count=int(payload.class_count),
+            class_names=class_names,
             confidence_threshold=float(payload.confidence_threshold),
             nms_iou_threshold=float(payload.nms_iou_threshold),
+            runtime_precision=payload.runtime_precision,
+            input_color_format=payload.input_color_format,
+            input_scale_factor=float(payload.input_scale_factor),
+            maintain_aspect_ratio=bool(payload.maintain_aspect_ratio),
+            symmetric_padding=bool(payload.symmetric_padding),
             validated=True,
         )
         manifest_path = artifact_path.with_name("model.manifest.json")
@@ -744,9 +961,15 @@ def prepare_deepstream_artifact(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = inspect_model_artifact(artifact_path)
+    updated_artifact = registry.update_artifact_status(
+        artifact.id,
+        _registry_status_from_scan(result.status),
+        checksum=f"sha256:{result.sha256}",
+    )
     return {
         "status": result.status,
         "reason": result.reason,
+        "artifact": asdict(updated_artifact),
         "manifest_path": _relative_registry_path(registry, result.manifest_path),
         "deepstream_config_path": _relative_registry_path(
             registry,
@@ -755,6 +978,41 @@ def prepare_deepstream_artifact(
         "model_fingerprint": result.model_fingerprint,
         "config_fingerprint": config_fingerprint,
     }
+
+
+def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> None:
+    input_shape = [int(item) for item in payload.input_shape]
+    output_shape = [int(item) for item in payload.output_shape]
+    class_count = int(payload.class_count)
+    precision = payload.runtime_precision.strip().lower()
+    if precision not in {"fp32", "fp16", "int8"}:
+        raise ValueError(
+            "DeepStream runtime_precision must be fp32, fp16, or int8 "
+            f"(got {payload.runtime_precision})"
+        )
+    if len(input_shape) != 4 or input_shape[0] != 1 or input_shape[1] != 3:
+        raise ValueError(f"DeepStream input_shape must be [1, 3, H, W], got {input_shape}")
+    if len(output_shape) != 3 or output_shape[0] != 1:
+        raise ValueError(f"DeepStream output_shape must be [1, channels, candidates], got {output_shape}")
+    if class_count <= 0:
+        raise ValueError(f"DeepStream class_count must be positive, got {class_count}")
+    color_format = payload.input_color_format.strip().upper()
+    if color_format not in {"RGB", "BGR", "GRAY", "GREY"}:
+        raise ValueError(
+            "DeepStream input_color_format must be RGB, BGR, or GRAY "
+            f"(got {payload.input_color_format})"
+        )
+    if float(payload.input_scale_factor) <= 0.0:
+        raise ValueError(
+            "DeepStream input_scale_factor must be positive "
+            f"(got {payload.input_scale_factor})"
+        )
+    expected_channels = 4 + class_count
+    if int(output_shape[1]) != expected_channels:
+        raise ValueError(
+            "DeepStream YOLO output channels must equal 4 + class_count "
+            f"(channels={output_shape[1]}, class_count={class_count})"
+        )
 
 
 @router.post("/artifacts/{artifact_id}/deepstream/pipeline")
@@ -769,12 +1027,9 @@ def build_deepstream_artifact_pipeline(
             registry,
             artifact_id,
         )
-        manifest_path = artifact_path.with_name("model.manifest.json")
-        deepstream_config_path = artifact_path.with_name("deepstream.ini")
-        if not manifest_path.exists():
-            raise RegistryValidationError("model manifest is missing; prepare DeepStream config first")
-        if not deepstream_config_path.exists():
-            raise RegistryValidationError("DeepStream config is missing; prepare DeepStream config first")
+        manifest_path, deepstream_config_path = _require_deepstream_artifact_files(
+            artifact_path,
+        )
         manifest = read_manifest(manifest_path)
         if len(manifest.input.shape) != 4:
             raise RegistryValidationError("DeepStream pipeline requires a 4D NCHW input shape")
@@ -791,8 +1046,12 @@ def build_deepstream_artifact_pipeline(
             model_width=model_width,
             model_height=model_height,
             nvinfer_config_path=deepstream_config_path,
+            pixel_format=str(payload.pixel_format or "MJPG"),
             io_mode=int(payload.io_mode),
             batched_push_timeout_us=int(payload.batched_push_timeout_us),
+            tracker_config_path=Path(str(payload.tracker_config_path)).expanduser()
+            if str(payload.tracker_config_path).strip()
+            else None,
         )
         pipeline = build_deepstream_pipeline(pipeline_config)
     except RegistryError as exc:
@@ -815,6 +1074,7 @@ def build_deepstream_artifact_pipeline(
         },
         "capture": {
             "device": str(payload.device),
+            "pixel_format": str(payload.pixel_format or "MJPG"),
             "width": int(payload.capture_width),
             "height": int(payload.capture_height),
             "fps": int(payload.fps),
@@ -921,6 +1181,7 @@ async def upload_model(
         asset_path.parent.mkdir(parents=True, exist_ok=True)
         asset_path.write_bytes(content)
         checksum = _sha256(asset_path)
+        artifact_status = _artifact_registry_status(kind, asset_path)
         artifact = _find_artifact(registry, model_version.id, filename)
         if artifact is None:
             artifact = registry.create_artifact(
@@ -928,7 +1189,13 @@ async def upload_model(
                 kind=kind,
                 path=filename,
                 checksum=checksum,
-                status="ready",
+                status=artifact_status,
+            )
+        elif artifact.checksum != checksum or artifact.status != artifact_status:
+            artifact = registry.update_artifact_status(
+                artifact.id,
+                artifact_status,
+                checksum=checksum,
             )
     except RegistryError as exc:
         logger.warning("model upload rejected filename=%s error=%s", filename, exc)
@@ -1112,6 +1379,41 @@ def publish(
             artifact_id=payload.artifact_id,
         )
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
+        if _deepstream_runtime_selected(request):
+            manifest_path, config_path = _require_deepstream_artifact_files(artifact_path)
+            deployment = registry.publish(
+                project_id=project_id,
+                artifact_id=payload.artifact_id,
+            )
+            _sync_deepstream_runtime_paths(
+                request,
+                registry,
+                manifest_path=manifest_path,
+                config_path=config_path,
+            )
+            _clear_runtime_pipeline_after_model_switch(
+                request,
+                "deepstream model deployment changed",
+            )
+            inference_status = _resume_deepstream_runtime_after_model_switch(
+                request,
+                should_resume=paused_for_switch,
+                manifest_path=manifest_path,
+                config_path=config_path,
+                artifact_path=artifact_path,
+            )
+            return {
+                "deployment": asdict(deployment),
+                "inference": inference_status,
+                "report": _model_switch_report(
+                    action="publish",
+                    deployment=deployment,
+                    artifact_path=artifact_path,
+                    classes=classes,
+                    input_shape=input_shape,
+                    inference_status=inference_status,
+                ),
+            }
         candidate, candidate_status = _prepare_runnable_artifact(
             request,
             artifact_path=artifact_path,
@@ -1177,6 +1479,82 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
         _require_project(registry, project_id)
         current = registry.get_deployment(project_id)
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
+        if _deepstream_runtime_selected(request):
+            if current is None or current.previous_artifact_id is None:
+                deployment = registry.rollback(project_id=project_id)
+                artifact_path, classes, input_shape = _resolve_runnable_artifact(
+                    registry,
+                    project_id=project_id,
+                    artifact_id=deployment.artifact_id,
+                )
+                manifest_path, config_path = _require_deepstream_artifact_files(
+                    artifact_path,
+                )
+                _sync_deepstream_runtime_paths(
+                    request,
+                    registry,
+                    manifest_path=manifest_path,
+                    config_path=config_path,
+                )
+                _clear_runtime_pipeline_after_model_switch(
+                    request,
+                    "deepstream model rollback requested without previous artifact",
+                )
+                inference_status = _resume_deepstream_runtime_after_model_switch(
+                    request,
+                    should_resume=paused_for_switch,
+                    manifest_path=manifest_path,
+                    config_path=config_path,
+                    artifact_path=artifact_path,
+                )
+                return {
+                    "deployment": asdict(deployment),
+                    "inference": inference_status,
+                    "report": _model_switch_report(
+                        action="rollback",
+                        deployment=deployment,
+                        artifact_path=artifact_path,
+                        classes=classes,
+                        input_shape=input_shape,
+                        inference_status=inference_status,
+                    ),
+                }
+            artifact_path, classes, input_shape = _resolve_runnable_artifact(
+                registry,
+                project_id=project_id,
+                artifact_id=current.previous_artifact_id,
+            )
+            manifest_path, config_path = _require_deepstream_artifact_files(artifact_path)
+            deployment = registry.rollback(project_id=project_id)
+            _sync_deepstream_runtime_paths(
+                request,
+                registry,
+                manifest_path=manifest_path,
+                config_path=config_path,
+            )
+            _clear_runtime_pipeline_after_model_switch(
+                request,
+                "deepstream model deployment rolled back",
+            )
+            inference_status = _resume_deepstream_runtime_after_model_switch(
+                request,
+                should_resume=paused_for_switch,
+                manifest_path=manifest_path,
+                config_path=config_path,
+                artifact_path=artifact_path,
+            )
+            return {
+                "deployment": asdict(deployment),
+                "inference": inference_status,
+                "report": _model_switch_report(
+                    action="rollback",
+                    deployment=deployment,
+                    artifact_path=artifact_path,
+                    classes=classes,
+                    input_shape=input_shape,
+                    inference_status=inference_status,
+                ),
+            }
         if current is None or current.previous_artifact_id is None:
             deployment = registry.rollback(project_id=project_id)
             artifact_path, classes, input_shape = _resolve_runnable_artifact(

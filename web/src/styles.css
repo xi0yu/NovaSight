@@ -4793,6 +4793,7 @@ tbody tr:hover {
   height: min(var(--roi-size, 640px), 100%);
   max-height: 100%;
   overflow: hidden;
+  border-radius: 14px;
 }
 
 .console-preview img {
@@ -4815,6 +4816,23 @@ tbody tr:hover {
 
 .console-preview:has(img)::after {
   content: "";
+}
+
+.console-preview.has-overlay .console-preview-frame {
+  background:
+    linear-gradient(rgba(17, 21, 31, .055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 21, 31, .055) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(255,255,255,.7), rgba(238,241,245,.78));
+  background-size: 32px 32px, 32px 32px, auto;
+}
+
+.console-preview.has-overlay::after {
+  content: "DeepStream Tensor Overlay";
+  top: 18px;
+  transform: translateX(-50%);
+  color: rgba(124, 132, 145, .88);
+  font-size: 11px;
+  letter-spacing: 0;
 }
 
 .console-detection-layer,

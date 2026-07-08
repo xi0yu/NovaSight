@@ -4,6 +4,7 @@ import {
   getConversionJobs,
   getModelArtifacts,
   getModelVersions,
+  prepareDeepStreamArtifact,
   prepareYolov8nExample,
   publishModel,
   rollbackModel,
@@ -54,6 +55,29 @@ function readInferenceFeedback(value: Record<string, unknown> | undefined): Infe
   };
 }
 
+function isInferenceBindingReady(status: InferenceFeedback | null): boolean {
+  if (!status) {
+    return false;
+  }
+  if (status.loaded && status.available) {
+    return true;
+  }
+  return status.available && status.selected === "deepstream";
+}
+
+function inferenceBindingMessage(status: InferenceFeedback | null, modelName: string, artifactKind: string): string {
+  if (!status) {
+    return `已发布 ${artifactKind} 产物，请刷新运行状态确认推理绑定。`;
+  }
+  if (status.loaded) {
+    return `已为 ${modelName} 绑定 ${artifactKind}，推理运行时已加载。`;
+  }
+  if (status.selected === "deepstream" && status.available) {
+    return `已为 ${modelName} 准备 DeepStream nvinfer 配置，启动运行时后加载。`;
+  }
+  return `已发布 ${artifactKind} 产物，但推理运行时未加载成功，请查看下方原因。`;
+}
+
 export function ModelsView({
   projects,
   activeModel,
@@ -87,6 +111,7 @@ export function ModelsView({
   const [publishFeedback, setPublishFeedback] = useState<PublishFeedback | null>(null);
   const [rollbackFeedback, setRollbackFeedback] = useState<RollbackFeedback | null>(null);
   const [publishingArtifactId, setPublishingArtifactId] = useState<number | null>(null);
+  const [preparingDeepStreamArtifactId, setPreparingDeepStreamArtifactId] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
   const [preparingExample, setPreparingExample] = useState(false);
   const [uploadingModel, setUploadingModel] = useState(false);
@@ -292,9 +317,11 @@ export function ModelsView({
         projectId: requestProjectId,
         versionId: requestVersionId,
         artifactId: artifact.id,
-        message: nextInferenceFeedback?.loaded
-          ? `已为 ${requestProjectName} (#${requestProjectId}) 绑定 ${artifact.kind}，推理运行时已加载。`
-          : `已发布 ${artifact.kind} 产物，但推理运行时未加载成功，请查看下方原因。`
+        message: inferenceBindingMessage(
+          nextInferenceFeedback,
+          `${requestProjectName} (#${requestProjectId})`,
+          artifact.kind
+        )
       });
     } catch (requestError) {
       setPublishFeedback({
@@ -305,6 +332,77 @@ export function ModelsView({
       });
     } finally {
       setPublishingArtifactId(null);
+    }
+  }
+
+  async function handlePrepareDeepStream(artifact: ModelArtifact) {
+    if (!selectedProject || !selectedVersion) {
+      return;
+    }
+    const inputShape = parseNchwShape(selectedVersion.input_shape);
+    if (!inputShape) {
+      setPublishFeedback({
+        projectId: selectedProject.id,
+        versionId: selectedVersion.id,
+        artifactId: artifact.id,
+        error: `无法从输入尺寸 ${selectedVersion.input_shape || "未标注"} 推导 DeepStream 配置。`
+      });
+      return;
+    }
+    const classCount = Math.max(1, selectedVersion.classes.length);
+    const modelHeight = inputShape[2];
+    const modelWidth = inputShape[3];
+    const candidates = yoloCandidateCount(modelWidth, modelHeight);
+    if (candidates <= 0) {
+      setPublishFeedback({
+        projectId: selectedProject.id,
+        versionId: selectedVersion.id,
+        artifactId: artifact.id,
+        error: `输入尺寸 ${modelWidth}x${modelHeight} 无法推导 YOLO 输出候选数。`
+      });
+      return;
+    }
+    setPreparingDeepStreamArtifactId(artifact.id);
+    setPublishFeedback(null);
+    try {
+      const result = await prepareDeepStreamArtifact(artifact.id, {
+        model_id: selectedProject.name,
+        display_name: selectedProject.name,
+        runtime_precision: "fp16",
+        input_name: "images",
+        input_shape: inputShape,
+        input_dtype: "float32",
+        input_color_format: "RGB",
+        input_scale_factor: 1 / 255,
+        maintain_aspect_ratio: false,
+        symmetric_padding: false,
+        output_name: "output0",
+        output_shape: [1, 4 + classCount, candidates],
+        output_dtype: "float32",
+        class_count: classCount,
+        confidence_threshold: 0.25,
+        nms_iou_threshold: 0.45
+      });
+      await onRuntimeRefresh();
+      setRegistryRefreshKey((current) => current + 1);
+      setPublishFeedback({
+        projectId: selectedProject.id,
+        versionId: selectedVersion.id,
+        artifactId: artifact.id,
+        message:
+          result.status === "ready"
+            ? "DeepStream 配置已准备完成，可以发布到推理链路。"
+            : result.reason || "DeepStream 配置已生成，但仍未进入可发布状态。"
+      });
+    } catch (requestError) {
+      setPublishFeedback({
+        projectId: selectedProject.id,
+        versionId: selectedVersion.id,
+        artifactId: artifact.id,
+        error: getErrorMessage(requestError)
+      });
+    } finally {
+      setPreparingDeepStreamArtifactId(null);
     }
   }
 
@@ -333,8 +431,8 @@ export function ModelsView({
       setRegistryRefreshKey((current) => current + 1);
       setRollbackFeedback({
         projectId: requestProjectId,
-        message: nextInferenceFeedback?.loaded
-          ? `已回滚 ${requestProjectName} (#${requestProjectId})，推理运行时已重新加载。`
+        message: isInferenceBindingReady(nextInferenceFeedback)
+          ? `已回滚 ${requestProjectName} (#${requestProjectId})，推理绑定已更新。`
           : `已回滚 ${requestProjectName} (#${requestProjectId})，但推理运行时未加载成功。`
       });
     } catch (requestError) {
@@ -672,6 +770,21 @@ export function ModelsView({
                   <StatusIndicator tone={getStatusTone(artifact.status)}>
                     {formatStatusLabel(artifact.status)}
                   </StatusIndicator>
+                  {artifact.kind === "engine" && artifact.status === "pending" ? (
+                    <button
+                      className="button compact-button"
+                      type="button"
+                      onClick={() => handlePrepareDeepStream(artifact)}
+                      disabled={
+                        rollingBack ||
+                        publishingArtifactId !== null ||
+                        preparingDeepStreamArtifactId !== null
+                      }
+                      title="根据当前版本输入尺寸和类别数生成 model.manifest.json 与 deepstream.ini"
+                    >
+                      {preparingDeepStreamArtifactId === artifact.id ? "准备中..." : "准备 DeepStream"}
+                    </button>
+                  ) : null}
                   <button
                     className="button compact-button"
                     type="button"
@@ -679,6 +792,7 @@ export function ModelsView({
                     disabled={
                       rollingBack ||
                       publishingArtifactId !== null ||
+                      preparingDeepStreamArtifactId !== null ||
                       artifact.status !== "ready" ||
                       !isRunnableArtifact(artifact)
                     }
@@ -759,13 +873,43 @@ function getStatusTone(status: string): "good" | "warn" | "bad" | "idle" {
   return "idle";
 }
 
+function parseNchwShape(value: string): [number, number, number, number] | null {
+  const parts = String(value || "")
+    .toLowerCase()
+    .split("x")
+    .map((item) => Number.parseInt(item.trim(), 10))
+    .filter((item) => Number.isFinite(item) && item > 0);
+  if (parts.length === 2) {
+    return [1, 3, parts[0], parts[1]];
+  }
+  if (parts.length === 3) {
+    return [1, parts[0], parts[1], parts[2]];
+  }
+  if (parts.length === 4) {
+    return [parts[0], parts[1], parts[2], parts[3]];
+  }
+  return null;
+}
+
+function yoloCandidateCount(width: number, height: number): number {
+  const strides = [8, 16, 32];
+  return strides.reduce((total, stride) => {
+    if (width % stride !== 0 || height % stride !== 0) {
+      return total;
+    }
+    return total + (width / stride) * (height / stride);
+  }, 0);
+}
+
 function isRunnableArtifact(artifact: ModelArtifact): boolean {
   return artifact.kind === "onnx" || artifact.kind === "engine";
 }
 
 function artifactRuntimeHint(artifact: ModelArtifact): string {
   if (artifact.kind === "engine") {
-    return "后缀 .engine，发布后自动使用 TensorRT。";
+    return artifact.status === "pending"
+      ? "TensorRT Engine 需要先准备 DeepStream 配置。"
+      : "TensorRT Engine，发布后由当前推理后端加载。";
   }
   if (artifact.kind === "onnx") {
     return "后缀 .onnx，发布后自动使用 ONNXRuntime。";
@@ -792,11 +936,17 @@ function InferenceBindingCard({
       </div>
     );
   }
-  const ok = status.loaded && status.available;
+  const ok = isInferenceBindingReady(status);
   return (
     <div className={ok ? "model-inference-binding good" : "model-inference-binding bad"}>
       <div>
-        <strong>{ok ? "推理运行时已绑定" : "推理运行时未就绪"}</strong>
+        <strong>
+          {status.loaded
+            ? "推理运行时已加载"
+            : ok
+            ? "DeepStream 推理已准备"
+            : "推理运行时未就绪"}
+        </strong>
         <span>
           {status.selected || "未知后端"}
           {status.inputShape ? ` · 输入 ${status.inputShape}` : ""}
