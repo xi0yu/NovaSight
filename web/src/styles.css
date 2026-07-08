@@ -4951,6 +4951,17 @@ tbody tr:hover {
   font-weight: 800;
 }
 
+.console-info {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #d6dae4;
+  border-radius: 12px;
+  background: #f7f8fa;
+  color: #555f6f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .launch-dialog-layer {
   position: fixed;
   inset: 0;

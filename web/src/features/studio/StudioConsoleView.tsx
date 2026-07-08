@@ -21,6 +21,7 @@ import {
   selectCaptureProfile,
   startRuntimePipeline,
   stopCapture,
+  stopRuntimePipeline,
   streamUrl,
   updateRuntimeConfig,
   updateRuntimeConfigField
@@ -377,6 +378,8 @@ export function StudioConsoleView({
   const [launchCompletedStages, setLaunchCompletedStages] = useState(0);
   const [launchError, setLaunchError] = useState("");
   const [launchToastVisible, setLaunchToastVisible] = useState(false);
+  const [mainlineLaunchAccepted, setMainlineLaunchAccepted] = useState(false);
+  const [mainlineLaunchMessage, setMainlineLaunchMessage] = useState("");
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
@@ -459,14 +462,53 @@ export function StudioConsoleView({
   const executionMeta = asRecord(execution.metadata);
   const inferenceTrace = asRecord(vision.inference);
   const runtimeInference = asRecord(runtime?.inference);
+  const pipeline = asRecord(runtime?.pipeline);
   const deepstreamRuntimeSelected = readString(runtimeInference.selected, "") === "deepstream";
   const deepstreamTerminalError = readBoolean(runtimeInference.terminal_error, false);
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceLoaded = runtimeInference.loaded === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
-  const captureMainRunning = deepstreamRuntimeSelected ? runtime?.running === true : capture?.available === true;
+  const pipelineRunning = readBoolean(pipeline.running, false);
+  const pipelineLastError = readString(pipeline.last_error, "");
+  const runtimeMainlineRunning = runtime?.running === true || pipelineRunning;
+  const mainlineLaunchPending =
+    deepstreamRuntimeSelected &&
+    mainlineLaunchAccepted &&
+    !runtimeMainlineRunning &&
+    !deepstreamTerminalError &&
+    pipelineLastError === "" &&
+    runtime?.fatal_error === null;
+  const captureMainRunning = deepstreamRuntimeSelected
+    ? runtimeMainlineRunning || mainlineLaunchPending
+    : capture?.available === true;
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
+  const captureStatusText = deepstreamRuntimeSelected
+    ? runtimeMainlineRunning
+      ? "DeepStream 主链运行中"
+      : mainlineLaunchPending
+        ? "启动确认中"
+        : runtimeInferenceConfigured
+          ? "主链待启动"
+          : "未配置"
+    : captureMainRunning
+      ? "运行中"
+      : captureMainConfigured
+        ? "已配置"
+        : "已停止";
+  const inferenceStatusText = deepstreamRuntimeSelected
+    ? runtimeMainlineRunning
+      ? "DetectionBatch 运行中"
+      : mainlineLaunchPending
+        ? "等待后端反馈"
+        : deepstreamTerminalError
+          ? "管线故障"
+          : runtimeInferenceConfigured
+            ? "待启动"
+            : "未配置"
+    : runtime?.running
+      ? "运行中"
+      : "已停止";
   const engineStatusLabel = deepstreamTerminalError
     ? "管线故障"
     : runtimeInferenceLoaded
@@ -484,7 +526,6 @@ export function StudioConsoleView({
   const runtimeModelOutput = asRecord(runtimeInference.model_output);
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
   const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
-  const pipeline = asRecord(runtime?.pipeline);
   const executorStatus = asRecord(runtime?.executor);
   const executors = asRecord(executorStatus.executors);
   const kmnetStatus = asRecord(executors.kmnet);
@@ -513,6 +554,35 @@ export function StudioConsoleView({
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
+  useEffect(() => {
+    if (!deepstreamRuntimeSelected) {
+      setMainlineLaunchAccepted(false);
+      setMainlineLaunchMessage("");
+      return;
+    }
+    if (runtimeMainlineRunning) {
+      setMainlineLaunchAccepted(false);
+      setMainlineLaunchMessage("");
+      return;
+    }
+    if (
+      mainlineLaunchAccepted &&
+      (deepstreamTerminalError || pipelineLastError !== "" || runtime?.fatal_error !== null)
+    ) {
+      setMainlineLaunchAccepted(false);
+      setMainlineLaunchMessage("");
+      setLocalError(`主链启动未确认：${pipelineLastError || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
+    }
+  }, [
+    deepstreamRuntimeSelected,
+    deepstreamTerminalError,
+    mainlineLaunchAccepted,
+    pipelineLastError,
+    runtime?.fatal_error,
+    runtimeInferenceDetail,
+    runtimeInferenceReason,
+    runtimeMainlineRunning
+  ]);
   const controlStrategy = "experimental_angle_pid";
   const controlMinConfidence = readNumber(controlConfig.min_confidence, 0);
   const selectionFovRatio = readNumber(controlConfig.fov_ratio, 0.28);
@@ -897,15 +967,21 @@ export function StudioConsoleView({
   const stopCurrentCapture = useCallback(async () => {
     setBusy("stop");
     setLocalError(null);
+    setMainlineLaunchAccepted(false);
+    setMainlineLaunchMessage("");
     try {
-      await stopCapture();
+      if (deepstreamRuntimeSelected) {
+        await stopRuntimePipeline();
+      } else {
+        await stopCapture();
+      }
       await onRefresh();
     } catch (err) {
       setLocalError(getErrorMessage(err));
     } finally {
       setBusy(null);
     }
-  }, [onRefresh]);
+  }, [deepstreamRuntimeSelected, onRefresh]);
 
   const startInferenceThread = useCallback(async () => {
     setBusy("runtime.start");
@@ -1007,7 +1083,14 @@ export function StudioConsoleView({
         await selectCaptureProfile(buildCapturePayload());
       });
       await runStage(2, async () => {
-        await startRuntimePipeline();
+        const status = asRecord(await startRuntimePipeline());
+        const accepted = readBoolean(status.running, true);
+        if (!accepted) {
+          const reason = readString(status.last_error, "后端未确认主链运行。");
+          throw new Error(reason);
+        }
+        setMainlineLaunchAccepted(true);
+        setMainlineLaunchMessage("主链启动请求已提交，正在等待后端状态确认。");
       });
       await runStage(3);
       await runStage(4);
@@ -1023,6 +1106,8 @@ export function StudioConsoleView({
       }
       setLaunchStatus("failed");
       setLaunchError(getErrorMessage(err));
+      setMainlineLaunchAccepted(false);
+      setMainlineLaunchMessage("");
       setLocalError(`启动主链失败：${getErrorMessage(err)}`);
       await onRefresh();
     } finally {
@@ -1046,9 +1131,11 @@ export function StudioConsoleView({
     }
     setLaunchStatus("cancelled");
     setLaunchError("");
+    setMainlineLaunchAccepted(false);
+    setMainlineLaunchMessage("");
     setBusy(null);
     try {
-      await stopCapture();
+      await stopRuntimePipeline();
       await onRefresh();
     } catch (err) {
       setLocalError(`取消启动失败：${getErrorMessage(err)}`);
@@ -1381,7 +1468,9 @@ export function StudioConsoleView({
           : `${launchCompletedStages}/6`;
   const launchTitle =
     launchStatus === "success"
-      ? "视觉处理链路已运行"
+      ? runtimeMainlineRunning
+        ? "视觉处理链路已运行"
+        : "主链启动请求已提交"
       : launchStatus === "failed"
         ? "启动主链失败"
         : launchStatus === "cancelled"
@@ -1389,7 +1478,9 @@ export function StudioConsoleView({
           : activeLaunchStage.title;
   const launchCaption =
     launchStatus === "success"
-      ? "采集、ROI、推理、跟踪、控制与执行出口已交由后端主链持有。"
+      ? runtimeMainlineRunning
+        ? "采集、ROI、推理、跟踪、控制与执行出口已交由后端主链持有。"
+        : "正在等待状态流确认 DetectionBatch 与控制输出，顶部会保持启动确认中。"
       : launchStatus === "failed"
         ? launchError || "后端拒绝启动，已保留当前运行态。"
         : launchStatus === "cancelled"
@@ -1434,7 +1525,9 @@ export function StudioConsoleView({
         <section className="console-process">
           <div className="console-process-state">
             <span className="console-dot" />
-            采集：{captureMainRunning ? "运行中" : captureMainConfigured ? "已配置" : "已停止"} · 推理：{runtime?.running ? "运行中" : "已停止"}
+            {deepstreamRuntimeSelected
+              ? `主链：${captureStatusText} · 推理：${inferenceStatusText}`
+              : `采集：${captureStatusText} · 推理：${inferenceStatusText}`}
           </div>
           <button
             className={captureMainRunning ? "console-button danger" : "console-button primary"}
@@ -1458,6 +1551,12 @@ export function StudioConsoleView({
           <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">导入配置...</button>
           <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
         </section>
+
+        {mainlineLaunchPending ? (
+          <div className="console-info">
+            {mainlineLaunchMessage || "主链启动请求已提交，正在等待后端状态确认。"}
+          </div>
+        ) : null}
 
         {lastError ? <div className="console-error">{lastError}</div> : null}
 
@@ -2384,7 +2483,7 @@ export function StudioConsoleView({
       ) : null}
 
       <div className={launchToastVisible ? "launch-toast show" : "launch-toast"} role="status">
-        视觉处理链路已启动
+        主链启动请求已提交
       </div>
     </section>
   );
