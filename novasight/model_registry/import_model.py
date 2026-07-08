@@ -25,6 +25,7 @@ def import_onnx_model(
     source_path: Path,
     *,
     output_dir: Path = Path("models/originals"),
+    target_dir: Path | None = None,
     model_id: str | None = None,
     display_name: str | None = None,
     class_names: list[str] | None = None,
@@ -40,9 +41,9 @@ def import_onnx_model(
 
     inferred = inspect_onnx_model(source_path)
     model_name = _safe_component(model_id or source_path.stem)
-    target_dir = Path(output_dir) / model_name
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / source_path.name
+    resolved_target_dir = Path(target_dir) if target_dir is not None else Path(output_dir) / model_name
+    resolved_target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = resolved_target_dir / source_path.name
     if source_path.resolve(strict=False) != target_path.resolve(strict=False):
         shutil.copy2(source_path, target_path)
 
@@ -66,7 +67,7 @@ def import_onnx_model(
         runtime_precision=runtime_precision,
         validated=False,
     )
-    manifest_path = target_dir / "model.manifest.json"
+    manifest_path = resolved_target_dir / "model.manifest.json"
     write_manifest(manifest, manifest_path)
     return ImportedModel(manifest=manifest, model_path=target_path, manifest_path=manifest_path)
 

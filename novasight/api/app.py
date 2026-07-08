@@ -20,6 +20,7 @@ from .routes_capture import router as capture_router
 from .routes_device import router as device_router
 from .routes_executors import router as executors_router
 from .routes_health import router as health_router
+from .routes_model_import import router as model_import_router
 from .routes_models import router as models_router
 from .routes_runtime import router as runtime_router
 
@@ -108,6 +109,7 @@ def create_app(
     app.include_router(capture_router)
     app.include_router(runtime_router)
     app.include_router(models_router)
+    app.include_router(model_import_router)
     app.include_router(executors_router)
     return app
 
