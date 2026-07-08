@@ -45,6 +45,39 @@ class ModelBuildRequest(BaseModel):
     force: bool = False
 
 
+@router.get("")
+@router.get("/")
+def list_registered_models(request: Request) -> dict[str, Any]:
+    registry: ModelRegistry = request.app.state.models
+    projects = []
+    for project in registry.list_projects():
+        versions = []
+        for version in registry.list_versions(project.id):
+            artifacts = registry.list_artifacts(version.id)
+            jobs = registry.list_conversion_jobs(version.id)
+            versions.append(
+                {
+                    **asdict(version),
+                    "artifacts": [asdict(artifact) for artifact in artifacts],
+                    "jobs": [asdict(job) for job in jobs],
+                }
+            )
+        deployment = registry.get_deployment(project.id)
+        projects.append(
+            {
+                **asdict(project),
+                "versions": versions,
+                "deployment": asdict(deployment) if deployment is not None else None,
+            }
+        )
+    active_deployment = registry.get_active_deployment()
+    return {
+        "projects": projects,
+        "project_count": len(projects),
+        "active_deployment": asdict(active_deployment) if active_deployment is not None else None,
+    }
+
+
 @router.post("/import")
 def import_model(request: Request, payload: ModelImportRequest) -> dict[str, Any]:
     registry: ModelRegistry = request.app.state.models
