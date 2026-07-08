@@ -35,6 +35,9 @@ def detection_batch_to_frame_context(
         tracks=detection_batch_tracks(detection_batch),
         classes=list(detection_batch.classes),
         capture_ts_ns=int(detection_batch.capture_ts_ns),
+        inference_start_ts_ns=int(detection_batch.inference_start_ts_ns),
+        inference_end_ts_ns=int(detection_batch.inference_end_ts_ns),
+        postprocess_ts_ns=int(detection_batch.inference_end_ts_ns),
     )
 
 

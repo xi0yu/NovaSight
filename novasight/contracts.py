@@ -151,6 +151,7 @@ class DetectionBatch:
     detections: list[Detection] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
     coordinate_space: DetectionCoordinateSpace = "roi"
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if int(self.frame_id) < 0:
@@ -161,6 +162,9 @@ class DetectionBatch:
             raise ValueError("DetectionBatch.inference_start_ts_ns must be positive")
         if int(self.inference_end_ts_ns) < int(self.inference_start_ts_ns):
             raise ValueError("DetectionBatch.inference_end_ts_ns must be >= inference_start_ts_ns")
+        object.__setattr__(self, "detections", list(self.detections))
+        object.__setattr__(self, "classes", list(self.classes))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
     def inference_latency_ms(self) -> float:
@@ -252,6 +256,13 @@ class FrameContext:
     tracks: list[Track] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
     capture_ts_ns: int | None = None
+    dequeue_ts_ns: int | None = None
+    decode_ts_ns: int | None = None
+    roi_ts_ns: int | None = None
+    inference_start_ts_ns: int | None = None
+    inference_end_ts_ns: int | None = None
+    postprocess_ts_ns: int | None = None
+    control_start_ts_ns: int | None = None
 
 
 @dataclass(frozen=True)

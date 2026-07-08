@@ -179,6 +179,7 @@ class CaptureLoop(threading.Thread):
             width=width,
             height=height,
             capture_ts_ns=capture_ts_ns,
+            dequeue_ts_ns=dequeue_ts_ns,
         )
         self.buffer.put(
             buffer,
