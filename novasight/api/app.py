@@ -25,6 +25,7 @@ from .routes_health import router as health_router
 from .routes_model_import import router as model_import_router
 from .routes_models import router as models_router
 from .routes_runtime import router as runtime_router
+from .routes_status import router as status_router
 from .routes_system import router as system_router
 from .routes_websocket import router as websocket_router
 
@@ -126,6 +127,7 @@ def create_app(
     app.include_router(device_router)
     app.include_router(capture_router)
     app.include_router(runtime_router)
+    app.include_router(status_router)
     app.include_router(models_router)
     app.include_router(model_import_router)
     app.include_router(executors_router)
