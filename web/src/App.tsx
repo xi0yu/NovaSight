@@ -289,6 +289,18 @@ export default function App() {
     return () => window.clearInterval(intervalId);
   }, [lastWsMessageAt, realtimeStatus]);
 
+  useEffect(() => {
+    if (!license?.valid || realtimeStatus === "connected") {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void load();
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, [license?.valid, load, realtimeStatus]);
+
   if (!license?.valid) {
     return (
       <LicenseGate
