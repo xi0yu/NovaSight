@@ -19,6 +19,7 @@ class PerfSummary:
     capture_fps: dict[str, float]
     inference_fps: dict[str, float]
     dropped_frames: int
+    covered_frames: int
     stale_detection_samples: int
     gates: dict[str, dict[str, Any]]
     passed: bool
@@ -83,15 +84,38 @@ def run_perf_probe(
         time.sleep(interval)
     elapsed = time.monotonic() - start
     stats = [_statistics(sample) for sample in samples]
-    e2e = [_number(stat.get("e2e_latency")) for stat in stats]
-    capture_fps = [_number(stat.get("capture_fps")) for stat in stats]
-    inference_fps = [_number(stat.get("inference_fps")) for stat in stats]
+    e2e = [_stat_number(stat, "e2e_latency_ms", "e2e_latency", "end_to_end_latency_ms") for stat in stats]
+    capture_fps = [_stat_number(stat, "capture_fps", "tensor_meta_fps") for stat in stats]
+    inference_fps = [_stat_number(stat, "inference_fps", "detection_batch_fps", "postprocess_fps") for stat in stats]
     stale_detection_samples = sum(
         1
         for stat in stats
-        if _number(stat.get("last_frame_age_ms")) > max(1000.0 * interval * 2.0, 100.0)
+        if _stat_number(stat, "last_frame_age_ms") > max(1000.0 * interval * 2.0, 100.0)
     )
-    dropped_frames = int(max((_number(stat.get("dropped_counter")) for stat in stats), default=0.0))
+    dropped_frames = int(
+        max(
+            (
+                _stat_number(stat, "dropped_counter", "frames_dropped", "skipped_counter")
+                for stat in stats
+            ),
+            default=0.0,
+        )
+    )
+    covered_frames = int(
+        max(
+            (
+                _stat_number(
+                    stat,
+                    "control_observation_counter",
+                    "inference_counter",
+                    "capture_counter",
+                    "published_batches",
+                )
+                for stat in stats
+            ),
+            default=0.0,
+        )
+    )
     latency = _percentiles(e2e)
     capture = _percentiles(capture_fps)
     inference = _percentiles(inference_fps)
@@ -113,6 +137,7 @@ def run_perf_probe(
         capture_fps=capture,
         inference_fps=inference,
         dropped_frames=dropped_frames,
+        covered_frames=covered_frames,
         stale_detection_samples=stale_detection_samples,
         gates=gates,
         passed=passed,
@@ -205,6 +230,13 @@ def _number(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return number if number == number else 0.0
+
+
+def _stat_number(stat: dict[str, Any], *keys: str) -> float:
+    for key in keys:
+        if key in stat:
+            return _number(stat.get(key))
+    return 0.0
 
 
 def _percentiles(values: list[float]) -> dict[str, float]:

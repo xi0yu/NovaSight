@@ -100,6 +100,7 @@ Review the output:
 - `e2e_latency_ms.p95` must be below `20.0`; below `15.0` is the preferred
   production target.
 - `capture_fps.p50` should stay within `+-1%` of the configured target FPS.
+- `covered_frames` should increase during the run.
 - `dropped_frames` should not grow during a stable run.
 - `stale_detection_samples` should remain near zero after warm-up.
 - `passed` must be `true`; failed gates are listed under `gates`.
