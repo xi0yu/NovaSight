@@ -16,8 +16,10 @@ class DeepStreamPipelineConfig:
     model_width: int
     model_height: int
     nvinfer_config_path: Path
+    pixel_format: str = "MJPG"
     io_mode: int = 2
     batched_push_timeout_us: int = 0
+    tracker_config_path: Path | None = None
 
     @property
     def roi_right(self) -> int:
@@ -31,10 +33,25 @@ class DeepStreamPipelineConfig:
 def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
     _validate_config(config)
     config_path = Path(config.nvinfer_config_path).resolve(strict=False)
+    tracker_config_path = (
+        Path(config.tracker_config_path).resolve(strict=False)
+        if config.tracker_config_path is not None
+        else None
+    )
     queue = "queue max-size-buffers=1 leaky=downstream"
+    inference_segments = [
+        f"nvinfer name=primary-infer config-file-path={_gst_property_value(config_path)}",
+    ]
+    if tracker_config_path is not None:
+        inference_segments.extend(
+            [
+                "!",
+                f"nvtracker name=tracker ll-config-file={_gst_property_value(tracker_config_path)}",
+            ]
+        )
     return " ".join(
         [
-            f"v4l2src device={config.device} io-mode={config.io_mode} do-timestamp=true",
+            f"v4l2src device={_gst_property_value(config.device)} io-mode={config.io_mode} do-timestamp=true",
             "!",
             (
                 f"image/jpeg,width={config.capture_width},height={config.capture_height},"
@@ -73,11 +90,20 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             "live-source=1",
             f"batched-push-timeout={config.batched_push_timeout_us}",
             "!",
-            f"nvinfer name=primary-infer config-file-path={config_path}",
+            *inference_segments,
             "!",
             "fakesink sync=false",
         ]
     )
+
+
+def validate_deepstream_capture_pixel_format(pixel_format: str) -> None:
+    normalized = str(pixel_format or "").strip().upper()
+    if normalized and normalized not in {"MJPG", "MJPEG"}:
+        raise ValueError(
+            "DeepStream backend currently expects MJPEG capture "
+            f"(capture.pixel_format={normalized})"
+        )
 
 
 def _validate_config(config: DeepStreamPipelineConfig) -> None:
@@ -92,7 +118,21 @@ def _validate_config(config: DeepStreamPipelineConfig) -> None:
     for field, value in positive_fields.items():
         if int(value) <= 0:
             raise ValueError(f"{field} must be positive")
+    validate_deepstream_capture_pixel_format(config.pixel_format)
+    if int(config.io_mode) < 0:
+        raise ValueError("io_mode must be >= 0")
+    if int(config.batched_push_timeout_us) < 0:
+        raise ValueError("batched_push_timeout_us must be >= 0")
     if config.roi_left < 0 or config.roi_top < 0:
         raise ValueError("ROI left/top must be >= 0")
     if config.roi_right > config.capture_width or config.roi_bottom > config.capture_height:
         raise ValueError("ROI crop must stay inside capture frame")
+
+
+def _gst_property_value(value: object) -> str:
+    text = str(value)
+    safe_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._:-")
+    if text and all(ch in safe_chars for ch in text):
+        return text
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
