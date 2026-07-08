@@ -30,6 +30,7 @@ from .aim import (
 from .state import RuntimeFrameResult, RuntimeState
 from .candidates import aim_point
 from .recorder import build_control_frame_record
+from .detection_batch import detection_batch_to_frame_context
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
@@ -348,13 +349,10 @@ class RuntimeService:
         if detection_batch.coordinate_space != "roi":
             self._clear_pending_commands("DETECTION_BATCH_COORDINATE_SPACE_INVALID")
             return self._empty_runtime_frame_result()
-        context = FrameContext(
-            frame_id=detection_batch.frame_id,
+        context = detection_batch_to_frame_context(
+            detection_batch,
             width=int(width),
             height=int(height),
-            detections=list(detection_batch.detections),
-            classes=list(detection_batch.classes),
-            capture_ts_ns=detection_batch.capture_ts_ns,
         )
         return self.update_control_observation(context)
 
