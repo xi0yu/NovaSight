@@ -5,6 +5,11 @@ import argparse
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import math
+import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 import time
 from typing import Any
@@ -33,6 +38,19 @@ def main() -> int:
     capture_loss.add_argument("--duration-s", type=float, default=30.0)
     capture_loss.add_argument("--interval-s", type=float, default=0.5)
 
+    overload = subparsers.add_parser("overload", help="Run a load command while probing telemetry gates.")
+    overload.add_argument("--duration-s", type=float, default=120.0)
+    overload.add_argument("--interval-s", type=float, default=0.05)
+    overload.add_argument("--max-p95-ms", type=float, default=20.0)
+    overload.add_argument("--target-fps", type=float, default=0.0)
+    overload.add_argument("--fps-tolerance-pct", type=float, default=1.0)
+    overload.add_argument("--min-samples", type=int, default=10)
+    overload.add_argument(
+        "--stress-command",
+        default="",
+        help="Optional load command. Defaults to stress-ng if installed.",
+    )
+
     args = parser.parse_args()
     headers = _parse_headers(args.header)
     if args.command == "bad-model":
@@ -48,6 +66,18 @@ def main() -> int:
             headers=headers,
             duration_s=args.duration_s,
             interval_s=args.interval_s,
+        )
+    elif args.command == "overload":
+        result = run_overload_probe(
+            base_url=args.base_url,
+            headers=headers,
+            duration_s=args.duration_s,
+            interval_s=args.interval_s,
+            max_p95_ms=args.max_p95_ms,
+            target_fps=args.target_fps,
+            fps_tolerance_pct=args.fps_tolerance_pct,
+            min_samples=args.min_samples,
+            stress_command=args.stress_command,
         )
     else:
         parser.error(f"unknown command: {args.command}")
@@ -130,6 +160,89 @@ def run_capture_loss_probe(
             "expectation": "unplug capture device during the window; runtime state should report capture.available=false",
         },
     )
+
+
+def run_overload_probe(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    duration_s: float,
+    interval_s: float,
+    max_p95_ms: float,
+    target_fps: float,
+    fps_tolerance_pct: float,
+    min_samples: int,
+    stress_command: str,
+) -> ProbeResult:
+    _ensure_repo_root_importable()
+    from tests.perf_test import run_perf_probe
+
+    command = _load_command(stress_command, duration_s)
+    process = _start_load_process(command)
+    try:
+        summary = run_perf_probe(
+            base_url=base_url,
+            endpoint="/api/runtime/state",
+            duration_s=duration_s,
+            interval_s=interval_s,
+            headers=headers,
+            max_p95_ms=max_p95_ms,
+            target_fps=target_fps,
+            fps_tolerance_pct=fps_tolerance_pct,
+            min_samples=min_samples,
+        )
+    finally:
+        _stop_load_process(process)
+    detail = {
+        "load_command": command,
+        "load_started": process is not None,
+        "load_exit_code": process.poll() if process is not None else None,
+        "perf": asdict(summary),
+        "expectation": "runtime keeps serving telemetry under load and latency gates remain bounded",
+    }
+    return ProbeResult(
+        name="inference_overload_bounded_latency",
+        passed=summary.passed,
+        detail=detail,
+    )
+
+
+def _ensure_repo_root_importable() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    repo_root_text = str(repo_root)
+    if repo_root_text not in sys.path:
+        sys.path.insert(0, repo_root_text)
+
+
+def _load_command(value: str, duration_s: float) -> list[str]:
+    if value.strip():
+        return shlex.split(value)
+    stress_ng = shutil.which("stress-ng")
+    if stress_ng is None:
+        return []
+    timeout_s = max(1, int(math.ceil(duration_s)))
+    return [stress_ng, "--cpu", "0", "--timeout", f"{timeout_s}s"]
+
+
+def _start_load_process(command: list[str]) -> subprocess.Popen[bytes] | None:
+    if not command:
+        return None
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _stop_load_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2.0)
 
 
 def _request_json(

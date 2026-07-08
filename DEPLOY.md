@@ -132,8 +132,12 @@ journalctl -u novasight -f
 
 # Inference overload: add load, then verify old frames are dropped instead of
 # building unbounded latency.
-stress-ng --cpu 4 --timeout 120s
-uv run python tests/perf_test.py --duration-s 120 --interval-s 0.05
+uv run python scripts/fault_injection.py overload \
+  --duration-s 120 \
+  --interval-s 0.05 \
+  --max-p95-ms 20 \
+  --target-fps 60 \
+  --fps-tolerance-pct 1
 
 # Bad model import/build: submit an invalid ONNX and confirm the build job fails
 # without stopping the API service.
