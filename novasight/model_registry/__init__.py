@@ -30,6 +30,12 @@ from .manifest import (
     write_manifest,
 )
 from .deepstream_config import generate_nvinfer_config
+from .engine_cache import (
+    ENGINE_CACHE_SCHEMA_VERSION,
+    EngineBuildInfo,
+    EngineCache,
+    current_platform_signature,
+)
 from .scanner import (
     ModelArtifactScanResult,
     ModelScanStatus,
@@ -66,6 +72,10 @@ __all__ = [
     "read_manifest",
     "write_manifest",
     "generate_nvinfer_config",
+    "ENGINE_CACHE_SCHEMA_VERSION",
+    "EngineBuildInfo",
+    "EngineCache",
+    "current_platform_signature",
     "ModelArtifactScanResult",
     "ModelScanStatus",
     "inspect_model_artifact",
