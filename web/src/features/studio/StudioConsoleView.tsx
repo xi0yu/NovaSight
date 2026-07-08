@@ -1,4 +1,4 @@
-import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import {
   CaptureCapabilitiesResponse,
@@ -762,6 +762,17 @@ export function StudioConsoleView({
   const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
   const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
   const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
+  const tensorMetaFps = readNumber(statistics?.tensor_meta_fps, 0);
+  const postprocessFps = readNumber(statistics?.postprocess_fps, 0);
+  const detectionBatchFps = readNumber(statistics?.detection_batch_fps, 0);
+  const controlObservationFps = readNumber(statistics?.control_observation_fps, 0);
+  const lastFrameAgeMs = readNumber(statistics?.last_frame_age_ms, 0);
+  const controlLatencyGuardMs = 55;
+  const inferenceThroughputHealthy = tensorMetaFps > 0 && postprocessFps > 0 && detectionBatchFps > 0;
+  const inferenceFreshnessBlocked =
+    inferenceThroughputHealthy &&
+    controlObservationFps <= 0 &&
+    (lastFrameAgeMs > controlLatencyGuardMs || captureToTensorMetaMs > controlLatencyGuardMs);
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.status === "ready" &&
@@ -2550,7 +2561,20 @@ export function StudioConsoleView({
           </div>
           <div className="console-grid3">
             <KvCard title="采集统计" rows={[["成功帧", String(statistics?.capture_counter ?? 0)], ["丢弃帧", String(statistics?.dropped_counter ?? 0)], ["抖动", formatNumber(capture?.frame_period_ms, 2)]]} />
-            <KvCard title="推理统计" rows={[
+            <KvCard
+              title="推理统计"
+              notice={inferenceFreshnessBlocked ? (
+                <div className="stats-diagnosis failed">
+                  <strong>吞吐正常，但批次新鲜度不合格</strong>
+                  <span>
+                    TensorMeta/Postprocess/Batch 都在输出，控制观察为 0；
+                    最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms，Tensor Meta {formatNumber(captureToTensorMetaMs, 1)}ms，
+                    已超过 {controlLatencyGuardMs.toFixed(0)}ms 控制保护阈值。
+                  </span>
+                  <em>优先检查 GstClock 时间戳映射、采集到 tensor 的排队延迟，以及 runtime 是否消费最新 DetectionBatch。</em>
+                </div>
+              ) : null}
+              rows={[
               ["完成帧", String(statistics?.inference_counter ?? 0)],
               ["TensorMeta FPS", formatNumber(statistics?.tensor_meta_fps, 1)],
               ["Postprocess FPS", formatNumber(statistics?.postprocess_fps, 1)],
@@ -2574,7 +2598,8 @@ export function StudioConsoleView({
                 ? ["交接等待", formatNumber(statistics?.stage_handoff_ms, 1)]
                 : ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
-            ]} />
+            ]}
+            />
             <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
           </div>
           <div className="console-card">
@@ -3049,10 +3074,11 @@ function PreviewFrame({
   );
 }
 
-function KvCard({ title, rows }: { title: string; rows: [string, string][] }) {
+function KvCard({ title, rows, notice }: { title: string; rows: [string, string][]; notice?: ReactNode }) {
   return (
     <div className="console-card">
       <h2 className="console-title">{title}</h2>
+      {notice}
       <div className="console-kv">
         {rows.map(([key, value]) => (
           <Fragment key={key}>
