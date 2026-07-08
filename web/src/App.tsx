@@ -113,6 +113,7 @@ export default function App() {
   const licenseRequestSeqRef = useRef(0);
   const runtimeStateReceivedAtRef = useRef(0);
   const backgroundLoadInFlightRef = useRef(false);
+  const foregroundLoadInFlightRef = useRef(false);
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
@@ -161,55 +162,66 @@ export default function App() {
       setLastWsMessageAt(null);
       runtimeStateReceivedAtRef.current = 0;
       backgroundLoadInFlightRef.current = false;
+      foregroundLoadInFlightRef.current = false;
     }
   }, []);
 
   const load = useCallback(async (options?: { background?: boolean }) => {
     const background = options?.background === true;
+    if (background && foregroundLoadInFlightRef.current) {
+      return;
+    }
     const requestSeq = loadRequestSeqRef.current + 1;
     loadRequestSeqRef.current = requestSeq;
     if (!background) {
+      foregroundLoadInFlightRef.current = true;
       setState((current) => ({ ...current, loading: true, errors: {} }));
     }
-    const [health, runtime, config, projects] = await Promise.allSettled([
-      getHealth(),
-      getRuntimeState(),
-      getRuntimeConfig(),
-      getModelProjects()
-    ]);
-    const responseReceivedAt = Date.now();
-    setState((current) => {
-      if (requestSeq !== loadRequestSeqRef.current) {
-        return current;
+    try {
+      const [health, runtime, config, projects] = await Promise.allSettled([
+        getHealth(),
+        getRuntimeState(),
+        getRuntimeConfig(),
+        getModelProjects()
+      ]);
+      const responseReceivedAt = Date.now();
+      setState((current) => {
+        if (requestSeq !== loadRequestSeqRef.current) {
+          return current;
+        }
+        const errors: LoadState["errors"] = {};
+        if (health.status === "rejected") {
+          errors.health = getErrorMessage(health.reason);
+        }
+        if (runtime.status === "rejected") {
+          errors.runtime = getErrorMessage(runtime.reason);
+        }
+        if (config.status === "rejected") {
+          errors.config = getErrorMessage(config.reason);
+        }
+        if (projects.status === "rejected") {
+          errors.projects = getErrorMessage(projects.reason);
+        }
+        const shouldApplyRuntime =
+          runtime.status === "fulfilled" && runtimeStateReceivedAtRef.current <= responseReceivedAt;
+        if (shouldApplyRuntime) {
+          runtimeStateReceivedAtRef.current = responseReceivedAt;
+        }
+        return {
+          loading: false,
+          errors,
+          health: health.status === "fulfilled" ? health.value : current.health,
+          runtime: shouldApplyRuntime ? runtime.value : current.runtime,
+          config: config.status === "fulfilled" ? config.value : current.config,
+          projects: projects.status === "fulfilled" ? projects.value : current.projects,
+          lastUpdated: new Date()
+        };
+      });
+    } finally {
+      if (!background) {
+        foregroundLoadInFlightRef.current = false;
       }
-      const errors: LoadState["errors"] = {};
-      if (health.status === "rejected") {
-        errors.health = getErrorMessage(health.reason);
-      }
-      if (runtime.status === "rejected") {
-        errors.runtime = getErrorMessage(runtime.reason);
-      }
-      if (config.status === "rejected") {
-        errors.config = getErrorMessage(config.reason);
-      }
-      if (projects.status === "rejected") {
-        errors.projects = getErrorMessage(projects.reason);
-      }
-      const shouldApplyRuntime =
-        runtime.status === "fulfilled" && runtimeStateReceivedAtRef.current <= responseReceivedAt;
-      if (shouldApplyRuntime) {
-        runtimeStateReceivedAtRef.current = responseReceivedAt;
-      }
-      return {
-        loading: false,
-        errors,
-        health: health.status === "fulfilled" ? health.value : current.health,
-        runtime: shouldApplyRuntime ? runtime.value : current.runtime,
-        config: config.status === "fulfilled" ? config.value : current.config,
-        projects: projects.status === "fulfilled" ? projects.value : current.projects,
-        lastUpdated: new Date()
-      };
-    });
+    }
   }, []);
 
   useEffect(() => {
@@ -300,7 +312,7 @@ export default function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      if (backgroundLoadInFlightRef.current) {
+      if (backgroundLoadInFlightRef.current || foregroundLoadInFlightRef.current) {
         return;
       }
       backgroundLoadInFlightRef.current = true;
