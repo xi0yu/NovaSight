@@ -4,6 +4,12 @@ NovaSight is a Jetson-first realtime vision console rebuilt from the old jetcam
 prototype with cleaner model, configuration, plugin, executor, API, and UI
 boundaries.
 
+## Current Project Authority
+
+Use `PROJECT_HEALTH_AUDIT.md` as the current cleanup and over-design ledger.
+Older plans under `docs/superpowers/` are archive material unless promoted by a
+current authority document.
+
 ## Development
 
 ```bash

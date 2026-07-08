@@ -6,6 +6,15 @@ Purpose: give future agents and developers one current cleanup ledger for
 NovaSight. This is not a product roadmap. It is a health audit for deciding what
 to keep, merge, delete, defer, or verify before adding more design.
 
+## Remediation Status
+
+| Date | Action | Result |
+| --- | --- | --- |
+| 2026-07-08 | Created this file as the active health ledger. | Done. |
+| 2026-07-08 | Labeled `docs/superpowers/` as historical archive material. | Done via `docs/superpowers/README.md`. |
+| 2026-07-08 | Linked the root README to this health ledger. | Done. |
+| 2026-07-08 | Verified first deletion candidates by import search. | `novasight/pipelines/*`, `novasight/inference/decoders/*`, and `experimental_angle_*` are still referenced; do not delete or rename yet. `novasight/detection/*` appears limited to compatibility/test coverage and remains a verify-before-delete candidate. |
+
 ## Unified Decisions
 
 These decisions are treated as current project law unless the owner explicitly
@@ -123,6 +132,15 @@ Concrete source code deletion candidates to verify before removing:
 | `novasight/inference/decoders/*` | Confirm whether shared YOLO parser makes decoder wrappers redundant. | Keep only if runtime selection needs them. |
 | Old `experimental_*` naming in config/control | Verify migration and UI compatibility. | Rename only with config migration; do not break existing configs casually. |
 
+Current candidate verification result:
+
+| Candidate | Result | Decision |
+| --- | --- | --- |
+| `novasight/detection/*` | Runtime imports are not visible in the current search, but `tests/test_roi.py` still covers `novasight.detection.roi.RoiTransformer`. | Do not delete in this pass. Mark as compatibility/test-bound candidate. |
+| `novasight/pipelines/*` | `novasight/core/inference_loop.py` imports `novasight.pipelines.probes.DetectionSlot`. | Keep for now; later merge `DetectionSlot` toward the DeepStream/runtime seam if it remains the only live use. |
+| `novasight/inference/decoders/*` | Re-exported by `novasight/inference/__init__.py`; registry still defines parser classes. | Keep for now; verify public API use before deleting. |
+| `experimental_angle_*` config/control keys | Used by runtime config, schema, service, control strategy, recorder, and tests. | Keep names until a deliberate config migration exists. |
+
 ## DEFER
 
 These are real concerns but not the next bottleneck.
@@ -176,6 +194,13 @@ These need evidence before the project can claim full health.
 6. Verify whether `novasight/detection/*` and `novasight/pipelines/*` are still
    current source or historical support code.
 7. Run Jetson DeepStream smoke evidence before promoting any DeepStream defaults.
+
+Progress:
+
+- Items 1 and 2 are complete.
+- Item 6 has an initial import-search pass; no source deletion is approved yet.
+- The next source change should start at item 3 or 4, not by adding new
+  abstractions.
 
 ## Hard Stop Rules
 
