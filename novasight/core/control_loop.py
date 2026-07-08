@@ -26,6 +26,7 @@ class ControlLoopStats:
     last_intent: ControlIntent | None = None
     last_target_id: int | None = None
     last_control_ts_ns: int = 0
+    last_latency_estimate_ns: int = 0
     last_stage_timestamps: dict[str, int] = field(default_factory=dict)
 
 
@@ -51,6 +52,9 @@ class KalmanProtocol(Protocol):
 
 class LatencyCompensatorProtocol(Protocol):
     def compute_horizon(self, measurement_ns: int, now_ns: int) -> int:
+        ...
+
+    def update_latency_estimate(self, total_latency_ns: int) -> int:
         ...
 
 
@@ -136,6 +140,7 @@ class ControlLoop(threading.Thread):
 
         intent = self._intent_for_target(context, target, now_ns=now_ns)
         self._dispatch_intent(intent, now_ns)
+        self._update_latency_estimate(control_start_ns=now_ns, done_ns=time.monotonic_ns())
         self.stats.emitted_intents += 1
         self.stats.last_intent = intent
         self.stats.last_target_id = int(target.track_id)
@@ -191,6 +196,13 @@ class ControlLoop(threading.Thread):
         clear = getattr(self.intent_sink, "clear", None)
         if callable(clear):
             clear(reason)
+
+    def _update_latency_estimate(self, *, control_start_ns: int, done_ns: int) -> None:
+        update = getattr(self.latency_compensator, "update_latency_estimate", None)
+        if not callable(update):
+            return
+        estimated_ns = update(max(0, int(done_ns) - int(control_start_ns)))
+        self.stats.last_latency_estimate_ns = int(estimated_ns)
 
     def _sleep_for_pacing(self, started_s: float) -> None:
         remaining_s = self.min_interval_s - (time.monotonic() - started_s)
