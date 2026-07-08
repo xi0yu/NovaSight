@@ -19,6 +19,7 @@ from novasight.runtime import ControlFrameCsvRecorder, ControlFrameParquetRecord
 from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 
 from .routes_capture import router as capture_router
+from .routes_capture_v1 import router as capture_v1_router
 from .routes_control import router as control_router
 from .routes_device import router as device_router
 from .routes_executors import router as executors_router
@@ -127,6 +128,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(device_router)
     app.include_router(capture_router)
+    app.include_router(capture_v1_router)
     app.include_router(control_router)
     app.include_router(runtime_router)
     app.include_router(status_router)
