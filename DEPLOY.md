@@ -11,6 +11,7 @@ clients connect over REST and WebSocket.
 - Application: `/opt/novasight`
 - Runtime config: `/etc/novasight/novasight.yaml`
 - Runtime data: `/var/lib/novasight`
+- Runtime logs: `/var/log/novasight/novasight.log`
 - Instance lock: `/run/novasight/instance.lock`
 - systemd unit: `deploy/novasight.service`
 
@@ -25,6 +26,14 @@ sudo cp config/novasight.yaml /etc/novasight/novasight.yaml
 sudo cp deploy/novasight.service /etc/systemd/system/novasight.service
 sudo systemctl daemon-reload
 sudo systemctl enable novasight
+```
+
+Set the production log directory in `/etc/novasight/novasight.yaml`:
+
+```yaml
+logging:
+  level: INFO
+  dir: /var/log/novasight
 ```
 
 ## Jetson Prerequisites
@@ -59,6 +68,11 @@ sudo systemctl stop novasight
 The service uses `Type=notify` and `WatchdogSec=10`. NovaSight sends `READY=1`
 on app startup and sends `WATCHDOG=1` at half of `WATCHDOG_USEC` while the API
 process is alive.
+
+Logs are written to journald through `StandardOutput=journal` and
+`StandardError=journal`. The runtime also writes rotating local logs to
+`/var/log/novasight/novasight.log`; `deploy/novasight.service` declares
+`LogsDirectory=novasight` so systemd creates that directory before startup.
 
 ## Hardware Checks
 

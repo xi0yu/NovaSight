@@ -10,6 +10,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock
 RuntimeDirectory=novasight
 RuntimeDirectoryMode=0755
+LogsDirectory=novasight
+LogsDirectoryMode=0755
 ExecStart=/opt/novasight/.venv/bin/novasight --host 0.0.0.0 --port 8000 --config /etc/novasight/novasight.yaml --data-dir /var/lib/novasight
 Restart=on-failure
 RestartSec=2
