@@ -158,6 +158,12 @@ Expected behavior:
 - The 24-hour soak has no service crash, unbounded memory growth, or sustained
   stale detections.
 
+Check the active instance lock through the system API:
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/system | jq .instance_lock
+```
+
 During the soak, record process memory from the system API:
 
 ```bash

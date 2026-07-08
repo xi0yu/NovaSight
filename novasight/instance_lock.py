@@ -26,6 +26,14 @@ class InstanceLock:
         handle.flush()
         self._handle = handle
 
+    def status(self) -> dict[str, object]:
+        return {
+            "configured": self.path is not None,
+            "path": str(self.path) if self.path is not None else "",
+            "acquired": self._handle is not None,
+            "pid": os.getpid() if self._handle is not None else None,
+        }
+
     def release(self) -> None:
         handle = self._handle
         if handle is None:
