@@ -1,4 +1,5 @@
 from .config_store import RuntimeConfigStore
+from .detection_batch import detection_batch_to_frame_context, detection_batch_tracks
 from .failfast import FailFastHandler
 from .logging import configure_logging
 from .pipeline import RuntimePipeline
@@ -26,6 +27,8 @@ __all__ = [
     "RuntimeConfigStore",
     "RuntimeReconfigurator",
     "ConfigApplyReport",
+    "detection_batch_to_frame_context",
+    "detection_batch_tracks",
     "RuntimePipeline",
     "RuntimeService",
     "RuntimeState",
