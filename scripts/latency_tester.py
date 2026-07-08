@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -281,7 +281,7 @@ def _tail(text: str, *, lines: int = 30) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(tz=UTC).isoformat()
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
 if __name__ == "__main__":

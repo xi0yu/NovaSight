@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
@@ -453,7 +453,7 @@ def _doctor_jetson_zero_copy(args: argparse.Namespace, cfg: object) -> int:
         return smoke_result
     report["accepted"] = True
     report["reason"] = ""
-    report["finished_at"] = datetime.now(UTC).isoformat()
+    report["finished_at"] = datetime.now(timezone.utc).isoformat()
     failures = _validate_jetson_zero_copy_report(
         report,
         require_tensorrt_engine=bool(getattr(args, "require_tensorrt_engine", False)),
@@ -495,7 +495,7 @@ def _jetson_zero_copy_report(
     return {
         "schema_version": 1,
         "check": "jetson-zero-copy",
-        "started_at": datetime.now(UTC).isoformat(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "accepted": False,
         "reason": "not_finished",
         "validation_failures": [],
@@ -563,7 +563,7 @@ class _StdoutCaptureTee:
 
 
 def _finish_and_write_report(path: str | None, report: dict[str, object]) -> None:
-    report["finished_at"] = datetime.now(UTC).isoformat()
+    report["finished_at"] = datetime.now(timezone.utc).isoformat()
     if not path:
         return
     report_path = Path(path).expanduser()
@@ -1121,7 +1121,7 @@ def _deepstream_smoke_report(args: argparse.Namespace) -> dict[str, object]:
     return {
         "schema_version": 1,
         "check": "deepstream-smoke",
-        "started_at": datetime.now(UTC).isoformat(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "accepted": False,
         "reason": "not_finished",
         "parameters": {

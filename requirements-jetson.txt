@@ -1,0 +1,22 @@
+# Jetson Python dependencies for NovaSight runtime bring-up.
+#
+# Use scripts/setup_jetson.sh so the virtual environment is created with
+# --system-site-packages and can see Jetson's system gi/GStreamer modules.
+#
+# Do not add pyds here. NVIDIA DeepStream pyds wheels are version/platform
+# specific and must be installed from the matching deepstream_python_apps
+# release, for example:
+# pyds-1.2.0-cp310-cp310-linux_aarch64.whl for DeepStream 7.1 + Python 3.10.
+numpy<2
+fastapi
+uvicorn[standard]
+onnxruntime
+pydantic
+pyserial
+websockets
+pyyaml
+python-multipart
+httpx
+pytest
+cryptography
+pillow

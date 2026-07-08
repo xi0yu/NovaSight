@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -303,7 +303,7 @@ def _tail(text: str, *, lines: int = 20) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(tz=UTC).isoformat()
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
 if __name__ == "__main__":

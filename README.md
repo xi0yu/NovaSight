@@ -110,13 +110,17 @@ system Python environment and do not install pip OpenCV or pip `gi`:
 
 ```bash
 cd ~/NovaSight
-/usr/bin/python3 -m venv .venv --system-site-packages
-source .venv/bin/activate
-python3 -m pip uninstall -y numpy opencv-python opencv-python-headless opencv-contrib-python
-python3 -m pip install -U pip setuptools wheel
-python3 -m pip install -e ".[dev]" --no-deps
-python3 -m pip install fastapi "uvicorn[standard]" onnxruntime pydantic pyserial \
-  websockets pyyaml python-multipart httpx pytest cryptography pillow
+scripts/setup_jetson.sh
+```
+
+If DeepStream Python tensor-meta support is needed, pass the matching NVIDIA
+`pyds` wheel. For DeepStream 7.1 on Jetson Python 3.10, use the
+`pyds-1.2.0-cp310-cp310-linux_aarch64.whl` wheel from NVIDIA's
+`deepstream_python_apps` v1.2.0 release:
+
+```bash
+scripts/setup_jetson.sh \
+  --pyds-wheel ~/Downloads/pyds-1.2.0-cp310-cp310-linux_aarch64.whl
 ```
 
 Verify the system-provided GStreamer bindings and NVIDIA elements:
