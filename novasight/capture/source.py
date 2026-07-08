@@ -627,6 +627,11 @@ def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int, str]:
 
     width, height, fmt = _sample_geometry(sample)
     buffer = sample.get_buffer()
+    if _sample_has_gpu_accessible_memory(sample, buffer):
+        raise RuntimeError(
+            "refusing to map GPU-accessible GStreamer sample into a CPU image; "
+            "use GstResourceFrameSource or CaptureLoop for NVMM/DMABUF/CUDA buffers"
+        )
     ok, info = buffer.map(Gst.MapFlags.READ)
     if not ok:
         raise RuntimeError("GStreamer sample buffer map failed")
@@ -644,6 +649,13 @@ def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int, str]:
         return image, width, height, str(fmt or "")
     finally:
         buffer.unmap(info)
+
+
+def _sample_has_gpu_accessible_memory(sample: Any, buffer: Any) -> bool:
+    features = _sample_caps_features(sample).lower()
+    memory_types = " ".join(_buffer_memory_types(buffer)).lower()
+    text = f"{features} {memory_types}"
+    return any(marker in text for marker in ("nvmm", "dmabuf", "cuda", "glmemory"))
 
 
 def _sample_geometry(sample: Any) -> tuple[int, int, str]:
