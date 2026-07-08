@@ -162,10 +162,13 @@ export default function App() {
     }
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background === true;
     const requestSeq = loadRequestSeqRef.current + 1;
     loadRequestSeqRef.current = requestSeq;
-    setState((current) => ({ ...current, loading: true, errors: {} }));
+    if (!background) {
+      setState((current) => ({ ...current, loading: true, errors: {} }));
+    }
     const [health, runtime, config, projects] = await Promise.allSettled([
       getHealth(),
       getRuntimeState(),
@@ -295,7 +298,7 @@ export default function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      void load();
+      void load({ background: true });
     }, 3000);
 
     return () => window.clearInterval(intervalId);
