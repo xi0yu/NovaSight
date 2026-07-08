@@ -61,6 +61,8 @@ export function VideoPanel({
   }, [available, hasError, loaded, running]);
 
   const classes = className ? `video-shell ${className}` : "video-shell";
+  const statusTone = available && running ? "good" : available ? "warn" : "idle";
+  const statusLabel = available ? (running ? "采集中" : "等待帧") : "未打开";
 
   return (
     <div className={classes}>
@@ -96,9 +98,7 @@ export function VideoPanel({
       ) : null}
       {profile ? (
         <div className="video-status">
-          <StatusIndicator tone={available ? "good" : "idle"}>
-            {available ? "采集中" : "未打开"}
-          </StatusIndicator>
+          <StatusIndicator tone={statusTone}>{statusLabel}</StatusIndicator>
           <span className="mono">{profile}</span>
         </div>
       ) : null}

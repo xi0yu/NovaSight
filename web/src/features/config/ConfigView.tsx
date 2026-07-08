@@ -13,6 +13,7 @@ import { Badge, EmptyState, InlineError, Panel } from "../../components/ui";
 import { LicensePanel } from "../license/LicensePanel";
 import { Field } from "../shared/Field";
 import { formatProfile, getErrorMessage } from "../shared/format";
+import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 export type ConfigValue =
   | string
@@ -131,6 +132,30 @@ export function ConfigView({
   const isDirty =
     config && initialConfig ? JSON.stringify(initialConfig) !== JSON.stringify(config) : false;
   const canWriteConfig = Boolean(license?.features.includes("config_write"));
+  const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
+  const deepstreamRuntimeSelected = runtime?.inference?.selected === "deepstream";
+  const runtimeStateLabel = deepstreamRuntimeSelected
+    ? runtimeMainlineStatus.failed
+      ? "主链故障"
+      : runtimeMainlineStatus.running
+        ? runtimeMainlineStatus.hasRuntimeConsumption
+          ? "主链已消费"
+          : runtimeMainlineStatus.hasInferenceSignal
+            ? "等待 runtime 消费"
+            : "等待 DetectionBatch"
+        : "主链未启动"
+    : runtime?.running
+      ? "运行中"
+      : "未运行";
+  const runtimeStateDetail = deepstreamRuntimeSelected
+    ? runtimeMainlineStatus.failed
+      ? runtimeMainlineStatus.failureMessage || "后端报告主链故障。"
+      : runtimeMainlineStatus.running
+        ? runtimeMainlineStatus.progressSummary
+        : "DeepStream 主链未持有采集、推理与控制链路。"
+    : runtime?.running
+      ? "传统 runtime 线程正在运行。"
+      : "传统 runtime 线程未运行。";
 
   const saveConfig = useCallback(async () => {
     if (!config || !isDirty || !canWriteConfig) {
@@ -164,7 +189,15 @@ export function ConfigView({
     } catch (err) {
       setError(getErrorMessage(err));
     }
-  }, [canWriteConfig, changedFields, changedPaths, config, isDirty, onRuntimeRefresh]);
+  }, [
+    canWriteConfig,
+    changedPaths,
+    config,
+    dangerousPaths,
+    isDirty,
+    onRuntimeRefresh,
+    restartImpactedPaths
+  ]);
 
   return (
     <div className="settings-workbench">
@@ -290,7 +323,8 @@ export function ConfigView({
 
       <Panel title="运行态对照" eyebrow="实时状态">
         <div className="field-grid">
-          <Field label="运行中" value={runtime?.running ? "是" : "否"} />
+          <Field label="运行态" value={runtimeStateLabel} />
+          <Field label="运行证据" value={runtimeStateDetail} />
           <Field label="配置版本" value={String(runtime?.config?.version ?? 0)} mono />
           <Field label="默认执行器" value={runtime?.executor.selected ?? "未加载"} mono />
           <Field label="采集状态" value={formatProfile(runtime?.capture)} />

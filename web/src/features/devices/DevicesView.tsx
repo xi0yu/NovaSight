@@ -10,6 +10,7 @@ import {
   getRuntimeConfig,
   selectCaptureProfile,
   selectImageSource,
+  stopRuntimePipeline,
   updateRuntimeConfig,
   stopCapture
 } from "../../api";
@@ -404,7 +405,11 @@ export function DevicesView({
     setStoppingCapture(true);
     setCaptureError(undefined);
     try {
-      await stopCapture();
+      if (runtime?.inference?.selected === "deepstream") {
+        await stopRuntimePipeline();
+      } else {
+        await stopCapture();
+      }
       await onRuntimeRefresh();
     } catch (err) {
       setCaptureError(getErrorMessage(err));
@@ -412,7 +417,7 @@ export function DevicesView({
     } finally {
       setStoppingCapture(false);
     }
-  }, [onRuntimeRefresh]);
+  }, [onRuntimeRefresh, runtime]);
 
   const applyImageSource = useCallback(async () => {
     if (!imagePath.trim()) {
@@ -605,11 +610,11 @@ export function DevicesView({
           <div className="panel-actions">
             <button
               className="button"
-              disabled={stoppingCapture || !capture?.available}
+              disabled={deepstreamRuntimeSelected ? stoppingCapture || !runtimeMainlineRunning : stoppingCapture || !capture?.available}
               onClick={() => void stopCaptureSession()}
               type="button"
             >
-              {stoppingCapture ? "停止中" : "停止采集"}
+              {stoppingCapture ? "停止中" : deepstreamRuntimeSelected ? "停止主链" : "停止采集"}
             </button>
             <button className="button" type="button" onClick={refreshCapabilities}>
               {loadingCaps ? "读取中" : "刷新采集卡信息"}
