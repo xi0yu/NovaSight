@@ -112,6 +112,7 @@ export default function App() {
   const loadRequestSeqRef = useRef(0);
   const licenseRequestSeqRef = useRef(0);
   const runtimeStateReceivedAtRef = useRef(0);
+  const backgroundLoadInFlightRef = useRef(false);
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
@@ -159,6 +160,7 @@ export default function App() {
       setRealtimeStatus("disconnected");
       setLastWsMessageAt(null);
       runtimeStateReceivedAtRef.current = 0;
+      backgroundLoadInFlightRef.current = false;
     }
   }, []);
 
@@ -298,7 +300,13 @@ export default function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      void load({ background: true });
+      if (backgroundLoadInFlightRef.current) {
+        return;
+      }
+      backgroundLoadInFlightRef.current = true;
+      void load({ background: true }).finally(() => {
+        backgroundLoadInFlightRef.current = false;
+      });
     }, 3000);
 
     return () => window.clearInterval(intervalId);
