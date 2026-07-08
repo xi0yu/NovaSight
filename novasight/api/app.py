@@ -12,9 +12,11 @@ from novasight.executors import ExecutorRegistry
 from novasight.hardware import create_hardware_box
 from novasight.inference import InferenceRuntime
 from novasight.inference.jetson import create_gpu_resource_preprocessor
+from novasight.instance_lock import InstanceLock
 from novasight.license import LicenseStore
 from novasight.model_registry import ModelRegistry
 from novasight.runtime import ControlFrameCsvRecorder, ControlFrameParquetRecorder, RuntimeService
+from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 
 from .routes_capture import router as capture_router
 from .routes_device import router as device_router
@@ -80,6 +82,8 @@ def create_app(
         inference=inference,
         recorder=_create_control_frame_recorder(config, data_path),
     )
+    systemd_notifier = SystemdNotifier(interval_s=watchdog_interval_from_env())
+    instance_lock = InstanceLock()
 
     app.state.config = config
     app.state.config_path = Path(config_path)
@@ -90,6 +94,18 @@ def create_app(
     app.state.capture = capture
     app.state.inference = inference
     app.state.runtime = runtime
+    app.state.systemd_notifier = systemd_notifier
+    app.state.instance_lock = instance_lock
+
+    @app.on_event("startup")
+    def start_process_lifecycle() -> None:
+        instance_lock.acquire()
+        systemd_notifier.start()
+
+    @app.on_event("shutdown")
+    def stop_process_lifecycle() -> None:
+        systemd_notifier.stop()
+        instance_lock.release()
 
     @app.middleware("http")
     async def require_license(request: Request, call_next):
