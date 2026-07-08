@@ -110,6 +110,7 @@ export default function App() {
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
   const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
   const loadRequestSeqRef = useRef(0);
+  const licenseRequestSeqRef = useRef(0);
   const runtimeStateReceivedAtRef = useRef(0);
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
@@ -117,10 +118,15 @@ export default function App() {
   const [licenseError, setLicenseError] = useState<string | undefined>();
 
   const loadLicense = useCallback(async () => {
+    const requestSeq = licenseRequestSeqRef.current + 1;
+    licenseRequestSeqRef.current = requestSeq;
     setLicenseLoading(true);
     setLicenseError(undefined);
     try {
       const status = await getLicenseStatus();
+      if (requestSeq !== licenseRequestSeqRef.current) {
+        return status;
+      }
       setLicense(status);
       if (status.valid) {
         localStorage.setItem(LICENSE_CACHE_KEY, "1");
@@ -129,11 +135,16 @@ export default function App() {
       }
       return status;
     } catch (err) {
+      if (requestSeq !== licenseRequestSeqRef.current) {
+        return null;
+      }
       setLicenseError(getErrorMessage(err));
       localStorage.removeItem(LICENSE_CACHE_KEY);
       return null;
     } finally {
-      setLicenseLoading(false);
+      if (requestSeq === licenseRequestSeqRef.current) {
+        setLicenseLoading(false);
+      }
     }
   }, []);
 
@@ -143,6 +154,7 @@ export default function App() {
       localStorage.setItem(LICENSE_CACHE_KEY, "1");
     } else {
       localStorage.removeItem(LICENSE_CACHE_KEY);
+      loadRequestSeqRef.current += 1;
       setState(initialState);
       setRealtimeStatus("disconnected");
       setLastWsMessageAt(null);
@@ -239,6 +251,9 @@ export default function App() {
       }
     };
     socket.onmessage = (event) => {
+      if (!active) {
+        return;
+      }
       try {
         const runtime = JSON.parse(String(event.data)) as RuntimeState;
         const receivedAt = Date.now();
@@ -248,10 +263,8 @@ export default function App() {
           runtime,
           lastUpdated: new Date()
         }));
-        if (active) {
-          setLastWsMessageAt(receivedAt);
-          setRealtimeStatus("connected");
-        }
+        setLastWsMessageAt(receivedAt);
+        setRealtimeStatus("connected");
       } catch {
         // Ignore malformed status frames; REST refresh still provides recovery.
       }
