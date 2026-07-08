@@ -7,6 +7,11 @@ from novasight.control.angular import (
     CalibrationProfile,
     ControllerMemory,
 )
+from novasight.control.controller import (
+    AngularController,
+    AngularControllerCalibration,
+    AngularControllerConfig,
+)
 from novasight.control.latency_compensator import LatencyCalibration, LatencyCompensator
 from novasight.control.output import ControlOutput, ControlOutputPolicy
 from novasight.control.scheduler import CommandScheduler, ScheduleDecision
@@ -18,6 +23,9 @@ from novasight.control.strategy import (
 
 __all__ = [
     "AngularControlOutput",
+    "AngularController",
+    "AngularControllerCalibration",
+    "AngularControllerConfig",
     "AngularErrorMapper",
     "AngularErrorState",
     "AngularPDConfig",
