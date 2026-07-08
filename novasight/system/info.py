@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
 import platform
+import re
 import resource
 import shutil
 import subprocess
@@ -11,6 +12,10 @@ import time
 from typing import Any
 
 _PROCESS_START_MONOTONIC_S = time.monotonic()
+_MEMORY_RE = re.compile(r"\b(?P<name>RAM|SWAP)\s+(?P<used>\d+)/(?P<total>\d+)MB")
+_CPU_RE = re.compile(r"\bCPU\s+\[(?P<items>[^\]]*)\]")
+_FREQ_RE = re.compile(r"\b(?P<name>GR3D_FREQ|EMC_FREQ)\s+(?P<load>\d+)%@(?P<freq>\d+)")
+_TEMP_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_]+)@(?P<temp>-?\d+(?:\.\d+)?)C")
 
 
 @dataclass(frozen=True)
@@ -120,11 +125,87 @@ def _tegrastats_sample() -> dict[str, Any]:
         process.kill()
         stdout, stderr = process.communicate(timeout=1.0)
     sample = next((line.strip() for line in stdout.splitlines() if line.strip()), "")
+    parsed = _parse_tegrastats_sample(sample)
     return {
         "available": bool(sample),
         "sample": sample,
         "reason": "" if sample else (stderr.strip() or "tegrastats produced no sample"),
+        **parsed,
     }
+
+
+def _parse_tegrastats_sample(sample: str) -> dict[str, Any]:
+    if not sample:
+        return {}
+    parsed: dict[str, Any] = {}
+    memory = _parse_tegrastats_memory(sample)
+    if memory:
+        parsed.update(memory)
+    cpu = _parse_tegrastats_cpu(sample)
+    if cpu:
+        parsed["cpu"] = cpu
+    frequencies = _parse_tegrastats_frequencies(sample)
+    if frequencies:
+        parsed.update(frequencies)
+    temperatures = {
+        match.group("name").lower(): float(match.group("temp"))
+        for match in _TEMP_RE.finditer(sample)
+    }
+    if temperatures:
+        parsed["temperatures_c"] = temperatures
+    return parsed
+
+
+def _parse_tegrastats_memory(sample: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for match in _MEMORY_RE.finditer(sample):
+        name = match.group("name").lower()
+        used = int(match.group("used"))
+        total = int(match.group("total"))
+        parsed[f"{name}_mb"] = {
+            "used": used,
+            "total": total,
+            "pct": round((used / total) * 100.0, 2) if total > 0 else 0.0,
+        }
+    return parsed
+
+
+def _parse_tegrastats_cpu(sample: str) -> list[dict[str, Any]]:
+    match = _CPU_RE.search(sample)
+    if match is None:
+        return []
+    cores: list[dict[str, Any]] = []
+    for index, raw_item in enumerate(match.group("items").split(",")):
+        item = raw_item.strip()
+        if item == "off":
+            cores.append({"core": index, "online": False, "load_pct": 0, "freq_mhz": 0})
+            continue
+        load_text, sep, freq_text = item.partition("%@")
+        if not sep:
+            continue
+        try:
+            cores.append(
+                {
+                    "core": index,
+                    "online": True,
+                    "load_pct": int(load_text),
+                    "freq_mhz": int(freq_text),
+                }
+            )
+        except ValueError:
+            continue
+    return cores
+
+
+def _parse_tegrastats_frequencies(sample: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for match in _FREQ_RE.finditer(sample):
+        key = match.group("name").lower()
+        parsed[key] = {
+            "load_pct": int(match.group("load")),
+            "freq_mhz": int(match.group("freq")),
+        }
+    return parsed
 
 
 def _read_first_existing(*paths: Path) -> str:
