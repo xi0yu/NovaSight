@@ -157,3 +157,9 @@ Expected behavior:
   a 24-hour soak is started.
 - The 24-hour soak has no service crash, unbounded memory growth, or sustained
   stale detections.
+
+During the soak, record process memory from the system API:
+
+```bash
+watch -n 60 'curl -s http://127.0.0.1:8000/api/v1/system | jq .process'
+```

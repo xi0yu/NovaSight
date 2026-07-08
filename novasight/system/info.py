@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 import platform
+import resource
 import shutil
 import subprocess
+import time
 from typing import Any
+
+_PROCESS_START_MONOTONIC_S = time.monotonic()
 
 
 @dataclass(frozen=True)
 class SystemInfo:
     platform: dict[str, str]
+    process: dict[str, Any]
     jetson: dict[str, Any]
     gpu: dict[str, Any]
     tegrastats: dict[str, Any]
@@ -27,10 +33,29 @@ def collect_system_info() -> SystemInfo:
             "release": platform.release(),
             "python": platform.python_version(),
         },
+        process=_process_info(),
         jetson=_jetson_info(),
         gpu=_gpu_info(),
         tegrastats=_tegrastats_sample(),
     )
+
+
+def _process_info() -> dict[str, Any]:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    rss_bytes = _ru_maxrss_bytes(float(getattr(usage, "ru_maxrss", 0.0)))
+    uptime_s = max(0.0, time.monotonic() - _PROCESS_START_MONOTONIC_S)
+    return {
+        "pid": os.getpid(),
+        "uptime_s": round(uptime_s, 3),
+        "rss_bytes": rss_bytes,
+        "rss_mb": round(rss_bytes / (1024 * 1024), 3),
+    }
+
+
+def _ru_maxrss_bytes(value: float) -> int:
+    if platform.system() == "Darwin":
+        return max(0, int(value))
+    return max(0, int(value * 1024))
 
 
 def _jetson_info() -> dict[str, Any]:
