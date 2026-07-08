@@ -14,6 +14,7 @@ clients connect over REST and WebSocket.
 - Runtime logs: `/var/log/novasight/novasight.log`
 - Instance lock: `/run/novasight/instance.lock`
 - systemd unit: `deploy/novasight.service`
+- Optional nvtracker config: `deploy/deepstream-tracker-iou.yml`
 
 ## Install
 
@@ -23,6 +24,7 @@ sudo cp -a . /opt/novasight
 cd /opt/novasight
 uv sync
 sudo cp config/novasight.yaml /etc/novasight/novasight.yaml
+sudo cp deploy/deepstream-tracker-iou.yml /etc/novasight/deepstream-tracker-iou.yml
 sudo cp deploy/novasight.service /etc/systemd/system/novasight.service
 sudo systemctl daemon-reload
 sudo systemctl enable novasight
@@ -36,6 +38,17 @@ logging:
   dir: /var/log/novasight
 ```
 
+For Jetson DeepStream runs, point the runtime at the generated model files and
+the deployed tracker config:
+
+```yaml
+inference:
+  backend: deepstream
+  deepstream_manifest_path: /var/lib/novasight/models/<model>/model.manifest.json
+  deepstream_config_path: /var/lib/novasight/models/<model>/deepstream.ini
+  deepstream_tracker_config_path: /etc/novasight/deepstream-tracker-iou.yml
+```
+
 ## Jetson Prerequisites
 
 - JetPack with DeepStream and TensorRT installed.
@@ -44,6 +57,9 @@ logging:
 - kmNet/HID network access from the Jetson to the configured hardware endpoint.
 - Model assets under `/var/lib/novasight/models` with generated manifest and
   DeepStream config files.
+- Optional `nvtracker` low-level config deployed from
+  `deploy/deepstream-tracker-iou.yml` or replaced by a Jetson-validated tracker
+  config for the selected DeepStream tracker library.
 
 Check the host before enabling the service:
 

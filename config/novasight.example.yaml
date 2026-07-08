@@ -25,6 +25,11 @@ inference:
   confidence_threshold: 0.25
   nms_threshold: 0.45
   input_source: source.default
+  deepstream_manifest_path: ""
+  deepstream_config_path: ""
+  deepstream_tracker_config_path: ""
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
 capture:
   device: /dev/video0
   preference: auto_high_fps
