@@ -14,7 +14,9 @@ from .pipeline_planner import PipelinePlan
 class CapturedBufferSlot:
     buffer: Any
     context: FrameContext
+    capture_timestamp_ns: int
     dequeue_timestamp_ns: int
+    timestamp_source: str
     owner: Any | None = field(default=None, repr=False, compare=False)
 
 
@@ -31,17 +33,25 @@ class LatestFrameBuffer:
         buffer: Any,
         ctx: FrameContext,
         *,
+        capture_timestamp_ns: int | None = None,
         dequeue_timestamp_ns: int | None = None,
+        timestamp_source: str = "",
         owner: Any | None = None,
     ) -> None:
         slot = CapturedBufferSlot(
             buffer=buffer,
             context=ctx,
+            capture_timestamp_ns=(
+                int(capture_timestamp_ns)
+                if capture_timestamp_ns is not None
+                else int(ctx.capture_ts_ns or time.monotonic_ns())
+            ),
             dequeue_timestamp_ns=(
                 int(dequeue_timestamp_ns)
                 if dequeue_timestamp_ns is not None
                 else time.monotonic_ns()
             ),
+            timestamp_source=timestamp_source,
             owner=owner,
         )
         with self._condition:
@@ -49,7 +59,12 @@ class LatestFrameBuffer:
             self._version += 1
             self._condition.notify_all()
 
-    def get(self, *, after_version: int | None = None, timeout_s: float | None = None) -> tuple[Any, FrameContext] | None:
+    def get(
+        self,
+        *,
+        after_version: int | None = None,
+        timeout_s: float | None = None,
+    ) -> tuple[Any, FrameContext] | None:
         slot = self.get_slot(after_version=after_version, timeout_s=timeout_s)
         if slot is None:
             return None
@@ -154,7 +169,10 @@ class CaptureLoop(threading.Thread):
             return Gst.FlowReturn.OK
         dequeue_ts_ns = time.monotonic_ns()
         width, height = _sample_size(sample)
-        capture_ts_ns = _buffer_timestamp_ns(buffer, Gst) or dequeue_ts_ns
+        capture_ts_ns, timestamp_source = _buffer_timestamp(buffer, Gst)
+        if capture_ts_ns is None:
+            capture_ts_ns = dequeue_ts_ns
+            timestamp_source = "dequeue_monotonic_fallback"
         self._frame_id += 1
         ctx = FrameContext(
             frame_id=self._frame_id,
@@ -165,7 +183,9 @@ class CaptureLoop(threading.Thread):
         self.buffer.put(
             buffer,
             ctx,
+            capture_timestamp_ns=capture_ts_ns,
             dequeue_timestamp_ns=dequeue_ts_ns,
+            timestamp_source=timestamp_source,
             owner=sample,
         )
         return Gst.FlowReturn.OK
@@ -221,7 +241,7 @@ def _sample_size(sample: Any) -> tuple[int, int]:
     return (int(width) if ok_width else 0, int(height) if ok_height else 0)
 
 
-def _buffer_timestamp_ns(buffer: Any, Gst: Any) -> int | None:
+def _buffer_timestamp(buffer: Any, Gst: Any) -> tuple[int | None, str]:
     none_value = getattr(Gst, "CLOCK_TIME_NONE", None)
     for attr in ("pts", "dts"):
         value = getattr(buffer, attr, None)
@@ -229,8 +249,8 @@ def _buffer_timestamp_ns(buffer: Any, Gst: Any) -> int | None:
             continue
         if none_value is not None and value == none_value:
             continue
-        return int(value)
-    return None
+        return int(value), f"gstreamer_buffer_{attr}"
+    return None, ""
 
 
 def _message_error_text(message: Any) -> str:
