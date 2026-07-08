@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from novasight.contracts import Detection, DetectionBatch, DetectionCoordinateSpace
+from novasight.contracts import Detection, DetectionBatch, DetectionCoordinateSpace, Track
 
 
 TimestampConverter = Callable[[int, int], tuple[int, str] | int]
@@ -103,7 +103,7 @@ def iter_detection_batches_from_batch_meta(
     frame_list = getattr(batch_meta, "frame_meta_list", None)
     while frame_list is not None:
         frame_meta = pyds.NvDsFrameMeta.cast(frame_list.data)
-        detections = list(_iter_frame_detections(frame_meta, pyds=pyds))
+        detections, tracks = _frame_objects(frame_meta, pyds=pyds)
         capture_ts_ns, timestamp_source = _capture_timestamp(
             frame_meta,
             observed_ns=int(observed_ns),
@@ -127,12 +127,16 @@ def iter_detection_batches_from_batch_meta(
                 "buf_pts": _optional_int(frame_meta, "buf_pts"),
                 "ntp_timestamp": _optional_int(frame_meta, "ntp_timestamp"),
                 "detection_count": len(detections),
+                "track_count": len(tracks),
+                "tracks": [_track_payload(track) for track in tracks],
             },
         )
         frame_list = frame_list.next
 
 
-def _iter_frame_detections(frame_meta: Any, *, pyds: Any) -> Iterator[Detection]:
+def _frame_objects(frame_meta: Any, *, pyds: Any) -> tuple[list[Detection], list[Track]]:
+    detections: list[Detection] = []
+    tracks: list[Track] = []
     obj_list = getattr(frame_meta, "obj_meta_list", None)
     while obj_list is not None:
         obj_meta = pyds.NvDsObjectMeta.cast(obj_list.data)
@@ -142,15 +146,61 @@ def _iter_frame_detections(frame_meta: Any, *, pyds: Any) -> Iterator[Detection]
             top = float(getattr(rect, "top", 0.0) or 0.0)
             width = float(getattr(rect, "width", 0.0) or 0.0)
             height = float(getattr(rect, "height", 0.0) or 0.0)
-            yield Detection(
-                cls=int(getattr(obj_meta, "class_id", 0) or 0),
-                score=float(getattr(obj_meta, "confidence", 0.0) or 0.0),
-                x=left,
-                y=top,
-                w=width,
-                h=height,
+            class_id = int(getattr(obj_meta, "class_id", 0) or 0)
+            confidence = float(getattr(obj_meta, "confidence", 0.0) or 0.0)
+            detections.append(
+                Detection(
+                    cls=class_id,
+                    score=confidence,
+                    x=left,
+                    y=top,
+                    w=width,
+                    h=height,
+                )
             )
+            track_id = _object_track_id(obj_meta)
+            if track_id is not None:
+                tracks.append(
+                    Track(
+                        track_id=track_id,
+                        cls=class_id,
+                        score=confidence,
+                        x=left,
+                        y=top,
+                        w=width,
+                        h=height,
+                    )
+                )
         obj_list = obj_list.next
+    return detections, tracks
+
+
+def _object_track_id(obj_meta: Any) -> int | None:
+    for attr in ("object_id", "track_id", "objectId"):
+        value = getattr(obj_meta, attr, None)
+        if value is None:
+            continue
+        try:
+            track_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if track_id >= 0:
+            return track_id
+    return None
+
+
+def _track_payload(track: Track) -> dict[str, float | int]:
+    return {
+        "track_id": int(track.track_id),
+        "cls": int(track.cls),
+        "score": float(track.score),
+        "x1": float(track.x1),
+        "y1": float(track.y1),
+        "x2": float(track.x2),
+        "y2": float(track.y2),
+        "cx": float(track.cx),
+        "cy": float(track.cy),
+    }
 
 
 def _capture_timestamp(
