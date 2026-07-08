@@ -1,3 +1,4 @@
+from novasight.detection.kalman_estimator import KalmanEstimator, PredictedTrack
 from novasight.detection.target_selector import (
     CandidateFilter,
     QualityScorer,
@@ -7,6 +8,8 @@ from novasight.detection.target_selector import (
 
 __all__ = [
     "CandidateFilter",
+    "KalmanEstimator",
+    "PredictedTrack",
     "QualityScorer",
     "TargetSelector",
     "TargetSelectorConfig",
