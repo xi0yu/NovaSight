@@ -19,6 +19,13 @@ def _normalize_output_tensor(output: Any, manifest: ModelManifest) -> Any:
     if shape != expected:
         if len(expected) >= 2 and expected[0] == 1 and shape == expected[1:]:
             return array.reshape(tuple(expected))
+        if (
+            len(expected) == 3
+            and expected[0] == 1
+            and len(shape) == 2
+            and shape == [expected[2], expected[1]]
+        ):
+            return array.T.reshape(tuple(expected))
         raise ValueError(f"tensor shape {shape} does not match manifest output shape {expected}")
     return array
 
