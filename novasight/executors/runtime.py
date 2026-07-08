@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from novasight.config import RuntimeConfig
-from novasight.control import CommandScheduler, ControlOutputPolicy
+from novasight.control import CommandScheduler, ControlOutput, ControlOutputPolicy
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.contracts import ControlIntent
@@ -135,6 +135,45 @@ class ExecutorRegistry:
             },
         )
 
+    def tick_pending(self, *, now_s: float | None = None) -> ExecutionResult:
+        if self.scheduler is None:
+            return ExecutionResult(
+                executor_id=self.selected,
+                sent=False,
+                intent=_scheduler_status_output("scheduler_required"),
+                message="command scheduler required",
+                metadata={
+                    "stage": "scheduler_required",
+                    "selected_executor": self.selected,
+                },
+            )
+        decision = self.scheduler.tick(now_s=now_s)
+        scheduler_metadata = decision.metadata
+        if decision.output is None:
+            return ExecutionResult(
+                executor_id=self.selected,
+                sent=False,
+                intent=_scheduler_status_output(str(scheduler_metadata.get("action") or "scheduler_idle")),
+                message="no pending control command ready",
+                metadata={
+                    "stage": "scheduler",
+                    "selected_executor": self.selected,
+                    **scheduler_metadata,
+                },
+            )
+        result = self.executors[self.selected].execute(decision.output)
+        scheduler_execution_metadata = self.scheduler.record_execution_result(
+            sent=bool(result.sent),
+            message=str(result.message),
+            now_s=now_s,
+        )
+        metadata = dict(result.metadata or {})
+        metadata["scheduler"] = {
+            **scheduler_metadata,
+            "execution": scheduler_execution_metadata,
+        }
+        return replace(result, metadata=metadata)
+
     def status(self, *, refresh_buttons: bool = False) -> dict[str, Any]:
         def executor_status(executor: Executor) -> dict[str, Any]:
             status = getattr(executor, "status", None)
@@ -186,4 +225,17 @@ def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler:
         max_step_y=int(config.control.scheduler_max_step_y),
         queue_hard_limit=int(config.control.scheduler_queue_hard_limit),
         device_error_cooldown_s=max(0.0, float(config.control.scheduler_device_error_cooldown_ms) / 1000.0),
+    )
+
+
+def _scheduler_status_output(reason: str) -> ControlOutput:
+    return ControlOutput(
+        dx=0,
+        dy=0,
+        action=None,
+        confidence=0.0,
+        source_id="scheduler",
+        accepted=False,
+        clipped=False,
+        reason=reason,
     )
