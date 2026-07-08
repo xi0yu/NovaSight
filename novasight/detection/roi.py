@@ -77,11 +77,39 @@ class RoiTransformer:
         )
 
     def roi_track_to_source(self, track: Track) -> Track:
+        return self._track_with_box(track, self.roi_to_source_box(track.box))
+
+    def model_track_to_source(self, track: Track) -> Track:
+        return self._track_with_box(
+            track,
+            self.model_to_source_box(track.box),
+            velocity_scale=(
+                self.coordinate_transform.model_to_roi_scale_x,
+                self.coordinate_transform.model_to_roi_scale_y,
+            ),
+        )
+
+    def _track_with_box(
+        self,
+        track: Track,
+        box: BBox,
+        *,
+        velocity_scale: tuple[float, float] = (1.0, 1.0),
+    ) -> Track:
         return Track(
             track_id=track.track_id,
             cls=track.cls,
             score=track.score,
-            box=self.roi_to_source_box(track.box),
+            box=box,
+            velocity_px_s=(
+                track.velocity_px_s[0] * velocity_scale[0],
+                track.velocity_px_s[1] * velocity_scale[1],
+            ),
+            quality_score=track.quality_score,
+            missed_frames=track.missed_frames,
+            last_seen_ns=track.last_seen_ns,
+            is_predicted=track.is_predicted,
+            is_stale=track.is_stale,
         )
 
 

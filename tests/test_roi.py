@@ -200,3 +200,46 @@ def test_map_detection_to_source_adds_roi_offset() -> None:
     assert mapped.y == 240
     assert mapped.w == 30
     assert mapped.h == 40
+
+
+def test_roi_transformer_preserves_track_state_when_mapping_to_source() -> None:
+    from novasight.contracts import Track
+    from novasight.detection.roi import RoiTransformer
+
+    transformer = RoiTransformer(
+        model_width=480,
+        model_height=480,
+        roi_x=720,
+        roi_y=300,
+        roi_width=480,
+        roi_height=480,
+        source_width=1920,
+        source_height=1080,
+    )
+    track = Track(
+        track_id=42,
+        cls=1,
+        score=0.9,
+        x=10,
+        y=20,
+        w=30,
+        h=40,
+        velocity_px_s=(120.0, -30.0),
+        quality_score=0.77,
+        missed_frames=2,
+        last_seen_ns=123456,
+        is_predicted=True,
+        is_stale=True,
+    )
+
+    mapped = transformer.roi_track_to_source(track)
+
+    assert mapped.track_id == 42
+    assert mapped.x == 730
+    assert mapped.y == 320
+    assert mapped.velocity_px_s == (120.0, -30.0)
+    assert mapped.quality_score == 0.77
+    assert mapped.missed_frames == 2
+    assert mapped.last_seen_ns == 123456
+    assert mapped.is_predicted is True
+    assert mapped.is_stale is True
