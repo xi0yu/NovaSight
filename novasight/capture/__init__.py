@@ -1,4 +1,5 @@
 from .caps import parse_v4l2_formats, query_capabilities, run_v4l2_ctl
+from .device_probe import DeviceCapability, DeviceProbe, PixelFormatCaps, ResolutionCaps
 from .pipeline import (
     CaptureCandidate,
     SelectedCaptureBackend,
@@ -6,6 +7,13 @@ from .pipeline import (
     build_pipeline_candidates,
     build_resource_appsink_candidates,
     select_open_source,
+)
+from .pipeline_planner import (
+    InfeasibleConfiguration,
+    PipelinePlan,
+    PipelinePlanner,
+    RoiConfig,
+    RoiRect,
 )
 from .profile import select_capture_profile
 from .service import CaptureService
@@ -41,6 +49,15 @@ __all__ = [
     "CaptureProfile",
     "CaptureRuntimeState",
     "CaptureService",
+    "DeviceCapability",
+    "DeviceProbe",
+    "InfeasibleConfiguration",
+    "PipelinePlan",
+    "PipelinePlanner",
+    "PixelFormatCaps",
+    "ResolutionCaps",
+    "RoiConfig",
+    "RoiRect",
     "SelectedCaptureBackend",
     "build_appsink_candidates",
     "build_pipeline_candidates",
