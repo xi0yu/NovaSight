@@ -4145,6 +4145,59 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.business-trace-guidance {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: rgba(17, 21, 31, 0.04);
+}
+
+.business-trace-guidance.failed {
+  border-color: rgba(255, 64, 88, 0.3);
+  background: rgba(255, 64, 88, 0.08);
+}
+
+.business-trace-guidance.blocked {
+  border-color: rgba(217, 119, 6, 0.28);
+  background: rgba(255, 247, 230, 0.78);
+}
+
+.business-trace-guidance.ok {
+  border-color: rgba(25, 198, 74, 0.28);
+  background: rgba(25, 198, 74, 0.08);
+}
+
+.business-trace-guidance strong,
+.business-trace-guidance span,
+.business-trace-guidance em {
+  display: block;
+  min-width: 0;
+}
+
+.business-trace-guidance strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.business-trace-guidance span {
+  margin-top: 4px;
+  color: #5d6672;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.business-trace-guidance em {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.5;
+}
+
 .business-trace-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

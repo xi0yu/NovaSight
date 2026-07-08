@@ -224,6 +224,58 @@ function readTraceStages(value: unknown): Record<string, unknown>[] {
   return Array.isArray(stages) ? stages.map(asRecord) : [];
 }
 
+type BusinessTraceGuidance = {
+  tone: "ok" | "blocked" | "failed";
+  title: string;
+  detail: string;
+  action: string;
+};
+
+function buildBusinessTraceGuidance(
+  trace: Record<string, unknown>,
+  stages: Record<string, unknown>[]
+): BusinessTraceGuidance {
+  const message = readString(trace.message, "等待运行状态");
+  const failedStage = stages.find((stage) => readString(stage.status) === "failed");
+  const blockedStage = stages.find((stage) => readString(stage.status) === "blocked");
+  const summaryStage = failedStage ?? blockedStage;
+  const summaryLabel = readString(summaryStage?.label, "链路");
+  const summaryMessage = readString(summaryStage?.message, message);
+  const staleBatch =
+    /DetectionBatch frame age exceeds control latency guard/i.test(message) ||
+    /DetectionBatch frame age exceeds control latency guard/i.test(summaryMessage);
+
+  if (staleBatch) {
+    const ageMatch = (message || summaryMessage).match(/([0-9.]+)ms\s*>\s*([0-9.]+)ms/);
+    const detail = ageMatch
+      ? `采集与 ROI 已有反馈，但 DetectionBatch age=${ageMatch[1]}ms，超过控制保护阈值 ${ageMatch[2]}ms。`
+      : "采集与 ROI 已有反馈，但 DetectionBatch 已超过控制保护阈值。";
+    return {
+      tone: "failed",
+      title: "推理批次已过期，控制链路已保护拦截",
+      detail,
+      action: "优先检查 DeepStream 时间戳、DetectionBatch 发布节奏和 runtime 消费是否滞后；目标、控制、执行阻塞是后续影响。"
+    };
+  }
+
+  if (summaryStage) {
+    const status = readString(summaryStage.status, "blocked") === "failed" ? "failed" : "blocked";
+    return {
+      tone: status,
+      title: `${summaryLabel}阶段${status === "failed" ? "失败" : "阻塞"}`,
+      detail: summaryMessage || "当前阶段没有可继续消费的运行证据。",
+      action: "先处理该阶段原因，再观察后续目标、控制和执行是否恢复。"
+    };
+  }
+
+  return {
+    tone: "ok",
+    title: "主营链路已贯通",
+    detail: message,
+    action: "继续观察目标选择、控制量和执行输出是否稳定。"
+  };
+}
+
 function triggerModeLabel(value: string): string {
   if (value === "always") {
     return "总是启用";
@@ -744,6 +796,7 @@ export function StudioConsoleView({
   const triggerAlwaysActive = triggerRaw.source === "always" && triggerRaw.active === true;
   const businessTrace = asRecord(vision.trace);
   const businessTraceStages = readTraceStages(vision.trace);
+  const businessTraceGuidance = buildBusinessTraceGuidance(businessTrace, businessTraceStages);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
   const rawDetections = readNumber(inferenceTrace.raw_detections, 0);
   const mappedDetections = readNumber(inferenceTrace.mapped_detections, 0);
@@ -1963,6 +2016,11 @@ export function StudioConsoleView({
                 <div className="business-trace-head">
                   <span>主营链路诊断</span>
                   <b>{readString(businessTrace.message, "等待运行状态")}</b>
+                </div>
+                <div className={`business-trace-guidance ${businessTraceGuidance.tone}`}>
+                  <strong>{businessTraceGuidance.title}</strong>
+                  <span>{businessTraceGuidance.detail}</span>
+                  <em>{businessTraceGuidance.action}</em>
                 </div>
                 <div className="business-trace-steps">
                   {businessTraceStages.map((stage) => (
