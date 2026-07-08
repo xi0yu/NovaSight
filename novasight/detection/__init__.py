@@ -1,4 +1,5 @@
 from novasight.detection.kalman_estimator import KalmanEstimator, PredictedTrack
+from novasight.detection.roi import RoiTransformer
 from novasight.detection.target_selector import (
     CandidateFilter,
     QualityScorer,
@@ -11,6 +12,7 @@ __all__ = [
     "KalmanEstimator",
     "PredictedTrack",
     "QualityScorer",
+    "RoiTransformer",
     "TargetSelector",
     "TargetSelectorConfig",
 ]
