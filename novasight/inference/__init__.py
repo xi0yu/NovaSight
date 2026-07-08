@@ -3,6 +3,15 @@ from novasight.inference.contracts import (
     InferenceEngine,
     InferenceResult,
 )
+from novasight.inference.decoders import (
+    PARSER_REGISTRY,
+    BaseDecoder,
+    YoloV5Decoder,
+    YoloV8Decoder,
+    YoloV8EndToEndDecoder,
+    create_decoder,
+    get_decoder_class,
+)
 from novasight.inference.input import (
     PreparedTensorInput,
     TensorInputShape,
@@ -32,10 +41,17 @@ __all__ = [
     "InferenceResult",
     "InferenceRuntime",
     "OnnxRuntimeInferenceEngine",
+    "BaseDecoder",
     "DeviceTensor",
     "GpuResourcePreprocessor",
+    "PARSER_REGISTRY",
+    "YoloV5Decoder",
+    "YoloV8Decoder",
+    "YoloV8EndToEndDecoder",
+    "create_decoder",
     "generate_nvinfer_config",
     "generate_nvinfer_config_with_fingerprint",
+    "get_decoder_class",
     "PreparedTensorInput",
     "TensorRtInferenceEngine",
     "TensorInputShape",
