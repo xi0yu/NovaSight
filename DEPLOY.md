@@ -153,6 +153,15 @@ Expected behavior:
 
 ## Production Acceptance
 
+Run the deployment self-check after installing the service file. Use
+`--skip-api` before the API is running, then run it again with the service
+started and a license header if the system API is protected:
+
+```bash
+uv run python scripts/deployment_check.py --skip-api
+uv run python scripts/deployment_check.py --header "Authorization: Bearer <token>"
+```
+
 - `systemctl start novasight`, `systemctl stop novasight`, and restart on
   failure work through systemd.
 - Watchdog notifications are active with `WatchdogSec=10`.
