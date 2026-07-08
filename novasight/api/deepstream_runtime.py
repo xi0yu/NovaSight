@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi import HTTPException, Request
 
@@ -188,7 +189,7 @@ def active_deployment_dir(request: Request) -> Path:
 
 
 def _configured_path(request: Request, value: str) -> Path | None:
-    text = value.strip()
+    text = unquote(value.strip())
     if not text:
         return None
     models_root = Path(request.app.state.models.data_dir).expanduser().resolve(strict=False)
@@ -196,6 +197,12 @@ def _configured_path(request: Request, value: str) -> Path | None:
     if path.is_absolute():
         resolved = path.resolve(strict=False)
     else:
+        registry_prefix = Path(models_root.name)
+        parent_prefix = Path(models_root.parent.name) / models_root.name
+        if path.parts[: len(parent_prefix.parts)] == parent_prefix.parts:
+            path = Path(*path.parts[len(parent_prefix.parts) :])
+        elif path.parts[: len(registry_prefix.parts)] == registry_prefix.parts:
+            path = Path(*path.parts[len(registry_prefix.parts) :])
         resolved = (models_root / path).resolve(strict=False)
     try:
         resolved.relative_to(models_root)

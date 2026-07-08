@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import asdict
 from typing import Any
@@ -39,7 +40,7 @@ async def put_config(request: Request) -> dict[str, Any]:
 
 @router.post("/api/config")
 async def post_config(request: Request) -> dict[str, Any]:
-    payload = await request.json()
+    payload = await _request_json(request)
     try:
         config = _config_from_payload(request, payload)
         report = RuntimeReconfigurator(request.app).apply(config)
@@ -48,6 +49,13 @@ async def post_config(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info("runtime config updated restart_required=%s", bool(request.app.state.runtime.running))
     return report.asdict()
+
+
+async def _request_json(request: Request) -> Any:
+    try:
+        return await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON body") from exc
 
 
 def _config_from_payload(request: Request, payload: dict[str, Any]) -> Any:

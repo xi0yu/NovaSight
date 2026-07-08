@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import yaml
 import pytest
 
 from novasight.api import create_app
+from novasight.api.deepstream_runtime import _configured_path
 from novasight.capture.state import (
     CaptureCapability,
     CaptureCapabilities,
@@ -111,6 +113,39 @@ def test_config_api_round_trips_strict_runtime_config(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["config"]["capture"]["device"] == "/dev/video1"
     assert app.state.runtime.config_store.status()["version"] == 1
+
+
+def test_config_api_rejects_invalid_json_without_server_error(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    client = TestClient(app)
+    _activate(client)
+
+    response = client.put(
+        "/api/config",
+        content=b"",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "invalid JSON body" in response.json()["detail"]
+
+
+def test_deepstream_configured_path_accepts_encoded_registry_paths(tmp_path) -> None:
+    models_root = tmp_path / "data" / "models"
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(models=SimpleNamespace(data_dir=models_root))
+        )
+    )
+
+    path = _configured_path(
+        request,
+        "data/models/combat_model%2Fdefault%2Fmodel.manifest.json",
+    )
+
+    assert path == (models_root / "combat_model/default/model.manifest.json").resolve(
+        strict=False
+    )
 
 
 def test_config_api_clears_pipeline_when_deepstream_pipeline_setting_changes(tmp_path) -> None:
