@@ -49,12 +49,53 @@ type CapabilityChoice = {
   fps: number;
 };
 
+type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
+
+type LaunchStage = {
+  label: string;
+  title: string;
+  caption: string;
+};
+
 const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "capture", index: "01", label: "采集" },
   { id: "infer", index: "02", label: "模型推理" },
   { id: "params", index: "03", label: "参数设置" },
   { id: "stats", index: "04", label: "统计" },
   { id: "latency", index: "05", label: "采集延迟" }
+];
+
+const MAINLINE_LAUNCH_STAGES: LaunchStage[] = [
+  {
+    label: "阶段 1 / 6",
+    title: "检查运行环境",
+    caption: "确认 Studio 已连接到 Jetson 运行服务。"
+  },
+  {
+    label: "阶段 2 / 6",
+    title: "应用采集配置",
+    caption: "按当前设备、格式、分辨率与帧率选择采集配置。"
+  },
+  {
+    label: "阶段 3 / 6",
+    title: "启动主链运行管线",
+    caption: "请求后端启动 DeepStream、ROI 与 runtime pipeline。"
+  },
+  {
+    label: "阶段 4 / 6",
+    title: "连接推理输出",
+    caption: "等待 DetectionBatch 输出进入运行态。"
+  },
+  {
+    label: "阶段 5 / 6",
+    title: "激活跟踪与控制",
+    caption: "跟踪、预测与角度控制模块跟随后端主链启动。"
+  },
+  {
+    label: "阶段 6 / 6",
+    title: "确认设备执行器",
+    caption: "刷新执行器状态，确认输出链路由后端持有。"
+  }
 ];
 
 function pageFromUrl(): ConsolePage {
@@ -330,11 +371,20 @@ export function StudioConsoleView({
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
+  const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
+  const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
+  const [launchStageIndex, setLaunchStageIndex] = useState(0);
+  const [launchCompletedStages, setLaunchCompletedStages] = useState(0);
+  const [launchError, setLaunchError] = useState("");
+  const [launchToastVisible, setLaunchToastVisible] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
+  const launchCancelledRef = useRef(false);
+  const launchTimerRef = useRef<number | null>(null);
+  const launchTimerResolveRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     writePageToUrl(activePage, "replace");
@@ -346,6 +396,41 @@ export function StudioConsoleView({
   const navigatePage = useCallback((page: ConsolePage) => {
     setActivePage(page);
     writePageToUrl(page);
+  }, []);
+
+  useEffect(() => {
+    if (!launchDialogOpen) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [launchDialogOpen]);
+
+  useEffect(() => {
+    if (!launchDialogOpen || launchStatus === "running") {
+      return undefined;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLaunchDialogOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [launchDialogOpen, launchStatus]);
+
+  useEffect(() => () => {
+    if (launchTimerRef.current !== null) {
+      window.clearTimeout(launchTimerRef.current);
+      launchTimerRef.current = null;
+    }
+    if (launchTimerResolveRef.current) {
+      launchTimerResolveRef.current();
+      launchTimerResolveRef.current = null;
+    }
   }, []);
 
   const capture = runtime?.capture;
@@ -768,11 +853,9 @@ export function StudioConsoleView({
     void refreshCapabilities();
   }, [refreshCapabilities]);
 
-  const applyCapture = useCallback(async () => {
+  const buildCapturePayload = useCallback((): CaptureSelectPayload => {
     const choice = selectedChoice;
-    setBusy("capture");
-    setLocalError(null);
-    const payload: CaptureSelectPayload = choice
+    return choice
       ? {
           device,
           preference: "manual",
@@ -794,6 +877,12 @@ export function StudioConsoleView({
             device,
             preference: "auto_high_fps"
           };
+  }, [device, selectedChoice, selectedProfile]);
+
+  const applyCapture = useCallback(async () => {
+    setBusy("capture");
+    setLocalError(null);
+    const payload = buildCapturePayload();
     try {
       await selectCaptureProfile(payload);
       await onRefresh();
@@ -803,7 +892,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [device, onRefresh, selectedChoice, selectedProfile]);
+  }, [buildCapturePayload, onRefresh]);
 
   const stopCurrentCapture = useCallback(async () => {
     setBusy("stop");
@@ -832,16 +921,151 @@ export function StudioConsoleView({
     }
   }, [onRefresh]);
 
+  const waitForLaunchFeedback = useCallback((ms: number) => new Promise<void>((resolve) => {
+    if (launchTimerRef.current !== null) {
+      window.clearTimeout(launchTimerRef.current);
+      launchTimerRef.current = null;
+    }
+    if (launchTimerResolveRef.current) {
+      launchTimerResolveRef.current();
+      launchTimerResolveRef.current = null;
+    }
+    launchTimerResolveRef.current = resolve;
+    launchTimerRef.current = window.setTimeout(() => {
+      launchTimerRef.current = null;
+      launchTimerResolveRef.current = null;
+      resolve();
+    }, ms);
+  }), []);
+
+  const resetLaunchDialog = useCallback(() => {
+    if (launchTimerRef.current !== null) {
+      window.clearTimeout(launchTimerRef.current);
+      launchTimerRef.current = null;
+    }
+    if (launchTimerResolveRef.current) {
+      launchTimerResolveRef.current();
+      launchTimerResolveRef.current = null;
+    }
+    launchCancelledRef.current = false;
+    setLaunchStatus("idle");
+    setLaunchStageIndex(0);
+    setLaunchCompletedStages(0);
+    setLaunchError("");
+  }, []);
+
+  const openMainlineLaunchDialog = useCallback(() => {
+    resetLaunchDialog();
+    setLaunchDialogOpen(true);
+  }, [resetLaunchDialog]);
+
+  const closeLaunchDialog = useCallback(() => {
+    if (launchStatus === "running") {
+      return;
+    }
+    setLaunchDialogOpen(false);
+  }, [launchStatus]);
+
+  const showLaunchToast = useCallback(() => {
+    setLaunchToastVisible(true);
+    window.setTimeout(() => setLaunchToastVisible(false), 2600);
+  }, []);
+
+  const startMainlineLaunch = useCallback(async () => {
+    if (launchStatus === "running") {
+      return;
+    }
+    launchCancelledRef.current = false;
+    setBusy("runtime.start");
+    setLocalError(null);
+    setLaunchStatus("running");
+    setLaunchError("");
+    setLaunchStageIndex(0);
+    setLaunchCompletedStages(0);
+
+    const ensureNotCancelled = () => {
+      if (launchCancelledRef.current) {
+        throw new Error("launch cancelled");
+      }
+    };
+    const runStage = async (index: number, action?: () => Promise<void>) => {
+      ensureNotCancelled();
+      setLaunchStageIndex(index);
+      await waitForLaunchFeedback(160);
+      ensureNotCancelled();
+      if (action) {
+        await action();
+      }
+      ensureNotCancelled();
+      setLaunchCompletedStages(index + 1);
+      await waitForLaunchFeedback(180);
+    };
+
+    try {
+      await runStage(0);
+      await runStage(1, async () => {
+        await selectCaptureProfile(buildCapturePayload());
+      });
+      await runStage(2, async () => {
+        await startRuntimePipeline();
+      });
+      await runStage(3);
+      await runStage(4);
+      await runStage(5, onRefresh);
+      setLaunchStatus("success");
+      setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES.length);
+      showLaunchToast();
+    } catch (err) {
+      if (launchCancelledRef.current) {
+        setLaunchStatus("cancelled");
+        setLaunchError("");
+        return;
+      }
+      setLaunchStatus("failed");
+      setLaunchError(getErrorMessage(err));
+      setLocalError(`启动主链失败：${getErrorMessage(err)}`);
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [buildCapturePayload, launchStatus, onRefresh, showLaunchToast, waitForLaunchFeedback]);
+
+  const cancelMainlineLaunch = useCallback(async () => {
+    if (launchStatus !== "running") {
+      closeLaunchDialog();
+      return;
+    }
+    launchCancelledRef.current = true;
+    if (launchTimerRef.current !== null) {
+      window.clearTimeout(launchTimerRef.current);
+      launchTimerRef.current = null;
+    }
+    if (launchTimerResolveRef.current) {
+      launchTimerResolveRef.current();
+      launchTimerResolveRef.current = null;
+    }
+    setLaunchStatus("cancelled");
+    setLaunchError("");
+    setBusy(null);
+    try {
+      await stopCapture();
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`取消启动失败：${getErrorMessage(err)}`);
+    }
+  }, [closeLaunchDialog, launchStatus, onRefresh]);
+
   const toggleCapture = useCallback(async () => {
     if (captureMainRunning) {
       await stopCurrentCapture();
       return;
     }
-    await applyCapture();
     if (deepstreamRuntimeSelected) {
-      await startInferenceThread();
+      openMainlineLaunchDialog();
+      return;
     }
-  }, [applyCapture, captureMainRunning, deepstreamRuntimeSelected, startInferenceThread, stopCurrentCapture]);
+    await applyCapture();
+  }, [applyCapture, captureMainRunning, deepstreamRuntimeSelected, openMainlineLaunchDialog, stopCurrentCapture]);
 
   const updateConfigField = useCallback(
     async (section: string, key: string, value: number | string | boolean | string[]) => {
@@ -1133,6 +1357,45 @@ export function StudioConsoleView({
     }
   };
 
+  const activeLaunchStage =
+    MAINLINE_LAUNCH_STAGES[Math.min(launchStageIndex, MAINLINE_LAUNCH_STAGES.length - 1)];
+  const launchProgress =
+    launchStatus === "success"
+      ? 100
+      : Math.round((launchCompletedStages / MAINLINE_LAUNCH_STAGES.length) * 100);
+  const launchIndicatorClass =
+    launchStatus === "running"
+      ? "launch-stage-indicator running"
+      : launchStatus === "success"
+        ? "launch-stage-indicator success"
+        : launchStatus === "failed"
+          ? "launch-stage-indicator failed"
+          : "launch-stage-indicator";
+  const launchIndicatorText =
+    launchStatus === "success"
+      ? "✓"
+      : launchStatus === "failed"
+        ? "!"
+        : launchStatus === "running"
+          ? ""
+          : `${launchCompletedStages}/6`;
+  const launchTitle =
+    launchStatus === "success"
+      ? "视觉处理链路已运行"
+      : launchStatus === "failed"
+        ? "启动主链失败"
+        : launchStatus === "cancelled"
+          ? "启动流程已停止"
+          : activeLaunchStage.title;
+  const launchCaption =
+    launchStatus === "success"
+      ? "采集、ROI、推理、跟踪、控制与执行出口已交由后端主链持有。"
+      : launchStatus === "failed"
+        ? launchError || "后端拒绝启动，已保留当前运行态。"
+        : launchStatus === "cancelled"
+          ? "已向后端发送停止请求，前端不执行额外回滚逻辑。"
+          : activeLaunchStage.caption;
+
   return (
     <section className="console-app">
       <header className="console-top">
@@ -1179,7 +1442,7 @@ export function StudioConsoleView({
             onClick={() => void toggleCapture()}
             type="button"
           >
-            {captureMainRunning ? "▪ 停止采集" : deepstreamRuntimeSelected ? "▶ 启动主链" : "▶ 启动采集"}
+            {captureMainRunning ? (deepstreamRuntimeSelected ? "▪ 停止主链" : "▪ 停止采集") : deepstreamRuntimeSelected ? "▶ 启动主链" : "▶ 启动采集"}
           </button>
           {!deepstreamRuntimeSelected && !runtime?.running && capture?.available ? (
             <button
@@ -2041,6 +2304,88 @@ export function StudioConsoleView({
           </div>
         </section>
       </main>
+
+      {launchDialogOpen ? (
+        <div
+          aria-hidden="false"
+          className="launch-dialog-layer"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && launchStatus !== "running") {
+              closeLaunchDialog();
+            }
+          }}
+        >
+          <section
+            aria-labelledby="launch-dialog-title"
+            aria-modal="true"
+            className="launch-dialog"
+            role="dialog"
+          >
+            <header className="launch-dialog-header">
+              <div className="launch-dialog-title-wrap">
+                <div className="launch-dialog-icon" aria-hidden="true">▶</div>
+                <div>
+                  <h2 id="launch-dialog-title">启动视觉处理链路</h2>
+                  <p>只展示必要启动阶段，不加载额外运行监控。</p>
+                </div>
+              </div>
+              <button
+                aria-label="关闭"
+                className="launch-dialog-close"
+                disabled={launchStatus === "running"}
+                onClick={closeLaunchDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </header>
+
+            <div className="launch-dialog-body">
+              <div className="launch-stage-visual">
+                <div className={launchIndicatorClass}>{launchIndicatorText}</div>
+                <div>
+                  <div className="launch-stage-label">
+                    {launchStatus === "idle" ? "准备启动" : launchStatus === "success" ? "启动完成" : launchStatus === "failed" ? "启动失败" : launchStatus === "cancelled" ? "已取消" : activeLaunchStage.label}
+                  </div>
+                  <div className="launch-stage-title">{launchTitle}</div>
+                  <div className="launch-stage-caption">{launchCaption}</div>
+                </div>
+              </div>
+
+              <div className="launch-progress-block">
+                <div className="launch-progress-meta">
+                  <span>总进度</span>
+                  <span>{launchProgress}%</span>
+                </div>
+                <div className="launch-progress-track">
+                  <div className="launch-progress-bar" style={{ width: `${launchProgress}%` }} />
+                </div>
+                <div className="launch-progress-note">
+                  前端仅维护阶段开始、阶段完成、启动失败、启动完成四类低频反馈；不轮询 FPS、温度、显存或后端日志，不进入采集、推理、跟踪、控制线程。
+                </div>
+              </div>
+            </div>
+
+            <footer className="launch-dialog-footer">
+              <button className="console-button" onClick={() => void cancelMainlineLaunch()} type="button">
+                {launchStatus === "running" ? "取消启动" : "关闭"}
+              </button>
+              <button
+                className="console-button primary"
+                disabled={launchStatus === "running"}
+                onClick={launchStatus === "success" ? closeLaunchDialog : () => void startMainlineLaunch()}
+                type="button"
+              >
+                {launchStatus === "running" ? "正在启动" : launchStatus === "success" ? "进入工作台" : launchStatus === "failed" || launchStatus === "cancelled" ? "重新启动" : "开始启动"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      <div className={launchToastVisible ? "launch-toast show" : "launch-toast"} role="status">
+        视觉处理链路已启动
+      </div>
     </section>
   );
 }
