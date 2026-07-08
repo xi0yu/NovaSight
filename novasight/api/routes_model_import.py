@@ -206,6 +206,38 @@ def build_model_engine(
     }
 
 
+@router.get("/{project_id}/manifest")
+def get_model_manifest(
+    request: Request,
+    project_id: int,
+    version_id: int | None = None,
+    artifact_id: int | None = None,
+) -> dict[str, Any]:
+    registry: ModelRegistry = request.app.state.models
+    try:
+        project = registry.get_project(project_id)
+        if project is None:
+            raise RegistryNotFoundError(f"unknown project id: {project_id}")
+        version = _select_build_version(registry, project_id, version_id)
+        artifact = _select_manifest_artifact(registry, version.id, artifact_id)
+        artifact_path = Path(registry.data_dir) / project.name / version.version / artifact.path
+        manifest_path = artifact_path.with_name("model.manifest.json")
+        if not manifest_path.is_file():
+            raise RegistryValidationError(f"model manifest missing: {manifest_path}")
+        manifest = read_manifest(manifest_path)
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "project": asdict(project),
+        "version": asdict(version),
+        "artifact": asdict(artifact),
+        "manifest_path": _relative_registry_path(registry, manifest_path),
+        "manifest": manifest.to_dict(),
+    }
+
+
 def _get_or_create_project(registry: ModelRegistry, name: str, description: str):
     existing = next((project for project in registry.list_projects() if project.name == name), None)
     if existing is not None:
@@ -273,6 +305,27 @@ def _select_build_source_artifact(
     if source is None:
         raise RegistryValidationError("selected version has no ONNX artifact to build")
     return source
+
+
+def _select_manifest_artifact(
+    registry: ModelRegistry,
+    version_id: int,
+    artifact_id: int | None,
+):
+    artifacts = registry.list_artifacts(version_id)
+    if artifact_id is not None:
+        artifact = registry.get_artifact(artifact_id)
+        if artifact is None:
+            raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
+        if artifact.version_id != version_id:
+            raise RegistryValidationError("artifact does not belong to selected version")
+        return artifact
+    source = next((artifact for artifact in artifacts if artifact.kind == "onnx"), None)
+    if source is not None:
+        return source
+    if not artifacts:
+        raise RegistryValidationError("selected version has no model artifacts")
+    return artifacts[-1]
 
 
 def _trtexec_command(
