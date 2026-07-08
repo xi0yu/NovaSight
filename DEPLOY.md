@@ -89,6 +89,9 @@ uv run python tests/perf_test.py \
   --endpoint /api/runtime/state \
   --duration-s 3600 \
   --interval-s 0.05 \
+  --max-p95-ms 20 \
+  --target-fps 60 \
+  --fps-tolerance-pct 1 \
   --output /var/lib/novasight/perf-1h.json
 ```
 
@@ -99,6 +102,7 @@ Review the output:
 - `capture_fps.p50` should stay within `+-1%` of the configured target FPS.
 - `dropped_frames` should not grow during a stable run.
 - `stale_detection_samples` should remain near zero after warm-up.
+- `passed` must be `true`; failed gates are listed under `gates`.
 
 Keep the generated JSON beside the deployment logs for regression comparison.
 

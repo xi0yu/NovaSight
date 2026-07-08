@@ -20,6 +20,8 @@ class PerfSummary:
     inference_fps: dict[str, float]
     dropped_frames: int
     stale_detection_samples: int
+    gates: dict[str, dict[str, Any]]
+    passed: bool
     errors: list[str]
 
 
@@ -31,6 +33,10 @@ def main() -> int:
     parser.add_argument("--interval-s", type=float, default=0.05)
     parser.add_argument("--header", action="append", default=[], help="Extra HTTP header as Name: Value.")
     parser.add_argument("--output", default="")
+    parser.add_argument("--max-p95-ms", type=float, default=20.0)
+    parser.add_argument("--target-fps", type=float, default=0.0)
+    parser.add_argument("--fps-tolerance-pct", type=float, default=1.0)
+    parser.add_argument("--min-samples", type=int, default=1)
     args = parser.parse_args()
 
     summary = run_perf_probe(
@@ -39,13 +45,17 @@ def main() -> int:
         duration_s=args.duration_s,
         interval_s=args.interval_s,
         headers=_parse_headers(args.header),
+        max_p95_ms=args.max_p95_ms,
+        target_fps=args.target_fps,
+        fps_tolerance_pct=args.fps_tolerance_pct,
+        min_samples=args.min_samples,
     )
     payload = json.dumps(asdict(summary), ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as handle:
             handle.write(payload + "\n")
     print(payload)
-    return 0 if not summary.errors else 2
+    return 0 if summary.passed else 2
 
 
 def run_perf_probe(
@@ -55,6 +65,10 @@ def run_perf_probe(
     duration_s: float,
     interval_s: float,
     headers: dict[str, str] | None = None,
+    max_p95_ms: float = 20.0,
+    target_fps: float = 0.0,
+    fps_tolerance_pct: float = 1.0,
+    min_samples: int = 1,
 ) -> PerfSummary:
     start = time.monotonic()
     deadline = start + max(0.0, duration_s)
@@ -78,16 +92,96 @@ def run_perf_probe(
         if _number(stat.get("last_frame_age_ms")) > max(1000.0 * interval * 2.0, 100.0)
     )
     dropped_frames = int(max((_number(stat.get("dropped_counter")) for stat in stats), default=0.0))
+    latency = _percentiles(e2e)
+    capture = _percentiles(capture_fps)
+    inference = _percentiles(inference_fps)
+    gates = _evaluate_gates(
+        samples=len(samples),
+        errors=errors,
+        e2e_latency_ms=latency,
+        capture_fps=capture,
+        max_p95_ms=max_p95_ms,
+        target_fps=target_fps,
+        fps_tolerance_pct=fps_tolerance_pct,
+        min_samples=min_samples,
+    )
+    passed = all(gate["passed"] for gate in gates.values())
     return PerfSummary(
         samples=len(samples),
         duration_s=round(elapsed, 3),
-        e2e_latency_ms=_percentiles(e2e),
-        capture_fps=_percentiles(capture_fps),
-        inference_fps=_percentiles(inference_fps),
+        e2e_latency_ms=latency,
+        capture_fps=capture,
+        inference_fps=inference,
         dropped_frames=dropped_frames,
         stale_detection_samples=stale_detection_samples,
+        gates=gates,
+        passed=passed,
         errors=errors[-20:],
     )
+
+
+def _evaluate_gates(
+    *,
+    samples: int,
+    errors: list[str],
+    e2e_latency_ms: dict[str, float],
+    capture_fps: dict[str, float],
+    max_p95_ms: float,
+    target_fps: float,
+    fps_tolerance_pct: float,
+    min_samples: int,
+) -> dict[str, dict[str, Any]]:
+    gates: dict[str, dict[str, Any]] = {}
+    gates["samples"] = _gate(
+        samples >= max(1, min_samples),
+        value=samples,
+        limit=max(1, min_samples),
+        message="sample count meets minimum",
+    )
+    gates["errors"] = _gate(
+        not errors,
+        value=len(errors),
+        limit=0,
+        message="telemetry requests completed without errors",
+    )
+    gates["e2e_latency_p95_ms"] = _gate(
+        e2e_latency_ms["p95"] <= max_p95_ms,
+        value=e2e_latency_ms["p95"],
+        limit=max_p95_ms,
+        message="p95 end-to-end latency is within budget",
+    )
+    if target_fps > 0.0:
+        tolerance = abs(target_fps) * max(0.0, fps_tolerance_pct) / 100.0
+        lower = target_fps - tolerance
+        upper = target_fps + tolerance
+        value = capture_fps["p50"]
+        gates["capture_fps_p50"] = {
+            "passed": lower <= value <= upper,
+            "value": value,
+            "target": target_fps,
+            "tolerance_pct": fps_tolerance_pct,
+            "lower": round(lower, 3),
+            "upper": round(upper, 3),
+            "message": "capture FPS p50 is within target tolerance",
+        }
+    else:
+        gates["capture_fps_p50"] = {
+            "passed": True,
+            "value": capture_fps["p50"],
+            "target": None,
+            "tolerance_pct": fps_tolerance_pct,
+            "message": "capture FPS gate skipped because --target-fps was not set",
+        }
+    return gates
+
+
+def _gate(passed: bool, *, value: Any, limit: Any, message: str) -> dict[str, Any]:
+    return {
+        "passed": bool(passed),
+        "value": value,
+        "limit": limit,
+        "message": message,
+    }
 
 
 def _fetch_json(url: str, *, headers: dict[str, str]) -> dict[str, Any]:
