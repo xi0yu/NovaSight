@@ -105,14 +105,15 @@ def _validate_manifest_contract(manifest: ModelManifest) -> None:
             f"DeepStream DetectionBatch mapping expects NCHW input shape, got {manifest.input.layout} {manifest.input.shape}"
         )
     class_count = int(manifest.output.class_count)
-    expected_channels = 4 + class_count
     if class_count <= 0:
         raise ValueError(f"DeepStream YOLO output class_count must be positive, got {class_count}")
     if len(manifest.output.shape) != 3:
         raise ValueError(f"DeepStream YOLO output shape must be [batch, channels, candidates], got {manifest.output.shape}")
     actual_channels = int(manifest.output.shape[1])
-    if actual_channels != expected_channels:
+    expected_channels = {4 + class_count, 5 + class_count}
+    if actual_channels not in expected_channels:
         raise ValueError(
             "DeepStream YOLO output channels must equal 4 + class_count "
+            "or 5 + class_count "
             f"(channels={actual_channels}, class_count={class_count})"
         )

@@ -1007,10 +1007,11 @@ def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> N
             "DeepStream input_scale_factor must be positive "
             f"(got {payload.input_scale_factor})"
         )
-    expected_channels = 4 + class_count
-    if int(output_shape[1]) != expected_channels:
+    expected_channels = {4 + class_count, 5 + class_count}
+    if int(output_shape[1]) not in expected_channels:
         raise ValueError(
             "DeepStream YOLO output channels must equal 4 + class_count "
+            "or 5 + class_count "
             f"(channels={output_shape[1]}, class_count={class_count})"
         )
 

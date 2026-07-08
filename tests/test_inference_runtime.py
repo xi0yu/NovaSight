@@ -1740,6 +1740,45 @@ def test_deepstream_output_tensor_reuses_shared_parser_and_returns_detection_bat
     assert detection.y2 == pytest.approx(300.0)
 
 
+def test_deepstream_output_tensor_accepts_yolov5_objectness_channels(tmp_path) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 320, 320], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 9, 1344], "float32", "NCHW"),
+        class_count=4,
+        class_names=["body", "head", "team", "bot"],
+    )
+    import numpy as np
+
+    output = np.zeros((1, 9, 1344), dtype=np.float32)
+    output[0, :, 0] = [160, 160, 40, 80, 0.8, 0.1, 0.9, 0.0, 0.0]
+
+    batch = output_tensor_to_detection_batch(
+        output,
+        manifest=manifest,
+        frame_id=12,
+        capture_ts_ns=1000,
+        inference_start_ts_ns=1200,
+        inference_end_ts_ns=1800,
+        roi_width=640,
+        roi_height=640,
+    )
+
+    assert batch.classes == ["body", "head", "team", "bot"]
+    assert len(batch.detections) == 1
+    detection = batch.detections[0]
+    assert detection.cls == 1
+    assert detection.score == pytest.approx(0.72)
+    assert detection.x1 == pytest.approx(280.0)
+    assert detection.y1 == pytest.approx(240.0)
+    assert detection.x2 == pytest.approx(360.0)
+    assert detection.y2 == pytest.approx(400.0)
+
+
 def test_deepstream_output_tensor_accepts_layer_dims_without_batch(tmp_path) -> None:
     engine_path = tmp_path / "model.engine"
     engine_path.write_bytes(b"engine")
@@ -1952,7 +1991,7 @@ def test_deepstream_output_tensor_rejects_class_count_channel_mismatch(tmp_path)
 
     output = np.zeros((1, 8, 1344), dtype=np.float32)
 
-    with pytest.raises(ValueError, match="channels must equal 4 \\+ class_count"):
+    with pytest.raises(ValueError, match="channels must equal 4 \\+ class_count or 5 \\+ class_count"):
         output_tensor_to_detection_batch(
             output,
             manifest=manifest,

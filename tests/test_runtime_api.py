@@ -974,6 +974,66 @@ def test_model_deepstream_prepare_api_writes_manifest_and_nvinfer_config(tmp_pat
     assert "symmetric-padding=1" in deepstream_ini
 
 
+def test_model_deepstream_prepare_api_accepts_yolov5_objectness_channels(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
+    client = TestClient(app)
+    _activate(client)
+    registry = app.state.models
+    project = registry.create_project("combat_model", "")
+    version = registry.create_version(
+        project.id,
+        "default",
+        "onnx",
+        "model.engine",
+        ["body", "head", "team", "bot"],
+        "1x3x320x320",
+    )
+    model_dir = registry.data_dir / project.name / version.version
+    model_dir.mkdir(parents=True, exist_ok=True)
+    engine_path = model_dir / "model.engine"
+    engine_path.write_bytes(b"confirmed engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        "model.engine",
+        "sha256:test",
+        "pending",
+    )
+
+    response = client.post(
+        f"/api/models/artifacts/{artifact.id}/deepstream/prepare",
+        json={
+            "model_id": "combat_model",
+            "display_name": "Combat Model",
+            "runtime_precision": "fp16",
+            "input_name": "images",
+            "input_shape": [1, 3, 320, 320],
+            "input_dtype": "float32",
+            "input_color_format": "RGB",
+            "input_scale_factor": 0.00392156862745098,
+            "maintain_aspect_ratio": False,
+            "symmetric_padding": False,
+            "output_name": "output0",
+            "output_shape": [1, 9, 6300],
+            "output_dtype": "float32",
+            "class_count": 4,
+            "confidence_threshold": 0.25,
+            "nms_iou_threshold": 0.45,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["manifest_path"] == "combat_model/default/model.manifest.json"
+    assert body["deepstream_config_path"] == "combat_model/default/deepstream.ini"
+    manifest = read_manifest(model_dir / "model.manifest.json")
+    assert manifest.input.shape == [1, 3, 320, 320]
+    assert manifest.output.shape == [1, 9, 6300]
+    assert manifest.output.class_count == 4
+    assert manifest.output.class_names == ["body", "head", "team", "bot"]
+
+
 def test_model_deepstream_prepare_api_rejects_class_count_channel_mismatch(tmp_path) -> None:
     app = create_app(data_dir=tmp_path / "data", config_path=tmp_path / "missing.yaml")
     client = TestClient(app)
@@ -1014,7 +1074,7 @@ def test_model_deepstream_prepare_api_rejects_class_count_channel_mismatch(tmp_p
     )
 
     assert response.status_code == 400
-    assert "channels must equal 4 + class_count" in response.json()["detail"]
+    assert "channels must equal 4 + class_count or 5 + class_count" in response.json()["detail"]
     assert not (model_dir / "model.manifest.json").exists()
     assert not (model_dir / "deepstream.ini").exists()
 
