@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type StudioViewId } from "./app/navigation";
 import { StatusIndicator } from "./components/ui";
@@ -109,6 +109,8 @@ export default function App() {
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
   const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
+  const loadRequestSeqRef = useRef(0);
+  const runtimeStateReceivedAtRef = useRef(0);
   const [licenseLoading, setLicenseLoading] = useState(
     localStorage.getItem(LICENSE_CACHE_KEY) === "1"
   );
@@ -144,10 +146,13 @@ export default function App() {
       setState(initialState);
       setRealtimeStatus("disconnected");
       setLastWsMessageAt(null);
+      runtimeStateReceivedAtRef.current = 0;
     }
   }, []);
 
   const load = useCallback(async () => {
+    const requestSeq = loadRequestSeqRef.current + 1;
+    loadRequestSeqRef.current = requestSeq;
     setState((current) => ({ ...current, loading: true, errors: {} }));
     const [health, runtime, config, projects] = await Promise.allSettled([
       getHealth(),
@@ -155,7 +160,11 @@ export default function App() {
       getRuntimeConfig(),
       getModelProjects()
     ]);
+    const responseReceivedAt = Date.now();
     setState((current) => {
+      if (requestSeq !== loadRequestSeqRef.current) {
+        return current;
+      }
       const errors: LoadState["errors"] = {};
       if (health.status === "rejected") {
         errors.health = getErrorMessage(health.reason);
@@ -169,11 +178,16 @@ export default function App() {
       if (projects.status === "rejected") {
         errors.projects = getErrorMessage(projects.reason);
       }
+      const shouldApplyRuntime =
+        runtime.status === "fulfilled" && runtimeStateReceivedAtRef.current <= responseReceivedAt;
+      if (shouldApplyRuntime) {
+        runtimeStateReceivedAtRef.current = responseReceivedAt;
+      }
       return {
         loading: false,
         errors,
         health: health.status === "fulfilled" ? health.value : current.health,
-        runtime: runtime.status === "fulfilled" ? runtime.value : current.runtime,
+        runtime: shouldApplyRuntime ? runtime.value : current.runtime,
         config: config.status === "fulfilled" ? config.value : current.config,
         projects: projects.status === "fulfilled" ? projects.value : current.projects,
         lastUpdated: new Date()
@@ -228,6 +242,7 @@ export default function App() {
       try {
         const runtime = JSON.parse(String(event.data)) as RuntimeState;
         const receivedAt = Date.now();
+        runtimeStateReceivedAtRef.current = receivedAt;
         setState((current) => ({
           ...current,
           runtime,
