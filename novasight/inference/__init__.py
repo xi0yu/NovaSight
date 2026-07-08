@@ -9,6 +9,11 @@ from novasight.inference.input import (
     parse_tensor_input_shape,
     prepare_tensor_input,
 )
+from novasight.inference.nvinfer_config import (
+    generate_nvinfer_config,
+    generate_nvinfer_config_with_fingerprint,
+    resolve_engine_path,
+)
 from novasight.inference.onnxruntime_engine import OnnxRuntimeInferenceEngine
 from novasight.inference.preprocess import (
     DeviceTensor,
@@ -29,6 +34,8 @@ __all__ = [
     "OnnxRuntimeInferenceEngine",
     "DeviceTensor",
     "GpuResourcePreprocessor",
+    "generate_nvinfer_config",
+    "generate_nvinfer_config_with_fingerprint",
     "PreparedTensorInput",
     "TensorRtInferenceEngine",
     "TensorInputShape",
@@ -38,4 +45,5 @@ __all__ = [
     "parse_tensor_input_shape",
     "prepare_tensor",
     "prepare_tensor_input",
+    "resolve_engine_path",
 ]
