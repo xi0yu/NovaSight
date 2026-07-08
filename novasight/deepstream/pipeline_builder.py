@@ -38,7 +38,7 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
         if config.tracker_config_path is not None
         else None
     )
-    queue = "queue max-size-buffers=1 leaky=downstream"
+    queue = "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream"
     inference_segments = [
         f"nvinfer name=primary-infer config-file-path={_gst_property_value(config_path)}",
     ]
@@ -88,6 +88,7 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             f"width={config.model_width}",
             f"height={config.model_height}",
             "live-source=1",
+            "sync-inputs=0",
             f"batched-push-timeout={config.batched_push_timeout_us}",
             "!",
             *inference_segments,

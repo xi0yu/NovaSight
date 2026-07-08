@@ -1591,12 +1591,12 @@ def test_deepstream_pipeline_builder_uses_nvmm_nvinfer_and_leaky_queues(tmp_path
 
     assert "v4l2src device=/dev/video0 io-mode=2 do-timestamp=true" in pipeline
     assert "image/jpeg,width=1920,height=1080,framerate=120/1" in pipeline
-    assert pipeline.count("queue max-size-buffers=1 leaky=downstream") >= 3
+    assert pipeline.count("queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream") >= 3
     assert "nvv4l2decoder mjpeg=1" in pipeline
     assert "video/x-raw(memory:NVMM),format=I420" in pipeline
     assert "nvvidconv left=720 right=1200 top=300 bottom=780" in pipeline
     assert "video/x-raw(memory:NVMM),format=NV12,width=256,height=256" in pipeline
-    assert "nvstreammux name=mux batch-size=1 width=256 height=256 live-source=1" in pipeline
+    assert "nvstreammux name=mux batch-size=1 width=256 height=256 live-source=1 sync-inputs=0" in pipeline
     assert f"nvinfer name=primary-infer config-file-path={config_path.resolve()}" in pipeline
     assert "video/x-raw,format=BGR" not in pipeline
     assert "videoconvert" not in pipeline

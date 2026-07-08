@@ -117,6 +117,9 @@ class DeepStreamDetectionBackend:
         self._gst_base_time_ns: int | None = None
         self._pts_to_monotonic_offset_ns: int | None = None
         self._timestamp_source = "uninitialized"
+        self._last_raw_pts_ns = 0
+        self._last_capture_ts_ns = 0
+        self._last_probe_observed_ts_ns = 0
         self._fallback_frame_id = 0
         self._bus_stop = threading.Event()
         self._bus_thread: threading.Thread | None = None
@@ -171,6 +174,9 @@ class DeepStreamDetectionBackend:
                 self._gst_base_time_ns = None
                 self._pts_to_monotonic_offset_ns = None
                 self._timestamp_source = "uninitialized"
+                self._last_raw_pts_ns = 0
+                self._last_capture_ts_ns = 0
+                self._last_probe_observed_ts_ns = 0
                 self._fallback_frame_id = 0
                 self._last_error = ""
                 self._terminal_error = False
@@ -228,8 +234,10 @@ class DeepStreamDetectionBackend:
         dependency = self.dependency_status()
         now_ns = time.monotonic_ns()
         with self._lock:
-            self._prune_publish_window_locked(now_ns)
             running = self._running
+            terminal_error = self._terminal_error
+            if running and not terminal_error:
+                self._prune_publish_window_locked(now_ns)
             last_result = self._last_result
             published = self._published_batches
             tensor_meta_frames = self._tensor_meta_frames
@@ -243,10 +251,12 @@ class DeepStreamDetectionBackend:
             latency_stats = _latency_stats_locked(self._latency_window_samples)
             started_at_ns = self._started_at_ns
             last_error = self._last_error
-            terminal_error = self._terminal_error
             confidence_threshold = self.confidence_threshold
             nms_threshold = self.nms_threshold
             timestamp_source = self._timestamp_source
+            last_raw_pts_ns = self._last_raw_pts_ns
+            last_capture_ts_ns = self._last_capture_ts_ns
+            last_probe_observed_ts_ns = self._last_probe_observed_ts_ns
         uptime_ms = 0.0
         if started_at_ns:
             uptime_ms = max(0.0, (now_ns - started_at_ns) / 1e6)
@@ -329,6 +339,12 @@ class DeepStreamDetectionBackend:
             "capture_to_tensor_meta_ms_stats": latency_stats,
             "latency_source": "capture_to_tensor_meta_done",
             "timestamp_source": timestamp_source,
+            "last_raw_pts_ns": last_raw_pts_ns,
+            "last_capture_ts_ns": last_capture_ts_ns,
+            "last_probe_observed_ts_ns": last_probe_observed_ts_ns,
+            "last_pts_to_probe_ms": max(0.0, (last_probe_observed_ts_ns - last_capture_ts_ns) / 1e6)
+            if last_probe_observed_ts_ns and last_capture_ts_ns
+            else 0.0,
             "last_detection_count": last_detection_count,
             "last_error": last_error,
             "uptime_ms": uptime_ms,
@@ -526,7 +542,12 @@ class DeepStreamDetectionBackend:
                 return Gst.PadProbeReturn.OK
             for frame_id, capture_ts_ns, output in self._iter_output_tensors(buffer):
                 done_ns = time.monotonic_ns()
-                capture_ts_ns = self._capture_ts_from_pts(capture_ts_ns, observed_ns=done_ns)
+                raw_pts_ns = int(capture_ts_ns or 0)
+                capture_ts_ns = self._capture_ts_from_pts(raw_pts_ns, observed_ns=done_ns)
+                with self._lock:
+                    self._last_raw_pts_ns = raw_pts_ns
+                    self._last_capture_ts_ns = int(capture_ts_ns)
+                    self._last_probe_observed_ts_ns = int(done_ns)
                 if output is None:
                     self.publish_empty_detection_batch(
                         frame_id=frame_id,
