@@ -27,6 +27,7 @@ def detection_batch_to_frame_context(
     width: int,
     height: int,
 ) -> FrameContext:
+    metadata = getattr(detection_batch, "metadata", {}) or {}
     return FrameContext(
         frame_id=int(detection_batch.frame_id),
         width=int(width),
@@ -35,9 +36,29 @@ def detection_batch_to_frame_context(
         tracks=detection_batch_tracks(detection_batch),
         classes=list(detection_batch.classes),
         capture_ts_ns=int(detection_batch.capture_ts_ns),
+        dequeue_ts_ns=_metadata_int(
+            metadata,
+            "dequeue_ts_ns",
+            "dequeue_timestamp_ns",
+        ),
+        decode_ts_ns=_metadata_int(
+            metadata,
+            "decode_ts_ns",
+            "decode_timestamp_ns",
+        ),
+        roi_ts_ns=_metadata_int(
+            metadata,
+            "roi_ts_ns",
+            "roi_timestamp_ns",
+        ),
         inference_start_ts_ns=int(detection_batch.inference_start_ts_ns),
         inference_end_ts_ns=int(detection_batch.inference_end_ts_ns),
-        postprocess_ts_ns=int(detection_batch.inference_end_ts_ns),
+        postprocess_ts_ns=_metadata_int(
+            metadata,
+            "postprocess_ts_ns",
+            "postprocess_timestamp_ns",
+        )
+        or int(detection_batch.inference_end_ts_ns),
     )
 
 
@@ -76,6 +97,20 @@ def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _metadata_int(metadata: object, *keys: str) -> int | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in keys:
+        value = metadata.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 __all__ = [
