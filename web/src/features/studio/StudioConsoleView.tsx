@@ -43,6 +43,7 @@ type StudioConsoleViewProps = {
   projects: ModelProject[];
   errors: Partial<Record<string, string>>;
   lastUpdated: Date | null;
+  realtimeStatus: "connecting" | "connected" | "stale" | "disconnected";
   onRefresh: () => Promise<void>;
 };
 
@@ -351,6 +352,7 @@ export function StudioConsoleView({
   projects,
   errors,
   lastUpdated,
+  realtimeStatus,
   onRefresh
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
@@ -1630,6 +1632,20 @@ export function StudioConsoleView({
         : launchStatus === "cancelled"
           ? "已向后端发送停止请求，前端不执行额外回滚逻辑。"
           : activeLaunchStage.caption;
+  const realtimeStatusText =
+    realtimeStatus === "connected"
+      ? "实时推送已连接"
+      : realtimeStatus === "stale"
+        ? "实时数据陈旧"
+        : realtimeStatus === "connecting"
+          ? "实时推送连接中"
+          : "实时推送已断开";
+  const realtimeStatusClass =
+    realtimeStatus === "connected"
+      ? "console-live good"
+      : realtimeStatus === "stale" || realtimeStatus === "connecting"
+        ? "console-live warn"
+        : "console-live bad";
 
   return (
     <section className="console-app">
@@ -1646,7 +1662,7 @@ export function StudioConsoleView({
           <div className="console-group">
             <div><span className="console-dot" />{health?.ok ? "在线" : "离线"}</div>
             <div className="console-pill">退出</div>
-            <div className="console-live">实时推送已连接 · {formatDate(lastUpdated)}</div>
+            <div className={realtimeStatusClass}>{realtimeStatusText} · {formatDate(lastUpdated)}</div>
           </div>
         </div>
       </header>

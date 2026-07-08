@@ -332,6 +332,7 @@ export default function App() {
           projects={state.projects}
           errors={state.errors}
           lastUpdated={state.lastUpdated}
+          realtimeStatus={realtimeStatus}
           onRefresh={load}
         />
       )}

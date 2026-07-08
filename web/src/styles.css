@@ -3867,6 +3867,18 @@ tbody tr:hover {
   font-weight: 900;
 }
 
+.console-live.good {
+  color: #15803d;
+}
+
+.console-live.warn {
+  color: #a16207;
+}
+
+.console-live.bad {
+  color: var(--accent-red);
+}
+
 .console-sidebar {
   padding: 36px 18px;
   border-right: 1px solid var(--hairline);
