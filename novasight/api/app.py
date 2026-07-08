@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from novasight.capture.service import CaptureService
@@ -56,6 +57,7 @@ def create_app(
     app = FastAPI(title="NovaSight")
     data_path = Path(data_dir)
     config = config or load_runtime_config(config_path)
+    _install_studio_cors(app, config)
     models = ModelRegistry(
         db_path=data_path / "novasight.db",
         data_dir=data_path / "models",
@@ -138,6 +140,24 @@ def create_app(
     app.include_router(system_router)
     app.include_router(websocket_router)
     return app
+
+
+def _install_studio_cors(app: FastAPI, config: RuntimeConfig) -> None:
+    studio_port = int(getattr(getattr(config, "web", None), "port", 5174))
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "tauri://localhost",
+            f"http://localhost:{studio_port}",
+            f"http://127.0.0.1:{studio_port}",
+        ],
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 def _create_control_frame_recorder(config: RuntimeConfig, data_path: Path):
