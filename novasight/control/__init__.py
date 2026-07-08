@@ -14,7 +14,7 @@ from novasight.control.controller import (
 )
 from novasight.control.latency_compensator import LatencyCalibration, LatencyCompensator
 from novasight.control.output import ControlOutput, ControlOutputPolicy
-from novasight.control.scheduler import CommandScheduler, ScheduleDecision
+from novasight.control.scheduler import CommandScheduler, ScheduleDecision, Scheduler
 from novasight.control.strategy import (
     ExperimentalAnglePidStrategy,
     IControlStrategy,
@@ -41,4 +41,5 @@ __all__ = [
     "LatencyCompensator",
     "MoveCommand",
     "ScheduleDecision",
+    "Scheduler",
 ]

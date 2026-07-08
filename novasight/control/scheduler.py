@@ -99,7 +99,7 @@ class CommandScheduler:
         expired_reason = self._drop_expired(now)
         cancel_reason = self._cancel_pending_for_new_output(output)
         elapsed = now - self._last_emit_s if self._last_emit_s > 0 else self.min_interval_s
-        if self.min_interval_s <= 0 or elapsed >= self.min_interval_s:
+        if _interval_due(elapsed, self.min_interval_s):
             cancelled = len(self._pending_steps)
             self._cancelled_pending += cancelled
             self._pending_steps.clear()
@@ -192,6 +192,100 @@ class CommandScheduler:
         self._pending_command_id = 0
         self._pending_expires_s = 0.0
         self._throttled_since_emit = 0
+
+    def tick(self, *, now_s: float | None = None) -> ScheduleDecision:
+        """Emit the next pending step when pacing allows it.
+
+        Output loops can call this at a higher frequency than the HID device
+        rate. The scheduler keeps the latest pending command and only releases
+        one already-split step per tick once the minimum interval has elapsed.
+        """
+
+        now = time.monotonic() if now_s is None else float(now_s)
+        if self._cooldown_until_s > now:
+            return ScheduleDecision(
+                output=None,
+                metadata={
+                    "stage": "scheduler",
+                    "action": "cooldown",
+                    "command_status": "cooldown",
+                    "sent_allowed": False,
+                    "cooldown_remaining_ms": (self._cooldown_until_s - now) * 1000.0,
+                    "last_error": self._last_error,
+                },
+            )
+
+        expired_reason = self._drop_expired(now)
+        if not self._pending_steps:
+            return ScheduleDecision(
+                output=None,
+                metadata={
+                    "stage": "scheduler",
+                    "action": "idle",
+                    "command_status": "idle",
+                    "sent_allowed": False,
+                    "expired_reason": expired_reason,
+                },
+            )
+
+        elapsed = now - self._last_emit_s if self._last_emit_s > 0 else self.min_interval_s
+        if not _interval_due(elapsed, self.min_interval_s):
+            return ScheduleDecision(
+                output=None,
+                metadata={
+                    "stage": "scheduler",
+                    "action": "hold_pending",
+                    "command_id": self._pending_command_id,
+                    "source_frame_id": self._pending_parent.source_frame_id
+                    if self._pending_parent is not None
+                    else None,
+                    "source_track_id": self._pending_parent.source_track_id
+                    if self._pending_parent is not None
+                    else None,
+                    "command_status": "pending",
+                    "sent_allowed": False,
+                    "reason": "minimum interval not elapsed",
+                    "elapsed_ms": elapsed * 1000.0,
+                    "min_interval_ms": self.min_interval_s * 1000.0,
+                    "pending_dx": float(sum(step.dx for step in self._pending_steps)),
+                    "pending_dy": float(sum(step.dy for step in self._pending_steps)),
+                    "pending_steps": len(self._pending_steps),
+                    "expired_reason": expired_reason,
+                },
+            )
+
+        step = self._pending_steps.popleft()
+        pending_dx = float(sum(pending.dx for pending in self._pending_steps))
+        pending_dy = float(sum(pending.dy for pending in self._pending_steps))
+        pending_steps = len(self._pending_steps)
+        command_id = self._pending_command_id
+        parent = self._pending_parent
+        self._last_emit_s = now
+        if not self._pending_steps:
+            self._pending_parent = None
+            self._pending_created_s = 0.0
+            self._pending_command_id = 0
+            self._pending_expires_s = 0.0
+        return ScheduleDecision(
+            output=step,
+            metadata={
+                "stage": "scheduler",
+                "action": "emit_pending_step",
+                "command_id": command_id,
+                "source_frame_id": parent.source_frame_id if parent is not None else step.source_frame_id,
+                "source_track_id": parent.source_track_id if parent is not None else step.source_track_id,
+                "command_status": "ready",
+                "sent_allowed": True,
+                "elapsed_ms": elapsed * 1000.0,
+                "min_interval_ms": self.min_interval_s * 1000.0,
+                "emitted_step_dx": int(step.dx),
+                "emitted_step_dy": int(step.dy),
+                "pending_dx": pending_dx,
+                "pending_dy": pending_dy,
+                "pending_steps": pending_steps,
+                "expired_reason": expired_reason,
+            },
+        )
 
     def record_execution_result(
         self,
@@ -319,6 +413,12 @@ def _sign(value: int) -> int:
     return 0
 
 
+def _interval_due(elapsed_s: float, min_interval_s: float) -> bool:
+    if min_interval_s <= 0:
+        return True
+    return elapsed_s + 1e-12 >= min_interval_s
+
+
 def _direction_changed(previous: ControlOutput, current: ControlOutput) -> bool:
     prev_x = _sign(int(previous.dx))
     prev_y = _sign(int(previous.dy))
@@ -358,3 +458,6 @@ def _split_steps(
         previous_y = target_y
         steps.append(replace(output, dx=step_x, dy=step_y))
     return steps or [output]
+
+
+Scheduler = CommandScheduler
