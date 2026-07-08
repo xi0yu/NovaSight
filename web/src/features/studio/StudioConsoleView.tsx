@@ -3,11 +3,13 @@ import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useStat
 import {
   CaptureCapabilitiesResponse,
   CaptureCapability,
+  CaptureState,
   CaptureSelectPayload,
   connectKmNet,
   diagnosticCircleKmNet,
   diagnosticMoveKmNet,
   disconnectKmNet,
+  getRuntimeState,
   HealthResponse,
   ModelArtifact,
   ModelProject,
@@ -27,6 +29,7 @@ import {
   updateRuntimeConfigField
 } from "../../api";
 import { getErrorMessage } from "../shared/format";
+import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 type ConsolePage = "capture" | "infer" | "params" | "stats" | "latency";
 
@@ -377,6 +380,7 @@ export function StudioConsoleView({
   const [launchStageIndex, setLaunchStageIndex] = useState(0);
   const [launchCompletedStages, setLaunchCompletedStages] = useState(0);
   const [launchError, setLaunchError] = useState("");
+  const [launchProgressDetail, setLaunchProgressDetail] = useState("");
   const [launchToastVisible, setLaunchToastVisible] = useState(false);
   const [mainlineLaunchAccepted, setMainlineLaunchAccepted] = useState(false);
   const [mainlineLaunchMessage, setMainlineLaunchMessage] = useState("");
@@ -464,28 +468,28 @@ export function StudioConsoleView({
   const runtimeInference = asRecord(runtime?.inference);
   const pipeline = asRecord(runtime?.pipeline);
   const deepstreamRuntimeSelected = readString(runtimeInference.selected, "") === "deepstream";
-  const deepstreamTerminalError = readBoolean(runtimeInference.terminal_error, false);
+  const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
+  const deepstreamTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceLoaded = runtimeInference.loaded === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
-  const pipelineRunning = readBoolean(pipeline.running, false);
-  const pipelineLastError = readString(pipeline.last_error, "");
-  const runtimeMainlineRunning = runtime?.running === true || pipelineRunning;
+  const runtimeMainlineRunning = runtimeMainlineStatus.running;
   const mainlineLaunchPending =
     deepstreamRuntimeSelected &&
     mainlineLaunchAccepted &&
     !runtimeMainlineRunning &&
-    !deepstreamTerminalError &&
-    pipelineLastError === "" &&
+    !runtimeMainlineStatus.failed &&
     runtime?.fatal_error === null;
   const captureMainRunning = deepstreamRuntimeSelected
     ? runtimeMainlineRunning || mainlineLaunchPending
     : capture?.available === true;
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
   const captureStatusText = deepstreamRuntimeSelected
-    ? runtimeMainlineRunning
-      ? "DeepStream 主链运行中"
+    ? runtimeMainlineStatus.failed
+      ? "主链故障"
+      : runtimeMainlineRunning
+        ? "DeepStream 主链运行中"
       : mainlineLaunchPending
         ? "启动确认中"
         : runtimeInferenceConfigured
@@ -497,15 +501,19 @@ export function StudioConsoleView({
         ? "已配置"
         : "已停止";
   const inferenceStatusText = deepstreamRuntimeSelected
-    ? runtimeMainlineRunning
-      ? "DetectionBatch 运行中"
+    ? runtimeMainlineStatus.failed
+      ? "管线故障"
+      : runtimeMainlineRunning
+        ? runtimeMainlineStatus.hasRuntimeConsumption
+          ? "runtime 已消费"
+          : runtimeMainlineStatus.hasInferenceSignal
+            ? "DetectionBatch 已产出"
+            : "等待推理输出"
       : mainlineLaunchPending
         ? "等待后端反馈"
-        : deepstreamTerminalError
-          ? "管线故障"
-          : runtimeInferenceConfigured
-            ? "待启动"
-            : "未配置"
+        : runtimeInferenceConfigured
+          ? "待启动"
+          : "未配置"
     : runtime?.running
       ? "运行中"
       : "已停止";
@@ -567,17 +575,18 @@ export function StudioConsoleView({
     }
     if (
       mainlineLaunchAccepted &&
-      (deepstreamTerminalError || pipelineLastError !== "" || runtime?.fatal_error !== null)
+      (runtimeMainlineStatus.failed || runtime?.fatal_error !== null)
     ) {
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
-      setLocalError(`主链启动未确认：${pipelineLastError || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
+      setLocalError(`主链启动未确认：${runtimeMainlineStatus.failureMessage || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
     }
   }, [
     deepstreamRuntimeSelected,
     deepstreamTerminalError,
     mainlineLaunchAccepted,
-    pipelineLastError,
+    runtimeMainlineStatus.failed,
+    runtimeMainlineStatus.failureMessage,
     runtime?.fatal_error,
     runtimeInferenceDetail,
     runtimeInferenceReason,
@@ -1028,6 +1037,7 @@ export function StudioConsoleView({
     setLaunchStageIndex(0);
     setLaunchCompletedStages(0);
     setLaunchError("");
+    setLaunchProgressDetail("");
   }, []);
 
   const openMainlineLaunchDialog = useCallback(() => {
@@ -1047,6 +1057,103 @@ export function StudioConsoleView({
     window.setTimeout(() => setLaunchToastVisible(false), 2600);
   }, []);
 
+  const captureLaunchFailureMessage = useCallback((state: CaptureState): string => {
+    const report = asRecord(state.report);
+    const sections = Array.isArray(report.sections) ? report.sections.map(asRecord) : [];
+    return (
+      readString(state.last_error, "") ||
+      readString(report.message, "") ||
+      sections.map((section) => readString(section.message, "")).find(Boolean) ||
+      "采集配置未进入可用状态。"
+    );
+  }, []);
+
+  const assertCaptureLaunchState = useCallback((state: CaptureState) => {
+    if (state.available !== true) {
+      throw new Error(`采集阶段失败：${captureLaunchFailureMessage(state)}`);
+    }
+  }, [captureLaunchFailureMessage]);
+
+  const assertRuntimeLaunchState = useCallback((state: RuntimeState, stageTitle: string) => {
+    const status = getRuntimeMainlineStatus(state);
+    if (status.failed || !status.running) {
+      throw new Error(`${stageTitle}失败：${status.failureMessage || "后端运行态未确认。"}`);
+    }
+  }, []);
+
+  const waitForRuntimeMainlineReady = useCallback(async (
+    stageTitle: string,
+    timeoutMs = 6000,
+    intervalMs = 600
+  ) => {
+    const deadline = Date.now() + timeoutMs;
+    let lastMessage = "后端运行态未确认。";
+    while (Date.now() <= deadline) {
+      if (launchCancelledRef.current) {
+        throw new Error("launch cancelled");
+      }
+      const state = await getRuntimeState();
+      const status = getRuntimeMainlineStatus(state);
+      setLaunchProgressDetail(
+        status.progressSummary ? `当前计数：${status.progressSummary}` : "等待后端运行态确认。"
+      );
+      if (status.failed) {
+        throw new Error(`${stageTitle}失败：${status.failureMessage || lastMessage}`);
+      }
+      if (status.running) {
+        setLaunchProgressDetail(
+          status.progressSummary ? `运行态已确认：${status.progressSummary}` : "运行态已确认。"
+        );
+        return state;
+      }
+      if (status.failureMessage) {
+        lastMessage = status.failureMessage;
+      }
+      await waitForLaunchFeedback(intervalMs);
+      if (launchCancelledRef.current) {
+        throw new Error("launch cancelled");
+      }
+    }
+    throw new Error(`${stageTitle}失败：等待后端运行态超时，${lastMessage}`);
+  }, [waitForLaunchFeedback]);
+
+  const waitForRuntimeEvidence = useCallback(async (
+    stageTitle: string,
+    hasEvidence: (state: RuntimeState) => boolean,
+    missingMessage: string,
+    timeoutMs = 6000,
+    intervalMs = 600
+  ) => {
+    const deadline = Date.now() + timeoutMs;
+    let lastSummary = "";
+    while (Date.now() <= deadline) {
+      if (launchCancelledRef.current) {
+        throw new Error("launch cancelled");
+      }
+      const state = await getRuntimeState();
+      const status = getRuntimeMainlineStatus(state);
+      lastSummary = status.progressSummary;
+      setLaunchProgressDetail(
+        status.progressSummary ? `当前计数：${status.progressSummary}` : "等待主链输出启动证据。"
+      );
+      if (status.failed) {
+        throw new Error(`${stageTitle}失败：${status.failureMessage || missingMessage}`);
+      }
+      if (!status.running) {
+        await waitForLaunchFeedback(intervalMs);
+        continue;
+      }
+      if (hasEvidence(state)) {
+        setLaunchProgressDetail(
+          status.progressSummary ? `已收到启动证据：${status.progressSummary}` : "已收到启动证据。"
+        );
+        return state;
+      }
+      await waitForLaunchFeedback(intervalMs);
+    }
+    throw new Error(`${stageTitle}失败：${missingMessage}${lastSummary ? ` 当前计数：${lastSummary}` : ""}`);
+  }, [waitForLaunchFeedback]);
+
   const startMainlineLaunch = useCallback(async () => {
     if (launchStatus === "running") {
       return;
@@ -1056,6 +1163,7 @@ export function StudioConsoleView({
     setLocalError(null);
     setLaunchStatus("running");
     setLaunchError("");
+    setLaunchProgressDetail("正在提交启动请求，等待后端阶段反馈。");
     setLaunchStageIndex(0);
     setLaunchCompletedStages(0);
 
@@ -1080,7 +1188,8 @@ export function StudioConsoleView({
     try {
       await runStage(0);
       await runStage(1, async () => {
-        await selectCaptureProfile(buildCapturePayload());
+        const captureState = await selectCaptureProfile(buildCapturePayload());
+        assertCaptureLaunchState(captureState);
       });
       await runStage(2, async () => {
         const status = asRecord(await startRuntimePipeline());
@@ -1089,19 +1198,38 @@ export function StudioConsoleView({
           const reason = readString(status.last_error, "后端未确认主链运行。");
           throw new Error(reason);
         }
+        await waitForRuntimeMainlineReady("启动主链运行管线");
         setMainlineLaunchAccepted(true);
         setMainlineLaunchMessage("主链启动请求已提交，正在等待后端状态确认。");
       });
-      await runStage(3);
-      await runStage(4);
-      await runStage(5, onRefresh);
+      await runStage(3, async () => {
+        await waitForRuntimeEvidence(
+          "连接推理输出",
+          (state) => getRuntimeMainlineStatus(state).hasInferenceSignal,
+          "未收到 DetectionBatch、Tensor Meta 或后处理帧反馈。"
+        );
+      });
+      await runStage(4, async () => {
+        await waitForRuntimeEvidence(
+          "激活跟踪与控制",
+          (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
+          "runtime 尚未消费 DetectionBatch，跟踪与控制没有输入。"
+        );
+      });
+      await runStage(5, async () => {
+        const state = await waitForRuntimeMainlineReady("确认设备执行器", 1600);
+        assertRuntimeLaunchState(state, "确认设备执行器");
+        await onRefresh();
+      });
       setLaunchStatus("success");
       setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES.length);
+      setLaunchProgressDetail((detail) => detail || "主链启动完成，后端运行态已确认。");
       showLaunchToast();
     } catch (err) {
       if (launchCancelledRef.current) {
         setLaunchStatus("cancelled");
         setLaunchError("");
+        setLaunchProgressDetail("启动已取消，已停止继续等待后端阶段反馈。");
         return;
       }
       setLaunchStatus("failed");
@@ -1109,11 +1237,26 @@ export function StudioConsoleView({
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
       setLocalError(`启动主链失败：${getErrorMessage(err)}`);
+      try {
+        await stopRuntimePipeline();
+      } catch {
+        // Keep the original launch error visible; refresh below exposes stop failures if backend reports them.
+      }
       await onRefresh();
     } finally {
       setBusy(null);
     }
-  }, [buildCapturePayload, launchStatus, onRefresh, showLaunchToast, waitForLaunchFeedback]);
+  }, [
+    assertCaptureLaunchState,
+    assertRuntimeLaunchState,
+    buildCapturePayload,
+    launchStatus,
+    onRefresh,
+    showLaunchToast,
+    waitForLaunchFeedback,
+    waitForRuntimeEvidence,
+    waitForRuntimeMainlineReady
+  ]);
 
   const cancelMainlineLaunch = useCallback(async () => {
     if (launchStatus !== "running") {
@@ -1131,6 +1274,7 @@ export function StudioConsoleView({
     }
     setLaunchStatus("cancelled");
     setLaunchError("");
+    setLaunchProgressDetail("启动已取消，已向后端发送停止主链请求。");
     setMainlineLaunchAccepted(false);
     setMainlineLaunchMessage("");
     setBusy(null);
@@ -2460,7 +2604,8 @@ export function StudioConsoleView({
                   <div className="launch-progress-bar" style={{ width: `${launchProgress}%` }} />
                 </div>
                 <div className="launch-progress-note">
-                  前端仅维护阶段开始、阶段完成、启动失败、启动完成四类低频反馈；不轮询 FPS、温度、显存或后端日志，不进入采集、推理、跟踪、控制线程。
+                  {launchProgressDetail ? <strong>{launchProgressDetail}</strong> : null}
+                  <span>前端仅维护阶段开始、阶段完成、启动失败、启动完成四类低频反馈；不轮询 FPS、温度、显存或后端日志，不进入采集、推理、跟踪、控制线程。</span>
                 </div>
               </div>
             </div>

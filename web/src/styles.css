@@ -5147,6 +5147,17 @@ tbody tr:hover {
   line-height: 1.6;
 }
 
+.launch-progress-note strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ink);
+  font-weight: 760;
+}
+
+.launch-progress-note span {
+  display: block;
+}
+
 .launch-dialog-footer {
   display: flex;
   justify-content: flex-end;

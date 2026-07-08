@@ -12,6 +12,7 @@ import {
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
 import { statusTone } from "../shared/format";
+import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 type DashboardViewProps = {
   health: HealthResponse | null;
@@ -294,8 +295,27 @@ export function DashboardView({
   const configSource = runtimeConfig ?? runtime?.config;
   const runtimeInference = asRecord(runtime?.inference);
   const deepstreamRuntimeSelected = readStringRecord(runtimeInference, "selected") === "deepstream";
-  const captureMainRunning = deepstreamRuntimeSelected ? runtime?.running === true : capture?.available === true;
+  const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
+  const runtimeMainlineRunning = runtimeMainlineStatus.running;
+  const captureMainRunning = deepstreamRuntimeSelected ? runtimeMainlineRunning : capture?.available === true;
   const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
+  const captureStateLabel = deepstreamRuntimeSelected
+    ? runtimeMainlineStatus.failed
+      ? "主链故障"
+      : runtimeMainlineRunning
+        ? runtimeMainlineStatus.hasRuntimeConsumption
+          ? "主链已消费"
+          : runtimeMainlineStatus.hasInferenceSignal
+            ? "等待消费"
+            : "等待推理输出"
+        : captureProfileConfigured
+          ? "主链待启动"
+          : "未启动"
+    : captureMainRunning
+      ? "运行中"
+      : captureProfileConfigured
+        ? "已配置"
+        : "未启动";
   const roiSize = readNestedNumber(configSource, "roi", "size", 640);
   const configVersion =
     typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
@@ -382,13 +402,17 @@ export function DashboardView({
             <div className="home-field">
               <div className="home-field-label">
                 <span>采集源</span>
-                <span>{captureMainRunning ? "运行中" : captureProfileConfigured ? "已配置" : "未启动"}</span>
+                <span>{captureStateLabel}</span>
               </div>
               <div className="home-selectbox">
                 <span>{capture?.device ?? "/dev/video0"}</span>
                 <span>{deepstreamRuntimeSelected ? "deepstream" : capture?.backend ?? "未打开"}</span>
               </div>
-              <div className="home-tiny">启动、停止、格式和分辨率选择统一在基础设置 / 采集设置。</div>
+              <div className="home-tiny">
+                {deepstreamRuntimeSelected && runtimeMainlineRunning
+                  ? runtimeMainlineStatus.progressSummary
+                  : "启动、停止、格式和分辨率选择统一在基础设置 / 采集设置。"}
+              </div>
             </div>
 
             <div className="home-field">

@@ -16,6 +16,7 @@ import {
 import { Badge, EmptyState, InlineError } from "../../components/ui";
 import pipelineVisualUrl from "../../assets/novasight-pipeline-visual.png";
 import { formatProfile, getErrorMessage } from "../shared/format";
+import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 type CapabilityChoice = {
   pixel_format: string;
@@ -501,8 +502,32 @@ export function DevicesView({
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
   const deepstreamRuntimeSelected = inferenceSelected === "deepstream";
-  const captureMainRunning = deepstreamRuntimeSelected ? runtime?.running === true : capture?.available === true;
+  const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
+  const runtimeMainlineRunning = runtimeMainlineStatus.running;
+  const captureMainRunning = deepstreamRuntimeSelected ? runtimeMainlineRunning : capture?.available === true;
   const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
+  const deepstreamInputReady = runtimeMainlineStatus.hasInferenceSignal;
+  const deepstreamRuntimeReady = runtimeMainlineStatus.hasRuntimeConsumption;
+  const deepstreamRunLabel = runtimeMainlineStatus.failed
+    ? "主链故障"
+    : runtimeMainlineRunning
+      ? deepstreamRuntimeReady
+        ? "主链已消费"
+        : deepstreamInputReady
+          ? "等待 runtime 消费"
+          : "等待 DetectionBatch"
+      : captureProfileConfigured
+        ? "主链待启动"
+        : "未启动";
+  const deepstreamInputLabel = runtimeMainlineStatus.failed
+    ? "管线故障"
+    : deepstreamRuntimeReady
+      ? "DetectionBatch 已消费"
+      : deepstreamInputReady
+        ? "DetectionBatch 已产出"
+        : runtimeMainlineRunning
+          ? "等待 DetectionBatch"
+          : "等待主链启动";
   const inferenceStatusInputShape =
     typeof inferenceStatus.input_shape === "string" ? inferenceStatus.input_shape : "";
   const inferenceStatusOutputShape =
@@ -511,15 +536,31 @@ export function DevicesView({
     {
       label: "输入帧",
       detail: deepstreamRuntimeSelected
-        ? captureMainRunning
-          ? "DeepStream 主链正在产出 DetectionBatch"
+        ? runtimeMainlineStatus.failed
+          ? runtimeMainlineStatus.failureMessage || "DeepStream 主链故障"
+          : captureMainRunning
+            ? deepstreamInputReady
+              ? "DeepStream 主链已产出 DetectionBatch"
+              : `DeepStream 主链运行中，${runtimeMainlineStatus.progressSummary}`
           : captureProfileConfigured
             ? "采集 Profile 已配置，启动主链后由 DeepStream 打开"
             : "先选择采集卡 Profile"
         : capture?.available
           ? "RoiFrame 已可用"
           : "先启动采集卡或图片输入",
-      tone: captureMainRunning || (!deepstreamRuntimeSelected && capture?.available) ? "ready" : captureProfileConfigured ? "warn" : "blocked"
+      tone: deepstreamRuntimeSelected
+        ? runtimeMainlineStatus.failed
+          ? "blocked"
+          : deepstreamInputReady
+            ? "ready"
+            : captureMainRunning || captureProfileConfigured
+              ? "warn"
+              : "blocked"
+        : capture?.available
+          ? "ready"
+          : captureProfileConfigured
+            ? "warn"
+            : "blocked"
     },
     {
       label: "运行模型",
@@ -603,18 +644,22 @@ export function DevicesView({
               label: "采集输入",
               value: captureProfileConfigured ? formatProfile(capture) : "未启动",
               detail: deepstreamRuntimeSelected
-                ? captureMainRunning
-                  ? "DeepStream 主链运行中"
-                  : "DeepStream 启动时打开设备"
+                ? deepstreamRunLabel
                 : normalizedActiveSource === "image" ? "图片输入" : device,
-              ready: captureMainRunning || (!deepstreamRuntimeSelected && Boolean(capture?.available))
+              ready: deepstreamRuntimeSelected
+                ? deepstreamRuntimeReady
+                : Boolean(capture?.available)
             },
             {
               id: "inference",
               label: "推理消费",
               value: inferenceEnabled ? activeModelName : "已关闭",
-              detail: `${inferenceSelected === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
-              ready: inferenceEnabled && activeModelName !== "未发布模型"
+              detail: deepstreamRuntimeSelected
+                ? deepstreamInputLabel
+                : `${inferenceSelected === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
+              ready: deepstreamRuntimeSelected
+                ? inferenceEnabled && deepstreamInputReady && activeModelName !== "未发布模型"
+                : inferenceEnabled && activeModelName !== "未发布模型"
             },
             {
               id: "algorithm",
@@ -679,7 +724,7 @@ export function DevicesView({
                 </div>
                 <div>
                   <dt>运行状态</dt>
-                  <dd>{captureMainRunning ? "采集中" : captureProfileConfigured ? "已配置" : "未启动"}</dd>
+                  <dd>{deepstreamRuntimeSelected ? deepstreamRunLabel : captureMainRunning ? "采集中" : captureProfileConfigured ? "已配置" : "未启动"}</dd>
                 </div>
                 <div>
                   <dt>当前 Profile</dt>
@@ -958,7 +1003,7 @@ export function DevicesView({
               <dl className="settings-summary-list">
                 <div>
                   <dt>输入</dt>
-                  <dd>{deepstreamRuntimeSelected ? (captureMainRunning ? "DetectionBatch 可用" : "等待主链启动") : capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
+                  <dd>{deepstreamRuntimeSelected ? deepstreamInputLabel : capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
                 </div>
                 <div>
                   <dt>模型</dt>
