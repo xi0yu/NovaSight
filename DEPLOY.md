@@ -113,7 +113,7 @@ Run these checks with HID output enabled only when the physical rig is safe:
 
 ```bash
 # Camera disconnect: unplug the capture device, then watch state and logs.
-watch -n 0.5 'curl -s http://127.0.0.1:8000/api/runtime/state'
+uv run python scripts/fault_injection.py capture-loss --duration-s 30 --interval-s 0.5
 journalctl -u novasight -f
 
 # Inference overload: add load, then verify old frames are dropped instead of
@@ -123,9 +123,7 @@ uv run python tests/perf_test.py --duration-s 120 --interval-s 0.05
 
 # Bad model import/build: submit an invalid ONNX and confirm the build job fails
 # without stopping the API service.
-curl -X POST http://127.0.0.1:8000/api/v1/models/import \
-  -H 'Content-Type: application/json' \
-  -d '{"source_path":"/tmp/not-a-model.onnx","model_id":"bad_model"}'
+uv run python scripts/fault_injection.py bad-model --model-id bad_model
 ```
 
 Expected behavior:
