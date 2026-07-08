@@ -53,9 +53,29 @@ def _track_from_mapping(value: Any) -> Track | None:
             y1=float(value["y1"]),
             x2=float(value["x2"]),
             y2=float(value["y2"]),
+            velocity_px_s=_velocity(value.get("velocity_px_s")),
+            quality_score=_optional_float(value.get("quality_score")),
+            missed_frames=int(value.get("missed_frames", 0) or 0),
+            last_seen_ns=int(value.get("last_seen_ns", 0) or 0),
+            is_predicted=bool(value.get("is_predicted", False)),
+            is_stale=bool(value.get("is_stale", False)),
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _velocity(value: Any) -> tuple[float, float]:
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return float(value[0]), float(value[1])
+    if isinstance(value, Mapping):
+        return float(value.get("x", 0.0) or 0.0), float(value.get("y", 0.0) or 0.0)
+    return 0.0, 0.0
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 __all__ = [

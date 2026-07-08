@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from novasight.contracts import BBox, Track
 from novasight.runtime.kalman import (
     KalmanConfig,
@@ -9,15 +7,7 @@ from novasight.runtime.kalman import (
 )
 
 
-@dataclass(frozen=True, slots=True, init=False)
 class PredictedTrack(Track):
-    velocity_px_s: tuple[float, float]
-    quality_score: float
-    missed_frames: int
-    last_seen_ns: int
-    is_predicted: bool
-    is_stale: bool
-
     def __init__(
         self,
         *,
@@ -38,13 +28,13 @@ class PredictedTrack(Track):
             cls=cls,
             score=score,
             box=box,
+            velocity_px_s=velocity_px_s,
+            quality_score=quality_score,
+            missed_frames=missed_frames,
+            last_seen_ns=last_seen_ns,
+            is_predicted=is_predicted,
+            is_stale=is_stale,
         )
-        object.__setattr__(self, "velocity_px_s", velocity_px_s)
-        object.__setattr__(self, "quality_score", float(quality_score))
-        object.__setattr__(self, "missed_frames", int(missed_frames))
-        object.__setattr__(self, "last_seen_ns", int(last_seen_ns))
-        object.__setattr__(self, "is_predicted", bool(is_predicted))
-        object.__setattr__(self, "is_stale", bool(is_stale))
 
 
 class KalmanEstimator:

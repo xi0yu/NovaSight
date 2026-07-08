@@ -128,7 +128,7 @@ def iter_detection_batches_from_batch_meta(
                 "ntp_timestamp": _optional_int(frame_meta, "ntp_timestamp"),
                 "detection_count": len(detections),
                 "track_count": len(tracks),
-                "tracks": [_track_payload(track) for track in tracks],
+                "tracks": [_track_payload(track, last_seen_ns=capture_ts_ns) for track in tracks],
             },
         )
         frame_list = frame_list.next
@@ -189,7 +189,7 @@ def _object_track_id(obj_meta: Any) -> int | None:
     return None
 
 
-def _track_payload(track: Track) -> dict[str, float | int]:
+def _track_payload(track: Track, *, last_seen_ns: int) -> dict[str, float | int | bool | tuple[float, float]]:
     return {
         "track_id": int(track.track_id),
         "cls": int(track.cls),
@@ -200,6 +200,12 @@ def _track_payload(track: Track) -> dict[str, float | int]:
         "y2": float(track.y2),
         "cx": float(track.cx),
         "cy": float(track.cy),
+        "velocity_px_s": tuple(float(value) for value in getattr(track, "velocity_px_s", (0.0, 0.0))),
+        "quality_score": float(getattr(track, "quality_score", track.score)),
+        "missed_frames": int(getattr(track, "missed_frames", 0)),
+        "last_seen_ns": int(getattr(track, "last_seen_ns", 0) or last_seen_ns),
+        "is_predicted": bool(getattr(track, "is_predicted", False)),
+        "is_stale": bool(getattr(track, "is_stale", False)),
     }
 
 

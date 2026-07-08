@@ -177,6 +177,12 @@ class Track:
     cls: int
     score: float
     box: BBox
+    velocity_px_s: tuple[float, float]
+    quality_score: float
+    missed_frames: int
+    last_seen_ns: int
+    is_predicted: bool
+    is_stale: bool
 
     def __init__(
         self,
@@ -193,11 +199,28 @@ class Track:
         y1: float | None = None,
         x2: float | None = None,
         y2: float | None = None,
+        velocity_px_s: tuple[float, float] | None = None,
+        quality_score: float | None = None,
+        missed_frames: int = 0,
+        last_seen_ns: int = 0,
+        is_predicted: bool = False,
+        is_stale: bool = False,
     ) -> None:
         object.__setattr__(self, "track_id", int(track_id))
         object.__setattr__(self, "cls", int(cls))
         object.__setattr__(self, "score", float(score))
         object.__setattr__(self, "box", _coerce_box(x=x, y=y, w=w, h=h, box=box, x1=x1, y1=y1, x2=x2, y2=y2))
+        velocity = velocity_px_s or (0.0, 0.0)
+        object.__setattr__(self, "velocity_px_s", (float(velocity[0]), float(velocity[1])))
+        object.__setattr__(
+            self,
+            "quality_score",
+            float(self.score if quality_score is None else quality_score),
+        )
+        object.__setattr__(self, "missed_frames", int(missed_frames))
+        object.__setattr__(self, "last_seen_ns", int(last_seen_ns))
+        object.__setattr__(self, "is_predicted", bool(is_predicted))
+        object.__setattr__(self, "is_stale", bool(is_stale))
 
     @property
     def x(self) -> float:
