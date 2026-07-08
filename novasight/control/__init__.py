@@ -12,7 +12,7 @@ from novasight.control.controller import (
     AngularControllerCalibration,
     AngularControllerConfig,
 )
-from novasight.control.hid_output import HidOutput
+from novasight.control.hid_output import HidOutput, HidOutputThread, HidOutputThreadStats
 from novasight.control.latency_compensator import LatencyCalibration, LatencyCompensator
 from novasight.control.output import ControlOutput, ControlOutputPolicy
 from novasight.control.scheduler import CommandScheduler, ScheduleDecision, Scheduler
@@ -38,6 +38,8 @@ __all__ = [
     "ControlOutputPolicy",
     "ExperimentalAnglePidStrategy",
     "HidOutput",
+    "HidOutputThread",
+    "HidOutputThreadStats",
     "IControlStrategy",
     "LatencyCalibration",
     "LatencyCompensator",
