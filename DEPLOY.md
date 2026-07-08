@@ -78,6 +78,7 @@ Logs are written to journald through `StandardOutput=journal` and
 
 ```bash
 novasight doctor camera --device /dev/video0
+uv run python scripts/nvmm_path_check.py --device /dev/video0 --resolution 1920x1080 --formats MJPG,NV12 --fps 60 --output /var/lib/novasight/nvmm-check.json
 novasight doctor deepstream-smoke --manifest /var/lib/novasight/models/<model>/model.manifest.json --nvinfer-config /var/lib/novasight/models/<model>/deepstream.ini
 novasight doctor kmnet --km-host <host> --km-port <port> --km-uuid <uuid>
 ```
