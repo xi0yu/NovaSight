@@ -34,9 +34,6 @@ class PipelineStats:
 
 class RuntimePipeline:
     CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法运行推理链路。"
-    GPU_BRIDGE_NOT_READY_ERROR = (
-        "capture.memory=nvmm 需要可用的 Jetson native bridge，当前未就绪。"
-    )
 
     def __init__(
         self,
@@ -66,7 +63,6 @@ class RuntimePipeline:
             return
         if self.detection_source is None:
             self._require_running_capture()
-            self._require_ready_gpu_preprocessor_if_needed()
         self._stop.clear()
         self._last_consumed_frame_id = -1
         self._last_consumed_generation = -1
@@ -125,69 +121,6 @@ class RuntimePipeline:
             or (session is not None and getattr(session, "running", False) is not True)
         ):
             raise RuntimeError(self.CAPTURE_NOT_STARTED_ERROR)
-
-    def _require_ready_gpu_preprocessor_if_needed(self) -> None:
-        if not self._inference_enabled():
-            return
-        if self._capture_memory() != "nvmm":
-            return
-        status = self._gpu_preprocessor_status()
-        if status is not None and bool(status.get("available", False)):
-            return
-        reason = ""
-        detail = ""
-        if status is None:
-            reason = "gpu preprocessor status unavailable"
-        else:
-            reason = str(status.get("reason") or "gpu preprocessor unavailable")
-            detail = str(status.get("detail") or "")
-            native_status = status.get("native_status")
-            if not detail and isinstance(native_status, dict):
-                detail = str(native_status.get("detail") or native_status.get("reason") or "")
-        message = f"{self.GPU_BRIDGE_NOT_READY_ERROR} reason={reason}"
-        if detail:
-            message = f"{message}; detail={detail}"
-        self.stats.last_error = message
-        raise RuntimeError(message)
-
-    def _capture_memory(self) -> str:
-        config = getattr(self.runtime, "config", None)
-        capture_config = getattr(config, "capture", None)
-        memory = getattr(capture_config, "memory", None)
-        if memory is None:
-            capture_config = getattr(self.capture, "config", None)
-            memory = getattr(capture_config, "memory", None)
-        return str(memory or "cpu").lower()
-
-    def _gpu_preprocessor_status(self) -> dict[str, Any] | None:
-        runtime_status = getattr(self.runtime, "status", None)
-        if callable(runtime_status):
-            try:
-                status = runtime_status()
-            except Exception as exc:
-                return {
-                    "available": False,
-                    "reason": "runtime status failed",
-                    "detail": str(exc),
-                }
-            if isinstance(status, dict):
-                bridge = status.get("gpu_preprocessor")
-                if isinstance(bridge, dict):
-                    return bridge
-        preprocessor = getattr(self.runtime, "_gpu_preprocessor", None)
-        status_fn = getattr(preprocessor, "status", None)
-        if callable(status_fn):
-            try:
-                status = status_fn()
-            except Exception as exc:
-                return {
-                    "available": False,
-                    "reason": "gpu preprocessor status failed",
-                    "detail": str(exc),
-                }
-            if isinstance(status, dict):
-                return status
-        return None
 
     def _capture_is_still_available(self) -> bool:
         state = getattr(self.capture, "state", None)

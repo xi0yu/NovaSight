@@ -258,14 +258,16 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
     assert pipeline.running is False
 
 
-def test_runtime_pipeline_requires_ready_gpu_bridge_for_nvmm_inference() -> None:
+def test_runtime_pipeline_does_not_require_gpu_bridge_for_nvmm_latest() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "nvmm"
+    cfg.inference.backend = "nvmm_latest"
     capture = SimpleNamespace(
         source=object(),
         state=SimpleNamespace(available=True),
         session=SimpleNamespace(running=True),
         config=cfg.capture,
+        wait_preview_frame=lambda *, after_frame_id=None, timeout_s=0.0: None,
     )
     runtime = SimpleNamespace(
         running=False,
@@ -285,12 +287,13 @@ def test_runtime_pipeline_requires_ready_gpu_bridge_for_nvmm_inference() -> None
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
-    with pytest.raises(RuntimeError, match="capture.memory=nvmm 需要可用的 Jetson native bridge"):
-        pipeline.start()
+    pipeline.start()
+    pipeline.stop()
 
     assert runtime.running is False
     assert pipeline.running is False
-    assert "native backend unavailable" in (pipeline.stats.last_error or "")
+    assert "native bridge" not in (pipeline.stats.last_error or "")
+    assert "gpu preprocessor" not in (pipeline.stats.last_error or "")
 
 
 def test_runtime_pipeline_allows_nvmm_capture_when_inference_is_disabled() -> None:

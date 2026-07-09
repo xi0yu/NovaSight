@@ -15,7 +15,6 @@ from novasight.capture.state import (
     CaptureRuntimeState,
 )
 from novasight.config import RuntimeConfig
-from novasight.inference.jetson import JetsonGpuResourcePreprocessor
 from novasight.license import TEST_MAX_LICENSE_KEY
 from novasight.model_registry.deepstream_config import generate_nvinfer_config
 from novasight.model_registry.manifest import (
@@ -1933,13 +1932,13 @@ def test_config_schema_matches_runtime_config_and_update_syncs_runtime_objects(t
     assert app.state.capture.roi_size == 320
     assert app.state.runtime.config.capture.device == "/dev/video7"
     assert app.state.runtime.config.capture.memory == "nvmm"
-    assert isinstance(app.state.inference._gpu_preprocessor, JetsonGpuResourcePreprocessor)
+    assert app.state.inference._gpu_preprocessor is None
     runtime_state = client.get("/api/runtime/state").json()
     bridge_status = runtime_state["inference"]["gpu_preprocessor"]
-    assert bridge_status["selected"] == "jetson_nvmm_cuda"
-    assert bridge_status["enabled"] is True
+    assert bridge_status["selected"] == ""
+    assert bridge_status["enabled"] is False
     assert bridge_status["available"] is False
-    assert bridge_status["reason"] == "JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE"
+    assert bridge_status["reason"] == "disabled"
     assert app.state.runtime.executors.selected == "kmnet"
     assert any(section["id"] == "hardware" for section in schema["sections"])
 

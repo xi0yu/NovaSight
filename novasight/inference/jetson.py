@@ -237,9 +237,20 @@ class JetsonGpuResourcePreprocessor:
 
 
 def create_gpu_resource_preprocessor(config: RuntimeConfig) -> JetsonGpuResourcePreprocessor | None:
-    if str(config.capture.memory).lower() != "nvmm":
-        return None
-    return JetsonGpuResourcePreprocessor()
+    """Return no implicit NVMM preprocessor for runtime startup.
+
+    The old path treated ``capture.memory=nvmm`` as a request for a generic
+    Python native bridge that converts NVMM resources into TensorRT input
+    tensors. The corrected NovaSight mainline does not use that bridge as a
+    startup prerequisite: NVIDIA GStreamer owns capture/decode/ROI, the runtime
+    owns latest-frame admission, and CUDA preprocess/TensorRT integration is
+    wired explicitly in the native latest path.
+
+    Keep ``JetsonGpuResourcePreprocessor`` available for explicit diagnostics
+    and low-level tests, but do not auto-enable it from capture memory.
+    """
+    _ = config
+    return None
 
 
 def jetson_gpu_resource_bridge_contract() -> dict[str, Any]:
