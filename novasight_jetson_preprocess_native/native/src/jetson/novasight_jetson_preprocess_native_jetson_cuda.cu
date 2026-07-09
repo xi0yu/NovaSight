@@ -284,9 +284,6 @@ bool resolve_source_surface_from_request(
                   "file descriptor to NvBufSurfaceFromFd.";
         return false;
     }
-        *surface = static_cast<NvBufSurface*>(surface_buffer);
-        return true;
-    }
 
     if (request.gst_buffer_ptr == 0) {
         *reason = "frame_resource_handle_required";
