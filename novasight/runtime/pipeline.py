@@ -36,7 +36,7 @@ class RuntimePipeline:
         "NVMM TensorRT GPU preprocess is not ready; build the Jetson native "
         "preprocess library with `python -m novasight doctor jetson-native-build` "
         "and make sure NOVASIGHT_JETSON_NATIVE_LIBRARY points to "
-        "libnovasight_jetson_preprocess_native.so."
+        "libnovasight_preprocess.so."
     )
 
     def __init__(

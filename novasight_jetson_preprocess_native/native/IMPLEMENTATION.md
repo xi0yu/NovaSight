@@ -167,14 +167,15 @@ native status hook. It must print `status_available: True`,
 
 `status_available: True` alone is not sufficient. The doctor command rejects a
 missing production source, a successful build that does not create
-`libnovasight_jetson_preprocess_native.so`, and any loaded status hook that does
-not explicitly return `zero_copy=true` with `memory_space=cuda_device`.
+`libnovasight_preprocess.so`, and any loaded status hook that does not
+explicitly return `zero_copy=true` with `memory_space=cuda_device`. The build
+also writes `libnovasight_jetson_preprocess_native.so` as a legacy alias.
 
 The real-frame acceptance entrypoint is:
 
 ```bash
 python -m novasight doctor jetson-native-smoke \
-  --library build/jetson-native/libnovasight_jetson_preprocess_native.so \
+  --library build/jetson-native/libnovasight_preprocess.so \
   --device /dev/video0 \
   --pixel-format MJPG \
   --width 1920 \

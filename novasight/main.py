@@ -318,7 +318,7 @@ def _doctor_jetson_native_build(args: argparse.Namespace) -> int:
         print("reason: jetson_native_build_failed")
         return 2
 
-    library = build_dir / "libnovasight_jetson_preprocess_native.so"
+    library = build_dir / native_backend.CANONICAL_LIBRARY_NAME
     print(f"library: {library}")
     if not library.is_file():
         print("available: False")
@@ -361,7 +361,9 @@ def _doctor_jetson_native_build(args: argparse.Namespace) -> int:
 
 def _doctor_jetson_zero_copy(args: argparse.Namespace, cfg: object) -> int:
     build_dir = Path(args.build_dir).expanduser()
-    library = build_dir / "libnovasight_jetson_preprocess_native.so"
+    import novasight_jetson_preprocess_native as native_backend
+
+    library = build_dir / native_backend.CANONICAL_LIBRARY_NAME
     report = _jetson_zero_copy_report(args, cfg=cfg, library=library)
     if bool(getattr(args, "require_tensorrt_engine", False)) and not str(
         args.tensorrt_engine or ""

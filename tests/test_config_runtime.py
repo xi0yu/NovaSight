@@ -87,6 +87,7 @@ def test_native_jetson_preprocess_cmake_has_production_gate() -> None:
     assert "NOVASIGHT_JETSON_PREPROCESS_SUPPORT_SOURCES" in cmake
     assert "novasight_jetson_preprocess_native_jetson_support.cpp" in cmake
     assert "${CMAKE_CURRENT_LIST_DIR}/src/jetson" in cmake
+    assert "OUTPUT_NAME novasight_preprocess" in cmake
     assert "jetson_cuda_preprocess_not_compiled" not in cmake
 
 
@@ -97,18 +98,22 @@ def test_native_jetson_cuda_source_uses_real_dmabuf_egl_cuda_path() -> None:
     ).read_text(encoding="utf-8")
 
     assert "NvBufSurfaceFromFd" in source
+    assert "#include <nvbufsurftransform.h>" in source
+    assert "NvBufSurfTransform" in source
+    assert "NVBUF_COLOR_FORMAT_RGBA" in source
+    assert "rgba_to_nchw_kernel" in source
     assert "NvBufSurfaceMapEglImage" in source
     assert "cuGraphicsEGLRegisterImage" in source
     assert "cuGraphicsResourceGetMappedEglFrame" in source
-    assert "nv12_to_nchw_kernel" in source
     assert "cudaMemcpy2DFromArrayAsync" in source
     assert "surface->surfaceList[0].width" in source
     assert "surface->surfaceList[0].height" in source
     assert "nvbufsurface_geometry_mismatch" in source
-    assert "bool validate_nv12_plane_layout" in source
-    assert "cuda_egl_nv12_plane_invalid" in source
-    assert "y_pitch < width || uv_pitch < width" in source
+    assert "bool validate_rgba_plane_layout" in source
+    assert "cuda_egl_rgba_plane_invalid" in source
+    assert "rgba_pitch < width * 4" in source
     assert "__device__ int scaled_source_index" in source
+    assert "nv12_to_nchw_kernel" not in source
     assert "max(0, min(255" not in source
     assert "const int src_x = min(" not in source
     assert "const int src_y = min(" not in source

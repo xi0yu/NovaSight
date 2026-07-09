@@ -26,6 +26,8 @@ DEFAULT_STATUS_SYMBOL = "novasight_status_json"
 DEFAULT_RELEASE_SYMBOL = "novasight_release_tensor"
 DEFAULT_RESULT_BUFFER_BYTES = 64 * 1024
 DEFAULT_BUILD_TIMEOUT_S = 180.0
+CANONICAL_LIBRARY_NAME = "libnovasight_preprocess.so"
+LEGACY_LIBRARY_NAME = "libnovasight_jetson_preprocess_native.so"
 
 CAPABILITIES = {
     "memory": ["nvmm", "dmabuf"],
@@ -113,7 +115,8 @@ def status() -> dict[str, Any]:
         reason = "native_implementation_missing"
         detail = (
             f"Set {LIBRARY_ENV} to a Jetson shared library that converts "
-            "DMABUF/NvBufSurface/EGL/CUDA resources into a TensorRT DeviceTensor."
+            "DMABUF/NvBufSurface/EGL/CUDA resources into a TensorRT DeviceTensor "
+            f"({CANONICAL_LIBRARY_NAME})."
         )
         if _LIBRARY_ERROR:
             reason = "native_library_unavailable"
@@ -662,15 +665,19 @@ def _library_path() -> str:
 
 
 def _default_library_candidates() -> list[Path]:
-    library_name = "libnovasight_jetson_preprocess_native.so"
     package_dir = Path(__file__).resolve().parent
     repo_root = package_dir.parent
     cwd = Path.cwd()
+    build_dirs = [
+        cwd / "build/jetson-native",
+        cwd / "build" / "jetson-native",
+        repo_root / "build/jetson-native",
+        repo_root / "build" / "jetson-native",
+    ]
     candidates = [
-        cwd / "build/jetson-native" / library_name,
-        cwd / "build" / "jetson-native" / library_name,
-        repo_root / "build/jetson-native" / library_name,
-        repo_root / "build" / "jetson-native" / library_name,
+        build_dir / library_name
+        for build_dir in build_dirs
+        for library_name in (CANONICAL_LIBRARY_NAME, LEGACY_LIBRARY_NAME)
     ]
     unique: list[Path] = []
     seen: set[str] = set()
@@ -693,12 +700,12 @@ def _ensure_default_library_built() -> Path | None:
     if not _is_jetson_runtime():
         return None
 
-    library_name = "libnovasight_jetson_preprocess_native.so"
     package_dir = Path(__file__).resolve().parent
     native_dir = package_dir / "native"
     production_source = native_dir / "src/jetson/novasight_jetson_preprocess_native_jetson_cuda.cu"
     build_dir = _default_build_dir()
-    library = build_dir / library_name
+    library = build_dir / CANONICAL_LIBRARY_NAME
+    legacy_library = build_dir / LEGACY_LIBRARY_NAME
     cmake = os.environ.get(CMAKE_ENV, "cmake").strip() or "cmake"
     timeout_s = _auto_build_timeout_s()
 
@@ -742,8 +749,13 @@ def _ensure_default_library_built() -> Path | None:
     if int(getattr(build, "returncode", 1)) != 0:
         _LIBRARY_ERROR = _command_failure_detail("build", build_command, build)
         return None
+    if not library.is_file() and legacy_library.is_file():
+        library = legacy_library
     if not library.is_file():
-        _LIBRARY_ERROR = f"Jetson native build completed but library is missing: {library}"
+        _LIBRARY_ERROR = (
+            "Jetson native build completed but library is missing: "
+            f"{build_dir / CANONICAL_LIBRARY_NAME}"
+        )
         return None
     _LIBRARY_ERROR = ""
     return library

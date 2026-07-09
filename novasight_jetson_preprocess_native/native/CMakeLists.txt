@@ -115,5 +115,12 @@ if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
 endif()
 
 set_target_properties(novasight_jetson_preprocess_native PROPERTIES
-    OUTPUT_NAME novasight_jetson_preprocess_native
+    OUTPUT_NAME novasight_preprocess
+)
+
+add_custom_command(TARGET novasight_jetson_preprocess_native POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:novasight_jetson_preprocess_native>
+        $<TARGET_FILE_DIR:novasight_jetson_preprocess_native>/libnovasight_jetson_preprocess_native.so
+    COMMENT "Writing legacy NovaSight Jetson preprocess library alias"
 )

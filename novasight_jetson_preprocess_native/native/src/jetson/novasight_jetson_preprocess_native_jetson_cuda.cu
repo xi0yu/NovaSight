@@ -7,6 +7,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <nvbufsurface.h>
+#include <nvbufsurftransform.h>
 
 #include <algorithm>
 #include <cmath>
@@ -28,16 +29,6 @@ struct DeviceAllocation {
 std::mutex g_allocations_mutex;
 std::unordered_map<uint64_t, DeviceAllocation> g_allocations;
 uint64_t g_next_release_token = 1;
-
-__device__ unsigned char clamp_u8(int value) {
-    if (value < 0) {
-        return 0;
-    }
-    if (value > 255) {
-        return 255;
-    }
-    return static_cast<unsigned char>(value);
-}
 
 __device__ int scaled_source_index(int dst_index, int dst_size, int src_size) {
     int value = (dst_index * src_size) / dst_size;
@@ -63,13 +54,11 @@ __device__ void write_tensor_value(
     }
 }
 
-__global__ void nv12_to_nchw_kernel(
-    const unsigned char* y_plane,
-    const unsigned char* uv_plane,
+__global__ void rgba_to_nchw_kernel(
+    const unsigned char* rgba_plane,
     int src_width,
     int src_height,
-    int y_pitch,
-    int uv_pitch,
+    int rgba_pitch,
     void* output,
     int dst_height,
     int dst_width,
@@ -84,23 +73,19 @@ __global__ void nv12_to_nchw_kernel(
 
     const int src_x = scaled_source_index(dst_x, dst_width, src_width);
     const int src_y = scaled_source_index(dst_y, dst_height, src_height);
-    const int y_value = static_cast<int>(y_plane[src_y * y_pitch + src_x]);
-    const int uv_index = (src_y / 2) * uv_pitch + (src_x / 2) * 2;
-    const int u_value = static_cast<int>(uv_plane[uv_index]);
-    const int v_value = static_cast<int>(uv_plane[uv_index + 1]);
-
-    const int c = y_value > 16 ? y_value - 16 : 0;
-    const int d = u_value - 128;
-    const int e = v_value - 128;
-    const float b = static_cast<float>(clamp_u8((298 * c + 516 * d + 128) >> 8)) / 255.0f;
-    const float g = static_cast<float>(clamp_u8((298 * c - 100 * d - 208 * e + 128) >> 8)) / 255.0f;
-    const float r = static_cast<float>(clamp_u8((298 * c + 409 * e + 128) >> 8)) / 255.0f;
+    const unsigned char* pixel = rgba_plane
+                                 + static_cast<size_t>(src_y) * static_cast<size_t>(rgba_pitch)
+                                 + static_cast<size_t>(src_x) * 4;
+    const float r = static_cast<float>(pixel[0]) / 255.0f;
+    const float g = static_cast<float>(pixel[1]) / 255.0f;
+    const float b = static_cast<float>(pixel[2]) / 255.0f;
+    const float a = static_cast<float>(pixel[3]) / 255.0f;
 
     const size_t plane_size = static_cast<size_t>(dst_height) * static_cast<size_t>(dst_width);
     const size_t pixel_index = static_cast<size_t>(dst_y) * static_cast<size_t>(dst_width)
                                + static_cast<size_t>(dst_x);
     if (channels == 1) {
-        write_tensor_value(output, dtype_code, pixel_index, static_cast<float>(y_value) / 255.0f);
+        write_tensor_value(output, dtype_code, pixel_index, (r + g + b) / 3.0f);
         return;
     }
 
@@ -108,7 +93,7 @@ __global__ void nv12_to_nchw_kernel(
     write_tensor_value(output, dtype_code, plane_size + pixel_index, g);
     write_tensor_value(output, dtype_code, plane_size * 2 + pixel_index, b);
     if (channels == 4) {
-        write_tensor_value(output, dtype_code, plane_size * 3 + pixel_index, 1.0f);
+        write_tensor_value(output, dtype_code, plane_size * 3 + pixel_index, a);
     }
 }
 
@@ -154,119 +139,81 @@ bool valid_egl_image(EGLImageKHR image) {
     return image != nullptr && image != EGL_NO_IMAGE_KHR;
 }
 
-bool copy_array_frame_to_linear_nv12(
+std::string transform_error_string(NvBufSurfTransform_Error error) {
+    std::ostringstream stream;
+    stream << "NvBufSurfTransform error=" << static_cast<int>(error);
+    return stream.str();
+}
+
+bool copy_array_frame_to_linear_rgba(
     const CUeglFrame& egl_frame,
     int width,
     int height,
-    unsigned char** y_linear,
-    unsigned char** uv_linear,
-    int* y_pitch,
-    int* uv_pitch,
+    unsigned char** rgba_linear,
+    int* rgba_pitch,
     std::string* detail
 ) {
-    if (egl_frame.planeCount < 2 || egl_frame.frame.pArray[0] == nullptr
-        || egl_frame.frame.pArray[1] == nullptr) {
-        *detail = "CUDA array EGL frame does not expose two NV12 planes.";
+    if (egl_frame.planeCount < 1 || egl_frame.frame.pArray[0] == nullptr) {
+        *detail = "CUDA array EGL frame does not expose an RGBA plane.";
         return false;
     }
-    *y_pitch = width;
-    *uv_pitch = width;
-    const size_t y_bytes = static_cast<size_t>(width) * static_cast<size_t>(height);
-    const size_t uv_bytes = static_cast<size_t>(width) * static_cast<size_t>(height / 2);
-    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(y_linear), y_bytes);
+    *rgba_pitch = width * 4;
+    const size_t rgba_bytes = static_cast<size_t>(*rgba_pitch) * static_cast<size_t>(height);
+    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(rgba_linear), rgba_bytes);
     if (err != cudaSuccess) {
-        *detail = "cudaMalloc y_linear failed: " + cuda_error_string(err);
-        return false;
-    }
-    err = cudaMalloc(reinterpret_cast<void**>(uv_linear), uv_bytes);
-    if (err != cudaSuccess) {
-        cudaFree(*y_linear);
-        *y_linear = nullptr;
-        *detail = "cudaMalloc uv_linear failed: " + cuda_error_string(err);
+        *detail = "cudaMalloc rgba_linear failed: " + cuda_error_string(err);
         return false;
     }
     err = cudaMemcpy2DFromArrayAsync(
-        *y_linear,
-        static_cast<size_t>(*y_pitch),
+        *rgba_linear,
+        static_cast<size_t>(*rgba_pitch),
         reinterpret_cast<cudaArray_t>(egl_frame.frame.pArray[0]),
         0,
         0,
-        static_cast<size_t>(width),
+        static_cast<size_t>(width) * 4,
         static_cast<size_t>(height),
         cudaMemcpyDeviceToDevice
     );
     if (err != cudaSuccess) {
-        cudaFree(*y_linear);
-        cudaFree(*uv_linear);
-        *y_linear = nullptr;
-        *uv_linear = nullptr;
-        *detail = "cudaMemcpy2DFromArrayAsync Y failed: " + cuda_error_string(err);
-        return false;
-    }
-    err = cudaMemcpy2DFromArrayAsync(
-        *uv_linear,
-        static_cast<size_t>(*uv_pitch),
-        reinterpret_cast<cudaArray_t>(egl_frame.frame.pArray[1]),
-        0,
-        0,
-        static_cast<size_t>(width),
-        static_cast<size_t>(height / 2),
-        cudaMemcpyDeviceToDevice
-    );
-    if (err != cudaSuccess) {
-        cudaFree(*y_linear);
-        cudaFree(*uv_linear);
-        *y_linear = nullptr;
-        *uv_linear = nullptr;
-        *detail = "cudaMemcpy2DFromArrayAsync UV failed: " + cuda_error_string(err);
+        cudaFree(*rgba_linear);
+        *rgba_linear = nullptr;
+        *detail = "cudaMemcpy2DFromArrayAsync RGBA failed: " + cuda_error_string(err);
         return false;
     }
     return true;
 }
 
-bool resolve_nv12_planes(
+bool resolve_rgba_plane(
     const CUeglFrame& egl_frame,
     int width,
     int height,
-    const unsigned char** y_plane,
-    const unsigned char** uv_plane,
-    unsigned char** y_linear_owner,
-    unsigned char** uv_linear_owner,
-    int* y_pitch,
-    int* uv_pitch,
+    const unsigned char** rgba_plane,
+    unsigned char** rgba_linear_owner,
+    int* rgba_pitch,
     std::string* detail
 ) {
     if (egl_frame.frameType == CU_EGL_FRAME_TYPE_PITCH) {
         if (egl_frame.frame.pPitch[0] == nullptr) {
-            *detail = "PITCH EGL frame does not expose Y plane.";
+            *detail = "PITCH EGL frame does not expose RGBA plane.";
             return false;
         }
-        *y_pitch = static_cast<int>(egl_frame.pitch);
-        *uv_pitch = static_cast<int>(egl_frame.pitch);
-        *y_plane = reinterpret_cast<const unsigned char*>(egl_frame.frame.pPitch[0]);
-        if (egl_frame.planeCount > 1 && egl_frame.frame.pPitch[1] != nullptr) {
-            *uv_plane = reinterpret_cast<const unsigned char*>(egl_frame.frame.pPitch[1]);
-        } else {
-            *uv_plane = *y_plane + static_cast<size_t>(*y_pitch) * static_cast<size_t>(height);
-        }
+        *rgba_pitch = static_cast<int>(egl_frame.pitch);
+        *rgba_plane = reinterpret_cast<const unsigned char*>(egl_frame.frame.pPitch[0]);
         return true;
     }
 
     if (egl_frame.frameType == CU_EGL_FRAME_TYPE_ARRAY) {
-        if (!copy_array_frame_to_linear_nv12(
+        if (!copy_array_frame_to_linear_rgba(
                 egl_frame,
                 width,
                 height,
-                y_linear_owner,
-                uv_linear_owner,
-                y_pitch,
-                uv_pitch,
+                rgba_linear_owner,
+                rgba_pitch,
                 detail
             )) {
             return false;
         }
-        *y_plane = *y_linear_owner;
-        *uv_plane = *uv_linear_owner;
+        *rgba_plane = *rgba_linear_owner;
         return true;
     }
 
@@ -276,22 +223,20 @@ bool resolve_nv12_planes(
     return false;
 }
 
-bool validate_nv12_plane_layout(
-    const unsigned char* y_plane,
-    const unsigned char* uv_plane,
-    int y_pitch,
-    int uv_pitch,
+bool validate_rgba_plane_layout(
+    const unsigned char* rgba_plane,
+    int rgba_pitch,
     int width,
     std::string* detail
 ) {
-    if (y_plane == nullptr || uv_plane == nullptr) {
-        *detail = "NV12 plane pointer is null.";
+    if (rgba_plane == nullptr) {
+        *detail = "RGBA plane pointer is null.";
         return false;
     }
-    if (y_pitch < width || uv_pitch < width) {
+    if (rgba_pitch < width * 4) {
         std::ostringstream stream;
-        stream << "NV12 pitch is smaller than width: y_pitch=" << y_pitch
-               << ", uv_pitch=" << uv_pitch << ", width=" << width << ".";
+        stream << "RGBA pitch is smaller than width*4: rgba_pitch=" << rgba_pitch
+               << ", width=" << width << ".";
         *detail = stream.str();
         return false;
     }
@@ -458,30 +403,79 @@ extern "C" int novasight_prepare_tensor_json(
         return 1;
     }
 
-    if (NvBufSurfaceMapEglImage(surface, 0) != 0) {
+    NvBufSurface* rgba_surface = nullptr;
+    NvBufSurfaceCreateParams create_params{};
+    create_params.gpuId = surface->gpuId;
+    create_params.width = static_cast<uint32_t>(request.nchw[3]);
+    create_params.height = static_cast<uint32_t>(request.nchw[2]);
+    create_params.size = 0;
+    create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
+    create_params.layout = NVBUF_LAYOUT_PITCH;
+    create_params.memType = NVBUF_MEM_DEFAULT;
+    if (NvBufSurfaceCreate(&rgba_surface, 1, &create_params) != 0 || rgba_surface == nullptr) {
         novasight::jetson_preprocess::write_error_json(
             result_json,
             result_json_size,
-            "nvbufsurface_map_egl_failed",
-            "NvBufSurfaceMapEglImage failed."
+            "nvbufsurface_create_rgba_failed",
+            "NvBufSurfaceCreate failed for intermediate RGBA tensor source."
         );
         return 1;
     }
 
     CUgraphicsResource cuda_resource = nullptr;
     void* output_device = nullptr;
-    unsigned char* y_linear_owner = nullptr;
-    unsigned char* uv_linear_owner = nullptr;
+    unsigned char* rgba_linear_owner = nullptr;
+    bool rgba_egl_mapped = false;
     int return_code = 1;
 
     do {
-        EGLImageKHR egl_image = surface->surfaceList[0].mappedAddr.eglImage;
+        NvBufSurfTransformRect src_rect{};
+        src_rect.top = 0;
+        src_rect.left = 0;
+        src_rect.width = static_cast<uint32_t>(request.width);
+        src_rect.height = static_cast<uint32_t>(request.height);
+        NvBufSurfTransformRect dst_rect{};
+        dst_rect.top = 0;
+        dst_rect.left = 0;
+        dst_rect.width = static_cast<uint32_t>(request.nchw[3]);
+        dst_rect.height = static_cast<uint32_t>(request.nchw[2]);
+        NvBufSurfTransformParams transform_params{};
+        transform_params.src_rect = &src_rect;
+        transform_params.dst_rect = &dst_rect;
+        transform_params.transform_flag = NVBUFSURF_TRANSFORM_CROP_SRC
+                                          | NVBUFSURF_TRANSFORM_CROP_DST
+                                          | NVBUFSURF_TRANSFORM_FILTER;
+        transform_params.transform_filter = NvBufSurfTransformInter_Default;
+
+        const NvBufSurfTransform_Error transform_error =
+            NvBufSurfTransform(surface, rgba_surface, &transform_params);
+        if (transform_error != NvBufSurfTransformError_Success) {
+            novasight::jetson_preprocess::write_error_json(
+                result_json,
+                result_json_size,
+                "nvbufsurftransform_nv12_to_rgba_failed",
+                transform_error_string(transform_error)
+            );
+            break;
+        }
+        if (NvBufSurfaceMapEglImage(rgba_surface, 0) != 0) {
+            novasight::jetson_preprocess::write_error_json(
+                result_json,
+                result_json_size,
+                "nvbufsurface_rgba_map_egl_failed",
+                "NvBufSurfaceMapEglImage failed for transformed RGBA surface."
+            );
+            break;
+        }
+        rgba_egl_mapped = true;
+
+        EGLImageKHR egl_image = rgba_surface->surfaceList[0].mappedAddr.eglImage;
         if (!valid_egl_image(egl_image)) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
                 result_json_size,
                 "egl_image_unavailable",
-                "NvBufSurface did not produce a valid EGLImage."
+                "Transformed RGBA NvBufSurface did not produce a valid EGLImage."
             );
             break;
         }
@@ -513,42 +507,35 @@ extern "C" int novasight_prepare_tensor_json(
             break;
         }
 
-        const unsigned char* y_plane = nullptr;
-        const unsigned char* uv_plane = nullptr;
-        int y_pitch = 0;
-        int uv_pitch = 0;
-        if (!resolve_nv12_planes(
+        const unsigned char* rgba_plane = nullptr;
+        int rgba_pitch = 0;
+        if (!resolve_rgba_plane(
                 egl_frame,
-                request.width,
-                request.height,
-                &y_plane,
-                &uv_plane,
-                &y_linear_owner,
-                &uv_linear_owner,
-                &y_pitch,
-                &uv_pitch,
+                request.nchw[3],
+                request.nchw[2],
+                &rgba_plane,
+                &rgba_linear_owner,
+                &rgba_pitch,
                 &detail
             )) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
                 result_json_size,
-                "cuda_egl_nv12_plane_unavailable",
+                "cuda_egl_rgba_plane_unavailable",
                 detail
             );
             break;
         }
-        if (!validate_nv12_plane_layout(
-                y_plane,
-                uv_plane,
-                y_pitch,
-                uv_pitch,
-                request.width,
+        if (!validate_rgba_plane_layout(
+                rgba_plane,
+                rgba_pitch,
+                request.nchw[3],
                 &detail
             )) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
                 result_json_size,
-                "cuda_egl_nv12_plane_invalid",
+                "cuda_egl_rgba_plane_invalid",
                 detail
             );
             break;
@@ -582,13 +569,11 @@ extern "C" int novasight_prepare_tensor_json(
             (request.nchw[2] + block.y - 1) / block.y
         );
         const int dtype_code = request.dtype == "float16" ? 16 : 32;
-        nv12_to_nchw_kernel<<<grid, block>>>(
-            y_plane,
-            uv_plane,
-            request.width,
-            request.height,
-            y_pitch,
-            uv_pitch,
+        rgba_to_nchw_kernel<<<grid, block>>>(
+            rgba_plane,
+            request.nchw[3],
+            request.nchw[2],
+            rgba_pitch,
             output_device,
             request.nchw[2],
             request.nchw[3],
@@ -626,16 +611,16 @@ extern "C" int novasight_prepare_tensor_json(
         return_code = 0;
     } while (false);
 
-    if (y_linear_owner != nullptr) {
-        cudaFree(y_linear_owner);
-    }
-    if (uv_linear_owner != nullptr) {
-        cudaFree(uv_linear_owner);
+    if (rgba_linear_owner != nullptr) {
+        cudaFree(rgba_linear_owner);
     }
     if (cuda_resource != nullptr) {
         cuGraphicsUnregisterResource(cuda_resource);
     }
-    NvBufSurfaceUnMapEglImage(surface, 0);
+    if (rgba_egl_mapped) {
+        NvBufSurfaceUnMapEglImage(rgba_surface, 0);
+    }
+    NvBufSurfaceDestroy(rgba_surface);
     if (output_device != nullptr) {
         cudaFree(output_device);
     }

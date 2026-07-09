@@ -13,7 +13,7 @@ cmake --build build
 Load it from Python:
 
 ```bash
-export NOVASIGHT_JETSON_NATIVE_LIBRARY=/path/to/libnovasight_jetson_preprocess_native.so
+export NOVASIGHT_JETSON_NATIVE_LIBRARY=/path/to/libnovasight_preprocess.so
 python -m novasight doctor jetson-bridge
 ```
 
@@ -207,15 +207,16 @@ library reports native readiness with `zero_copy=true` and
 errors before the library is ready to be loaded.
 
 The command fails before CMake when the selected production source is missing,
-fails after build when `libnovasight_jetson_preprocess_native.so` was not
-created, and rejects status hooks that report `available=true` without the
-device zero-copy output contract.
+fails after build when `libnovasight_preprocess.so` was not created, and
+rejects status hooks that report `available=true` without the device zero-copy
+output contract. `libnovasight_jetson_preprocess_native.so` is still written as
+a legacy alias for old local scripts.
 
 After a successful build check, run the real-frame smoke check on the Jetson:
 
 ```bash
 python -m novasight doctor jetson-native-smoke \
-  --library build/jetson-native/libnovasight_jetson_preprocess_native.so \
+  --library build/jetson-native/libnovasight_preprocess.so \
   --device /dev/video0 \
   --pixel-format MJPG \
   --width 1920 \

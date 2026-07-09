@@ -387,7 +387,7 @@ def test_native_ctypes_bridge_auto_discovers_default_build_output(
 ) -> None:
     import novasight_jetson_preprocess_native as native_backend
 
-    library = tmp_path / "build" / "jetson-native" / "libnovasight_jetson_preprocess_native.so"
+    library = tmp_path / "build" / "jetson-native" / "libnovasight_preprocess.so"
     library.parent.mkdir(parents=True)
     library.write_text("not a shared object", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -410,7 +410,7 @@ def test_native_ctypes_bridge_auto_builds_default_library_on_jetson(
 ) -> None:
     import novasight_jetson_preprocess_native as native_backend
 
-    library = tmp_path / "build" / "jetson-native" / "libnovasight_jetson_preprocess_native.so"
+    library = tmp_path / "build" / "jetson-native" / "libnovasight_preprocess.so"
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], timeout_s: float):
