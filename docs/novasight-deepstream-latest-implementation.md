@@ -77,7 +77,7 @@ The first production code is in:
 native/gst-novasight-latest/
 ```
 
-The committed layer is a GStreamer-free core state machine:
+The committed native layer contains a portable core state machine:
 
 - `NsLatestGateCore`
 - `NsFrameToken`
@@ -85,7 +85,19 @@ The committed layer is a GStreamer-free core state machine:
 
 It is intentionally independent of GStreamer so replacement, single-credit,
 ACK, timeout, flush, EOS, and epoch behavior can be verified on development
-machines before wrapping the core as `nslatestgate` and `nsinferack`.
+machines.
+
+The same directory also contains an optional GStreamer plugin wrapper:
+
+- `nslatestgate`
+- `nsinferack`
+- gate registry used by ACK elements to release credit
+
+The wrapper is compiled only when GStreamer development headers are available.
+The current token transport is a same-buffer qdata prototype; production still
+requires `GstMeta` and `NvDsUserMeta` transform/release callbacks.
+The wrapper currently uses drop-pending EOS behavior; drain-latest EOS remains
+an explicit follow-up that needs an integration test.
 
 Build and test:
 
@@ -93,6 +105,14 @@ Build and test:
 cmake -S native/gst-novasight-latest -B build/ns-latest
 cmake --build build/ns-latest
 ctest --test-dir build/ns-latest --output-on-failure
+```
+
+Force plugin compilation on Jetson:
+
+```bash
+cmake -S native/gst-novasight-latest -B build/ns-latest \
+  -DNSLATEST_BUILD_GSTREAMER=ON
+cmake --build build/ns-latest
 ```
 
 ## Backend Naming
