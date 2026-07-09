@@ -34,7 +34,7 @@ class RuntimePipeline:
     CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法运行推理链路。"
     GPU_PREPROCESSOR_NOT_READY_ERROR = (
         "NVMM TensorRT GPU preprocess is not ready; build the Jetson native "
-        "preprocess library with `python -m novasight doctor jetson-native-build` "
+        "preprocess library with `scripts/build_jetson_preprocess.sh` "
         "and make sure NOVASIGHT_JETSON_NATIVE_LIBRARY points to "
         "libnovasight_preprocess.so."
     )

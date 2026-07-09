@@ -113,6 +113,13 @@ cd ~/NovaSight
 scripts/setup_jetson.sh
 ```
 
+Build only the Jetson NVMM TensorRT preprocess bridge after pulling new code:
+
+```bash
+scripts/build_jetson_preprocess.sh --preflight
+source build/jetson-native/novasight-native-env.sh
+```
+
 If DeepStream Python tensor-meta support is needed, pass the matching NVIDIA
 `pyds` wheel. For DeepStream 7.1 on Jetson Python 3.10, use the
 `pyds-1.2.0-cp310-cp310-linux_aarch64.whl` wheel from NVIDIA's

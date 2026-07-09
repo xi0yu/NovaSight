@@ -4197,6 +4197,65 @@ def test_ctypes_native_backend_owner_release_fails_on_native_error(
     native_backend._reset_library_cache()
 
 
+def test_ctypes_native_backend_reports_stale_dmabuf_only_library(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    import novasight_jetson_preprocess_native as native_backend
+
+    class FakeCFunction:
+        def __init__(self, callback):
+            self.callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class FakeLibrary:
+        def __init__(self) -> None:
+            self.novasight_abi_version = FakeCFunction(lambda: native_backend.ABI_VERSION)
+            self.novasight_prepare_tensor_json = FakeCFunction(self.prepare_json)
+            self.novasight_status_json = FakeCFunction(self.status_json)
+
+        def status_json(self, buffer, size):
+            del size
+            buffer.value = (
+                b'{"available":true,"ready":true,"backend":"fake_ctypes",'
+                b'"zero_copy":true,"memory_space":"cuda_device"}'
+            )
+            return 0
+
+        def prepare_json(self, payload_ptr, buffer, size):
+            del payload_ptr, size
+            buffer.value = (
+                b'{"reason":"dmabuf_fd_required",'
+                b'"detail":"Native Jetson preprocessing requires a valid dmabuf_fd."}'
+            )
+            return 1
+
+    native_backend._reset_library_cache()
+    monkeypatch.setenv(native_backend.LIBRARY_ENV, "/tmp/fake-novasight-jetson.so")
+    monkeypatch.setattr(native_backend.ctypes, "CDLL", lambda path: FakeLibrary())
+
+    with pytest.raises(RuntimeError) as exc_info:
+        native_backend.prepare_tensor(
+            _ctypes_native_payload(
+                resource_memory="nvmm",
+                dmabuf_fd=None,
+                gst_buffer_ptr=987654,
+                resource_metadata={"gst_buffer_ptr": 987654},
+            )
+        )
+
+    detail = str(exc_info.value)
+    assert "native preprocess library is stale" in detail
+    assert "GstBuffer pointer fallback" in detail
+    assert "rebuild or replace" in detail
+    native_backend._reset_library_cache()
+
+
 def test_ctypes_native_backend_rejects_release_token_without_release_symbol(
     monkeypatch,
 ) -> None:

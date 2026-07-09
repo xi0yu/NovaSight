@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,24 +66,27 @@ class ModelRegistry:
     def __init__(self, db_path: Path, data_dir: Path) -> None:
         self.db_path = Path(db_path)
         self.data_dir = Path(data_dir)
+        self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._create_tables()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
-            yield conn
-        except Exception:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
-        finally:
-            conn.close()
+        with self._lock:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                yield conn
+            except Exception:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+            finally:
+                conn.close()
 
     def _create_tables(self) -> None:
         with self._connect() as conn:

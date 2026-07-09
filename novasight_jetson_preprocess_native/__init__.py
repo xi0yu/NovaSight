@@ -702,10 +702,33 @@ def _call_json_function(function: Any, payload_json: bytes) -> str:
         rc = int(function(buffer, ctypes.sizeof(buffer)))
     result = buffer.value.decode("utf-8", errors="replace")
     if rc != 0:
-        raise RuntimeError(result or f"native function returned rc={rc}")
+        raise RuntimeError(_native_error_detail(result, rc=rc))
     if not result:
         raise RuntimeError("native function returned an empty JSON result")
     return result
+
+
+def _native_error_detail(result: str, *, rc: int) -> str:
+    text = result.strip()
+    if not text:
+        return f"native function returned rc={rc}"
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return text
+    if not isinstance(payload, Mapping):
+        return text
+    reason = str(payload.get("reason") or "").strip()
+    detail = str(payload.get("detail") or "").strip()
+    if reason == "dmabuf_fd_required":
+        return (
+            "loaded Jetson native preprocess library is stale: it still requires "
+            "dmabuf_fd and does not support the GstBuffer pointer fallback. "
+            f"library={_library_path()}; rebuild or replace the native shared "
+            "library from the current source before starting NVMM inference. "
+            f"native_detail={detail or text}"
+        )
+    return text
 
 
 def _validate_prepare_result_contract(result: Mapping[str, Any]) -> None:

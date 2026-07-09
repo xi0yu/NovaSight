@@ -10,7 +10,7 @@ Creates a Jetson-friendly NovaSight virtual environment with system GStreamer
 bindings visible through --system-site-packages. If a NVIDIA DeepStream pyds
 wheel is provided, the script installs and verifies it. Pass --build to also
 run `python -m novasight doctor jetson-preflight` and
-`python -m novasight doctor jetson-native-build` so the production NVMM
+`scripts/build_jetson_preprocess.sh --preflight` so the production NVMM
 preprocess .so is produced end-to-end.
 EOF
 }
@@ -139,27 +139,6 @@ echo "  cp config/novasight.example.yaml config/novasight.yaml"
 echo "  python3 -m novasight --host 0.0.0.0 --port 5174"
 
 if [[ "${RUN_BUILD}" -eq 1 ]]; then
-  echo "==> Running jetson-preflight doctor"
-  set +e
-  python3 -m novasight doctor jetson-preflight
-  preflight_status=$?
-  set -e
-  if [[ "${preflight_status}" -ne 0 ]]; then
-    echo "preflight reported missing JetPack components; rerun the suggested apt install." >&2
-    exit 2
-  fi
   echo "==> Building production NVMM preprocess library"
-  python3 -m novasight doctor jetson-native-build --build-dir build/jetson-native
-
-  canonical="build/jetson-native/libnovasight_preprocess.so"
-  if [[ -f "${canonical}" ]]; then
-    echo "==> Built: ${canonical}"
-    echo "==> Tip: export the library path before running the NovaSight backend:"
-    echo "    export NOVASIGHT_JETSON_NATIVE_LIBRARY=\"${PWD}/${canonical}\""
-  else
-    echo "warning: ${canonical} was not produced by doctor jetson-native-build." >&2
-    echo "         Run 'python -m novasight doctor jetson-native-build --build-dir build/jetson-native' manually and inspect its output." >&2
-    exit 2
-  fi
+  scripts/build_jetson_preprocess.sh --preflight --build-dir build/jetson-native
 fi
-

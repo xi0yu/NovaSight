@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -30,6 +31,7 @@ from novasight.inference import parse_tensor_input_shape
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
+_MODEL_SYNC_LOCK = threading.RLock()
 
 YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 YOLOV8N_CLASSES = [
@@ -276,20 +278,21 @@ def _classes_from_sidecar(sidecar: dict[str, Any]) -> list[str]:
 
 
 def _sync_models_directory(registry: ModelRegistry) -> None:
-    roots = [Path(registry.data_dir), Path("models")]
-    seen: set[Path] = set()
-    for root in roots:
-        if not root.exists() or not root.is_dir():
-            continue
-        root = root.resolve(strict=False)
-        for model_file in sorted(root.rglob("*")):
-            if not model_file.is_file() or model_file.suffix.lower() not in {".onnx", ".engine"}:
+    with _MODEL_SYNC_LOCK:
+        roots = [Path(registry.data_dir), Path("models")]
+        seen: set[Path] = set()
+        for root in roots:
+            if not root.exists() or not root.is_dir():
                 continue
-            resolved = model_file.resolve(strict=False)
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            _sync_model_file(registry, root, resolved)
+            root = root.resolve(strict=False)
+            for model_file in sorted(root.rglob("*")):
+                if not model_file.is_file() or model_file.suffix.lower() not in {".onnx", ".engine"}:
+                    continue
+                resolved = model_file.resolve(strict=False)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                _sync_model_file(registry, root, resolved)
 
 
 def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> None:
