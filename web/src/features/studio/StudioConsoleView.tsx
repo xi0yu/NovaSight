@@ -534,7 +534,7 @@ export function StudioConsoleView({
     !runtimeMainlineStatus.failed &&
     runtime?.fatal_error === null;
   const captureMainRunning = runtimeMainlineSelected
-    ? runtimeMainlineRunning || mainlineLaunchPending
+    ? (!runtimeMainlineStatus.failed && runtimeMainlineRunning) || mainlineLaunchPending
     : capture?.available === true;
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
   const captureStatusText = runtimeMainlineSelected
@@ -594,9 +594,28 @@ export function StudioConsoleView({
   const runningWidth = selectedProfile?.width ?? 0;
   const runningHeight = selectedProfile?.height ?? 0;
   const runningFps = selectedProfile?.fps ?? 0;
+  const configuredCaptureProfile =
+    configuredCapturePixelFormat && configuredCaptureWidth > 0 && configuredCaptureHeight > 0 && configuredCaptureFps > 0
+      ? {
+          pixel_format: configuredCapturePixelFormat.toUpperCase(),
+          width: configuredCaptureWidth,
+          height: configuredCaptureHeight,
+          fps: configuredCaptureFps
+        }
+      : null;
+  const configuredChoiceId = configuredCaptureProfile
+    ? `${configuredCaptureProfile.pixel_format}:${configuredCaptureProfile.width}x${configuredCaptureProfile.height}@${configuredCaptureProfile.fps}`
+    : "";
+  const runningChoiceId = selectedProfile
+    ? `${selectedProfile.pixel_format.toUpperCase()}:${selectedProfile.width}x${selectedProfile.height}@${selectedProfile.fps}`
+    : "";
+  const displayCaptureProfile = configuredCaptureProfile ?? selectedProfile ?? null;
   const choices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
   const selectedChoice =
-    choices.find((choice) => choiceId(choice) === selectedChoiceId) ?? choices[0];
+    choices.find((choice) => choiceId(choice) === selectedChoiceId) ??
+    choices.find((choice) => choiceId(choice) === configuredChoiceId) ??
+    choices.find((choice) => choiceId(choice) === runningChoiceId) ??
+    choices[0];
   const roiSize = readNumber(roiConfig.size, 640);
   const roiOffsetX = readNumber(roiConfig.offset_x, 0);
   const roiOffsetY = readNumber(roiConfig.offset_y, 0);
@@ -837,12 +856,14 @@ export function StudioConsoleView({
   }, [configuredCaptureDevice, runtime?.capture?.device]);
 
   useEffect(() => {
-    if (!selectedChoiceId && selectedProfile) {
-      setSelectedChoiceId(
-        `${selectedProfile.pixel_format.toUpperCase()}:${selectedProfile.width}x${selectedProfile.height}@${selectedProfile.fps}`
-      );
+    if (!selectedChoiceId && configuredChoiceId) {
+      setSelectedChoiceId(configuredChoiceId);
+      return;
     }
-  }, [selectedChoiceId, selectedProfile]);
+    if (!selectedChoiceId && runningChoiceId) {
+      setSelectedChoiceId(runningChoiceId);
+    }
+  }, [configuredChoiceId, runningChoiceId, selectedChoiceId]);
 
   useEffect(() => {
     if (projects.length === 0) {
@@ -1650,10 +1671,17 @@ export function StudioConsoleView({
   const launchStages = MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT;
   const activeLaunchStage =
     launchStages[Math.min(launchStageIndex, launchStages.length - 1)];
+  const launchVisibleCompletedStages =
+    launchStatus === "idle"
+      ? launchCompletedStages
+      : Math.max(
+          launchCompletedStages,
+          Math.min(launchStageIndex + 1, launchStages.length)
+        );
   const launchProgress =
     launchStatus === "success"
       ? 100
-      : Math.round((launchCompletedStages / launchStages.length) * 100);
+      : Math.round((launchVisibleCompletedStages / launchStages.length) * 100);
   const launchIndicatorClass =
     launchStatus === "running"
       ? "launch-stage-indicator running"
@@ -1781,8 +1809,8 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集 FPS" value={formatNumber(statistics?.capture_fps ?? capture?.fps_capture, 1)} small="FPS" />
-            <Metric title="分辨率" value={selectedProfile ? `${selectedProfile.width}x${selectedProfile.height}` : "待机"} small="input" />
-            <Metric title="像素格式" value={selectedProfile?.pixel_format ?? "待机"} small="format" />
+            <Metric title="分辨率" value={displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : "待机"} small="config" />
+            <Metric title="像素格式" value={displayCaptureProfile?.pixel_format ?? "待机"} small="config" />
             <Metric title="丢帧" value={String(statistics?.dropped_counter ?? capture?.frames_dropped ?? 0)} small="drop" />
           </div>
 
@@ -1805,7 +1833,7 @@ export function StudioConsoleView({
                 </select>
                 <div className="console-row">
                   <label>目标帧率</label>
-                  <input value={selectedChoice?.fps ?? selectedProfile?.fps ?? ""} readOnly />
+                  <input value={selectedChoice?.fps ?? displayCaptureProfile?.fps ?? ""} readOnly />
                 </div>
                 <button className="console-button primary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
                   {busy === "caps" ? "检测中..." : "检测设备能力"}

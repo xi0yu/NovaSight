@@ -6,6 +6,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from novasight.runtime.control_trace import (
+    CONTROL_TRACE_FIELD_UNITS,
+    CONTROL_TRACE_SCHEMA_NAME,
+    CONTROL_TRACE_SCHEMA_VERSION,
+    ControlTraceJsonlRecorder,
+    build_control_trace_record,
+    serialize_control_trace,
+)
+
 
 CONTROL_FRAME_FIELDS = [
     "frame_id",
@@ -430,3 +439,17 @@ def _csv_value(value: Any) -> Any:
 
 def _parquet_value(value: Any) -> str:
     return str(_csv_value(value))
+
+
+__all__ = [
+    "CONTROL_FRAME_FIELDS",
+    "CONTROL_TRACE_FIELD_UNITS",
+    "CONTROL_TRACE_SCHEMA_NAME",
+    "CONTROL_TRACE_SCHEMA_VERSION",
+    "ControlFrameCsvRecorder",
+    "ControlFrameParquetRecorder",
+    "ControlTraceJsonlRecorder",
+    "build_control_frame_record",
+    "build_control_trace_record",
+    "serialize_control_trace",
+]

@@ -7,9 +7,15 @@ from .latest_frame import FrameHandle, LatestFrameBroker
 from .pipeline import RuntimePipeline
 from .recorder import (
     CONTROL_FRAME_FIELDS,
+    CONTROL_TRACE_FIELD_UNITS,
+    CONTROL_TRACE_SCHEMA_NAME,
+    CONTROL_TRACE_SCHEMA_VERSION,
     ControlFrameCsvRecorder,
     ControlFrameParquetRecorder,
+    ControlTraceJsonlRecorder,
     build_control_frame_record,
+    build_control_trace_record,
+    serialize_control_trace,
 )
 from .reconfigurator import ConfigApplyReport, RuntimeReconfigurator
 from .service import RuntimeService
@@ -39,8 +45,12 @@ __all__ = [
     "LatestFrameBroker",
     "StatusHub",
     "CONTROL_FRAME_FIELDS",
+    "CONTROL_TRACE_FIELD_UNITS",
+    "CONTROL_TRACE_SCHEMA_NAME",
+    "CONTROL_TRACE_SCHEMA_VERSION",
     "ControlFrameCsvRecorder",
     "ControlFrameParquetRecorder",
+    "ControlTraceJsonlRecorder",
     "ControlFrameReplay",
     "ReplayInjection",
     "ReplayAcceptanceCase",
@@ -50,5 +60,7 @@ __all__ = [
     "run_replay_acceptance",
     "compare_replay_metrics",
     "build_control_frame_record",
+    "build_control_trace_record",
+    "serialize_control_trace",
     "configure_logging",
 ]

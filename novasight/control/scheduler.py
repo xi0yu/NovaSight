@@ -333,6 +333,12 @@ class CommandScheduler:
             "pending_dx": float(sum(step.dx for step in self._pending_steps)),
             "pending_dy": float(sum(step.dy for step in self._pending_steps)),
             "pending_steps": len(self._pending_steps),
+            "pending_created_ts_ns": int(self._pending_created_s * 1_000_000_000),
+            "pending_age_ms": (
+                max(0.0, (now - self._pending_created_s) * 1000.0)
+                if self._pending_created_s > 0.0 and self._pending_steps
+                else 0.0
+            ),
             "max_step_x": self.max_step_x,
             "max_step_y": self.max_step_y,
             "queue_hard_limit": self.queue_hard_limit,

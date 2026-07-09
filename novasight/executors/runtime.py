@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+import time
 from typing import Any
 
 from novasight.config import RuntimeConfig
@@ -93,15 +94,23 @@ class ExecutorRegistry:
                 },
             )
         bounded = decision.output
+        device_send_start_ts_ns = time.monotonic_ns()
         result = self.executors[self.selected].execute(bounded)
+        device_send_end_ts_ns = time.monotonic_ns()
         scheduler_execution_metadata: dict[str, Any] | None = None
         scheduler_execution_metadata = self.scheduler.record_execution_result(
             sent=bool(result.sent),
             message=str(result.message),
         )
+        device_timing_metadata = {
+            "device_send_start_ts_ns": device_send_start_ts_ns,
+            "device_send_end_ts_ns": device_send_end_ts_ns,
+            "device_send_clock_domain": "monotonic",
+        }
         if result.metadata is not None:
             if scheduler_metadata is not None or scheduler_execution_metadata is not None:
                 metadata = dict(result.metadata)
+                metadata.update(device_timing_metadata)
                 if scheduler_metadata is not None:
                     metadata["scheduler"] = {
                         **scheduler_metadata,
@@ -110,7 +119,9 @@ class ExecutorRegistry:
                 elif scheduler_execution_metadata is not None:
                     metadata["scheduler"] = {"execution": scheduler_execution_metadata}
                 return replace(result, metadata=metadata)
-            return result
+            metadata = dict(result.metadata)
+            metadata.update(device_timing_metadata)
+            return replace(result, metadata=metadata)
         return ExecutionResult(
             executor_id=result.executor_id,
             sent=result.sent,
@@ -122,6 +133,7 @@ class ExecutorRegistry:
                 "accepted": bool(bounded.accepted),
                 "clipped": bool(bounded.clipped),
                 "policy_reason": str(bounded.reason),
+                **device_timing_metadata,
                 **(
                     {
                         "scheduler": {
@@ -161,13 +173,22 @@ class ExecutorRegistry:
                     **scheduler_metadata,
                 },
             )
+        device_send_start_ts_ns = time.monotonic_ns()
         result = self.executors[self.selected].execute(decision.output)
+        device_send_end_ts_ns = time.monotonic_ns()
         scheduler_execution_metadata = self.scheduler.record_execution_result(
             sent=bool(result.sent),
             message=str(result.message),
             now_s=now_s,
         )
         metadata = dict(result.metadata or {})
+        metadata.update(
+            {
+                "device_send_start_ts_ns": device_send_start_ts_ns,
+                "device_send_end_ts_ns": device_send_end_ts_ns,
+                "device_send_clock_domain": "monotonic",
+            }
+        )
         metadata["scheduler"] = {
             **scheduler_metadata,
             "execution": scheduler_execution_metadata,

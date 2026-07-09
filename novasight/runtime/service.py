@@ -16,6 +16,7 @@ from novasight.control import (
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
+from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.model_registry import ModelRegistry
 from novasight.contracts import BBox, ControlIntent, Detection, DetectionBatch, FrameContext, Track
 from novasight.roi import center_roi_frame, center_roi_region
@@ -32,6 +33,7 @@ from .state import RuntimeFrameResult, RuntimeState
 from .candidates import aim_point
 from .detection_batch import detection_batch_to_frame_context
 from .recorder import build_control_frame_record
+from .control_trace import build_control_trace_record
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
@@ -179,6 +181,7 @@ class RuntimeService:
             configure(
                 confidence_threshold=config.inference.confidence_threshold,
                 nms_threshold=config.inference.nms_threshold,
+                gpu_preprocessor=create_gpu_resource_preprocessor(config),
             )
         self._log_production_control_chain(
             "calibration_profile_changed" if calibration_changed else "config_updated"
@@ -814,9 +817,12 @@ class RuntimeService:
                     selector_debug,
                     selection=selection,
                 )
+                control_now_ns = time.monotonic_ns()
                 self.last_control = {
                     "frame_id": context.frame_id,
                     "capture_ts_ns": context.capture_ts_ns,
+                    "control_now_ts_ns": control_now_ns,
+                    "trajectory_generation": int(context.generation or context.frame_id),
                     "global_state": self._global_state_from_selection_state(selection.state),
                     "selector_state": selection.state,
                     "selection_reason": selection.reason,
@@ -843,13 +849,14 @@ class RuntimeService:
                 target=target,
                 selection=selection,
             )
+            control_now_ns = time.monotonic_ns()
             strategy_metadata.update(
                 self._aim_latency_metadata(
                     context=context,
                     target=target,
                     strategy_metadata=strategy_metadata,
                     selector_debug=selector_debug,
-                    compute_ts_ns=time.monotonic_ns(),
+                    compute_ts_ns=control_now_ns,
                 )
             )
             strategy_input = self._with_strategy_target(
@@ -885,6 +892,8 @@ class RuntimeService:
             self.last_control = {
                 "frame_id": context.frame_id,
                 "capture_ts_ns": context.capture_ts_ns,
+                "control_now_ts_ns": control_now_ns,
+                "trajectory_generation": int(context.generation or context.frame_id),
                 "global_state": self._global_state_from_selection_state(selection.state),
                 "selector_state": selection.state,
                 "selection_reason": selection.reason,
@@ -1286,8 +1295,11 @@ class RuntimeService:
                 selector_debug,
                 selection=selection,
             )
+            control_now_ns = time.monotonic_ns()
             self.last_control = {
                 "frame_id": context.frame_id,
+                "control_now_ts_ns": control_now_ns,
+                "trajectory_generation": int(context.generation or context.frame_id),
                 "global_state": self._global_state_from_selection_state(selection.state),
                 "selector_state": selection.state,
                 "selection_reason": selection.reason,
@@ -1344,6 +1356,8 @@ class RuntimeService:
             self.last_control = {
                 "frame_id": context.frame_id,
                 "capture_ts_ns": context.capture_ts_ns,
+                "control_now_ts_ns": time.monotonic_ns(),
+                "trajectory_generation": int(context.generation or context.frame_id),
                 "frame_age_ms": frame_age_ms,
                 "global_state": "DISABLED",
                 "selector_state": selection.state,
@@ -1390,13 +1404,14 @@ class RuntimeService:
             target=target,
             selection=selection,
         )
+        control_now_ns = time.monotonic_ns()
         strategy_metadata.update(
             self._aim_latency_metadata(
                 context=context,
                 target=target,
                 strategy_metadata=strategy_metadata,
                 selector_debug=selector_debug,
-                compute_ts_ns=time.monotonic_ns(),
+                compute_ts_ns=control_now_ns,
             )
         )
         strategy_input = (
@@ -1435,6 +1450,7 @@ class RuntimeService:
         if isinstance(strategy_aim_x, (int, float)) and isinstance(strategy_aim_y, (int, float)):
             aim_x = float(strategy_aim_x)
             aim_y = float(strategy_aim_y)
+        trajectory_generation = int(context.generation or context.frame_id)
         intent = ControlIntent(
             dx=command.dx,
             dy=command.dy,
@@ -1449,7 +1465,7 @@ class RuntimeService:
             source_frame_id=context.frame_id,
             source_track_id=int(getattr(target, "track_id")) if hasattr(target, "track_id") else None,
             predicted_source=predicted_source,
-            trajectory_generation=int(context.generation or context.frame_id),
+            trajectory_generation=trajectory_generation,
         )
         output_mode = str(
             getattr(self.config.control, "output_mode", "")
@@ -1504,6 +1520,8 @@ class RuntimeService:
         self.last_control = {
             "frame_id": context.frame_id,
             "capture_ts_ns": context.capture_ts_ns,
+            "control_now_ts_ns": control_now_ns,
+            "trajectory_generation": trajectory_generation,
             "frame_age_ms": frame_age_ms,
             "global_state": self._global_state_from_selection_state(selection.state),
             "aim_error_x": aim_error_x,
@@ -2544,21 +2562,32 @@ class RuntimeService:
         if recorder is None:
             return
         try:
+            scheduler_status = self._scheduler_status()
             record = build_control_frame_record(
                 control=self.last_control,
                 target=self.last_target,
                 inference=self.last_inference_status,
                 execution=self.last_execution,
                 config=self.config,
-                scheduler_status=self._scheduler_status(),
+                scheduler_status=scheduler_status,
             )
+            trace = build_control_trace_record(
+                control=self.last_control,
+                target=self.last_target,
+                inference=self.last_inference_status,
+                execution=self.last_execution,
+                scheduler_status=scheduler_status,
+            )
+            trace_writer = getattr(recorder, "record_control_trace", None)
             writer = getattr(recorder, "record_control_frame", None)
             if callable(writer):
                 writer(record)
-                return
-            writer = getattr(recorder, "record", None)
-            if callable(writer):
-                writer(record)
+            else:
+                writer = getattr(recorder, "record", None)
+                if callable(writer) and not callable(trace_writer):
+                    writer(record)
+            if callable(trace_writer):
+                trace_writer(trace)
         except Exception as exc:
             logger.warning("control frame recorder failed: %s", exc)
 
@@ -2576,7 +2605,7 @@ class RuntimeService:
     def _execution_result_payload(self, result: Any) -> dict[str, Any]:
         intent = getattr(result, "intent", None)
         metadata = getattr(result, "metadata", None) or {}
-        return {
+        payload = {
             "executor_id": str(getattr(result, "executor_id", "")),
             "sent": bool(getattr(result, "sent", False)),
             "message": str(getattr(result, "message", "")),
@@ -2595,6 +2624,15 @@ class RuntimeService:
                 "reason": str(getattr(intent, "reason", "")),
             },
         }
+        if isinstance(metadata, dict):
+            for key in (
+                "device_send_start_ts_ns",
+                "device_send_end_ts_ns",
+                "device_send_clock_domain",
+            ):
+                if key in metadata:
+                    payload[key] = metadata[key]
+        return payload
 
     def _attach_execution_to_last_control(self, execution: dict[str, Any]) -> None:
         if not isinstance(self.last_control, dict):

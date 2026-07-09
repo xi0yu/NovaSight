@@ -60,11 +60,15 @@ function readStatistics(runtime: RuntimeState | null): Statistics {
   };
 }
 
-function captureMode(capture: CaptureState | undefined): string {
-  if (!capture?.profile) {
+function captureMode(
+  capture: CaptureState | undefined,
+  configuredProfile?: { pixel_format: string; width: number; height: number; fps: number } | null
+): string {
+  const profile = configuredProfile ?? capture?.profile;
+  if (!profile) {
     return "未打开";
   }
-  const { pixel_format, height, fps } = capture.profile;
+  const { pixel_format, height, fps } = profile;
   const size = height >= 2160 ? "4K" : height >= 1440 ? "2K" : "1K";
   return `${pixel_format} · ${size}${fps} · ROI`;
 }
@@ -165,6 +169,16 @@ function readNestedNumber(
 ): number {
   const value = asRecord(asRecord(config)[section])[key];
   return typeof value === "number" ? value : fallback;
+}
+
+function readNestedString(
+  config: unknown,
+  section: string,
+  key: string,
+  fallback = ""
+): string {
+  const value = asRecord(asRecord(config)[section])[key];
+  return typeof value === "string" ? value : fallback;
 }
 
 function readNumberRecord(value: Record<string, unknown>, key: string): number | null {
@@ -291,15 +305,31 @@ export function DashboardView({
   const displayTick = useDisplayTick();
   const capture = runtime?.capture;
   const stats = useMemo(() => readStatistics(runtime), [runtime, displayTick]);
-  const targetFps = capture?.profile?.fps ?? 120;
   const configSource = runtimeConfig ?? runtime?.config;
+  const configuredCapturePixelFormat = readNestedString(configSource, "capture", "pixel_format", "").toUpperCase();
+  const configuredCaptureWidth = readNestedNumber(configSource, "capture", "width", 0);
+  const configuredCaptureHeight = readNestedNumber(configSource, "capture", "height", 0);
+  const configuredCaptureFps = readNestedNumber(configSource, "capture", "fps", 0);
+  const configuredCaptureProfile =
+    configuredCapturePixelFormat && configuredCaptureWidth > 0 && configuredCaptureHeight > 0 && configuredCaptureFps > 0
+      ? {
+          pixel_format: configuredCapturePixelFormat,
+          width: configuredCaptureWidth,
+          height: configuredCaptureHeight,
+          fps: configuredCaptureFps
+        }
+      : null;
+  const displayCaptureProfile = configuredCaptureProfile ?? capture?.profile ?? null;
+  const targetFps = displayCaptureProfile?.fps ?? 120;
   const runtimeInference = asRecord(runtime?.inference);
   const selectedRuntimeBackend = readStringRecord(runtimeInference, "selected");
   const runtimeMainlineSelected = selectedRuntimeBackend === "nvmm_latest";
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
-  const runtimeMainlineRunning = runtimeMainlineStatus.running;
+  const runtimeMainlineRunning =
+    runtimeMainlineStatus.running && !runtimeMainlineStatus.failed;
   const captureMainRunning = runtimeMainlineSelected ? runtimeMainlineRunning : capture?.available === true;
-  const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
+  const captureProfileConfigured =
+    capture?.available === true || Boolean(capture?.profile) || Boolean(configuredCaptureProfile);
   const captureStateLabel = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "主链故障"
@@ -419,13 +449,13 @@ export function DashboardView({
             <div className="home-field">
               <div className="home-field-label">
                 <span>当前 Profile</span>
-                <span>{capture?.profile?.selection_reason ?? "等待采集"}</span>
+                <span>{configuredCaptureProfile ? "已保存配置" : capture?.profile?.selection_reason ?? "等待采集"}</span>
               </div>
               <div className="home-status-line">
-                <strong>{capture?.profile?.pixel_format ?? "--"}</strong>
+                <strong>{displayCaptureProfile?.pixel_format ?? "--"}</strong>
                 <span>
-                  {capture?.profile
-                    ? `${capture.profile.width}x${capture.profile.height} @ ${capture.profile.fps}fps`
+                  {displayCaptureProfile
+                    ? `${displayCaptureProfile.width}x${displayCaptureProfile.height} @ ${displayCaptureProfile.fps}fps`
                     : "未选择"}
                 </span>
               </div>
@@ -477,8 +507,8 @@ export function DashboardView({
         <div className="home-pipeline-strip">
           <div className="home-mini-node">
             <div className="k">采集输入</div>
-            <div className="v">{capture?.profile ? `${capture.profile.width}x${capture.profile.height} · ${capture.profile.fps}fps` : "等待采集"}</div>
-            <div className="s">{capture?.profile?.pixel_format ?? "未选择"} · {runtimeMainlineSelected ? `${selectedRuntimeBackend} 启动时打开` : capture?.backend ?? "未打开"}</div>
+            <div className="v">{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height} · ${displayCaptureProfile.fps}fps` : "等待采集"}</div>
+            <div className="s">{displayCaptureProfile?.pixel_format ?? "未选择"} · {runtimeMainlineSelected ? `${selectedRuntimeBackend} 启动时打开` : capture?.backend ?? "未打开"}</div>
           </div>
           <div className="home-arrow">→</div>
           <div className="home-mini-node">
@@ -545,7 +575,7 @@ export function DashboardView({
             </div>
             <div className="home-hud home-hud-left">
               <span>预览 {runtimeMainlineSelected ? "Tensor Overlay" : previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
-              <span>{captureMode(capture)}</span>
+              <span>{captureMode(capture, configuredCaptureProfile)}</span>
               <span>ROI {roiSize}</span>
               <span>GPU 路线</span>
             </div>

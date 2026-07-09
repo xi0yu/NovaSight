@@ -36,6 +36,7 @@ class InferenceRuntime:
             self.engine = UnavailableInferenceEngine(
                 self.engine.last_reason() or "TensorRT unavailable"
             )
+        self._configure_engine_gpu_preprocessor()
 
     def configure(
         self,
@@ -58,7 +59,7 @@ class InferenceRuntime:
                 if hasattr(self.engine, name):
                     setattr(self.engine, name, value)
             setter = getattr(self.engine, "set_gpu_preprocessor", None)
-            if gpu_preprocessor is not self._UNSET and callable(setter):
+            if callable(setter):
                 setter(self._gpu_preprocessor)
 
     def status(self) -> dict:
@@ -90,6 +91,11 @@ class InferenceRuntime:
             "available": True,
             "reason": "",
         }
+
+    def _configure_engine_gpu_preprocessor(self) -> None:
+        setter = getattr(self.engine, "set_gpu_preprocessor", None)
+        if callable(setter):
+            setter(self._gpu_preprocessor)
 
     def disable(self, reason: str) -> None:
         self._load_error = reason
