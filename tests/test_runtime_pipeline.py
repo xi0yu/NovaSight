@@ -5,15 +5,19 @@ from types import SimpleNamespace
 
 import pytest
 
+from novasight.capture.pipeline import build_appsink_candidates
 from novasight.capture.session import CaptureSession
-from novasight.capture.source import CapturedFrame
-from novasight.capture.state import CaptureProfile
+from novasight.capture.source import CapturedFrame, GstAppSinkFrameSource
+from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext
+from novasight.inference.contracts import InferenceResult
 from novasight.runtime import (
     DetectionBatchMailbox,
     FailFastHandler,
     FrameHandle,
+    FreshnessGate,
+    LatestFrameExchange,
     LatestFrameBroker,
     RuntimeConfigStore,
     RuntimePipeline,
@@ -48,6 +52,68 @@ def _handle(generation: int) -> FrameHandle:
         format="NV12",
         resource=object(),
     )
+
+
+def test_latest_frame_exchange_name_is_capacity_one_latest_mailbox() -> None:
+    exchange = LatestFrameExchange()
+
+    for generation in range(1, 5):
+        exchange.publish(_handle(generation))
+
+    latest = exchange.acquire_latest(after_generation=-1, timeout_s=0.0)
+
+    assert latest is not None
+    assert latest.generation == 4
+    assert exchange.status()["max_pending_depth"] == 1
+    assert exchange.status()["overwritten_frames"] == 3
+
+
+def test_freshness_gate_uses_strictest_positive_threshold() -> None:
+    now_ns = 1_000_000_000_000
+    gate = FreshnessGate.strictest(55, 10, 0, None)
+
+    reason = gate.stale_reason(
+        capture_ts_ns=now_ns - 12_000_000,
+        now_ns=now_ns,
+        template="stale {age_ms:.1f}>{threshold_ms:.1f}",
+    )
+
+    assert reason == "stale 12.0>10.0"
+
+
+def test_gst_cpu_latest_pipeline_uses_single_frame_leaky_appsink() -> None:
+    profile = CaptureProfile(
+        device="/dev/video0",
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=120,
+        preference="manual",
+        selection_reason="test",
+    )
+
+    candidates = build_appsink_candidates(profile, roi_size=640)
+    pipeline = candidates[0].pipeline
+
+    assert candidates[0].label.startswith("gst_cpu_latest:")
+    assert "v4l2src device=/dev/video0 io-mode=2 do-timestamp=true" in pipeline
+    assert "image/jpeg,width=1920,height=1080,framerate=120/1" in pipeline
+    assert pipeline.count("queue max-size-buffers=1") >= 2
+    assert "leaky=downstream" in pipeline
+    assert "jpegparse" in pipeline
+    assert "nvv4l2decoder mjpeg=1" in pipeline
+    assert "nvvidconv left=640 right=1280 top=220 bottom=860" in pipeline
+    assert "video/x-raw,format=BGRx,width=640,height=640" in pipeline
+    assert "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false" in pipeline
+    assert any("video/x-raw,format=RGBA,width=640,height=640" in item.pipeline for item in candidates)
+    assert any("video/x-raw,format=RGB,width=640,height=640" in item.pipeline for item in candidates)
+    assert any("video/x-raw,format=I420,width=640,height=640" in item.pipeline for item in candidates)
+
+
+def test_cpu_compatible_capture_backend_is_public_appsink_bridge() -> None:
+    from novasight.capture import CpuCompatibleCaptureBackend
+
+    assert CpuCompatibleCaptureBackend is GstAppSinkFrameSource
 
 
 def test_latest_frame_broker_releases_overwritten_and_cleared_pending_handles() -> None:
@@ -108,6 +174,100 @@ def test_latest_frame_broker_overwrites_pending_frames() -> None:
     assert status["busy_drop_count"] == 6
 
 
+def test_latest_frame_broker_rejects_stale_generation_publish() -> None:
+    released: list[str] = []
+    broker = LatestFrameBroker()
+    broker.publish(
+        FrameHandle(
+            generation=2,
+            frame_id=2,
+            source_sequence=2,
+            capture_ts_ns=time.monotonic_ns(),
+            clock_domain="monotonic",
+            pipeline_running_time_ns=None,
+            width=640,
+            height=640,
+            format="BGR",
+            resource="newest",
+            release_callback=lambda resource: released.append(resource),
+        )
+    )
+    newest = broker.acquire_latest(after_generation=-1, timeout_s=0.0)
+    assert newest is not None
+    newest.release()
+
+    broker.publish(
+        FrameHandle(
+            generation=1,
+            frame_id=1,
+            source_sequence=1,
+            capture_ts_ns=time.monotonic_ns(),
+            clock_domain="monotonic",
+            pipeline_running_time_ns=None,
+            width=640,
+            height=640,
+            format="BGR",
+            resource="stale",
+            release_callback=lambda resource: released.append(resource),
+        )
+    )
+
+    stale = broker.acquire_latest(after_generation=-1, timeout_s=0.0)
+
+    assert stale is None
+    assert released == ["newest", "stale"]
+    assert broker.status()["stale_published_frames"] == 1
+    assert broker.status()["published_generation"] == 2
+
+
+def test_latest_frame_broker_rejects_stale_frame_id_publish() -> None:
+    released: list[str] = []
+    broker = LatestFrameBroker()
+    broker.publish(
+        FrameHandle(
+            generation=2,
+            frame_id=20,
+            source_sequence=20,
+            capture_ts_ns=time.monotonic_ns(),
+            clock_domain="monotonic",
+            pipeline_running_time_ns=None,
+            width=640,
+            height=640,
+            format="BGR",
+            resource="newest",
+            release_callback=lambda resource: released.append(resource),
+        )
+    )
+    newest = broker.acquire_latest(after_generation=-1, timeout_s=0.0)
+    assert newest is not None
+    newest.release()
+
+    broker.publish(
+        FrameHandle(
+            generation=3,
+            frame_id=19,
+            source_sequence=19,
+            capture_ts_ns=time.monotonic_ns(),
+            clock_domain="monotonic",
+            pipeline_running_time_ns=None,
+            width=640,
+            height=640,
+            format="BGR",
+            resource="stale-frame-id",
+            release_callback=lambda resource: released.append(resource),
+        )
+    )
+
+    stale = broker.acquire_latest(after_generation=-1, timeout_s=0.0)
+    status = broker.status()
+
+    assert stale is None
+    assert released == ["newest", "stale-frame-id"]
+    assert status["stale_published_frames"] == 1
+    assert status["published_generation"] == 2
+    assert status["published_frame_id"] == 20
+
+
 def test_latest_frame_broker_pending_depth_never_exceeds_one() -> None:
     broker = LatestFrameBroker()
 
@@ -147,6 +307,128 @@ def test_detection_batch_mailbox_keeps_only_latest_generation() -> None:
     assert status["pending_depth"] == 1
     assert status["max_pending_depth"] == 1
     assert status["overwritten_batches"] == 8
+
+
+def test_detection_batch_mailbox_rejects_stale_generation_publish() -> None:
+    mailbox = DetectionBatchMailbox()
+    now_ns = time.monotonic_ns()
+    mailbox.publish(
+        DetectionBatch(
+            frame_id=10,
+            generation=10,
+            capture_ts_ns=now_ns,
+            inference_start_ts_ns=now_ns + 1_000,
+            inference_end_ts_ns=now_ns + 2_000,
+            detections=[],
+            classes=[],
+            coordinate_space="roi",
+        )
+    )
+    mailbox.publish(
+        DetectionBatch(
+            frame_id=9,
+            generation=9,
+            capture_ts_ns=now_ns + 3_000,
+            inference_start_ts_ns=now_ns + 4_000,
+            inference_end_ts_ns=now_ns + 5_000,
+            detections=[],
+            classes=[],
+            coordinate_space="roi",
+        )
+    )
+
+    latest = mailbox.acquire_latest(after_generation=-1, timeout_s=0.0)
+    status = mailbox.status()
+
+    assert latest is not None
+    assert latest.generation == 10
+    assert latest.frame_id == 10
+    assert status["latest_generation"] == 10
+    assert status["latest_frame_id"] == 10
+    assert status["published_batches"] == 1
+    assert status["stale_published_batches"] == 1
+
+
+def test_detection_batch_mailbox_rejects_stale_frame_id_publish() -> None:
+    mailbox = DetectionBatchMailbox()
+    now_ns = time.monotonic_ns()
+    mailbox.publish(
+        DetectionBatch(
+            frame_id=20,
+            generation=20,
+            capture_ts_ns=now_ns,
+            inference_start_ts_ns=now_ns + 1_000,
+            inference_end_ts_ns=now_ns + 2_000,
+            detections=[],
+            classes=[],
+            coordinate_space="roi",
+        )
+    )
+    mailbox.publish(
+        DetectionBatch(
+            frame_id=19,
+            generation=21,
+            capture_ts_ns=now_ns + 3_000,
+            inference_start_ts_ns=now_ns + 4_000,
+            inference_end_ts_ns=now_ns + 5_000,
+            detections=[],
+            classes=[],
+            coordinate_space="roi",
+        )
+    )
+
+    latest = mailbox.acquire_latest(after_generation=-1, timeout_s=0.0)
+    status = mailbox.status()
+
+    assert latest is not None
+    assert latest.generation == 20
+    assert latest.frame_id == 20
+    assert status["latest_generation"] == 20
+    assert status["latest_frame_id"] == 20
+    assert status["published_batches"] == 1
+    assert status["stale_published_batches"] == 1
+
+
+def test_detection_batch_mailbox_rejects_capture_timestamp_rollback() -> None:
+    mailbox = DetectionBatchMailbox()
+    now_ns = time.monotonic_ns()
+    mailbox.publish(
+        DetectionBatch(
+            frame_id=20,
+            generation=20,
+            capture_ts_ns=now_ns,
+            inference_start_ts_ns=now_ns + 1_000,
+            inference_end_ts_ns=now_ns + 2_000,
+            detections=[],
+            classes=[],
+            coordinate_space="roi",
+        )
+    )
+    mailbox.publish(
+        DetectionBatch(
+            frame_id=21,
+            generation=21,
+            capture_ts_ns=now_ns - 1_000,
+            inference_start_ts_ns=now_ns + 3_000,
+            inference_end_ts_ns=now_ns + 4_000,
+            detections=[],
+            classes=[],
+            coordinate_space="roi",
+        )
+    )
+
+    latest = mailbox.acquire_latest(after_generation=-1, timeout_s=0.0)
+    status = mailbox.status()
+
+    assert latest is not None
+    assert latest.generation == 20
+    assert latest.frame_id == 20
+    assert latest.capture_ts_ns == now_ns
+    assert status["latest_generation"] == 20
+    assert status["latest_frame_id"] == 20
+    assert status["latest_capture_ts_ns"] == now_ns
+    assert status["published_batches"] == 1
+    assert status["stale_published_batches"] == 1
 
 
 def test_capture_session_publishes_captured_frames_to_latest_frame_broker() -> None:
@@ -491,6 +773,112 @@ def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
     assert processed == [2]
     assert pipeline.stats.skipped_frames >= 1
     assert "input frame age exceeds deadline" in (pipeline.stats.last_error or "")
+
+
+def test_runtime_service_drops_detection_when_newer_generation_arrives_during_inference() -> None:
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "system"
+    cfg.control.latency_reject_if_age_exceeds_ms = 55.0
+
+    class Broker:
+        def status(self) -> dict[str, int]:
+            return {"published_generation": 2}
+
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("expired DetectionBatch must not execute"),
+        ),
+        capture=SimpleNamespace(latest_frame_broker=Broker(), state=CaptureRuntimeState()),
+        inference=SimpleNamespace(
+            status=lambda: {"available": True, "loaded": True, "selected": "tensorrt"},
+            infer=lambda _frame: InferenceResult(
+                available=True,
+                detections=[],
+                classes=["target"],
+                debug={"timings": {}, "preprocess": {"model_width": 2, "model_height": 2}},
+            )
+        ),
+    )
+    frame = CapturedFrame(
+        frame_id=1,
+        generation=1,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns(),
+        capture_wait_ms=1.0,
+        image=None,
+    )
+
+    result = service.process_captured_frame(frame)
+    state = service.state()
+
+    assert result.observation_updated is False
+    assert service.last_frame_context is None
+    assert service.last_inference_status["available"] is False
+    assert service.last_inference_status["stale_rejected"] is True
+    assert service.last_inference_status["latest_generation"] == 2
+    assert "latest generation" in service.last_inference_status["reason"]
+    assert state.statistics["stale_drop_count"] == 1
+    assert "control_observe_fps" in state.statistics
+    assert "inference_ms" in state.statistics
+    assert "postprocess_ms" in state.statistics
+
+
+def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_inference() -> None:
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "system"
+    cfg.control.latency_reject_if_age_exceeds_ms = 55.0
+
+    class Broker:
+        def status(self) -> dict[str, int]:
+            return {"published_generation": 1, "published_frame_id": 2}
+
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("expired DetectionBatch must not execute"),
+        ),
+        capture=SimpleNamespace(latest_frame_broker=Broker(), state=CaptureRuntimeState()),
+        inference=SimpleNamespace(
+            status=lambda: {"available": True, "loaded": True, "selected": "tensorrt"},
+            infer=lambda _frame: InferenceResult(
+                available=True,
+                detections=[],
+                classes=["target"],
+                debug={"timings": {}, "preprocess": {"model_width": 2, "model_height": 2}},
+            )
+        ),
+    )
+    frame = CapturedFrame(
+        frame_id=1,
+        generation=1,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns(),
+        capture_wait_ms=1.0,
+        image=None,
+    )
+
+    result = service.process_captured_frame(frame)
+
+    assert result.observation_updated is False
+    assert service.last_frame_context is None
+    assert service.last_inference_status["available"] is False
+    assert service.last_inference_status["stale_rejected"] is True
+    assert service.last_inference_status["latest_generation"] == 1
+    assert service.last_inference_status["latest_frame_id"] == 2
+    assert "latest frame_id" in service.last_inference_status["reason"]
 
 
 def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:

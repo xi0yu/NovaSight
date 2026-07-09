@@ -57,6 +57,11 @@ class CapturedFrame:
     roi_size: int | None = None
     roi_offset_x: int = 0
     roi_offset_y: int = 0
+    generation: int = 0
+    source_backend: str = ""
+    caps_string: str = ""
+    actual_pipeline_string: str = ""
+    copy_cost_ms: float = 0.0
 
     @property
     def capture_ts_ns(self) -> int:
@@ -105,6 +110,10 @@ class CapturedFrame:
         return None
 
     @property
+    def data(self) -> Any:
+        return self.image_ref
+
+    @property
     def gpu_buffer(self) -> Any | None:
         if self.frame_resource is not None and self.frame_resource.gpu_accessible:
             return self.frame_resource.handle
@@ -126,6 +135,7 @@ class CapturedFrame:
 
 
 CaptureFrame = CapturedFrame
+HostFrame = CapturedFrame
 
 
 class FrameSource(Protocol):
@@ -282,6 +292,7 @@ class GstAppSinkFrameSource:
         self._candidate = candidate
         self.backend_label = candidate.label
         self._Gst = Gst
+        self._pipeline_string = candidate.pipeline
         self._pipeline = Gst.parse_launch(candidate.pipeline)
         self._closed = False
         self._appsink = self._pipeline.get_by_name("sink")
@@ -335,15 +346,20 @@ class GstAppSinkFrameSource:
         if sample is None:
             return None
         source_ts_ns, source_ts_kind = _sample_source_timestamp(sample, self._Gst)
+        caps_string = _sample_caps_string(sample)
         image, width, height, fmt = _sample_to_bgr(sample, self._Gst)
-        frame_resource = _sample_frame_resource(
-            sample,
-            self._Gst,
+        ready_ts_ns = time.monotonic_ns()
+        copy_cost_ms = (ready_ts_ns - receive_ts_ns) / 1e6
+        frame_resource = _host_frame_resource_from_copy(
+            image,
             width=width,
             height=height,
-            pixel_format=fmt,
+            pixel_format="BGR",
+            source_pixel_format=fmt,
+            caps_string=caps_string,
+            copy_cost_ms=copy_cost_ms,
+            pipeline_string=self._pipeline_string,
         )
-        ready_ts_ns = time.monotonic_ns()
         self._frame_id += 1
         return CapturedFrame(
             frame_id=self._frame_id,
@@ -355,6 +371,10 @@ class GstAppSinkFrameSource:
             image=image,
             frame_resource=frame_resource,
             userspace_process_ms=(ready_ts_ns - receive_ts_ns) / 1e6,
+            source_backend=self.backend_label,
+            caps_string=caps_string,
+            actual_pipeline_string=self._pipeline_string,
+            copy_cost_ms=copy_cost_ms,
             source_ts_ns=source_ts_ns,
             source_ts_kind=source_ts_kind,
             source_width=self._candidate.source_width,
@@ -373,6 +393,7 @@ class GstResourceFrameSource(GstAppSinkFrameSource):
         if sample is None:
             return None
         source_ts_ns, source_ts_kind = _sample_source_timestamp(sample, self._Gst)
+        caps_string = _sample_caps_string(sample)
         width, height, fmt = _sample_geometry(sample)
         frame_resource = _sample_frame_resource(
             sample,
@@ -398,6 +419,9 @@ class GstResourceFrameSource(GstAppSinkFrameSource):
             image=None,
             frame_resource=frame_resource,
             userspace_process_ms=(ready_ts_ns - receive_ts_ns) / 1e6,
+            source_backend=self.backend_label,
+            caps_string=caps_string,
+            actual_pipeline_string=self._pipeline_string,
             source_ts_ns=source_ts_ns,
             source_ts_kind=source_ts_kind,
             source_width=self._candidate.source_width,
@@ -406,6 +430,38 @@ class GstResourceFrameSource(GstAppSinkFrameSource):
             roi_offset_x=self._candidate.roi_offset_x,
             roi_offset_y=self._candidate.roi_offset_y,
         )
+
+
+CpuCompatibleCaptureBackend = GstAppSinkFrameSource
+
+
+def _host_frame_resource_from_copy(
+    image: Any,
+    *,
+    width: int,
+    height: int,
+    pixel_format: str,
+    source_pixel_format: str,
+    caps_string: str,
+    copy_cost_ms: float,
+    pipeline_string: str,
+) -> FrameResource:
+    return FrameResource(
+        kind="host_frame",
+        handle=image,
+        memory="cpu",
+        width=int(width),
+        height=int(height),
+        pixel_format=str(pixel_format or "").upper(),
+        source="appsink",
+        metadata={
+            "source_pixel_format": str(source_pixel_format or "").upper(),
+            "caps_string": str(caps_string or ""),
+            "copy_cost_ms": float(copy_cost_ms),
+            "actual_pipeline_string": str(pipeline_string or ""),
+            "memory_kind": "cpu",
+        },
+    )
 
 
 def _drain_bus_diagnostics(pipeline: Any, Gst: Any) -> list[str]:
@@ -525,6 +581,14 @@ def _sample_caps_features(sample: Any) -> str:
         caps = sample.get_caps()
         features = caps.get_features(0)
         return str(features.to_string())
+    except Exception:
+        return ""
+
+
+def _sample_caps_string(sample: Any) -> str:
+    try:
+        caps = sample.get_caps()
+        return str(caps.to_string())
     except Exception:
         return ""
 
@@ -799,13 +863,22 @@ def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int, str]:
         raise RuntimeError("GStreamer sample buffer map failed")
     try:
         raw = np.frombuffer(info.data, dtype=np.uint8)
-        if fmt == "BGRx":
+        normalized_fmt = str(fmt or "").upper()
+        if normalized_fmt in {"BGRX", "BGRA"}:
             bgrx = raw.reshape((height, width, 4))
             image = np.ascontiguousarray(bgrx[:, :, :3])
-        elif fmt == "BGR":
-            image = np.ascontiguousarray(raw.reshape((height, width, 3)))
-        elif fmt == "NV12":
+        elif normalized_fmt == "RGBA":
+            rgba = raw.reshape((height, width, 4))
+            image = np.ascontiguousarray(rgba[:, :, [2, 1, 0]])
+        elif normalized_fmt == "RGB":
+            rgb = raw.reshape((height, width, 3))
+            image = np.ascontiguousarray(rgb[:, :, [2, 1, 0]])
+        elif normalized_fmt == "BGR":
+            image = raw.reshape((height, width, 3)).copy()
+        elif normalized_fmt == "NV12":
             image = _nv12_to_bgr(raw, width=width, height=height, np=np)
+        elif normalized_fmt == "I420":
+            image = _i420_to_bgr(raw, width=width, height=height, np=np)
         else:
             raise RuntimeError(f"unsupported GStreamer sample format: {fmt}")
         return image, width, height, str(fmt or "")
@@ -844,7 +917,26 @@ def _nv12_to_bgr(raw: Any, *, width: int, height: int, np: Any) -> Any:
     uv = raw[y_size:expected].reshape((height // 2, width // 2, 2)).astype(np.int32)
     u = np.repeat(np.repeat(uv[:, :, 0], 2, axis=0), 2, axis=1)[:height, :width]
     v = np.repeat(np.repeat(uv[:, :, 1], 2, axis=0), 2, axis=1)[:height, :width]
+    return _yuv_to_bgr(y, u, v, np=np)
 
+
+def _i420_to_bgr(raw: Any, *, width: int, height: int, np: Any) -> Any:
+    expected = width * height * 3 // 2
+    if raw.size < expected:
+        raise RuntimeError(
+            f"I420 sample buffer too small: got {raw.size}, expected {expected}"
+        )
+    y_size = width * height
+    chroma_size = (width // 2) * (height // 2)
+    y = raw[:y_size].reshape((height, width)).astype(np.int32)
+    u_plane = raw[y_size : y_size + chroma_size].reshape((height // 2, width // 2)).astype(np.int32)
+    v_plane = raw[y_size + chroma_size : y_size + chroma_size * 2].reshape((height // 2, width // 2)).astype(np.int32)
+    u = np.repeat(np.repeat(u_plane, 2, axis=0), 2, axis=1)[:height, :width]
+    v = np.repeat(np.repeat(v_plane, 2, axis=0), 2, axis=1)[:height, :width]
+    return _yuv_to_bgr(y, u, v, np=np)
+
+
+def _yuv_to_bgr(y: Any, u: Any, v: Any, *, np: Any) -> Any:
     c = np.maximum(y - 16, 0)
     d = u - 128
     e = v - 128

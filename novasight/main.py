@@ -95,6 +95,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Reject reports that do not include TensorRT engine binding evidence.",
     )
+    doctor_gst_cpu_latest_smoke = doctor_sub.add_parser("gst-cpu-latest-smoke")
+    doctor_gst_cpu_latest_smoke.add_argument("--device", default="/dev/video0")
+    doctor_gst_cpu_latest_smoke.add_argument("--seconds", type=float, default=60.0)
+    doctor_gst_cpu_latest_smoke.add_argument("--poll-interval", type=float, default=0.05)
+    doctor_gst_cpu_latest_smoke.add_argument("--preference", default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--pixel-format", default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--width", type=int, default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--height", type=int, default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--fps", type=int, default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--tensorrt-engine", default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--input-shape", default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--dtype", default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--classes", default=None)
+    doctor_gst_cpu_latest_smoke.add_argument("--max-memory-growth-mb", type=float, default=64.0)
+    doctor_gst_cpu_latest_smoke.add_argument("--report-json", default=None)
+    doctor_gst_cpu_latest_smoke_report = doctor_sub.add_parser("gst-cpu-latest-smoke-report")
+    doctor_gst_cpu_latest_smoke_report.add_argument("--report-json", required=True)
     doctor_kmnet = doctor_sub.add_parser("kmnet")
     doctor_kmnet.add_argument("--km-host", default=None)
     doctor_kmnet.add_argument("--km-port", type=int, default=None)
@@ -112,6 +129,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.command == "doctor" and args.doctor_command == "jetson-zero-copy-report":
+        return _doctor_jetson_zero_copy_report(args)
+    if args.command == "doctor" and args.doctor_command == "gst-cpu-latest-smoke-report":
+        return _doctor_gst_cpu_latest_smoke_report(args)
     cfg = load_runtime_config(args.config)
     if args.host is not None:
         cfg.web.host = args.host
@@ -120,7 +141,8 @@ def main(argv: list[str] | None = None) -> int:
             "error: doctor requires a subcommand: camera, jetson-bridge, "
             "jetson-preflight, jetson-native-build, jetson-native-smoke, "
             "jetson-zero-copy, jetson-zero-copy-report, deepstream-smoke, "
-            "deepstream-smoke-report, kmnet",
+            "deepstream-smoke-report, gst-cpu-latest-smoke, "
+            "gst-cpu-latest-smoke-report, kmnet",
             file=sys.stderr,
         )
     configure_logging(cfg)
@@ -129,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
             "error: doctor requires a subcommand: camera, jetson-bridge, "
             "jetson-preflight, jetson-native-build, jetson-native-smoke, "
             "jetson-zero-copy, jetson-zero-copy-report, deepstream-smoke, "
-            "deepstream-smoke-report, kmnet",
+            "deepstream-smoke-report, gst-cpu-latest-smoke, "
+            "gst-cpu-latest-smoke-report, kmnet",
             file=sys.stderr,
         )
         return 2
@@ -205,8 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor_jetson_native_smoke(args, cfg)
     if args.command == "doctor" and args.doctor_command == "jetson-zero-copy":
         return _doctor_jetson_zero_copy(args, cfg)
-    if args.command == "doctor" and args.doctor_command == "jetson-zero-copy-report":
-        return _doctor_jetson_zero_copy_report(args)
+    if args.command == "doctor" and args.doctor_command == "gst-cpu-latest-smoke":
+        return _doctor_gst_cpu_latest_smoke(args, cfg)
     if args.command == "doctor" and args.doctor_command == "kmnet":
         from novasight.executors.kmnet import KmNetExecutor
 
@@ -288,6 +311,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"capture_wait_ms: {state.capture_wait_ms:.2f}")
             print(f"frame_period_ms: {state.frame_period_ms:.2f}")
             print(f"frames_dropped: {state.frames_dropped}")
+            stats = state.statistics
+            print(f"published_frames: {stats.published_frames}")
+            print(f"overwritten_frames: {stats.overwritten_frames}")
+            print(f"acquired_frames: {stats.acquired_frames}")
+            print(f"latest_frame_age_ms: {stats.latest_frame_age_ms:.2f}")
+            if stats.appsink_caps:
+                print(f"appsink_caps: {stats.appsink_caps}")
+            if stats.actual_pipeline_string:
+                print(f"actual_pipeline_string: {stats.actual_pipeline_string}")
             return 0
         except Exception as exc:
             print(f"reason: {exc}")
@@ -614,6 +646,992 @@ def _doctor_jetson_zero_copy_report(args: argparse.Namespace) -> int:
     print(f"smoke_exit: {smoke['exit_code']}")
     _print_zero_copy_report_evidence(report)
     return 0
+
+
+def _doctor_gst_cpu_latest_smoke(args: argparse.Namespace, cfg: object) -> int:
+    from novasight.runtime.pipeline import RuntimePipeline
+
+    seconds = float(args.seconds or 0.0)
+    if seconds < 60.0:
+        print("accepted: False")
+        print("reason: gst_cpu_latest_smoke_requires_60s")
+        return 2
+    _force_gst_cpu_latest_runtime_config(cfg)
+    report = _gst_cpu_latest_smoke_report_skeleton(args, seconds=seconds)
+    start_rss_mb = _current_rss_mb()
+    start_s = time.monotonic()
+    app = None
+    pipeline = None
+    try:
+        app = create_app(data_dir=Path(args.data_dir), config_path=Path(args.config), config=cfg)
+        capture = app.state.capture
+        runtime = app.state.runtime
+        inference = app.state.inference
+        load_reason = _load_gst_cpu_latest_explicit_engine(args, cfg, inference)
+        if load_reason:
+            return _finish_gst_cpu_latest_smoke_failure(
+                report,
+                reason="gst_cpu_latest_smoke_tensorrt_load_failed",
+                detail=load_reason,
+                report_json=args.report_json,
+            )
+        capture_state = capture.configure(
+            args.device,
+            preference=args.preference,
+            pixel_format=args.pixel_format,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+        )
+        if not bool(getattr(capture_state, "available", False)):
+            reason = str(getattr(capture_state, "last_error", "") or "capture unavailable")
+            return _finish_gst_cpu_latest_smoke_failure(
+                report,
+                reason="gst_cpu_latest_smoke_capture_unavailable",
+                detail=reason,
+                report_json=args.report_json,
+            )
+        inference_status = inference.status() if callable(getattr(inference, "status", None)) else {}
+        preflight_reason = _gst_cpu_latest_inference_preflight_reason(inference_status)
+        if preflight_reason:
+            return _finish_gst_cpu_latest_smoke_failure(
+                report,
+                reason="gst_cpu_latest_smoke_tensorrt_unavailable",
+                detail=preflight_reason,
+                report_json=args.report_json,
+            )
+        pipeline = getattr(runtime, "pipeline", None)
+        if pipeline is None:
+            pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+            runtime.pipeline = pipeline
+        pipeline.start()
+        poll_interval_s = max(0.001, float(args.poll_interval or 0.05))
+        metric_samples: list[dict[str, object]] = []
+        sample_interval_s = 1.0
+        next_sample_elapsed_s = 0.0
+        sample_now_s = time.monotonic()
+        _append_gst_cpu_latest_smoke_metric_sample(
+            metric_samples,
+            runtime=runtime,
+            cfg=cfg,
+            elapsed_s=max(0.0, sample_now_s - start_s),
+            memory_rss_mb=_current_rss_mb(),
+        )
+        next_sample_elapsed_s = max(
+            sample_interval_s,
+            float(metric_samples[-1].get("elapsed_s", 0.0)) + sample_interval_s,
+        )
+        while True:
+            now_s = time.monotonic()
+            elapsed_s = now_s - start_s
+            if elapsed_s >= seconds:
+                break
+            if elapsed_s >= next_sample_elapsed_s:
+                _append_gst_cpu_latest_smoke_metric_sample(
+                    metric_samples,
+                    runtime=runtime,
+                    cfg=cfg,
+                    elapsed_s=max(0.0, elapsed_s),
+                    memory_rss_mb=_current_rss_mb(),
+                )
+                next_sample_elapsed_s += sample_interval_s
+            time.sleep(poll_interval_s)
+        duration_s = max(0.0, time.monotonic() - start_s)
+        runtime_state = runtime.state()
+        end_rss_mb = _current_rss_mb()
+        _append_gst_cpu_latest_smoke_metric_sample(
+            metric_samples,
+            runtime=runtime,
+            cfg=cfg,
+            elapsed_s=duration_s,
+            memory_rss_mb=end_rss_mb,
+        )
+        evidence = _gst_cpu_latest_smoke_evidence(
+            runtime_state,
+            runtime=runtime,
+            cfg=cfg,
+            duration_s=duration_s,
+            memory_rss_start_mb=start_rss_mb,
+            memory_rss_end_mb=end_rss_mb,
+        )
+        engine_text = _gst_cpu_latest_engine_path_text(args)
+        if engine_text:
+            evidence["tensorrt_engine"] = engine_text
+        report["evidence"] = evidence
+        report["metric_samples"] = metric_samples
+        report["accepted"] = True
+        report["reason"] = ""
+        report["exit_code"] = 0
+        failures = _validate_gst_cpu_latest_smoke_report(report)
+        if failures:
+            report["accepted"] = False
+            report["reason"] = "gst_cpu_latest_smoke_report_invalid"
+            report["exit_code"] = 2
+            report["validation_failures"] = failures
+            _finish_and_write_report(args.report_json, report)
+            print("accepted: False")
+            print("reason: gst_cpu_latest_smoke_report_invalid")
+            for failure in failures:
+                print(f"missing: {failure}")
+            return 2
+        report["validation_failures"] = []
+        _finish_and_write_report(args.report_json, report)
+        _print_gst_cpu_latest_smoke_summary(report)
+        return 0
+    except Exception as exc:
+        return _finish_gst_cpu_latest_smoke_failure(
+            report,
+            reason="gst_cpu_latest_smoke_failed",
+            detail=str(exc),
+            report_json=args.report_json,
+        )
+    finally:
+        if pipeline is not None:
+            try:
+                pipeline.stop()
+            except Exception:
+                pass
+        if app is not None:
+            capture = getattr(getattr(app, "state", None), "capture", None)
+            stop = getattr(capture, "stop", None)
+            if callable(stop):
+                try:
+                    stop("gst_cpu_latest smoke complete")
+                except Exception:
+                    pass
+
+
+def _force_gst_cpu_latest_runtime_config(cfg: object) -> None:
+    cfg.source.default = "capture"
+    cfg.capture.backend = "gst_cpu_latest"
+    cfg.capture.memory = "system"
+    cfg.capture.latest_only = True
+    cfg.capture.appsink_max_buffers = 1
+    cfg.capture.queue_leaky = "downstream"
+    cfg.preprocess.backend = "cpu"
+    cfg.preprocess.input_format = "auto"
+    cfg.inference.backend = "tensorrt"
+    cfg.inference.device = "cuda"
+    cfg.inference.require_gpu = True
+    cfg.inference.allow_cpu_fallback = False
+    cfg.runtime.drop_stale_batches = True
+    cfg.runtime.consume_latest_only = True
+    cfg.consumers.inference = True
+
+
+def _gst_cpu_latest_smoke_report_skeleton(
+    args: argparse.Namespace,
+    *,
+    seconds: float,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "check": "gst-cpu-latest-smoke",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "accepted": False,
+        "reason": "not_finished",
+        "exit_code": None,
+        "validation_failures": [],
+        "parameters": {
+            "device": args.device,
+            "seconds": seconds,
+            "poll_interval": args.poll_interval,
+            "preference": args.preference,
+            "pixel_format": args.pixel_format,
+            "width": args.width,
+            "height": args.height,
+            "fps": args.fps,
+            "tensorrt_engine": _gst_cpu_latest_engine_path_text(args),
+            "input_shape": args.input_shape,
+            "dtype": args.dtype,
+            "classes": args.classes,
+            "max_memory_growth_mb": float(args.max_memory_growth_mb or 64.0),
+        },
+        "evidence": {},
+        "metric_samples": [],
+    }
+
+
+def _gst_cpu_latest_engine_path_text(args: argparse.Namespace) -> str:
+    engine = str(getattr(args, "tensorrt_engine", "") or "").strip()
+    return str(Path(engine).expanduser()) if engine else ""
+
+
+def _load_gst_cpu_latest_explicit_engine(
+    args: argparse.Namespace,
+    cfg: object,
+    inference: object,
+) -> str:
+    engine_text = _gst_cpu_latest_engine_path_text(args)
+    if not engine_text:
+        return ""
+    engine_path = Path(engine_text)
+    if not engine_path.is_file():
+        return f"TensorRT engine not found: {engine_path}"
+    try:
+        shape = _doctor_tensor_input_shape(
+            getattr(args, "input_shape", None),
+            dtype=getattr(args, "dtype", None),
+            roi_size=int(getattr(getattr(cfg, "roi", None), "size", 640) or 640),
+        )
+    except Exception as exc:
+        return str(exc)
+    preprocess = getattr(cfg, "preprocess", None)
+    if preprocess is not None:
+        preprocess.output_dtype = "fp16" if shape.dtype == "float16" else "fp32"
+    load = getattr(inference, "load", None)
+    if not callable(load):
+        return "inference runtime missing load()"
+    try:
+        input_shape_text = (
+            str(shape)
+            if str(getattr(args, "input_shape", "") or "").strip()
+            else ""
+        )
+        load(
+            engine_path,
+            classes=_doctor_classes(getattr(args, "classes", None)),
+            input_shape=input_shape_text,
+        )
+        status_fn = getattr(inference, "status", None)
+        status = status_fn() if callable(status_fn) else {}
+        status = status if isinstance(status, dict) else {}
+        switch_error = str(status.get("last_switch_error") or "").strip()
+        if switch_error:
+            return switch_error
+        if status.get("loaded") is not True:
+            return str(status.get("reason") or "TensorRT engine not loaded")
+        if status.get("available") is not True:
+            return str(status.get("reason") or "TensorRT unavailable")
+    except Exception as exc:
+        return str(exc)
+    return ""
+
+
+def _finish_gst_cpu_latest_smoke_failure(
+    report: dict[str, object],
+    *,
+    reason: str,
+    detail: str,
+    report_json: str | None,
+) -> int:
+    report["accepted"] = False
+    report["reason"] = reason
+    report["exit_code"] = 2
+    report["detail"] = detail
+    _finish_and_write_report(report_json, report)
+    print("accepted: False")
+    print(f"reason: {reason}")
+    if detail:
+        print(f"detail: {detail}")
+    return 2
+
+
+def _gst_cpu_latest_inference_preflight_reason(status: object) -> str:
+    payload = status if isinstance(status, dict) else {}
+    selected = str(payload.get("execution_backend") or payload.get("selected") or "")
+    if selected != "tensorrt":
+        return f"inference selected backend must be tensorrt, got {selected or '<missing>'}"
+    if payload.get("loaded") is not True:
+        reason = str(payload.get("reason") or "TensorRT engine not loaded")
+        return reason
+    if payload.get("available") is not True:
+        return str(payload.get("reason") or "TensorRT unavailable")
+    if bool(payload.get("allow_cpu_fallback", False)):
+        return "inference.allow_cpu_fallback must be false"
+    return ""
+
+
+def _gst_cpu_latest_smoke_evidence(
+    runtime_state: object,
+    *,
+    runtime: object,
+    cfg: object,
+    duration_s: float,
+    memory_rss_start_mb: float,
+    memory_rss_end_mb: float,
+) -> dict[str, object]:
+    state = _state_payload(runtime_state)
+    capture = _mapping_payload(state.get("capture"))
+    capture_stats = _mapping_payload(capture.get("statistics"))
+    statistics = _mapping_payload(state.get("statistics"))
+    inference = _mapping_payload(state.get("inference"))
+    pipeline = _mapping_payload(state.get("pipeline"))
+    broker = _mapping_payload(pipeline.get("latest_frame_broker"))
+    last_inference = _mapping_payload(getattr(runtime, "last_inference_status", {}))
+    last_control = _mapping_payload(getattr(runtime, "last_control", {}))
+    control_now_ts_ns = _int_value(last_control.get("control_now_ts_ns"))
+    evidence = {
+        "capture_backend": _first_present(capture.get("backend"), inference.get("capture_backend")),
+        "capture_memory": str(getattr(cfg.capture, "memory", "system")),
+        "capture_fps": _first_number(statistics, capture_stats, key="capture_fps"),
+        "published_frames": _first_int(statistics, capture_stats, broker, key="published_frames"),
+        "overwritten_frames": _first_int(statistics, capture_stats, broker, key="overwritten_frames"),
+        "acquired_frames": _first_int(statistics, capture_stats, broker, key="acquired_frames"),
+        "latest_frame_broker_max_pending_depth": _first_int(
+            broker,
+            key="max_pending_depth",
+            default=0,
+        ),
+        "latest_frame_age_ms": _first_number(statistics, capture_stats, key="latest_frame_age_ms"),
+        "appsink_caps": _first_present(capture_stats.get("appsink_caps"), statistics.get("appsink_caps")),
+        "actual_pipeline_string": _first_present(
+            capture_stats.get("actual_pipeline_string"),
+            statistics.get("actual_pipeline_string"),
+        ),
+        "inference_selected": _first_present(
+            inference.get("execution_backend"),
+            inference.get("selected"),
+        ),
+        "inference_device": _first_present(inference.get("device"), getattr(cfg.inference, "device", "cuda")),
+        "inference_require_gpu": bool(inference.get("require_gpu", getattr(cfg.inference, "require_gpu", True))),
+        "inference_allow_cpu_fallback": bool(
+            inference.get("allow_cpu_fallback", getattr(cfg.inference, "allow_cpu_fallback", False))
+        ),
+        "tensorrt_host_input_pinned": bool(inference.get("host_input_pinned", False)),
+        "tensorrt_host_output_pinned": bool(inference.get("host_output_pinned", False)),
+        "preprocess_backend": _first_present(
+            inference.get("preprocess_backend"),
+            getattr(cfg.preprocess, "backend", "cpu"),
+        ),
+        "preprocess_ms": _first_number(statistics, key="preprocess_ms"),
+        "h2d_ms": _first_number(statistics, key="h2d_ms"),
+        "host_frame_copy_ms": _first_number(
+            statistics,
+            last_inference,
+            key="host_frame_copy_ms",
+            default=_first_number(last_inference, key="frame_copy_cost_ms"),
+        ),
+        "inference_ms": _first_number(statistics, key="inference_ms"),
+        "postprocess_ms": _first_number(statistics, key="postprocess_ms"),
+        "batch_age_ms": _first_number(statistics, key="batch_age_ms"),
+        "stale_drop_count": _first_int(statistics, key="stale_drop_count"),
+        "control_observe_fps": _first_number(statistics, key="control_observe_fps"),
+        "control_now_ts_ns": control_now_ts_ns,
+        "freshness_gate_rejected": bool(last_inference.get("stale_rejected", False)),
+        "duration_s": float(duration_s),
+        "memory_rss_start_mb": float(memory_rss_start_mb),
+        "memory_rss_end_mb": float(memory_rss_end_mb),
+        "memory_growth_mb": max(0.0, float(memory_rss_end_mb) - float(memory_rss_start_mb)),
+        "detection_batch": {
+            "frame_id": _int_value(last_inference.get("detection_batch_frame_id")),
+            "capture_ts_ns": _int_value(last_inference.get("detection_batch_capture_ts_ns")),
+            "inference_start_ts_ns": _int_value(last_inference.get("inference_start_ts_ns")),
+            "inference_end_ts_ns": _int_value(last_inference.get("inference_end_ts_ns")),
+            "control_now_ts_ns": control_now_ts_ns,
+            "model_input_size": list(last_inference.get("detection_batch_model_input_size") or []),
+            "coordinate_space": _first_present(
+                last_inference.get("detection_coordinate_space"),
+                "roi",
+            ),
+        },
+    }
+    return evidence
+
+
+def _append_gst_cpu_latest_smoke_metric_sample(
+    metric_samples: list[dict[str, object]],
+    *,
+    runtime: object,
+    cfg: object,
+    elapsed_s: float,
+    memory_rss_mb: float,
+) -> None:
+    runtime_state = runtime.state()
+    state = _state_payload(runtime_state)
+    capture = _mapping_payload(state.get("capture"))
+    capture_stats = _mapping_payload(capture.get("statistics"))
+    statistics = _mapping_payload(state.get("statistics"))
+    inference = _mapping_payload(state.get("inference"))
+    pipeline = _mapping_payload(state.get("pipeline"))
+    broker = _mapping_payload(pipeline.get("latest_frame_broker"))
+    last_inference = _mapping_payload(getattr(runtime, "last_inference_status", {}))
+    sample = {
+        "elapsed_s": max(0.0, float(elapsed_s)),
+        "memory_rss_mb": max(0.0, float(memory_rss_mb)),
+        "capture_fps": _first_number(statistics, capture_stats, key="capture_fps"),
+        "published_frames": _first_int(statistics, capture_stats, broker, key="published_frames"),
+        "overwritten_frames": _first_int(statistics, capture_stats, broker, key="overwritten_frames"),
+        "acquired_frames": _first_int(statistics, capture_stats, broker, key="acquired_frames"),
+        "latest_frame_broker_max_pending_depth": _first_int(
+            broker,
+            key="max_pending_depth",
+            default=0,
+        ),
+        "latest_frame_age_ms": _first_number(statistics, capture_stats, key="latest_frame_age_ms"),
+        "preprocess_ms": _first_number(statistics, key="preprocess_ms"),
+        "h2d_ms": _first_number(statistics, key="h2d_ms"),
+        "host_frame_copy_ms": _first_number(
+            statistics,
+            last_inference,
+            key="host_frame_copy_ms",
+            default=_first_number(last_inference, key="frame_copy_cost_ms"),
+        ),
+        "inference_ms": _first_number(statistics, key="inference_ms"),
+        "postprocess_ms": _first_number(statistics, key="postprocess_ms"),
+        "batch_age_ms": _first_number(statistics, key="batch_age_ms"),
+        "stale_drop_count": _first_int(statistics, key="stale_drop_count"),
+        "control_observe_fps": _first_number(statistics, key="control_observe_fps"),
+        "appsink_caps": _first_present(capture_stats.get("appsink_caps"), statistics.get("appsink_caps")),
+        "actual_pipeline_string": _first_present(
+            capture_stats.get("actual_pipeline_string"),
+            statistics.get("actual_pipeline_string"),
+        ),
+        "inference_selected": _first_present(
+            inference.get("execution_backend"),
+            inference.get("selected"),
+        ),
+        "inference_device": _first_present(inference.get("device"), getattr(cfg.inference, "device", "cuda")),
+        "preprocess_backend": _first_present(
+            inference.get("preprocess_backend"),
+            getattr(cfg.preprocess, "backend", "cpu"),
+        ),
+        "tensorrt_host_input_pinned": bool(inference.get("host_input_pinned", False)),
+        "tensorrt_host_output_pinned": bool(inference.get("host_output_pinned", False)),
+    }
+    metric_samples.append(sample)
+    _print_gst_cpu_latest_smoke_metric_sample(sample)
+
+
+def _print_gst_cpu_latest_smoke_metric_sample(sample: dict[str, object]) -> None:
+    def number(key: str) -> float:
+        return _float_value(sample.get(key)) or 0.0
+
+    def integer(key: str) -> int:
+        return _int_value(sample.get(key)) or 0
+
+    print(
+        "metric_sample: "
+        f"elapsed_s={number('elapsed_s'):.2f} "
+        f"capture_fps={number('capture_fps'):.2f} "
+        f"published_frames={integer('published_frames')} "
+        f"overwritten_frames={integer('overwritten_frames')} "
+        f"acquired_frames={integer('acquired_frames')} "
+        f"latest_frame_age_ms={number('latest_frame_age_ms'):.2f} "
+        f"preprocess_ms={number('preprocess_ms'):.2f} "
+        f"h2d_ms={number('h2d_ms'):.2f} "
+        f"host_frame_copy_ms={number('host_frame_copy_ms'):.2f} "
+        f"inference_ms={number('inference_ms'):.2f} "
+        f"postprocess_ms={number('postprocess_ms'):.2f} "
+        f"batch_age_ms={number('batch_age_ms'):.2f} "
+        f"stale_drop_count={integer('stale_drop_count')} "
+        f"control_observe_fps={number('control_observe_fps'):.2f} "
+        f"memory_rss_mb={number('memory_rss_mb'):.2f}"
+    )
+
+
+def _state_payload(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    return {
+        key: getattr(value, key)
+        for key in ("capture", "statistics", "inference", "pipeline")
+        if hasattr(value, key)
+    }
+
+
+def _mapping_payload(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _first_present(*values: object) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_number(*payloads: dict[str, object], key: str, default: float = 0.0) -> float:
+    for payload in payloads:
+        value = _float_value(payload.get(key))
+        if value is not None:
+            return value
+    return float(default)
+
+
+def _first_int(*payloads: dict[str, object], key: str, default: int = 0) -> int:
+    for payload in payloads:
+        value = _int_value(payload.get(key))
+        if value is not None:
+            return value
+    return int(default)
+
+
+def _float_value(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _int_value(value: object) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _current_rss_mb() -> float:
+    statm = Path("/proc/self/statm")
+    if statm.is_file():
+        try:
+            pages = int(statm.read_text(encoding="utf-8").split()[1])
+            return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+        except Exception:
+            pass
+    try:
+        import resource
+
+        rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if sys.platform == "darwin":
+            return rss / (1024 * 1024)
+        return rss / 1024
+    except Exception:
+        return 0.0
+
+
+def _print_gst_cpu_latest_smoke_summary(report: dict[str, object]) -> None:
+    print("accepted: True")
+    evidence = report.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    for key in (
+        "capture_backend",
+        "capture_memory",
+        "capture_fps",
+        "published_frames",
+        "overwritten_frames",
+        "acquired_frames",
+        "latest_frame_broker_max_pending_depth",
+        "latest_frame_age_ms",
+        "appsink_caps",
+        "inference_selected",
+        "inference_device",
+        "tensorrt_engine",
+        "tensorrt_host_input_pinned",
+        "tensorrt_host_output_pinned",
+        "preprocess_backend",
+        "preprocess_ms",
+        "h2d_ms",
+        "host_frame_copy_ms",
+        "inference_ms",
+        "postprocess_ms",
+        "batch_age_ms",
+        "stale_drop_count",
+        "control_observe_fps",
+        "duration_s",
+        "memory_growth_mb",
+    ):
+        if key in evidence:
+            print(f"{key}: {evidence[key]}")
+
+
+def _doctor_gst_cpu_latest_smoke_report(args: argparse.Namespace) -> int:
+    report_path = Path(args.report_json).expanduser()
+    print(f"report_json: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print("accepted: False")
+        print("reason: gst_cpu_latest_smoke_report_unreadable")
+        print(f"detail: {exc}")
+        return 2
+    failures = _validate_gst_cpu_latest_smoke_report(report)
+    if failures:
+        print("accepted: False")
+        print("reason: gst_cpu_latest_smoke_report_invalid")
+        for failure in failures:
+            print(f"missing: {failure}")
+        return 2
+    evidence = report["evidence"]
+    assert isinstance(evidence, dict)
+    print("accepted: True")
+    for key in (
+        "capture_backend",
+        "capture_memory",
+        "appsink_caps",
+        "inference_selected",
+        "inference_device",
+        "preprocess_backend",
+    ):
+        if key in evidence:
+            print(f"{key}: {evidence[key]}")
+    for key in (
+        "duration_s",
+        "capture_fps",
+        "latest_frame_age_ms",
+        "preprocess_ms",
+        "h2d_ms",
+        "host_frame_copy_ms",
+        "inference_ms",
+        "postprocess_ms",
+        "batch_age_ms",
+        "control_observe_fps",
+        "memory_growth_mb",
+    ):
+        value = _report_float(evidence, key)
+        if value is not None:
+            print(f"{key}: {value:.2f}")
+    for key in (
+        "published_frames",
+        "overwritten_frames",
+        "acquired_frames",
+        "stale_drop_count",
+    ):
+        value = _report_int(evidence, key)
+        if value is not None:
+            print(f"{key}: {value}")
+    return 0
+
+
+def _validate_gst_cpu_latest_smoke_report(report: object) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(report, dict):
+        return ["report must be a JSON object"]
+    if report.get("schema_version") != 1:
+        failures.append("schema_version must be 1")
+    if report.get("check") != "gst-cpu-latest-smoke":
+        failures.append("check must be gst-cpu-latest-smoke")
+    if report.get("accepted") is not True:
+        failures.append("accepted must be true")
+    if report.get("exit_code") != 0:
+        failures.append("exit_code must be 0")
+    if str(report.get("reason") or "").strip():
+        failures.append("reason must be empty when accepted is true")
+    parameters = report.get("parameters")
+    if not isinstance(parameters, dict):
+        failures.append("parameters object is required")
+        parameters = {}
+    evidence = report.get("evidence")
+    if not isinstance(evidence, dict):
+        failures.append("evidence object is required")
+        evidence = {}
+    _validate_gst_cpu_latest_metric_samples(report, failures)
+
+    expected_seconds = _report_float(parameters, "seconds")
+    required_duration_s = max(60.0, expected_seconds or 0.0)
+    _require_report_float_at_least(
+        evidence,
+        "duration_s",
+        required_duration_s,
+        failures,
+    )
+    max_memory_growth_mb = _report_float(parameters, "max_memory_growth_mb")
+    if max_memory_growth_mb is None:
+        max_memory_growth_mb = 64.0
+    for key in ("memory_rss_start_mb", "memory_rss_end_mb", "memory_growth_mb"):
+        _require_report_float_at_least(evidence, key, 0.0, failures)
+    growth = _report_float(evidence, "memory_growth_mb")
+    if growth is not None and growth > max_memory_growth_mb:
+        failures.append(
+            f"evidence.memory_growth_mb<={_format_threshold(max_memory_growth_mb)}"
+        )
+
+    backend = _report_str(evidence, "capture_backend")
+    if not backend.startswith("gst_cpu_latest:"):
+        failures.append("evidence.capture_backend startswith gst_cpu_latest:")
+    if _report_str(evidence, "capture_memory") != "system":
+        failures.append("evidence.capture_memory==system")
+    _require_report_float_at_least(evidence, "capture_fps", 0.000001, failures)
+    _require_report_int_at_least(evidence, "published_frames", 1, failures)
+    _require_report_int_at_least(evidence, "overwritten_frames", 0, failures)
+    _require_report_int_at_least(evidence, "acquired_frames", 1, failures)
+    if _report_int(evidence, "latest_frame_broker_max_pending_depth") != 1:
+        failures.append("evidence.latest_frame_broker_max_pending_depth==1")
+    _require_report_float_at_least(evidence, "latest_frame_age_ms", 0.0, failures)
+    if not _report_str(evidence, "appsink_caps"):
+        failures.append("evidence.appsink_caps is required")
+    pipeline = _report_str(evidence, "actual_pipeline_string")
+    if not pipeline:
+        failures.append("evidence.actual_pipeline_string is required")
+    else:
+        _validate_gst_cpu_latest_pipeline_queue_elements(pipeline, failures)
+    latest_sink = "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+    if latest_sink not in pipeline:
+        failures.append("evidence.actual_pipeline_string contains latest-only appsink")
+    for token in ("nvv4l2decoder", "nvvidconv"):
+        if token not in pipeline:
+            failures.append(f"evidence.actual_pipeline_string contains {token}")
+
+    if _report_str(evidence, "inference_selected") != "tensorrt":
+        failures.append("evidence.inference_selected==tensorrt")
+    if _report_str(evidence, "inference_device") != "cuda":
+        failures.append("evidence.inference_device==cuda")
+    if _report_bool(evidence, "inference_require_gpu") is not True:
+        failures.append("evidence.inference_require_gpu==true")
+    if _report_bool(evidence, "inference_allow_cpu_fallback") is not False:
+        failures.append("evidence.inference_allow_cpu_fallback==false")
+    if _report_str(evidence, "preprocess_backend") != "cpu":
+        failures.append("evidence.preprocess_backend==cpu")
+    expected_engine = _report_str(parameters, "tensorrt_engine")
+    if expected_engine and _report_str(evidence, "tensorrt_engine") != expected_engine:
+        failures.append("evidence.tensorrt_engine matches parameters.tensorrt_engine")
+    for key in (
+        "preprocess_ms",
+        "h2d_ms",
+        "host_frame_copy_ms",
+        "inference_ms",
+        "postprocess_ms",
+        "batch_age_ms",
+    ):
+        _require_report_float_at_least(evidence, key, 0.0, failures)
+    _require_report_int_at_least(evidence, "stale_drop_count", 0, failures)
+    control_observe_fps = _report_float(evidence, "control_observe_fps")
+    freshness_rejected = _report_bool(evidence, "freshness_gate_rejected") is True
+    if control_observe_fps is None:
+        failures.append("evidence.control_observe_fps is required")
+    elif control_observe_fps <= 0.0 and not freshness_rejected:
+        failures.append("evidence.control_observe_fps>0 unless freshness_gate_rejected")
+
+    detection_batch = evidence.get("detection_batch")
+    if not isinstance(detection_batch, dict):
+        failures.append("evidence.detection_batch object is required")
+    else:
+        _validate_gst_cpu_latest_detection_batch_evidence(detection_batch, failures)
+    return failures
+
+
+def _validate_gst_cpu_latest_pipeline_queue_elements(
+    pipeline: str,
+    failures: list[str],
+    *,
+    prefix: str = "evidence",
+) -> None:
+    queue_elements = [
+        element
+        for element in _gst_pipeline_elements(pipeline)
+        if element == "queue" or element.startswith("queue ")
+    ]
+    if not queue_elements:
+        failures.append(f"{prefix}.actual_pipeline_string contains latest-only queue")
+        return
+    latest_queues = [
+        element
+        for element in queue_elements
+        if "max-size-buffers=1" in element and "leaky=downstream" in element
+    ]
+    if not latest_queues:
+        failures.append(f"{prefix}.actual_pipeline_string contains latest-only queue")
+        return
+    if len(latest_queues) != len(queue_elements):
+        failures.append(f"{prefix}.actual_pipeline_string has only latest-only queue elements")
+
+
+def _gst_pipeline_elements(pipeline: str) -> list[str]:
+    return [part.strip() for part in str(pipeline or "").split("!") if part.strip()]
+
+
+def _validate_gst_cpu_latest_metric_samples(
+    report: dict[str, object],
+    failures: list[str],
+) -> None:
+    samples = report.get("metric_samples")
+    if not isinstance(samples, list) or not samples:
+        failures.append("metric_samples nonempty list is required")
+        return
+    previous_elapsed_s: float | None = None
+    elapsed_samples: list[float] = []
+    for index, sample in enumerate(samples):
+        prefix = f"metric_samples[{index}]"
+        if not isinstance(sample, dict):
+            failures.append(f"{prefix} object is required")
+            continue
+        _require_report_float_at_least(sample, "elapsed_s", 0.0, failures, prefix=prefix)
+        _require_report_float_at_least(sample, "memory_rss_mb", 0.0, failures, prefix=prefix)
+        for key in (
+            "capture_fps",
+            "latest_frame_age_ms",
+            "preprocess_ms",
+            "h2d_ms",
+            "host_frame_copy_ms",
+            "inference_ms",
+            "postprocess_ms",
+            "batch_age_ms",
+            "control_observe_fps",
+        ):
+            _require_report_float_at_least(sample, key, 0.0, failures, prefix=prefix)
+        for key in (
+            "published_frames",
+            "overwritten_frames",
+            "acquired_frames",
+            "latest_frame_broker_max_pending_depth",
+            "stale_drop_count",
+        ):
+            _require_report_int_at_least(sample, key, 0, failures, prefix=prefix)
+        if _report_str(sample, "appsink_caps") == "":
+            failures.append(f"{prefix}.appsink_caps is required")
+        pipeline = _report_str(sample, "actual_pipeline_string")
+        if not pipeline:
+            failures.append(f"{prefix}.actual_pipeline_string is required")
+        else:
+            _validate_gst_cpu_latest_pipeline_queue_elements(
+                pipeline,
+                failures,
+                prefix=prefix,
+            )
+        if _report_str(sample, "inference_selected") != "tensorrt":
+            failures.append(f"{prefix}.inference_selected==tensorrt")
+        if _report_str(sample, "inference_device") != "cuda":
+            failures.append(f"{prefix}.inference_device==cuda")
+        if _report_str(sample, "preprocess_backend") != "cpu":
+            failures.append(f"{prefix}.preprocess_backend==cpu")
+        elapsed_s = _report_float(sample, "elapsed_s")
+        if (
+            elapsed_s is not None
+            and previous_elapsed_s is not None
+            and elapsed_s < previous_elapsed_s
+        ):
+            failures.append(f"{prefix}.elapsed_s>=previous_sample_elapsed_s")
+        if elapsed_s is not None:
+            elapsed_samples.append(elapsed_s)
+            previous_elapsed_s = elapsed_s
+    _validate_gst_cpu_latest_metric_sample_cadence(report, elapsed_samples, failures)
+
+
+def _validate_gst_cpu_latest_metric_sample_cadence(
+    report: dict[str, object],
+    elapsed_samples: list[float],
+    failures: list[str],
+) -> None:
+    if not elapsed_samples:
+        return
+    evidence = report.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    parameters = report.get("parameters")
+    parameters = parameters if isinstance(parameters, dict) else {}
+    duration_s = _report_float(evidence, "duration_s")
+    expected_seconds = _report_float(parameters, "seconds")
+    required_duration_s = max(60.0, expected_seconds or 0.0)
+    observed_duration_s = duration_s if duration_s is not None else required_duration_s
+    if observed_duration_s < 60.0:
+        return
+    max_gap_s = 2.5
+    if elapsed_samples[0] > max_gap_s:
+        failures.append("metric_samples start within 2.5s")
+    if elapsed_samples[-1] < max(0.0, observed_duration_s - max_gap_s):
+        failures.append("metric_samples reach runtime duration")
+    for previous, current in zip(elapsed_samples, elapsed_samples[1:]):
+        if current - previous > max_gap_s:
+            failures.append("metric_samples cadence <=2.5s")
+            return
+
+
+def _validate_gst_cpu_latest_detection_batch_evidence(
+    detection_batch: dict[str, object],
+    failures: list[str],
+) -> None:
+    for key in (
+        "frame_id",
+        "capture_ts_ns",
+        "inference_start_ts_ns",
+        "inference_end_ts_ns",
+    ):
+        _require_report_int_at_least(detection_batch, key, 1, failures, prefix="evidence.detection_batch")
+    start_ns = _report_int(detection_batch, "inference_start_ts_ns")
+    end_ns = _report_int(detection_batch, "inference_end_ts_ns")
+    if start_ns is not None and end_ns is not None and end_ns < start_ns:
+        failures.append("evidence.detection_batch.inference_end_ts_ns>=inference_start_ts_ns")
+    _require_report_int_at_least(
+        detection_batch,
+        "control_now_ts_ns",
+        1,
+        failures,
+        prefix="evidence.detection_batch",
+    )
+    control_now_ns = _report_int(detection_batch, "control_now_ts_ns")
+    if control_now_ns is not None and end_ns is not None and control_now_ns < end_ns:
+        failures.append("evidence.detection_batch.control_now_ts_ns>=inference_end_ts_ns")
+    model_input_size = detection_batch.get("model_input_size")
+    if (
+        not isinstance(model_input_size, list)
+        or len(model_input_size) < 2
+        or _positive_int_value(model_input_size[0]) is None
+        or _positive_int_value(model_input_size[1]) is None
+    ):
+        failures.append("evidence.detection_batch.model_input_size has two positive ints")
+    if _report_str(detection_batch, "coordinate_space") != "roi":
+        failures.append("evidence.detection_batch.coordinate_space==roi")
+
+
+def _report_str(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    return "" if value is None else str(value).strip()
+
+
+def _report_bool(payload: dict[str, object], key: str) -> bool | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _report_float(payload: dict[str, object], key: str) -> float | None:
+    try:
+        value = float(payload.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _report_int(payload: dict[str, object], key: str) -> int | None:
+    try:
+        value = int(payload.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value
+
+
+def _require_report_float_at_least(
+    payload: dict[str, object],
+    key: str,
+    minimum: float,
+    failures: list[str],
+    *,
+    prefix: str = "evidence",
+) -> None:
+    value = _report_float(payload, key)
+    if value is None:
+        failures.append(f"{prefix}.{key} is required")
+    elif value < minimum:
+        failures.append(f"{prefix}.{key}>={_format_threshold(minimum)}")
+
+
+def _require_report_int_at_least(
+    payload: dict[str, object],
+    key: str,
+    minimum: int,
+    failures: list[str],
+    *,
+    prefix: str = "evidence",
+) -> None:
+    value = _report_int(payload, key)
+    if value is None:
+        failures.append(f"{prefix}.{key} is required")
+    elif value < minimum:
+        failures.append(f"{prefix}.{key}>={minimum}")
+
+
+def _positive_int_value(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _format_threshold(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:g}"
 
 
 def _print_zero_copy_report_evidence(report: dict[str, object]) -> None:

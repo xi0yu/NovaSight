@@ -8,6 +8,8 @@ from novasight.roi import center_roi_region
 from .state import CaptureProfile
 
 LATEST_ONLY_QUEUE = "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream"
+GST_CPU_LATEST_BACKEND = "gst_cpu_latest"
+CPU_APPSINK_FALLBACK_FORMATS = ("RGBA", "RGB", "BGR", "NV12", "I420")
 
 
 @dataclass(frozen=True)
@@ -142,7 +144,7 @@ def build_appsink_candidates(
 
     def gst(label: str, body: str) -> CaptureCandidate:
         return CaptureCandidate(
-            label=f"gst-appsink:{label}",
+            label=f"{GST_CPU_LATEST_BACKEND}:{label}",
             pipeline=body,
             source_width=candidate_source_width,
             source_height=candidate_source_height,
@@ -153,50 +155,50 @@ def build_appsink_candidates(
 
     appsink_caps = f"video/x-raw,format=BGRx,width={output_width},height={output_height}"
     nvvidconv = f"nvvidconv{crop_properties}"
-    mjpg_appsink_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {appsink_caps} ! {sink}"
+    mjpg_appsink_tail = f"{LATEST_ONLY_QUEUE} ! jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {appsink_caps} ! {sink}"
     nv12_appsink_tail = f"{nvvidconv} ! {appsink_caps} ! {sink}"
     yuyv_appsink_tail = f"{nvvidconv} ! {appsink_caps} ! {sink}"
 
     mjpg = [
         gst(
             "nvmm-mjpg-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {mjpg_caps} ! {mjpg_appsink_tail}",
+            f"v4l2src device={device} io-mode=2 do-timestamp=true ! {mjpg_caps} ! {mjpg_appsink_tail}",
         ),
         gst(
             "nvmm-mjpg-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {mjpg_caps} ! {mjpg_appsink_tail}",
+            f"v4l2src device={device} io-mode=4 do-timestamp=true ! {mjpg_caps} ! {mjpg_appsink_tail}",
         ),
         gst(
             "nvmm-mjpg-ioauto",
-            f"v4l2src device={device} ! {mjpg_caps} ! {mjpg_appsink_tail}",
+            f"v4l2src device={device} do-timestamp=true ! {mjpg_caps} ! {mjpg_appsink_tail}",
         ),
     ]
     nv12 = [
         gst(
             "nvmm-nv12-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {nv12_caps} ! {nv12_appsink_tail}",
+            f"v4l2src device={device} io-mode=2 do-timestamp=true ! {nv12_caps} ! {LATEST_ONLY_QUEUE} ! {nv12_appsink_tail}",
         ),
         gst(
             "nvmm-nv12-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {nv12_caps} ! {nv12_appsink_tail}",
+            f"v4l2src device={device} io-mode=4 do-timestamp=true ! {nv12_caps} ! {LATEST_ONLY_QUEUE} ! {nv12_appsink_tail}",
         ),
         gst(
             "nvmm-nv12-ioauto",
-            f"v4l2src device={device} ! {nv12_caps} ! {nv12_appsink_tail}",
+            f"v4l2src device={device} do-timestamp=true ! {nv12_caps} ! {LATEST_ONLY_QUEUE} ! {nv12_appsink_tail}",
         ),
     ]
     yuyv = [
         gst(
             "nvmm-yuyv-iomode2",
-            f"v4l2src device={device} io-mode=2 ! {yuyv_caps} ! {yuyv_appsink_tail}",
+            f"v4l2src device={device} io-mode=2 do-timestamp=true ! {yuyv_caps} ! {LATEST_ONLY_QUEUE} ! {yuyv_appsink_tail}",
         ),
         gst(
             "nvmm-yuyv-iomode4",
-            f"v4l2src device={device} io-mode=4 ! {yuyv_caps} ! {yuyv_appsink_tail}",
+            f"v4l2src device={device} io-mode=4 do-timestamp=true ! {yuyv_caps} ! {LATEST_ONLY_QUEUE} ! {yuyv_appsink_tail}",
         ),
         gst(
             "nvmm-yuyv-ioauto",
-            f"v4l2src device={device} ! {yuyv_caps} ! {yuyv_appsink_tail}",
+            f"v4l2src device={device} do-timestamp=true ! {yuyv_caps} ! {LATEST_ONLY_QUEUE} ! {yuyv_appsink_tail}",
         ),
     ]
 
@@ -205,7 +207,11 @@ def build_appsink_candidates(
         ordered = nv12 + yuyv + mjpg
     elif fmt == "YUYV":
         ordered = yuyv + nv12 + mjpg
-    return ordered
+    return _with_cpu_appsink_format_fallbacks(
+        ordered,
+        width=output_width,
+        height=output_height,
+    )
 
 
 def build_resource_appsink_candidates(
@@ -327,6 +333,33 @@ def build_resource_appsink_candidates(
     elif fmt == "YUYV":
         ordered = yuyv + nv12 + mjpg
     return ordered
+
+
+def _with_cpu_appsink_format_fallbacks(
+    candidates: list[CaptureCandidate],
+    *,
+    width: int,
+    height: int,
+) -> list[CaptureCandidate]:
+    preferred_caps = f"video/x-raw,format=BGRx,width={width},height={height}"
+    result = list(candidates)
+    for fmt in CPU_APPSINK_FALLBACK_FORMATS:
+        fallback_caps = f"video/x-raw,format={fmt},width={width},height={height}"
+        for candidate in candidates:
+            if preferred_caps not in candidate.pipeline:
+                continue
+            result.append(
+                CaptureCandidate(
+                    label=f"{candidate.label}-{fmt.lower()}",
+                    pipeline=candidate.pipeline.replace(preferred_caps, fallback_caps),
+                    source_width=candidate.source_width,
+                    source_height=candidate.source_height,
+                    roi_size=candidate.roi_size,
+                    roi_offset_x=candidate.roi_offset_x,
+                    roi_offset_y=candidate.roi_offset_y,
+                )
+            )
+    return result
 
 
 def select_open_source(

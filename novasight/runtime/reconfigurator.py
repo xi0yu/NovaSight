@@ -317,6 +317,7 @@ class RuntimeReconfigurator:
         capture = config.capture
         return (
             capture.device,
+            capture.backend,
             capture.memory,
             capture.pixel_format,
             capture.width,
@@ -390,7 +391,7 @@ class RuntimeReconfigurator:
         if runtime is None or capture is None or config is None:
             return
         backend = str(getattr(getattr(config, "inference", None), "backend", "")).lower()
-        if backend != "nvmm_latest":
+        if backend not in {"tensorrt", "nvmm_latest"}:
             return
         if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
             return
@@ -440,16 +441,32 @@ class RuntimeReconfigurator:
         next_inference = config.inference
         previous_capture = previous_config.capture
         next_capture = config.capture
+        previous_preprocess = previous_config.preprocess
+        next_preprocess = config.preprocess
+        previous_runtime = previous_config.runtime
+        next_runtime = config.runtime
         previous_roi = previous_config.roi
         next_roi = config.roi
         return (
             previous_inference.backend != next_inference.backend
+            or previous_inference.device != next_inference.device
+            or previous_inference.require_gpu != next_inference.require_gpu
+            or previous_inference.allow_cpu_fallback != next_inference.allow_cpu_fallback
+            or previous_capture.backend != next_capture.backend
             or previous_capture.device != next_capture.device
             or previous_capture.memory != next_capture.memory
+            or previous_capture.latest_only != next_capture.latest_only
+            or previous_capture.appsink_max_buffers != next_capture.appsink_max_buffers
+            or previous_capture.queue_leaky != next_capture.queue_leaky
             or previous_capture.pixel_format != next_capture.pixel_format
             or previous_capture.width != next_capture.width
             or previous_capture.height != next_capture.height
             or previous_capture.fps != next_capture.fps
+            or previous_preprocess.backend != next_preprocess.backend
+            or previous_preprocess.output_dtype != next_preprocess.output_dtype
+            or previous_runtime.freshness_threshold_ms != next_runtime.freshness_threshold_ms
+            or previous_runtime.drop_stale_batches != next_runtime.drop_stale_batches
+            or previous_runtime.consume_latest_only != next_runtime.consume_latest_only
             or previous_roi.size != next_roi.size
             or previous_roi.offset_x != next_roi.offset_x
             or previous_roi.offset_y != next_roi.offset_y

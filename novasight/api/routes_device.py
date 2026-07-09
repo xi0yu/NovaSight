@@ -21,6 +21,9 @@ def device_capabilities(request: Request) -> dict[str, Any]:
     capture_state = capture.state
     capture_session = getattr(capture, "session", None)
     executor_status = request.app.state.executors.status()
+    capture_backend = str(getattr(config.capture, "backend", "")).lower()
+    inference_backend = str(getattr(config.inference, "backend", "")).lower()
+    capture_memory = str(config.capture.memory).lower()
     return {
         "node_role": "jetson_runtime",
         "studio_role": "remote_manager",
@@ -55,9 +58,10 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "remote_runtime_control": True,
             "onnx_training_or_export": False,
             "full_deepstream_pipeline_generation": False,
-            "deepstream_capture_data_plane": str(config.capture.memory).lower() == "nvmm",
-            "custom_tensorrt_scheduler": str(config.inference.backend).lower() == "nvmm_latest",
-            "nvmm_capture_configured": str(config.capture.memory).lower() == "nvmm",
+            "gst_cpu_latest_capture": capture_backend == "gst_cpu_latest",
+            "deepstream_capture_data_plane": capture_memory == "nvmm",
+            "custom_tensorrt_scheduler": inference_backend in {"tensorrt", "nvmm_latest"},
+            "nvmm_capture_configured": capture_memory == "nvmm",
             "gpu_resource_preprocess_available": bool(
                 inference_status.get("gpu_preprocessor", {}).get("available", False)
             ),
@@ -65,7 +69,10 @@ def device_capabilities(request: Request) -> dict[str, Any]:
         },
         "active_config": {
             "capture_device": config.capture.device,
+            "capture_backend": config.capture.backend,
             "capture_memory": config.capture.memory,
+            "preprocess_backend": config.preprocess.backend,
+            "freshness_threshold_ms": config.runtime.freshness_threshold_ms,
             "roi_size": config.roi.size,
             "preview_fps": config.limits.stream_fps,
             "output_mode": config.control.output_mode,
@@ -78,8 +85,14 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "inference_engine": str(inference_status.get("selected", "")),
         },
         "mainline": {
-            "backend": "deepstream_capture_custom_tensorrt",
+            "backend": (
+                "gst_cpu_latest_custom_tensorrt"
+                if capture_backend == "gst_cpu_latest"
+                else "deepstream_capture_custom_tensorrt"
+            ),
             "capture_memory": config.capture.memory,
+            "capture_backend": config.capture.backend,
+            "preprocess_backend": config.preprocess.backend,
             "inference_backend": config.inference.backend,
         },
     }

@@ -160,6 +160,7 @@ class DetectionBatch:
     source_sequence: int | None = None
     is_stale: bool = False
     clock_domain: str = "monotonic"
+    model_input_size: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if int(self.frame_id) < 0:
@@ -191,6 +192,11 @@ class DetectionBatch:
         object.__setattr__(self, "result_age_ms", float(self.result_age_ms))
         object.__setattr__(self, "is_stale", bool(self.is_stale))
         object.__setattr__(self, "clock_domain", str(self.clock_domain))
+        if self.model_input_size is not None:
+            width, height = self.model_input_size
+            if int(width) <= 0 or int(height) <= 0:
+                raise ValueError("DetectionBatch.model_input_size values must be positive")
+            object.__setattr__(self, "model_input_size", (int(width), int(height)))
 
     @property
     def inference_latency_ms(self) -> float:

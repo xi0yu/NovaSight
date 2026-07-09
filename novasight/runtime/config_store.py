@@ -34,11 +34,28 @@ class RuntimeConfigStore:
                 },
                 "capture": {
                     "device": config.capture.device,
+                    "backend": config.capture.backend,
                     "memory": config.capture.memory,
+                    "latest_only": config.capture.latest_only,
+                    "appsink_max_buffers": config.capture.appsink_max_buffers,
+                    "queue_leaky": config.capture.queue_leaky,
                     "pixel_format": config.capture.pixel_format,
                     "width": config.capture.width,
                     "height": config.capture.height,
                     "fps": config.capture.fps,
+                },
+                "preprocess": {
+                    "backend": config.preprocess.backend,
+                    "input_format": config.preprocess.input_format,
+                    "output_dtype": config.preprocess.output_dtype,
+                    "normalize": config.preprocess.normalize,
+                    "use_pinned_memory": config.preprocess.use_pinned_memory,
+                    "h2d_async": config.preprocess.h2d_async,
+                },
+                "runtime": {
+                    "freshness_threshold_ms": config.runtime.freshness_threshold_ms,
+                    "drop_stale_batches": config.runtime.drop_stale_batches,
+                    "consume_latest_only": config.runtime.consume_latest_only,
                 },
                 "roi": {
                     "size": config.roi.size,

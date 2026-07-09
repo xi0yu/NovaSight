@@ -103,6 +103,202 @@ use signed `NS1.<payload>.<signature>` tokens with created time, activation time
 duration, tier, and feature permissions; plaintext keys are never returned by the
 API.
 
+## Temporary `gst_cpu_latest` Mainline
+
+The current stable control path is a CPU-readable GStreamer bridge into GPU
+TensorRT inference:
+
+```text
+GC553G2/V4L2 -> nvv4l2decoder -> nvvidconv ROI/resize
+-> appsink system memory -> LatestFrameExchange capacity=1
+-> CPU preprocess host tensor -> CUDA H2D -> TensorRT -> DetectionBatch
+-> Tracker/Selector/Kalman/Controller/Scheduler
+```
+
+This is not CPU inference. The runtime accepts only TensorRT `.engine`
+artifacts for execution; if TensorRT/CUDA is unavailable, model load and
+inference fail explicitly instead of falling back to ONNXRuntime CPU.
+
+Required config values:
+
+```yaml
+capture:
+  backend: gst_cpu_latest
+  memory: system
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+preprocess:
+  backend: cpu
+  input_format: auto
+  output_dtype: fp16
+  normalize: true
+  use_pinned_memory: true
+  h2d_async: true
+inference:
+  backend: tensorrt
+  device: cuda
+  require_gpu: true
+  allow_cpu_fallback: false
+runtime:
+  freshness_threshold_ms: 55
+  drop_stale_batches: true
+  consume_latest_only: true
+```
+
+Start with the example config:
+
+```bash
+cp config/novasight.example.yaml config/novasight.yaml
+python3 -m novasight --host 0.0.0.0 --port 5174
+```
+
+Run a 60-second capture smoke on Jetson:
+
+```bash
+python3 -m novasight capture-smoke --device /dev/video0 --seconds 60
+```
+
+For the full temporary runtime acceptance gate, run the live runtime smoke on
+Jetson with either the active model already configured or an explicit TensorRT
+engine:
+
+```bash
+python3 -m novasight doctor gst-cpu-latest-smoke \
+  --device /dev/video0 \
+  --seconds 60 \
+  --tensorrt-engine data/models/combat/default/model.engine \
+  --input-shape 1x3x640x640 \
+  --dtype fp16 \
+  --classes target \
+  --report-json /tmp/novasight-gst-cpu-latest-smoke.json
+```
+
+Then re-validate the saved evidence with:
+
+```bash
+python3 -m novasight doctor gst-cpu-latest-smoke-report \
+  --report-json /tmp/novasight-gst-cpu-latest-smoke.json
+```
+
+During the live run the command prints `metric_sample:` lines at the same
+cadence used for the saved report, including capture FPS, broker counters,
+host-frame copy cost, preprocess/H2D/inference timings, stale drops, control
+observation FPS, and RSS memory.
+
+The report must use `check: "gst-cpu-latest-smoke"` and include runtime
+evidence for the latest-only pipeline, TensorRT GPU execution, metrics,
+DetectionBatch timing fields, 60s duration, memory growth, and a
+`metric_samples` list captured at roughly one-second cadence:
+
+```json
+{
+  "schema_version": 1,
+  "check": "gst-cpu-latest-smoke",
+  "accepted": true,
+  "exit_code": 0,
+  "parameters": {
+    "device": "/dev/video0",
+    "seconds": 60,
+    "tensorrt_engine": "data/models/combat/default/model.engine",
+    "max_memory_growth_mb": 64
+  },
+  "evidence": {
+    "capture_backend": "gst_cpu_latest:nvmm-mjpg-iomode2",
+    "capture_memory": "system",
+    "capture_fps": 119.4,
+    "published_frames": 7164,
+    "overwritten_frames": 420,
+    "acquired_frames": 6744,
+    "latest_frame_broker_max_pending_depth": 1,
+    "latest_frame_age_ms": 4.5,
+    "appsink_caps": "video/x-raw,format=BGRx,width=640,height=640",
+    "actual_pipeline_string": "v4l2src ... queue max-size-buffers=1 ... leaky=downstream ... appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false",
+    "inference_selected": "tensorrt",
+    "inference_device": "cuda",
+    "inference_require_gpu": true,
+    "inference_allow_cpu_fallback": false,
+    "tensorrt_engine": "data/models/combat/default/model.engine",
+    "preprocess_backend": "cpu",
+    "preprocess_ms": 1.3,
+    "h2d_ms": 0.4,
+    "host_frame_copy_ms": 0.2,
+    "inference_ms": 5.2,
+    "postprocess_ms": 0.1,
+    "batch_age_ms": 11.8,
+    "stale_drop_count": 3,
+    "control_observe_fps": 58.0,
+    "freshness_gate_rejected": false,
+    "duration_s": 60.2,
+    "memory_rss_start_mb": 312.0,
+    "memory_rss_end_mb": 328.0,
+    "memory_growth_mb": 16.0,
+    "detection_batch": {
+      "frame_id": 7164,
+      "capture_ts_ns": 1000000,
+      "inference_start_ts_ns": 1004000,
+      "inference_end_ts_ns": 1009000,
+      "control_now_ts_ns": 1020000,
+      "model_input_size": [640, 640],
+      "coordinate_space": "roi"
+    }
+  },
+  "metric_samples": [
+    {
+      "elapsed_s": 1.0,
+      "memory_rss_mb": 316.0,
+      "capture_fps": 119.4,
+      "published_frames": 7164,
+      "latest_frame_broker_max_pending_depth": 1,
+      "latest_frame_age_ms": 4.5,
+      "preprocess_ms": 1.3,
+      "h2d_ms": 0.4,
+      "host_frame_copy_ms": 0.2,
+      "inference_ms": 5.2,
+      "batch_age_ms": 11.8,
+      "stale_drop_count": 3,
+      "control_observe_fps": 58.0,
+      "inference_selected": "tensorrt",
+      "inference_device": "cuda",
+      "preprocess_backend": "cpu"
+    }
+  ]
+}
+```
+
+Verify latest-only from status:
+
+```bash
+curl http://127.0.0.1:5174/api/runtime/state | python3 -m json.tool
+```
+
+Check these fields:
+
+- `pipeline.latest_frame_broker.max_pending_depth == 1`
+- `pipeline.latest_frame_broker.overwritten_frames` increases under overload
+- `statistics.stale_drop_count` is present
+- `statistics.batch_age_ms`, `statistics.preprocess_ms`, and `statistics.h2d_ms`
+  are visible after inference
+- `inference.execution_backend == "tensorrt"` or `inference.selected == "tensorrt"`
+- `inference.allow_cpu_fallback == false`
+
+The generated GStreamer CPU bridge uses:
+
+```text
+queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream
+appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false
+```
+
+The preferred appsink caps are `video/x-raw,format=BGRx`, with fallback
+candidates for `RGBA`, `RGB`, `BGR`, `NV12`, and `I420`. `appsink_caps` and
+`actual_pipeline_string` are exposed in capture statistics after frames arrive.
+Record the negotiated caps from Jetson smoke output before changing pixel
+formats. CPU preprocess preserves aspect ratio with letterbox padding if a host
+frame reaches TensorRT with non-matching model/input aspect ratio. TensorRT
+host input/output buffers prefer CUDA pinned host memory when the runtime
+exposes `cudaHostAlloc`/`cudaMallocHost` plus `cudaFreeHost`; otherwise they
+fall back to ordinary NumPy host buffers and still use async H2D/D2H copies.
+
 ## Jetson Camera Diagnostics
 
 Jetson capture uses the system GStreamer stack through `GstAppSink`. Use the
@@ -152,13 +348,13 @@ Inspect `/dev/video0` capabilities:
 python3 -m novasight doctor camera --device /dev/video0
 ```
 
-For the tested HDMI capture card, NovaSight's automatic Jetson route prefers:
+For the tested HDMI capture card, the temporary CPU bridge prefers:
 
 ```text
 MJPG 1920x1080 @ 120
 -> nvv4l2decoder
 -> nvvidconv
--> video/x-raw(memory:NVMM),format=NV12,width=320,height=320
+-> video/x-raw,format=BGRx,width=<model_w>,height=<model_h>
 -> appsink max-buffers=1 drop=true sync=false
 ```
 
@@ -168,16 +364,19 @@ The matching standalone GStreamer smoke command is:
 gst-launch-1.0 -v \
   v4l2src device=/dev/video0 io-mode=2 ! \
   'image/jpeg,width=1920,height=1080,framerate=120/1' ! \
+  queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! \
   jpegparse ! \
   nvv4l2decoder mjpeg=1 ! \
   nvvidconv ! \
-  'video/x-raw(memory:NVMM),format=NV12,width=320,height=320' ! \
+  'video/x-raw,format=BGRx,width=320,height=320' ! \
+  queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! \
   appsink sync=false max-buffers=1 drop=true
 ```
 
-If NVMM buffers cannot be mapped by Python on a given Jetson image, NovaSight
-falls back to CPU `BGRx` AppSink candidates generated from the same V4L2 mode.
-It does not require pip OpenCV for the normal Jetson path.
+The future `nvmm_latest` path is still available for native bridge development,
+but it is explicit and requires `capture.backend=nvmm_latest`,
+`capture.memory=nvmm`, `preprocess.backend=cuda`, and
+`inference.backend=nvmm_latest`.
 
 Run a short real capture smoke test:
 

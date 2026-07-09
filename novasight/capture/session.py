@@ -222,13 +222,26 @@ class CaptureSession:
             self.state.fps_capture = self._window_fps(self._capture_window_ts_ns)
             self.state.statistics.capture_fps = self.state.fps_capture
             self._last_frame_ts_ns = frame.capture_ts_ns
-            self._latest_frame = frame
             self._broker_generation += 1
+            frame = replace(frame, generation=self._broker_generation)
+            self._latest_frame = frame
             self.latest_frame_broker.publish(
                 _frame_handle_from_capture_frame(
                     frame,
                     generation=self._broker_generation,
                 )
+            )
+            broker_status = self.latest_frame_broker.status()
+            self.state.statistics.published_frames = int(broker_status.get("published_frames", 0))
+            self.state.statistics.overwritten_frames = int(broker_status.get("overwritten_frames", 0))
+            self.state.statistics.acquired_frames = int(broker_status.get("acquired_frames", 0))
+            self.state.statistics.latest_frame_age_ms = max(
+                0.0,
+                (time.monotonic_ns() - int(frame.capture_ts_ns)) / 1e6,
+            )
+            self.state.statistics.appsink_caps = str(getattr(frame, "caps_string", "") or "")
+            self.state.statistics.actual_pipeline_string = str(
+                getattr(frame, "actual_pipeline_string", "") or ""
             )
             self.state.last_error = None
             self._condition.notify_all()

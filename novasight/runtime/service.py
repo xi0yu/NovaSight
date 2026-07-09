@@ -32,6 +32,7 @@ from .aim import (
 from .state import RuntimeFrameResult, RuntimeState
 from .candidates import aim_point
 from .detection_batch import detection_batch_to_frame_context
+from .freshness import FreshnessGate
 from .recorder import build_control_frame_record
 from .control_trace import build_control_trace_record
 from .target_selector import RuntimeTargetSelector, TargetSelection
@@ -89,6 +90,7 @@ class RuntimeService:
         self._last_runtime_reset_reason = ""
         self._accepted_batch_generation = -1
         self._accepted_batch_capture_ts_ns = 0
+        self.stale_drop_count = 0
         self._log_production_control_chain("startup")
 
     def state(self) -> RuntimeState:
@@ -114,11 +116,30 @@ class RuntimeService:
                 "control_observation_fps",
                 0.0,
             )
+            statistics["control_observe_fps"] = statistics["control_observation_fps"]
             statistics["queue_latency"] = getattr(pipeline_stats, "queue_latency_ms", 0.0)
             statistics["inference_latency"] = getattr(pipeline_stats, "inference_latency_ms", 0.0)
+            statistics["inference_ms"] = getattr(pipeline_stats, "inference_latency_ms", 0.0)
             statistics["e2e_latency"] = getattr(pipeline_stats, "e2e_latency_ms", 0.0)
+        else:
+            statistics.setdefault("control_observe_fps", 0.0)
+            statistics.setdefault("inference_ms", 0.0)
+        statistics["stale_drop_count"] = int(self.stale_drop_count)
+        latest_frame_age_ms = self._latest_frame_age_ms()
+        if latest_frame_age_ms is not None:
+            statistics["latest_frame_age_ms"] = latest_frame_age_ms
+        if isinstance(self.last_inference_status, dict):
+            statistics["batch_age_ms"] = float(self.last_inference_status.get("frame_age_ms") or 0.0)
+            statistics["preprocess_ms"] = float(self.last_inference_status.get("preprocess_ms") or 0.0)
+            statistics["h2d_ms"] = float(self.last_inference_status.get("h2d_ms") or 0.0)
+            statistics["host_frame_copy_ms"] = float(
+                self.last_inference_status.get("frame_copy_cost_ms")
+                or self.last_inference_status.get("frame_userspace_process_ms")
+                or 0.0
+            )
         for key, value in self.last_pipeline_timings.items():
             statistics[f"stage_{key}"] = value
+        statistics["postprocess_ms"] = float(self.last_pipeline_timings.get("postprocess_ms", 0.0))
         if capture_payload:
             capture_payload["statistics"] = statistics
         return RuntimeState(
@@ -155,11 +176,22 @@ class RuntimeService:
         payload["configured"] = active_model is not None
         payload.setdefault("running", bool(self.running))
         payload.setdefault("loaded", bool(payload.get("available", False)))
+        payload["capture_memory"] = str(getattr(self.config.capture, "memory", ""))
+        payload["capture_backend"] = str(getattr(self.config.capture, "backend", ""))
+        payload["preprocess_backend"] = str(getattr(self.config.preprocess, "backend", ""))
+        payload["device"] = str(getattr(self.config.inference, "device", "cuda"))
+        payload["require_gpu"] = bool(getattr(self.config.inference, "require_gpu", True))
+        payload["allow_cpu_fallback"] = bool(
+            getattr(self.config.inference, "allow_cpu_fallback", False)
+        )
         payload.setdefault(
             "reason",
-            "DeepStream采集 + NovaSight自定义 TensorRT 推理主链",
+            (
+                "GStreamer CPU latest bridge + TensorRT GPU inference"
+                if payload["capture_backend"] == "gst_cpu_latest"
+                else "NVMM latest bridge + NovaSight TensorRT GPU inference"
+            ),
         )
-        payload["capture_memory"] = str(getattr(self.config.capture, "memory", ""))
         return {
             **payload,
         }
@@ -413,6 +445,7 @@ class RuntimeService:
         )
         freshness_reason = self._detection_batch_freshness_reason(detection_batch)
         if freshness_reason:
+            self.stale_drop_count += 1
             self._reset_runtime_control_state("DETECTION_BATCH_NOT_LATEST")
             self.last_inference_reason = freshness_reason
             self._set_detection_batch_pipeline_timings(
@@ -498,6 +531,7 @@ class RuntimeService:
             now_ns=total_start_ns,
         )
         if stale_reason:
+            self.stale_drop_count += 1
             self._reset_runtime_control_state("DETECTION_BATCH_STALE")
             self.last_inference_reason = stale_reason
             self._set_detection_batch_pipeline_timings(
@@ -630,6 +664,11 @@ class RuntimeService:
             "inference_start_ts_ns": detection_batch.inference_start_ts_ns,
             "inference_end_ts_ns": detection_batch.inference_end_ts_ns,
             "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms,
+            "detection_batch_model_input_size": (
+                list(detection_batch.model_input_size)
+                if detection_batch.model_input_size is not None
+                else []
+            ),
             "detection_batch_metadata": dict(getattr(detection_batch, "metadata", {}) or {}),
             "latency_source": "custom_tensorrt_done",
             "classes": list(detection_batch.classes),
@@ -671,6 +710,132 @@ class RuntimeService:
                 f"{capture_ts_ns} <= {self._accepted_batch_capture_ts_ns}"
             )
         return ""
+
+    def _detection_batch_latest_generation_reason(
+        self,
+        detection_batch: DetectionBatch,
+        *,
+        latest_generation: int | None,
+        latest_frame_id: int | None = None,
+    ) -> str:
+        if latest_generation is None:
+            generation_reason = ""
+        else:
+            generation = int(getattr(detection_batch, "generation", detection_batch.frame_id) or 0)
+            if generation < int(latest_generation):
+                generation_reason = (
+                    "DetectionBatch generation is no longer latest generation: "
+                    f"{generation} < {int(latest_generation)}"
+                )
+            else:
+                generation_reason = ""
+        if generation_reason:
+            return generation_reason
+        if latest_frame_id is None:
+            return ""
+        frame_id = int(getattr(detection_batch, "frame_id", 0) or 0)
+        if frame_id < int(latest_frame_id):
+            return (
+                "DetectionBatch frame_id is no longer latest frame_id: "
+                f"{frame_id} < {int(latest_frame_id)}"
+            )
+        return ""
+
+    def _latest_published_identity(self) -> tuple[int | None, int | None]:
+        capture = getattr(self, "capture", None)
+        broker = getattr(capture, "latest_frame_broker", None)
+        if broker is None:
+            session = getattr(capture, "session", None)
+            broker = getattr(session, "latest_frame_broker", None)
+        status_fn = getattr(broker, "status", None)
+        if not callable(status_fn):
+            return None, None
+        try:
+            status = status_fn()
+        except Exception:
+            return None, None
+        if not isinstance(status, dict):
+            return None, None
+        return (
+            self._latest_status_int(status, ("published_generation", "latest_generation")),
+            self._latest_status_int(status, ("published_frame_id", "latest_frame_id")),
+        )
+
+    def _latest_status_int(
+        self,
+        status: dict[str, Any],
+        keys: tuple[str, ...],
+    ) -> int | None:
+        for key in keys:
+            value = status.get(key)
+            if value is None:
+                continue
+            try:
+                parsed = int(value)
+            except Exception:
+                continue
+            return parsed if parsed >= 0 else None
+        return None
+
+    def _latest_published_generation(self) -> int | None:
+        latest_generation, _latest_frame_id = self._latest_published_identity()
+        return latest_generation
+
+    def _latest_published_frame_id(self) -> int | None:
+        _latest_generation, latest_frame_id = self._latest_published_identity()
+        return latest_frame_id
+
+    def _latest_frame_age_ms(self) -> float | None:
+        capture = getattr(self, "capture", None)
+        latest_frame = None
+        latest_frame_fn = getattr(capture, "get_latest_preview_frame", None)
+        if callable(latest_frame_fn):
+            try:
+                latest_frame = latest_frame_fn()
+            except Exception:
+                latest_frame = None
+        if latest_frame is None:
+            session = getattr(capture, "session", None)
+            latest_frame_fn = getattr(session, "latest_frame", None)
+            if callable(latest_frame_fn):
+                try:
+                    latest_frame = latest_frame_fn(timeout_s=0.0)
+                except Exception:
+                    latest_frame = None
+        if latest_frame is None:
+            return None
+        try:
+            capture_ts_ns = int(getattr(latest_frame, "capture_ts_ns"))
+        except Exception:
+            return None
+        return max(0.0, (time.monotonic_ns() - capture_ts_ns) / 1e6)
+
+    @staticmethod
+    def _model_input_size_from_debug(
+        debug: dict[str, Any] | None,
+        *,
+        fallback_width: int,
+        fallback_height: int,
+    ) -> tuple[int, int]:
+        debug_payload = debug if isinstance(debug, dict) else {}
+        preprocess = debug_payload.get("preprocess")
+        preprocess_debug = preprocess if isinstance(preprocess, dict) else {}
+        size = preprocess_debug.get("model_input_size")
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                width = int(size[0])
+                height = int(size[1])
+                if width > 0 and height > 0:
+                    return width, height
+            except Exception:
+                pass
+        try:
+            width = int(preprocess_debug.get("model_width") or fallback_width)
+            height = int(preprocess_debug.get("model_height") or fallback_height)
+        except Exception:
+            width = int(fallback_width)
+            height = int(fallback_height)
+        return max(1, width), max(1, height)
 
     def _record_accepted_detection_batch(self, detection_batch: DetectionBatch) -> None:
         self._accepted_batch_generation = int(
@@ -766,27 +931,15 @@ class RuntimeService:
         *,
         now_ns: int,
     ) -> str:
-        threshold_ms = float(
-            getattr(getattr(self.config, "control", None), "latency_reject_if_age_exceeds_ms", 0.0)
-            or 0.0
+        gate = FreshnessGate.strictest(
+            getattr(getattr(self.config, "runtime", None), "freshness_threshold_ms", 0.0),
+            getattr(getattr(self.config, "control", None), "latency_reject_if_age_exceeds_ms", 0.0),
         )
-        if threshold_ms <= 0.0:
-            return ""
-        age_ms = self._detection_batch_age_ms(detection_batch, now_ns=now_ns)
-        if not math.isfinite(age_ms):
-            return ""
-        # Some legacy unit seams use tiny synthetic timestamps. Enforce stale
-        # rejection only when capture_ts_ns is plausibly in this process
-        # monotonic domain. Production batches must use monotonic timestamps.
-        max_plausible_age_ms = max(3_600_000.0, threshold_ms * 100.0)
-        if age_ms > max_plausible_age_ms:
-            return ""
-        if age_ms > threshold_ms:
-            return (
-                "DetectionBatch frame age exceeds control latency guard: "
-                f"{age_ms:.1f}ms > {threshold_ms:.1f}ms"
-            )
-        return ""
+        return gate.stale_reason(
+            capture_ts_ns=getattr(detection_batch, "capture_ts_ns", 0),
+            now_ns=now_ns,
+            template="DetectionBatch frame age exceeds control latency guard: {age_ms:.1f}ms > {threshold_ms:.1f}ms",
+        )
 
     @staticmethod
     def _detection_batch_age_ms(
@@ -794,11 +947,10 @@ class RuntimeService:
         *,
         now_ns: int,
     ) -> float:
-        try:
-            capture_ts_ns = int(detection_batch.capture_ts_ns)
-        except Exception:
-            return 0.0
-        return max(0.0, (int(now_ns) - capture_ts_ns) / 1e6)
+        return FreshnessGate.age_ms(
+            capture_ts_ns=getattr(detection_batch, "capture_ts_ns", 0),
+            now_ns=now_ns,
+        )
 
     def update_control_observation(self, context: FrameContext) -> RuntimeFrameResult:
         if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
@@ -1033,6 +1185,12 @@ class RuntimeService:
                     )
                 )
             classes = list(inference_result.classes)
+            model_input_size = self._model_input_size_from_debug(
+                inference_result.debug,
+                fallback_width=int(getattr(roi_frame, "width", frame.width)),
+                fallback_height=int(getattr(roi_frame, "height", frame.height)),
+            )
+            generation = int(getattr(frame, "generation", 0) or frame.frame_id)
             detection_batch = DetectionBatch(
                 frame_id=frame.frame_id,
                 capture_ts_ns=frame.capture_ts_ns,
@@ -1041,14 +1199,20 @@ class RuntimeService:
                 detections=detections,
                 classes=classes,
                 coordinate_space="roi",
-                generation=frame.frame_id,
+                generation=generation,
                 publish_ts_ns=postprocess_start_ns,
                 input_age_ms=max(0.0, (infer_start_ns - int(frame.capture_ts_ns)) / 1e6),
                 inference_ms=max(0.0, (postprocess_start_ns - infer_start_ns) / 1e6),
                 result_age_ms=max(0.0, (postprocess_start_ns - int(frame.capture_ts_ns)) / 1e6),
-                source_sequence=frame.frame_id,
+                source_sequence=generation,
                 is_stale=False,
                 clock_domain="monotonic",
+                model_input_size=model_input_size,
+                metadata={
+                    "source_backend": str(getattr(frame, "source_backend", "") or ""),
+                    "caps_string": str(getattr(frame, "caps_string", "") or ""),
+                    "model_input_size": model_input_size,
+                },
             )
         except Exception as exc:
             self.last_inference_reason = str(exc)
@@ -1071,8 +1235,21 @@ class RuntimeService:
                 control_start_ns=control_start_ns,
             )
             return result
+        latest_generation, latest_frame_id = self._latest_published_identity()
         freshness_reason = self._detection_batch_freshness_reason(detection_batch)
+        if not freshness_reason:
+            freshness_reason = self._detection_batch_latest_generation_reason(
+                detection_batch,
+                latest_generation=latest_generation,
+                latest_frame_id=latest_frame_id,
+            )
+        if not freshness_reason:
+            freshness_reason = self._detection_batch_stale_reason(
+                detection_batch,
+                now_ns=postprocess_start_ns,
+            )
         if freshness_reason:
+            self.stale_drop_count += 1
             self._reset_runtime_control_state("DETECTION_BATCH_NOT_LATEST")
             self.last_inference_reason = freshness_reason
             self._record_inference_status(
@@ -1086,9 +1263,15 @@ class RuntimeService:
                 classes=detection_batch.classes,
                 detection_batch=detection_batch,
                 debug=inference_result.debug,
+                extra={
+                    "stale_rejected": True,
+                    "latest_generation": latest_generation,
+                    "latest_frame_id": latest_frame_id,
+                    "stale_drop_count": self.stale_drop_count,
+                },
             )
             control_start_ns = time.monotonic_ns()
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self._empty_runtime_frame_result()
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -1153,10 +1336,18 @@ class RuntimeService:
         decode_debug = inference_debug.get("decode", {}) if isinstance(inference_debug, dict) else {}
         decode_timings = decode_debug.get("timings", {}) if isinstance(decode_debug, dict) else {}
         decode_ms = float(decode_timings.get("decode_ms") or debug_timings.get("decode_ms") or 0.0)
+        preprocess_ms = float(
+            debug_timings.get("native_preprocess_total_ms")
+            or debug_timings.get("numpy_tensor_ms")
+            or 0.0
+        )
+        h2d_ms = float(decode_timings.get("h2d_enqueue_ms") or 0.0)
         engine_total_ms = float(decode_timings.get("total_ms") or debug_timings.get("execute_total_ms") or 0.0)
         engine_execute_ms = max(0.0, engine_total_ms - decode_ms)
         self.last_pipeline_timings = {
             "roi_ms": ms(roi_start_ns, infer_start_ns),
+            "preprocess_ms": preprocess_ms,
+            "h2d_ms": h2d_ms,
             "engine_ms": ms(infer_start_ns, postprocess_start_ns),
             "engine_execute_ms": engine_execute_ms,
             "decode_ms": decode_ms,
@@ -1171,7 +1362,7 @@ class RuntimeService:
             frame_id=frame.frame_id,
             width=self._source_width(frame),
             height=self._source_height(frame),
-            generation=int(frame.frame_id),
+            generation=int(getattr(frame, "generation", 0) or frame.frame_id),
             capture_ts_ns=frame.capture_ts_ns,
         )
 
@@ -1188,6 +1379,7 @@ class RuntimeService:
         classes: list[str] | None = None,
         detection_batch: DetectionBatch | None = None,
         debug: dict[str, Any] | None = None,
+        extra: dict[str, object] | None = None,
     ) -> None:
         debug_payload = dict(debug or {})
         preprocess = debug_payload.get("preprocess")
@@ -1198,6 +1390,15 @@ class RuntimeService:
         model_to_roi_scale_y = self._debug_float(preprocess_debug, "model_to_roi_scale_y")
         input_downscale_factor = self._debug_float(preprocess_debug, "downscale_factor")
         input_pixel_ratio = self._debug_float(preprocess_debug, "pixel_ratio")
+        decode_debug = debug_payload.get("decode")
+        decode_timings = decode_debug.get("timings", {}) if isinstance(decode_debug, dict) else {}
+        debug_timings = debug_payload.get("timings", {}) if isinstance(debug_payload.get("timings"), dict) else {}
+        preprocess_ms = float(
+            debug_timings.get("native_preprocess_total_ms")
+            or debug_timings.get("numpy_tensor_ms")
+            or 0.0
+        )
+        h2d_ms = float(decode_timings.get("h2d_enqueue_ms") or 0.0)
         (
             source_width,
             source_height,
@@ -1217,10 +1418,15 @@ class RuntimeService:
             "frame_source_ts_ns": getattr(frame, "source_ts_ns", None),
             "frame_source_ts_kind": str(getattr(frame, "source_ts_kind", "") or ""),
             "frame_userspace_process_ms": float(getattr(frame, "userspace_process_ms", 0.0) or 0.0),
+            "frame_copy_cost_ms": float(
+                getattr(frame, "copy_cost_ms", getattr(frame, "userspace_process_ms", 0.0)) or 0.0
+            ),
             "frame_resource_kind": str(getattr(frame_resource, "kind", "") or ""),
             "frame_resource_memory": str(getattr(frame_resource, "memory", "") or "cpu"),
             "frame_dmabuf_fd": getattr(frame_resource, "dmabuf_fd", None),
             "frame_age_ms": max(0.0, (time.monotonic_ns() - int(frame.capture_ts_ns)) / 1e6),
+            "preprocess_ms": preprocess_ms,
+            "h2d_ms": h2d_ms,
             "ran": ran,
             "available": available,
             "reason": reason,
@@ -1235,6 +1441,11 @@ class RuntimeService:
             "detection_batch_input_age_ms": detection_batch.input_age_ms if detection_batch is not None else 0.0,
             "detection_batch_result_age_ms": detection_batch.result_age_ms if detection_batch is not None else 0.0,
             "detection_batch_is_stale": detection_batch.is_stale if detection_batch is not None else False,
+            "detection_batch_model_input_size": (
+                list(detection_batch.model_input_size)
+                if detection_batch is not None and detection_batch.model_input_size is not None
+                else []
+            ),
             "inference_start_ts_ns": detection_batch.inference_start_ts_ns if detection_batch is not None else 0,
             "inference_end_ts_ns": detection_batch.inference_end_ts_ns if detection_batch is not None else 0,
             "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms if detection_batch is not None else 0.0,
@@ -1271,6 +1482,8 @@ class RuntimeService:
             "configured_roi_offset_y": int(getattr(self.config.roi, "offset_y", 0)),
             "debug": debug_payload,
         }
+        if extra:
+            self.last_inference_status.update(extra)
 
     @staticmethod
     def _debug_int(payload: dict[str, Any], key: str) -> int:

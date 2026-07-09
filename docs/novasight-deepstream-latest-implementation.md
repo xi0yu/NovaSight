@@ -25,8 +25,8 @@ GC553G2 / V4L2
 -> CPU FrameHandle
 -> CPU LatestFrameExchange, one pending_latest
 -> TensorRT InferenceLoop pulls latest when idle
--> CPU -> CUDA upload
--> CUDA preprocess / existing preprocess
+-> CPU preprocess host tensor
+-> CUDA H2D upload
 -> TensorRT single-frame inference
 -> output sync
 -> decode / NMS
@@ -38,6 +38,15 @@ GC553G2 / V4L2
 The compatible path has a CPU-to-GPU upload, but it preserves the two required
 properties for the active control mainline: latest-only frame selection and GPU
 TensorRT inference.
+
+The preferred CPU-readable appsink format is `BGRx`. The candidate list also
+keeps `RGBA`, `RGB`, `BGR`, `NV12`, and `I420` fallbacks available for Jetson
+images where one caps negotiation path is unstable. Host preprocessing converts
+these formats to RGB/NCHW, normalizes to FP16/FP32, and uses letterbox padding
+instead of stretching when the input and model aspect ratios differ.
+TensorRT host input/output buffers prefer CUDA pinned host memory when the
+runtime exposes an alloc/free pair, then fall back to ordinary NumPy buffers if
+pinned allocation is unavailable.
 
 Temporary-mainline acceptance focuses on freshness behavior, not absolute
 minimum latency:
@@ -300,23 +309,35 @@ Long-term configuration should separate pipeline orchestration from inference
 execution:
 
 ```text
-pipeline.backend:
-  legacy_latest
-  deepstream_capture_latest
-  deepstream_uncontrolled
-  native_tensorrt_latest
+capture.backend:
+  gst_cpu_latest
+  nvmm_latest
+
+preprocess.backend:
+  cpu
+  cuda
 
 inference.backend:
-  onnxruntime
-  native_tensorrt
+  tensorrt
+  nvmm_latest
 ```
 
 The current repo still carries legacy names for compatibility:
 
-- `tensorrt`: current default compatible GPU inference path.
-- `nvmm_latest`: legacy name for the explicit target/experimental NVMM exchange
-  path requiring native GPU support.
-- `deepstream`: Full DeepStream push mode, experimental only.
+- `gst_cpu_latest`: current default compatible capture bridge. It uses
+  GStreamer/NVIDIA decode and `nvvidconv` ROI/resize, then appsink system
+  memory plus CPU host preprocessing before TensorRT CUDA upload.
+  `novasight doctor gst-cpu-latest-smoke` is the 60-second acceptance gate for
+  this path; its saved report includes final evidence plus per-second
+  `metric_samples` for capture FPS, broker depth, preprocessing/H2D/inference
+  timing, host-frame copy cost, stale drops, control observation FPS, RSS memory, and
+  `capture_ts_ns`/`inference_end_ts_ns`/`control_now_ts_ns` timing evidence.
+- `tensorrt`: current default GPU inference path. CPU/ONNXRuntime fallback is
+  not a runtime execution mode.
+- `nvmm_latest`: explicit target/experimental NVMM exchange path requiring
+  native GPU preprocess support.
+- `deepstream`: Full DeepStream push mode, experimental only and not a default
+  control mainline.
 
 Do not silently map one mode to another.
 

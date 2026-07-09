@@ -21,6 +21,7 @@ from .service import CaptureService
 from .source import (
     CaptureFrame,
     CapturedFrame,
+    CpuCompatibleCaptureBackend,
     FrameResource,
     FrameSource,
     GstAppSinkFrameSource,
@@ -43,6 +44,7 @@ __all__ = [
     "CaptureLoop",
     "CapturedFrame",
     "CapturedBufferSlot",
+    "CpuCompatibleCaptureBackend",
     "FrameResource",
     "FrameSource",
     "GstAppSinkFrameSource",

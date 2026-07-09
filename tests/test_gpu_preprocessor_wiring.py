@@ -7,15 +7,24 @@ from types import SimpleNamespace
 import pytest
 
 from novasight.api import create_app
-from novasight.capture.source import CapturedFrame, FrameResource, _sample_frame_resource
+from novasight.capture.source import (
+    CapturedFrame,
+    FrameResource,
+    _host_frame_resource_from_copy,
+    _sample_to_bgr,
+    _sample_frame_resource,
+)
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
+from novasight.contracts import BBox
+from novasight.inference.contracts import InferenceDetection
+from novasight.inference.geometry import map_model_detections_to_roi_frame
 from novasight.inference.input import PreparedTensorInput, TensorInputShape, prepare_tensor_input
 from novasight.inference.jetson import (
     JetsonGpuResourcePreprocessor,
     create_gpu_resource_preprocessor,
 )
-from novasight.inference.preprocess import DeviceTensor, TensorPreprocessResult, prepare_tensor
+from novasight.inference.preprocess import DeviceTensor, TensorPreprocessResult, prepare_host_tensor, prepare_tensor
 import novasight.inference.tensorrt as tensorrt_module
 from novasight.inference.runtime import InferenceRuntime
 from novasight.inference.tensorrt import TensorRtInferenceEngine
@@ -417,6 +426,302 @@ def test_nvmm_frame_resource_keeps_gstreamer_sample_handle_alive() -> None:
     assert frame.gpu_buffer is sample
     assert prepared.buffer is sample
     assert prepared.dmabuf_fd == 7
+
+
+def test_cpu_compatible_frame_resource_owns_host_copy_not_gstreamer_sample() -> None:
+    import numpy as np
+
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+    resource = _host_frame_resource_from_copy(
+        image,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        source_pixel_format="BGRx",
+        caps_string="video/x-raw,format=BGRx,width=2,height=2",
+        copy_cost_ms=0.25,
+        pipeline_string="v4l2src ! appsink",
+    )
+    frame = CapturedFrame(
+        frame_id=10,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=1_000_000_000,
+        capture_wait_ms=0.1,
+        image=image,
+        frame_resource=resource,
+    )
+
+    prepared = prepare_tensor_input(
+        frame,
+        TensorInputShape(batch=1, channels=3, height=2, width=2),
+    )
+
+    assert resource.kind == "host_frame"
+    assert resource.memory == "cpu"
+    assert resource.handle is image
+    assert resource.metadata["source_pixel_format"] == "BGRX"
+    assert resource.metadata["copy_cost_ms"] == pytest.approx(0.25)
+    assert prepared.mode == "host_frame"
+    assert prepared.buffer is image
+    assert prepared.resource_kind == "host_frame"
+    assert prepared.resource_memory == "cpu"
+    assert prepared.resource_source == "appsink"
+    assert prepared.gst_buffer_ptr is None
+
+
+def test_cpu_host_frame_preprocess_converts_bgrx_to_rgb_nchw_fp16() -> None:
+    import numpy as np
+
+    image = np.array(
+        [
+            [[10, 20, 30, 255], [1, 2, 3, 255]],
+            [[90, 80, 70, 255], [7, 8, 9, 255]],
+        ],
+        dtype=np.uint8,
+    )
+    frame = CapturedFrame(
+        frame_id=33,
+        width=2,
+        height=2,
+        pixel_format="BGRx",
+        ts_ns=1_000_000_000,
+        capture_wait_ms=0.1,
+        image=image,
+    )
+    shape = TensorInputShape(batch=1, channels=3, height=2, width=2, dtype="float16")
+
+    prepared = prepare_tensor_input(frame, shape)
+    result = prepare_host_tensor(prepared, shape)
+
+    assert prepared.mode == "host_frame"
+    assert prepared.resource_memory == "cpu"
+    assert result.backend == "cpu"
+    assert result.location == "host"
+    assert result.zero_copy is False
+    assert result.tensor.shape == (1, 3, 2, 2)
+    assert result.tensor.dtype == np.float16
+    assert result.tensor[0, 0, 0, 0] == np.float16(30 / 255.0)
+    assert result.tensor[0, 1, 0, 0] == np.float16(20 / 255.0)
+    assert result.tensor[0, 2, 0, 0] == np.float16(10 / 255.0)
+    assert result.timings is not None
+    assert result.timings["total_ms"] >= 0.0
+
+
+def test_cpu_host_frame_preprocess_letterboxes_non_square_input() -> None:
+    import numpy as np
+
+    image = np.zeros((2, 4, 3), dtype=np.uint8)
+    image[:, :, 2] = 255
+    frame = CapturedFrame(
+        frame_id=34,
+        width=4,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=1_000_000_000,
+        capture_wait_ms=0.1,
+        image=image,
+    )
+    shape = TensorInputShape(batch=1, channels=3, height=4, width=4, dtype="float32")
+
+    prepared = prepare_tensor_input(frame, shape)
+    result = prepare_host_tensor(prepared, shape)
+
+    assert result.metadata is not None
+    assert result.metadata["resize_mode"] == "letterbox"
+    assert result.metadata["model_content_width"] == 4
+    assert result.metadata["model_content_height"] == 2
+    assert result.metadata["pad_x"] == 0
+    assert result.metadata["pad_y"] == 1
+    assert result.tensor.shape == (1, 3, 4, 4)
+    assert result.tensor[0, 0, 0, 0] == pytest.approx(114 / 255.0)
+    assert result.tensor[0, 0, 1, 0] == pytest.approx(1.0)
+
+
+def test_model_to_roi_mapping_accounts_for_letterbox_padding() -> None:
+    prepared = PreparedTensorInput(
+        mode="host_frame",
+        buffer=object(),
+        frame_id=34,
+        capture_ts_ns=1_000_000_000,
+        width=400,
+        height=200,
+        pixel_format="BGR",
+        source_width=1920,
+        source_height=1080,
+        offset_x=760,
+        offset_y=440,
+        needs_resize=True,
+    )
+    preprocess_result = TensorPreprocessResult(
+        tensor=object(),
+        backend="cpu",
+        input_mode="host_frame",
+        resource_kind="host_frame",
+        resource_memory="cpu",
+        metadata={
+            "resize_mode": "letterbox",
+            "model_content_width": 400,
+            "model_content_height": 200,
+            "pad_x": 0,
+            "pad_y": 100,
+        },
+    )
+    detections = [
+        InferenceDetection(
+            cls=0,
+            score=0.9,
+            box=BBox.from_xyxy(100, 150, 300, 250),
+        )
+    ]
+
+    mapped = map_model_detections_to_roi_frame(
+        detections,
+        prepared=prepared,
+        shape=TensorInputShape(batch=1, channels=3, height=400, width=400),
+        preprocess_result=preprocess_result,
+    )
+
+    assert mapped[0].box.x1 == pytest.approx(100.0)
+    assert mapped[0].box.y1 == pytest.approx(50.0)
+    assert mapped[0].box.x2 == pytest.approx(300.0)
+    assert mapped[0].box.y2 == pytest.approx(150.0)
+
+
+def test_gstreamer_cpu_sample_copy_accepts_rgba_rgb_and_i420_fallback_formats() -> None:
+    import numpy as np
+
+    class Gst:
+        class MapFlags:
+            READ = object()
+
+    class FakeStructure:
+        def __init__(self, fmt: str, width: int, height: int) -> None:
+            self.fmt = fmt
+            self.width = width
+            self.height = height
+
+        def get_int(self, key: str):
+            return True, self.width if key == "width" else self.height
+
+        def get_string(self, key: str) -> str:
+            assert key == "format"
+            return self.fmt
+
+    class FakeCaps:
+        def __init__(self, fmt: str, width: int, height: int) -> None:
+            self.structure = FakeStructure(fmt, width, height)
+
+        def get_size(self) -> int:
+            return 1
+
+        def get_structure(self, _index: int) -> FakeStructure:
+            return self.structure
+
+        def get_features(self, _index: int):
+            return SimpleNamespace(to_string=lambda: "")
+
+    class FakeBuffer:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+
+        def n_memory(self) -> int:
+            return 0
+
+        def map(self, _flags):
+            return True, SimpleNamespace(data=self.payload)
+
+        def unmap(self, _info) -> None:
+            pass
+
+    class FakeSample:
+        def __init__(self, fmt: str, width: int, height: int, payload: bytes) -> None:
+            self.caps = FakeCaps(fmt, width, height)
+            self.buffer = FakeBuffer(payload)
+
+        def get_caps(self) -> FakeCaps:
+            return self.caps
+
+        def get_buffer(self) -> FakeBuffer:
+            return self.buffer
+
+    rgba = np.array([[[1, 2, 3, 255]]], dtype=np.uint8)
+    rgb = np.array([[[4, 5, 6]]], dtype=np.uint8)
+    y = np.array([[82, 82], [82, 82]], dtype=np.uint8)
+    u = np.array([[90]], dtype=np.uint8)
+    v = np.array([[240]], dtype=np.uint8)
+    i420 = bytes([*y.reshape(-1), *u.reshape(-1), *v.reshape(-1)])
+
+    rgba_image, _, _, rgba_fmt = _sample_to_bgr(FakeSample("RGBA", 1, 1, rgba.tobytes()), Gst)
+    rgb_image, _, _, rgb_fmt = _sample_to_bgr(FakeSample("RGB", 1, 1, rgb.tobytes()), Gst)
+    i420_image, _, _, i420_fmt = _sample_to_bgr(FakeSample("I420", 2, 2, i420), Gst)
+
+    assert rgba_fmt == "RGBA"
+    assert rgba_image.tolist() == [[[3, 2, 1]]]
+    assert rgb_fmt == "RGB"
+    assert rgb_image.tolist() == [[[6, 5, 4]]]
+    assert i420_fmt == "I420"
+    assert i420_image.shape == (2, 2, 3)
+    assert i420_image[0, 0, 2] > 200
+
+
+def test_gstreamer_cpu_sample_copy_owns_bgr_memory_after_unmap() -> None:
+    class Gst:
+        class MapFlags:
+            READ = object()
+
+    class FakeStructure:
+        def get_int(self, key: str):
+            return True, 1
+
+        def get_string(self, key: str) -> str:
+            assert key == "format"
+            return "BGR"
+
+    class FakeCaps:
+        def get_size(self) -> int:
+            return 1
+
+        def get_structure(self, _index: int) -> FakeStructure:
+            return FakeStructure()
+
+        def get_features(self, _index: int):
+            return SimpleNamespace(to_string=lambda: "")
+
+    class FakeBuffer:
+        def __init__(self, payload: bytearray) -> None:
+            self.payload = payload
+            self.unmapped = False
+
+        def n_memory(self) -> int:
+            return 0
+
+        def map(self, _flags):
+            return True, SimpleNamespace(data=self.payload)
+
+        def unmap(self, _info) -> None:
+            self.unmapped = True
+
+    class FakeSample:
+        def __init__(self, payload: bytearray) -> None:
+            self.buffer = FakeBuffer(payload)
+
+        def get_caps(self) -> FakeCaps:
+            return FakeCaps()
+
+        def get_buffer(self) -> FakeBuffer:
+            return self.buffer
+
+    payload = bytearray([10, 20, 30])
+    sample = FakeSample(payload)
+
+    image, _, _, fmt = _sample_to_bgr(sample, Gst)
+    payload[:] = b"\x01\x02\x03"
+
+    assert fmt == "BGR"
+    assert sample.buffer.unmapped is True
+    assert image.tolist() == [[[10, 20, 30]]]
 
 
 def test_nvmm_frame_resource_records_gst_buffer_pointer_when_dmabuf_is_absent() -> None:

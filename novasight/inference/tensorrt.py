@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,7 @@ from .input import (
     PreparedTensorInput,
     TensorInputShape,
     normalize_tensor_dtype,
+    parse_tensor_input_shape,
     prepare_tensor_input,
 )
 from .geometry import map_model_detections_to_roi_frame, preprocess_debug
@@ -49,6 +52,7 @@ class TensorRtInferenceEngine:
         self._output_name = ""
         self._device_input: int | None = None
         self._host_input: Any | None = None
+        self._host_allocations: list[_HostAllocation] = []
         self._device_outputs: dict[str, int] = {}
         self._host_outputs: dict[str, Any] = {}
         self._output_shapes: dict[str, tuple[int, ...]] = {}
@@ -92,6 +96,9 @@ class TensorRtInferenceEngine:
             "loaded": self._loaded,
             "warmed": self._warmed,
             "supports_execution": True,
+            "device": "cuda",
+            "require_gpu": True,
+            "allow_cpu_fallback": False,
             "reason": self._reason,
             "input_shape": str(self._input_shape) if self._input_shape is not None else "",
             "input_dtype": self._input_dtype,
@@ -100,6 +107,8 @@ class TensorRtInferenceEngine:
             "output_dtype": self._output_dtype,
             "engine_input_shape": "x".join(str(item) for item in self._engine_input_shape),
             "input_shape_source": self._input_shape_source,
+            "host_input_pinned": self._host_input_pinned(),
+            "host_output_pinned": self._host_output_pinned(),
             "input_profile": {
                 name: list(shape)
                 for name, shape in self._input_profile_shapes.items()
@@ -186,7 +195,12 @@ class TensorRtInferenceEngine:
         self._last_preprocess_backend = ""
         self._last_preprocess_reason = ""
         self._last_preprocess_timings = {}
-        self._load_engine(artifact_path)
+        requested_shape = (
+            _tensor_input_shape_tuple(parse_tensor_input_shape(input_shape))
+            if str(input_shape or "").strip()
+            else None
+        )
+        self._load_engine(artifact_path, requested_shape=requested_shape)
         self._loaded = True
         self._warmup()
 
@@ -217,6 +231,7 @@ class TensorRtInferenceEngine:
                 detections,
                 prepared=self._last_input,
                 shape=self._input_shape,
+                preprocess_result=preprocess_result,
             )
             preprocess_debug_payload = preprocess_debug(
                 self._last_input,
@@ -292,7 +307,12 @@ class TensorRtInferenceEngine:
             self._warmed = False
             logger.warning("TensorRT warmup failed: %s", exc)
 
-    def _load_engine(self, artifact_path: Path) -> None:
+    def _load_engine(
+        self,
+        artifact_path: Path,
+        *,
+        requested_shape: tuple[int, int, int, int] | None,
+    ) -> None:
         import numpy as np
 
         trt = self._trt
@@ -327,6 +347,7 @@ class TensorRtInferenceEngine:
             engine,
             input_name=input_name,
             engine_shape=engine_input_shape,
+            requested_shape=requested_shape,
         )
         input_dtype = np.dtype(trt.nptype(engine.get_tensor_dtype(input_name)))
         if -1 in engine_input_shape:
@@ -356,7 +377,13 @@ class TensorRtInferenceEngine:
         self._engine = engine
         self._context = context
         self._input_name = input_name
-        self._host_input = np.empty((batch, channels, height, width), dtype=input_dtype)
+        input_allocation = _allocate_host_array(
+            cudart,
+            shape=(batch, channels, height, width),
+            dtype=input_dtype,
+        )
+        self._host_allocations.append(input_allocation)
+        self._host_input = input_allocation.array
         err, device_input = cudart.cudaMalloc(self._host_input.nbytes)
         _cuda_check(err, "cudaMalloc input")
         err, stream = cudart.cudaStreamCreate()
@@ -372,7 +399,13 @@ class TensorRtInferenceEngine:
             self._output_shapes[name] = tuple(int(item) for item in shape)
             dtype = np.dtype(trt.nptype(engine.get_tensor_dtype(name)))
             self._output_dtypes[name] = str(dtype)
-            host_output = np.empty(int(np.prod(shape)), dtype=dtype)
+            host_allocation = _allocate_host_array(
+                cudart,
+                shape=(int(np.prod(shape)),),
+                dtype=dtype,
+            )
+            self._host_allocations.append(host_allocation)
+            host_output = host_allocation.array
             nbytes = host_output.nbytes
             err, device_output = cudart.cudaMalloc(nbytes)
             _cuda_check(err, f"cudaMalloc output {name}")
@@ -627,12 +660,15 @@ class TensorRtInferenceEngine:
                     cudart.cudaStreamDestroy(self._stream)
                 except Exception:
                     pass
+        for allocation in self._host_allocations:
+            allocation.release()
         self._device_input = None
         self._device_outputs = {}
         self._stream = None
         self._context = None
         self._engine = None
         self._host_input = None
+        self._host_allocations = []
         self._host_outputs = {}
         self._output_shapes = {}
         self._output_dtypes = {}
@@ -679,6 +715,110 @@ class TensorRtInferenceEngine:
         except Exception:
             pass
 
+    def _host_input_pinned(self) -> bool:
+        return bool(self._host_allocations and self._host_allocations[0].pinned)
+
+    def _host_output_pinned(self) -> bool:
+        return any(allocation.pinned for allocation in self._host_allocations[1:])
+
+
+TensorRtGpuInferBackend = TensorRtInferenceEngine
+
+
+@dataclass
+class _HostAllocation:
+    array: Any
+    pointer: int = 0
+    pinned: bool = False
+    _release: Any | None = None
+    _owner: Any | None = None
+    _released: bool = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        if not self.pinned or self._release is None or self.pointer <= 0:
+            return
+        try:
+            self._release(self.pointer)
+        except Exception:
+            pass
+
+
+def _allocate_host_array(
+    cudart: Any,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> _HostAllocation:
+    import numpy as np
+
+    array_shape = tuple(int(item) for item in shape)
+    np_dtype = np.dtype(dtype)
+    nbytes = int(np.prod(array_shape)) * int(np_dtype.itemsize)
+    pinned = _try_allocate_pinned_host_array(
+        cudart,
+        shape=array_shape,
+        dtype=np_dtype,
+        nbytes=nbytes,
+        np=np,
+    )
+    if pinned is not None:
+        return pinned
+    array = np.empty(array_shape, dtype=np_dtype)
+    return _HostAllocation(
+        array=array,
+        pointer=int(array.ctypes.data),
+        pinned=False,
+    )
+
+
+def _try_allocate_pinned_host_array(
+    cudart: Any,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+    nbytes: int,
+    np: Any,
+) -> _HostAllocation | None:
+    releaser = getattr(cudart, "cudaFreeHost", None)
+    if not callable(releaser):
+        return None
+    for allocator_name in ("cudaHostAlloc", "cudaMallocHost"):
+        allocator = getattr(cudart, allocator_name, None)
+        if not callable(allocator):
+            continue
+        try:
+            if allocator_name == "cudaHostAlloc":
+                flags = int(getattr(cudart, "cudaHostAllocDefault", 0) or 0)
+                result = allocator(int(nbytes), flags)
+            else:
+                result = allocator(int(nbytes))
+            err, pointer = _cuda_result_error_pointer(result)
+        except Exception:
+            continue
+        if err != 0 or pointer <= 0:
+            continue
+        ctypes_array = (ctypes.c_uint8 * int(nbytes)).from_address(pointer)
+        array = np.ctypeslib.as_array(ctypes_array).view(dtype).reshape(shape)
+        return _HostAllocation(
+            array=array,
+            pointer=pointer,
+            pinned=True,
+            _release=releaser,
+            _owner=ctypes_array,
+        )
+    return None
+
+
+def _cuda_result_error_pointer(result: Any) -> tuple[int, int]:
+    if isinstance(result, tuple):
+        if len(result) < 2:
+            return int(result[0]), 0
+        return int(result[0]), int(result[1])
+    return int(result), 0
+
 
 def _cuda_check(result: Any, what: str) -> None:
     err = result[0] if isinstance(result, tuple) else result
@@ -691,7 +831,16 @@ def _resolve_input_shape(
     *,
     input_name: str,
     engine_shape: tuple[int, ...],
+    requested_shape: tuple[int, int, int, int] | None = None,
 ) -> tuple[tuple[int, ...], str, dict[str, tuple[int, ...]]]:
+    if requested_shape is not None:
+        _validate_requested_shape_matches_engine(requested_shape, engine_shape)
+        if -1 not in engine_shape:
+            return tuple(requested_shape), "requested_static", {}
+        profile_shapes = _read_input_profile_shapes(engine, input_name)
+        _validate_requested_shape_within_profile(requested_shape, profile_shapes)
+        return tuple(requested_shape), "requested", profile_shapes
+
     if -1 not in engine_shape:
         return engine_shape, "engine_static", {}
 
@@ -704,6 +853,64 @@ def _resolve_input_shape(
         f"TensorRT dynamic input shape requires a static optimization profile opt shape, "
         f"got engine_shape={engine_shape} input={input_name} profile={profile_shapes}"
     )
+
+
+def _tensor_input_shape_tuple(shape: TensorInputShape) -> tuple[int, int, int, int]:
+    return (
+        int(shape.batch),
+        int(shape.channels),
+        int(shape.height),
+        int(shape.width),
+    )
+
+
+def _validate_requested_shape_matches_engine(
+    requested_shape: tuple[int, int, int, int],
+    engine_shape: tuple[int, ...],
+) -> None:
+    if len(requested_shape) != 4:
+        raise RuntimeError(f"requested input shape must be NCHW, got {requested_shape}")
+    if any(int(item) <= 0 for item in requested_shape):
+        raise RuntimeError(f"requested input shape values must be positive: {requested_shape}")
+    if len(engine_shape) != 4:
+        raise RuntimeError(f"unsupported TensorRT input shape: {engine_shape}")
+    mismatched_static_dims = [
+        (index, expected, actual)
+        for index, (expected, actual) in enumerate(zip(engine_shape, requested_shape))
+        if int(expected) > 0 and int(expected) != int(actual)
+    ]
+    if mismatched_static_dims:
+        raise RuntimeError(
+            "requested input shape does not match TensorRT engine shape: "
+            f"requested={requested_shape} engine={engine_shape}"
+        )
+
+
+def _validate_requested_shape_within_profile(
+    requested_shape: tuple[int, int, int, int],
+    profile_shapes: dict[str, tuple[int, ...]],
+) -> None:
+    minimum = profile_shapes.get("min", ())
+    maximum = profile_shapes.get("max", ())
+    if not minimum or not maximum:
+        return
+    if len(minimum) != 4 or len(maximum) != 4:
+        raise RuntimeError(
+            "TensorRT profile bounds must be NCHW for requested input shape: "
+            f"requested={requested_shape} profile={profile_shapes}"
+        )
+    out_of_bounds = [
+        (index, low, actual, high)
+        for index, (low, actual, high) in enumerate(
+            zip(minimum, requested_shape, maximum)
+        )
+        if int(actual) < int(low) or int(actual) > int(high)
+    ]
+    if out_of_bounds:
+        raise RuntimeError(
+            "requested input shape is outside TensorRT optimization profile: "
+            f"requested={requested_shape} profile={profile_shapes}"
+        )
 
 
 def _read_input_profile_shapes(engine: Any, input_name: str) -> dict[str, tuple[int, ...]]:

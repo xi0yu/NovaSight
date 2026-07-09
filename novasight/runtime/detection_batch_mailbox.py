@@ -13,6 +13,9 @@ class DetectionBatchMailbox:
     def __init__(self) -> None:
         self._condition = threading.Condition()
         self._batch: DetectionBatch | None = None
+        self._latest_generation = -1
+        self._latest_frame_id = -1
+        self._latest_capture_ts_ns = 0
         self._published_batches = 0
         self._stale_published_batches = 0
         self._overwritten_batches = 0
@@ -22,12 +25,26 @@ class DetectionBatchMailbox:
         if not isinstance(batch, DetectionBatch):
             raise TypeError("DetectionBatchMailbox.publish expects a DetectionBatch")
         with self._condition:
-            if self._batch is not None and int(self._batch.generation or 0) != int(batch.generation or 0):
+            generation = int(batch.generation or 0)
+            frame_id = int(batch.frame_id)
+            capture_ts_ns = int(batch.capture_ts_ns)
+            if (
+                bool(batch.is_stale)
+                or generation <= self._latest_generation
+                or frame_id <= self._latest_frame_id
+                or capture_ts_ns <= self._latest_capture_ts_ns
+            ):
+                self._stale_published_batches += 1
+                self._last_publish_ts_ns = time.monotonic_ns()
+                self._condition.notify_all()
+                return
+            if self._batch is not None and int(self._batch.generation or 0) != generation:
                 self._overwritten_batches += 1
             self._batch = batch
+            self._latest_generation = generation
+            self._latest_frame_id = frame_id
+            self._latest_capture_ts_ns = capture_ts_ns
             self._published_batches += 1
-            if bool(batch.is_stale):
-                self._stale_published_batches += 1
             self._last_publish_ts_ns = time.monotonic_ns()
             self._condition.notify_all()
 
@@ -51,6 +68,13 @@ class DetectionBatchMailbox:
     def clear(self) -> None:
         with self._condition:
             self._batch = None
+            self._latest_generation = -1
+            self._latest_frame_id = -1
+            self._latest_capture_ts_ns = 0
+            self._published_batches = 0
+            self._stale_published_batches = 0
+            self._overwritten_batches = 0
+            self._last_publish_ts_ns = 0
             self._condition.notify_all()
 
     def status(self) -> dict[str, Any]:
@@ -58,8 +82,9 @@ class DetectionBatchMailbox:
             return {
                 "pending_depth": 1 if self._batch is not None else 0,
                 "max_pending_depth": 1,
-                "latest_generation": int(self._batch.generation or 0) if self._batch else -1,
-                "latest_frame_id": int(self._batch.frame_id) if self._batch else -1,
+                "latest_generation": self._latest_generation,
+                "latest_frame_id": self._latest_frame_id,
+                "latest_capture_ts_ns": self._latest_capture_ts_ns,
                 "published_batches": self._published_batches,
                 "stale_published_batches": self._stale_published_batches,
                 "overwritten_batches": self._overwritten_batches,

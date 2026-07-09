@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-TensorInputMode = Literal["gpu_buffer"]
+TensorInputMode = Literal["gpu_buffer", "host_frame"]
 TENSOR_DTYPE_BYTES = {
     "float32": 4,
     "float16": 2,
@@ -157,8 +157,23 @@ def prepare_tensor_input(frame: Any, shape: TensorInputShape) -> PreparedTensorI
         resource_pixel_format = str(
             getattr(frame_resource, "pixel_format", "") or ""
         ).upper()
+    elif getattr(frame, "image", None) is not None:
+        mode = "host_frame"
+        buffer = getattr(frame, "image")
+        resource_kind = str(getattr(frame_resource, "kind", "") or "host_frame")
+        resource_memory = str(getattr(frame_resource, "memory", "") or "cpu")
+        resource_source = str(
+            getattr(frame_resource, "source", "") or getattr(frame, "source_backend", "")
+        )
+        dmabuf_fd = None
+        resource_metadata = _dict_attr(frame_resource, "metadata")
+        resource_width = _int_attr(frame_resource, "width", _int_attr(frame, "width", 0))
+        resource_height = _int_attr(frame_resource, "height", _int_attr(frame, "height", 0))
+        resource_pixel_format = str(
+            getattr(frame_resource, "pixel_format", "") or getattr(frame, "pixel_format", "")
+        ).upper()
     else:
-        raise ValueError("TensorRT input frame has no GPU/NVMM resource")
+        raise ValueError("TensorRT input frame has no GPU/NVMM resource or CPU-readable image")
 
     width = _int_attr(frame, "width", 1)
     height = _int_attr(frame, "height", 1)

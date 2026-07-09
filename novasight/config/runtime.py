@@ -38,6 +38,13 @@ class RuntimeLimitsConfig:
 
 
 @dataclass
+class RuntimeBehaviorConfig:
+    freshness_threshold_ms: float = 55.0
+    drop_stale_batches: bool = True
+    consume_latest_only: bool = True
+
+
+@dataclass
 class RoiConfig:
     size: int = 640
     mode: str = "center"
@@ -48,7 +55,10 @@ class RoiConfig:
 @dataclass
 class InferenceConfig:
     enabled: bool = True
-    backend: str = "nvmm_latest"
+    backend: str = "tensorrt"
+    device: str = "cuda"
+    require_gpu: bool = True
+    allow_cpu_fallback: bool = False
     inference_input_deadline_ms: float = 55.0
     confidence_threshold: float = 0.25
     nms_threshold: float = 0.45
@@ -79,10 +89,24 @@ class InferenceConfig:
 
 
 @dataclass
+class PreprocessConfig:
+    backend: str = "cpu"
+    input_format: str = "auto"
+    output_dtype: str = "fp16"
+    normalize: bool = True
+    use_pinned_memory: bool = True
+    h2d_async: bool = True
+
+
+@dataclass
 class CaptureConfig:
     device: str = "/dev/video0"
+    backend: str = "gst_cpu_latest"
     preference: str = "auto_high_fps"
-    memory: str = "nvmm"
+    memory: str = "system"
+    latest_only: bool = True
+    appsink_max_buffers: int = 1
+    queue_leaky: str = "downstream"
     pixel_format: str = ""
     width: int = 0
     height: int = 0
@@ -248,8 +272,10 @@ class RuntimeConfig:
     source: SourceConfig = field(default_factory=SourceConfig)
     consumers: ConsumerConfig = field(default_factory=ConsumerConfig)
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
+    runtime: RuntimeBehaviorConfig = field(default_factory=RuntimeBehaviorConfig)
     roi: RoiConfig = field(default_factory=RoiConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
+    preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
@@ -328,12 +354,11 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         inference = dict(inference)
         if str(inference.get("backend", "")).lower() in {
             "deepstream",
-            "tensorrt",
             "onnxruntime",
             "legacy_latest",
             "deepstream_uncontrolled",
         }:
-            inference["backend"] = "nvmm_latest"
+            inference["backend"] = "tensorrt"
         for key in (
             "deepstream_manifest_path",
             "deepstream_config_path",
@@ -346,8 +371,15 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     capture = normalized.get("capture")
     if isinstance(capture, dict):
         capture = dict(capture)
-        if str(capture.get("memory", "")).lower() in {"cpu", "system"}:
-            capture["memory"] = "nvmm"
+        memory = str(capture.get("memory", "")).lower()
+        if memory == "cpu":
+            capture["memory"] = "system"
+        if str(capture.get("backend", "")).lower() in {
+            "deepstream",
+            "legacy_latest",
+            "deepstream_uncontrolled",
+        }:
+            capture["backend"] = "gst_cpu_latest"
         normalized["capture"] = capture
     control = normalized.get("control")
     if isinstance(control, dict):
@@ -392,10 +424,28 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
     if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
         raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
-    if cfg.capture.memory != "nvmm":
-        raise ValueError("runtime config key 'capture.memory' must be nvmm")
+    if cfg.capture.backend not in {"gst_cpu_latest", "nvmm_latest"}:
+        raise ValueError("runtime config key 'capture.backend' must be gst_cpu_latest or nvmm_latest")
+    if cfg.capture.memory not in {"system", "nvmm"}:
+        raise ValueError("runtime config key 'capture.memory' must be system or nvmm")
+    if cfg.capture.backend == "gst_cpu_latest" and cfg.capture.memory != "system":
+        raise ValueError("runtime config key 'capture.memory' must be system for gst_cpu_latest")
+    if cfg.capture.backend == "nvmm_latest" and cfg.capture.memory != "nvmm":
+        raise ValueError("runtime config key 'capture.memory' must be nvmm for nvmm_latest")
+    if not cfg.capture.latest_only:
+        raise ValueError("runtime config key 'capture.latest_only' must be true")
+    if cfg.capture.appsink_max_buffers != 1:
+        raise ValueError("runtime config key 'capture.appsink_max_buffers' must be 1")
+    if cfg.capture.queue_leaky != "downstream":
+        raise ValueError("runtime config key 'capture.queue_leaky' must be downstream")
     if cfg.limits.stream_fps not in {15, 30, 60}:
         raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
+    if cfg.runtime.freshness_threshold_ms < 0:
+        raise ValueError("runtime config key 'runtime.freshness_threshold_ms' must be >= 0")
+    if not cfg.runtime.drop_stale_batches:
+        raise ValueError("runtime config key 'runtime.drop_stale_batches' must be true")
+    if not cfg.runtime.consume_latest_only:
+        raise ValueError("runtime config key 'runtime.consume_latest_only' must be true")
     if cfg.consumers.recording_format not in {"csv", "parquet"}:
         raise ValueError("runtime config key 'consumers.recording_format' must be csv or parquet")
     try:
@@ -405,10 +455,22 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
     if cfg.roi.mode not in {"center", "manual"}:
         raise ValueError("unsupported ROI mode: must be center or manual")
-    if cfg.inference.backend != "nvmm_latest":
+    if cfg.preprocess.backend not in {"cpu", "cuda"}:
+        raise ValueError("runtime config key 'preprocess.backend' must be cpu or cuda")
+    if cfg.preprocess.input_format != "auto":
+        raise ValueError("runtime config key 'preprocess.input_format' must be auto")
+    if cfg.preprocess.output_dtype not in {"fp16", "fp32", "float16", "float32"}:
+        raise ValueError("runtime config key 'preprocess.output_dtype' must be fp16 or fp32")
+    if cfg.inference.backend not in {"tensorrt", "nvmm_latest"}:
         raise ValueError(
-            "runtime config key 'inference.backend' must be nvmm_latest"
+            "runtime config key 'inference.backend' must be tensorrt or nvmm_latest"
         )
+    if cfg.inference.device != "cuda":
+        raise ValueError("runtime config key 'inference.device' must be cuda")
+    if not cfg.inference.require_gpu:
+        raise ValueError("runtime config key 'inference.require_gpu' must be true")
+    if cfg.inference.allow_cpu_fallback:
+        raise ValueError("runtime config key 'inference.allow_cpu_fallback' must be false")
     if cfg.inference.inference_input_deadline_ms < 0:
         raise ValueError("runtime config key 'inference.inference_input_deadline_ms' must be >= 0")
     if cfg.inference.confidence_threshold < 0 or cfg.inference.confidence_threshold > 1:

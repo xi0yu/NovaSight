@@ -20,13 +20,15 @@ from novasight.inference.input import (
 )
 from novasight.inference.preprocess import (
     DeviceTensor,
+    CpuPreprocessor,
     GpuResourcePreprocessor,
     TensorPreprocessError,
     TensorPreprocessResult,
+    prepare_host_tensor,
     prepare_tensor,
 )
 from novasight.inference.runtime import InferenceRuntime
-from novasight.inference.tensorrt import TensorRtInferenceEngine
+from novasight.inference.tensorrt import TensorRtGpuInferBackend, TensorRtInferenceEngine
 from novasight.inference.unavailable import UnavailableInferenceEngine
 
 __all__ = [
@@ -36,6 +38,7 @@ __all__ = [
     "InferenceRuntime",
     "BaseDecoder",
     "DeviceTensor",
+    "CpuPreprocessor",
     "GpuResourcePreprocessor",
     "PARSER_REGISTRY",
     "YoloV5Decoder",
@@ -45,11 +48,13 @@ __all__ = [
     "get_decoder_class",
     "PreparedTensorInput",
     "TensorRtInferenceEngine",
+    "TensorRtGpuInferBackend",
     "TensorInputShape",
     "TensorPreprocessError",
     "TensorPreprocessResult",
     "UnavailableInferenceEngine",
     "parse_tensor_input_shape",
     "prepare_tensor",
+    "prepare_host_tensor",
     "prepare_tensor_input",
 ]

@@ -45,9 +45,16 @@ class CaptureStatistics:
     inference_counter: int = 0
     dropped_counter: int = 0
     skipped_counter: int = 0
+    published_frames: int = 0
+    overwritten_frames: int = 0
+    acquired_frames: int = 0
+    stale_drop_count: int = 0
     capture_fps: float = 0.0
     inference_fps: float = 0.0
     e2e_latency: float = 0.0
+    latest_frame_age_ms: float = 0.0
+    appsink_caps: str = ""
+    actual_pipeline_string: str = ""
 
 
 @dataclass

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .failfast import FailFastHandler
+from .freshness import FreshnessGate
 
 
 @dataclass
@@ -370,19 +371,15 @@ class RuntimePipeline:
     def _stale_inference_input_reason(self, *, frame_capture_ts_ns: int, now_ns: int) -> str:
         config = getattr(self.runtime, "config", None)
         inference = getattr(config, "inference", None)
-        deadline_ms = float(getattr(inference, "inference_input_deadline_ms", 0.0) or 0.0)
-        if deadline_ms <= 0.0:
-            return ""
-        age_ms = max(0.0, (int(now_ns) - int(frame_capture_ts_ns)) / 1e6)
-        # Legacy unit seams use tiny synthetic timestamps. Only enforce the
-        # deadline for timestamps that plausibly belong to this monotonic clock.
-        if age_ms > max(3_600_000.0, deadline_ms * 100.0):
-            return ""
-        if age_ms <= deadline_ms:
-            return ""
-        return (
-            "inference input frame age exceeds deadline: "
-            f"{age_ms:.1f}ms > {deadline_ms:.1f}ms"
+        runtime_config = getattr(config, "runtime", None)
+        gate = FreshnessGate.strictest(
+            getattr(runtime_config, "freshness_threshold_ms", 0.0),
+            getattr(inference, "inference_input_deadline_ms", 0.0),
+        )
+        return gate.stale_reason(
+            capture_ts_ns=frame_capture_ts_ns,
+            now_ns=now_ns,
+            template="inference input frame age exceeds deadline: {age_ms:.1f}ms > {threshold_ms:.1f}ms",
         )
 
     def _continuous_control_enabled(self) -> bool:

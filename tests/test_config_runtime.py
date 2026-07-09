@@ -333,13 +333,29 @@ def test_runtime_config_defaults_include_experimental_angle_settings() -> None:
 def test_runtime_config_defaults_include_inference_settings() -> None:
     cfg = RuntimeConfig()
 
-    assert cfg.capture.memory == "nvmm"
+    assert cfg.capture.backend == "gst_cpu_latest"
+    assert cfg.capture.memory == "system"
+    assert cfg.capture.latest_only is True
+    assert cfg.capture.appsink_max_buffers == 1
+    assert cfg.capture.queue_leaky == "downstream"
+    assert cfg.preprocess.backend == "cpu"
+    assert cfg.preprocess.input_format == "auto"
+    assert cfg.preprocess.output_dtype == "fp16"
+    assert cfg.preprocess.normalize is True
+    assert cfg.preprocess.use_pinned_memory is True
+    assert cfg.preprocess.h2d_async is True
     assert cfg.inference.enabled is True
-    assert cfg.inference.backend == "nvmm_latest"
+    assert cfg.inference.backend == "tensorrt"
+    assert cfg.inference.device == "cuda"
+    assert cfg.inference.require_gpu is True
+    assert cfg.inference.allow_cpu_fallback is False
     assert cfg.inference.inference_input_deadline_ms == 55.0
     assert cfg.inference.confidence_threshold == 0.25
     assert cfg.inference.nms_threshold == 0.45
     assert cfg.inference.input_source == "source.default"
+    assert cfg.runtime.freshness_threshold_ms == 55.0
+    assert cfg.runtime.drop_stale_batches is True
+    assert cfg.runtime.consume_latest_only is True
 
 
 def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
@@ -356,16 +372,27 @@ def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
         }
     )
 
-    assert cfg.capture.memory == "nvmm"
-    assert cfg.inference.backend == "nvmm_latest"
+    assert cfg.capture.backend == "gst_cpu_latest"
+    assert cfg.capture.memory == "system"
+    assert cfg.inference.backend == "tensorrt"
     assert not hasattr(cfg.inference, "deepstream_manifest_path")
     assert not hasattr(cfg.inference, "deepstream_config_path")
     assert not hasattr(cfg.inference, "deepstream_io_mode")
     assert not hasattr(cfg.inference, "deepstream_batched_push_timeout_us")
 
 
-def test_runtime_config_accepts_nvmm_latest_backend() -> None:
-    cfg = parse_runtime_config({"inference": {"backend": "nvmm_latest"}})
+def test_runtime_config_accepts_tensorrt_and_nvmm_latest_backends() -> None:
+    cfg = parse_runtime_config({"inference": {"backend": "tensorrt"}})
+
+    assert cfg.inference.backend == "tensorrt"
+
+    cfg = parse_runtime_config(
+        {
+            "capture": {"backend": "nvmm_latest", "memory": "nvmm"},
+            "preprocess": {"backend": "cuda"},
+            "inference": {"backend": "nvmm_latest"},
+        }
+    )
 
     assert cfg.inference.backend == "nvmm_latest"
 
@@ -409,8 +436,9 @@ def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
 def test_example_runtime_config_loads_with_current_schema() -> None:
     cfg = load_runtime_config(Path("config/novasight.example.yaml"))
 
-    assert cfg.inference.backend == "nvmm_latest"
-    assert cfg.capture.memory == "nvmm"
+    assert cfg.capture.backend == "gst_cpu_latest"
+    assert cfg.capture.memory == "system"
+    assert cfg.inference.backend == "tensorrt"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
     assert cfg.calibration.fov_x_deg == 105
@@ -633,12 +661,14 @@ def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
     assert cfg.roi.mode == "manual"
 
 
-def test_runtime_config_capture_memory_is_nvmm_only() -> None:
-    assert parse_runtime_config({}).capture.memory == "nvmm"
-    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "nvmm"
-    assert parse_runtime_config({"capture": {"memory": "nvmm"}}).capture.memory == "nvmm"
+def test_runtime_config_capture_memory_matches_backend() -> None:
+    assert parse_runtime_config({}).capture.memory == "system"
+    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "system"
+    assert parse_runtime_config(
+        {"capture": {"backend": "nvmm_latest", "memory": "nvmm"}, "preprocess": {"backend": "cuda"}, "inference": {"backend": "nvmm_latest"}}
+    ).capture.memory == "nvmm"
 
-    with pytest.raises(ValueError, match="capture.memory.*nvmm"):
+    with pytest.raises(ValueError, match="capture.memory.*system or nvmm"):
         parse_runtime_config({"capture": {"memory": "dmabuf"}})
 
 
@@ -667,9 +697,10 @@ def test_runtime_config_schema_exposes_capture_memory() -> None:
         "path": "capture.memory",
         "label": "采集内存路径",
         "type": "select",
-        "options": ["nvmm"],
+        "options": ["system", "nvmm"],
         "restart_required": True,
     }
+    assert fields["capture.backend"]["options"] == ["gst_cpu_latest", "nvmm_latest"]
 
 
 def test_runtime_config_schema_exposes_only_experimental_angle_control_fields() -> None:
@@ -778,6 +809,9 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     assert {
         "inference.enabled",
         "inference.backend",
+        "inference.device",
+        "inference.require_gpu",
+        "inference.allow_cpu_fallback",
         "inference.inference_input_deadline_ms",
         "inference.confidence_threshold",
         "inference.nms_threshold",
@@ -786,4 +820,16 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     backend_field = next(
         field for field in inference_section["fields"] if field["path"] == "inference.backend"
     )
-    assert backend_field["options"] == ["nvmm_latest"]
+    assert backend_field["options"] == ["tensorrt", "nvmm_latest"]
+
+
+def test_runtime_config_schema_exposes_latest_only_runtime_fields() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    runtime_section = next(section for section in schema["sections"] if section["id"] == "runtime")
+    paths = {field["path"] for field in runtime_section["fields"]}
+
+    assert {
+        "runtime.freshness_threshold_ms",
+        "runtime.drop_stale_batches",
+        "runtime.consume_latest_only",
+    }.issubset(paths)

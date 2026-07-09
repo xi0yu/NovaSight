@@ -189,8 +189,11 @@ def _load_active_model(models: ModelRegistry, inference: InferenceRuntime) -> No
     if artifact is None:
         inference.disable(f"active deployment artifact not found: {deployment.artifact_id}")
         return
-    if artifact.kind not in {"onnx", "engine"}:
-        inference.disable(f"active artifact is not runnable inference artifact: {artifact.kind}")
+    if artifact.kind != "engine":
+        inference.disable(
+            "active artifact must be a TensorRT .engine; "
+            f"CPU/ONNX fallback is disabled for runtime inference: {artifact.kind}"
+        )
         return
     version = models.get_version(artifact.version_id)
     if version is None:

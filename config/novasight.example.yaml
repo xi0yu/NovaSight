@@ -14,6 +14,10 @@ consumers:
   recording_path: ""
 limits:
   stream_fps: 30
+runtime:
+  freshness_threshold_ms: 55
+  drop_stale_batches: true
+  consume_latest_only: true
 roi:
   size: 640
   mode: center
@@ -21,15 +25,29 @@ roi:
   offset_y: 0
 inference:
   enabled: true
-  backend: nvmm_latest
+  backend: tensorrt
+  device: cuda
+  require_gpu: true
+  allow_cpu_fallback: false
   confidence_threshold: 0.25
   nms_threshold: 0.45
   input_source: source.default
   inference_input_deadline_ms: 55
+preprocess:
+  backend: cpu
+  input_format: auto
+  output_dtype: fp16
+  normalize: true
+  use_pinned_memory: true
+  h2d_async: true
 capture:
   device: /dev/video0
+  backend: gst_cpu_latest
   preference: auto_high_fps
-  memory: nvmm
+  memory: system
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
   pixel_format: ""
   width: 0
   height: 0

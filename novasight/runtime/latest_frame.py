@@ -55,9 +55,12 @@ class LatestFrameBroker:
         self._condition = threading.Condition()
         self._pending: FrameHandle | None = None
         self._published_generation = -1
+        self._published_frame_id = -1
         self._acquired_generation = -1
+        self._acquired_frame_id = -1
         self._published_frames = 0
         self._overwritten_frames = 0
+        self._stale_published_frames = 0
         self._acquired_frames = 0
         self._last_publish_ts_ns = 0
         self._last_acquire_ts_ns = 0
@@ -66,17 +69,34 @@ class LatestFrameBroker:
         if not isinstance(frame, FrameHandle):
             raise TypeError("LatestFrameBroker.publish expects a FrameHandle")
         old: FrameHandle | None = None
+        stale: FrameHandle | None = None
         with self._condition:
-            if self._pending is not None and int(self._pending.generation) != int(frame.generation):
+            if (
+                int(frame.generation) <= self._published_generation
+                or int(frame.frame_id) <= self._published_frame_id
+            ):
+                self._stale_published_frames += 1
+                stale = frame
+            elif self._pending is not None and int(self._pending.generation) != int(frame.generation):
                 self._overwritten_frames += 1
                 old = self._pending
-            self._pending = frame
-            self._published_generation = max(self._published_generation, int(frame.generation))
-            self._published_frames += 1
-            self._last_publish_ts_ns = time.monotonic_ns()
-            self._condition.notify_all()
+                self._pending = frame
+                self._published_generation = int(frame.generation)
+                self._published_frame_id = int(frame.frame_id)
+                self._published_frames += 1
+                self._last_publish_ts_ns = time.monotonic_ns()
+                self._condition.notify_all()
+            else:
+                self._pending = frame
+                self._published_generation = int(frame.generation)
+                self._published_frame_id = int(frame.frame_id)
+                self._published_frames += 1
+                self._last_publish_ts_ns = time.monotonic_ns()
+                self._condition.notify_all()
         if old is not None:
             old.release()
+        if stale is not None:
+            stale.release()
 
     def acquire_latest(
         self,
@@ -92,6 +112,7 @@ class LatestFrameBroker:
                     frame = self._pending
                     self._pending = None
                     self._acquired_generation = int(frame.generation)
+                    self._acquired_frame_id = int(frame.frame_id)
                     self._acquired_frames += 1
                     self._last_acquire_ts_ns = time.monotonic_ns()
                     return frame
@@ -104,6 +125,16 @@ class LatestFrameBroker:
         with self._condition:
             old = self._pending
             self._pending = None
+            self._published_generation = -1
+            self._published_frame_id = -1
+            self._acquired_generation = -1
+            self._acquired_frame_id = -1
+            self._published_frames = 0
+            self._overwritten_frames = 0
+            self._stale_published_frames = 0
+            self._acquired_frames = 0
+            self._last_publish_ts_ns = 0
+            self._last_acquire_ts_ns = 0
             self._condition.notify_all()
         if old is not None:
             old.release()
@@ -114,15 +145,21 @@ class LatestFrameBroker:
                 "pending_depth": 1 if self._pending is not None else 0,
                 "max_pending_depth": 1,
                 "published_generation": self._published_generation,
+                "published_frame_id": self._published_frame_id,
                 "acquired_generation": self._acquired_generation,
+                "acquired_frame_id": self._acquired_frame_id,
                 "published_frames": self._published_frames,
                 "overwritten_frames": self._overwritten_frames,
                 "latest_overwrite_count": self._overwritten_frames,
                 "busy_drop_count": self._overwritten_frames,
+                "stale_published_frames": self._stale_published_frames,
                 "acquired_frames": self._acquired_frames,
                 "last_publish_ts_ns": self._last_publish_ts_ns,
                 "last_acquire_ts_ns": self._last_acquire_ts_ns,
             }
 
 
-__all__ = ["FrameHandle", "LatestFrameBroker"]
+LatestFrameExchange = LatestFrameBroker
+
+
+__all__ = ["FrameHandle", "LatestFrameBroker", "LatestFrameExchange"]
