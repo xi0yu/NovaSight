@@ -150,5 +150,16 @@ if [[ "${RUN_BUILD}" -eq 1 ]]; then
   fi
   echo "==> Building production NVMM preprocess library"
   python3 -m novasight doctor jetson-native-build --build-dir build/jetson-native
+
+  canonical="build/jetson-native/libnovasight_preprocess.so"
+  if [[ -f "${canonical}" ]]; then
+    echo "==> Built: ${canonical}"
+    echo "==> Tip: export the library path before running the NovaSight backend:"
+    echo "    export NOVASIGHT_JETSON_NATIVE_LIBRARY=\"${PWD}/${canonical}\""
+  else
+    echo "warning: ${canonical} was not produced by doctor jetson-native-build." >&2
+    echo "         Run 'python -m novasight doctor jetson-native-build --build-dir build/jetson-native' manually and inspect its output." >&2
+    exit 2
+  fi
 fi
 

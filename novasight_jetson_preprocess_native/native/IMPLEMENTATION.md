@@ -267,6 +267,37 @@ then `cmake --build`. A successful run must print `available: True`,
 means the bundled `.cu` was not linked against real nvbufsurface, even if the
 .so file exists.
 
+## Run with capture.memory=nvmm
+
+Once `libnovasight_preprocess.so` is built, the NovaSight backend will find
+it via `NOVASIGHT_JETSON_NATIVE_LIBRARY`, falling back to a built-in candidate
+scan in `novasight_jetson_preprocess_native._library_path()` that already
+probes `build/jetson-native/libnovasight_preprocess.so` from both cwd and
+the repository root. For an explicit, prod-style setup:
+
+```bash
+cd /home/nvidia/NovaSight
+export NOVASIGHT_JETSON_NATIVE_LIBRARY="$PWD/build/jetson-native/libnovasight_preprocess.so"
+
+cp -n config/novasight.example.yaml config/novasight.yaml
+# Edit config/novasight.yaml: set
+#   capture.memory: nvmm           # appsink delivers dmabuf NvBufSurface
+#   capture.device: /dev/video0    # or /dev/video1 for the second CSI
+#   inference.backend: nvmm_latest # TensorRT engine that consumes DeviceTensor
+#   inference.enabled: true
+```
+
+Start the backend:
+
+```bash
+python -m novasight --host 0.0.0.0 --port 5174
+```
+
+Open `http://<jetson-ip>:5174` and confirm via the device status route that
+`gpu_preprocessor.available` is `true` and `gpu_preprocessor.native_ready`
+is `true`. The 400 error `JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE` should be
+gone; the pipeline is now producing real NCHW device tensors.
+
 ## Required Input
 
 `novasight_prepare_tensor_json(payload_json,result_json,size)` receives JSON
