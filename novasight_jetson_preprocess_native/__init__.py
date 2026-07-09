@@ -241,37 +241,91 @@ def status() -> dict[str, Any]:
     }
 
 
+
+_JETPACK_CUDA_HEADER_CANDIDATES: tuple[str, ...] = (
+    "/usr/local/cuda/include/cuda.h",
+    "/usr/local/cuda/targets/aarch64-linux/include/cuda.h",
+    "/usr/local/cuda-12/include/cuda.h",
+    "/usr/local/cuda-12.6/include/cuda.h",
+    "/usr/local/cuda-12.6/targets/aarch64-linux/include/cuda.h",
+    "/usr/local/cuda-12.4/include/cuda.h",
+    "/usr/local/cuda-12.2/include/cuda.h",
+    "/usr/local/cuda-11/include/cuda.h",
+    "/usr/include/cuda.h",
+)
+_JETPACK_CUDA_LIBRARY_CANDIDATES: tuple[str, ...] = (
+    "/usr/local/cuda/lib64/libcudart.so",
+    "/usr/local/cuda/targets/aarch64-linux/lib/libcudart.so",
+    "/usr/local/cuda-12/lib64/libcudart.so",
+    "/usr/local/cuda-12.6/lib64/libcudart.so",
+    "/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcudart.so",
+    "/usr/local/cuda-12.4/lib64/libcudart.so",
+    "/usr/local/cuda-12.2/lib64/libcudart.so",
+    "/usr/local/cuda-11/lib64/libcudart.so",
+    "/usr/lib/aarch64-linux-gnu/libcudart.so",
+    "/usr/lib/aarch64-linux-gnu/libcudart.so.1",
+    "/usr/lib/aarch64-linux-gnu/libcudart.so.12",
+    "/usr/lib/aarch64-linux-gnu/libcudart.so.11",
+)
+
 def _probe_jetpack_component(
     *,
-    header_paths: tuple[tuple[str, ...], ...],
-    library_names: tuple[str, ...],
+    header_paths: tuple[tuple[str, ...], ...] = (),
+    library_names: tuple[str, ...] = (),
     apt_package: str,
+    explicit_header_candidates: tuple[str, ...] = (),
+    explicit_library_candidates: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Inspect the filesystem to determine which JetPack component is missing."""
+    """Inspect the filesystem to determine which JetPack component is missing.
+
+    Two scanning modes are supported. The default mode derives every probed
+    path from a structured prefix list (used by nvbufsurface / EGL), which
+    looks up headers under typical JetPack locations and libraries under
+    ``/usr/lib/aarch64-linux-gnu*`` + ``/usr/lib*/nvidia`` + DeepStream 7.1.
+    Pass ``explicit_header_candidates`` / ``explicit_library_candidates`` to
+    override the structured derivation (used by CUDA Toolkit, where the
+    on-disk layout varies per JetPack release).
+    """
     found_header: str | None = None
-    for candidates in header_paths:
-        for candidate in candidates:
-            if Path(candidate).is_file():
-                found_header = candidate
+    if explicit_header_candidates:
+        for candidate in explicit_header_candidates:
+            path = Path(candidate)
+            if path.is_file() or (path.is_symlink() and path.resolve().is_file()):
+                found_header = str(path)
                 break
-        if found_header is not None:
-            break
+    else:
+        for candidates in header_paths:
+            for candidate in candidates:
+                if Path(candidate).is_file():
+                    found_header = candidate
+                    break
+            if found_header is not None:
+                break
     found_library: str | None = None
-    for name in library_names:
-        probes = (
-            Path(f"/usr/lib/aarch64-linux-gnu/lib{name}.so"),
-            Path(f"/usr/lib/aarch64-linux-gnu/lib{name}.so.1"),
-            Path(f"/usr/lib/aarch64-linux-gnu/nvidia/lib{name}.so"),
-            Path(f"/usr/lib/aarch64-linux-gnu/nvidia/lib{name}.so.1"),
-            Path(f"/opt/nvidia/deepstream/deepstream-7.1/lib/lib{name}.so"),
-            Path(f"/usr/lib/lib{name}.so"),
-        )
-        for probe in probes:
-            if probe.is_file():
-                found_library = str(probe)
+    if explicit_library_candidates:
+        for candidate in explicit_library_candidates:
+            path = Path(candidate)
+            if path.is_file() or (path.is_symlink() and path.resolve().is_file()):
+                found_library = str(path)
                 break
-        if found_library is not None:
-            break
+    else:
+        for name in library_names:
+            probes = (
+                Path(f"/usr/lib/aarch64-linux-gnu/lib{name}.so"),
+                Path(f"/usr/lib/aarch64-linux-gnu/lib{name}.so.1"),
+                Path(f"/usr/lib/aarch64-linux-gnu/nvidia/lib{name}.so"),
+                Path(f"/usr/lib/aarch64-linux-gnu/nvidia/lib{name}.so.1"),
+                Path(f"/opt/nvidia/deepstream/deepstream-7.1/lib/lib{name}.so"),
+                Path(f"/usr/lib/lib{name}.so"),
+            )
+            for probe in probes:
+                if probe.is_file() or (
+                    probe.is_symlink() and probe.resolve().is_file()
+                ):
+                    found_library = str(probe)
+                    break
+            if found_library is not None:
+                break
     return {
         "header": found_header,
         "library": found_library,
@@ -338,14 +392,9 @@ def preflight() -> dict[str, Any]:
         apt_package="libegl1 libegl-dev",
     )
     cuda_toolkit = _probe_jetpack_component(
-        header_paths=(
-            (
-                "/usr/local/cuda/include/cuda.h",
-                "/usr/include/cuda.h",
-            ),
-        ),
-        library_names=("cudart",),
         apt_package="nvidia-cuda-toolkit-* (or JetPack cuda-toolkit)",
+        explicit_header_candidates=_JETPACK_CUDA_HEADER_CANDIDATES,
+        explicit_library_candidates=_JETPACK_CUDA_LIBRARY_CANDIDATES,
     )
     components = {
         "nvbufsurface": nvbufsurface,
