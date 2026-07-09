@@ -2571,7 +2571,7 @@ export function StudioConsoleView({
                     最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms，Tensor Meta {formatNumber(captureToTensorMetaMs, 1)}ms，
                     已超过 {controlLatencyGuardMs.toFixed(0)}ms 控制保护阈值。
                   </span>
-                  <em>优先检查 GstClock 时间戳映射、采集到 tensor 的排队延迟，以及 runtime 是否消费最新 DetectionBatch。</em>
+                  <em>实时控制不会补完旧帧；过期批次会被丢弃，只允许新鲜 DetectionBatch 进入控制。</em>
                 </div>
               ) : null}
               rows={[
@@ -2582,6 +2582,8 @@ export function StudioConsoleView({
               ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
               ["累计批次", formatNumber(statistics?.published_batches, 0)],
               ["窗口批次", formatNumber(statistics?.window_published_batches, 0)],
+              ["丢弃旧批次", formatNumber(statistics?.stale_dropped_batches, 0)],
+              ["窗口丢旧", formatNumber(statistics?.window_stale_dropped_batches, 0)],
               ["窗口 TensorMeta", formatNumber(statistics?.window_tensor_meta_frames, 0)],
               ["窗口后处理", formatNumber(statistics?.window_postprocess_frames, 0)],
               ["时间戳", shortTimestampSource(readString(statistics?.timestamp_source, "-"))],

@@ -133,6 +133,9 @@ class RuntimeService:
         for key in (
             "published_batches",
             "window_published_batches",
+            "stale_dropped_batches",
+            "window_stale_dropped_batches",
+            "max_publish_age_ms",
             "tensor_meta_frames",
             "postprocess_frames",
             "window_tensor_meta_frames",

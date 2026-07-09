@@ -105,6 +105,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     doctor_deepstream_smoke.add_argument("--roi-size", type=int, default=480)
     doctor_deepstream_smoke.add_argument("--io-mode", type=int, default=2)
     doctor_deepstream_smoke.add_argument("--batched-push-timeout-us", type=int, default=0)
+    doctor_deepstream_smoke.add_argument("--max-publish-age-ms", type=float, default=55.0)
     doctor_deepstream_smoke.add_argument("--tracker-config", default="")
     doctor_deepstream_smoke.add_argument("--seconds", type=float, default=5.0)
     doctor_deepstream_smoke.add_argument("--poll-interval", type=float, default=0.02)
@@ -672,6 +673,7 @@ def _doctor_deepstream_smoke(args: argparse.Namespace) -> int:
             manifest=manifest,
             roi_width=args.roi_size,
             roi_height=args.roi_size,
+            max_publish_age_ms=float(getattr(args, "max_publish_age_ms", 55.0)),
         )
     except Exception as exc:
         print("available: False")
@@ -781,6 +783,9 @@ def _doctor_deepstream_smoke(args: argparse.Namespace) -> int:
         print(f"available: {status['available']}")
         print(f"running: {status['running']}")
         print(f"published_batches: {status['published_batches']}")
+        print(f"stale_dropped_batches: {int(status.get('stale_dropped_batches', 0))}")
+        print(f"window_stale_dropped_batches: {int(status.get('window_stale_dropped_batches', 0))}")
+        print(f"max_publish_age_ms: {float(status.get('max_publish_age_ms', 0.0)):.2f}")
         print(f"observed_batches: {observed}")
         print(f"terminal_error: {bool(status.get('terminal_error', False))}")
         print(f"tensor_meta_frames: {int(status.get('tensor_meta_frames', 0))}")
@@ -824,6 +829,11 @@ def _doctor_deepstream_smoke(args: argparse.Namespace) -> int:
                 "available": status["available"],
                 "running": status["running"],
                 "published_batches": status["published_batches"],
+                "stale_dropped_batches": int(status.get("stale_dropped_batches", 0)),
+                "window_stale_dropped_batches": int(
+                    status.get("window_stale_dropped_batches", 0)
+                ),
+                "max_publish_age_ms": float(status.get("max_publish_age_ms", 0.0)),
                 "observed_batches": observed,
                 "terminal_error": bool(status.get("terminal_error", False)),
                 "tensor_meta_frames": int(status.get("tensor_meta_frames", 0)),

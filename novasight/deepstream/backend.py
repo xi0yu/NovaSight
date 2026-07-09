@@ -84,6 +84,7 @@ class DeepStreamDetectionBackend:
         roi_height: int,
         confidence_threshold: float | None = None,
         nms_threshold: float | None = None,
+        max_publish_age_ms: float = 0.0,
     ) -> None:
         self.pipeline_config = pipeline_config
         self.manifest = manifest
@@ -99,6 +100,7 @@ class DeepStreamDetectionBackend:
             if nms_threshold is None
             else float(nms_threshold)
         )
+        self.max_publish_age_ms = max(0.0, float(max_publish_age_ms))
         self.pipeline_description = build_deepstream_pipeline(pipeline_config)
         self._lock = threading.RLock()
         self._pipeline: Any | None = None
@@ -106,9 +108,11 @@ class DeepStreamDetectionBackend:
         self._last_result: DetectionBatch | None = None
         self._last_error = ""
         self._published_batches = 0
+        self._stale_dropped_batches = 0
         self._tensor_meta_frames = 0
         self._postprocess_frames = 0
         self._publish_window_ts_ns: deque[int] = deque()
+        self._stale_drop_window_ts_ns: deque[int] = deque()
         self._tensor_meta_window_ts_ns: deque[int] = deque()
         self._postprocess_window_ts_ns: deque[int] = deque()
         self._latency_window_samples: deque[tuple[int, float]] = deque()
@@ -163,9 +167,11 @@ class DeepStreamDetectionBackend:
                 self._running = True
                 self._last_result = None
                 self._published_batches = 0
+                self._stale_dropped_batches = 0
                 self._tensor_meta_frames = 0
                 self._postprocess_frames = 0
                 self._publish_window_ts_ns.clear()
+                self._stale_drop_window_ts_ns.clear()
                 self._tensor_meta_window_ts_ns.clear()
                 self._postprocess_window_ts_ns.clear()
                 self._latency_window_samples.clear()
@@ -192,6 +198,7 @@ class DeepStreamDetectionBackend:
                 self._running = False
                 self._started_at_ns = 0
                 self._publish_window_ts_ns.clear()
+                self._stale_drop_window_ts_ns.clear()
                 self._tensor_meta_window_ts_ns.clear()
                 self._postprocess_window_ts_ns.clear()
                 self._latency_window_samples.clear()
@@ -240,9 +247,11 @@ class DeepStreamDetectionBackend:
                 self._prune_publish_window_locked(now_ns)
             last_result = self._last_result
             published = self._published_batches
+            stale_dropped = self._stale_dropped_batches
             tensor_meta_frames = self._tensor_meta_frames
             postprocess_frames = self._postprocess_frames
             window_published = len(self._publish_window_ts_ns)
+            window_stale_dropped = len(self._stale_drop_window_ts_ns)
             window_tensor_meta = len(self._tensor_meta_window_ts_ns)
             window_postprocess = len(self._postprocess_window_ts_ns)
             detection_batch_fps = self._publish_window_fps_locked()
@@ -253,6 +262,7 @@ class DeepStreamDetectionBackend:
             last_error = self._last_error
             confidence_threshold = self.confidence_threshold
             nms_threshold = self.nms_threshold
+            max_publish_age_ms = self.max_publish_age_ms
             timestamp_source = self._timestamp_source
             last_raw_pts_ns = self._last_raw_pts_ns
             last_capture_ts_ns = self._last_capture_ts_ns
@@ -326,6 +336,9 @@ class DeepStreamDetectionBackend:
             },
             "published_batches": published,
             "window_published_batches": window_published if running and not terminal_error else 0,
+            "stale_dropped_batches": stale_dropped,
+            "window_stale_dropped_batches": window_stale_dropped if running and not terminal_error else 0,
+            "max_publish_age_ms": max_publish_age_ms,
             "tensor_meta_frames": tensor_meta_frames,
             "postprocess_frames": postprocess_frames,
             "window_tensor_meta_frames": window_tensor_meta if running and not terminal_error else 0,
@@ -485,10 +498,7 @@ class DeepStreamDetectionBackend:
         with self._lock:
             if self._terminal_error or not self._running:
                 return
-            self._last_result = batch
-            self._published_batches += 1
             inference_end_ts_ns = int(batch.inference_end_ts_ns)
-            self._publish_window_ts_ns.append(inference_end_ts_ns)
             self._latency_window_samples.append(
                 (inference_end_ts_ns, float(batch.inference_latency_ms))
             )
@@ -498,9 +508,36 @@ class DeepStreamDetectionBackend:
             if postprocess:
                 self._postprocess_frames += 1
                 self._postprocess_window_ts_ns.append(inference_end_ts_ns)
+            if self._batch_age_exceeds_publish_limit_locked(batch):
+                self._stale_dropped_batches += 1
+                self._stale_drop_window_ts_ns.append(inference_end_ts_ns)
+                self._prune_publish_window_locked(inference_end_ts_ns)
+                self._last_error = (
+                    "DeepStream DetectionBatch dropped before runtime: "
+                    f"age {self._batch_age_ms(batch):.1f}ms > {self.max_publish_age_ms:.1f}ms"
+                )
+                return
+            self._last_result = batch
+            self._published_batches += 1
+            self._publish_window_ts_ns.append(inference_end_ts_ns)
             self._prune_publish_window_locked(inference_end_ts_ns)
             if not self._terminal_error:
                 self._last_error = ""
+
+    def _batch_age_exceeds_publish_limit_locked(self, batch: DetectionBatch) -> bool:
+        if self.max_publish_age_ms <= 0.0:
+            return False
+        return self._batch_age_ms(batch) > self.max_publish_age_ms
+
+    @staticmethod
+    def _batch_age_ms(batch: DetectionBatch) -> float:
+        try:
+            return max(
+                0.0,
+                (int(batch.inference_end_ts_ns) - int(batch.capture_ts_ns)) / 1e6,
+            )
+        except Exception:
+            return 0.0
 
     def _publish_window_fps_locked(self) -> float:
         return self._window_fps_locked(self._publish_window_ts_ns)
@@ -517,6 +554,8 @@ class DeepStreamDetectionBackend:
         window_start_ns = int(now_ns) - 1_000_000_000
         while self._publish_window_ts_ns and self._publish_window_ts_ns[0] < window_start_ns:
             self._publish_window_ts_ns.popleft()
+        while self._stale_drop_window_ts_ns and self._stale_drop_window_ts_ns[0] < window_start_ns:
+            self._stale_drop_window_ts_ns.popleft()
         while self._tensor_meta_window_ts_ns and self._tensor_meta_window_ts_ns[0] < window_start_ns:
             self._tensor_meta_window_ts_ns.popleft()
         while self._postprocess_window_ts_ns and self._postprocess_window_ts_ns[0] < window_start_ns:

@@ -176,6 +176,9 @@ export type Statistics = {
   control_observation_fps?: number;
   published_batches?: number;
   window_published_batches?: number;
+  stale_dropped_batches?: number;
+  window_stale_dropped_batches?: number;
+  max_publish_age_ms?: number;
   tensor_meta_frames?: number;
   postprocess_frames?: number;
   window_tensor_meta_frames?: number;

@@ -3167,6 +3167,65 @@ def test_deepstream_backend_publishes_latest_detection_batch(tmp_path, monkeypat
     assert stopped_status["capture_to_tensor_meta_ms_stats"]["count"] == 0
 
 
+def test_deepstream_backend_drops_stale_batches_before_runtime(tmp_path, monkeypatch) -> None:
+    engine_path = tmp_path / "model.engine"
+    engine_path.write_bytes(b"engine")
+    config_path = tmp_path / "deepstream.ini"
+    config_path.write_text("[property]\n", encoding="utf-8")
+    manifest = build_engine_manifest(
+        model_id="combat",
+        display_name="Combat",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+    )
+    backend = DeepStreamDetectionBackend(
+        pipeline_config=DeepStreamPipelineConfig(
+            device="/dev/video0",
+            capture_width=1920,
+            capture_height=1080,
+            fps=120,
+            roi_left=720,
+            roi_top=300,
+            roi_size=480,
+            model_width=256,
+            model_height=256,
+            nvinfer_config_path=config_path,
+        ),
+        manifest=manifest,
+        roi_width=480,
+        roi_height=480,
+        max_publish_age_ms=55.0,
+    )
+    import numpy as np
+
+    output = np.zeros((1, 8, 1344), dtype=np.float32)
+    output[0, :, 0] = [128, 128, 32, 64, 0.9, 0.1, 0.0, 0.0]
+    with backend._lock:
+        backend._running = True
+
+    batch = backend.publish_output_tensor(
+        output,
+        frame_id=12,
+        capture_ts_ns=1_000_000,
+        inference_start_ts_ns=1_000_000,
+        inference_end_ts_ns=101_000_000,
+    )
+    monkeypatch.setattr("novasight.deepstream.backend.time.monotonic_ns", lambda: 101_000_000)
+    status = backend.status()
+
+    assert batch.frame_id == 12
+    assert backend.latest_result() is None
+    assert status["tensor_meta_frames"] == 1
+    assert status["postprocess_frames"] == 1
+    assert status["published_batches"] == 0
+    assert status["stale_dropped_batches"] == 1
+    assert status["window_stale_dropped_batches"] == 1
+    assert status["max_publish_age_ms"] == pytest.approx(55.0)
+    assert "dropped before runtime" in status["last_error"]
+
+
 def test_deepstream_backend_reports_sliding_window_detection_fps(tmp_path, monkeypatch) -> None:
     engine_path = tmp_path / "model.engine"
     engine_path.write_bytes(b"engine")

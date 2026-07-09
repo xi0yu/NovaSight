@@ -80,6 +80,7 @@ def build_deepstream_detection_source(request: Request) -> DeepStreamDetectionBa
             roi_height=roi_size,
             confidence_threshold=float(config.inference.confidence_threshold),
             nms_threshold=float(config.inference.nms_threshold),
+            max_publish_age_ms=float(config.control.latency_reject_if_age_exceeds_ms),
         )
     except HTTPException:
         raise
