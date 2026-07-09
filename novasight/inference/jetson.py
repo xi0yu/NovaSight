@@ -26,6 +26,7 @@ JETSON_GPU_RESOURCE_BRIDGE_REQUIRED_PAYLOAD_FIELDS = (
     "resource_memory",
     "resource_source",
     "dmabuf_fd",
+    "gst_buffer_ptr",
     "resource_metadata",
     "resource_width",
     "resource_height",
@@ -509,11 +510,19 @@ def _validate_required_payload_contract(
             "for resource_kind='gstreamer_sample' so the Gst.Sample/GstBuffer "
             "outlives native preprocess",
         )
-    _require_payload_nonnegative_int(payload, "dmabuf_fd", module_name)
     if not isinstance(payload.get("resource_metadata"), Mapping):
         raise TensorPreprocessError(
             JETSON_GPU_RESOURCE_BRIDGE_INVALID,
             f"Jetson GPU resource bridge {module_name} requires resource_metadata to be an object",
+        )
+    dmabuf_fd = _optional_nonnegative_int(payload.get("dmabuf_fd"))
+    gst_buffer_ptr = _optional_positive_int(payload.get("gst_buffer_ptr"))
+    if dmabuf_fd is None and gst_buffer_ptr is None:
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_INVALID,
+            f"Jetson GPU resource bridge {module_name} requires dmabuf_fd or "
+            "gst_buffer_ptr. The capture pipeline delivered NVMM without a "
+            "DMABUF fd and did not expose the GstBuffer pointer fallback.",
         )
     resource_width = _require_payload_positive_int(payload, "resource_width", module_name)
     resource_height = _require_payload_positive_int(payload, "resource_height", module_name)
@@ -670,6 +679,26 @@ def _require_nonnegative_int_value(value: Any, key: str, module_name: str) -> in
     return result
 
 
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = int(value)
+    except Exception:
+        return None
+    return result if result >= 0 else None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = int(value)
+    except Exception:
+        return None
+    return result if result > 0 else None
+
+
 def _capability_values(
     capabilities: Mapping[str, Any],
     aliases: tuple[str, ...],
@@ -723,6 +752,7 @@ def _native_bridge_payload(
     prepared: PreparedTensorInput,
     shape: TensorInputShape,
 ) -> dict[str, Any]:
+    resource_metadata = dict(prepared.resource_metadata)
     return {
         "resource_handle": prepared.buffer,
         "frame_id": int(prepared.frame_id),
@@ -731,7 +761,8 @@ def _native_bridge_payload(
         "resource_memory": prepared.resource_memory,
         "resource_source": prepared.resource_source,
         "dmabuf_fd": prepared.dmabuf_fd,
-        "resource_metadata": dict(prepared.resource_metadata),
+        "gst_buffer_ptr": _optional_positive_int(resource_metadata.get("gst_buffer_ptr")),
+        "resource_metadata": resource_metadata,
         "resource_width": int(prepared.resource_width),
         "resource_height": int(prepared.resource_height),
         "resource_pixel_format": prepared.resource_pixel_format,

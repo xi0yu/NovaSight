@@ -82,6 +82,8 @@ def test_native_jetson_preprocess_cmake_has_production_gate() -> None:
     assert "CMAKE_CUDA_STANDARD 17" in cmake
     assert "cuda_std_17" in cmake
     assert "CUDA::cuda_driver" in cmake
+    assert "PkgConfig" in cmake
+    assert "gstreamer-1.0" in cmake
     assert "nvbufsurface.h" in cmake
     assert "nvbufsurftransform" in cmake
     assert "NOVASIGHT_JETSON_PREPROCESS_SUPPORT_SOURCES" in cmake
@@ -98,6 +100,11 @@ def test_native_jetson_cuda_source_uses_real_dmabuf_egl_cuda_path() -> None:
     ).read_text(encoding="utf-8")
 
     assert "NvBufSurfaceFromFd" in source
+    assert "#include <gst/gst.h>" in source
+    assert "gst_buffer_map" in source
+    assert "gst_buffer_unmap" in source
+    assert "gst_buffer_ref" in source
+    assert "gst_buffer_unref" in source
     assert "#include <nvbufsurftransform.h>" in source
     assert "NvBufSurfTransform" in source
     assert "NVBUF_COLOR_FORMAT_RGBA" in source

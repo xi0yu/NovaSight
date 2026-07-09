@@ -142,6 +142,9 @@ class TensorRtInferenceEngine:
             "last_input_dmabuf_fd": (
                 self._last_input.dmabuf_fd if self._last_input is not None else None
             ),
+            "last_input_gst_buffer_ptr": (
+                self._last_input.gst_buffer_ptr if self._last_input is not None else None
+            ),
             "last_input_needs_resize": (
                 self._last_input.needs_resize if self._last_input is not None else False
             ),

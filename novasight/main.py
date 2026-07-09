@@ -642,6 +642,7 @@ def _print_zero_copy_report_evidence(report: dict[str, object]) -> None:
         "resource_size",
         "resource_format",
         "dmabuf_fd",
+        "gst_buffer_ptr",
         "preprocess_backend",
         "preprocess_zero_copy",
         "smoke_release_token",
@@ -683,6 +684,7 @@ def _print_zero_copy_report_evidence(report: dict[str, object]) -> None:
         "resource_size",
         "resource_format",
         "dmabuf_fd",
+        "gst_buffer_ptr",
         "prepared_frame_id",
         "prepared_capture_ts_ns",
         "prepared_resource_kind",
@@ -691,6 +693,7 @@ def _print_zero_copy_report_evidence(report: dict[str, object]) -> None:
         "prepared_resource_size",
         "prepared_resource_format",
         "prepared_dmabuf_fd",
+        "prepared_gst_buffer_ptr",
         "input_shape",
         "input_dtype",
         "bridge_available",
@@ -718,6 +721,8 @@ def _print_zero_copy_report_evidence(report: dict[str, object]) -> None:
         "tensorrt_last_input_resource_size",
         "tensorrt_last_input_resource_format",
         "tensorrt_last_input_dmabuf_fd",
+        "tensorrt_last_input_gst_buffer_ptr",
+        "tensorrt_last_input_gst_buffer_ptr",
         "tensorrt_preprocess_backend",
         "tensorrt_preprocess_location",
         "tensorrt_preprocess_zero_copy",
@@ -1152,6 +1157,7 @@ def _validate_zero_copy_smoke_values(
             "resource_size",
             "resource_format",
             "dmabuf_fd",
+            "gst_buffer_ptr",
             "prepared_mode",
             "prepared_frame_id",
             "prepared_capture_ts_ns",
@@ -1161,6 +1167,7 @@ def _validate_zero_copy_smoke_values(
             "prepared_resource_size",
             "prepared_resource_format",
             "prepared_dmabuf_fd",
+            "prepared_gst_buffer_ptr",
             "input_shape",
             "input_dtype",
             "bridge_available",
@@ -1253,8 +1260,22 @@ def _validate_zero_copy_smoke_values(
     _require_stdout_value(
         fields, "smoke_device_owner_release", "released", failures, "smoke"
     )
-    _require_non_negative_int(fields, "dmabuf_fd", failures, "smoke")
-    _require_non_negative_int(fields, "prepared_dmabuf_fd", failures, "smoke")
+    _validate_resource_handle_fields(
+        fields,
+        failures,
+        "smoke",
+        dmabuf_key="dmabuf_fd",
+        gst_buffer_key="gst_buffer_ptr",
+        label="frame resource",
+    )
+    _validate_resource_handle_fields(
+        fields,
+        failures,
+        "smoke",
+        dmabuf_key="prepared_dmabuf_fd",
+        gst_buffer_key="prepared_gst_buffer_ptr",
+        label="prepared resource",
+    )
     _require_positive_int(fields, "tensor_device_ptr", failures, "smoke")
     _require_positive_int(fields, "tensor_nbytes", failures, "smoke")
     expected_tensor_shape = _expected_tensor_shape(parameters, failures)
@@ -1299,6 +1320,16 @@ def _validate_zero_copy_smoke_values(
     if dmabuf_fd and prepared_dmabuf_fd and dmabuf_fd != prepared_dmabuf_fd:
         failures.append(
             "phases.smoke.stdout prepared_dmabuf_fd must match dmabuf_fd"
+        )
+    gst_buffer_ptr = fields.get("gst_buffer_ptr")
+    prepared_gst_buffer_ptr = fields.get("prepared_gst_buffer_ptr")
+    if (
+        gst_buffer_ptr
+        and prepared_gst_buffer_ptr
+        and gst_buffer_ptr != prepared_gst_buffer_ptr
+    ):
+        failures.append(
+            "phases.smoke.stdout prepared_gst_buffer_ptr must match gst_buffer_ptr"
         )
     frame_id = fields.get("frame_id")
     prepared_frame_id = fields.get("prepared_frame_id")
@@ -1634,8 +1665,13 @@ def _validate_zero_copy_tensorrt_values(
     _require_stdout_value(
         fields, "tensorrt_last_input_resource_format", "NV12", failures, "smoke"
     )
-    _require_non_negative_int(
-        fields, "tensorrt_last_input_dmabuf_fd", failures, "smoke"
+    _validate_resource_handle_fields(
+        fields,
+        failures,
+        "smoke",
+        dmabuf_key="tensorrt_last_input_dmabuf_fd",
+        gst_buffer_key="tensorrt_last_input_gst_buffer_ptr",
+        label="TensorRT last input resource",
     )
     resource_size = fields.get("resource_size")
     prepared_resource_size = fields.get("prepared_resource_size")
@@ -1678,6 +1714,9 @@ def _validate_zero_copy_tensorrt_values(
     dmabuf_fd = _stdout_int(fields, "dmabuf_fd")
     prepared_dmabuf_fd = _stdout_int(fields, "prepared_dmabuf_fd")
     tensorrt_dmabuf_fd = _stdout_int(fields, "tensorrt_last_input_dmabuf_fd")
+    gst_buffer_ptr = _stdout_int(fields, "gst_buffer_ptr")
+    prepared_gst_buffer_ptr = _stdout_int(fields, "prepared_gst_buffer_ptr")
+    tensorrt_gst_buffer_ptr = _stdout_int(fields, "tensorrt_last_input_gst_buffer_ptr")
     if (
         tensorrt_dmabuf_fd is not None
         and dmabuf_fd is not None
@@ -1693,6 +1732,22 @@ def _validate_zero_copy_tensorrt_values(
     ):
         failures.append(
             "phases.smoke.stdout tensorrt_last_input_dmabuf_fd must match prepared_dmabuf_fd"
+        )
+    if (
+        tensorrt_gst_buffer_ptr is not None
+        and gst_buffer_ptr is not None
+        and tensorrt_gst_buffer_ptr != gst_buffer_ptr
+    ):
+        failures.append(
+            "phases.smoke.stdout tensorrt_last_input_gst_buffer_ptr must match gst_buffer_ptr"
+        )
+    if (
+        tensorrt_gst_buffer_ptr is not None
+        and prepared_gst_buffer_ptr is not None
+        and tensorrt_gst_buffer_ptr != prepared_gst_buffer_ptr
+    ):
+        failures.append(
+            "phases.smoke.stdout tensorrt_last_input_gst_buffer_ptr must match prepared_gst_buffer_ptr"
         )
     _require_stdout_value(
         fields, "tensorrt_preprocess_location", "device", failures, "smoke"
@@ -1855,6 +1910,27 @@ def _require_positive_int(
     phase_name: str,
 ) -> None:
     _require_int_at_least(fields, key, 1, failures, phase_name)
+
+
+def _validate_resource_handle_fields(
+    fields: dict[str, str],
+    failures: list[str],
+    phase_name: str,
+    *,
+    dmabuf_key: str,
+    gst_buffer_key: str,
+    label: str,
+) -> None:
+    dmabuf_fd = _stdout_int(fields, dmabuf_key)
+    gst_buffer_ptr = _stdout_int(fields, gst_buffer_key)
+    if dmabuf_key in fields and fields.get(dmabuf_key) not in {"", "None", "none", "null"}:
+        _require_non_negative_int(fields, dmabuf_key, failures, phase_name)
+    if gst_buffer_key in fields and fields.get(gst_buffer_key) not in {"", "None", "none", "null"}:
+        _require_positive_int(fields, gst_buffer_key, failures, phase_name)
+    if dmabuf_fd is None and gst_buffer_ptr is None:
+        failures.append(
+            f"phases.{phase_name}.stdout {label} requires {dmabuf_key} or {gst_buffer_key}"
+        )
 
 
 def _require_int_at_least(
@@ -2177,6 +2253,7 @@ def _doctor_jetson_native_smoke(args: argparse.Namespace, cfg: object) -> int:
         resource_height = getattr(resource, "height", None)
         resource_format = str(getattr(resource, "pixel_format", "") or "").upper()
         resource_dmabuf_fd = getattr(resource, "dmabuf_fd", None)
+        resource_gst_buffer_ptr = getattr(resource, "gst_buffer_ptr", None)
         profile = state.profile
         expected_capture_width = int(getattr(profile, "width", args.width or 0) or 0)
         expected_capture_height = int(getattr(profile, "height", args.height or 0) or 0)
@@ -2200,6 +2277,7 @@ def _doctor_jetson_native_smoke(args: argparse.Namespace, cfg: object) -> int:
         print(f"resource_size: {resource_width}x{resource_height}")
         print(f"resource_format: {resource_format}")
         print(f"dmabuf_fd: {resource_dmabuf_fd}")
+        print(f"gst_buffer_ptr: {resource_gst_buffer_ptr}")
         frame_contract_failures: list[str] = []
         try:
             frame_id_value = int(frame.frame_id)
@@ -2329,9 +2407,9 @@ def _doctor_jetson_native_smoke(args: argparse.Namespace, cfg: object) -> int:
             for failure in resource_contract_failures:
                 print(f"resource_contract_failure: {failure}")
             return 2
-        if resource_dmabuf_fd is None:
+        if resource_dmabuf_fd is None and resource_gst_buffer_ptr is None:
             print("available: False")
-            print("reason: jetson_native_smoke_missing_dmabuf_fd")
+            print("reason: jetson_native_smoke_missing_frame_resource_handle")
             return 2
 
         preprocessor_kwargs = {"module_name": args.module} if args.module else {}
@@ -2364,6 +2442,7 @@ def _doctor_jetson_native_smoke(args: argparse.Namespace, cfg: object) -> int:
         print(f"prepared_resource_size: {prepared_resource_width}x{prepared_resource_height}")
         print(f"prepared_resource_format: {prepared_resource_format}")
         print(f"prepared_dmabuf_fd: {prepared.dmabuf_fd}")
+        print(f"prepared_gst_buffer_ptr: {prepared.gst_buffer_ptr}")
         prepared_contract_failures: list[str] = []
         if prepared.mode != "gpu_buffer":
             prepared_contract_failures.append(
@@ -2450,6 +2529,11 @@ def _doctor_jetson_native_smoke(args: argparse.Namespace, cfg: object) -> int:
             prepared_contract_failures.append(
                 "prepared_dmabuf_fd must match frame dmabuf_fd "
                 f"{resource_dmabuf_fd}, got {prepared.dmabuf_fd}"
+            )
+        if prepared.gst_buffer_ptr != resource_gst_buffer_ptr:
+            prepared_contract_failures.append(
+                "prepared_gst_buffer_ptr must match frame gst_buffer_ptr "
+                f"{resource_gst_buffer_ptr}, got {prepared.gst_buffer_ptr}"
             )
         if prepared_contract_failures:
             print("available: False")
@@ -2744,6 +2828,10 @@ def _doctor_jetson_tensorrt_binding(
         )
         print(f"tensorrt_last_input_dmabuf_fd: {status.get('last_input_dmabuf_fd')}")
         print(
+            "tensorrt_last_input_gst_buffer_ptr: "
+            f"{status.get('last_input_gst_buffer_ptr')}"
+        )
+        print(
             "tensorrt_preprocess_backend: "
             f"{tensorrt_preprocess_backend}"
         )
@@ -2762,6 +2850,7 @@ def _doctor_jetson_tensorrt_binding(
         print(f"tensorrt_device_owner_release: {device_owner_release}")
         frame_resource = getattr(frame, "frame_resource", None)
         frame_dmabuf_fd = getattr(frame_resource, "dmabuf_fd", None)
+        frame_gst_buffer_ptr = getattr(frame_resource, "gst_buffer_ptr", None)
         frame_resource_size = (
             f"{getattr(frame_resource, 'width', '')}x{getattr(frame_resource, 'height', '')}"
             if frame_resource is not None
@@ -2772,6 +2861,9 @@ def _doctor_jetson_tensorrt_binding(
         ).upper()
         tensorrt_dmabuf_fd = _stdout_non_negative_int_value(
             status.get("last_input_dmabuf_fd")
+        )
+        tensorrt_gst_buffer_ptr = _stdout_non_negative_int_value(
+            status.get("last_input_gst_buffer_ptr")
         )
         frame_id = _stdout_non_negative_int_value(getattr(frame, "frame_id", None))
         frame_capture_ts_ns = _stdout_non_negative_int_value(
@@ -2805,9 +2897,24 @@ def _doctor_jetson_tensorrt_binding(
             or status.get("last_input_resource_source") != "appsink"
             or status.get("last_input_resource_size") != frame_resource_size
             or status.get("last_input_resource_format") != frame_resource_format
-            or frame_dmabuf_fd is None
-            or tensorrt_dmabuf_fd is None
-            or int(frame_dmabuf_fd) != tensorrt_dmabuf_fd
+            or (
+                frame_dmabuf_fd is None
+                and frame_gst_buffer_ptr is None
+            )
+            or (
+                frame_dmabuf_fd is not None
+                and (
+                    tensorrt_dmabuf_fd is None
+                    or int(frame_dmabuf_fd) != tensorrt_dmabuf_fd
+                )
+            )
+            or (
+                frame_gst_buffer_ptr is not None
+                and (
+                    tensorrt_gst_buffer_ptr is None
+                    or int(frame_gst_buffer_ptr) != tensorrt_gst_buffer_ptr
+                )
+            )
             or frame_id is None
             or tensorrt_frame_id is None
             or frame_id != tensorrt_frame_id

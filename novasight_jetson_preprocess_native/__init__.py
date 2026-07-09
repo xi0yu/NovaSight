@@ -48,6 +48,7 @@ CONTRACT = {
         "resource_memory",
         "resource_source",
         "dmabuf_fd",
+        "gst_buffer_ptr",
         "resource_metadata",
         "resource_width",
         "resource_height",
@@ -78,7 +79,9 @@ CONTRACT = {
     "ctypes_release_abi": "int release(uint64_t release_token)",
     "payload_json_notes": (
         "The ctypes bridge serializes JSON-safe payload fields only. "
-        "resource_handle is not passed to C; a valid dmabuf_fd is required."
+        "resource_handle is not passed to C; a valid dmabuf_fd or gst_buffer_ptr "
+        "is required. Python must keep the Gst.Sample/GstBuffer resource_handle "
+        "alive until native preprocessing returns."
     ),
     "result_required_fields": [
         "device_ptr",
@@ -428,7 +431,11 @@ def prepare_nvmm_tensor(payload: Mapping[str, Any]) -> Any:
 
 def _payload_json(payload: Mapping[str, Any]) -> bytes:
     _validate_payload_contract(payload)
-    dmabuf_fd = _required_nonnegative_int(payload, "dmabuf_fd")
+    dmabuf_fd = _optional_nonnegative_int(payload.get("dmabuf_fd"))
+    resource_metadata = _json_safe(payload.get("resource_metadata", {}))
+    gst_buffer_ptr = _optional_positive_int(payload.get("gst_buffer_ptr"))
+    if gst_buffer_ptr is None and isinstance(resource_metadata, Mapping):
+        gst_buffer_ptr = _optional_positive_int(resource_metadata.get("gst_buffer_ptr"))
     serializable = {
         "frame_id": _required_positive_int(payload, "frame_id"),
         "capture_ts_ns": _required_positive_int(payload, "capture_ts_ns"),
@@ -436,7 +443,8 @@ def _payload_json(payload: Mapping[str, Any]) -> bytes:
         "resource_memory": _required_text(payload, "resource_memory"),
         "resource_source": _required_text(payload, "resource_source"),
         "dmabuf_fd": dmabuf_fd,
-        "resource_metadata": _json_safe(payload.get("resource_metadata", {})),
+        "gst_buffer_ptr": gst_buffer_ptr,
+        "resource_metadata": resource_metadata,
         "resource_width": _required_positive_int(payload, "resource_width"),
         "resource_height": _required_positive_int(payload, "resource_height"),
         "resource_pixel_format": _required_text(payload, "resource_pixel_format"),
@@ -471,9 +479,18 @@ def _validate_payload_contract(payload: Mapping[str, Any]) -> None:
         raise RuntimeError("ctypes Jetson native backend requires resource_memory=nvmm or dmabuf")
     if _required_text(payload, "resource_source") != "appsink":
         raise RuntimeError("ctypes Jetson native backend requires resource_source=appsink")
-    _required_nonnegative_int(payload, "dmabuf_fd")
     if not isinstance(payload.get("resource_metadata"), Mapping):
         raise RuntimeError("ctypes Jetson native backend requires resource_metadata to be an object")
+    dmabuf_fd = _optional_nonnegative_int(payload.get("dmabuf_fd"))
+    gst_buffer_ptr = _optional_positive_int(payload.get("gst_buffer_ptr"))
+    if gst_buffer_ptr is None:
+        metadata = payload.get("resource_metadata")
+        if isinstance(metadata, Mapping):
+            gst_buffer_ptr = _optional_positive_int(metadata.get("gst_buffer_ptr"))
+    if dmabuf_fd is None and gst_buffer_ptr is None:
+        raise RuntimeError(
+            "ctypes Jetson native backend requires dmabuf_fd or gst_buffer_ptr"
+        )
     resource_width = _required_positive_int(payload, "resource_width")
     resource_height = _required_positive_int(payload, "resource_height")
     if _required_text(payload, "resource_pixel_format").upper() != "NV12":
@@ -542,11 +559,6 @@ def _required_positive_int(
 
 
 def _required_nonnegative_int(payload: Mapping[str, Any], key: str) -> int:
-    if payload.get(key) is None and key == "dmabuf_fd":
-        raise RuntimeError(
-            "ctypes Jetson native backend requires dmabuf_fd; "
-            "Python Gst.Sample handles are not passed to C"
-        )
     try:
         value = int(payload.get(key))
     except Exception as exc:
@@ -558,6 +570,26 @@ def _required_nonnegative_int(payload: Mapping[str, Any], key: str) -> int:
             f"ctypes Jetson native backend requires {key} to be a non-negative integer"
         )
     return value
+
+
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _required_nchw(payload: Mapping[str, Any]) -> list[int]:

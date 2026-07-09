@@ -6,6 +6,7 @@
 #include <cudaEGL.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <gst/gst.h>
 #include <nvbufsurface.h>
 #include <nvbufsurftransform.h>
 
@@ -443,17 +444,39 @@ extern "C" int novasight_prepare_tensor_json(
         return 1;
     }
 
-    void* surface_buffer = nullptr;
-    if (NvBufSurfaceFromFd(request.dmabuf_fd, &surface_buffer) != 0 || surface_buffer == nullptr) {
+    NvBufSurface* surface = nullptr;
+    GstBuffer* gst_buffer_owner = nullptr;
+    GstMapInfo gst_map_info{};
+    bool gst_buffer_mapped = false;
+    std::string source_reason;
+    std::string source_detail;
+    auto cleanup_source_surface = [&]() {
+        if (gst_buffer_mapped && gst_buffer_owner != nullptr) {
+            gst_buffer_unmap(gst_buffer_owner, &gst_map_info);
+            gst_buffer_mapped = false;
+        }
+        if (gst_buffer_owner != nullptr) {
+            gst_buffer_unref(gst_buffer_owner);
+            gst_buffer_owner = nullptr;
+        }
+    };
+    if (!resolve_source_surface_from_request(
+            request,
+            &surface,
+            &gst_buffer_owner,
+            &gst_map_info,
+            &gst_buffer_mapped,
+            &source_reason,
+            &source_detail
+        )) {
         novasight::jetson_preprocess::write_error_json(
             result_json,
             result_json_size,
-            "nvbufsurface_from_fd_failed",
-            "NvBufSurfaceFromFd failed for dmabuf_fd."
+            source_reason,
+            source_detail
         );
         return 1;
     }
-    NvBufSurface* surface = static_cast<NvBufSurface*>(surface_buffer);
     if (surface->batchSize < 1 || surface->surfaceList == nullptr) {
         novasight::jetson_preprocess::write_error_json(
             result_json,
@@ -461,6 +484,7 @@ extern "C" int novasight_prepare_tensor_json(
             "invalid_nvbufsurface",
             "NvBufSurface has no surfaceList entry."
         );
+        cleanup_source_surface();
         return 1;
     }
     if (surface->surfaceList[0].colorFormat != NVBUF_COLOR_FORMAT_NV12) {
@@ -470,6 +494,7 @@ extern "C" int novasight_prepare_tensor_json(
             "unsupported_nvbufsurface_format",
             "NvBufSurface colorFormat is not NVBUF_COLOR_FORMAT_NV12."
         );
+        cleanup_source_surface();
         return 1;
     }
     const int surface_width = static_cast<int>(surface->surfaceList[0].width);
@@ -486,6 +511,7 @@ extern "C" int novasight_prepare_tensor_json(
             "nvbufsurface_geometry_mismatch",
             geometry_detail.str()
         );
+        cleanup_source_surface();
         return 1;
     }
 
@@ -505,6 +531,7 @@ extern "C" int novasight_prepare_tensor_json(
             "nvbufsurface_create_rgba_failed",
             "NvBufSurfaceCreate failed for intermediate RGBA tensor source."
         );
+        cleanup_source_surface();
         return 1;
     }
 
@@ -731,6 +758,7 @@ extern "C" int novasight_prepare_tensor_json(
     if (output_device != nullptr) {
         cudaFree(output_device);
     }
+    cleanup_source_surface();
     return return_code;
 }
 

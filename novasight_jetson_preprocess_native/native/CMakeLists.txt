@@ -45,6 +45,8 @@ elseif(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
     endif()
 
     find_package(CUDAToolkit REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(NOVASIGHT_GSTREAMER REQUIRED gstreamer-1.0)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -205,12 +207,18 @@ if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
     target_include_directories(novasight_jetson_preprocess_native
         PRIVATE
             ${NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}
+            ${NOVASIGHT_GSTREAMER_INCLUDE_DIRS}
             ${CMAKE_CURRENT_LIST_DIR}/src/jetson
+    )
+    target_link_directories(novasight_jetson_preprocess_native
+        PRIVATE
+            ${NOVASIGHT_GSTREAMER_LIBRARY_DIRS}
     )
     target_link_libraries(novasight_jetson_preprocess_native
         PRIVATE
             CUDA::cuda_driver
             CUDA::cudart
+            ${NOVASIGHT_GSTREAMER_LIBRARIES}
             ${NOVASIGHT_NVBUFSURFACE_LIBRARY}
             ${NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}
     )

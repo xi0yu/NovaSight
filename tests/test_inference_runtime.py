@@ -129,6 +129,7 @@ def _ctypes_native_payload(**overrides) -> dict[str, object]:
         "resource_memory": "dmabuf",
         "resource_source": "appsink",
         "dmabuf_fd": 42,
+        "gst_buffer_ptr": None,
         "resource_metadata": {},
         "resource_width": 320,
         "resource_height": 320,
@@ -4427,7 +4428,7 @@ def test_direct_ctypes_native_bridge_accepts_nvmm_resource_with_dmabuf(
     native_backend._reset_library_cache()
 
 
-def test_ctypes_native_backend_rejects_missing_dmabuf_fd(monkeypatch) -> None:
+def test_ctypes_native_backend_rejects_missing_frame_resource_handle(monkeypatch) -> None:
     import novasight_jetson_preprocess_native as native_backend
 
     class FakeCFunction:
@@ -4436,7 +4437,7 @@ def test_ctypes_native_backend_rejects_missing_dmabuf_fd(monkeypatch) -> None:
             self.restype = None
 
         def __call__(self, *args):
-            raise AssertionError("native prepare must not be called without dmabuf_fd")
+            raise AssertionError("native prepare must not be called without a frame resource handle")
 
     class FakeLibrary:
         novasight_prepare_tensor_json = FakeCFunction()
@@ -4445,9 +4446,13 @@ def test_ctypes_native_backend_rejects_missing_dmabuf_fd(monkeypatch) -> None:
     monkeypatch.setenv(native_backend.LIBRARY_ENV, "/tmp/fake-novasight-jetson.so")
     monkeypatch.setattr(native_backend.ctypes, "CDLL", lambda path: FakeLibrary())
 
-    with pytest.raises(RuntimeError, match="requires dmabuf_fd"):
+    with pytest.raises(RuntimeError, match="requires dmabuf_fd or gst_buffer_ptr"):
         native_backend.prepare_tensor(
-            _ctypes_native_payload(resource_memory="nvmm", dmabuf_fd=None)
+            _ctypes_native_payload(
+                resource_memory="nvmm",
+                dmabuf_fd=None,
+                gst_buffer_ptr=None,
+            )
         )
     native_backend._reset_library_cache()
 
@@ -5086,7 +5091,7 @@ def test_jetson_gpu_resource_preprocessor_rejects_missing_frame_timestamp_before
     assert calls == []
 
 
-def test_jetson_gpu_resource_preprocessor_rejects_missing_dmabuf_before_native_call(
+def test_jetson_gpu_resource_preprocessor_rejects_missing_frame_resource_handle_before_native_call(
     monkeypatch,
 ) -> None:
     resource = FrameResource(
@@ -5119,23 +5124,25 @@ def test_jetson_gpu_resource_preprocessor_rejects_missing_dmabuf_before_native_c
         status=lambda: {
             "available": True,
             "ready": True,
-            "backend": "missing_dmabuf_bridge",
+            "backend": "missing_frame_resource_handle_bridge",
             "zero_copy": True,
             "memory_space": "cuda_device",
         },
         prepare_tensor=lambda payload: calls.append(payload),
     )
-    monkeypatch.setitem(sys.modules, "missing_dmabuf_bridge", module)
+    monkeypatch.setitem(sys.modules, "missing_frame_resource_handle_bridge", module)
 
     with pytest.raises(TensorPreprocessError) as exc_info:
         prepare_tensor(
             prepared,
             shape,
-            gpu_preprocessor=JetsonGpuResourcePreprocessor(module_name="missing_dmabuf_bridge"),
+            gpu_preprocessor=JetsonGpuResourcePreprocessor(
+                module_name="missing_frame_resource_handle_bridge"
+            ),
         )
 
     assert exc_info.value.reason == JETSON_GPU_RESOURCE_BRIDGE_INVALID
-    assert "dmabuf_fd" in str(exc_info.value)
+    assert "dmabuf_fd or gst_buffer_ptr" in str(exc_info.value)
     assert calls == []
 
 

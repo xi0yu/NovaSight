@@ -20,6 +20,7 @@ CONTRACT = {
         "resource_memory",
         "resource_source",
         "dmabuf_fd",
+        "gst_buffer_ptr",
         "resource_metadata",
         "resource_width",
         "resource_height",

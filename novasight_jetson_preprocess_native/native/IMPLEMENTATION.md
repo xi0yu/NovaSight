@@ -93,7 +93,8 @@ production `status_backend`, real-frame `capture_available=True`,
 identity (`frame_id`), monotonic capture timestamp (`capture_ts_ns`), timestamp
 source (`capture_ts_source=userspace_monotonic_receive`), independent GStreamer
 source timestamp diagnostics (`source_ts_ns/source_ts_kind`), ROI frame size, ROI
-offset, NV12 frame/source geometry, appsink resource source, `dmabuf_fd`, GPU `PreparedTensorInput`,
+offset, NV12 frame/source geometry, appsink resource source, `dmabuf_fd` or
+`gst_buffer_ptr`, GPU `PreparedTensorInput`,
 TensorRT input shape/dtype, bridge readiness, device preprocess location,
 zero-copy preprocess, smoke probe owner release, and device tensor
 pointer/size/shape/dtype. Critical stdout evidence keys must be unique; a report
@@ -109,8 +110,9 @@ is limited to `gstreamer_pts`, `gstreamer_dts`, or empty, with a non-negative
 `source_ts_ns` required when a GStreamer kind is present; `roi_offset` must match
 `parameters.roi_offset_x/roi_offset_y`; `resource_source` and
 `prepared_resource_source` must both be `appsink`; `prepared_frame_id` and
-`prepared_capture_ts_ns` must match the captured `frame_id/capture_ts_ns`; `dmabuf_fd` and
-`prepared_dmabuf_fd` must be non-negative integers and match;
+`prepared_capture_ts_ns` must match the captured `frame_id/capture_ts_ns`; the
+captured and prepared resources must expose matching `dmabuf_fd` or matching
+`gst_buffer_ptr`;
 `bridge_available/bridge_native_ready` must be true; `preprocess_location` must
 be `device`; the preprocess backend must not be reference/scaffold;
 `smoke_device_owner_release` must be `released`;
@@ -301,14 +303,15 @@ gone; the pipeline is now producing real NCHW device tensors.
 ## Required Input
 
 `novasight_prepare_tensor_json(payload_json,result_json,size)` receives JSON
-metadata from Python. The Python `Gst.Sample` object is intentionally not passed
-through the C ABI. The production source must use `dmabuf_fd` plus the metadata
-below:
+metadata from Python. Python keeps the `Gst.Sample`/`GstBuffer` resource handle
+alive while native preprocessing runs. The production source must use either
+`dmabuf_fd` or `gst_buffer_ptr` plus the metadata below:
 
 - `resource_kind=gstreamer_sample`
 - `resource_memory=nvmm` or `dmabuf`
 - `resource_source=appsink`
-- `dmabuf_fd` as a non-negative file descriptor
+- `dmabuf_fd` as a non-negative file descriptor, or `gst_buffer_ptr` as a
+  positive live `GstBuffer*` pointer
 - `pixel_format=NV12`
 - ROI dimensions: `width`, `height`
 - source capture dimensions: `source_width`, `source_height`

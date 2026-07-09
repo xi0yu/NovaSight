@@ -354,10 +354,16 @@ RequestValidation parse_tensor_request(const char* payload_json) {
             request
         );
     }
-    if (!read_int_field(json, "dmabuf_fd", &request.dmabuf_fd) || request.dmabuf_fd < 0) {
+    if (!read_int_field(json, "dmabuf_fd", &request.dmabuf_fd)) {
+        request.dmabuf_fd = -1;
+    }
+    if (!read_uint64_field(json, "gst_buffer_ptr", &request.gst_buffer_ptr)) {
+        request.gst_buffer_ptr = 0;
+    }
+    if (request.dmabuf_fd < 0 && request.gst_buffer_ptr == 0) {
         return invalid(
-            "dmabuf_fd_required",
-            "Native Jetson preprocessing requires a valid dmabuf_fd.",
+            "frame_resource_handle_required",
+            "Native Jetson preprocessing requires a valid dmabuf_fd or gst_buffer_ptr.",
             request
         );
     }

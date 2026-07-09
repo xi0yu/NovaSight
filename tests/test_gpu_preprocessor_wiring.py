@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from novasight.api import create_app
-from novasight.capture.source import CapturedFrame, FrameResource
+from novasight.capture.source import CapturedFrame, FrameResource, _sample_frame_resource
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.inference.input import PreparedTensorInput, TensorInputShape, prepare_tensor_input
@@ -417,6 +417,131 @@ def test_nvmm_frame_resource_keeps_gstreamer_sample_handle_alive() -> None:
     assert frame.gpu_buffer is sample
     assert prepared.buffer is sample
     assert prepared.dmabuf_fd == 7
+
+
+def test_nvmm_frame_resource_records_gst_buffer_pointer_when_dmabuf_is_absent() -> None:
+    class FakeFeatures:
+        def to_string(self) -> str:
+            return "memory:NVMM"
+
+    class FakeCaps:
+        def get_features(self, _index: int) -> FakeFeatures:
+            return FakeFeatures()
+
+    class FakeBuffer:
+        pts = 11
+        dts = 22
+
+        def __hash__(self) -> int:
+            return 987654
+
+        def n_memory(self) -> int:
+            return 0
+
+    class FakeSample:
+        def __init__(self) -> None:
+            self.buffer = FakeBuffer()
+
+        def get_buffer(self) -> FakeBuffer:
+            return self.buffer
+
+        def get_caps(self) -> FakeCaps:
+            return FakeCaps()
+
+    resource = _sample_frame_resource(
+        FakeSample(),
+        SimpleNamespace(),
+        width=640,
+        height=640,
+        pixel_format="NV12",
+    )
+
+    assert resource is not None
+    assert resource.memory == "nvmm"
+    assert resource.dmabuf_fd is None
+    assert resource.gst_buffer_ptr == 987654
+    assert resource.metadata["gst_buffer_ptr"] == 987654
+
+
+def test_nvmm_gstreamer_sample_without_dmabuf_uses_gst_buffer_pointer_fallback(
+    monkeypatch,
+) -> None:
+    class Owner:
+        def release(self) -> None:
+            pass
+
+    calls: list[dict] = []
+
+    def prepare_native_tensor(payload: dict) -> dict:
+        calls.append(dict(payload))
+        return {
+            "device_ptr": 12345,
+            "nbytes": 1 * 3 * 320 * 320 * 4,
+            "shape": (1, 3, 320, 320),
+            "dtype": "float32",
+            "zero_copy": True,
+            "memory_space": "cuda_device",
+            "backend": "jetson_cuda",
+            "owner": Owner(),
+        }
+
+    module_name = "gst_buffer_ptr_gpu_preprocessor_bridge_for_test"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(
+            ABI_VERSION=1,
+            CAPABILITIES={
+                "memory": ["nvmm"],
+                "resource_kind": ["gstreamer_sample"],
+                "resource_source": ["appsink"],
+                "formats": ["NV12"],
+                "dtype": ["float32"],
+            },
+            status=lambda: {
+                "available": True,
+                "ready": True,
+                "backend": "jetson_cuda",
+                "zero_copy": True,
+                "memory_space": "cuda_device",
+            },
+            prepare_tensor=prepare_native_tensor,
+        ),
+    )
+    monkeypatch.setenv("NOVASIGHT_JETSON_PREPROCESSOR", module_name)
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "nvmm_latest"
+    cfg.capture.memory = "nvmm"
+    preprocessor = create_gpu_resource_preprocessor(cfg)
+    shape = TensorInputShape(batch=1, channels=3, height=320, width=320)
+    prepared = PreparedTensorInput(
+        mode="gpu_buffer",
+        buffer=object(),
+        frame_id=10,
+        capture_ts_ns=1_000_000_000,
+        width=640,
+        height=640,
+        pixel_format="NV12",
+        source_width=2560,
+        source_height=1440,
+        offset_x=960,
+        offset_y=400,
+        needs_resize=True,
+        resource_kind="gstreamer_sample",
+        resource_memory="nvmm",
+        resource_source="appsink",
+        dmabuf_fd=None,
+        resource_metadata={"gst_buffer_ptr": 987654},
+        resource_width=640,
+        resource_height=640,
+        resource_pixel_format="NV12",
+    )
+
+    result = prepare_tensor(prepared, shape, gpu_preprocessor=preprocessor)
+
+    assert result.zero_copy is True
+    assert calls[0]["dmabuf_fd"] is None
+    assert calls[0]["gst_buffer_ptr"] == 987654
 
 
 def test_nvmm_gstreamer_sample_requires_live_resource_handle(

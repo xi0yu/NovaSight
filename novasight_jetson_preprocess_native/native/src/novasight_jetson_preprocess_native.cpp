@@ -269,11 +269,18 @@ PayloadValidation validate_payload(const char* payload_json) {
     }
 
     long long dmabuf_fd = -1;
-    if (!read_int_field(json, "dmabuf_fd", &dmabuf_fd) || dmabuf_fd < 0) {
+    if (!read_int_field(json, "dmabuf_fd", &dmabuf_fd)) {
+        dmabuf_fd = -1;
+    }
+    long long gst_buffer_ptr = 0;
+    if (!read_int_field(json, "gst_buffer_ptr", &gst_buffer_ptr)) {
+        gst_buffer_ptr = 0;
+    }
+    if (dmabuf_fd < 0 && gst_buffer_ptr <= 0) {
         return {
             false,
-            "dmabuf_fd_required",
-            "Native Jetson preprocessing requires a valid dmabuf_fd."
+            "frame_resource_handle_required",
+            "Native Jetson preprocessing requires a valid dmabuf_fd or gst_buffer_ptr."
         };
     }
 

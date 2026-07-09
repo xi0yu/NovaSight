@@ -21,8 +21,9 @@ uint32_t novasight_abi_version(void);
  * Prepare a model-ready GPU tensor from a JSON payload.
  *
  * payload_json contains JSON-safe metadata from the Python bridge. The Python
- * Gst.Sample handle is intentionally not passed across the C ABI. A valid
- * dmabuf_fd is required for native implementations.
+ * Gst.Sample resource_handle stays alive in Python while native preprocessing
+ * runs. Native implementations must import either dmabuf_fd or gst_buffer_ptr;
+ * gst_buffer_ptr is mapped only for the duration of the prepare call.
  *
  * On success, write a JSON object into result_json and return 0. The production
  * Python ctypes bridge requires device_ptr, nbytes, a positive release_token,

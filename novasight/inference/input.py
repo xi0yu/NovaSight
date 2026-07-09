@@ -82,6 +82,10 @@ class PreparedTensorInput:
     resource_height: int = 0
     resource_pixel_format: str = ""
 
+    @property
+    def gst_buffer_ptr(self) -> int | None:
+        return _optional_positive_int(self.resource_metadata.get("gst_buffer_ptr"))
+
 
 def parse_tensor_input_shape(value: str) -> TensorInputShape:
     normalized = (
@@ -233,6 +237,14 @@ def _optional_int_attr(obj: object | None, name: str) -> int | None:
     except Exception:
         return None
     return result if result >= 0 else None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except Exception:
+        return None
+    return result if result > 0 else None
 
 
 def _dict_attr(obj: object | None, name: str) -> dict[str, Any]:

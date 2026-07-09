@@ -30,7 +30,7 @@ The reference validator currently accepts:
 - `resource_source=appsink`
 - `pixel_format=NV12`
 - `dtype=float32` or `dtype=float16`
-- a non-negative `dmabuf_fd`
+- a non-negative `dmabuf_fd` or a positive `gst_buffer_ptr`
 - positive `width`, `height`, `source_width`, `source_height`
 - `nchw=[N,C,H,W]` with channel count `1`, `3`, or `4`
 
@@ -83,11 +83,13 @@ cmake -S native -B build-jetson \
 cmake --build build-jetson
 ```
 
-The bundled source imports `dmabuf_fd` with NvBufSurface, maps it to EGL/CUDA,
-converts NV12 to normalized NCHW FP32/FP16 device memory, and returns a
-`release_token` for the CUDA allocation. It still must be compiled and verified
-on the actual Jetson/GStreamer surface layout before being treated as deployed
-zero-copy inference.
+The bundled source imports `dmabuf_fd` with NvBufSurface when available. When
+GStreamer exposes NVMM without a DMABUF fd, it maps the live `GstBuffer*` from
+`gst_buffer_ptr` to `NvBufSurface` for the duration of the prepare call. It then
+maps the surface to EGL/CUDA, converts NV12 to normalized NCHW FP32/FP16 device
+memory, and returns a `release_token` for the CUDA allocation. It still must be
+compiled and verified on the actual Jetson/GStreamer surface layout before
+being treated as deployed zero-copy inference.
 
 The application-level Jetson build check wraps the same CMake production mode
 and then loads the resulting shared library through the ctypes bridge:
@@ -114,7 +116,7 @@ compiler/linker problem from a capture/resource/import problem. When
 `--report-json` is set, the command writes a machine-readable artifact with the
 build and smoke phase exit codes, selected parameters, built library path, and
 final `accepted` status. The report also stores each phase's stdout so the
-artifact contains the actual `status_zero_copy`, `dmabuf_fd`,
+artifact contains the actual `status_zero_copy`, `dmabuf_fd`, `gst_buffer_ptr`,
 `preprocess_zero_copy`, TensorRT frame identity, TensorRT last-input,
 TensorRT input-location evidence, and TensorRT output execution evidence
 printed during acceptance. The one-shot command self-validates the
@@ -149,8 +151,8 @@ the production path. Critical stdout evidence keys must appear exactly once;
 duplicate keys are rejected instead of letting a later line overwrite an earlier
 wrong value. It also requires the report
 parameters to include the capture format, source geometry, FPS, ROI size, input
-shape, and dtype; verifies that `dmabuf_fd` and `prepared_dmabuf_fd` are
-non-negative integers and match; verifies that `bridge_available` and
+shape, and dtype; verifies that each frame has either matching `dmabuf_fd`
+values or matching `gst_buffer_ptr` values; verifies that `bridge_available` and
 `bridge_native_ready` are true; verifies that `preprocess_location` is `device`
 and the preprocess backend is not reference/scaffold; verifies that
 `source_ts_kind` is only `gstreamer_pts`, `gstreamer_dts`, or empty, with
@@ -168,8 +170,9 @@ include `tensorrt_engine`, the verifier also requires
 `tensorrt_preprocess_location=device`, `tensorrt_preprocess_zero_copy=True`,
 and `tensorrt_input_location=device`. The TensorRT input contract must also be
 a valid batch-1, 3-channel NCHW tensor shape with a supported FP32/FP16 dtype,
-and `tensorrt_last_input_dmabuf_fd` must match both the captured `dmabuf_fd` and
-the `prepared_dmabuf_fd`. It also requires positive `frame_id`,
+and TensorRT last-input resource handles must match both the captured resource
+and the prepared resource through either `dmabuf_fd` or `gst_buffer_ptr`. It
+also requires positive `frame_id`,
 `capture_ts_ns`, `prepared_frame_id`, `prepared_capture_ts_ns`,
 `tensorrt_frame_id`, `tensorrt_capture_ts_ns`,
 `tensorrt_last_input_frame_id`, and `tensorrt_last_input_capture_ts_ns`
