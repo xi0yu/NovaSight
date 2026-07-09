@@ -48,27 +48,84 @@ elseif(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
+        "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}"
+        CACHE PATH "Override directory containing nvbufsurface.h"
+    )
+    set(NOVASIGHT_NVBUFSURFACE_LIBRARY
+        "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}"
+        CACHE FILEPATH "Override path to libnvbufsurface"
+    )
+    set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
+        "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}"
+        CACHE FILEPATH "Override path to libnvbufsurftransform"
+    )
     find_path(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
         NAMES nvbufsurface.h
         PATHS
             /usr/src/jetson_multimedia_api/include
+            /opt/nvidia/deepstream/deepstream-7.1/sources/includes
             /usr/include/aarch64-linux-gnu
             /usr/include
     )
     find_library(NOVASIGHT_NVBUFSURFACE_LIBRARY
         NAMES nvbufsurface
-        PATHS /usr/lib/aarch64-linux-gnu /usr/lib
+        PATHS
+            /usr/lib/aarch64-linux-gnu
+            /usr/lib/aarch64-linux-gnu/nvidia
+            /opt/nvidia/deepstream/deepstream-7.1/lib
+            /usr/lib
     )
     find_library(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
         NAMES nvbufsurftransform
-        PATHS /usr/lib/aarch64-linux-gnu /usr/lib
+        PATHS
+            /usr/lib/aarch64-linux-gnu
+            /usr/lib/aarch64-linux-gnu/nvidia
+            /opt/nvidia/deepstream/deepstream-7.1/lib
+            /usr/lib
     )
-    if(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
-        OR NOT NOVASIGHT_NVBUFSURFACE_LIBRARY
-        OR NOT NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY)
+    set(_novasight_missing_requirements "")
+    if(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR)
+        list(APPEND _novasight_missing_requirements
+            "  - nvbufsurface.h (searched /usr/src/jetson_multimedia_api/include,"
+            "    /opt/nvidia/deepstream/deepstream-7.1/sources/includes,"
+            "    /usr/include/aarch64-linux-gnu, /usr/include; or set"
+            "    NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR=...)"
+        )
+    endif()
+    if(NOT NOVASIGHT_NVBUFSURFACE_LIBRARY)
+        list(APPEND _novasight_missing_requirements
+            "  - libnvbufsurface.so (searched /usr/lib/aarch64-linux-gnu,"
+            "    /usr/lib/aarch64-linux-gnu/nvidia,"
+            "    /opt/nvidia/deepstream/deepstream-7.1/lib, /usr/lib; or set"
+            "    NOVASIGHT_NVBUFSURFACE_LIBRARY=...)"
+        )
+    endif()
+    if(NOT NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY)
+        list(APPEND _novasight_missing_requirements
+            "  - libnvbufsurftransform.so (searched /usr/lib/aarch64-linux-gnu,"
+            "    /usr/lib/aarch64-linux-gnu/nvidia,"
+            "    /opt/nvidia/deepstream/deepstream-7.1/lib, /usr/lib; or set"
+            "    NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY=...)"
+        )
+    endif()
+    if(_novasight_missing_requirements)
+        list(JOIN _novasight_missing_requirements "\n" _novasight_missing_block)
         message(FATAL_ERROR
-            "Jetson production preprocess requires nvbufsurface.h, "
-            "libnvbufsurface, and libnvbufsurftransform.")
+            "Jetson production preprocess requires nvbufsurface.h and the "
+            "libnvbufsurface / libnvbufsurftransform libraries, which were not found.\n"
+            "On a JetPack device install:\n"
+            "  sudo apt update\n"
+            "  sudo apt install nvidia-l4t-jetson-multimedia-api\n"
+            "If the headers/libs are in a non-standard location, export:\n"
+            "  NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR=/path/to/include\n"
+            "  NOVASIGHT_NVBUFSURFACE_LIBRARY=/path/to/libnvbufsurface.so\n"
+            "  NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY=/path/to/libnvbufsurftransform.so\n"
+            "Verify the install with:\n"
+            "  find /usr/src/jetson_multimedia_api -name nvbufsurface.h 2>/dev/null\n"
+            "  ldconfig -p | grep -E 'libnvbuf(surface|surftransform)'\n"
+            "Missing:\n${_novasight_missing_block}"
+        )
     endif()
     set(NOVASIGHT_JETSON_PREPROCESS_SOURCES
         ${NOVASIGHT_JETSON_PREPROCESS_SUPPORT_SOURCES}

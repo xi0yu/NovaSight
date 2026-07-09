@@ -238,6 +238,148 @@ def status() -> dict[str, Any]:
     }
 
 
+def _probe_jetpack_component(
+    *,
+    header_paths: tuple[tuple[str, ...], ...],
+    library_names: tuple[str, ...],
+    apt_package: str,
+) -> dict[str, Any]:
+    """Inspect the filesystem to determine which JetPack component is missing."""
+    found_header: str | None = None
+    for candidates in header_paths:
+        for candidate in candidates:
+            if Path(candidate).is_file():
+                found_header = candidate
+                break
+        if found_header is not None:
+            break
+    found_library: str | None = None
+    for name in library_names:
+        probes = (
+            Path(f"/usr/lib/aarch64-linux-gnu/lib{name}.so"),
+            Path(f"/usr/lib/aarch64-linux-gnu/lib{name}.so.1"),
+            Path(f"/usr/lib/aarch64-linux-gnu/nvidia/lib{name}.so"),
+            Path(f"/usr/lib/aarch64-linux-gnu/nvidia/lib{name}.so.1"),
+            Path(f"/opt/nvidia/deepstream/deepstream-7.1/lib/lib{name}.so"),
+            Path(f"/usr/lib/lib{name}.so"),
+        )
+        for probe in probes:
+            if probe.is_file():
+                found_library = str(probe)
+                break
+        if found_library is not None:
+            break
+    return {
+        "header": found_header,
+        "library": found_library,
+        "apt_package": apt_package,
+        "present": found_header is not None and found_library is not None,
+    }
+
+
+def preflight() -> dict[str, Any]:
+    """Inspect Jetson-side dependencies required by the production build.
+
+    Read-only; never invokes cmake. Returns a structured status object suitable
+    for logging before attempting the auto-build. The output makes the precise
+    JetPack apt package (and any of the standard search paths) auditable from
+    a single command.
+    """
+    if platform.system() != "Linux" or platform.machine().lower() not in {"aarch64", "arm64"}:
+        return {
+            "jetson_runtime": False,
+            "platform": platform.system(),
+            "machine": platform.machine(),
+            "production_build_supported": False,
+            "missing_components": [],
+            "apt_install_command": "",
+            "reason": "non_jetson_platform",
+            "detail": (
+                "Production Jetson preprocess can only be built on aarch64 Linux. "
+                "Use NOVASIGHT_JETSON_NATIVE_LIBRARY to point to a pre-built "
+                "libnovasight_preprocess.so when developing off-device."
+            ),
+        }
+    nvbufsurface = _probe_jetpack_component(
+        header_paths=(
+            (
+                "/usr/src/jetson_multimedia_api/include/nvbufsurface.h",
+                "/usr/include/aarch64-linux-gnu/nvbufsurface.h",
+                "/usr/include/nvbufsurface.h",
+                "/opt/nvidia/deepstream/deepstream-7.1/sources/includes/nvbufsurface.h",
+            ),
+        ),
+        library_names=("nvbufsurface",),
+        apt_package="nvidia-l4t-jetson-multimedia-api",
+    )
+    nvbufsurftransform = _probe_jetpack_component(
+        header_paths=(
+            (
+                "/usr/src/jetson_multimedia_api/include/nvbufsurftransform.h",
+                "/usr/include/aarch64-linux-gnu/nvbufsurftransform.h",
+                "/usr/include/nvbufsurftransform.h",
+                "/opt/nvidia/deepstream/deepstream-7.1/sources/includes/nvbufsurftransform.h",
+            ),
+        ),
+        library_names=("nvbufsurftransform",),
+        apt_package="nvidia-l4t-jetson-multimedia-api",
+    )
+    egl = _probe_jetpack_component(
+        header_paths=(
+            (
+                "/usr/include/EGL/egl.h",
+                "/usr/include/aarch64-linux-gnu/EGL/egl.h",
+            ),
+        ),
+        library_names=("EGL",),
+        apt_package="libegl1 libegl-dev",
+    )
+    cuda_toolkit = _probe_jetpack_component(
+        header_paths=(
+            (
+                "/usr/local/cuda/include/cuda.h",
+                "/usr/include/cuda.h",
+            ),
+        ),
+        library_names=("cudart",),
+        apt_package="nvidia-cuda-toolkit-* (or JetPack cuda-toolkit)",
+    )
+    components = {
+        "nvbufsurface": nvbufsurface,
+        "nvbufsurftransform": nvbufsurftransform,
+        "egl": egl,
+        "cuda_toolkit": cuda_toolkit,
+    }
+    missing_components = [
+        name for name, info in components.items() if not info["present"]
+    ]
+    apt_packages: list[str] = []
+    seen: set[str] = set()
+    for name in missing_components:
+        pkg = components[name]["apt_package"]
+        if pkg not in seen:
+            apt_packages.append(pkg)
+            seen.add(pkg)
+    return {
+        "jetson_runtime": True,
+        "platform": "linux",
+        "machine": platform.machine(),
+        "production_build_supported": not missing_components,
+        "components": components,
+        "missing_components": missing_components,
+        "apt_install_command": " ".join(["sudo apt install -y", *apt_packages]),
+        "apt_packages": apt_packages,
+        "reason": "production_build_unsupported" if missing_components else "production_build_ready",
+        "detail": (
+            "Missing JetPack components: " + ", ".join(missing_components) + ". "
+            "Run the apt_install_command to enable the production build."
+        )
+        if missing_components
+        else "",
+    }
+
+
+
 def prepare_tensor(payload: Mapping[str, Any]) -> Any:
     payload_json = _payload_json(payload)
     library = _load_library()
@@ -819,11 +961,26 @@ def _command_failure_detail(
     )
     if len(output) > 2000:
         output = output[-2000:]
-    return (
+    detail = (
         f"Jetson native auto-build {phase} failed rc={getattr(result, 'returncode', '?')} "
         f"command={' '.join(command)}"
         + (f"; output={output}" if output else "")
     )
+    if phase == "configure" and _is_jetson_runtime():
+        try:
+            check = preflight()
+        except Exception:
+            check = None
+        if isinstance(check, dict) and check.get("missing_components"):
+            detail = (
+                detail
+                + " | preflight_missing="
+                + ",".join(check["missing_components"])
+                + " | apt_fix=\""
+                + str(check.get("apt_install_command") or "")
+                + "\""
+            )
+    return detail
 
 
 def _abi_symbol_name() -> str:

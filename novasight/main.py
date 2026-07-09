@@ -44,6 +44,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     doctor_jetson_build.add_argument("--source", default=None)
     doctor_jetson_build.add_argument("--cmake", default="cmake")
     doctor_jetson_build.add_argument("--skip-load", action="store_true")
+    doctor_jetson_preflight = doctor_sub.add_parser("jetson-preflight")
+    doctor_jetson_preflight.add_argument("--json", action="store_true")
     doctor_jetson_smoke = doctor_sub.add_parser("jetson-native-smoke")
     doctor_jetson_smoke.add_argument("--device", default=None)
     doctor_jetson_smoke.add_argument("--preference", default=None)
@@ -114,13 +116,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.host is not None:
         cfg.web.host = args.host
     if args.port is not None:
-        cfg.web.port = args.port
+        print(
+            "error: doctor requires a subcommand: camera, jetson-bridge, "
+            "jetson-preflight, jetson-native-build, jetson-native-smoke, "
+            "jetson-zero-copy, jetson-zero-copy-report, deepstream-smoke, "
+            "deepstream-smoke-report, kmnet",
+            file=sys.stderr,
+        )
     configure_logging(cfg)
     if args.command == "doctor" and args.doctor_command is None:
         print(
             "error: doctor requires a subcommand: camera, jetson-bridge, "
-            "jetson-native-build, jetson-native-smoke, jetson-zero-copy, "
-            "jetson-zero-copy-report, deepstream-smoke, deepstream-smoke-report, kmnet",
+            "jetson-preflight, jetson-native-build, jetson-native-smoke, "
+            "jetson-zero-copy, jetson-zero-copy-report, deepstream-smoke, "
+            "deepstream-smoke-report, kmnet",
             file=sys.stderr,
         )
         return 2
@@ -165,6 +174,31 @@ def main(argv: list[str] | None = None) -> int:
         if status["detail"]:
             print(f"detail: {status['detail']}")
         return 0 if status["available"] else 2
+    if args.command == "doctor" and args.doctor_command == "jetson-preflight":
+        import json as _json
+        import novasight_jetson_preprocess_native as native_backend
+
+        check = native_backend.preflight()
+        if args.json:
+            print(_json.dumps(check, indent=2, sort_keys=True))
+        else:
+            print(f"jetson_runtime: {check['jetson_runtime']}")
+            print(f"platform: {check['platform']}")
+            print(f"machine: {check['machine']}")
+            print(f"production_build_supported: {check['production_build_supported']}")
+            for name, info in check.get("components", {}).items():
+                print(
+                    f"component.{name}.present: {info['present']}"
+                    f"  header={info['header']}  library={info['library']}"
+                )
+            if check.get("missing_components"):
+                print(f"missing_components: {', '.join(check['missing_components'])}")
+                print(f"apt_install_command: {check['apt_install_command']}")
+            if check.get("reason"):
+                print(f"reason: {check['reason']}")
+            if check.get("detail"):
+                print(f"detail: {check['detail']}")
+        return 0 if check.get("production_build_supported", False) else 2
     if args.command == "doctor" and args.doctor_command == "jetson-native-build":
         return _doctor_jetson_native_build(args)
     if args.command == "doctor" and args.doctor_command == "jetson-native-smoke":

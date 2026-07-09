@@ -211,6 +211,62 @@ not corrupt the ABI response. The helper does not import DMABUF/NvBufSurface
 resources and does not create a tensor; the production source remains
 responsible for the CUDA/NvBufSurface conversion.
 
+## Build on Jetson (copy-paste recipe)
+
+The Jetson production preprocess library depends on JetPack multimedia API
+headers/libs that are not always preinstalled on a stock L4T image. Run this
+once on the device (after `scripts/setup_jetson.sh` finishes), then rebuild.
+
+```bash
+# 1. Confirm dependency readiness in <1s without invoking cmake.
+python -m novasight doctor jetson-preflight
+
+# If "missing_components" lists anything, install it (the doctor prints the
+# exact apt command):
+sudo apt update
+sudo apt install -y nvidia-l4t-jetson-multimedia-api libegl1 libegl-dev libgles2
+
+# 2. Configure + build the production shared library.
+python -m novasight doctor jetson-native-build \
+  --build-dir build/jetson-native
+
+# Expected artifacts:
+#   build/jetson-native/libnovasight_preprocess.so          (canonical)
+#   build/jetson-native/libnovasight_jetson_preprocess_native.so  (legacy alias)
+ls -l build/jetson-native/libnovasight_preprocess.so
+
+# 3. End-to-end smoke (real frame through the bridge -> TensorRT engine):
+python -m novasight doctor jetson-native-smoke \
+  --library build/jetson-native/libnovasight_preprocess.so \
+  --device /dev/video0 \
+  --pixel-format MJPG \
+  --width 1920 --height 1080 --fps 30 \
+  --roi-size 640 \
+  --input-shape 1x3x640x640 \
+  --tensorrt-engine data/models/<model>.engine
+```
+
+If `doctor jetson-native-build` itself prints an "apt_fix=" snippet into its
+detail, run that snippet and re-run the doctor — it means
+`nvidia-l4t-jetson-multimedia-api` is not installed in this L4T image.
+
+If the headers/libs live in a non-standard path, override via env so the build
+does not require apt:
+
+```bash
+export NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR=/path/to/include
+export NOVASIGHT_NVBUFSURFACE_LIBRARY=/path/to/libnvbufsurface.so
+export NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY=/path/to/libnvbufsurftransform.so
+python -m novasight doctor jetson-native-build --build-dir build/jetson-native
+```
+
+The doctor configures with `NOVASIGHT_JETSON_PREPROCESS_IMPL=jetson`,
+`NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE=.../native/src/jetson/novasight_jetson_preprocess_native_jetson_cuda.cu`,
+then `cmake --build`. A successful run must print `available: True`,
+`status_zero_copy: True`, and `status_memory_space: cuda_device`. Anything else
+means the bundled `.cu` was not linked against real nvbufsurface, even if the
+.so file exists.
+
 ## Required Input
 
 `novasight_prepare_tensor_json(payload_json,result_json,size)` receives JSON

@@ -4,22 +4,28 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/setup_jetson.sh [--pyds-wheel /path/to/pyds-*.whl]
+  scripts/setup_jetson.sh [--pyds-wheel /path/to/pyds-*.whl] [--build]
 
 Creates a Jetson-friendly NovaSight virtual environment with system GStreamer
 bindings visible through --system-site-packages. If a NVIDIA DeepStream pyds
-wheel is provided, the script installs and verifies it.
-
-Do not install the unrelated python3-pyds9 package for DeepStream.
+wheel is provided, the script installs and verifies it. Pass --build to also
+run `python -m novasight doctor jetson-preflight` and
+`python -m novasight doctor jetson-native-build` so the production NVMM
+preprocess .so is produced end-to-end.
 EOF
 }
 
 PYDS_WHEEL=""
+RUN_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pyds-wheel)
       PYDS_WHEEL="${2:-}"
       shift 2
+      ;;
+    --build)
+      RUN_BUILD=1
+      shift
       ;;
     -h|--help)
       usage
@@ -48,7 +54,36 @@ sudo apt install -y \
   build-essential \
   libglib2.0-dev \
   libgstreamer1.0-dev \
-  libgstreamer-plugins-base1.0-dev
+  libgstreamer-plugins-base1.0-dev \
+  \
+  libegl1 \
+  libegl-dev \
+  libgles2 \
+  \
+  nvidia-l4t-jetson-multimedia-api
+
+echo "==> Verifying JetPack multimedia API headers/libs for nvbufsurface"
+for candidate in \
+  /usr/src/jetson_multimedia_api/include/nvbufsurface.h \
+  /usr/include/aarch64-linux-gnu/nvbufsurface.h \
+  /usr/include/nvbufsurface.h \
+; do
+  if [[ -f "${candidate}" ]]; then
+    echo "header_ok: ${candidate}"
+    header_found=1
+    break
+  fi
+done
+: "${header_found:=0}"
+if [[ "${header_found}" -ne 1 ]]; then
+  echo "warning: nvbufsurface.h was not found. capture.memory=nvmm will not build."
+  echo "         ensure nvidia-l4t-jetson-multimedia-api is installed and"
+  echo "         /usr/src/jetson_multimedia_api/include/ is reachable."
+fi
+if ! ldconfig -p | grep -q 'libnvbufsurface\.so\|libnvbufsurftransform\.so'; then
+  echo "warning: libnvbufsurface / libnvbufsurftransform were not found via ldconfig."
+  echo "         try: sudo apt install --reinstall nvidia-l4t-jetson-multimedia-api"
+fi
 
 echo "==> Creating .venv with system site packages"
 /usr/bin/python3 -m venv .venv --system-site-packages
@@ -102,3 +137,18 @@ echo "Start the backend with:"
 echo "  source .venv/bin/activate"
 echo "  cp config/novasight.example.yaml config/novasight.yaml"
 echo "  python3 -m novasight --host 0.0.0.0 --port 5174"
+
+if [[ "${RUN_BUILD}" -eq 1 ]]; then
+  echo "==> Running jetson-preflight doctor"
+  set +e
+  python3 -m novasight doctor jetson-preflight
+  preflight_status=$?
+  set -e
+  if [[ "${preflight_status}" -ne 0 ]]; then
+    echo "preflight reported missing JetPack components; rerun the suggested apt install." >&2
+    exit 2
+  fi
+  echo "==> Building production NVMM preprocess library"
+  python3 -m novasight doctor jetson-native-build --build-dir build/jetson-native
+fi
+
