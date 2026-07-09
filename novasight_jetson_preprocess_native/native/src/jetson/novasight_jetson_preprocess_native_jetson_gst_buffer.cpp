@@ -48,7 +48,7 @@ int novasight_gst_open_surface(
         write_err(err_buf, err_buf_size, "gst_buffer_ptr is zero");
         return NOVASIGHT_GST_RESULT_INVALID_INPUT;
     }
-    auto* buffer = reinterpret_cast<GstBuffer*>(static_cast<gpointer>(gst_buffer_ptr));
+    auto* buffer = reinterpret_cast<GstBuffer*>(gst_buffer_ptr);
     if (buffer == nullptr) {
         write_err(err_buf, err_buf_size, "gst_buffer_ptr resolved to null GstBuffer");
         return NOVASIGHT_GST_RESULT_INVALID_INPUT;
