@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from novasight.api import create_app
+from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.inference.input import PreparedTensorInput, TensorInputShape
 from novasight.inference.jetson import (
@@ -132,6 +133,134 @@ def test_runtime_service_update_config_rewires_gpu_preprocessor() -> None:
 
     assert isinstance(inference._gpu_preprocessor, JetsonGpuResourcePreprocessor)
     assert inference.engine.gpu_preprocessor is inference._gpu_preprocessor
+
+
+def test_capture_select_does_not_auto_start_stopped_nvmm_runtime(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.enabled = True
+    cfg.inference.backend = "nvmm_latest"
+    cfg.capture.memory = "nvmm"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=cfg,
+    )
+    profile = CaptureProfile(
+        device="/dev/video0",
+        pixel_format="MJPG",
+        width=2560,
+        height=1440,
+        fps=120,
+        preference="manual",
+        selection_reason="manual profile matched device capabilities",
+    )
+    state = CaptureRuntimeState(
+        available=True,
+        device="/dev/video0",
+        profile=profile,
+        backend="gst-resource:nvmm-mjpg-iomode2",
+    )
+    app.state.capture = SimpleNamespace(
+        config=cfg.capture,
+        roi_size=cfg.roi.size,
+        roi_offset_x=cfg.roi.offset_x,
+        roi_offset_y=cfg.roi.offset_y,
+        source=object(),
+        session=SimpleNamespace(running=True),
+        state=state,
+        last_config_error=None,
+        configure=lambda *args, **kwargs: state,
+    )
+
+    def fail_if_started(*args, **kwargs):
+        raise AssertionError("capture selection must not auto-start a stopped runtime")
+
+    monkeypatch.setattr("novasight.runtime.pipeline.RuntimePipeline.start", fail_if_started)
+
+    report = RuntimeReconfigurator(app).select_capture(
+        device="/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=2560,
+        height=1440,
+        fps=120,
+    )
+
+    assert report.applied is True
+    assert report.message == "采集配置已应用"
+    assert app.state.runtime.running is False
+
+
+def test_capture_select_reports_runtime_restart_failure_when_pipeline_was_running(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.enabled = True
+    cfg.inference.backend = "nvmm_latest"
+    cfg.capture.memory = "nvmm"
+    cfg.capture.width = 1920
+    cfg.capture.height = 1080
+    cfg.capture.fps = 60
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=cfg,
+    )
+    profile = CaptureProfile(
+        device="/dev/video0",
+        pixel_format="MJPG",
+        width=2560,
+        height=1440,
+        fps=120,
+        preference="manual",
+        selection_reason="manual profile matched device capabilities",
+    )
+    state = CaptureRuntimeState(
+        available=True,
+        device="/dev/video0",
+        profile=profile,
+        backend="gst-resource:nvmm-mjpg-iomode2",
+    )
+    app.state.runtime.running = True
+    app.state.runtime.pipeline = SimpleNamespace(
+        running=True,
+        stop=lambda: None,
+    )
+    app.state.capture = SimpleNamespace(
+        config=cfg.capture,
+        roi_size=cfg.roi.size,
+        roi_offset_x=cfg.roi.offset_x,
+        roi_offset_y=cfg.roi.offset_y,
+        source=object(),
+        session=SimpleNamespace(running=True),
+        state=state,
+        last_config_error=None,
+        configure=lambda *args, **kwargs: state,
+    )
+
+    def fail_start(*args, **kwargs):
+        raise RuntimeError("native bridge unavailable")
+
+    monkeypatch.setattr("novasight.runtime.pipeline.RuntimePipeline.start", fail_start)
+
+    report = RuntimeReconfigurator(app).select_capture(
+        device="/dev/video0",
+        preference="manual",
+        pixel_format="MJPG",
+        width=2560,
+        height=1440,
+        fps=120,
+    )
+
+    assert report.applied is False
+    assert report.rolled_back is False
+    assert report.message.startswith("采集配置已应用，但启动主链失败")
+    assert any(section.section == "runtime_pipeline" and section.status == "failed" for section in report.sections)
+    assert app.state.runtime.running is False
 
 
 def test_inference_runtime_injects_gpu_preprocessor_into_current_engine() -> None:

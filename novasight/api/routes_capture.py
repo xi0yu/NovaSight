@@ -13,7 +13,6 @@ from pydantic import BaseModel, field_validator
 from novasight.capture.preview import render_preview_frame
 from novasight.config import save_runtime_config
 from novasight.runtime.reconfigurator import RuntimeReconfigurator
-from novasight.runtime.pipeline import RuntimePipeline
 from novasight.roi import normalize_roi_size
 
 
@@ -201,7 +200,6 @@ def image_source(request: Request, payload: ImageSourceRequest):
     body = asdict(state)
     if state.available is False:
         return JSONResponse(status_code=400, content=body)
-    _ensure_runtime_pipeline(request)
     return body
 
 
@@ -233,31 +231,6 @@ def _normalize_roi_size(value: int | None) -> int:
         return normalize_roi_size(value or 640)
     except ValueError:
         return 640
-
-
-def _ensure_runtime_pipeline(request: Request) -> None:
-    runtime = getattr(request.app.state, "runtime", None)
-    if runtime is None:
-        return
-    config = getattr(runtime, "config", None)
-    if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
-        return
-    backend = str(getattr(getattr(config, "inference", None), "backend", "")).lower()
-    if backend != "nvmm_latest":
-        return
-    if runtime.pipeline is None:
-        runtime.pipeline = RuntimePipeline(
-            capture=request.app.state.capture,
-            runtime=runtime,
-        )
-    if getattr(runtime.pipeline, "running", False):
-        return
-    try:
-        runtime.pipeline.start()
-    except RuntimeError as exc:
-        logger.warning("runtime pipeline auto-start after capture failed: %s", exc)
-    else:
-        logger.info("runtime pipeline auto-started after capture selection")
 
 
 def _clear_runtime_pipeline(runtime, reason: str) -> None:

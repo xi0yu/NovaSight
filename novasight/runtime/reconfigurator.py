@@ -102,7 +102,8 @@ class RuntimeReconfigurator:
         config_path = getattr(self.app.state, "config_path", None)
         if config_path is not None:
             save_runtime_config(config, config_path)
-        self._ensure_runtime_pipeline_for_live_capture()
+        if was_running:
+            self._ensure_runtime_pipeline_for_live_capture(required=True)
         running = bool(getattr(getattr(self.app.state, "runtime", None), "running", False))
         return ConfigApplyReport(
             config=asdict(config),
@@ -125,6 +126,11 @@ class RuntimeReconfigurator:
     ) -> ConfigApplyReport:
         previous_config = getattr(self.app.state, "config", None)
         previous_capture_signature = self._capture_signature(previous_config)
+        runtime = getattr(self.app.state, "runtime", None)
+        pipeline = getattr(runtime, "pipeline", None) if runtime is not None else None
+        was_running = bool(getattr(runtime, "running", False)) or bool(
+            getattr(pipeline, "running", False)
+        )
         state = self.app.state.capture.configure(
             device,
             preference=preference,
@@ -208,7 +214,28 @@ class RuntimeReconfigurator:
                     message="capture selection changed; restart runtime to rebuild GStreamer pipeline",
                 )
             )
-        self._ensure_runtime_pipeline_for_live_capture()
+        if was_running:
+            try:
+                self._ensure_runtime_pipeline_for_live_capture(required=True)
+            except ValueError as exc:
+                sections.append(
+                    ConfigSectionApplyResult(
+                        section="runtime_pipeline",
+                        impact="pipeline_rebuild",
+                        status="failed",
+                        message=str(exc),
+                    )
+                )
+                return ConfigApplyReport(
+                    config=asdict(config),
+                    schema=runtime_config_schema(config),
+                    restart_required=False,
+                    applied=False,
+                    rolled_back=False,
+                    sections=sections,
+                    message=f"采集配置已应用，但启动主链失败：{exc}",
+                    capture=capture_payload,
+                )
         return ConfigApplyReport(
             config=asdict(config),
             schema=runtime_config_schema(config),
@@ -356,7 +383,7 @@ class RuntimeReconfigurator:
                 status.get("last_error") or status,
             )
 
-    def _ensure_runtime_pipeline_for_live_capture(self) -> None:
+    def _ensure_runtime_pipeline_for_live_capture(self, *, required: bool = False) -> None:
         runtime = getattr(self.app.state, "runtime", None)
         capture = getattr(self.app.state, "capture", None)
         config = getattr(self.app.state, "config", None)
@@ -382,9 +409,12 @@ class RuntimeReconfigurator:
         try:
             runtime.pipeline.start()
         except RuntimeError as exc:
-            logger.warning("runtime pipeline auto-start after config update failed: %s", exc)
+            self._reset_runtime_pipeline("runtime pipeline restart failed")
+            if required:
+                raise ValueError(str(exc)) from exc
+            logger.warning("runtime pipeline restart after config update failed: %s", exc)
         else:
-            logger.info("runtime pipeline auto-started after config update")
+            logger.info("runtime pipeline restarted after config update")
 
     def _reset_runtime_pipeline(self, reason: str) -> None:
         runtime = getattr(self.app.state, "runtime", None)
