@@ -14,7 +14,7 @@ GStreamer capture
 -> control
 ```
 
-The compatible path is not zero-copy, but it preserves the two required
+The compatible path has a CPU-to-GPU upload, but it preserves the two required
 properties for the active control mainline: latest-only frame selection and GPU
 TensorRT inference.
 
@@ -36,7 +36,7 @@ v4l2src
 -> basic color conversion
 -> LatestFrameExchange capacity=1
 -> NovaSight TensorRT InferenceLoop
--> CUDA preprocess
+-> CUDA preprocess to model input tensor
 -> TensorRT enqueueV3
 -> CUDA postprocess / NMS
 -> result timestamp validation
@@ -76,7 +76,37 @@ Operational rules:
 - TensorRT inference is a single loop that pulls
   `acquire_latest_after(last_generation)` when ready.
 - TensorRT does not consume ordinary FIFO input.
+- The exchange carries ROI-ready video surfaces, not TensorRT input tensors.
+- CUDA preprocess must convert NVMM image surfaces into model input device
+  buffers.
 - Result timestamps are validated before a `DetectionBatch` can enter control.
+
+## NVMM Surface Is Not Tensor Input
+
+NVMM output from DeepStream/GStreamer is normally a video surface, commonly
+NV12, RGBA, or RGB. TensorRT models usually require a fixed-shape tensor such
+as NCHW RGB FP16/FP32/INT8 with normalization and sometimes letterbox behavior.
+
+The production path therefore includes a GPU-side preprocess step:
+
+```text
+NvBufSurface video frame
+-> CUDA-accessible image data
+-> RGB / layout conversion
+-> HWC to CHW
+-> uint8 to FP16 / FP32 / INT8
+-> normalization and optional letterbox
+-> TensorRT input device buffer
+```
+
+This may write a new GPU tensor buffer. That is expected. The goal is not a
+literal no-write path from NVMM surface to TensorRT binding; the goal is to
+avoid GPU -> CPU -> GPU crossings. GPU surface -> GPU tensor is the correct
+low-latency boundary.
+
+`NvBufSurface` mapping, CUDA/EGL access, synchronization, and lifetime must be
+managed explicitly. Do not mark an NVMM video surface as a TensorRT-ready input
+tensor unless CUDA preprocess has actually produced the model input buffer.
 
 ## Native Module
 

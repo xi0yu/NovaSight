@@ -4,6 +4,7 @@
 #include <vector>
 
 using novasight::exchange::FrameDescriptor;
+using novasight::exchange::FrameContent;
 using novasight::exchange::FrameMemory;
 using novasight::exchange::LatestFrameExchange;
 
@@ -21,6 +22,7 @@ FrameDescriptor frame(std::uint64_t generation) {
         640,
         "NV12",
         "monotonic",
+        FrameContent::VideoSurface,
         {nullptr, "GstBuffer", FrameMemory::Nvmm, {}},
     };
 }
@@ -35,6 +37,9 @@ int main() {
     exchange.publish(frame(100));
     auto first = exchange.acquire_latest_after(last_generation);
     assert(first);
+    assert(first->descriptor().content == FrameContent::VideoSurface);
+    assert(first->descriptor().resource.memory == FrameMemory::Nvmm);
+    assert(first->descriptor().format == "NV12");
     inferred.push_back(first->descriptor().generation);
     last_generation = first->descriptor().generation;
 

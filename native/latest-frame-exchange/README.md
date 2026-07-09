@@ -11,6 +11,7 @@ GC553G2 / V4L2
 -> GPU/VIC resize / color conversion
 -> LatestFrameExchange capacity=1
 -> NovaSight TensorRT InferenceLoop
+-> CUDA preprocess to model input tensor
 -> DetectionBatch
 -> Tracker / Selector / Kalman / Control
 ```
@@ -33,6 +34,23 @@ latest ROI-ready frame. A single TensorRT inference loop calls
 produces frames faster than TensorRT can infer, newer frames replace older
 pending frames and inference observes generation jumps.
 
+The exchange carries video surfaces, not TensorRT input tensors. A typical
+published resource is an NVMM `NvBufSurface` with formats such as NV12 or RGBA.
+The inference loop must still run CUDA preprocess:
+
+```text
+NVMM video surface
+-> CUDA-accessible image data
+-> RGB / layout conversion
+-> HWC to CHW
+-> FP16 / FP32 / INT8 conversion
+-> normalization / letterbox
+-> TensorRT input device buffer
+```
+
+The target is no GPU-to-CPU-to-GPU boundary. A GPU-side write from image surface
+to TensorRT input buffer is expected and correct.
+
 Build and test:
 
 ```bash
@@ -43,5 +61,5 @@ ctest --test-dir build/latest-frame-exchange --output-on-failure
 
 The current implementation is resource-agnostic and testable on development
 machines. Jetson integration should wrap real `GstBuffer` / `NvBufSurface`
-resources with a release callback and publish them into this exchange after
-ROI/resize/color conversion.
+video surfaces with a release callback and publish them into this exchange
+after ROI/resize/color conversion.

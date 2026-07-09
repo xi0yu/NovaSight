@@ -3,6 +3,7 @@
 #include <cassert>
 
 using novasight::exchange::FrameDescriptor;
+using novasight::exchange::FrameContent;
 using novasight::exchange::FrameMemory;
 using novasight::exchange::LatestFrameExchange;
 
@@ -20,6 +21,7 @@ FrameDescriptor frame(std::uint64_t generation) {
         320,
         "NV12",
         "monotonic",
+        FrameContent::VideoSurface,
         {nullptr, "GstBuffer", FrameMemory::Nvmm, {}},
     };
 }

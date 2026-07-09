@@ -16,6 +16,12 @@ enum class FrameMemory {
     CudaDevice,
 };
 
+enum class FrameContent {
+    Unknown,
+    VideoSurface,
+    Tensor,
+};
+
 struct FrameResource {
     void* handle = nullptr;
     std::string kind;
@@ -34,6 +40,7 @@ struct FrameDescriptor {
     std::uint32_t pitch = 0;
     std::string format;
     std::string clock_domain = "monotonic";
+    FrameContent content = FrameContent::VideoSurface;
     FrameResource resource;
 };
 

@@ -22,6 +22,11 @@ void validate_descriptor(const FrameDescriptor& descriptor) {
     if (descriptor.clock_domain.empty()) {
         throw std::invalid_argument("FrameDescriptor.clock_domain must be non-empty");
     }
+    if (descriptor.content != FrameContent::VideoSurface) {
+        throw std::invalid_argument(
+            "LatestFrameExchange only accepts ROI-ready video surfaces, not TensorRT input tensors"
+        );
+    }
 }
 
 }  // namespace

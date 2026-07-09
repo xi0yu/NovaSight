@@ -4,6 +4,7 @@
 #include <vector>
 
 using novasight::exchange::FrameDescriptor;
+using novasight::exchange::FrameContent;
 using novasight::exchange::FrameMemory;
 using novasight::exchange::LatestFrameExchange;
 
@@ -21,6 +22,7 @@ FrameDescriptor frame(std::uint64_t generation, std::uint64_t sequence, std::vec
         640,
         "NV12",
         "monotonic",
+        FrameContent::VideoSurface,
         {reinterpret_cast<void*>(sequence), "GstBuffer", FrameMemory::Nvmm, [released](void* ptr) {
              released->push_back(static_cast<int>(reinterpret_cast<std::uintptr_t>(ptr)));
          }},
