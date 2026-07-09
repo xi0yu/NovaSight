@@ -265,7 +265,7 @@ bool resolve_source_surface_from_request(
     *surface = nullptr;
     *gst_map_owner = nullptr;
 
-    if (request.dmabuf_fd >= 0) {
+    if (request.dmabuf_fd >= 3) {
         void* surface_buffer = nullptr;
         if (NvBufSurfaceFromFd(request.dmabuf_fd, &surface_buffer) != 0
             || surface_buffer == nullptr) {
@@ -273,6 +273,17 @@ bool resolve_source_surface_from_request(
             *detail = "NvBufSurfaceFromFd failed for dmabuf_fd.";
             return false;
         }
+        *surface = static_cast<NvBufSurface*>(surface_buffer);
+        return true;
+    }
+
+    if (request.dmabuf_fd >= 0 && request.dmabuf_fd < 3) {
+        *reason = "dmabuf_fd_invalid";
+        *detail = "dmabuf_fd is below the minimum real fd (3); "
+                  "the capture pipeline did not deliver a usable kernel "
+                  "file descriptor to NvBufSurfaceFromFd.";
+        return false;
+    }
         *surface = static_cast<NvBufSurface*>(surface_buffer);
         return true;
     }

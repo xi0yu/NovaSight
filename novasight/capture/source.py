@@ -728,15 +728,22 @@ def _coerce_fd(value: Any) -> int | None:
         fd = int(value)
     except Exception:
         return None
-    return fd if fd >= 0 else None
+    return fd if fd >= 3 else None
 
 
 def _valid_fd(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
     try:
         fd = int(value)
     except Exception:
         return None
-    return fd if fd >= 0 else None
+    # Real kernel file descriptors are >= 3 (0/1/2 are stdin/stdout/stderr).
+    # This guards against tuple-returning getters like NVIDIA NvBuffer
+    # (success, fd) where `success` is `True` and would otherwise coerce
+    # to fd=1, which NvBufSurfaceFromFd treats as a usable fd and can
+    # subsequently SIGSEGV in the kernel driver.
+    return fd if fd >= 3 else None
 
 
 def _gobject_pointer(obj: Any) -> int | None:
