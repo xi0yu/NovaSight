@@ -63,6 +63,7 @@ class TensorRtInferenceEngine:
         self._last_slow_log_ns = 0
         self._last_preprocess_backend = ""
         self._last_preprocess_reason = ""
+        self._last_preprocess_timings: dict[str, float] = {}
 
     def available(self) -> bool:
         try:
@@ -146,6 +147,7 @@ class TensorRtInferenceEngine:
             ),
             "last_preprocess_backend": self._last_preprocess_backend,
             "last_preprocess_reason": self._last_preprocess_reason,
+            "last_preprocess_timings": dict(self._last_preprocess_timings),
             "gpu_preprocessor": self._gpu_preprocessor_status(),
         }
 
@@ -180,6 +182,7 @@ class TensorRtInferenceEngine:
         self._last_input = None
         self._last_preprocess_backend = ""
         self._last_preprocess_reason = ""
+        self._last_preprocess_timings = {}
         self._load_engine(artifact_path)
         self._loaded = True
         self._warmup()
@@ -202,6 +205,7 @@ class TensorRtInferenceEngine:
             )
             self._last_preprocess_backend = preprocess_result.backend
             self._last_preprocess_reason = preprocess_result.reason
+            self._last_preprocess_timings = dict(preprocess_result.timings or {})
             tensor = preprocess_result.tensor
             execute_start_ns = time.monotonic_ns()
             detections, decode_debug = self._execute(tensor)
@@ -226,15 +230,19 @@ class TensorRtInferenceEngine:
                     "total_ms": _elapsed_ms(total_start_ns, done_ns),
                 }
             )
+            for key, value in self._last_preprocess_timings.items():
+                timings[f"native_preprocess_{key}"] = float(value)
             self._log_slow_inference(timings, decode_debug)
         except ValueError as exc:
             self._last_preprocess_backend = "unavailable"
             self._last_preprocess_reason = getattr(exc, "reason", "")
+            self._last_preprocess_timings = {}
             self._log_failure_once(f"input rejected: {exc}")
             return InferenceResult(available=False, reason=str(exc))
         except Exception as exc:
             self._last_preprocess_backend = "unavailable"
             self._last_preprocess_reason = getattr(exc, "reason", "")
+            self._last_preprocess_timings = {}
             self._log_failure_once(str(exc), with_trace=True)
             return InferenceResult(available=False, reason=str(exc), classes=self._classes)
         return InferenceResult(

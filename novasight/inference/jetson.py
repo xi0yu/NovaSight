@@ -493,7 +493,7 @@ def _validate_required_payload_contract(
 
     _require_payload_positive_int(payload, "frame_id", module_name)
     _require_payload_positive_int(payload, "capture_ts_ns", module_name)
-    _require_payload_nonempty_text(payload, "resource_kind", module_name)
+    resource_kind = _require_payload_nonempty_text(payload, "resource_kind", module_name)
     _require_payload_nonempty_text(payload, "resource_memory", module_name)
     resource_source = _require_payload_nonempty_text(payload, "resource_source", module_name)
     if _normalize_capability_value(resource_source) != "appsink":
@@ -501,6 +501,13 @@ def _validate_required_payload_contract(
             JETSON_GPU_RESOURCE_BRIDGE_INVALID,
             f"Jetson GPU resource bridge {module_name} requires resource_source='appsink'; "
             f"got {resource_source!r}",
+        )
+    if _normalize_capability_value(resource_kind) == "gstreamer_sample" and payload.get("resource_handle") is None:
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_INVALID,
+            f"Jetson GPU resource bridge {module_name} requires a live resource_handle "
+            "for resource_kind='gstreamer_sample' so the Gst.Sample/GstBuffer "
+            "outlives native preprocess",
         )
     _require_payload_nonnegative_int(payload, "dmabuf_fd", module_name)
     if not isinstance(payload.get("resource_metadata"), Mapping):
@@ -759,6 +766,7 @@ def _tensor_result_from_native(
         _require_device_memory_space(native_result)
         zero_copy = True
         reason = str(_optional_value(native_result, "reason", ""))
+    timings = _timings_from_native(native_result)
     return TensorPreprocessResult(
         tensor=tensor,
         backend=backend,
@@ -768,7 +776,29 @@ def _tensor_result_from_native(
         location="device",
         zero_copy=zero_copy,
         reason=reason,
+        timings=timings,
     )
+
+
+def _timings_from_native(native_result: Any) -> dict[str, float]:
+    raw = _optional_value(native_result, "timings", None)
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_INVALID,
+            "Jetson GPU resource bridge result timings must be an object",
+        )
+    timings: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            timings[str(key)] = float(value)
+        except Exception as exc:
+            raise TensorPreprocessError(
+                JETSON_GPU_RESOURCE_BRIDGE_INVALID,
+                f"Jetson GPU resource bridge timing {key!r} must be numeric",
+            ) from exc
+    return timings
 
 
 def _shape_from_native(native_result: Any, shape: TensorInputShape) -> tuple[int, ...]:

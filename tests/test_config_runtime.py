@@ -102,6 +102,10 @@ def test_native_jetson_cuda_source_uses_real_dmabuf_egl_cuda_path() -> None:
     assert "NvBufSurfTransform" in source
     assert "NVBUF_COLOR_FORMAT_RGBA" in source
     assert "rgba_to_nchw_kernel" in source
+    assert '\\"timings\\"' in source
+    assert '\\"nvbufsurftransform_ms\\"' in source
+    assert '\\"egl_cuda_map_ms\\"' in source
+    assert '\\"cuda_kernel_ms\\"' in source
     assert "NvBufSurfaceMapEglImage" in source
     assert "cuGraphicsEGLRegisterImage" in source
     assert "cuGraphicsResourceGetMappedEglFrame" in source

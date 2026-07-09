@@ -35,14 +35,18 @@ class TensorPreprocessResult:
     location: str = "host"
     zero_copy: bool = False
     reason: str = ""
+    timings: dict[str, float] | None = None
 
     def debug_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "preprocess_backend": self.backend,
             "preprocess_location": self.location,
             "preprocess_zero_copy": self.zero_copy,
             "preprocess_reason": self.reason,
         }
+        if self.timings:
+            payload["preprocess_native_timings"] = dict(self.timings)
+        return payload
 
 
 class GpuResourcePreprocessor(Protocol):

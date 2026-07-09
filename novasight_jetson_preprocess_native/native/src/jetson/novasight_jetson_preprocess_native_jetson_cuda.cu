@@ -10,6 +10,7 @@
 #include <nvbufsurftransform.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
@@ -20,6 +21,7 @@
 namespace {
 
 using novasight::jetson_preprocess::TensorRequest;
+using Clock = std::chrono::steady_clock;
 
 struct DeviceAllocation {
     void* ptr = nullptr;
@@ -126,6 +128,10 @@ bool ensure_cuda_context(std::string* detail) {
         return false;
     }
     return true;
+}
+
+double elapsed_ms(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
 uint64_t register_allocation(void* ptr, uint64_t nbytes) {
@@ -247,7 +253,11 @@ std::string success_json(
     const TensorRequest& request,
     void* device_ptr,
     uint64_t nbytes,
-    uint64_t release_token
+    uint64_t release_token,
+    double nvbufsurftransform_ms,
+    double egl_cuda_map_ms,
+    double cuda_kernel_ms,
+    double total_ms
 ) {
     std::ostringstream out;
     out << "{\"device_ptr\":" << reinterpret_cast<uintptr_t>(device_ptr)
@@ -259,7 +269,13 @@ std::string success_json(
         << ",\"backend\":\"novasight_jetson_preprocess_native:jetson_cuda\""
         << ",\"zero_copy\":true"
         << ",\"memory_space\":\"cuda_device\""
-        << ",\"release_token\":" << release_token << "}";
+        << ",\"release_token\":" << release_token
+        << ",\"timings\":{"
+        << "\"nvbufsurftransform_ms\":" << nvbufsurftransform_ms
+        << ",\"egl_cuda_map_ms\":" << egl_cuda_map_ms
+        << ",\"cuda_kernel_ms\":" << cuda_kernel_ms
+        << ",\"total_ms\":" << total_ms
+        << "}}";
     return out.str();
 }
 
@@ -318,6 +334,7 @@ extern "C" int novasight_prepare_tensor_json(
         return 1;
     }
     const TensorRequest& request = validation.request;
+    const auto total_start = Clock::now();
     if (request.nchw[0] != 1) {
         novasight::jetson_preprocess::write_error_json(
             result_json,
@@ -426,6 +443,9 @@ extern "C" int novasight_prepare_tensor_json(
     void* output_device = nullptr;
     unsigned char* rgba_linear_owner = nullptr;
     bool rgba_egl_mapped = false;
+    double nvbufsurftransform_ms = 0.0;
+    double egl_cuda_map_ms = 0.0;
+    double cuda_kernel_ms = 0.0;
     int return_code = 1;
 
     do {
@@ -447,8 +467,11 @@ extern "C" int novasight_prepare_tensor_json(
                                           | NVBUFSURF_TRANSFORM_FILTER;
         transform_params.transform_filter = NvBufSurfTransformInter_Default;
 
+        const auto transform_start = Clock::now();
         const NvBufSurfTransform_Error transform_error =
             NvBufSurfTransform(surface, rgba_surface, &transform_params);
+        const auto transform_done = Clock::now();
+        nvbufsurftransform_ms = elapsed_ms(transform_start, transform_done);
         if (transform_error != NvBufSurfTransformError_Success) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
@@ -458,6 +481,7 @@ extern "C" int novasight_prepare_tensor_json(
             );
             break;
         }
+        const auto map_start = Clock::now();
         if (NvBufSurfaceMapEglImage(rgba_surface, 0) != 0) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
@@ -540,6 +564,8 @@ extern "C" int novasight_prepare_tensor_json(
             );
             break;
         }
+        const auto map_done = Clock::now();
+        egl_cuda_map_ms = elapsed_ms(map_start, map_done);
 
         const uint64_t nbytes = novasight::jetson_preprocess::tensor_nbytes(request);
         if (nbytes == 0) {
@@ -569,6 +595,7 @@ extern "C" int novasight_prepare_tensor_json(
             (request.nchw[2] + block.y - 1) / block.y
         );
         const int dtype_code = request.dtype == "float16" ? 16 : 32;
+        const auto kernel_start = Clock::now();
         rgba_to_nchw_kernel<<<grid, block>>>(
             rgba_plane,
             request.nchw[3],
@@ -591,6 +618,8 @@ extern "C" int novasight_prepare_tensor_json(
             break;
         }
         err = cudaDeviceSynchronize();
+        const auto kernel_done = Clock::now();
+        cuda_kernel_ms = elapsed_ms(kernel_start, kernel_done);
         if (err != cudaSuccess) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
@@ -605,7 +634,16 @@ extern "C" int novasight_prepare_tensor_json(
         novasight::jetson_preprocess::write_json(
             result_json,
             result_json_size,
-            success_json(request, output_device, nbytes, release_token)
+            success_json(
+                request,
+                output_device,
+                nbytes,
+                release_token,
+                nvbufsurftransform_ms,
+                egl_cuda_map_ms,
+                cuda_kernel_ms,
+                elapsed_ms(total_start, Clock::now())
+            )
         );
         output_device = nullptr;
         return_code = 0;

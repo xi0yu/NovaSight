@@ -4,15 +4,19 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from novasight.api import create_app
+from novasight.capture.source import CapturedFrame, FrameResource
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
-from novasight.inference.input import PreparedTensorInput, TensorInputShape
+from novasight.inference.input import PreparedTensorInput, TensorInputShape, prepare_tensor_input
 from novasight.inference.jetson import (
     JetsonGpuResourcePreprocessor,
     create_gpu_resource_preprocessor,
 )
-from novasight.inference.preprocess import prepare_tensor
+from novasight.inference.preprocess import DeviceTensor, TensorPreprocessResult, prepare_tensor
+import novasight.inference.tensorrt as tensorrt_module
 from novasight.inference.runtime import InferenceRuntime
 from novasight.inference.tensorrt import TensorRtInferenceEngine
 from novasight.runtime import RuntimeService
@@ -379,6 +383,265 @@ def test_nvmm_gstreamer_sample_uses_configured_gpu_preprocessor(
     assert result.tensor.device_ptr == 12345
     assert calls[0]["resource_kind"] == "gstreamer_sample"
     assert calls[0]["resource_memory"] == "nvmm"
+
+
+def test_nvmm_frame_resource_keeps_gstreamer_sample_handle_alive() -> None:
+    sample = object()
+    resource = FrameResource(
+        kind="gstreamer_sample",
+        handle=sample,
+        memory="nvmm",
+        width=640,
+        height=640,
+        pixel_format="NV12",
+        source="appsink",
+        dmabuf_fd=7,
+    )
+    frame = CapturedFrame(
+        frame_id=10,
+        width=640,
+        height=640,
+        pixel_format="NV12",
+        ts_ns=1_000_000_000,
+        capture_wait_ms=0.1,
+        image=None,
+        frame_resource=resource,
+    )
+    prepared = prepare_tensor_input(
+        frame,
+        TensorInputShape(batch=1, channels=3, height=320, width=320),
+    )
+
+    assert frame.image is None
+    assert frame.frame_resource.handle is sample
+    assert frame.gpu_buffer is sample
+    assert prepared.buffer is sample
+    assert prepared.dmabuf_fd == 7
+
+
+def test_nvmm_gstreamer_sample_requires_live_resource_handle(
+    monkeypatch,
+) -> None:
+    calls: list[dict] = []
+
+    module_name = "resource_handle_required_gpu_preprocessor_bridge_for_test"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(
+            ABI_VERSION=1,
+            CAPABILITIES={
+                "memory": ["nvmm"],
+                "resource_kind": ["gstreamer_sample"],
+                "resource_source": ["appsink"],
+                "formats": ["NV12"],
+                "dtype": ["float32"],
+            },
+            status=lambda: {
+                "available": True,
+                "ready": True,
+                "backend": "jetson_cuda",
+                "zero_copy": True,
+                "memory_space": "cuda_device",
+            },
+            prepare_tensor=lambda payload: calls.append(dict(payload)),
+        ),
+    )
+    monkeypatch.setenv("NOVASIGHT_JETSON_PREPROCESSOR", module_name)
+    prepared = PreparedTensorInput(
+        mode="gpu_buffer",
+        buffer=None,
+        frame_id=10,
+        capture_ts_ns=1_000_000_000,
+        width=320,
+        height=320,
+        pixel_format="NV12",
+        source_width=1920,
+        source_height=1080,
+        offset_x=800,
+        offset_y=300,
+        needs_resize=False,
+        resource_kind="gstreamer_sample",
+        resource_memory="nvmm",
+        resource_source="appsink",
+        dmabuf_fd=7,
+        resource_metadata={},
+        resource_width=320,
+        resource_height=320,
+        resource_pixel_format="NV12",
+    )
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "nvmm_latest"
+    cfg.capture.memory = "nvmm"
+    preprocessor = create_gpu_resource_preprocessor(cfg)
+    shape = TensorInputShape(batch=1, channels=3, height=320, width=320)
+
+    with pytest.raises(Exception, match="resource_handle"):
+        prepare_tensor(prepared, shape, gpu_preprocessor=preprocessor)
+
+    assert calls == []
+
+
+def test_nvmm_native_preprocess_timings_surface_in_result_debug(
+    monkeypatch,
+) -> None:
+    class Owner:
+        def release(self) -> None:
+            pass
+
+    def prepare_native_tensor(payload: dict) -> dict:
+        return {
+            "device_ptr": 12345,
+            "nbytes": 1 * 3 * 320 * 320 * 4,
+            "shape": (1, 3, 320, 320),
+            "dtype": "float32",
+            "zero_copy": True,
+            "memory_space": "cuda_device",
+            "backend": "jetson_cuda",
+            "owner": Owner(),
+            "timings": {
+                "nvbufsurftransform_ms": 0.42,
+                "cuda_kernel_ms": 0.13,
+                "total_ms": 0.71,
+            },
+        }
+
+    module_name = "timed_gpu_preprocessor_bridge_for_test"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(
+            ABI_VERSION=1,
+            CAPABILITIES={
+                "memory": ["nvmm"],
+                "resource_kind": ["gstreamer_sample"],
+                "resource_source": ["appsink"],
+                "formats": ["NV12"],
+                "dtype": ["float32"],
+            },
+            status=lambda: {
+                "available": True,
+                "ready": True,
+                "backend": "jetson_cuda",
+                "zero_copy": True,
+                "memory_space": "cuda_device",
+            },
+            prepare_tensor=prepare_native_tensor,
+        ),
+    )
+    monkeypatch.setenv("NOVASIGHT_JETSON_PREPROCESSOR", module_name)
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "nvmm_latest"
+    cfg.capture.memory = "nvmm"
+    preprocessor = create_gpu_resource_preprocessor(cfg)
+    shape = TensorInputShape(batch=1, channels=3, height=320, width=320)
+    prepared = PreparedTensorInput(
+        mode="gpu_buffer",
+        buffer=object(),
+        frame_id=10,
+        capture_ts_ns=1_000_000_000,
+        width=320,
+        height=320,
+        pixel_format="NV12",
+        source_width=1920,
+        source_height=1080,
+        offset_x=800,
+        offset_y=300,
+        needs_resize=False,
+        resource_kind="gstreamer_sample",
+        resource_memory="nvmm",
+        resource_source="appsink",
+        dmabuf_fd=7,
+        resource_metadata={},
+        resource_width=320,
+        resource_height=320,
+        resource_pixel_format="NV12",
+    )
+
+    result = prepare_tensor(prepared, shape, gpu_preprocessor=preprocessor)
+
+    debug = result.debug_payload()
+    assert debug["preprocess_native_timings"]["nvbufsurftransform_ms"] == 0.42
+    assert debug["preprocess_native_timings"]["cuda_kernel_ms"] == 0.13
+    assert debug["preprocess_native_timings"]["total_ms"] == 0.71
+
+
+def test_tensorrt_inference_debug_includes_native_preprocess_timings(
+    monkeypatch,
+) -> None:
+    prepared = PreparedTensorInput(
+        mode="gpu_buffer",
+        buffer=object(),
+        frame_id=10,
+        capture_ts_ns=1_000_000_000,
+        width=320,
+        height=320,
+        pixel_format="NV12",
+        source_width=1920,
+        source_height=1080,
+        offset_x=800,
+        offset_y=300,
+        needs_resize=False,
+        resource_kind="gstreamer_sample",
+        resource_memory="nvmm",
+        resource_source="appsink",
+        dmabuf_fd=7,
+        resource_metadata={},
+        resource_width=320,
+        resource_height=320,
+        resource_pixel_format="NV12",
+    )
+    shape = TensorInputShape(batch=1, channels=3, height=320, width=320)
+    preprocess_result = TensorPreprocessResult(
+        tensor=DeviceTensor(
+            device_ptr=12345,
+            nbytes=shape.nbytes,
+            shape=(1, 3, 320, 320),
+            owner=SimpleNamespace(release=lambda: None),
+        ),
+        backend="jetson_cuda",
+        input_mode="gpu_buffer",
+        resource_kind="gstreamer_sample",
+        resource_memory="nvmm",
+        location="device",
+        zero_copy=True,
+        timings={
+            "nvbufsurftransform_ms": 0.42,
+            "cuda_kernel_ms": 0.13,
+            "total_ms": 0.71,
+        },
+    )
+    engine = TensorRtInferenceEngine()
+    engine._loaded = True
+    engine._input_shape = shape
+    engine._context = object()
+    engine._cudart = object()
+    engine._classes = ["target"]
+    engine._input_name = "images"
+    engine._output_name = "output0"
+    engine._output_shape = (1, 6, 0)
+    engine._output_dtype = "float32"
+
+    monkeypatch.setattr(tensorrt_module, "prepare_tensor_input", lambda _frame, _shape: prepared)
+    monkeypatch.setattr(
+        tensorrt_module,
+        "prepare_tensor",
+        lambda _prepared, _shape, *, gpu_preprocessor: preprocess_result,
+    )
+    monkeypatch.setattr(engine, "_execute", lambda _tensor: ([], {"timings": {"input_location": "device"}}))
+
+    result = engine.infer(object())
+
+    assert result.available is True
+    assert result.debug["preprocess"]["preprocess_native_timings"]["cuda_kernel_ms"] == 0.13
+    assert result.debug["timings"]["native_preprocess_nvbufsurftransform_ms"] == 0.42
+    assert result.debug["timings"]["native_preprocess_cuda_kernel_ms"] == 0.13
+    assert result.debug["timings"]["native_preprocess_total_ms"] == 0.71
+    assert engine.status()["last_preprocess_timings"] == {
+        "nvbufsurftransform_ms": 0.42,
+        "cuda_kernel_ms": 0.13,
+        "total_ms": 0.71,
+    }
 
 
 def test_native_ctypes_bridge_auto_discovers_default_build_output(

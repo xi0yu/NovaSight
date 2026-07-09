@@ -104,6 +104,8 @@ def test_latest_frame_broker_overwrites_pending_frames() -> None:
     assert status["pending_depth"] == 0
     assert status["max_pending_depth"] == 1
     assert status["overwritten_frames"] == 6
+    assert status["latest_overwrite_count"] == 6
+    assert status["busy_drop_count"] == 6
 
 
 def test_latest_frame_broker_pending_depth_never_exceeds_one() -> None:

@@ -117,6 +117,8 @@ class LatestFrameBroker:
                 "acquired_generation": self._acquired_generation,
                 "published_frames": self._published_frames,
                 "overwritten_frames": self._overwritten_frames,
+                "latest_overwrite_count": self._overwritten_frames,
+                "busy_drop_count": self._overwritten_frames,
                 "acquired_frames": self._acquired_frames,
                 "last_publish_ts_ns": self._last_publish_ts_ns,
                 "last_acquire_ts_ns": self._last_acquire_ts_ns,
