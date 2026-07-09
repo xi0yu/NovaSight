@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -639,7 +640,35 @@ def _library_symbol(library: Any, name: str) -> Any | None:
 
 
 def _library_path() -> str:
-    return os.environ.get(LIBRARY_ENV, "").strip()
+    configured = os.environ.get(LIBRARY_ENV, "").strip()
+    if configured:
+        return configured
+    for candidate in _default_library_candidates():
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
+def _default_library_candidates() -> list[Path]:
+    library_name = "libnovasight_jetson_preprocess_native.so"
+    package_dir = Path(__file__).resolve().parent
+    repo_root = package_dir.parent
+    cwd = Path.cwd()
+    candidates = [
+        cwd / "build/jetson-native" / library_name,
+        cwd / "build" / "jetson-native" / library_name,
+        repo_root / "build/jetson-native" / library_name,
+        repo_root / "build" / "jetson-native" / library_name,
+    ]
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
 
 
 def _abi_symbol_name() -> str:

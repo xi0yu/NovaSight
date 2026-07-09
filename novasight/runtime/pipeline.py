@@ -32,6 +32,12 @@ class PipelineStats:
 
 class RuntimePipeline:
     CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法运行推理链路。"
+    GPU_PREPROCESSOR_NOT_READY_ERROR = (
+        "NVMM TensorRT GPU preprocess is not ready; build the Jetson native "
+        "preprocess library with `python -m novasight doctor jetson-native-build` "
+        "and make sure NOVASIGHT_JETSON_NATIVE_LIBRARY points to "
+        "libnovasight_jetson_preprocess_native.so."
+    )
 
     def __init__(
         self,
@@ -65,6 +71,7 @@ class RuntimePipeline:
         self._control_observation_window_ts_ns.clear()
         self._skipped_window_ts_ns.clear()
         self.stats = PipelineStats(started_at=time.time())
+        self._require_gpu_preprocessor_ready()
         self.runtime.running = True
         self._threads = [
             threading.Thread(
@@ -109,6 +116,50 @@ class RuntimePipeline:
             or (session is not None and getattr(session, "running", False) is not True)
         ):
             raise RuntimeError(self.CAPTURE_NOT_STARTED_ERROR)
+
+    def _require_gpu_preprocessor_ready(self) -> None:
+        config = getattr(self.runtime, "config", None)
+        inference_config = getattr(config, "inference", None)
+        capture_config = getattr(config, "capture", None)
+        if str(getattr(inference_config, "backend", "")).lower() != "nvmm_latest":
+            return
+        if not bool(getattr(inference_config, "enabled", True)):
+            return
+        if str(getattr(capture_config, "memory", "")).lower() != "nvmm":
+            return
+        status = self._runtime_inference_status()
+        gpu_status = status.get("gpu_preprocessor")
+        if not isinstance(gpu_status, dict):
+            gpu_status = {}
+        if gpu_status.get("available") is True and gpu_status.get("native_ready", True) is not False:
+            return
+        reason = str(gpu_status.get("reason") or status.get("reason") or "gpu_preprocessor_unavailable")
+        detail = str(gpu_status.get("detail") or "")
+        native_status = gpu_status.get("native_status")
+        if not detail and isinstance(native_status, dict):
+            detail = str(native_status.get("detail") or native_status.get("reason") or "")
+        message = f"{self.GPU_PREPROCESSOR_NOT_READY_ERROR} reason={reason}"
+        if detail:
+            message = f"{message}; detail={detail}"
+        self.stats.last_error = message
+        self.runtime.running = False
+        raise RuntimeError(message)
+
+    def _runtime_inference_status(self) -> dict[str, Any]:
+        inference = getattr(self.runtime, "inference", None)
+        status_fn = getattr(inference, "status", None)
+        if callable(status_fn):
+            status = status_fn()
+            return dict(status) if isinstance(status, dict) else {}
+        status_fn = getattr(self.runtime, "status", None)
+        if not callable(status_fn):
+            return {}
+        status = status_fn()
+        if isinstance(status, dict):
+            inference_status = status.get("inference", status)
+            return dict(inference_status) if isinstance(inference_status, dict) else {}
+        inference_status = getattr(status, "inference", {})
+        return dict(inference_status) if isinstance(inference_status, dict) else {}
 
     def _capture_is_still_available(self) -> bool:
         state = getattr(self.capture, "state", None)

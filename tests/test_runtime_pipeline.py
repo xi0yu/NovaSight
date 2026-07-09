@@ -258,7 +258,7 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
     assert pipeline.running is False
 
 
-def test_runtime_pipeline_does_not_require_gpu_bridge_for_nvmm_latest() -> None:
+def test_runtime_pipeline_requires_gpu_bridge_for_nvmm_latest_inference() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "nvmm"
     cfg.inference.backend = "nvmm_latest"
@@ -287,13 +287,12 @@ def test_runtime_pipeline_does_not_require_gpu_bridge_for_nvmm_latest() -> None:
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
-    pipeline.start()
-    pipeline.stop()
+    with pytest.raises(RuntimeError, match="NVMM TensorRT GPU preprocess is not ready"):
+        pipeline.start()
 
     assert runtime.running is False
     assert pipeline.running is False
-    assert "native bridge" not in (pipeline.stats.last_error or "")
-    assert "gpu preprocessor" not in (pipeline.stats.last_error or "")
+    assert "native backend unavailable" in (pipeline.stats.last_error or "")
 
 
 def test_runtime_pipeline_allows_nvmm_capture_when_inference_is_disabled() -> None:

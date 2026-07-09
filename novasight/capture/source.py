@@ -569,6 +569,9 @@ def _extract_dmabuf_fd(buffer: Any) -> int | None:
 
 def _gst_allocators_module() -> Any | None:
     try:
+        import gi
+
+        gi.require_version("GstAllocators", "1.0")
         from gi.repository import GstAllocators
 
         return GstAllocators

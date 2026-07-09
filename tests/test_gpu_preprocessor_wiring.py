@@ -250,3 +250,26 @@ def test_nvmm_gstreamer_sample_uses_configured_gpu_preprocessor(
     assert result.tensor.device_ptr == 12345
     assert calls[0]["resource_kind"] == "gstreamer_sample"
     assert calls[0]["resource_memory"] == "nvmm"
+
+
+def test_native_ctypes_bridge_auto_discovers_default_build_output(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import novasight_jetson_preprocess_native as native_backend
+
+    library = tmp_path / "build" / "jetson-native" / "libnovasight_jetson_preprocess_native.so"
+    library.parent.mkdir(parents=True)
+    library.write_text("not a shared object", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(native_backend.LIBRARY_ENV, raising=False)
+    native_backend._reset_library_cache()
+
+    try:
+        status = native_backend.status()
+    finally:
+        native_backend._reset_library_cache()
+
+    assert status["available"] is False
+    assert status["reason"] == "native_library_unavailable"
+    assert status["library"] == str(library)
