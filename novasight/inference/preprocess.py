@@ -59,40 +59,11 @@ def prepare_tensor(
     *,
     gpu_preprocessor: GpuResourcePreprocessor | None = None,
 ) -> TensorPreprocessResult:
-    import numpy as np
-
-    if prepared.mode == "gpu_buffer":
-        if gpu_preprocessor is None:
-            raise_gpu_resource_preprocess_not_implemented(prepared)
-        result = gpu_preprocessor.prepare(prepared, shape)
-        _validate_device_preprocess_result(result, shape)
-        return result
-    return prepare_host_tensor(prepared, shape, np=np)
-
-
-def prepare_host_tensor(
-    prepared: PreparedTensorInput,
-    shape: TensorInputShape,
-    *,
-    np: Any | None = None,
-) -> TensorPreprocessResult:
-    if prepared.mode == "gpu_buffer":
+    if prepared.mode != "gpu_buffer" or gpu_preprocessor is None:
         raise_gpu_resource_preprocess_not_implemented(prepared)
-    if np is None:
-        import numpy as np_module
-
-        np = np_module
-
-    tensor = _prepare_cpu_numpy_tensor(prepared, shape, np=np)
-    return TensorPreprocessResult(
-        tensor=tensor,
-        backend="cpu_numpy",
-        input_mode=prepared.mode,
-        resource_kind=prepared.resource_kind,
-        resource_memory=prepared.resource_memory,
-        location="host",
-        zero_copy=False,
-    )
+    result = gpu_preprocessor.prepare(prepared, shape)
+    _validate_device_preprocess_result(result, shape)
+    return result
 
 
 def raise_gpu_resource_preprocess_not_implemented(prepared: PreparedTensorInput) -> None:
@@ -100,8 +71,8 @@ def raise_gpu_resource_preprocess_not_implemented(prepared: PreparedTensorInput)
     kind = prepared.resource_kind or "unknown"
     raise TensorPreprocessError(
         GPU_RESOURCE_PREPROCESS_NOT_IMPLEMENTED,
-        f"{resource} tensor input is not implemented for {kind}; use CPU image "
-        "fallback or provide a real GPU-side TensorRT/ONNX preprocess path",
+        f"{resource} tensor input is not implemented for {kind}; provide the "
+        "NovaSight GPU-side TensorRT preprocess path",
     )
 
 
@@ -162,47 +133,3 @@ def _validate_device_preprocess_result(
             "GPU_RESOURCE_PREPROCESS_DTYPE_MISMATCH",
             f"GPU preprocessor returned dtype {result.tensor.dtype}, expected {expected_dtype}",
         )
-
-
-def _prepare_cpu_numpy_tensor(
-    prepared: PreparedTensorInput,
-    shape: TensorInputShape,
-    *,
-    np: Any,
-) -> Any:
-    image = prepared.buffer
-    try:
-        from PIL import Image
-
-        if isinstance(image, Image.Image):
-            image = image.convert("RGB")
-            if image.size != (shape.width, shape.height):
-                image = image.resize((shape.width, shape.height))
-            array = np.asarray(image, dtype=np.float32) / 255.0
-            return array.transpose(2, 0, 1)[None, ...]
-    except Exception:
-        pass
-    if hasattr(image, "shape"):
-        array = np.asarray(image)
-        if array.ndim == 2:
-            array = np.repeat(array[:, :, None], 3, axis=2)
-        if array.ndim == 3 and array.shape[2] >= 3:
-            array = np.ascontiguousarray(array[:, :, :3])
-            if prepared.pixel_format in {"BGR", "BGR3"}:
-                array = array[:, :, ::-1]
-            if array.shape[1] != shape.width or array.shape[0] != shape.height:
-                array = _resize_numpy_image(array, width=shape.width, height=shape.height, np=np)
-            array = array.astype(np.float32) / 255.0
-            return array.transpose(2, 0, 1)[None, ...]
-    return np.zeros((shape.batch, shape.channels, shape.height, shape.width), dtype=np.float32)
-
-
-def _resize_numpy_image(image: Any, *, width: int, height: int, np: Any) -> Any:
-    try:
-        from PIL import Image
-
-        return np.asarray(Image.fromarray(image).resize((width, height)))
-    except Exception:
-        y_idx = np.linspace(0, image.shape[0] - 1, height).astype(np.int64)
-        x_idx = np.linspace(0, image.shape[1] - 1, width).astype(np.int64)
-        return image[y_idx][:, x_idx]

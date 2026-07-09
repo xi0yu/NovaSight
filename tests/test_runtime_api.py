@@ -7,6 +7,12 @@ from fastapi.testclient import TestClient
 import yaml
 import pytest
 
+pytest.skip(
+    "legacy Full DeepStream API suite archived; current mainline is DeepStream "
+    "capture plus NovaSight custom TensorRT",
+    allow_module_level=True,
+)
+
 from novasight.api import create_app
 from novasight.api.deepstream_runtime import _configured_path
 from novasight.capture.state import (

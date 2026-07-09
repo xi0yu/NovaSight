@@ -7,7 +7,6 @@ from typing import Any
 
 from .contracts import InferenceEngine
 from .contracts import InferenceResult
-from .onnxruntime_engine import OnnxRuntimeInferenceEngine
 from .preprocess import GpuResourcePreprocessor
 from .tensorrt import TensorRtInferenceEngine
 from .unavailable import UnavailableInferenceEngine
@@ -204,11 +203,6 @@ class InferenceRuntime:
 
     def _engine_for_artifact(self, artifact_path: Path) -> InferenceEngine:
         suffix = artifact_path.suffix.lower()
-        if suffix == ".onnx":
-            return OnnxRuntimeInferenceEngine(
-                confidence_threshold=self.confidence_threshold,
-                nms_threshold=self.nms_threshold,
-            )
         if suffix == ".engine":
             return TensorRtInferenceEngine(
                 confidence_threshold=self.confidence_threshold,

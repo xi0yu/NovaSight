@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-TensorInputMode = Literal["gpu_buffer", "cpu_image"]
+TensorInputMode = Literal["gpu_buffer"]
 TENSOR_DTYPE_BYTES = {
     "float32": 4,
     "float16": 2,
@@ -127,7 +127,6 @@ def parse_tensor_input_shape(value: str) -> TensorInputShape:
 def prepare_tensor_input(frame: Any, shape: TensorInputShape) -> PreparedTensorInput:
     frame_resource = getattr(frame, "frame_resource", None)
     gpu_buffer = getattr(frame, "gpu_buffer", None)
-    image = getattr(frame, "image", None)
     if _resource_gpu_accessible(frame_resource):
         mode: TensorInputMode = "gpu_buffer"
         buffer = getattr(frame_resource, "handle")
@@ -144,7 +143,7 @@ def prepare_tensor_input(frame: Any, shape: TensorInputShape) -> PreparedTensorI
     elif gpu_buffer is not None:
         mode = "gpu_buffer"
         buffer = gpu_buffer
-        resource_kind = str(getattr(frame_resource, "kind", "") or "legacy_gpu_buffer")
+        resource_kind = str(getattr(frame_resource, "kind", "") or "external_gpu_buffer")
         resource_memory = str(getattr(frame_resource, "memory", "") or "unknown")
         resource_source = str(getattr(frame_resource, "source", "") or "")
         dmabuf_fd = _optional_int_attr(frame_resource, "dmabuf_fd")
@@ -154,21 +153,8 @@ def prepare_tensor_input(frame: Any, shape: TensorInputShape) -> PreparedTensorI
         resource_pixel_format = str(
             getattr(frame_resource, "pixel_format", "") or ""
         ).upper()
-    elif image is not None:
-        mode = "cpu_image"
-        buffer = image
-        resource_kind = str(getattr(frame_resource, "kind", "") or "cpu_image")
-        resource_memory = str(getattr(frame_resource, "memory", "") or "cpu")
-        resource_source = str(getattr(frame_resource, "source", "") or "")
-        dmabuf_fd = _optional_int_attr(frame_resource, "dmabuf_fd")
-        resource_metadata = _dict_attr(frame_resource, "metadata")
-        resource_width = _int_attr(frame_resource, "width", 0)
-        resource_height = _int_attr(frame_resource, "height", 0)
-        resource_pixel_format = str(
-            getattr(frame_resource, "pixel_format", "") or ""
-        ).upper()
     else:
-        raise ValueError("TensorRT input frame has no gpu_buffer or image")
+        raise ValueError("TensorRT input frame has no GPU/NVMM resource")
 
     width = _int_attr(frame, "width", 1)
     height = _int_attr(frame, "height", 1)

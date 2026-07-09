@@ -12,7 +12,7 @@ from .input import (
     normalize_tensor_dtype,
     prepare_tensor_input,
 )
-from .onnxruntime_engine import _preprocess_debug, map_model_detections_to_roi_frame
+from .geometry import map_model_detections_to_roi_frame, preprocess_debug
 from .postprocess.yolo import decode_nx6_detections
 from .preprocess import DeviceTensor, GpuResourcePreprocessor, prepare_tensor
 
@@ -211,7 +211,7 @@ class TensorRtInferenceEngine:
                 prepared=self._last_input,
                 shape=self._input_shape,
             )
-            preprocess_debug = _preprocess_debug(
+            preprocess_debug_payload = preprocess_debug(
                 self._last_input,
                 self._input_shape,
                 preprocess_result=preprocess_result,
@@ -248,7 +248,7 @@ class TensorRtInferenceEngine:
                 "output_shape": list(self._output_shape),
                 "output_dtype": self._output_dtype,
                 "decoded_detections": len(detections),
-                "preprocess": preprocess_debug,
+                    "preprocess": preprocess_debug_payload,
                 "decode": decode_debug,
                 "timings": timings,
             },

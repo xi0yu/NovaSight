@@ -4935,7 +4935,7 @@ tbody tr:hover {
 }
 
 .console-preview.has-overlay::after {
-  content: "DeepStream Tensor Overlay";
+  content: "NovaSight Tensor Overlay";
   top: 18px;
   transform: translateX(-50%);
   color: rgba(124, 132, 145, .88);

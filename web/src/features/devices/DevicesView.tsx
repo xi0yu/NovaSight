@@ -57,17 +57,8 @@ function getNestedRecord(value: unknown, key: string): Record<string, unknown> |
 }
 
 function formatBackendLabel(value: string): string {
-  if (value === "tensorrt") {
-    return "TensorRT";
-  }
-  if (value === "onnxruntime") {
-    return "ONNX Runtime";
-  }
   if (value === "nvmm_latest") {
-    return "NVMM Latest";
-  }
-  if (value === "deepstream") {
-    return "Full DeepStream experimental";
+    return "DeepStream采集 + 自定义推理";
   }
   return value || "未选择";
 }
@@ -409,10 +400,10 @@ export function DevicesView({
 
   const stopCaptureSession = useCallback(async () => {
     setStoppingCapture(true);
-    setCaptureError(undefined);
-    try {
-      const selected = runtime?.inference?.selected;
-      if (selected === "nvmm_latest" || selected === "deepstream") {
+      setCaptureError(undefined);
+      try {
+        const selected = runtime?.inference?.selected;
+      if (selected === "nvmm_latest") {
         await stopRuntimePipeline();
       } else {
         await stopCapture();
@@ -509,20 +500,20 @@ export function DevicesView({
   const inferenceLoaded = inferenceStatus.loaded === true;
   const inferenceSupportsExecution = inferenceStatus.supports_execution !== false;
   const inferenceReason = typeof inferenceStatus.reason === "string" ? inferenceStatus.reason : "";
-  const inferredBackend =
-    activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : "";
+  const inferredBackend = activeArtifact === "engine" ? "nvmm_latest" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
   const nvmmLatestRuntimeSelected = inferenceSelected === "nvmm_latest";
-  const fullDeepStreamRuntimeSelected = inferenceSelected === "deepstream";
-  const runtimeMainlineSelected = nvmmLatestRuntimeSelected || fullDeepStreamRuntimeSelected;
+  const runtimeMainlineSelected = nvmmLatestRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
   const captureMainRunning = runtimeMainlineSelected ? runtimeMainlineRunning : capture?.available === true;
   const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
   const mainlineInputReady = runtimeMainlineStatus.hasInferenceSignal;
   const mainlineRuntimeReady = runtimeMainlineStatus.hasRuntimeConsumption;
-  const mainlineBackendLabel = nvmmLatestRuntimeSelected ? "NVMM 主链" : "Full DeepStream 实验链";
+  const mainlineBackendLabel = nvmmLatestRuntimeSelected
+    ? "DeepStream采集 + 自定义推理主链"
+    : "未选择主链";
   const mainlineRunLabel = runtimeMainlineStatus.failed
     ? "主链故障"
     : runtimeMainlineRunning
@@ -530,7 +521,9 @@ export function DevicesView({
         ? "主链已消费"
         : mainlineInputReady
           ? "等待 runtime 消费"
-          : "等待 DetectionBatch"
+          : nvmmLatestRuntimeSelected
+            ? "等待自定义推理输出"
+            : "等待 DetectionBatch"
       : captureProfileConfigured
         ? "主链待启动"
         : "未启动";
@@ -671,7 +664,7 @@ export function DevicesView({
               value: inferenceEnabled ? activeModelName : "已关闭",
               detail: runtimeMainlineSelected
                 ? mainlineInputLabel
-                : `${inferenceSelected === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
+                : `自定义 TensorRT · ${formatThreshold(confidenceThreshold)} 置信度`,
               ready: runtimeMainlineSelected
                 ? inferenceEnabled && mainlineInputReady && activeModelName !== "未发布模型"
                 : inferenceEnabled && activeModelName !== "未发布模型"

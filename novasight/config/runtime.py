@@ -48,12 +48,7 @@ class RoiConfig:
 @dataclass
 class InferenceConfig:
     enabled: bool = True
-    backend: str = "tensorrt"
-    deepstream_manifest_path: str = ""
-    deepstream_config_path: str = ""
-    deepstream_io_mode: int = 2
-    deepstream_batched_push_timeout_us: int = 0
-    deepstream_tracker_config_path: str = ""
+    backend: str = "nvmm_latest"
     inference_input_deadline_ms: float = 55.0
     confidence_threshold: float = 0.25
     nms_threshold: float = 0.45
@@ -87,7 +82,7 @@ class InferenceConfig:
 class CaptureConfig:
     device: str = "/dev/video0"
     preference: str = "auto_high_fps"
-    memory: str = "cpu"
+    memory: str = "nvmm"
     pixel_format: str = ""
     width: int = 0
     height: int = 0
@@ -328,6 +323,32 @@ def _build_dataclass(cls: type[T], raw: dict[str, Any], section: str = "") -> T:
 
 def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(raw)
+    inference = normalized.get("inference")
+    if isinstance(inference, dict):
+        inference = dict(inference)
+        if str(inference.get("backend", "")).lower() in {
+            "deepstream",
+            "tensorrt",
+            "onnxruntime",
+            "legacy_latest",
+            "deepstream_uncontrolled",
+        }:
+            inference["backend"] = "nvmm_latest"
+        for key in (
+            "deepstream_manifest_path",
+            "deepstream_config_path",
+            "deepstream_io_mode",
+            "deepstream_batched_push_timeout_us",
+            "deepstream_tracker_config_path",
+        ):
+            inference.pop(key, None)
+        normalized["inference"] = inference
+    capture = normalized.get("capture")
+    if isinstance(capture, dict):
+        capture = dict(capture)
+        if str(capture.get("memory", "")).lower() in {"cpu", "system"}:
+            capture["memory"] = "nvmm"
+        normalized["capture"] = capture
     control = normalized.get("control")
     if isinstance(control, dict):
         control = dict(control)
@@ -371,8 +392,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
     if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
         raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
-    if cfg.capture.memory not in {"cpu", "nvmm"}:
-        raise ValueError("runtime config key 'capture.memory' must be cpu or nvmm")
+    if cfg.capture.memory != "nvmm":
+        raise ValueError("runtime config key 'capture.memory' must be nvmm")
     if cfg.limits.stream_fps not in {15, 30, 60}:
         raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
     if cfg.consumers.recording_format not in {"csv", "parquet"}:
@@ -384,14 +405,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
     if cfg.roi.mode not in {"center", "manual"}:
         raise ValueError("unsupported ROI mode: must be center or manual")
-    if cfg.inference.backend not in {"onnxruntime", "tensorrt", "deepstream", "nvmm_latest"}:
+    if cfg.inference.backend != "nvmm_latest":
         raise ValueError(
-            "runtime config key 'inference.backend' must be onnxruntime, tensorrt, deepstream, or nvmm_latest"
+            "runtime config key 'inference.backend' must be nvmm_latest"
         )
-    if cfg.inference.deepstream_io_mode < 0:
-        raise ValueError("runtime config key 'inference.deepstream_io_mode' must be >= 0")
-    if cfg.inference.deepstream_batched_push_timeout_us < 0:
-        raise ValueError("runtime config key 'inference.deepstream_batched_push_timeout_us' must be >= 0")
     if cfg.inference.inference_input_deadline_ms < 0:
         raise ValueError("runtime config key 'inference.inference_input_deadline_ms' must be >= 0")
     if cfg.inference.confidence_threshold < 0 or cfg.inference.confidence_threshold > 1:

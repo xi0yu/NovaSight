@@ -13,7 +13,6 @@ from novasight.coordinates import CoordinateTransform
 from novasight.control import (
     ExperimentalAnglePidStrategy,
 )
-from novasight.deepstream import check_deepstream_dependencies
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
 from novasight.inference import InferenceResult
@@ -36,21 +35,6 @@ from .recorder import build_control_frame_record
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
-
-
-def _status_float(value: object, fallback: float) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return float(fallback)
-    return number if number == number else float(fallback)
-
-
-def _status_int(value: object, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(fallback)
 
 
 class RuntimeService:
@@ -131,37 +115,6 @@ class RuntimeService:
             statistics["queue_latency"] = getattr(pipeline_stats, "queue_latency_ms", 0.0)
             statistics["inference_latency"] = getattr(pipeline_stats, "inference_latency_ms", 0.0)
             statistics["e2e_latency"] = getattr(pipeline_stats, "e2e_latency_ms", 0.0)
-        source_statistics = self._detection_source_statistics(pipeline)
-        for key in (
-            "published_batches",
-            "window_published_batches",
-            "stale_dropped_batches",
-            "window_stale_dropped_batches",
-            "max_publish_age_ms",
-            "tensor_meta_frames",
-            "postprocess_frames",
-            "window_tensor_meta_frames",
-            "window_postprocess_frames",
-            "tensor_meta_fps",
-            "postprocess_fps",
-            "timestamp_source",
-            "last_raw_pts_ns",
-            "last_capture_ts_ns",
-            "last_probe_observed_ts_ns",
-            "last_pts_to_probe_ms",
-            "last_frame_age_ms",
-            "last_inference_latency_ms",
-            "last_" + "detection_count",
-        ):
-            if key in source_statistics:
-                statistics[key] = source_statistics[key]
-        if source_statistics:
-            tensor_meta_fps = _status_float(source_statistics.get("tensor_meta_fps"), 0.0)
-            published_batches = _status_int(source_statistics.get("published_batches"), 0)
-            if tensor_meta_fps > 0.0 and _status_float(statistics.get("capture_fps"), 0.0) <= 0.0:
-                statistics["capture_fps"] = tensor_meta_fps
-            if published_batches > 0 and _status_int(statistics.get("capture_counter"), 0) <= 0:
-                statistics["capture_counter"] = published_batches
         for key, value in self.last_pipeline_timings.items():
             statistics[f"stage_{key}"] = value
         if capture_payload:
@@ -180,116 +133,33 @@ class RuntimeService:
             fatal_error=self.fatal_error,
         )
 
-    @staticmethod
-    def _detection_source_statistics(pipeline: Any) -> dict[str, Any]:
-        detection_source = getattr(pipeline, "detection_source", None)
-        status_fn = getattr(detection_source, "status", None)
-        if not callable(status_fn):
-            return {}
-        try:
-            source_status = status_fn()
-        except Exception:
-            return {}
-        return dict(source_status) if isinstance(source_status, dict) else {}
-
     def _runtime_inference_status(
         self,
         inference_state: Any,
         active_model: dict | None,
     ) -> dict[str, Any]:
         backend = str(getattr(self.config.inference, "backend", "")).lower()
-        if backend != "deepstream":
-            status = (
-                inference_state.status()
-                if inference_state is not None
-                else {"available": False}
-            )
-            payload = dict(status) if isinstance(status, dict) else {"available": False}
-            engine_selected = str(payload.get("selected") or "")
-            payload["selected"] = backend
-            payload["backend"] = backend
-            if engine_selected and engine_selected != backend:
-                payload["execution_backend"] = engine_selected
-            payload["configured"] = active_model is not None
-            payload.setdefault("running", bool(self.running))
-            payload.setdefault("loaded", bool(payload.get("available", False)))
-            if backend == "nvmm_latest":
-                payload.setdefault("reason", "NVMM latest-frame TensorRT mainline")
-            return payload
-        source_status: dict[str, Any] = {}
-        pipeline = getattr(self, "pipeline", None)
-        detection_source = getattr(pipeline, "detection_source", None)
-        status_fn = getattr(detection_source, "status", None)
-        if callable(status_fn):
-            try:
-                raw_status = status_fn()
-                if isinstance(raw_status, dict):
-                    source_status = dict(raw_status)
-            except Exception as exc:
-                source_status = {
-                    "available": False,
-                    "running": False,
-                    "reason": "DeepStream status failed",
-                    "detail": str(exc),
-                }
-        source_status.pop("pipeline", None)
-        dependency_status: Any | None = None
-        if not source_status:
-            try:
-                dependency_status = check_deepstream_dependencies()
-            except Exception as exc:
-                dependency_status = {
-                    "available": False,
-                    "reason": "DeepStream dependency check failed",
-                    "detail": str(exc),
-                }
-        inference_config = getattr(self.config, "inference", None)
-        explicit_deepstream_paths = bool(
-            str(getattr(inference_config, "deepstream_manifest_path", "") or "").strip()
-            and str(getattr(inference_config, "deepstream_config_path", "") or "").strip()
+        status = (
+            inference_state.status()
+            if inference_state is not None
+            else {"available": False}
         )
-        configured = active_model is not None or explicit_deepstream_paths
-        running = bool(source_status.get("running", False))
-        dependency_available = (
-            bool(getattr(dependency_status, "available", False))
-            if dependency_status is not None and not isinstance(dependency_status, dict)
-            else bool((dependency_status or {}).get("available", False))
+        payload = dict(status) if isinstance(status, dict) else {"available": False}
+        engine_selected = str(payload.get("selected") or "")
+        payload["selected"] = backend
+        payload["backend"] = backend
+        if engine_selected and engine_selected != backend:
+            payload["execution_backend"] = engine_selected
+        payload["configured"] = active_model is not None
+        payload.setdefault("running", bool(self.running))
+        payload.setdefault("loaded", bool(payload.get("available", False)))
+        payload.setdefault(
+            "reason",
+            "DeepStream采集 + NovaSight自定义 TensorRT 推理主链",
         )
-        available = bool(
-            source_status.get(
-                "available",
-                dependency_available if dependency_status is not None else configured,
-            )
-        )
-        reason = str(source_status.get("reason") or source_status.get("last_error") or "")
-        detail = str(source_status.get("detail") or "")
-        if dependency_status is not None and not available:
-            dependency_reason = (
-                str(getattr(dependency_status, "reason", ""))
-                if not isinstance(dependency_status, dict)
-                else str(dependency_status.get("reason") or "")
-            )
-            dependency_detail = (
-                str(getattr(dependency_status, "detail", ""))
-                if not isinstance(dependency_status, dict)
-                else str(dependency_status.get("detail") or "")
-            )
-            reason = reason or dependency_reason
-            detail = detail or dependency_detail
-        if not configured:
-            reason = reason or "DeepStream backend requires an active model deployment"
-        elif not running:
-            reason = reason or "DeepStream nvinfer loads when runtime starts"
+        payload["capture_memory"] = str(getattr(self.config.capture, "memory", ""))
         return {
-            **source_status,
-            "selected": "deepstream",
-            "backend": "deepstream",
-            "available": available,
-            "loaded": running,
-            "running": running,
-            "configured": configured,
-            "reason": reason,
-            "detail": detail,
+            **payload,
         }
 
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
@@ -620,37 +490,6 @@ class RuntimeService:
                 roi_offset_y=resolved_roi_offset_y,
             )
             return self._empty_runtime_frame_result()
-        timestamp_source_reason = self._detection_batch_timestamp_source_reason(detection_batch)
-        if timestamp_source_reason:
-            self._reset_runtime_control_state("DETECTION_BATCH_TIMESTAMP_SOURCE_INVALID")
-            self.last_inference_reason = timestamp_source_reason
-            self._set_detection_batch_pipeline_timings(
-                detection_batch,
-                total_start_ns=total_start_ns,
-                control_start_ns=None,
-                done_ns=time.monotonic_ns(),
-            )
-            metadata = getattr(detection_batch, "metadata", {}) or {}
-            self.last_inference_status = self._detection_batch_status_payload(
-                detection_batch,
-                width=int(width),
-                height=int(height),
-                now_ns=total_start_ns,
-                reason=self.last_inference_reason,
-                available=False,
-                mapped_detections=0,
-                source_width=resolved_source_width,
-                source_height=resolved_source_height,
-                source_geometry_source=source_geometry_source,
-                source_geometry_trusted=source_geometry_trusted,
-                roi_offset_x=resolved_roi_offset_x,
-                roi_offset_y=resolved_roi_offset_y,
-                extra={
-                    "timestamp_source_invalid": True,
-                    "timestamp_source": str(metadata.get("timestamp_source") or ""),
-                },
-            )
-            return self._empty_runtime_frame_result()
         stale_reason = self._detection_batch_stale_reason(
             detection_batch,
             now_ns=total_start_ns,
@@ -679,33 +518,6 @@ class RuntimeService:
                 roi_offset_x=resolved_roi_offset_x,
                 roi_offset_y=resolved_roi_offset_y,
                 extra={"stale_rejected": True},
-            )
-            return self._empty_runtime_frame_result()
-        missing_tensor_reason = self._detection_batch_missing_tensor_reason(detection_batch)
-        if missing_tensor_reason:
-            self._reset_runtime_control_state("DETECTION_BATCH_MISSING_TENSOR_META")
-            self.last_inference_reason = missing_tensor_reason
-            self._set_detection_batch_pipeline_timings(
-                detection_batch,
-                total_start_ns=total_start_ns,
-                control_start_ns=None,
-                done_ns=time.monotonic_ns(),
-            )
-            self.last_inference_status = self._detection_batch_status_payload(
-                detection_batch,
-                width=int(width),
-                height=int(height),
-                now_ns=total_start_ns,
-                reason=self.last_inference_reason,
-                available=False,
-                mapped_detections=0,
-                source_width=resolved_source_width,
-                source_height=resolved_source_height,
-                source_geometry_source=source_geometry_source,
-                source_geometry_trusted=source_geometry_trusted,
-                roi_offset_x=resolved_roi_offset_x,
-                roi_offset_y=resolved_roi_offset_y,
-                extra={"missing_tensor_meta": True},
             )
             return self._empty_runtime_frame_result()
         self.last_inference_reason = ""
@@ -759,7 +571,6 @@ class RuntimeService:
             "roi_ms": 0.0,
             "engine_ms": detection_batch.inference_latency_ms,
             "engine_execute_ms": detection_batch.inference_latency_ms,
-            "capture_to_tensor_meta_ms": detection_batch.inference_latency_ms,
             "decode_ms": 0.0,
             "handoff_ms": max(
                 0.0,
@@ -817,8 +628,7 @@ class RuntimeService:
             "inference_end_ts_ns": detection_batch.inference_end_ts_ns,
             "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms,
             "detection_batch_metadata": dict(getattr(detection_batch, "metadata", {}) or {}),
-            "capture_to_tensor_meta_ms": detection_batch.inference_latency_ms,
-            "latency_source": "capture_to_tensor_meta_done",
+            "latency_source": "custom_tensorrt_done",
             "classes": list(detection_batch.classes),
             "input_width": int(width),
             "input_height": int(height),
@@ -889,7 +699,7 @@ class RuntimeService:
                     max(0, int(roi_offset_x or 0)),
                     max(0, int(roi_offset_y or 0)),
                     True,
-                    "detection_source",
+                    "detection_batch",
                 )
         capture_config = getattr(self.config, "capture", None)
         config_source_width = int(getattr(capture_config, "width", 0) or 0)
@@ -947,27 +757,6 @@ class RuntimeService:
                 )
         return ""
 
-    @staticmethod
-    def _detection_batch_missing_tensor_reason(detection_batch: DetectionBatch) -> str:
-        metadata = getattr(detection_batch, "metadata", {}) or {}
-        if str(metadata.get("empty_reason") or "") == "missing_tensor_meta":
-            return "DeepStream tensor meta missing for frame"
-        return ""
-
-    @staticmethod
-    def _detection_batch_timestamp_source_reason(detection_batch: DetectionBatch) -> str:
-        metadata = getattr(detection_batch, "metadata", {}) or {}
-        if str(metadata.get("source") or "") != "deepstream":
-            return ""
-        timestamp_source = str(metadata.get("timestamp_source") or "")
-        if timestamp_source == "gst_clock_base_time_pts":
-            return ""
-        return (
-            "DeepStream DetectionBatch timestamp_source must be "
-            "gst_clock_base_time_pts for control input "
-            f"(got {timestamp_source or '-'})"
-        )
-
     def _detection_batch_stale_reason(
         self,
         detection_batch: DetectionBatch,
@@ -983,19 +772,11 @@ class RuntimeService:
         age_ms = self._detection_batch_age_ms(detection_batch, now_ns=now_ns)
         if not math.isfinite(age_ms):
             return ""
-        metadata = getattr(detection_batch, "metadata", {}) or {}
-        metadata_source = str(metadata.get("source") or "")
-        timestamp_source = str(metadata.get("timestamp_source") or "")
-        explicit_runtime_clock = metadata_source == "deepstream" or timestamp_source in {
-            "gst_clock_base_time_pts",
-            "first_probe_offset_pts",
-            "observed_probe_time_invalid_pts",
-        }
         # Some legacy unit seams use tiny synthetic timestamps. Enforce stale
-        # rejection on explicit runtime-clock batches, and otherwise only when
-        # capture_ts_ns is plausibly in this process monotonic domain.
+        # rejection only when capture_ts_ns is plausibly in this process
+        # monotonic domain. Production batches must use monotonic timestamps.
         max_plausible_age_ms = max(3_600_000.0, threshold_ms * 100.0)
-        if not explicit_runtime_clock and age_ms > max_plausible_age_ms:
+        if age_ms > max_plausible_age_ms:
             return ""
         if age_ms > threshold_ms:
             return (

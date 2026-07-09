@@ -638,6 +638,7 @@ def test_runtime_pipeline_consumes_frames_from_capture_session_thread() -> None:
         capture.stop("test complete")
 
 
+@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
 def test_runtime_pipeline_consumes_detection_batches_from_deepstream_source() -> None:
     batch = DetectionBatch(
         frame_id=42,
@@ -741,6 +742,7 @@ def test_runtime_pipeline_consumes_detection_batches_from_deepstream_source() ->
     assert "pipeline" not in status["detection_source"]
 
 
+@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
 def test_runtime_pipeline_resets_stats_between_detection_source_restarts() -> None:
     batches = [
         DetectionBatch(
@@ -830,6 +832,7 @@ def test_runtime_pipeline_resets_stats_between_detection_source_restarts() -> No
     assert second_status["last_frame_id"] == 1
 
 
+@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
 def test_runtime_pipeline_does_not_count_rejected_batch_as_control_observation() -> None:
     batch = DetectionBatch(
         frame_id=5,
@@ -898,6 +901,7 @@ def test_runtime_pipeline_does_not_count_rejected_batch_as_control_observation()
     assert status["control_observation_fps"] == 0.0
 
 
+@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
 def test_runtime_pipeline_stops_deepstream_source_when_it_becomes_unavailable() -> None:
     stopped = threading.Event()
 
@@ -963,7 +967,7 @@ def test_runtime_pipeline_stops_deepstream_source_when_it_becomes_unavailable() 
 def test_detection_batch_copies_mutable_inputs() -> None:
     detections = [Detection(cls=0, score=0.9, x1=10, y1=20, x2=40, y2=80)]
     classes = ["body"]
-    metadata = {"source": "deepstream"}
+    metadata = {"source": "custom_tensorrt"}
 
     batch = DetectionBatch(
         frame_id=7,
@@ -981,7 +985,7 @@ def test_detection_batch_copies_mutable_inputs() -> None:
 
     assert len(batch.detections) == 1
     assert batch.classes == ["body"]
-    assert batch.metadata == {"source": "deepstream"}
+    assert batch.metadata == {"source": "custom_tensorrt"}
 
 
 def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
@@ -1024,11 +1028,11 @@ def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
     assert service.last_inference_status["available"] is True
     assert service.last_inference_status["source"] == "detection_batch"
     assert service.last_inference_status["mapped_detections"] == 1
-    assert service.last_inference_status["latency_source"] == "capture_to_tensor_meta_done"
-    assert service.last_inference_status["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
+    assert service.last_inference_status["latency_source"] == "custom_tensorrt_done"
+    assert service.last_inference_status["inference_ms"] == pytest.approx(0.001)
     assert service.last_inference_status["source_width"] == 1920
     assert service.last_inference_status["source_height"] == 1080
-    assert service.last_inference_status["source_geometry_source"] == "detection_source"
+    assert service.last_inference_status["source_geometry_source"] == "detection_batch"
 
 
 def test_runtime_service_rejects_stale_detection_batch_before_control() -> None:
@@ -1080,7 +1084,7 @@ def test_runtime_service_rejects_stale_detection_batch_before_control() -> None:
     assert service.last_inference_status["roi_offset_x"] == 720
     assert service.last_inference_status["roi_offset_y"] == 300
     assert service.last_inference_status["roi_region"] == {"x": 720, "y": 300, "w": 480, "h": 480}
-    assert service.last_pipeline_timings["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
+    assert service.last_pipeline_timings["engine_ms"] == pytest.approx(0.001)
     assert service.last_pipeline_timings["handoff_ms"] >= 0.0
     assert service.last_pipeline_timings["postprocess_ms"] == pytest.approx(0.0)
 
@@ -1211,6 +1215,7 @@ def test_runtime_service_rejects_detection_batch_generation_and_capture_rollback
     assert "capture_ts_ns must increase" in service.last_inference_status["reason"]
 
 
+@pytest.mark.skip(reason="legacy DeepStream timestamp-source rejection removed")
 def test_runtime_service_rejects_deepstream_untrusted_timestamp_source() -> None:
     cfg = RuntimeConfig()
     service = RuntimeService(
@@ -1256,7 +1261,7 @@ def test_runtime_service_rejects_deepstream_untrusted_timestamp_source() -> None
     assert service.last_inference_status["timestamp_source"] == "first_probe_offset_pts"
     assert "timestamp_source must be gst_clock_base_time_pts" in service.last_inference_status["reason"]
     assert service.last_inference_status["detection_batch_metadata"]["source"] == "deepstream"
-    assert service.last_pipeline_timings["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
+    assert service.last_pipeline_timings["engine_ms"] == pytest.approx(0.001)
     assert service.last_pipeline_timings["control_ms"] == 0.0
 
 
@@ -1272,26 +1277,6 @@ def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats()
         ),
     )
     service.pipeline = SimpleNamespace(
-        detection_source=SimpleNamespace(
-            status=lambda: {
-                "published_batches": 42,
-                "window_published_batches": 12,
-                "tensor_meta_frames": 43,
-                "postprocess_frames": 41,
-                "window_tensor_meta_frames": 11,
-                "window_postprocess_frames": 10,
-                "tensor_meta_fps": 119.2,
-                "postprocess_fps": 118.7,
-                "timestamp_source": "gst_clock_base_time_pts",
-                "last_raw_pts_ns": 12_000_000,
-                "last_capture_ts_ns": 34_000_000,
-                "last_probe_observed_ts_ns": 36_500_000,
-                "last_pts_to_probe_ms": 2.5,
-                "last_frame_age_ms": 6.4,
-                "last_inference_latency_ms": 1.5,
-                "last_detection_count": 2,
-            },
-        ),
         stats=SimpleNamespace(
             window_processed_frames=12,
             skipped_frames=3,
@@ -1312,27 +1297,10 @@ def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats()
     assert state.statistics["detection_batch_fps"] == pytest.approx(117.8)
     assert state.statistics["control_observation_counter"] == 10
     assert state.statistics["control_observation_fps"] == pytest.approx(116.6)
-    assert state.statistics["tensor_meta_fps"] == pytest.approx(119.2)
-    assert state.statistics["postprocess_fps"] == pytest.approx(118.7)
-    assert state.statistics["timestamp_source"] == "gst_clock_base_time_pts"
-    assert state.statistics["capture_fps"] == pytest.approx(119.2)
-    assert state.statistics["published_batches"] == 42
-    assert state.statistics["window_published_batches"] == 12
-    assert state.statistics["capture_counter"] == 42
-    assert state.statistics["tensor_meta_frames"] == 43
-    assert state.statistics["postprocess_frames"] == 41
-    assert state.statistics["window_tensor_meta_frames"] == 11
-    assert state.statistics["window_postprocess_frames"] == 10
-    assert state.statistics["last_raw_pts_ns"] == 12_000_000
-    assert state.statistics["last_capture_ts_ns"] == 34_000_000
-    assert state.statistics["last_probe_observed_ts_ns"] == 36_500_000
-    assert state.statistics["last_pts_to_probe_ms"] == pytest.approx(2.5)
-    assert state.statistics["last_frame_age_ms"] == pytest.approx(6.4)
-    assert state.statistics["last_inference_latency_ms"] == pytest.approx(1.5)
-    assert state.statistics["last_detection_count"] == 2
     assert state.statistics["skipped_counter"] == 3
 
 
+@pytest.mark.skip(reason="legacy DeepStream TensorMeta contract removed")
 def test_runtime_service_rejects_deepstream_missing_tensor_meta_batch() -> None:
     cfg = RuntimeConfig()
     service = RuntimeService(
@@ -1409,7 +1377,7 @@ def test_runtime_service_rejects_non_roi_detection_batch() -> None:
 
     assert result.control_intents == []
     assert service.last_frame_context is None
-    assert service.last_pipeline_timings["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
+    assert service.last_pipeline_timings["engine_ms"] == pytest.approx(0.001)
     assert service.last_pipeline_timings["control_ms"] == 0.0
     assert service.last_control is not None
     assert service.last_control["control_allowed"] is False
@@ -1418,8 +1386,8 @@ def test_runtime_service_rejects_non_roi_detection_batch() -> None:
     assert service.last_inference_status["source"] == "detection_batch"
     assert service.last_inference_status["reason"] == "DetectionBatch coordinate_space must be roi"
     assert service.last_inference_status["detection_coordinate_space"] == "model"
-    assert service.last_inference_status["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
-    assert service.last_inference_status["latency_source"] == "capture_to_tensor_meta_done"
+    assert service.last_inference_status["inference_ms"] == pytest.approx(0.001)
+    assert service.last_inference_status["latency_source"] == "custom_tensorrt_done"
     assert service.last_inference_status["input_width"] == 480
     assert service.last_inference_status["input_height"] == 480
 
@@ -1450,7 +1418,7 @@ def test_runtime_service_rejects_invalid_roi_detection_batch() -> None:
 
     assert result.control_intents == []
     assert service.last_frame_context is None
-    assert service.last_pipeline_timings["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
+    assert service.last_pipeline_timings["engine_ms"] == pytest.approx(0.001)
     assert service.last_pipeline_timings["control_ms"] == 0.0
     assert service.last_control is not None
     assert service.last_control["control_allowed"] is False
@@ -1461,5 +1429,5 @@ def test_runtime_service_rejects_invalid_roi_detection_batch() -> None:
     assert service.last_inference_status["detection_coordinate_space"] == "roi"
     assert service.last_inference_status["raw_detections"] == 1
     assert service.last_inference_status["mapped_detections"] == 0
-    assert service.last_inference_status["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
-    assert service.last_inference_status["latency_source"] == "capture_to_tensor_meta_done"
+    assert service.last_inference_status["inference_ms"] == pytest.approx(0.001)
+    assert service.last_inference_status["latency_source"] == "custom_tensorrt_done"

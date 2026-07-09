@@ -70,34 +70,34 @@ const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "latency", index: "05", label: "采集延迟" }
 ];
 
-const MAINLINE_LAUNCH_STAGES: LaunchStage[] = [
+// The production mainline uses the NVIDIA/DeepStream data plane for capture,
+// decode, NVMM ROI, and format work, then hands the latest frame to NovaSight's
+// own TensorRT inference loop. It does not use the old automatic DeepStream
+// inference mailbox as the scheduler, so the launch dialog must wait on runtime latest-frame
+// consumption instead of DeepStream inference counters.
+const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
-    label: "阶段 1 / 6",
+    label: "阶段 1 / 5",
     title: "检查运行环境",
     caption: "确认 Studio 已连接到 Jetson 运行服务。"
   },
   {
-    label: "阶段 2 / 6",
+    label: "阶段 2 / 5",
     title: "应用采集配置",
     caption: "按当前设备、格式、分辨率与帧率选择采集配置。"
   },
   {
-    label: "阶段 3 / 6",
+    label: "阶段 3 / 5",
     title: "启动主链运行管线",
-    caption: "请求后端启动 DeepStream、ROI 与 runtime pipeline。"
+    caption: "请求后端启动 DeepStream 采集与 NovaSight 自定义 TensorRT 推理主链。"
   },
   {
-    label: "阶段 4 / 6",
-    title: "连接推理输出",
-    caption: "等待 DetectionBatch 输出进入运行态。"
-  },
-  {
-    label: "阶段 5 / 6",
+    label: "阶段 4 / 5",
     title: "激活跟踪与控制",
-    caption: "跟踪、预测与角度控制模块跟随后端主链启动。"
+    caption: "runtime 已开始消费 latest 帧，跟踪、预测与角度控制模块随即激活。"
   },
   {
-    label: "阶段 6 / 6",
+    label: "阶段 5 / 5",
     title: "确认设备执行器",
     caption: "刷新执行器状态，确认输出链路由后端持有。"
   }
@@ -254,7 +254,7 @@ function buildBusinessTraceGuidance(
       tone: "failed",
       title: "推理批次已过期，控制链路已保护拦截",
       detail,
-      action: "优先检查 DeepStream 时间戳、DetectionBatch 发布节奏和 runtime 消费是否滞后；目标、控制、执行阻塞是后续影响。"
+      action: "优先检查 latest 帧准入、TensorRT 推理耗时和 runtime 消费是否滞后；目标、控制、执行阻塞是后续影响。"
     };
   }
 
@@ -496,11 +496,7 @@ export function StudioConsoleView({
 
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
-  const captureToTensorMetaMs = readNumber(statistics?.stage_capture_to_tensor_meta_ms, Number.NaN);
-  const hasCaptureToTensorMetaMs = Number.isFinite(captureToTensorMetaMs);
-  const inferenceLatencyDisplay = hasCaptureToTensorMetaMs
-    ? captureToTensorMetaMs
-    : (statistics?.stage_engine_ms ?? statistics?.inference_latency);
+  const inferenceLatencyDisplay = statistics?.stage_engine_ms ?? statistics?.inference_latency;
   const config = configDraft ?? runtimeConfig;
   const captureConfig = nestedRecord(config, "capture");
   const configuredCaptureDevice = readString(captureConfig.device, "");
@@ -523,10 +519,9 @@ export function StudioConsoleView({
   const pipeline = asRecord(runtime?.pipeline);
   const selectedRuntimeBackend = readString(runtimeInference.selected, "");
   const mainlineRuntimeSelected = selectedRuntimeBackend === "nvmm_latest";
-  const fullDeepStreamRuntimeSelected = selectedRuntimeBackend === "deepstream";
-  const runtimeMainlineSelected = mainlineRuntimeSelected || fullDeepStreamRuntimeSelected;
+  const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
-  const deepstreamTerminalError = runtimeMainlineStatus.terminalError;
+  const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceLoaded = runtimeInference.loaded === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
@@ -546,7 +541,7 @@ export function StudioConsoleView({
     ? runtimeMainlineStatus.failed
       ? "主链故障"
       : runtimeMainlineRunning
-        ? mainlineRuntimeSelected ? "NVMM 主链运行中" : "Full DeepStream 实验运行中"
+        ? "DeepStream采集+自定义推理运行中"
       : mainlineLaunchPending
         ? "启动确认中"
         : runtimeInferenceConfigured
@@ -565,7 +560,7 @@ export function StudioConsoleView({
           ? "runtime 已消费"
           : runtimeMainlineStatus.hasInferenceSignal
             ? "DetectionBatch 已产出"
-            : mainlineRuntimeSelected ? "等待 TensorRT 输出" : "等待推理输出"
+            : "等待自定义 TensorRT 输出"
       : mainlineLaunchPending
         ? "等待后端反馈"
         : runtimeInferenceConfigured
@@ -574,14 +569,14 @@ export function StudioConsoleView({
     : runtime?.running
       ? "运行中"
       : "已停止";
-  const engineStatusLabel = deepstreamTerminalError
+  const engineStatusLabel = mainlineTerminalError
     ? "管线故障"
     : runtimeInferenceLoaded
       ? "已加载"
       : runtimeInferenceConfigured
         ? "待启动"
         : "未配置";
-  const deepstreamStatusLabel = deepstreamTerminalError
+  const mainlineStatusLabel = mainlineTerminalError
     ? "管线故障"
     : runtimeInferenceLoaded
       ? "运行中"
@@ -640,7 +635,7 @@ export function StudioConsoleView({
     }
   }, [
     runtimeMainlineSelected,
-    deepstreamTerminalError,
+    mainlineTerminalError,
     mainlineLaunchAccepted,
     runtimeMainlineStatus.failed,
     runtimeMainlineStatus.failureMessage,
@@ -765,17 +760,15 @@ export function StudioConsoleView({
   const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
   const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
   const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
-  const tensorMetaFps = readNumber(statistics?.tensor_meta_fps, 0);
-  const postprocessFps = readNumber(statistics?.postprocess_fps, 0);
   const detectionBatchFps = readNumber(statistics?.detection_batch_fps, 0);
   const controlObservationFps = readNumber(statistics?.control_observation_fps, 0);
   const lastFrameAgeMs = readNumber(statistics?.last_frame_age_ms, 0);
   const controlLatencyGuardMs = 55;
-  const inferenceThroughputHealthy = tensorMetaFps > 0 && postprocessFps > 0 && detectionBatchFps > 0;
+  const inferenceThroughputHealthy = readNumber(statistics?.inference_fps, 0) > 0 || detectionBatchFps > 0;
   const inferenceFreshnessBlocked =
     inferenceThroughputHealthy &&
     controlObservationFps <= 0 &&
-    (lastFrameAgeMs > controlLatencyGuardMs || captureToTensorMetaMs > controlLatencyGuardMs);
+    lastFrameAgeMs > controlLatencyGuardMs;
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.status === "ready" &&
@@ -1271,27 +1264,24 @@ export function StudioConsoleView({
         setMainlineLaunchAccepted(true);
         setMainlineLaunchMessage("主链启动请求已提交，正在等待后端状态确认。");
       });
+      // DeepStream 采集 + 自定义 TensorRT 主链不走旧自动推理邮箱。
+      // 这里以 runtime 消费 latest 帧作为自定义推理链已接入
+      // 控制主链的启动证据。
       await runStage(3, async () => {
-        await waitForRuntimeEvidence(
-          "连接推理输出",
-          (state) => getRuntimeMainlineStatus(state).hasInferenceSignal,
-          "未收到 DetectionBatch、Tensor Meta 或后处理帧反馈。"
-        );
-      });
-      await runStage(4, async () => {
         await waitForRuntimeEvidence(
           "激活跟踪与控制",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "runtime 尚未消费 DetectionBatch，跟踪与控制没有输入。"
+          "runtime 尚未消费 latest 帧，跟踪与控制没有输入。"
         );
       });
-      await runStage(5, async () => {
+      await runStage(4, async () => {
         const state = await waitForRuntimeMainlineReady("确认设备执行器", 1600);
         assertRuntimeLaunchState(state, "确认设备执行器");
         await onRefresh();
       });
       setLaunchStatus("success");
-      setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES.length);
+      setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT.length);
+
       setLaunchProgressDetail((detail) => detail || "主链启动完成，后端运行态已确认。");
       showLaunchToast();
     } catch (err) {
@@ -1657,12 +1647,13 @@ export function StudioConsoleView({
     }
   };
 
+  const launchStages = MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT;
   const activeLaunchStage =
-    MAINLINE_LAUNCH_STAGES[Math.min(launchStageIndex, MAINLINE_LAUNCH_STAGES.length - 1)];
+    launchStages[Math.min(launchStageIndex, launchStages.length - 1)];
   const launchProgress =
     launchStatus === "success"
       ? 100
-      : Math.round((launchCompletedStages / MAINLINE_LAUNCH_STAGES.length) * 100);
+      : Math.round((launchCompletedStages / launchStages.length) * 100);
   const launchIndicatorClass =
     launchStatus === "running"
       ? "launch-stage-indicator running"
@@ -1678,7 +1669,7 @@ export function StudioConsoleView({
         ? "!"
         : launchStatus === "running"
           ? ""
-          : `${launchCompletedStages}/6`;
+          : `${launchCompletedStages}/${launchStages.length}`;
   const launchTitle =
     launchStatus === "success"
       ? runtimeMainlineRunning
@@ -1862,7 +1853,7 @@ export function StudioConsoleView({
           </div>
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
-            <Metric title={hasCaptureToTensorMetaMs ? "Tensor Meta延迟" : "推理延迟"} value={formatNumber(inferenceLatencyDisplay, 1)} small="ms" />
+            <Metric title="推理延迟" value={formatNumber(inferenceLatencyDisplay, 1)} small="ms" />
             <Metric title="目标数量" value={String(detections)} small="objects" />
             <Metric title="引擎状态" value={engineStatusLabel} small={readString(runtime?.inference?.selected, "engine")} />
           </div>
@@ -2056,9 +2047,9 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
                 <span>推理原因</span><b>{inferenceReason || "-"}</b>
-                <span>DeepStream 状态</span><b>{deepstreamStatusLabel}</b>
-                <span>DeepStream 原因</span><b>{runtimeInferenceReason || "-"}</b>
-                <span className="wide">DeepStream 详情</span><b className="wide">{runtimeInferenceDetail || "-"}</b>
+                <span>主链状态</span><b>{mainlineStatusLabel}</b>
+                <span>主链原因</span><b>{runtimeInferenceReason || "-"}</b>
+                <span className="wide">主链详情</span><b className="wide">{runtimeInferenceDetail || "-"}</b>
                 <span>raw 检测</span><b>{String(rawDetections)}</b>
                 <span>前端检测</span><b>{String(mappedDetections)}</b>
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
@@ -2570,8 +2561,8 @@ export function StudioConsoleView({
                 <div className="stats-diagnosis failed">
                   <strong>吞吐正常，但批次新鲜度不合格</strong>
                   <span>
-                    TensorMeta/Postprocess/Batch 都在输出，控制观察为 0；
-                    最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms，Tensor Meta {formatNumber(captureToTensorMetaMs, 1)}ms，
+                    latest 推理有输出，但控制观察为 0；
+                    最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms，
                     已超过 {controlLatencyGuardMs.toFixed(0)}ms 控制保护阈值。
                   </span>
                   <em>实时控制不会补完旧帧；过期批次会被丢弃，只允许新鲜 DetectionBatch 进入控制。</em>
@@ -2579,32 +2570,17 @@ export function StudioConsoleView({
               ) : null}
               rows={[
               ["完成帧", String(statistics?.inference_counter ?? 0)],
-              ["TensorMeta FPS", formatNumber(statistics?.tensor_meta_fps, 1)],
-              ["Postprocess FPS", formatNumber(statistics?.postprocess_fps, 1)],
+              ["推理 FPS", formatNumber(statistics?.inference_fps, 1)],
               ["Batch 消费 FPS", formatNumber(statistics?.detection_batch_fps, 1)],
               ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
-              ["累计批次", formatNumber(statistics?.published_batches, 0)],
-              ["窗口批次", formatNumber(statistics?.window_published_batches, 0)],
-              ["丢弃旧批次", formatNumber(statistics?.stale_dropped_batches, 0)],
-              ["窗口丢旧", formatNumber(statistics?.window_stale_dropped_batches, 0)],
-              ["窗口 TensorMeta", formatNumber(statistics?.window_tensor_meta_frames, 0)],
-              ["窗口后处理", formatNumber(statistics?.window_postprocess_frames, 0)],
+              ["跳过帧", formatNumber(statistics?.skipped_counter, 0)],
               ["时间戳", shortTimestampSource(readString(statistics?.timestamp_source, "-"))],
               ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
               ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
-              hasCaptureToTensorMetaMs
-                ? ["Tensor Meta", formatNumber(captureToTensorMetaMs, 1)]
-                : ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
-              hasCaptureToTensorMetaMs
-                ? ["PTS到Probe", formatNumber(statistics?.last_pts_to_probe_ms, 1)]
-                : ["PTS到Probe", "-"],
-              hasCaptureToTensorMetaMs
-                ? ["延迟来源", "采集到tensor"]
-                : ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
+              ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
+              ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
               ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],
-              hasCaptureToTensorMetaMs
-                ? ["交接等待", formatNumber(statistics?.stage_handoff_ms, 1)]
-                : ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
+              ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
             ]}
             />
@@ -2633,20 +2609,10 @@ export function StudioConsoleView({
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
                 <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
                 <Event label="ROI" value={formatNumber(statistics?.stage_roi_ms, 1)} width={18} />
-                {hasCaptureToTensorMetaMs ? (
-                  <Event label="Tensor Meta" value={formatNumber(captureToTensorMetaMs, 1)} width={56} />
-                ) : (
-                  <>
-                    <Event label="推理总耗时" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
-                    <Event label="TRT执行" value={formatNumber(statistics?.stage_engine_execute_ms, 1)} width={18} />
-                  </>
-                )}
+                <Event label="推理总耗时" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
+                <Event label="TRT执行" value={formatNumber(statistics?.stage_engine_execute_ms, 1)} width={18} />
                 <Event label="解码/NMS" value={formatNumber(statistics?.stage_decode_ms, 1)} width={34} />
-                {hasCaptureToTensorMetaMs ? (
-                  <Event label="交接等待" value={formatNumber(statistics?.stage_handoff_ms, 1)} width={20} />
-                ) : (
-                  <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
-                )}
+                <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
                 <Event label="Control" value={formatNumber(statistics?.stage_control_ms, 1)} width={14} />
               </div>
             </div>

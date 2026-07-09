@@ -17,6 +17,12 @@ from types import SimpleNamespace
 
 import pytest
 
+pytest.skip(
+    "legacy Full DeepStream/CPU inference suite archived; current mainline is "
+    "DeepStream capture plus NovaSight custom TensorRT",
+    allow_module_level=True,
+)
+
 from novasight.capture.source import CapturedFrame, FrameResource
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext, Track

@@ -10,8 +10,6 @@ from novasight.executors import ExecutorRegistry
 from novasight.hardware import create_hardware_box
 from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.runtime.pipeline import RuntimePipeline
-from novasight.capture.profile import select_capture_profile
-from novasight.capture.state import CaptureRuntimeState
 
 
 logger = logging.getLogger("novasight.runtime.reconfigurator")
@@ -126,16 +124,6 @@ class RuntimeReconfigurator:
         fps: int | None = None,
     ) -> ConfigApplyReport:
         previous_config = getattr(self.app.state, "config", None)
-        if previous_config is not None and self._deepstream_selected(previous_config):
-            return self._select_deepstream_capture(
-                previous_config=previous_config,
-                device=device,
-                preference=preference,
-                pixel_format=pixel_format,
-                width=width,
-                height=height,
-                fps=fps,
-            )
         previous_capture_signature = self._capture_signature(previous_config)
         state = self.app.state.capture.configure(
             device,
@@ -210,17 +198,14 @@ class RuntimeReconfigurator:
                 ),
             )
         ]
-        if (
-            self._deepstream_selected(config)
-            and previous_capture_signature != self._capture_signature(config)
-        ):
-            self._reset_runtime_pipeline("DeepStream capture selection changed")
+        if previous_capture_signature != self._capture_signature(config):
+            self._reset_runtime_pipeline("capture selection changed")
             sections.append(
                 ConfigSectionApplyResult(
                     section="runtime_pipeline",
                     impact="pipeline_rebuild",
                     status="cleared",
-                    message="DeepStream capture selection changed; restart runtime to rebuild GStreamer pipeline",
+                    message="capture selection changed; restart runtime to rebuild GStreamer pipeline",
                 )
             )
         self._ensure_runtime_pipeline_for_live_capture()
@@ -232,147 +217,6 @@ class RuntimeReconfigurator:
             sections=sections,
             message="采集配置已应用",
             capture=capture_payload,
-        )
-
-    def _select_deepstream_capture(
-        self,
-        *,
-        previous_config: RuntimeConfig,
-        device: str,
-        preference: str | None,
-        pixel_format: str | None,
-        width: int | None,
-        height: int | None,
-        fps: int | None,
-    ) -> ConfigApplyReport:
-        capture = self.app.state.capture
-        selected_device = device or previous_config.capture.device
-        selected_preference = preference or previous_config.capture.preference
-        selected_pixel_format = pixel_format or previous_config.capture.pixel_format or None
-        selected_width = width or previous_config.capture.width or None
-        selected_height = height or previous_config.capture.height or None
-        selected_fps = fps or previous_config.capture.fps or None
-        caps = capture.capabilities(selected_device)
-        if not caps.available:
-            failure = CaptureRuntimeState(
-                available=False,
-                device=selected_device,
-                last_error=caps.reason,
-            )
-            capture.last_config_error = failure
-            capture.state = failure
-            return ConfigApplyReport(
-                config=asdict(self.app.state.config),
-                schema=runtime_config_schema(self.app.state.config),
-                restart_required=bool(getattr(getattr(self.app.state, "runtime", None), "running", False)),
-                applied=False,
-                rolled_back=True,
-                sections=[
-                    ConfigSectionApplyResult(
-                        section="capture",
-                        impact="deepstream_profile_select",
-                        status="failed",
-                        message=caps.reason,
-                    )
-                ],
-                message="DeepStream 采集配置选择失败",
-                capture=asdict(failure),
-            )
-        try:
-            profile = select_capture_profile(
-                selected_device,
-                caps.capabilities,
-                selected_preference,  # type: ignore[arg-type]
-                pixel_format=selected_pixel_format,
-                width=selected_width,
-                height=selected_height,
-                fps=selected_fps,
-            )
-        except Exception as exc:
-            failure = CaptureRuntimeState(
-                available=False,
-                device=selected_device,
-                last_error=str(exc),
-            )
-            capture.last_config_error = failure
-            capture.state = failure
-            return ConfigApplyReport(
-                config=asdict(self.app.state.config),
-                schema=runtime_config_schema(self.app.state.config),
-                restart_required=bool(getattr(getattr(self.app.state, "runtime", None), "running", False)),
-                applied=False,
-                rolled_back=True,
-                sections=[
-                    ConfigSectionApplyResult(
-                        section="capture",
-                        impact="deepstream_profile_select",
-                        status="failed",
-                        message=str(exc),
-                    )
-                ],
-                message="DeepStream 采集配置选择失败",
-                capture=asdict(failure),
-            )
-
-        if getattr(capture, "source", None) is not None:
-            capture.stop("DeepStream owns the capture device")
-
-        config = self.app.state.config
-        previous_capture_signature = self._capture_signature(config)
-        config.source.default = "capture"
-        config.capture.device = profile.device
-        config.capture.preference = "manual"
-        config.capture.pixel_format = profile.pixel_format
-        config.capture.width = profile.width
-        config.capture.height = profile.height
-        config.capture.fps = profile.fps
-        capture.config = config.capture
-        capture.roi_size = config.roi.size
-        capture.roi_offset_x = config.roi.offset_x
-        capture.roi_offset_y = config.roi.offset_y
-        state = CaptureRuntimeState(
-            available=True,
-            device=profile.device,
-            profile=profile,
-            backend="deepstream",
-            last_error=None,
-        )
-        capture.state = state
-        capture.last_config_error = None
-        self.app.state.runtime.update_config(config)
-        config_path = getattr(self.app.state, "config_path", None)
-        if config_path is not None:
-            save_runtime_config(config, config_path)
-
-        sections = [
-            ConfigSectionApplyResult(
-                section="capture",
-                impact="deepstream_profile_select",
-                status="applied",
-                message=(
-                    f"{profile.pixel_format} {profile.width}x{profile.height}@{profile.fps}; "
-                    "DeepStream runtime will open the device"
-                ),
-            )
-        ]
-        if previous_capture_signature != self._capture_signature(config):
-            self._reset_runtime_pipeline("DeepStream capture selection changed")
-            sections.append(
-                ConfigSectionApplyResult(
-                    section="runtime_pipeline",
-                    impact="pipeline_rebuild",
-                    status="cleared",
-                    message="DeepStream capture selection changed; restart runtime to rebuild GStreamer pipeline",
-                )
-            )
-        return ConfigApplyReport(
-            config=asdict(config),
-            schema=runtime_config_schema(config),
-            restart_required=bool(getattr(self.app.state.runtime, "running", False)),
-            applied=True,
-            sections=sections,
-            message="DeepStream 采集配置已应用，未启动旧采集会话",
-            capture=asdict(state),
         )
 
     def _install_config(self, config: RuntimeConfig) -> None:
@@ -401,7 +245,6 @@ class RuntimeReconfigurator:
         self.app.state.runtime.executors = self.app.state.executors
         self.app.state.runtime.hardware = self.app.state.hardware
         self.app.state.runtime.update_config(config)
-        self._update_live_deepstream_postprocess(config)
 
     def _rollback(
         self,
@@ -439,10 +282,6 @@ class RuntimeReconfigurator:
             or previous_config.hardware.uuid != config.hardware.uuid
             or previous_config.hardware.monitor_port != config.hardware.monitor_port
         )
-
-    @staticmethod
-    def _deepstream_selected(config: RuntimeConfig) -> bool:
-        return str(getattr(config.inference, "backend", "")).lower() == "deepstream"
 
     @staticmethod
     def _capture_signature(config: RuntimeConfig | None) -> tuple[object, ...]:
@@ -524,7 +363,7 @@ class RuntimeReconfigurator:
         if runtime is None or capture is None or config is None:
             return
         backend = str(getattr(getattr(config, "inference", None), "backend", "")).lower()
-        if backend == "deepstream":
+        if backend != "nvmm_latest":
             return
         if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
             return
@@ -546,25 +385,6 @@ class RuntimeReconfigurator:
             logger.warning("runtime pipeline auto-start after config update failed: %s", exc)
         else:
             logger.info("runtime pipeline auto-started after config update")
-
-    def _update_live_deepstream_postprocess(self, config: RuntimeConfig) -> None:
-        if not self._deepstream_selected(config):
-            return
-        runtime = getattr(self.app.state, "runtime", None)
-        pipeline = getattr(runtime, "pipeline", None) if runtime is not None else None
-        detection_source = getattr(pipeline, "detection_source", None)
-        update = getattr(detection_source, "update_postprocess_thresholds", None)
-        if not callable(update):
-            return
-        update(
-            confidence_threshold=float(config.inference.confidence_threshold),
-            nms_threshold=float(config.inference.nms_threshold),
-        )
-        logger.info(
-            "DeepStream postprocess thresholds updated confidence=%s nms=%s",
-            config.inference.confidence_threshold,
-            config.inference.nms_threshold,
-        )
 
     def _reset_runtime_pipeline(self, reason: str) -> None:
         runtime = getattr(self.app.state, "runtime", None)
@@ -594,12 +414,6 @@ class RuntimeReconfigurator:
         next_roi = config.roi
         return (
             previous_inference.backend != next_inference.backend
-            or previous_inference.deepstream_manifest_path
-            != next_inference.deepstream_manifest_path
-            or previous_inference.deepstream_config_path != next_inference.deepstream_config_path
-            or previous_inference.deepstream_io_mode != next_inference.deepstream_io_mode
-            or previous_inference.deepstream_batched_push_timeout_us
-            != next_inference.deepstream_batched_push_timeout_us
             or previous_capture.device != next_capture.device
             or previous_capture.memory != next_capture.memory
             or previous_capture.pixel_format != next_capture.pixel_format

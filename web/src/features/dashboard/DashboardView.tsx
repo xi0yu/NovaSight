@@ -295,8 +295,7 @@ export function DashboardView({
   const configSource = runtimeConfig ?? runtime?.config;
   const runtimeInference = asRecord(runtime?.inference);
   const selectedRuntimeBackend = readStringRecord(runtimeInference, "selected");
-  const runtimeMainlineSelected =
-    selectedRuntimeBackend === "nvmm_latest" || selectedRuntimeBackend === "deepstream";
+  const runtimeMainlineSelected = selectedRuntimeBackend === "nvmm_latest";
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
   const captureMainRunning = runtimeMainlineSelected ? runtimeMainlineRunning : capture?.available === true;

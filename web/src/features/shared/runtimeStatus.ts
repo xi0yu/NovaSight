@@ -43,10 +43,7 @@ function maxNumber(...values: unknown[]): number {
 
 export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeMainlineStatus {
   const pipeline = asRecord(runtime?.pipeline);
-  const detectionSource = asRecord(pipeline.detection_source);
   const inference = asRecord(runtime?.inference);
-  const selectedBackend = readString(inference.selected);
-  const fullDeepStreamSelected = selectedBackend === "deepstream";
   const capture = asRecord(runtime?.capture);
   const statistics = asRecord(runtime?.statistics);
   const captureStatistics = asRecord(capture.statistics);
@@ -55,80 +52,32 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   const terminalError = readBoolean(inference.terminal_error);
   const failureMessage =
     pipelineLastError ||
-    readString(detectionSource.last_error) ||
-    readString(detectionSource.detail) ||
-    readString(detectionSource.reason) ||
     readString(inference.detail) ||
     readString(inference.reason) ||
     readString(fatal.message);
-  const publishedBatches = maxNumber(
-    statistics.published_batches,
-    captureStatistics.published_batches,
-    detectionSource.published_batches
-  );
-  const staleDroppedBatches = maxNumber(
-    statistics.stale_dropped_batches,
-    captureStatistics.stale_dropped_batches,
-    detectionSource.stale_dropped_batches
-  );
-  const windowStaleDroppedBatches = maxNumber(
-    statistics.window_stale_dropped_batches,
-    captureStatistics.window_stale_dropped_batches,
-    detectionSource.window_stale_dropped_batches
-  );
-  const maxPublishAgeMs = maxNumber(
-    statistics.max_publish_age_ms,
-    captureStatistics.max_publish_age_ms,
-    detectionSource.max_publish_age_ms
-  );
-  const lastPtsToProbeMs = maxNumber(
-    statistics.last_pts_to_probe_ms,
-    captureStatistics.last_pts_to_probe_ms,
-    detectionSource.last_pts_to_probe_ms
-  );
-  const tensorMetaFrames = maxNumber(
-    statistics.tensor_meta_frames,
-    captureStatistics.tensor_meta_frames,
-    detectionSource.tensor_meta_frames
-  );
-  const postprocessFrames = maxNumber(
-    statistics.postprocess_frames,
-    captureStatistics.postprocess_frames,
-    detectionSource.postprocess_frames
-  );
+  const publishedBatches = 0;
+  const staleDroppedBatches = 0;
+  const windowStaleDroppedBatches = 0;
+  const maxPublishAgeMs = 0;
+  const lastPtsToProbeMs = 0;
+  const tensorMetaFrames = 0;
+  const postprocessFrames = 0;
   const inferenceCounter = maxNumber(
     statistics.inference_counter,
     captureStatistics.inference_counter,
-    pipeline.processed_frames,
-    pipeline.consumed_detection_batches
+    pipeline.processed_frames
   );
   const hasInferenceSignal =
-    publishedBatches > 0 ||
-    tensorMetaFrames > 0 ||
-    postprocessFrames > 0 ||
-    maxNumber(statistics.detection_batch_fps, captureStatistics.detection_batch_fps, detectionSource.detection_batch_fps) > 0 ||
-    maxNumber(statistics.tensor_meta_fps, captureStatistics.tensor_meta_fps, detectionSource.tensor_meta_fps) > 0 ||
-    maxNumber(statistics.postprocess_fps, captureStatistics.postprocess_fps, detectionSource.postprocess_fps) > 0;
+    inferenceCounter > 0 ||
+    maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
   const hasRuntimeConsumption =
     inferenceCounter > 0 ||
     maxNumber(statistics.control_observation_counter, captureStatistics.control_observation_counter) > 0 ||
     maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
-  const staleDropFailure =
-    fullDeepStreamSelected &&
-    staleDroppedBatches > 0 &&
-    tensorMetaFrames > 0 &&
-    postprocessFrames > 0 &&
-    publishedBatches <= 0 &&
-    inferenceCounter <= 0;
-  const staleDropFailureMessage = staleDropFailure
-    ? `DeepStream 已产生 TensorMeta/Postprocess，但所有 DetectionBatch 均超过 ${maxPublishAgeMs || 55}ms 新鲜度阈值并在进入 runtime 前丢弃；PTS到Probe=${lastPtsToProbeMs.toFixed(1)}ms。`
-    : "";
-  const resolvedFailureMessage = staleDropFailureMessage || failureMessage;
+  const resolvedFailureMessage = failureMessage;
   const progressSummary = [
-    `published=${publishedBatches}`,
-    `stale=${staleDroppedBatches}`,
-    `tensor=${tensorMetaFrames}`,
-    `postprocess=${postprocessFrames}`,
+    `latest=${maxNumber(pipeline.consumed_frames, statistics.capture_counter, captureStatistics.capture_counter)}`,
+    `inferred=${inferenceCounter}`,
     `consumed=${inferenceCounter}`
   ].join(" · ");
   const running = runtime?.running === true || pipeline.running === true;
@@ -136,10 +85,8 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     runtime?.fatal_error !== null && runtime?.fatal_error !== undefined
       ? true
       : terminalError ||
-        staleDropFailure ||
         pipelineLastError !== "" ||
-        (detectionSource.available === false && (running || failureMessage !== "")) ||
-        (detectionSource.running === false && running && failureMessage !== "");
+        failureMessage !== "";
 
   return {
     running,

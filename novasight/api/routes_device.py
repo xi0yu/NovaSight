@@ -4,8 +4,6 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from novasight.deepstream import check_deepstream_dependencies
-
 router = APIRouter(prefix="/api/device", tags=["device"])
 
 
@@ -23,7 +21,6 @@ def device_capabilities(request: Request) -> dict[str, Any]:
     capture_state = capture.state
     capture_session = getattr(capture, "session", None)
     executor_status = request.app.state.executors.status()
-    deepstream_status = check_deepstream_dependencies()
     return {
         "node_role": "jetson_runtime",
         "studio_role": "remote_manager",
@@ -57,10 +54,9 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "logs_and_performance": True,
             "remote_runtime_control": True,
             "onnx_training_or_export": False,
-            "deepstream_pipeline_generation": True,
-            "deepstream_runtime_backend": deepstream_status.available,
-            "deepstream_realtime_path_selected": str(config.inference.backend).lower() == "deepstream",
-            "legacy_nvmm_capture_configured": str(config.capture.memory).lower() == "nvmm",
+            "full_deepstream_pipeline_generation": False,
+            "deepstream_capture_data_plane": str(config.capture.memory).lower() == "nvmm",
+            "custom_tensorrt_scheduler": str(config.inference.backend).lower() == "nvmm_latest",
             "nvmm_capture_configured": str(config.capture.memory).lower() == "nvmm",
             "gpu_resource_preprocess_available": bool(
                 inference_status.get("gpu_preprocessor", {}).get("available", False)
@@ -74,10 +70,6 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "preview_fps": config.limits.stream_fps,
             "output_mode": config.control.output_mode,
             "inference_backend": config.inference.backend,
-            "deepstream_manifest_path": config.inference.deepstream_manifest_path,
-            "deepstream_config_path": config.inference.deepstream_config_path,
-            "deepstream_io_mode": config.inference.deepstream_io_mode,
-            "deepstream_batched_push_timeout_us": config.inference.deepstream_batched_push_timeout_us,
         },
         "runtime": {
             "capture_available": bool(getattr(capture_state, "available", False)),
@@ -85,9 +77,9 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "inference_loaded": bool(inference_status.get("loaded", False)),
             "inference_engine": str(inference_status.get("selected", "")),
         },
-        "deepstream": {
-            "available": deepstream_status.available,
-            "reason": deepstream_status.reason,
-            "detail": deepstream_status.detail,
+        "mainline": {
+            "backend": "deepstream_capture_custom_tensorrt",
+            "capture_memory": config.capture.memory,
+            "inference_backend": config.inference.backend,
         },
     }

@@ -195,8 +195,6 @@ def image_source(request: Request, payload: ImageSourceRequest):
         runtime = getattr(request.app.state, "runtime", None)
         if runtime is not None:
             runtime.update_config(config)
-            if _runtime_uses_deepstream(runtime):
-                _clear_runtime_pipeline(runtime, "image source selected")
         config_path = getattr(request.app.state, "config_path", None)
         if config_path is not None:
             save_runtime_config(config, config_path)
@@ -245,7 +243,7 @@ def _ensure_runtime_pipeline(request: Request) -> None:
     if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
         return
     backend = str(getattr(getattr(config, "inference", None), "backend", "")).lower()
-    if backend == "deepstream":
+    if backend != "nvmm_latest":
         return
     if runtime.pipeline is None:
         runtime.pipeline = RuntimePipeline(
@@ -260,12 +258,6 @@ def _ensure_runtime_pipeline(request: Request) -> None:
         logger.warning("runtime pipeline auto-start after capture failed: %s", exc)
     else:
         logger.info("runtime pipeline auto-started after capture selection")
-
-
-def _runtime_uses_deepstream(runtime) -> bool:
-    config = getattr(runtime, "config", None)
-    inference = getattr(config, "inference", None)
-    return str(getattr(inference, "backend", "")).lower() == "deepstream"
 
 
 def _clear_runtime_pipeline(runtime, reason: str) -> None:

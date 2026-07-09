@@ -8,12 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
-from novasight.api.deepstream_runtime import (
-    build_deepstream_detection_source,
-)
 from novasight.config import parse_runtime_config
 from novasight.config.schema import runtime_config_schema
-from novasight.deepstream import DeepStreamDetectionBackend
 from novasight.runtime.reconfigurator import RuntimeReconfigurator
 from novasight.runtime.pipeline import RuntimePipeline
 from novasight.runtime.status import StatusHub
@@ -110,22 +106,10 @@ def delete_license(request: Request) -> dict[str, Any]:
 def start_runtime(request: Request) -> dict[str, Any]:
     runtime = request.app.state.runtime
     try:
-        if (
-            _full_deepstream_selected(runtime.config)
-            and runtime.pipeline is not None
-            and getattr(runtime.pipeline, "running", False) is not True
-        ):
-            _stop_existing_runtime_pipeline(runtime)
         if runtime.pipeline is None:
-            detection_source = (
-                _deepstream_detection_source(request)
-                if _full_deepstream_selected(runtime.config)
-                else None
-            )
             runtime.pipeline = RuntimePipeline(
                 capture=request.app.state.capture,
                 runtime=runtime,
-                detection_source=detection_source,
             )
         runtime.pipeline.start()
     except HTTPException:
@@ -154,19 +138,6 @@ def _clear_failed_runtime_pipeline(runtime: Any) -> None:
     _stop_existing_runtime_pipeline(runtime)
 
 
-def _full_deepstream_selected(config: Any) -> bool:
-    inference = getattr(config, "inference", None)
-    return str(getattr(inference, "backend", "")).lower() == "deepstream"
-
-
-def _deepstream_selected(config: Any) -> bool:
-    return _full_deepstream_selected(config)
-
-
-def _deepstream_detection_source(request: Request) -> DeepStreamDetectionBackend:
-    return build_deepstream_detection_source(request)
-
-
 @router.post("/api/runtime/stop")
 def stop_runtime(request: Request) -> dict[str, Any]:
     runtime = request.app.state.runtime
@@ -174,10 +145,6 @@ def stop_runtime(request: Request) -> dict[str, Any]:
         runtime.pipeline.stop()
         logger.info("runtime pipeline stopped")
         status = runtime.pipeline.status()
-        if _full_deepstream_selected(runtime.config):
-            runtime.pipeline = None
-            runtime.running = False
-            logger.info("deepstream runtime pipeline cleared after stop")
         return status
     runtime.running = False
     logger.info("runtime pipeline stop requested while idle")

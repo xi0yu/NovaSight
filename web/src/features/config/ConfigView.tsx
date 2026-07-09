@@ -134,17 +134,16 @@ export function ConfigView({
   const canWriteConfig = Boolean(license?.features.includes("config_write"));
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeSelectedBackend = runtime?.inference?.selected;
-  const runtimeMainlineSelected =
-    runtimeSelectedBackend === "nvmm_latest" || runtimeSelectedBackend === "deepstream";
+  const runtimeMainlineSelected = runtimeSelectedBackend === "nvmm_latest";
   const runtimeStateLabel = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "主链故障"
       : runtimeMainlineStatus.running
         ? runtimeMainlineStatus.hasRuntimeConsumption
           ? "主链已消费"
-          : runtimeMainlineStatus.hasInferenceSignal
+        : runtimeMainlineStatus.hasInferenceSignal
             ? "等待 runtime 消费"
-            : "等待 DetectionBatch"
+            : "等待自定义推理输出"
         : "主链未启动"
     : runtime?.running
       ? "运行中"
@@ -154,9 +153,7 @@ export function ConfigView({
       ? runtimeMainlineStatus.failureMessage || "后端报告主链故障。"
       : runtimeMainlineStatus.running
         ? runtimeMainlineStatus.progressSummary
-        : runtimeSelectedBackend === "deepstream"
-          ? "Full DeepStream 实验链未持有采集、推理与控制链路。"
-          : "NVMM latest 主链未持有采集、推理与控制链路。"
+        : "DeepStream采集 + 自定义推理主链未持有采集、推理与控制链路。"
     : runtime?.running
       ? "传统 runtime 线程正在运行。"
       : "传统 runtime 线程未运行。";

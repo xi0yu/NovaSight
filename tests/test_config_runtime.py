@@ -304,21 +304,19 @@ def test_runtime_config_defaults_include_experimental_angle_settings() -> None:
 def test_runtime_config_defaults_include_inference_settings() -> None:
     cfg = RuntimeConfig()
 
+    assert cfg.capture.memory == "nvmm"
     assert cfg.inference.enabled is True
-    assert cfg.inference.backend == "tensorrt"
-    assert cfg.inference.deepstream_manifest_path == ""
-    assert cfg.inference.deepstream_config_path == ""
-    assert cfg.inference.deepstream_io_mode == 2
-    assert cfg.inference.deepstream_batched_push_timeout_us == 0
+    assert cfg.inference.backend == "nvmm_latest"
     assert cfg.inference.inference_input_deadline_ms == 55.0
     assert cfg.inference.confidence_threshold == 0.25
     assert cfg.inference.nms_threshold == 0.45
     assert cfg.inference.input_source == "source.default"
 
 
-def test_runtime_config_accepts_deepstream_backend_paths() -> None:
+def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
     cfg = parse_runtime_config(
         {
+            "capture": {"memory": "cpu"},
             "inference": {
                 "backend": "deepstream",
                 "deepstream_manifest_path": "combat/default/model.manifest.json",
@@ -329,11 +327,12 @@ def test_runtime_config_accepts_deepstream_backend_paths() -> None:
         }
     )
 
-    assert cfg.inference.backend == "deepstream"
-    assert cfg.inference.deepstream_manifest_path == "combat/default/model.manifest.json"
-    assert cfg.inference.deepstream_config_path == "combat/default/deepstream.ini"
-    assert cfg.inference.deepstream_io_mode == 4
-    assert cfg.inference.deepstream_batched_push_timeout_us == 12000
+    assert cfg.capture.memory == "nvmm"
+    assert cfg.inference.backend == "nvmm_latest"
+    assert not hasattr(cfg.inference, "deepstream_manifest_path")
+    assert not hasattr(cfg.inference, "deepstream_config_path")
+    assert not hasattr(cfg.inference, "deepstream_io_mode")
+    assert not hasattr(cfg.inference, "deepstream_batched_push_timeout_us")
 
 
 def test_runtime_config_accepts_nvmm_latest_backend() -> None:
@@ -381,8 +380,8 @@ def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
 def test_example_runtime_config_loads_with_current_schema() -> None:
     cfg = load_runtime_config(Path("config/novasight.example.yaml"))
 
-    assert cfg.inference.backend == "tensorrt"
-    assert cfg.capture.memory == "cpu"
+    assert cfg.inference.backend == "nvmm_latest"
+    assert cfg.capture.memory == "nvmm"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
     assert cfg.calibration.fov_x_deg == 105
@@ -455,11 +454,6 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"latency_min_velocity_measurements": 0}}, "control.latency_min_velocity_measurements"),
         ({"control": {"latency_min_velocity_confidence": 1.5}}, "control.latency_min_velocity_confidence"),
         ({"control": {"latency_min_velocity_px_s": 100, "latency_max_velocity_px_s": 50}}, "control.latency_max_velocity_px_s"),
-        ({"inference": {"deepstream_io_mode": -1}}, "inference.deepstream_io_mode"),
-        (
-            {"inference": {"deepstream_batched_push_timeout_us": -1}},
-            "inference.deepstream_batched_push_timeout_us",
-        ),
     ],
 )
 def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_path: str) -> None:
@@ -610,12 +604,12 @@ def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
     assert cfg.roi.mode == "manual"
 
 
-def test_runtime_config_capture_memory_is_explicit_cpu_or_nvmm() -> None:
-    assert parse_runtime_config({}).capture.memory == "cpu"
-    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "cpu"
+def test_runtime_config_capture_memory_is_nvmm_only() -> None:
+    assert parse_runtime_config({}).capture.memory == "nvmm"
+    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "nvmm"
     assert parse_runtime_config({"capture": {"memory": "nvmm"}}).capture.memory == "nvmm"
 
-    with pytest.raises(ValueError, match="capture.memory.*cpu or nvmm"):
+    with pytest.raises(ValueError, match="capture.memory.*nvmm"):
         parse_runtime_config({"capture": {"memory": "dmabuf"}})
 
 
@@ -644,7 +638,7 @@ def test_runtime_config_schema_exposes_capture_memory() -> None:
         "path": "capture.memory",
         "label": "采集内存路径",
         "type": "select",
-        "options": ["cpu", "nvmm"],
+        "options": ["nvmm"],
         "restart_required": True,
     }
 
@@ -755,10 +749,6 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     assert {
         "inference.enabled",
         "inference.backend",
-        "inference.deepstream_manifest_path",
-        "inference.deepstream_config_path",
-        "inference.deepstream_io_mode",
-        "inference.deepstream_batched_push_timeout_us",
         "inference.inference_input_deadline_ms",
         "inference.confidence_threshold",
         "inference.nms_threshold",
@@ -767,4 +757,4 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     backend_field = next(
         field for field in inference_section["fields"] if field["path"] == "inference.backend"
     )
-    assert backend_field["options"] == ["tensorrt", "onnxruntime", "nvmm_latest", "deepstream"]
+    assert backend_field["options"] == ["nvmm_latest"]

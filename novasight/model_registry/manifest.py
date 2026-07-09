@@ -21,7 +21,7 @@ class ArtifactInfo:
 
 @dataclass(frozen=True)
 class RuntimeInfo:
-    backend: str = "deepstream"
+    backend: str = "custom_tensorrt"
     precision: str = "fp16"
     batch_size: int = 1
 
@@ -62,14 +62,6 @@ class PostprocessSpec:
 
 
 @dataclass(frozen=True)
-class DeepStreamSpec:
-    network_type: int = 100
-    output_tensor_meta: bool = True
-    gie_unique_id: int = 1
-    interval: int = 0
-
-
-@dataclass(frozen=True)
 class ModelManifest:
     schema_version: int
     model_id: str
@@ -79,7 +71,6 @@ class ModelManifest:
     input: InputSpec
     output: OutputSpec
     postprocess: PostprocessSpec = field(default_factory=PostprocessSpec)
-    deepstream: DeepStreamSpec = field(default_factory=DeepStreamSpec)
     validated: bool = False
     model_fingerprint: str = ""
 
@@ -142,7 +133,6 @@ def build_engine_manifest(
             confidence_threshold=float(confidence_threshold),
             nms_iou_threshold=float(nms_iou_threshold),
         ),
-        deepstream=DeepStreamSpec(),
         validated=bool(validated),
     )
     return replace(manifest, model_fingerprint=compute_model_fingerprint(manifest))
@@ -221,7 +211,6 @@ def manifest_from_dict(raw: dict[str, Any]) -> ModelManifest:
     input_spec = InputSpec(**dict(raw["input"]))
     output_spec = OutputSpec(**raw_output)
     postprocess = PostprocessSpec(**dict(raw.get("postprocess", {})))
-    deepstream = DeepStreamSpec(**dict(raw.get("deepstream", {})))
     manifest = ModelManifest(
         schema_version=int(raw.get("schema_version", MODEL_MANIFEST_SCHEMA_VERSION)),
         model_id=str(raw["model_id"]),
@@ -231,7 +220,6 @@ def manifest_from_dict(raw: dict[str, Any]) -> ModelManifest:
         input=input_spec,
         output=output_spec,
         postprocess=postprocess,
-        deepstream=deepstream,
         validated=bool(raw.get("validated", False)),
         model_fingerprint=str(raw.get("model_fingerprint", "")),
     )

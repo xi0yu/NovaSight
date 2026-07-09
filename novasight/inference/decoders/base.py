@@ -7,7 +7,7 @@ from novasight.inference.contracts import InferenceDetection
 
 
 class BaseDecoder(ABC):
-    """Compatibility decoder for tensor outputs that are not parsed inside nvinfer."""
+    """Decoder for TensorRT output tensors produced by NovaSight inference."""
 
     parser_name: str = ""
     requires_cpu_postprocess: bool = True
@@ -23,7 +23,7 @@ class BaseDecoder(ABC):
         class_count: int | None = None,
         debug: dict[str, Any] | None = None,
     ) -> list[InferenceDetection]:
-        """Decode nvinfer/engine layer outputs into normalized inference detections."""
+        """Decode engine layer outputs into normalized inference detections."""
 
 
 def single_output(layer_outputs: list[Any], *, parser_name: str) -> Any:
