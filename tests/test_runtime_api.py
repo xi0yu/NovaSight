@@ -805,8 +805,8 @@ def test_device_capabilities_describe_jetson_runtime_boundary(tmp_path) -> None:
     assert body["features"]["deepstream_pipeline_generation"] is True
     assert body["features"]["deepstream_runtime_backend"] == body["deepstream"]["available"]
     assert body["features"]["deepstream_realtime_path_selected"] is True
-    assert body["features"]["legacy_nvmm_capture_configured"] is False
-    assert body["features"]["nvmm_capture_configured"] is False
+    assert body["features"]["legacy_nvmm_capture_configured"] is True
+    assert body["features"]["nvmm_capture_configured"] is True
     assert body["active_config"]["inference_backend"] == "deepstream"
     assert body["active_config"]["deepstream_manifest_path"] == (
         "combat/default/model.manifest.json"

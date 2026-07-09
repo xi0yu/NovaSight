@@ -390,6 +390,8 @@ def test_runtime_pipeline_prefers_latest_frame_broker_over_preview_wait() -> Non
     )
     processed: list[int] = []
     processed_one = threading.Event()
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "cpu"
     capture = SimpleNamespace(
         source=object(),
         state=SimpleNamespace(available=True),
@@ -399,7 +401,7 @@ def test_runtime_pipeline_prefers_latest_frame_broker_over_preview_wait() -> Non
     )
     runtime = SimpleNamespace(
         running=False,
-        config=RuntimeConfig(),
+        config=cfg,
         process_captured_frame=lambda item: (
             processed.append(item.frame_id),
             processed_one.set(),
@@ -419,6 +421,7 @@ def test_runtime_pipeline_prefers_latest_frame_broker_over_preview_wait() -> Non
 
 def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
     cfg = RuntimeConfig()
+    cfg.capture.memory = "cpu"
     cfg.inference.inference_input_deadline_ms = 10.0
     stale = CapturedFrame(
         frame_id=1,
@@ -527,6 +530,7 @@ def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
 
 def test_runtime_pipeline_stops_when_capture_becomes_unavailable() -> None:
     cfg = RuntimeConfig()
+    cfg.capture.memory = "cpu"
     observed = threading.Event()
     capture_state = SimpleNamespace(available=True, last_error=None)
     capture = SimpleNamespace(
@@ -610,9 +614,11 @@ def test_runtime_pipeline_consumes_frames_from_capture_session_thread() -> None:
         if len(processed) >= 2:
             processed_two.set()
 
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "cpu"
     runtime = SimpleNamespace(
         running=False,
-        config=RuntimeConfig(),
+        config=cfg,
         process_captured_frame=process_captured_frame,
         process_control_tick=lambda: None,
     )

@@ -155,7 +155,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "inference.backend",
                         "label": "推理后端",
                         "type": "select",
-                        "options": ["onnxruntime", "tensorrt", "nvmm_latest", "deepstream"],
+                        "options": ["nvmm_latest", "tensorrt", "onnxruntime", "deepstream"],
                         "restart_required": True,
                     },
                     {

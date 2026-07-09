@@ -48,7 +48,7 @@ class RoiConfig:
 @dataclass
 class InferenceConfig:
     enabled: bool = True
-    backend: str = "onnxruntime"
+    backend: str = "nvmm_latest"
     deepstream_manifest_path: str = ""
     deepstream_config_path: str = ""
     deepstream_io_mode: int = 2
@@ -87,7 +87,7 @@ class InferenceConfig:
 class CaptureConfig:
     device: str = "/dev/video0"
     preference: str = "auto_high_fps"
-    memory: str = "cpu"
+    memory: str = "nvmm"
     pixel_format: str = ""
     width: int = 0
     height: int = 0

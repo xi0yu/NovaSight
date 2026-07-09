@@ -411,7 +411,8 @@ export function DevicesView({
     setStoppingCapture(true);
     setCaptureError(undefined);
     try {
-      if (runtime?.inference?.selected === "deepstream") {
+      const selected = runtime?.inference?.selected;
+      if (selected === "nvmm_latest" || selected === "deepstream") {
         await stopRuntimePipeline();
       } else {
         await stopCapture();
@@ -512,29 +513,32 @@ export function DevicesView({
     activeArtifact === "engine" ? "tensorrt" : activeArtifact === "onnx" ? "onnxruntime" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
-  const deepstreamRuntimeSelected = inferenceSelected === "deepstream";
+  const nvmmLatestRuntimeSelected = inferenceSelected === "nvmm_latest";
+  const fullDeepStreamRuntimeSelected = inferenceSelected === "deepstream";
+  const runtimeMainlineSelected = nvmmLatestRuntimeSelected || fullDeepStreamRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
-  const captureMainRunning = deepstreamRuntimeSelected ? runtimeMainlineRunning : capture?.available === true;
+  const captureMainRunning = runtimeMainlineSelected ? runtimeMainlineRunning : capture?.available === true;
   const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
-  const deepstreamInputReady = runtimeMainlineStatus.hasInferenceSignal;
-  const deepstreamRuntimeReady = runtimeMainlineStatus.hasRuntimeConsumption;
-  const deepstreamRunLabel = runtimeMainlineStatus.failed
+  const mainlineInputReady = runtimeMainlineStatus.hasInferenceSignal;
+  const mainlineRuntimeReady = runtimeMainlineStatus.hasRuntimeConsumption;
+  const mainlineBackendLabel = nvmmLatestRuntimeSelected ? "NVMM 主链" : "Full DeepStream 实验链";
+  const mainlineRunLabel = runtimeMainlineStatus.failed
     ? "主链故障"
     : runtimeMainlineRunning
-      ? deepstreamRuntimeReady
+      ? mainlineRuntimeReady
         ? "主链已消费"
-        : deepstreamInputReady
+        : mainlineInputReady
           ? "等待 runtime 消费"
           : "等待 DetectionBatch"
       : captureProfileConfigured
         ? "主链待启动"
         : "未启动";
-  const deepstreamInputLabel = runtimeMainlineStatus.failed
+  const mainlineInputLabel = runtimeMainlineStatus.failed
     ? "管线故障"
-    : deepstreamRuntimeReady
+    : mainlineRuntimeReady
       ? "DetectionBatch 已消费"
-      : deepstreamInputReady
+      : mainlineInputReady
         ? "DetectionBatch 已产出"
         : runtimeMainlineRunning
           ? "等待 DetectionBatch"
@@ -546,23 +550,23 @@ export function DevicesView({
   const inferenceChecklist: { label: string; detail: string; tone: ReadinessTone }[] = [
     {
       label: "输入帧",
-      detail: deepstreamRuntimeSelected
+      detail: runtimeMainlineSelected
         ? runtimeMainlineStatus.failed
-          ? runtimeMainlineStatus.failureMessage || "DeepStream 主链故障"
+          ? runtimeMainlineStatus.failureMessage || `${mainlineBackendLabel}故障`
           : captureMainRunning
-            ? deepstreamInputReady
-              ? "DeepStream 主链已产出 DetectionBatch"
-              : `DeepStream 主链运行中，${runtimeMainlineStatus.progressSummary}`
+            ? mainlineInputReady
+              ? `${mainlineBackendLabel}已产出 DetectionBatch`
+              : `${mainlineBackendLabel}运行中，${runtimeMainlineStatus.progressSummary}`
           : captureProfileConfigured
-            ? "采集 Profile 已配置，启动主链后由 DeepStream 打开"
+            ? "采集 Profile 已配置，启动主链后由后端打开"
             : "先选择采集卡 Profile"
         : capture?.available
           ? "RoiFrame 已可用"
           : "先启动采集卡或图片输入",
-      tone: deepstreamRuntimeSelected
+      tone: runtimeMainlineSelected
         ? runtimeMainlineStatus.failed
           ? "blocked"
-          : deepstreamInputReady
+          : mainlineInputReady
             ? "ready"
             : captureMainRunning || captureProfileConfigured
               ? "warn"
@@ -616,11 +620,11 @@ export function DevicesView({
           <div className="panel-actions">
             <button
               className="button"
-              disabled={deepstreamRuntimeSelected ? stoppingCapture || !runtimeMainlineRunning : stoppingCapture || !capture?.available}
+              disabled={runtimeMainlineSelected ? stoppingCapture || !runtimeMainlineRunning : stoppingCapture || !capture?.available}
               onClick={() => void stopCaptureSession()}
               type="button"
             >
-              {stoppingCapture ? "停止中" : deepstreamRuntimeSelected ? "停止主链" : "停止采集"}
+              {stoppingCapture ? "停止中" : runtimeMainlineSelected ? "停止主链" : "停止采集"}
             </button>
             <button className="button" type="button" onClick={refreshCapabilities}>
               {loadingCaps ? "读取中" : "刷新采集卡信息"}
@@ -654,22 +658,22 @@ export function DevicesView({
               id: "capture",
               label: "采集输入",
               value: captureProfileConfigured ? formatProfile(capture) : "未启动",
-              detail: deepstreamRuntimeSelected
-                ? deepstreamRunLabel
+              detail: runtimeMainlineSelected
+                ? mainlineRunLabel
                 : normalizedActiveSource === "image" ? "图片输入" : device,
-              ready: deepstreamRuntimeSelected
-                ? deepstreamRuntimeReady
+              ready: runtimeMainlineSelected
+                ? mainlineRuntimeReady
                 : Boolean(capture?.available)
             },
             {
               id: "inference",
               label: "推理消费",
               value: inferenceEnabled ? activeModelName : "已关闭",
-              detail: deepstreamRuntimeSelected
-                ? deepstreamInputLabel
+              detail: runtimeMainlineSelected
+                ? mainlineInputLabel
                 : `${inferenceSelected === "tensorrt" ? "TensorRT" : "ONNX"} · ${formatThreshold(confidenceThreshold)} 置信度`,
-              ready: deepstreamRuntimeSelected
-                ? inferenceEnabled && deepstreamInputReady && activeModelName !== "未发布模型"
+              ready: runtimeMainlineSelected
+                ? inferenceEnabled && mainlineInputReady && activeModelName !== "未发布模型"
                 : inferenceEnabled && activeModelName !== "未发布模型"
             },
             {
@@ -709,7 +713,7 @@ export function DevicesView({
                     "capture",
                     "采集卡",
                     captureProfileConfigured
-                      ? deepstreamRuntimeSelected
+                      ? runtimeMainlineSelected
                         ? `${formatProfile(capture)} · 主链启动时打开`
                         : formatProfile(capture)
                       : "等待启动",
@@ -735,7 +739,7 @@ export function DevicesView({
                 </div>
                 <div>
                   <dt>运行状态</dt>
-                  <dd>{deepstreamRuntimeSelected ? deepstreamRunLabel : captureMainRunning ? "采集中" : captureProfileConfigured ? "已配置" : "未启动"}</dd>
+                  <dd>{runtimeMainlineSelected ? mainlineRunLabel : captureMainRunning ? "采集中" : captureProfileConfigured ? "已配置" : "未启动"}</dd>
                 </div>
                 <div>
                   <dt>当前 Profile</dt>
@@ -743,7 +747,7 @@ export function DevicesView({
                 </div>
                 <div>
                   <dt>后端</dt>
-                  <dd>{deepstreamRuntimeSelected ? "deepstream" : capture?.backend ?? "未打开"}</dd>
+                  <dd>{runtimeMainlineSelected ? inferenceSelected : capture?.backend ?? "未打开"}</dd>
                 </div>
                 <div>
                   <dt>RoiFrame</dt>
@@ -1014,7 +1018,7 @@ export function DevicesView({
               <dl className="settings-summary-list">
                 <div>
                   <dt>输入</dt>
-                  <dd>{deepstreamRuntimeSelected ? deepstreamInputLabel : capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
+                  <dd>{runtimeMainlineSelected ? mainlineInputLabel : capture?.available ? "RoiFrame 可用" : "等待采集"}</dd>
                 </div>
                 <div>
                   <dt>模型</dt>

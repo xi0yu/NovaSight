@@ -272,7 +272,7 @@ def test_runtime_config_defaults_include_inference_settings() -> None:
     cfg = RuntimeConfig()
 
     assert cfg.inference.enabled is True
-    assert cfg.inference.backend == "onnxruntime"
+    assert cfg.inference.backend == "nvmm_latest"
     assert cfg.inference.deepstream_manifest_path == ""
     assert cfg.inference.deepstream_config_path == ""
     assert cfg.inference.deepstream_io_mode == 2
@@ -348,7 +348,8 @@ def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
 def test_example_runtime_config_loads_with_current_schema() -> None:
     cfg = load_runtime_config(Path("config/novasight.example.yaml"))
 
-    assert cfg.inference.backend == "onnxruntime"
+    assert cfg.inference.backend == "nvmm_latest"
+    assert cfg.capture.memory == "nvmm"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
     assert cfg.calibration.fov_x_deg == 105
@@ -577,7 +578,8 @@ def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
 
 
 def test_runtime_config_capture_memory_is_explicit_cpu_or_nvmm() -> None:
-    assert parse_runtime_config({}).capture.memory == "cpu"
+    assert parse_runtime_config({}).capture.memory == "nvmm"
+    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "cpu"
     assert parse_runtime_config({"capture": {"memory": "nvmm"}}).capture.memory == "nvmm"
 
     with pytest.raises(ValueError, match="capture.memory.*cpu or nvmm"):
@@ -732,4 +734,5 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     backend_field = next(
         field for field in inference_section["fields"] if field["path"] == "inference.backend"
     )
-    assert "nvmm_latest" in backend_field["options"]
+    assert backend_field["options"][0] == "nvmm_latest"
+    assert "deepstream" in backend_field["options"]

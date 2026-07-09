@@ -199,11 +199,23 @@ class RuntimeService:
     ) -> dict[str, Any]:
         backend = str(getattr(self.config.inference, "backend", "")).lower()
         if backend != "deepstream":
-            return (
+            status = (
                 inference_state.status()
                 if inference_state is not None
                 else {"available": False}
             )
+            payload = dict(status) if isinstance(status, dict) else {"available": False}
+            engine_selected = str(payload.get("selected") or "")
+            payload["selected"] = backend
+            payload["backend"] = backend
+            if engine_selected and engine_selected != backend:
+                payload["execution_backend"] = engine_selected
+            payload["configured"] = active_model is not None
+            payload.setdefault("running", bool(self.running))
+            payload.setdefault("loaded", bool(payload.get("available", False)))
+            if backend == "nvmm_latest":
+                payload.setdefault("reason", "NVMM latest-frame TensorRT mainline")
+            return payload
         source_status: dict[str, Any] = {}
         pipeline = getattr(self, "pipeline", None)
         detection_source = getattr(pipeline, "detection_source", None)

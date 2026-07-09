@@ -521,7 +521,10 @@ export function StudioConsoleView({
   const inferenceTrace = asRecord(vision.inference);
   const runtimeInference = asRecord(runtime?.inference);
   const pipeline = asRecord(runtime?.pipeline);
-  const deepstreamRuntimeSelected = readString(runtimeInference.selected, "") === "deepstream";
+  const selectedRuntimeBackend = readString(runtimeInference.selected, "");
+  const mainlineRuntimeSelected = selectedRuntimeBackend === "nvmm_latest";
+  const fullDeepStreamRuntimeSelected = selectedRuntimeBackend === "deepstream";
+  const runtimeMainlineSelected = mainlineRuntimeSelected || fullDeepStreamRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const deepstreamTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
@@ -530,20 +533,20 @@ export function StudioConsoleView({
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
   const mainlineLaunchPending =
-    deepstreamRuntimeSelected &&
+    mainlineRuntimeSelected &&
     mainlineLaunchAccepted &&
     !runtimeMainlineRunning &&
     !runtimeMainlineStatus.failed &&
     runtime?.fatal_error === null;
-  const captureMainRunning = deepstreamRuntimeSelected
+  const captureMainRunning = runtimeMainlineSelected
     ? runtimeMainlineRunning || mainlineLaunchPending
     : capture?.available === true;
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
-  const captureStatusText = deepstreamRuntimeSelected
+  const captureStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "主链故障"
       : runtimeMainlineRunning
-        ? "DeepStream 主链运行中"
+        ? mainlineRuntimeSelected ? "NVMM 主链运行中" : "Full DeepStream 实验运行中"
       : mainlineLaunchPending
         ? "启动确认中"
         : runtimeInferenceConfigured
@@ -554,7 +557,7 @@ export function StudioConsoleView({
       : captureMainConfigured
         ? "已配置"
         : "已停止";
-  const inferenceStatusText = deepstreamRuntimeSelected
+  const inferenceStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "管线故障"
       : runtimeMainlineRunning
@@ -562,7 +565,7 @@ export function StudioConsoleView({
           ? "runtime 已消费"
           : runtimeMainlineStatus.hasInferenceSignal
             ? "DetectionBatch 已产出"
-            : "等待推理输出"
+            : mainlineRuntimeSelected ? "等待 TensorRT 输出" : "等待推理输出"
       : mainlineLaunchPending
         ? "等待后端反馈"
         : runtimeInferenceConfigured
@@ -617,7 +620,7 @@ export function StudioConsoleView({
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
   useEffect(() => {
-    if (!deepstreamRuntimeSelected) {
+    if (!runtimeMainlineSelected) {
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
       return;
@@ -636,7 +639,7 @@ export function StudioConsoleView({
       setLocalError(`主链启动未确认：${runtimeMainlineStatus.failureMessage || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
     }
   }, [
-    deepstreamRuntimeSelected,
+    runtimeMainlineSelected,
     deepstreamTerminalError,
     mainlineLaunchAccepted,
     runtimeMainlineStatus.failed,
@@ -1045,7 +1048,7 @@ export function StudioConsoleView({
     setMainlineLaunchAccepted(false);
     setMainlineLaunchMessage("");
     try {
-      if (deepstreamRuntimeSelected) {
+      if (runtimeMainlineSelected) {
         await stopRuntimePipeline();
       } else {
         await stopCapture();
@@ -1056,7 +1059,18 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [deepstreamRuntimeSelected, onRefresh]);
+  }, [runtimeMainlineSelected, onRefresh]);
+
+  const ensureNvmmLatestMainlineConfig = useCallback(async () => {
+    const configBackend = readString(asRecord(inferenceConfig).backend, selectedRuntimeBackend);
+    const captureMemory = readString(asRecord(captureConfig).memory, "");
+    if (configBackend !== "nvmm_latest") {
+      await updateRuntimeConfigField("inference", "backend", "nvmm_latest");
+    }
+    if (captureMemory !== "nvmm") {
+      await updateRuntimeConfigField("capture", "memory", "nvmm");
+    }
+  }, [captureConfig, inferenceConfig, selectedRuntimeBackend]);
 
   const startInferenceThread = useCallback(async () => {
     setBusy("runtime.start");
@@ -1254,6 +1268,7 @@ export function StudioConsoleView({
     try {
       await runStage(0);
       await runStage(1, async () => {
+        await ensureNvmmLatestMainlineConfig();
         const captureState = await selectCaptureProfile(buildCapturePayload());
         assertCaptureLaunchState(captureState);
       });
@@ -1321,7 +1336,8 @@ export function StudioConsoleView({
     showLaunchToast,
     waitForLaunchFeedback,
     waitForRuntimeEvidence,
-    waitForRuntimeMainlineReady
+    waitForRuntimeMainlineReady,
+    ensureNvmmLatestMainlineConfig
   ]);
 
   const cancelMainlineLaunch = useCallback(async () => {
@@ -1357,12 +1373,12 @@ export function StudioConsoleView({
       await stopCurrentCapture();
       return;
     }
-    if (deepstreamRuntimeSelected) {
+    if (runtimeMainlineSelected) {
       openMainlineLaunchDialog();
       return;
     }
     await applyCapture();
-  }, [applyCapture, captureMainRunning, deepstreamRuntimeSelected, openMainlineLaunchDialog, stopCurrentCapture]);
+  }, [applyCapture, captureMainRunning, runtimeMainlineSelected, openMainlineLaunchDialog, stopCurrentCapture]);
 
   const updateConfigField = useCallback(
     async (section: string, key: string, value: number | string | boolean | string[]) => {
@@ -1749,7 +1765,7 @@ export function StudioConsoleView({
         <section className="console-process">
           <div className="console-process-state">
             <span className="console-dot" />
-            {deepstreamRuntimeSelected
+            {runtimeMainlineSelected
               ? `主链：${captureStatusText} · 推理：${inferenceStatusText}`
               : `采集：${captureStatusText} · 推理：${inferenceStatusText}`}
           </div>
@@ -1759,9 +1775,9 @@ export function StudioConsoleView({
             onClick={() => void toggleCapture()}
             type="button"
           >
-            {captureMainRunning ? (deepstreamRuntimeSelected ? "▪ 停止主链" : "▪ 停止采集") : deepstreamRuntimeSelected ? "▶ 启动主链" : "▶ 启动采集"}
+            {captureMainRunning ? (runtimeMainlineSelected ? "▪ 停止主链" : "▪ 停止采集") : runtimeMainlineSelected ? "▶ 启动主链" : "▶ 启动采集"}
           </button>
-          {!deepstreamRuntimeSelected && !runtime?.running && capture?.available ? (
+          {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
             <button
               className="console-button"
               disabled={busy === "runtime.start"}
@@ -2019,7 +2035,7 @@ export function StudioConsoleView({
               <h2 className="console-title">推理输出</h2>
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
-                imageEnabled={!deepstreamRuntimeSelected}
+                imageEnabled={!runtimeMainlineSelected}
                 runtime={runtime}
                 roiSize={roiSize}
               />

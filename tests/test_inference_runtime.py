@@ -5627,6 +5627,27 @@ def test_runtime_service_reports_deepstream_source_last_error() -> None:
     assert status.inference["reason"] == "DeepStream pipeline error: nvinfer rejected output0"
 
 
+def test_runtime_service_reports_nvmm_latest_as_selected_mainline() -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "nvmm_latest"
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(status=lambda: {}, update_runtime_config=lambda _cfg: None),
+    )
+    service._active_model = lambda: {"artifact": {"kind": "engine", "path": "/tmp/model.engine"}}  # type: ignore[method-assign]
+    service.inference = SimpleNamespace(
+        status=lambda: {"selected": "tensorrt", "available": True, "loaded": True}
+    )
+
+    status = service.state()
+
+    assert status.inference["selected"] == "nvmm_latest"
+    assert status.inference["backend"] == "nvmm_latest"
+    assert status.inference["execution_backend"] == "tensorrt"
+    assert status.inference["configured"] is True
+
+
 def test_missing_tensorrt_does_not_break_import_or_runtime_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

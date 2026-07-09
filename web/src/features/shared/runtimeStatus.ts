@@ -45,6 +45,8 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   const pipeline = asRecord(runtime?.pipeline);
   const detectionSource = asRecord(pipeline.detection_source);
   const inference = asRecord(runtime?.inference);
+  const selectedBackend = readString(inference.selected);
+  const fullDeepStreamSelected = selectedBackend === "deepstream";
   const capture = asRecord(runtime?.capture);
   const statistics = asRecord(runtime?.statistics);
   const captureStatistics = asRecord(capture.statistics);
@@ -112,6 +114,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     maxNumber(statistics.control_observation_counter, captureStatistics.control_observation_counter) > 0 ||
     maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
   const staleDropFailure =
+    fullDeepStreamSelected &&
     staleDroppedBatches > 0 &&
     tensorMetaFrames > 0 &&
     postprocessFrames > 0 &&
