@@ -639,17 +639,33 @@ def _require_positive_int_value(value: Any, key: str, module_name: str) -> int:
 
 
 def _require_nonnegative_int_value(value: Any, key: str, module_name: str) -> int:
+    if value is None:
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_INVALID,
+            f"Jetson GPU resource bridge {module_name} requires {key} "
+            "to be a non-negative integer; got None. The capture pipeline "
+            "did not deliver a dmabuf file descriptor (appsink received a "
+            "non-DMABUF buffer, so NvBufSurface is unreachable).",
+        )
+    if not isinstance(value, (int, float)):
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_INVALID,
+            f"Jetson GPU resource bridge {module_name} requires {key} "
+            f"to be a non-negative integer; got {value!r} (type={type(value).__name__}).",
+        )
     try:
         result = int(value)
     except Exception as exc:
         raise TensorPreprocessError(
             JETSON_GPU_RESOURCE_BRIDGE_INVALID,
-            f"Jetson GPU resource bridge {module_name} requires {key} to be a non-negative integer",
+            f"Jetson GPU resource bridge {module_name} requires {key} "
+            f"to be a non-negative integer; cannot parse {value!r} as int.",
         ) from exc
     if result < 0:
         raise TensorPreprocessError(
             JETSON_GPU_RESOURCE_BRIDGE_INVALID,
-            f"Jetson GPU resource bridge {module_name} requires {key} to be a non-negative integer; got {value!r}",
+            f"Jetson GPU resource bridge {module_name} requires {key} "
+            f"to be a non-negative integer; got {value!r}",
         )
     return result
 
