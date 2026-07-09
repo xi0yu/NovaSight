@@ -21,7 +21,7 @@ roi:
   offset_y: 0
 inference:
   enabled: true
-  backend: onnxruntime
+  backend: tensorrt
   confidence_threshold: 0.25
   nms_threshold: 0.45
   input_source: source.default

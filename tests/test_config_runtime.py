@@ -272,7 +272,7 @@ def test_runtime_config_defaults_include_inference_settings() -> None:
     cfg = RuntimeConfig()
 
     assert cfg.inference.enabled is True
-    assert cfg.inference.backend == "onnxruntime"
+    assert cfg.inference.backend == "tensorrt"
     assert cfg.inference.deepstream_manifest_path == ""
     assert cfg.inference.deepstream_config_path == ""
     assert cfg.inference.deepstream_io_mode == 2
@@ -348,7 +348,7 @@ def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
 def test_example_runtime_config_loads_with_current_schema() -> None:
     cfg = load_runtime_config(Path("config/novasight.example.yaml"))
 
-    assert cfg.inference.backend == "onnxruntime"
+    assert cfg.inference.backend == "tensorrt"
     assert cfg.capture.memory == "cpu"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
@@ -734,4 +734,4 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     backend_field = next(
         field for field in inference_section["fields"] if field["path"] == "inference.backend"
     )
-    assert backend_field["options"] == ["onnxruntime", "tensorrt", "nvmm_latest", "deepstream"]
+    assert backend_field["options"] == ["tensorrt", "onnxruntime", "nvmm_latest", "deepstream"]

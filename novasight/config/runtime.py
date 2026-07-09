@@ -48,7 +48,7 @@ class RoiConfig:
 @dataclass
 class InferenceConfig:
     enabled: bool = True
-    backend: str = "onnxruntime"
+    backend: str = "tensorrt"
     deepstream_manifest_path: str = ""
     deepstream_config_path: str = ""
     deepstream_io_mode: int = 2
