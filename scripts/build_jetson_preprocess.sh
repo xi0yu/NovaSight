@@ -90,6 +90,9 @@ else
   BUILD_DIR_ABS="${ROOT_DIR}/${BUILD_DIR}"
 fi
 
+HOST_SYSTEM="$(uname -s)"
+HOST_MACHINE="$(uname -m)"
+
 build_args=(
   doctor
   jetson-native-build
@@ -107,7 +110,15 @@ echo "==> NovaSight Jetson native preprocess build"
 echo "repo: ${ROOT_DIR}"
 echo "python: ${PYTHON_BIN}"
 echo "build_dir: ${BUILD_DIR_ABS}"
+echo "host: ${HOST_SYSTEM} ${HOST_MACHINE}"
 echo "command: ${PYTHON_BIN} -m novasight doctor jetson-native-build ${build_args[*]:2}"
+
+if [[ "${HOST_SYSTEM}" != "Linux" || ! "${HOST_MACHINE}" =~ ^(aarch64|arm64)$ ]]; then
+  echo "available: False"
+  echo "reason: jetson_native_build_requires_jetson"
+  echo "detail: production NVMM TensorRT preprocess must be built on Jetson Linux/aarch64 with CUDA and NvBufSurface. This host cannot compile libnovasight_preprocess.so."
+  exit 2
+fi
 
 if [[ "${RUN_PREFLIGHT}" -eq 1 ]]; then
   echo "==> Running Jetson preflight"
