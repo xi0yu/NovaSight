@@ -249,6 +249,75 @@ bool validate_rgba_plane_layout(
     return true;
 }
 
+bool resolve_source_surface_from_request(
+    const TensorRequest& request,
+    NvBufSurface** surface,
+    GstBuffer** gst_buffer_owner,
+    GstMapInfo* gst_map_info,
+    bool* gst_buffer_mapped,
+    std::string* reason,
+    std::string* detail
+) {
+    *surface = nullptr;
+    *gst_buffer_owner = nullptr;
+    *gst_buffer_mapped = false;
+
+    if (request.dmabuf_fd >= 0) {
+        void* surface_buffer = nullptr;
+        if (NvBufSurfaceFromFd(request.dmabuf_fd, &surface_buffer) != 0
+            || surface_buffer == nullptr) {
+            *reason = "nvbufsurface_from_fd_failed";
+            *detail = "NvBufSurfaceFromFd failed for dmabuf_fd.";
+            return false;
+        }
+        *surface = static_cast<NvBufSurface*>(surface_buffer);
+        return true;
+    }
+
+    if (request.gst_buffer_ptr == 0) {
+        *reason = "frame_resource_handle_required";
+        *detail = "Native Jetson preprocessing requires a valid dmabuf_fd or gst_buffer_ptr.";
+        return false;
+    }
+
+    GstBuffer* buffer =
+        reinterpret_cast<GstBuffer*>(static_cast<uintptr_t>(request.gst_buffer_ptr));
+    if (buffer == nullptr) {
+        *reason = "gst_buffer_ptr_invalid";
+        *detail = "gst_buffer_ptr resolved to a null GstBuffer.";
+        return false;
+    }
+
+    *gst_buffer_owner = gst_buffer_ref(buffer);
+    if (*gst_buffer_owner == nullptr) {
+        *reason = "gst_buffer_ref_failed";
+        *detail = "gst_buffer_ref returned null for gst_buffer_ptr.";
+        return false;
+    }
+
+    if (!gst_buffer_map(*gst_buffer_owner, gst_map_info, GST_MAP_READ)) {
+        gst_buffer_unref(*gst_buffer_owner);
+        *gst_buffer_owner = nullptr;
+        *reason = "gst_buffer_map_nvbufsurface_failed";
+        *detail = "gst_buffer_map failed for gst_buffer_ptr NVMM resource.";
+        return false;
+    }
+    *gst_buffer_mapped = true;
+
+    if (gst_map_info->data == nullptr || gst_map_info->size < sizeof(NvBufSurface)) {
+        gst_buffer_unmap(*gst_buffer_owner, gst_map_info);
+        gst_buffer_unref(*gst_buffer_owner);
+        *gst_buffer_owner = nullptr;
+        *gst_buffer_mapped = false;
+        *reason = "gst_buffer_nvbufsurface_unavailable";
+        *detail = "gst_buffer_map did not expose a valid NvBufSurface payload.";
+        return false;
+    }
+
+    *surface = reinterpret_cast<NvBufSurface*>(gst_map_info->data);
+    return true;
+}
+
 std::string success_json(
     const TensorRequest& request,
     void* device_ptr,

@@ -34,6 +34,10 @@ class FrameResource:
     def gpu_accessible(self) -> bool:
         return self.memory in {"nvmm", "dmabuf", "cuda"}
 
+    @property
+    def gst_buffer_ptr(self) -> int | None:
+        return _valid_pointer(self.metadata.get("gst_buffer_ptr"))
+
 
 @dataclass(frozen=True)
 class CapturedFrame:
@@ -113,6 +117,12 @@ class CapturedFrame:
     @property
     def dmabuf_fd(self) -> int | None:
         return self.frame_resource.dmabuf_fd if self.frame_resource is not None else None
+
+    @property
+    def gst_buffer_ptr(self) -> int | None:
+        if self.frame_resource is None:
+            return None
+        return self.frame_resource.gst_buffer_ptr
 
 
 CaptureFrame = CapturedFrame
@@ -484,7 +494,9 @@ def _sample_frame_resource(
     features = _sample_caps_features(sample)
     memory_types = _buffer_memory_types(buffer)
     memory = _classify_frame_memory(features, memory_types)
-    dmabuf_fd = _extract_dmabuf_fd(buffer)
+    dmabuf_fd, fd_extraction = _extract_dmabuf_fd_with_diag(buffer)
+    gst_buffer_ptr = _gobject_pointer(buffer)
+    gst_sample_ptr = _gobject_pointer(sample)
     return FrameResource(
         kind="gstreamer_sample",
         handle=sample,
@@ -500,6 +512,10 @@ def _sample_frame_resource(
             "gst_buffer_pts": _safe_int_attr(buffer, "pts"),
             "gst_buffer_dts": _safe_int_attr(buffer, "dts"),
             "dmabuf_fd": dmabuf_fd,
+            "gst_buffer_ptr": gst_buffer_ptr,
+            "gst_sample_ptr": gst_sample_ptr,
+            "fd_extraction": fd_extraction,
+            "memory_kind": memory,
         },
     )
 
@@ -567,6 +583,95 @@ def _extract_dmabuf_fd(buffer: Any) -> int | None:
     return None
 
 
+def _extract_dmabuf_fd_with_diag(buffer: Any) -> tuple[int | None, dict[str, Any]]:
+    """Extract the kernel dmabuf fd from the first sub-memory in the buffer,
+    returning both the integer and a structured diagnostic describing how it
+    was found (or why it was not).
+
+    On Jetson, appsink fed by `nvvidconv ! video/x-raw(memory:NVMM)` produces
+    a GstBuffer whose memory is an NVIDIA NvBuffer allocator memory; that
+    memory's `get_fd()` typically returns a `(success: bool, fd: int)` tuple
+    rather than a bare int, which the original implementation did not handle.
+    """
+    allocators = _gst_allocators_module()
+    try:
+        count = int(buffer.n_memory())
+    except Exception:
+        return None, {"method": "buffer_count_failed", "buffer_n_memory": 0}
+    per_memory: list[dict[str, Any]] = []
+    for index in range(max(0, count)):
+        try:
+            memory = buffer.peek_memory(index)
+        except Exception:
+            per_memory.append({"index": index, "memory_type": "<peek_failed>"})
+            continue
+        memory_type = type(memory).__name__
+        attrs_seen = [a for a in ("get_fd", "fd", "fileno") if hasattr(memory, a)]
+        method = None
+        fd: int | None = None
+        if allocators is not None:
+            try:
+                is_dmabuf = bool(allocators.is_dmabuf_memory(memory))
+            except Exception:
+                is_dmabuf = False
+            if is_dmabuf:
+                try:
+                    raw = allocators.dmabuf_memory_get_fd(memory)
+                except Exception:
+                    raw = None
+                fd = _valid_fd(raw)
+                if fd is not None:
+                    method = "gst_allocators_dmabuf"
+        if fd is None:
+            for attr in attrs_seen:
+                try:
+                    value = getattr(memory, attr)
+                except Exception:
+                    continue
+                if value is None:
+                    continue
+                if callable(value):
+                    try:
+                        value = value()
+                    except Exception:
+                        continue
+                candidates: list[Any] = []
+                if isinstance(value, tuple):
+                    candidates.extend(value)
+                else:
+                    candidates.append(value)
+                fd_candidate: int | None = None
+                for element in candidates:
+                    element_fd = _valid_fd(element)
+                    if element_fd is None:
+                        continue
+                    if fd_candidate is None or element_fd > fd_candidate:
+                        fd_candidate = element_fd
+                if fd_candidate is not None:
+                    fd = fd_candidate
+                    method = f"tuple_getter_{attr}" if isinstance(value, tuple) else f"attr_{attr}"
+                    break
+        per_memory.append({
+            "index": index,
+            "memory_type": memory_type,
+            "attrs_seen": attrs_seen,
+            "fd": fd,
+            "method": method,
+        })
+        if fd is not None:
+            return fd, {
+                "method": method,
+                "memory_index": index,
+                "memory_type": memory_type,
+                "attrs_seen": attrs_seen,
+                "per_memory": per_memory,
+            }
+    return None, {
+        "method": "none_found",
+        "per_memory": per_memory,
+        "buffer_n_memory": count,
+    }
+
 def _gst_allocators_module() -> Any | None:
     try:
         import gi
@@ -598,15 +703,32 @@ def _memory_dmabuf_fd(memory: Any, allocators: Any | None) -> int | None:
             value = getattr(memory, attr)
         except Exception:
             continue
+        if value is None:
+            continue
         if callable(value):
             try:
                 value = value()
             except Exception:
                 continue
-        result = _valid_fd(value)
-        if result is not None:
-            return result
+        if isinstance(value, tuple) and value:
+            for element in value:
+                coerced = _coerce_fd(element)
+                if coerced is not None:
+                    return coerced
+            continue
+        coerced = _coerce_fd(value)
+        if coerced is not None:
+            return coerced
     return None
+
+def _coerce_fd(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        fd = int(value)
+    except Exception:
+        return None
+    return fd if fd >= 0 else None
 
 
 def _valid_fd(value: Any) -> int | None:
@@ -615,6 +737,35 @@ def _valid_fd(value: Any) -> int | None:
     except Exception:
         return None
     return fd if fd >= 0 else None
+
+
+def _gobject_pointer(obj: Any) -> int | None:
+    for attr in ("__gpointer__", "__pointer__", "gpointer"):
+        try:
+            value = getattr(obj, attr)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        result = _valid_pointer(value)
+        if result is not None:
+            return result
+    try:
+        value = hash(obj)
+    except Exception:
+        return None
+    return _valid_pointer(value)
+
+
+def _valid_pointer(value: Any) -> int | None:
+    try:
+        pointer = int(value)
+    except Exception:
+        return None
+    return pointer if pointer > 0 else None
 
 
 def _safe_int_attr(obj: Any, name: str) -> int | None:
