@@ -98,65 +98,42 @@ elseif(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
         endif()
     endforeach()
     if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}
-            AND IS_DIRECTORY "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
+            AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}/nvbufsurface.h")
         set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
             "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
-    else()
-        find_path(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
-            NAMES nvbufsurface.h
-            PATHS ${_nvbuf_inc_search}
-            NO_DEFAULT_PATH
-        )
+    elseif(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR)
+        foreach(_d IN LISTS _nvbuf_inc_search)
+            if(EXISTS "${_d}/nvbufsurface.h")
+                set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR "${_d}")
+                break()
+            endif()
+        endforeach()
     endif()
     if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}
             AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
         set(NOVASIGHT_NVBUFSURFACE_LIBRARY
             "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
-    else()
-        find_library(NOVASIGHT_NVBUFSURFACE_LIBRARY
-            NAMES nvbufsurface
-            PATHS ${_nvbuf_lib_search}
-            NO_DEFAULT_PATH
-        )
+    elseif(NOT NOVASIGHT_NVBUFSURFACE_LIBRARY)
+        foreach(_d IN LISTS _nvbuf_lib_search)
+            if(EXISTS "${_d}/libnvbufsurface.so")
+                set(NOVASIGHT_NVBUFSURFACE_LIBRARY "${_d}/libnvbufsurface.so")
+                break()
+            endif()
+        endforeach()
     endif()
     if(DEFINED ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}
             AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}")
         set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
             "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}")
-    else()
-        find_library(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
-            NAMES nvbufsurftransform
-            PATHS ${_nvbuf_lib_search}
-            NO_DEFAULT_PATH
-        )
+    elseif(NOT NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY)
+        foreach(_d IN LISTS _nvbuf_lib_search)
+            if(EXISTS "${_d}/libnvbufsurftransform.so")
+                set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY "${_d}/libnvbufsurftransform.so")
+                break()
+            endif()
+        endforeach()
     endif()
     set(_novasight_missing_requirements "")
-    set(_inc_files nvbufsurface.h nvbufsurftransform.h)
-    foreach(_d IN LISTS _nvbuf_inc_search)
-        foreach(_f IN LISTS _inc_files)
-            if(EXISTS "${_d}/${_f}")
-                message(STATUS "novasight: ${_d}/${_f} -> FILE")
-            else()
-                message(STATUS "novasight: ${_d}/${_f} -> not_found")
-            endif()
-        endforeach()
-    endforeach()
-    set(_lib_files libnvbufsurface.so libnvbufsurface.so.1 libnvbufsurftransform.so libnvbufsurftransform.so.1)
-    foreach(_d IN LISTS _nvbuf_lib_search)
-        foreach(_f IN LISTS _lib_files)
-            if(EXISTS "${_d}/${_f}")
-                message(STATUS "novasight: ${_d}/${_f} -> FILE")
-                if(_f STREQUAL "libnvbufsurface.so" AND NOT NOVASIGHT_NVBUFSURFACE_LIBRARY)
-                    set(NOVASIGHT_NVBUFSURFACE_LIBRARY "${_d}/${_f}")
-                endif()
-                if(_f STREQUAL "libnvbufsurftransform.so" AND NOT NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY)
-                    set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY "${_d}/${_f}")
-                endif()
-            else()
-                message(STATUS "novasight: ${_d}/${_f} -> not_found")
-            endif()
-        endforeach()
-    endforeach()
     if(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR)
         list(APPEND _novasight_missing_requirements
             "  - nvbufsurface.h (searched /usr/src/jetson_multimedia_api/include,"
