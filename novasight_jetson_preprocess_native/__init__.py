@@ -3,6 +3,8 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import platform
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,11 +16,16 @@ PREPARE_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_PREPARE_SYMBOL"
 STATUS_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_STATUS_SYMBOL"
 RELEASE_SYMBOL_ENV = "NOVASIGHT_JETSON_NATIVE_RELEASE_SYMBOL"
 RESULT_BUFFER_BYTES_ENV = "NOVASIGHT_JETSON_NATIVE_RESULT_BUFFER_BYTES"
+AUTO_BUILD_ENV = "NOVASIGHT_JETSON_NATIVE_AUTO_BUILD"
+BUILD_DIR_ENV = "NOVASIGHT_JETSON_NATIVE_BUILD_DIR"
+CMAKE_ENV = "NOVASIGHT_JETSON_NATIVE_CMAKE"
+BUILD_TIMEOUT_S_ENV = "NOVASIGHT_JETSON_NATIVE_BUILD_TIMEOUT_S"
 DEFAULT_ABI_SYMBOL = "novasight_abi_version"
 DEFAULT_PREPARE_SYMBOL = "novasight_prepare_tensor_json"
 DEFAULT_STATUS_SYMBOL = "novasight_status_json"
 DEFAULT_RELEASE_SYMBOL = "novasight_release_tensor"
 DEFAULT_RESULT_BUFFER_BYTES = 64 * 1024
+DEFAULT_BUILD_TIMEOUT_S = 180.0
 
 CAPABILITIES = {
     "memory": ["nvmm", "dmabuf"],
@@ -97,6 +104,7 @@ CONTRACT = {
 _LIBRARY: Any | None = None
 _LIBRARY_PATH = ""
 _LIBRARY_ERROR = ""
+_AUTO_BUILD_ATTEMPTED = False
 
 
 def status() -> dict[str, Any]:
@@ -614,10 +622,11 @@ def _load_library() -> Any | None:
 
 
 def _reset_library_cache() -> None:
-    global _LIBRARY, _LIBRARY_ERROR, _LIBRARY_PATH
+    global _LIBRARY, _LIBRARY_ERROR, _LIBRARY_PATH, _AUTO_BUILD_ATTEMPTED
     _LIBRARY = None
     _LIBRARY_ERROR = ""
     _LIBRARY_PATH = ""
+    _AUTO_BUILD_ATTEMPTED = False
 
 
 def _library_prepare(library: Any) -> Any | None:
@@ -646,6 +655,9 @@ def _library_path() -> str:
     for candidate in _default_library_candidates():
         if candidate.is_file():
             return str(candidate)
+    built = _ensure_default_library_built()
+    if built is not None and built.is_file():
+        return str(built)
     return ""
 
 
@@ -669,6 +681,137 @@ def _default_library_candidates() -> list[Path]:
         seen.add(key)
         unique.append(candidate)
     return unique
+
+
+def _ensure_default_library_built() -> Path | None:
+    global _AUTO_BUILD_ATTEMPTED, _LIBRARY_ERROR
+    if _AUTO_BUILD_ATTEMPTED:
+        return None
+    _AUTO_BUILD_ATTEMPTED = True
+    if not _auto_build_enabled():
+        return None
+    if not _is_jetson_runtime():
+        return None
+
+    library_name = "libnovasight_jetson_preprocess_native.so"
+    package_dir = Path(__file__).resolve().parent
+    native_dir = package_dir / "native"
+    production_source = native_dir / "src/jetson/novasight_jetson_preprocess_native_jetson_cuda.cu"
+    build_dir = _default_build_dir()
+    library = build_dir / library_name
+    cmake = os.environ.get(CMAKE_ENV, "cmake").strip() or "cmake"
+    timeout_s = _auto_build_timeout_s()
+
+    if not native_dir.is_dir():
+        _LIBRARY_ERROR = f"Jetson native source tree missing: {native_dir}"
+        return None
+    if not production_source.is_file():
+        _LIBRARY_ERROR = f"Jetson native production source missing: {production_source}"
+        return None
+
+    configure_command = [
+        cmake,
+        "-S",
+        str(native_dir),
+        "-B",
+        str(build_dir),
+        "-DNOVASIGHT_JETSON_PREPROCESS_IMPL=jetson",
+        f"-DNOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE={production_source}",
+    ]
+    build_command = [cmake, "--build", str(build_dir)]
+
+    try:
+        configure = _run_auto_build_command(configure_command, timeout_s)
+    except Exception as exc:
+        _LIBRARY_ERROR = (
+            "Jetson native auto-build configure failed before completion "
+            f"command={' '.join(configure_command)}; error={exc}"
+        )
+        return None
+    if int(getattr(configure, "returncode", 1)) != 0:
+        _LIBRARY_ERROR = _command_failure_detail("configure", configure_command, configure)
+        return None
+    try:
+        build = _run_auto_build_command(build_command, timeout_s)
+    except Exception as exc:
+        _LIBRARY_ERROR = (
+            "Jetson native auto-build build failed before completion "
+            f"command={' '.join(build_command)}; error={exc}"
+        )
+        return None
+    if int(getattr(build, "returncode", 1)) != 0:
+        _LIBRARY_ERROR = _command_failure_detail("build", build_command, build)
+        return None
+    if not library.is_file():
+        _LIBRARY_ERROR = f"Jetson native build completed but library is missing: {library}"
+        return None
+    _LIBRARY_ERROR = ""
+    return library
+
+
+def _default_build_dir() -> Path:
+    configured = os.environ.get(BUILD_DIR_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.cwd() / "build" / "jetson-native"
+
+
+def _auto_build_enabled() -> bool:
+    value = os.environ.get(AUTO_BUILD_ENV, "1").strip().lower()
+    return value not in {"0", "false", "no", "off", "disable", "disabled"}
+
+
+def _auto_build_timeout_s() -> float:
+    try:
+        return max(5.0, float(os.environ.get(BUILD_TIMEOUT_S_ENV, DEFAULT_BUILD_TIMEOUT_S)))
+    except Exception:
+        return DEFAULT_BUILD_TIMEOUT_S
+
+
+def _is_jetson_runtime() -> bool:
+    if platform.system() != "Linux":
+        return False
+    if platform.machine().lower() not in {"aarch64", "arm64"}:
+        return False
+    jetson_markers = (
+        Path("/etc/nv_tegra_release"),
+        Path("/usr/src/jetson_multimedia_api/include/nvbufsurface.h"),
+        Path("/usr/include/aarch64-linux-gnu/nvbufsurface.h"),
+        Path("/usr/include/nvbufsurface.h"),
+    )
+    return any(marker.exists() for marker in jetson_markers)
+
+
+def _run_auto_build_command(command: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+    )
+
+
+def _command_failure_detail(
+    phase: str,
+    command: list[str],
+    result: Any,
+) -> str:
+    output = "\n".join(
+        item
+        for item in (
+            str(getattr(result, "stderr", "") or "").strip(),
+            str(getattr(result, "stdout", "") or "").strip(),
+        )
+        if item
+    )
+    if len(output) > 2000:
+        output = output[-2000:]
+    return (
+        f"Jetson native auto-build {phase} failed rc={getattr(result, 'returncode', '?')} "
+        f"command={' '.join(command)}"
+        + (f"; output={output}" if output else "")
+    )
 
 
 def _abi_symbol_name() -> str:

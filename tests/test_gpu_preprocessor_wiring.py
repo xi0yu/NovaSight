@@ -402,3 +402,65 @@ def test_native_ctypes_bridge_auto_discovers_default_build_output(
     assert status["available"] is False
     assert status["reason"] == "native_library_unavailable"
     assert status["library"] == str(library)
+
+
+def test_native_ctypes_bridge_auto_builds_default_library_on_jetson(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import novasight_jetson_preprocess_native as native_backend
+
+    library = tmp_path / "build" / "jetson-native" / "libnovasight_jetson_preprocess_native.so"
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], timeout_s: float):
+        calls.append(list(command))
+        if "--build" in command:
+            library.parent.mkdir(parents=True, exist_ok=True)
+            library.write_text("not a shared object", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(native_backend.LIBRARY_ENV, raising=False)
+    monkeypatch.setattr(native_backend, "_is_jetson_runtime", lambda: True)
+    monkeypatch.setattr(native_backend, "_run_auto_build_command", fake_run)
+    native_backend._reset_library_cache()
+
+    try:
+        status = native_backend.status()
+    finally:
+        native_backend._reset_library_cache()
+
+    assert len(calls) == 2
+    assert calls[0][:4] == ["cmake", "-S", str(Path(native_backend.__file__).resolve().parent / "native"), "-B"]
+    assert calls[0][4] == str(tmp_path / "build" / "jetson-native")
+    assert calls[1] == ["cmake", "--build", str(tmp_path / "build" / "jetson-native")]
+    assert status["available"] is False
+    assert status["reason"] == "native_library_unavailable"
+    assert status["library"] == str(library)
+
+
+def test_native_ctypes_bridge_does_not_auto_build_off_jetson(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import novasight_jetson_preprocess_native as native_backend
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(native_backend.LIBRARY_ENV, raising=False)
+    monkeypatch.setattr(native_backend, "_is_jetson_runtime", lambda: False)
+    monkeypatch.setattr(
+        native_backend,
+        "_run_auto_build_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not build off Jetson")),
+    )
+    native_backend._reset_library_cache()
+
+    try:
+        status = native_backend.status()
+    finally:
+        native_backend._reset_library_cache()
+
+    assert status["available"] is False
+    assert status["reason"] == "native_implementation_missing"
+    assert status["library"] == ""
