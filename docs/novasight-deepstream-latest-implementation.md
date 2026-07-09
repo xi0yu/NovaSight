@@ -81,6 +81,42 @@ Operational rules:
   buffers.
 - Result timestamps are validated before a `DetectionBatch` can enter control.
 
+## Logical Double Buffering
+
+`LatestFrameExchange` is logically a two-position boundary, but only one
+position lives inside the exchange:
+
+```text
+current frame: owned by TensorRT InferenceLoop while inference is running
+pending frame: owned by LatestFrameExchange and always replaceable
+```
+
+This is the correct source-frame model for `GstBuffer` / `NvBufSurface`
+resources. The inference loop owns the current `FrameHandle`; the exchange owns
+at most one pending latest `FrameHandle`; capture can keep replacing pending
+without waiting for current inference to finish. The implementation must release
+any replaced pending resource outside the exchange lock.
+
+Do not implement this as blind fixed A/B alternation. A waiting frame is valid
+only when its `generation` is newer than the last consumed generation. If no
+new frame arrived during the previous inference, the runtime must not re-infer
+an older slot simply because the slot index toggled.
+
+Physical A/B ping-pong is still useful one layer later, after CUDA preprocess
+has produced NovaSight-owned TensorRT input buffers:
+
+```text
+LatestFrameExchange source frame
+-> CUDA preprocess
+-> TensorRT input slot A / TensorRT input slot B
+-> TensorRT enqueueV3
+```
+
+Those tensor slots require an explicit state machine, for example `Empty`,
+`Writing`, `Ready`, and `Inferencing`, with CUDA events or stream dependencies
+between preprocess and TensorRT. A single atomic active-slot index is not a
+valid synchronization model for asynchronous GPU work.
+
 ## NVMM Surface Is Not Tensor Input
 
 NVMM output from DeepStream/GStreamer is normally a video surface, commonly
