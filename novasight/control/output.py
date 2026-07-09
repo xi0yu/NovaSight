@@ -23,6 +23,7 @@ class ControlOutput:
     source_frame_id: int | None = None
     source_track_id: int | None = None
     predicted_source: bool = False
+    trajectory_generation: int | None = None
 
 
 class ControlOutputPolicy:
@@ -63,6 +64,7 @@ class ControlOutputPolicy:
                 intent.source_frame_id,
                 intent.source_track_id,
                 intent.predicted_source,
+                intent.trajectory_generation,
             )
         if intent.confidence < self.min_confidence:
             return ControlOutput(
@@ -81,6 +83,7 @@ class ControlOutputPolicy:
                 intent.source_frame_id,
                 intent.source_track_id,
                 intent.predicted_source,
+                intent.trajectory_generation,
             )
         requested_dx = int(round(intent.dx))
         requested_dy = int(round(intent.dy))
@@ -104,4 +107,5 @@ class ControlOutputPolicy:
             intent.source_frame_id,
             intent.source_track_id,
             intent.predicted_source,
+            intent.trajectory_generation,
         )

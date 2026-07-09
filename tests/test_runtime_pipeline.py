@@ -11,6 +11,7 @@ from novasight.capture.state import CaptureProfile
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext
 from novasight.runtime import (
+    DetectionBatchMailbox,
     FailFastHandler,
     FrameHandle,
     LatestFrameBroker,
@@ -49,6 +50,43 @@ def _handle(generation: int) -> FrameHandle:
     )
 
 
+def test_latest_frame_broker_releases_overwritten_and_cleared_pending_handles() -> None:
+    released: list[str] = []
+    broker = LatestFrameBroker()
+    first = FrameHandle(
+        generation=1,
+        frame_id=1,
+        source_sequence=1,
+        capture_ts_ns=time.monotonic_ns(),
+        clock_domain="monotonic",
+        pipeline_running_time_ns=None,
+        width=640,
+        height=640,
+        format="NV12",
+        resource="first",
+        release_callback=lambda resource: released.append(resource),
+    )
+    second = FrameHandle(
+        generation=2,
+        frame_id=2,
+        source_sequence=2,
+        capture_ts_ns=time.monotonic_ns(),
+        clock_domain="monotonic",
+        pipeline_running_time_ns=None,
+        width=640,
+        height=640,
+        format="NV12",
+        resource="second",
+        release_callback=lambda resource: released.append(resource),
+    )
+
+    broker.publish(first)
+    broker.publish(second)
+    broker.clear()
+
+    assert released == ["first", "second"]
+
+
 def test_latest_frame_broker_overwrites_pending_frames() -> None:
     broker = LatestFrameBroker()
 
@@ -79,6 +117,83 @@ def test_latest_frame_broker_pending_depth_never_exceeds_one() -> None:
 
     assert latest.generation == 99
     assert broker.status()["pending_depth"] == 0
+
+
+def test_detection_batch_mailbox_keeps_only_latest_generation() -> None:
+    mailbox = DetectionBatchMailbox()
+
+    for generation in range(100, 109):
+        now_ns = time.monotonic_ns()
+        mailbox.publish(
+            DetectionBatch(
+                frame_id=generation,
+                generation=generation,
+                capture_ts_ns=now_ns,
+                inference_start_ts_ns=now_ns + 1_000,
+                inference_end_ts_ns=now_ns + 2_000,
+                detections=[],
+                classes=[],
+                coordinate_space="roi",
+            )
+        )
+
+    latest = mailbox.acquire_latest(after_generation=100, timeout_s=0.0)
+    status = mailbox.status()
+
+    assert latest is not None
+    assert latest.generation == 108
+    assert status["pending_depth"] == 1
+    assert status["max_pending_depth"] == 1
+    assert status["overwritten_batches"] == 8
+
+
+def test_capture_session_publishes_captured_frames_to_latest_frame_broker() -> None:
+    class OneFrameSource:
+        backend_label = "test:one-frame"
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.reads = 0
+
+        def read(self) -> CapturedFrame | None:
+            if self.closed:
+                return None
+            self.reads += 1
+            if self.reads > 1:
+                time.sleep(0.01)
+                return None
+            return _frame(7)
+
+        def close(self) -> None:
+            self.closed = True
+
+    source = OneFrameSource()
+    profile = CaptureProfile(
+        device="/dev/test",
+        pixel_format="BGR",
+        width=2,
+        height=2,
+        fps=120,
+        preference="manual",
+        selection_reason="broker test",
+    )
+    capture = CaptureSession(source_factory=lambda _profile: source)
+
+    try:
+        capture.start(profile)
+        handle = capture.latest_frame_broker.acquire_latest(
+            after_generation=-1,
+            timeout_s=1.0,
+        )
+    finally:
+        capture.stop("test complete")
+
+    assert handle is not None
+    assert handle.generation == 1
+    assert handle.frame_id == 7
+    assert handle.source_sequence == 7
+    assert handle.metadata["captured_frame"].frame_id == 7
+    assert handle.clock_domain == "monotonic"
 
 
 def test_runtime_config_store_returns_isolated_snapshots() -> None:
@@ -245,6 +360,61 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     assert status["consumed_frames"] == 2
     assert "queue" not in status
     assert "capture_frames" not in status
+
+
+def test_runtime_pipeline_prefers_latest_frame_broker_over_preview_wait() -> None:
+    broker = LatestFrameBroker()
+    frame = CapturedFrame(
+        frame_id=11,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns(),
+        capture_wait_ms=1.0,
+        image=None,
+    )
+    broker.publish(
+        FrameHandle(
+            generation=1,
+            frame_id=11,
+            source_sequence=11,
+            capture_ts_ns=frame.capture_ts_ns,
+            clock_domain="monotonic",
+            pipeline_running_time_ns=None,
+            width=2,
+            height=2,
+            format="BGR",
+            resource=frame,
+            metadata={"captured_frame": frame},
+        )
+    )
+    processed: list[int] = []
+    processed_one = threading.Event()
+    capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+        latest_frame_broker=broker,
+        wait_preview_frame=lambda **_kwargs: pytest.fail("broker path must not poll preview frames"),
+    )
+    runtime = SimpleNamespace(
+        running=False,
+        config=RuntimeConfig(),
+        process_captured_frame=lambda item: (
+            processed.append(item.frame_id),
+            processed_one.set(),
+            RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False),
+        )[-1],
+        process_control_tick=lambda: None,
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    pipeline.start()
+    assert processed_one.wait(1.0)
+    pipeline.stop()
+
+    assert processed == [11]
+    assert pipeline.status()["latest_frame_broker"]["acquired_generation"] == 1
 
 
 def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:

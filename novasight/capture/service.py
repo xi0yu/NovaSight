@@ -152,6 +152,10 @@ class CaptureService:
     def source(self) -> FrameSource | None:
         return self.session.source
 
+    @property
+    def latest_frame_broker(self):
+        return self.session.latest_frame_broker
+
     def _sync_state(self) -> CaptureRuntimeState:
         return self.state
 

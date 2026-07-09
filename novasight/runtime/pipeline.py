@@ -56,6 +56,7 @@ class RuntimePipeline:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._last_consumed_frame_id = -1
+        self._last_consumed_generation = -1
         self._processed_window_ts_ns: deque[int] = deque()
         self._control_observation_window_ts_ns: deque[int] = deque()
         self._skipped_window_ts_ns: deque[int] = deque()
@@ -68,6 +69,7 @@ class RuntimePipeline:
             self._require_ready_gpu_preprocessor_if_needed()
         self._stop.clear()
         self._last_consumed_frame_id = -1
+        self._last_consumed_generation = -1
         self._processed_window_ts_ns.clear()
         self._control_observation_window_ts_ns.clear()
         self._skipped_window_ts_ns.clear()
@@ -111,6 +113,7 @@ class RuntimePipeline:
             **self.stats.__dict__,
             "running": self.running,
             "detection_source": self._detection_source_status(),
+            "latest_frame_broker": self._latest_frame_broker_status(),
         }
 
     def _require_running_capture(self) -> None:
@@ -213,6 +216,10 @@ class RuntimePipeline:
         if self.detection_source is not None:
             self._detection_batch_loop()
             return
+        broker = self._latest_frame_broker()
+        if broker is not None:
+            self._latest_frame_broker_loop(broker)
+            return
         wait_frame = getattr(self.capture, "wait_preview_frame", None)
         if not callable(wait_frame):
             wait_frame = getattr(self.capture, "latest_frame")
@@ -265,6 +272,74 @@ class RuntimePipeline:
             self.stats.inference_latency_ms = max(0.0, (done_ns - process_start_ns) / 1e6)
             self.stats.e2e_latency_ms = max(0.0, (done_ns - int(frame.capture_ts_ns)) / 1e6)
             self.stats.skipped_frames = len(self._skipped_window_ts_ns)
+
+    def _latest_frame_broker_loop(self, broker: Any) -> None:
+        acquire_latest = getattr(broker, "acquire_latest", None)
+        if not callable(acquire_latest):
+            self.stats.last_error = "latest frame broker missing acquire_latest()"
+            self.runtime.running = False
+            self._stop.set()
+            return
+        while not self._stop.is_set():
+            handle = acquire_latest(
+                after_generation=self._last_consumed_generation,
+                timeout_s=0.1,
+            )
+            if handle is None:
+                if not self._capture_is_still_available():
+                    self.stats.last_error = self._capture_unavailable_reason()
+                    self.runtime.running = False
+                    self._stop.set()
+                    break
+                continue
+            frame = self._captured_frame_from_handle(handle)
+            release = getattr(handle, "release", None)
+            try:
+                if frame is None:
+                    self.stats.last_error = "FrameHandle missing captured_frame adapter"
+                    self.runtime.running = False
+                    self._stop.set()
+                    break
+                skipped = self._skipped_generations_since_previous(handle)
+                self.stats.consumed_frames += 1
+                self._last_consumed_generation = int(getattr(handle, "generation", -1))
+                self._last_consumed_frame_id = int(frame.frame_id)
+                self.stats.last_frame_id = self._last_consumed_frame_id
+                if skipped:
+                    self._record_skipped(time.monotonic_ns(), skipped)
+                if not self._inference_enabled():
+                    continue
+                process_start_ns = time.monotonic_ns()
+                stale_input_reason = self._stale_inference_input_reason(
+                    frame_capture_ts_ns=int(frame.capture_ts_ns),
+                    now_ns=process_start_ns,
+                )
+                if stale_input_reason:
+                    self.stats.last_error = stale_input_reason
+                    self._record_skipped(process_start_ns, 1)
+                    self._prune_window(self._skipped_window_ts_ns, process_start_ns)
+                    self.stats.skipped_frames = len(self._skipped_window_ts_ns)
+                    continue
+                result = self.runtime.process_captured_frame(frame)
+                self.stats.processed_frames += 1
+                done_ns = time.monotonic_ns()
+                self._processed_window_ts_ns.append(done_ns)
+                self._record_control_observation_if_updated(result, done_ns)
+                self._prune_window(self._processed_window_ts_ns, done_ns)
+                self._prune_window(self._control_observation_window_ts_ns, done_ns)
+                self._prune_window(self._skipped_window_ts_ns, done_ns)
+                self.stats.window_processed_frames = len(self._processed_window_ts_ns)
+                self.stats.window_control_observations = len(self._control_observation_window_ts_ns)
+                self.stats.inference_fps = self._window_fps(self._processed_window_ts_ns)
+                self.stats.control_observation_fps = self._window_fps(self._control_observation_window_ts_ns)
+                self.stats.detection_batch_fps = 0.0
+                self.stats.queue_latency_ms = max(0.0, (process_start_ns - int(frame.capture_ts_ns)) / 1e6)
+                self.stats.inference_latency_ms = max(0.0, (done_ns - process_start_ns) / 1e6)
+                self.stats.e2e_latency_ms = max(0.0, (done_ns - int(frame.capture_ts_ns)) / 1e6)
+                self.stats.skipped_frames = len(self._skipped_window_ts_ns)
+            finally:
+                if callable(release):
+                    release()
 
     def _detection_batch_loop(self) -> None:
         source = self.detection_source
@@ -329,6 +404,40 @@ class RuntimePipeline:
     def _record_control_observation_if_updated(self, result: Any, ts_ns: int) -> None:
         if getattr(result, "observation_updated", False) is True:
             self._control_observation_window_ts_ns.append(int(ts_ns))
+
+    def _latest_frame_broker(self) -> Any | None:
+        broker = getattr(self.capture, "latest_frame_broker", None)
+        if broker is None:
+            session = getattr(self.capture, "session", None)
+            broker = getattr(session, "latest_frame_broker", None)
+        return broker
+
+    def _latest_frame_broker_status(self) -> dict[str, Any]:
+        broker = self._latest_frame_broker()
+        status_fn = getattr(broker, "status", None)
+        if not callable(status_fn):
+            return {}
+        try:
+            status = status_fn()
+        except Exception as exc:
+            return {"available": False, "reason": "status failed", "detail": str(exc)}
+        return dict(status) if isinstance(status, dict) else {}
+
+    @staticmethod
+    def _captured_frame_from_handle(handle: Any) -> Any | None:
+        metadata = getattr(handle, "metadata", {}) or {}
+        if isinstance(metadata, dict) and metadata.get("captured_frame") is not None:
+            return metadata["captured_frame"]
+        resource = getattr(handle, "resource", None)
+        if all(hasattr(resource, attr) for attr in ("frame_id", "capture_ts_ns", "width", "height")):
+            return resource
+        return None
+
+    def _skipped_generations_since_previous(self, handle: Any) -> int:
+        generation = int(getattr(handle, "generation", -1))
+        if self._last_consumed_generation < 0:
+            return 0
+        return max(0, generation - self._last_consumed_generation - 1)
 
     def _start_detection_source(self) -> None:
         if self.detection_source is None:

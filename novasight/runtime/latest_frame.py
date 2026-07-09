@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class FrameHandle:
     format: str
     resource: Any
     metadata: dict[str, Any] = field(default_factory=dict)
+    release_callback: Callable[[Any], None] | None = None
 
     def __post_init__(self) -> None:
         if int(self.generation) < 0:
@@ -36,6 +37,15 @@ class FrameHandle:
         if not str(self.format).strip():
             raise ValueError("FrameHandle.format must be non-empty")
         object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "_released", False)
+
+    def release(self) -> None:
+        if getattr(self, "_released", False):
+            return
+        object.__setattr__(self, "_released", True)
+        callback = self.release_callback
+        if callback is not None:
+            callback(self.resource)
 
 
 class LatestFrameBroker:
@@ -55,14 +65,18 @@ class LatestFrameBroker:
     def publish(self, frame: FrameHandle) -> None:
         if not isinstance(frame, FrameHandle):
             raise TypeError("LatestFrameBroker.publish expects a FrameHandle")
+        old: FrameHandle | None = None
         with self._condition:
             if self._pending is not None and int(self._pending.generation) != int(frame.generation):
                 self._overwritten_frames += 1
+                old = self._pending
             self._pending = frame
             self._published_generation = max(self._published_generation, int(frame.generation))
             self._published_frames += 1
             self._last_publish_ts_ns = time.monotonic_ns()
             self._condition.notify_all()
+        if old is not None:
+            old.release()
 
     def acquire_latest(
         self,
@@ -85,6 +99,14 @@ class LatestFrameBroker:
                 if remaining <= 0:
                     return None
                 self._condition.wait(remaining)
+
+    def clear(self) -> None:
+        with self._condition:
+            old = self._pending
+            self._pending = None
+            self._condition.notify_all()
+        if old is not None:
+            old.release()
 
     def status(self) -> dict[str, Any]:
         with self._condition:

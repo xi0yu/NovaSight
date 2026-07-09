@@ -1,4 +1,5 @@
 from .config_store import RuntimeConfigStore
+from .detection_batch_mailbox import DetectionBatchMailbox
 from .detection_batch import detection_batch_to_frame_context, detection_batch_tracks
 from .failfast import FailFastHandler
 from .logging import configure_logging
@@ -26,6 +27,7 @@ from .replay import (
 __all__ = [
     "FailFastHandler",
     "RuntimeConfigStore",
+    "DetectionBatchMailbox",
     "RuntimeReconfigurator",
     "ConfigApplyReport",
     "detection_batch_to_frame_context",

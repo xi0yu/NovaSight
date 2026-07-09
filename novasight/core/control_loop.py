@@ -170,6 +170,7 @@ class ControlLoop(threading.Thread):
             source_frame_id=int(context.frame_id),
             source_track_id=int(target.track_id),
             predicted_source=bool(getattr(target, "is_predicted", False)),
+            trajectory_generation=int(context.generation or context.frame_id),
         )
 
     def _dispatch_intent(self, intent: ControlIntent, now_ns: int) -> None:

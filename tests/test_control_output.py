@@ -75,6 +75,7 @@ def test_policy_preserves_scheduler_metadata() -> None:
         source_frame_id=42,
         source_track_id=7,
         predicted_source=True,
+        trajectory_generation=42,
     )
 
     output = ControlOutputPolicy().apply(intent)
@@ -82,3 +83,4 @@ def test_policy_preserves_scheduler_metadata() -> None:
     assert output.source_frame_id == 42
     assert output.source_track_id == 7
     assert output.predicted_source is True
+    assert output.trajectory_generation == 42

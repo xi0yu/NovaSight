@@ -47,6 +47,7 @@ def _output(
     frame_id: int = 1,
     track_id: int = 1,
     predicted: bool = False,
+    trajectory_generation: int | None = None,
 ) -> ControlOutput:
     return ControlOutput(
         dx=dx,
@@ -60,6 +61,7 @@ def _output(
         source_frame_id=frame_id,
         source_track_id=track_id,
         predicted_source=predicted,
+        trajectory_generation=trajectory_generation,
     )
 
 
@@ -392,6 +394,34 @@ def test_command_scheduler_cancels_pending_on_new_frame() -> None:
     assert replaced.output is None
     assert replaced.metadata["cancel_reason"] == "NEW_FRAME"
     assert scheduler.status(now_s=1.02)["pending_source_frame_id"] == 3
+
+
+def test_command_scheduler_replaces_pending_on_new_trajectory_generation() -> None:
+    scheduler = CommandScheduler(min_interval_s=0.1, ttl_s=0.05)
+
+    scheduler.submit(_output(1, 0, frame_id=1, trajectory_generation=1), now_s=1.0)
+    scheduler.submit(_output(2, 0, frame_id=1, trajectory_generation=1), now_s=1.01)
+    replaced = scheduler.submit(_output(3, 0, frame_id=1, trajectory_generation=2), now_s=1.02)
+    status = scheduler.status(now_s=1.02)
+
+    assert replaced.output is None
+    assert replaced.metadata["cancel_reason"] == "TRAJECTORY_GENERATION"
+    assert replaced.metadata["trajectory_generation"] == 2
+    assert status["pending_trajectory_generation"] == 2
+    assert status["pending_dx"] == 3
+
+
+def test_command_scheduler_can_cancel_pending_before_generation() -> None:
+    scheduler = CommandScheduler(min_interval_s=0.1, ttl_s=0.05)
+
+    scheduler.submit(_output(1, 0, frame_id=1, trajectory_generation=4), now_s=1.0)
+    scheduler.submit(_output(2, 0, frame_id=1, trajectory_generation=4), now_s=1.01)
+
+    assert scheduler.cancel_pending_before_generation(4) is False
+    assert scheduler.status(now_s=1.01)["has_pending"] is True
+    assert scheduler.cancel_pending_before_generation(5) is True
+    assert scheduler.status(now_s=1.01)["has_pending"] is False
+    assert scheduler.status(now_s=1.01)["last_cancel_reason"] == "TRAJECTORY_GENERATION"
 
 
 def test_command_scheduler_cancels_pending_on_direction_change() -> None:

@@ -9,6 +9,7 @@ from typing import Any
 
 from novasight.contracts import DetectionBatch
 from novasight.model_registry.manifest import ModelManifest
+from novasight.runtime import DetectionBatchMailbox
 
 from .pipeline_builder import DeepStreamPipelineConfig, build_deepstream_pipeline
 from .tensor_meta import output_tensor_to_detection_batch
@@ -105,6 +106,7 @@ class DeepStreamDetectionBackend:
         self._lock = threading.RLock()
         self._pipeline: Any | None = None
         self._running = False
+        self.detection_batch_mailbox = DetectionBatchMailbox()
         self._last_result: DetectionBatch | None = None
         self._last_error = ""
         self._published_batches = 0
@@ -165,6 +167,7 @@ class DeepStreamDetectionBackend:
             with self._lock:
                 self._pipeline = pipeline
                 self._running = True
+                self.detection_batch_mailbox.clear()
                 self._last_result = None
                 self._published_batches = 0
                 self._stale_dropped_batches = 0
@@ -212,6 +215,7 @@ class DeepStreamDetectionBackend:
             pipeline = self._pipeline
             self._pipeline = None
             self._running = False
+            self.detection_batch_mailbox.clear()
             self._last_result = None
             self._publish_window_ts_ns.clear()
             self._tensor_meta_window_ts_ns.clear()
@@ -235,7 +239,10 @@ class DeepStreamDetectionBackend:
             return None
         if after_frame_id is not None and result.frame_id <= int(after_frame_id):
             return None
-        return result
+        return self.detection_batch_mailbox.acquire_latest(
+            after_generation=int(after_frame_id if after_frame_id is not None else -1),
+            timeout_s=0.0,
+        )
 
     def status(self) -> dict[str, Any]:
         dependency = self.dependency_status()
@@ -260,6 +267,7 @@ class DeepStreamDetectionBackend:
             latency_stats = _latency_stats_locked(self._latency_window_samples)
             started_at_ns = self._started_at_ns
             last_error = self._last_error
+            mailbox_status = self.detection_batch_mailbox.status()
             confidence_threshold = self.confidence_threshold
             nms_threshold = self.nms_threshold
             max_publish_age_ms = self.max_publish_age_ms
@@ -360,6 +368,7 @@ class DeepStreamDetectionBackend:
             else 0.0,
             "last_detection_count": last_detection_count,
             "last_error": last_error,
+            "detection_batch_mailbox": mailbox_status,
             "uptime_ms": uptime_ms,
             "pipeline": self.pipeline_description,
         }
@@ -518,6 +527,7 @@ class DeepStreamDetectionBackend:
                 )
                 return
             self._last_result = batch
+            self.detection_batch_mailbox.publish(batch)
             self._published_batches += 1
             self._publish_window_ts_ns.append(inference_end_ts_ns)
             self._prune_publish_window_locked(inference_end_ts_ns)

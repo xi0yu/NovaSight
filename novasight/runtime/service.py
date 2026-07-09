@@ -1313,6 +1313,7 @@ class RuntimeService:
             frame_id=detection_batch.frame_id,
             width=roi_frame.width,
             height=roi_frame.height,
+            generation=int(detection_batch.generation or detection_batch.frame_id),
             detections=detection_batch.detections,
             classes=detection_batch.classes,
             capture_ts_ns=detection_batch.capture_ts_ns,
@@ -1368,6 +1369,7 @@ class RuntimeService:
             frame_id=frame.frame_id,
             width=self._source_width(frame),
             height=self._source_height(frame),
+            generation=int(frame.frame_id),
             capture_ts_ns=frame.capture_ts_ns,
         )
 
@@ -1654,6 +1656,7 @@ class RuntimeService:
             source_frame_id=context.frame_id,
             source_track_id=int(getattr(target, "track_id")) if hasattr(target, "track_id") else None,
             predicted_source=predicted_source,
+            trajectory_generation=int(context.generation or context.frame_id),
         )
         output_mode = str(
             getattr(self.config.control, "output_mode", "")

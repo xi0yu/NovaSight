@@ -301,6 +301,7 @@ class FrameContext:
     frame_id: int
     width: int
     height: int
+    generation: int | None = None
     detections: list[Detection] = field(default_factory=list)
     tracks: list[Track] = field(default_factory=list)
     classes: list[str] = field(default_factory=list)
@@ -329,6 +330,7 @@ class ControlIntent:
     source_frame_id: int | None = None
     source_track_id: int | None = None
     predicted_source: bool = False
+    trajectory_generation: int | None = None
 
 
 def _coerce_box(

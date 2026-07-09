@@ -126,6 +126,7 @@ class CommandScheduler:
                     "command_id": command_id,
                     "source_frame_id": output.source_frame_id,
                     "source_track_id": output.source_track_id,
+                    "trajectory_generation": output.trajectory_generation,
                     "created_ts_ns": int(now * 1_000_000_000),
                     "expires_ts_ns": int(expires_s * 1_000_000_000),
                     "command_status": "ready",
@@ -162,6 +163,7 @@ class CommandScheduler:
                 "command_id": command_id,
                 "source_frame_id": output.source_frame_id,
                 "source_track_id": output.source_track_id,
+                "trajectory_generation": output.trajectory_generation,
                 "created_ts_ns": int(now * 1_000_000_000),
                 "expires_ts_ns": int(self._pending_expires_s * 1_000_000_000),
                 "command_status": "pending",
@@ -242,6 +244,9 @@ class CommandScheduler:
                     "source_track_id": self._pending_parent.source_track_id
                     if self._pending_parent is not None
                     else None,
+                    "trajectory_generation": self._pending_parent.trajectory_generation
+                    if self._pending_parent is not None
+                    else None,
                     "command_status": "pending",
                     "sent_allowed": False,
                     "reason": "minimum interval not elapsed",
@@ -274,6 +279,7 @@ class CommandScheduler:
                 "command_id": command_id,
                 "source_frame_id": parent.source_frame_id if parent is not None else step.source_frame_id,
                 "source_track_id": parent.source_track_id if parent is not None else step.source_track_id,
+                "trajectory_generation": parent.trajectory_generation if parent is not None else step.trajectory_generation,
                 "command_status": "ready",
                 "sent_allowed": True,
                 "elapsed_ms": elapsed * 1000.0,
@@ -332,6 +338,7 @@ class CommandScheduler:
             "queue_hard_limit": self.queue_hard_limit,
             "pending_source_frame_id": self._pending_parent.source_frame_id if self._pending_parent is not None else None,
             "pending_source_track_id": self._pending_parent.source_track_id if self._pending_parent is not None else None,
+            "pending_trajectory_generation": self._pending_parent.trajectory_generation if self._pending_parent is not None else None,
             "pending_expires_ts_ns": int(self._pending_expires_s * 1_000_000_000),
             "cancelled_pending": self._cancelled_pending,
             "expired_pending": self._expired_pending,
@@ -356,6 +363,13 @@ class CommandScheduler:
         if pending is None:
             return ""
         if (
+            pending.trajectory_generation is not None
+            and output.trajectory_generation is not None
+            and pending.trajectory_generation != output.trajectory_generation
+        ):
+            self.clear("TRAJECTORY_GENERATION")
+            return "TRAJECTORY_GENERATION"
+        if (
             self.cancel_on_track_change
             and pending.source_track_id is not None
             and output.source_track_id is not None
@@ -375,6 +389,15 @@ class CommandScheduler:
             self.clear("DIRECTION_CHANGE")
             return "DIRECTION_CHANGE"
         return ""
+
+    def cancel_pending_before_generation(self, generation: int) -> bool:
+        pending = self._pending_parent
+        if pending is None or pending.trajectory_generation is None:
+            return False
+        if int(pending.trajectory_generation) >= int(generation):
+            return False
+        self.clear("TRAJECTORY_GENERATION")
+        return True
 
     def _ttl_for(self, output: ControlOutput) -> float:
         return self.predicted_ttl_s if output.predicted_source else self.ttl_s

@@ -7,6 +7,8 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
 
+from novasight.runtime.latest_frame import FrameHandle, LatestFrameBroker
+
 from .source import CapturedFrame, FrameSource
 from .state import CaptureProfile, CaptureRuntimeState
 
@@ -35,6 +37,8 @@ class CaptureSession:
         self._last_frame_ts_ns: int | None = None
         self._capture_window_ts_ns: deque[int] = deque()
         self._drop_window_ts_ns: deque[int] = deque()
+        self.latest_frame_broker = LatestFrameBroker()
+        self._broker_generation = 0
 
     @property
     def running(self) -> bool:
@@ -72,6 +76,8 @@ class CaptureSession:
                 self._source = source
                 self._latest_frame = None
                 self._last_frame_ts_ns = None
+                self._broker_generation = 0
+                self.latest_frame_broker.clear()
                 self._capture_window_ts_ns.clear()
                 self._drop_window_ts_ns.clear()
                 self._stop_event = stop_event
@@ -132,6 +138,8 @@ class CaptureSession:
             )
             self._latest_frame = None
             self._last_frame_ts_ns = None
+            self._broker_generation = 0
+            self.latest_frame_broker.clear()
             self._capture_window_ts_ns.clear()
             self._condition.notify_all()
             return self.state
@@ -215,6 +223,13 @@ class CaptureSession:
             self.state.statistics.capture_fps = self.state.fps_capture
             self._last_frame_ts_ns = frame.capture_ts_ns
             self._latest_frame = frame
+            self._broker_generation += 1
+            self.latest_frame_broker.publish(
+                _frame_handle_from_capture_frame(
+                    frame,
+                    generation=self._broker_generation,
+                )
+            )
             self.state.last_error = None
             self._condition.notify_all()
 
@@ -268,6 +283,8 @@ class CaptureSession:
             )
             self._latest_frame = None
             self._last_frame_ts_ns = None
+            self._broker_generation = 0
+            self.latest_frame_broker.clear()
             self._capture_window_ts_ns.clear()
             self._drop_window_ts_ns.clear()
             self._condition.notify_all()
@@ -282,3 +299,32 @@ class CaptureSession:
         except Exception as exc:
             return f"capture close failed: {exc}"
         return ""
+
+
+def _frame_handle_from_capture_frame(frame: CapturedFrame, *, generation: int) -> FrameHandle:
+    frame_resource = getattr(frame, "frame_resource", None)
+    resource = getattr(frame_resource, "handle", None)
+    if resource is None:
+        resource = getattr(frame, "image", None)
+    if resource is None:
+        resource = frame
+    running_time_ns = getattr(frame, "source_ts_ns", None)
+    return FrameHandle(
+        generation=int(generation),
+        frame_id=int(frame.frame_id),
+        source_sequence=int(frame.frame_id),
+        capture_ts_ns=int(frame.capture_ts_ns),
+        clock_domain="monotonic",
+        pipeline_running_time_ns=int(running_time_ns) if running_time_ns is not None else None,
+        width=int(frame.width),
+        height=int(frame.height),
+        format=str(frame.pixel_format),
+        resource=resource,
+        metadata={
+            "captured_frame": frame,
+            "resource_memory": str(getattr(frame, "resource_memory", "cpu")),
+            "source_ts_ns": getattr(frame, "source_ts_ns", None),
+            "source_ts_kind": str(getattr(frame, "source_ts_kind", "") or ""),
+            "capture_ts_source": str(getattr(frame, "capture_ts_source", "monotonic")),
+        },
+    )
