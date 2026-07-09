@@ -94,45 +94,58 @@ def test_native_jetson_preprocess_cmake_has_production_gate() -> None:
 
 
 def test_native_jetson_cuda_source_uses_real_dmabuf_egl_cuda_path() -> None:
-    source = Path(
+    cu_path = Path(
         "novasight_jetson_preprocess_native/native/src/jetson/"
         "novasight_jetson_preprocess_native_jetson_cuda.cu"
-    ).read_text(encoding="utf-8")
+    )
+    cpp_path = Path(
+        "novasight_jetson_preprocess_native/native/src/jetson/"
+        "novasight_jetson_preprocess_native_jetson_gst_buffer.cpp"
+    )
+    cu_source = cu_path.read_text(encoding="utf-8")
+    cpp_source = cpp_path.read_text(encoding="utf-8")
 
-    assert "NvBufSurfaceFromFd" in source
-    assert "#include <gst/gst.h>" in source
-    assert "gst_buffer_map" in source
-    assert "gst_buffer_unmap" in source
-    assert "gst_buffer_ref" in source
-    assert "gst_buffer_unref" in source
-    assert "#include <nvbufsurftransform.h>" in source
-    assert "NvBufSurfTransform" in source
-    assert "NVBUF_COLOR_FORMAT_RGBA" in source
-    assert "rgba_to_nchw_kernel" in source
-    assert '\\"timings\\"' in source
-    assert '\\"nvbufsurftransform_ms\\"' in source
-    assert '\\"egl_cuda_map_ms\\"' in source
-    assert '\\"cuda_kernel_ms\\"' in source
-    assert "NvBufSurfaceMapEglImage" in source
-    assert "cuGraphicsEGLRegisterImage" in source
-    assert "cuGraphicsResourceGetMappedEglFrame" in source
-    assert "cudaMemcpy2DFromArrayAsync" in source
-    assert "surface->surfaceList[0].width" in source
-    assert "surface->surfaceList[0].height" in source
-    assert "nvbufsurface_geometry_mismatch" in source
-    assert "bool validate_rgba_plane_layout" in source
-    assert "cuda_egl_rgba_plane_invalid" in source
-    assert "rgba_pitch < width * 4" in source
-    assert "__device__ int scaled_source_index" in source
-    assert "nv12_to_nchw_kernel" not in source
-    assert "max(0, min(255" not in source
-    assert "const int src_x = min(" not in source
-    assert "const int src_y = min(" not in source
-    assert "const int c = max(" not in source
-    assert '\\"zero_copy\\":true' in source
-    assert '\\"memory_space\\":\\"cuda_device' in source
-    assert "release_token" in source
-    assert "novasight_release_tensor" in source
+    assert "NvBufSurfaceFromFd" in cu_source
+    assert "nvbufsurftransform.h" in cu_source.lower()
+    # The .cu must NOT pull <gst/gst.h> directly: nvcc 12.6 fails to parse
+    # glib-2.0/gmacros.h's legacy __has_attribute() macro. All GStreamer
+    # access must live in the sibling .cpp compiled with g++.
+    assert "#include <gst/gst.h>" not in cu_source
+    assert "gst_buffer_ref(" not in cu_source
+    assert "gst_buffer_unref(" not in cu_source
+    assert "gst_buffer_map(" not in cu_source
+    assert "gst_buffer_unmap(" not in cu_source
+    assert cpp_path.exists(), "gst_buffer helper .cpp is missing"
+    assert "#include <gst/gst.h>" in cpp_source
+    assert "gst_buffer_map" in cpp_source
+    assert "gst_buffer_ref" in cpp_source
+    assert "NvBufSurfTransform" in cu_source
+    assert "NVBUF_COLOR_FORMAT_RGBA" in cu_source
+    assert "rgba_to_nchw_kernel" in cu_source
+    assert '\\"timings\\"' in cu_source
+    assert '\\"nvbufsurftransform_ms\\"' in cu_source
+    assert '\\"egl_cuda_map_ms\\"' in cu_source
+    assert '\\"cuda_kernel_ms\\"' in cu_source
+    assert "NvBufSurfaceMapEglImage" in cu_source
+    assert "cuGraphicsEGLRegisterImage" in cu_source
+    assert "cuGraphicsResourceGetMappedEglFrame" in cu_source
+    assert "cudaMemcpy2DFromArrayAsync" in cu_source
+    assert "surface->surfaceList[0].width" in cu_source
+    assert "surface->surfaceList[0].height" in cu_source
+    assert "nvbufsurface_geometry_mismatch" in cu_source
+    assert "bool validate_rgba_plane_layout" in cu_source
+    assert "cuda_egl_rgba_plane_invalid" in cu_source
+    assert "rgba_pitch < width * 4" in cu_source
+    assert "__device__ int scaled_source_index" in cu_source
+    assert "nv12_to_nchw_kernel" not in cu_source
+    assert "max(0, min(255" not in cu_source
+    assert "const int src_x = min(" not in cu_source
+    assert "const int src_y = min(" not in cu_source
+    assert "const int c = max(" not in cu_source
+    assert '\\"zero_copy\\":true' in cu_source
+    assert '\\"memory_space\\":\\"cuda_device' in cu_source
+    assert "release_token" in cu_source
+    assert "novasight_release_tensor" in cu_source
 
 
 def test_native_jetson_support_escapes_diagnostic_json() -> None:

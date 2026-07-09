@@ -12,6 +12,7 @@ set(NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE "" CACHE FILEPATH
 
 set(NOVASIGHT_JETSON_PREPROCESS_SUPPORT_SOURCES
     src/jetson/novasight_jetson_preprocess_native_jetson_support.cpp
+    src/jetson/novasight_jetson_preprocess_native_jetson_gst_buffer.cpp
 )
 
 if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "reference")

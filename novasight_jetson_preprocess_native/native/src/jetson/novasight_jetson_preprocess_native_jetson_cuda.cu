@@ -1,15 +1,20 @@
+// All GStreamer access lives in
+// novasight_jetson_preprocess_native_jetson_gst_buffer.cpp (a .cpp compiled
+// with g++, not nvcc). Pulling <gst/gst.h> into a .cu on this toolchain
+// makes glib-2.0/glib/gmacros.h emit a legacy __has_attribute() guard
+// that nvcc 12.6 fails to parse. The .cu therefore holds opaque handles
+// instead of the GstBuffer / GstMapInfo structs.
 #include "novasight_jetson_preprocess_native.h"
 #include "novasight_jetson_preprocess_native_jetson_support.h"
+#include "novasight_jetson_preprocess_native_jetson_gst_buffer.h"
 
 #include <EGL/egl.h>
 #include <cuda.h>
 #include <cudaEGL.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <gst/gst.h>
 #include <nvbufsurface.h>
 #include <nvbufsurftransform.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -253,15 +258,12 @@ bool validate_rgba_plane_layout(
 bool resolve_source_surface_from_request(
     const TensorRequest& request,
     NvBufSurface** surface,
-    GstBuffer** gst_buffer_owner,
-    GstMapInfo* gst_map_info,
-    bool* gst_buffer_mapped,
+    void** gst_map_owner,
     std::string* reason,
     std::string* detail
 ) {
     *surface = nullptr;
-    *gst_buffer_owner = nullptr;
-    *gst_buffer_mapped = false;
+    *gst_map_owner = nullptr;
 
     if (request.dmabuf_fd >= 0) {
         void* surface_buffer = nullptr;
@@ -281,41 +283,36 @@ bool resolve_source_surface_from_request(
         return false;
     }
 
-    GstBuffer* buffer =
-        reinterpret_cast<GstBuffer*>(static_cast<uintptr_t>(request.gst_buffer_ptr));
-    if (buffer == nullptr) {
-        *reason = "gst_buffer_ptr_invalid";
-        *detail = "gst_buffer_ptr resolved to a null GstBuffer.";
+    char err_buf[256] = {0};
+    void* map_owner = nullptr;
+    int rc = novasight_gst_open_surface(
+        request.gst_buffer_ptr,
+        reinterpret_cast<void**>(surface),
+        &map_owner,
+        err_buf,
+        sizeof(err_buf)
+    );
+    if (rc != NOVASIGHT_GST_RESULT_OK) {
+        *gst_map_owner = nullptr;
+        switch (rc) {
+            case NOVASIGHT_GST_RESULT_INVALID_INPUT:
+                *reason = "gst_buffer_ptr_invalid";
+                break;
+            case NOVASIGHT_GST_RESULT_MAP_FAILED:
+                *reason = "gst_buffer_map_nvbufsurface_failed";
+                break;
+            case NOVASIGHT_GST_RESULT_PAYLOAD_UNAVAILABLE:
+                *reason = "gst_buffer_nvbufsurface_unavailable";
+                break;
+            default:
+                *reason = "gst_buffer_helper_failed";
+                break;
+        }
+        *detail = err_buf[0] != '\0' ? std::string(err_buf)
+                                      : std::string("novasight_gst_open_surface failed");
         return false;
     }
-
-    *gst_buffer_owner = gst_buffer_ref(buffer);
-    if (*gst_buffer_owner == nullptr) {
-        *reason = "gst_buffer_ref_failed";
-        *detail = "gst_buffer_ref returned null for gst_buffer_ptr.";
-        return false;
-    }
-
-    if (!gst_buffer_map(*gst_buffer_owner, gst_map_info, GST_MAP_READ)) {
-        gst_buffer_unref(*gst_buffer_owner);
-        *gst_buffer_owner = nullptr;
-        *reason = "gst_buffer_map_nvbufsurface_failed";
-        *detail = "gst_buffer_map failed for gst_buffer_ptr NVMM resource.";
-        return false;
-    }
-    *gst_buffer_mapped = true;
-
-    if (gst_map_info->data == nullptr || gst_map_info->size < sizeof(NvBufSurface)) {
-        gst_buffer_unmap(*gst_buffer_owner, gst_map_info);
-        gst_buffer_unref(*gst_buffer_owner);
-        *gst_buffer_owner = nullptr;
-        *gst_buffer_mapped = false;
-        *reason = "gst_buffer_nvbufsurface_unavailable";
-        *detail = "gst_buffer_map did not expose a valid NvBufSurface payload.";
-        return false;
-    }
-
-    *surface = reinterpret_cast<NvBufSurface*>(gst_map_info->data);
+    *gst_map_owner = map_owner;
     return true;
 }
 
@@ -445,27 +442,19 @@ extern "C" int novasight_prepare_tensor_json(
     }
 
     NvBufSurface* surface = nullptr;
-    GstBuffer* gst_buffer_owner = nullptr;
-    GstMapInfo gst_map_info{};
-    bool gst_buffer_mapped = false;
+    void* gst_map_owner = nullptr;
     std::string source_reason;
     std::string source_detail;
     auto cleanup_source_surface = [&]() {
-        if (gst_buffer_mapped && gst_buffer_owner != nullptr) {
-            gst_buffer_unmap(gst_buffer_owner, &gst_map_info);
-            gst_buffer_mapped = false;
-        }
-        if (gst_buffer_owner != nullptr) {
-            gst_buffer_unref(gst_buffer_owner);
-            gst_buffer_owner = nullptr;
+        if (gst_map_owner != nullptr) {
+            novasight_gst_release_surface(gst_map_owner);
+            gst_map_owner = nullptr;
         }
     };
     if (!resolve_source_surface_from_request(
             request,
             &surface,
-            &gst_buffer_owner,
-            &gst_map_info,
-            &gst_buffer_mapped,
+            &gst_map_owner,
             &source_reason,
             &source_detail
         )) {
