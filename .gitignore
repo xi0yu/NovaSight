@@ -13,6 +13,7 @@ __pycache__/
 .pnpm-store/
 data/
 logs/
+build/
 config/novasight.yaml
 web/node_modules/
 web/dist/
