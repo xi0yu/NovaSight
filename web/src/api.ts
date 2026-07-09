@@ -183,6 +183,10 @@ export type Statistics = {
   tensor_meta_fps?: number;
   postprocess_fps?: number;
   timestamp_source?: string;
+  last_raw_pts_ns?: number;
+  last_capture_ts_ns?: number;
+  last_probe_observed_ts_ns?: number;
+  last_pts_to_probe_ms?: number;
   last_frame_age_ms?: number;
   last_inference_latency_ms?: number;
   last_detection_count?: number;

@@ -2591,6 +2591,9 @@ export function StudioConsoleView({
                 ? ["Tensor Meta", formatNumber(captureToTensorMetaMs, 1)]
                 : ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
               hasCaptureToTensorMetaMs
+                ? ["PTS到Probe", formatNumber(statistics?.last_pts_to_probe_ms, 1)]
+                : ["PTS到Probe", "-"],
+              hasCaptureToTensorMetaMs
                 ? ["延迟来源", "采集到tensor"]
                 : ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
               ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],

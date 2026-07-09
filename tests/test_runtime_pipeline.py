@@ -860,6 +860,10 @@ def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats()
                 "tensor_meta_fps": 119.2,
                 "postprocess_fps": 118.7,
                 "timestamp_source": "gst_clock_base_time_pts",
+                "last_raw_pts_ns": 12_000_000,
+                "last_capture_ts_ns": 34_000_000,
+                "last_probe_observed_ts_ns": 36_500_000,
+                "last_pts_to_probe_ms": 2.5,
                 "last_frame_age_ms": 6.4,
                 "last_inference_latency_ms": 1.5,
                 "last_detection_count": 2,
@@ -896,6 +900,10 @@ def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats()
     assert state.statistics["postprocess_frames"] == 41
     assert state.statistics["window_tensor_meta_frames"] == 11
     assert state.statistics["window_postprocess_frames"] == 10
+    assert state.statistics["last_raw_pts_ns"] == 12_000_000
+    assert state.statistics["last_capture_ts_ns"] == 34_000_000
+    assert state.statistics["last_probe_observed_ts_ns"] == 36_500_000
+    assert state.statistics["last_pts_to_probe_ms"] == pytest.approx(2.5)
     assert state.statistics["last_frame_age_ms"] == pytest.approx(6.4)
     assert state.statistics["last_inference_latency_ms"] == pytest.approx(1.5)
     assert state.statistics["last_detection_count"] == 2

@@ -1227,7 +1227,7 @@ def test_model_deepstream_pipeline_api_uses_confirmed_manifest_and_config(tmp_pa
     pipeline = body["pipeline"]
     assert "v4l2src device=/dev/video0 io-mode=2 do-timestamp=true" in pipeline
     assert "video/x-raw(memory:NVMM),format=NV12,width=256,height=256" in pipeline
-    assert "nvstreammux name=mux batch-size=1 width=256 height=256 live-source=1" in pipeline
+    assert "nvstreammux name=mux batch-size=1 width=256 height=256 live-source=1 sync-inputs=0" in pipeline
     assert f"nvinfer name=primary-infer config-file-path={(model_dir / 'deepstream.ini').resolve()}" in pipeline
     assert "videoconvert" not in pipeline
 

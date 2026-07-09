@@ -795,6 +795,10 @@ def _doctor_deepstream_smoke(args: argparse.Namespace) -> int:
         print(f"last_inference_latency_ms: {float(status.get('last_inference_latency_ms', 0.0)):.2f}")
         print(f"latency_source: {status.get('latency_source', '')}")
         print(f"timestamp_source: {status.get('timestamp_source', '')}")
+        print(f"last_raw_pts_ns: {int(status.get('last_raw_pts_ns', 0) or 0)}")
+        print(f"last_capture_ts_ns: {int(status.get('last_capture_ts_ns', 0) or 0)}")
+        print(f"last_probe_observed_ts_ns: {int(status.get('last_probe_observed_ts_ns', 0) or 0)}")
+        print(f"last_pts_to_probe_ms: {float(status.get('last_pts_to_probe_ms', 0.0)):.2f}")
         print(
             "capture_to_tensor_meta_ms: "
             f"{float(status.get('last_inference_latency_ms', 0.0)):.2f}"
@@ -843,6 +847,12 @@ def _doctor_deepstream_smoke(args: argparse.Namespace) -> int:
                 "runtime_model_output": status.get("model_output", {}),
                 "latency_source": status.get("latency_source", ""),
                 "timestamp_source": status.get("timestamp_source", ""),
+                "last_raw_pts_ns": int(status.get("last_raw_pts_ns", 0) or 0),
+                "last_capture_ts_ns": int(status.get("last_capture_ts_ns", 0) or 0),
+                "last_probe_observed_ts_ns": int(
+                    status.get("last_probe_observed_ts_ns", 0) or 0
+                ),
+                "last_pts_to_probe_ms": float(status.get("last_pts_to_probe_ms", 0.0)),
                 "last_detection_count": status.get("last_detection_count", 0),
                 "last_error": status["last_error"],
             }
@@ -941,6 +951,7 @@ def _doctor_deepstream_smoke_report(args: argparse.Namespace) -> int:
     print(f"model_fingerprint: {evidence.get('model_fingerprint', '')}")
     print(f"nvinfer_config_fingerprint: {evidence.get('nvinfer_config_fingerprint', '')}")
     print(f"timestamp_source: {evidence.get('timestamp_source', '')}")
+    print(f"last_pts_to_probe_ms: {float(evidence.get('last_pts_to_probe_ms', 0.0)):.2f}")
     print(f"tensor_meta_fps: {float(evidence.get('tensor_meta_fps', 0.0)):.2f}")
     print(f"postprocess_fps: {float(evidence.get('postprocess_fps', 0.0)):.2f}")
     print(f"detection_batch_fps: {float(evidence.get('detection_batch_fps', 0.0)):.2f}")
@@ -990,6 +1001,9 @@ def _validate_deepstream_smoke_report(
         "capture_to_tensor_meta_ms_stats",
         "latency_source",
         "timestamp_source",
+        "last_raw_pts_ns",
+        "last_probe_observed_ts_ns",
+        "last_pts_to_probe_ms",
         "last_capture_ts_ns",
         "last_detections",
         "coordinate_space",

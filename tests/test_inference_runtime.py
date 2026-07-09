@@ -185,6 +185,10 @@ def _deepstream_smoke_model_contract() -> dict[str, object]:
             "p99": 5.0,
             "max": 5.6,
         },
+        "last_raw_pts_ns": 900_000,
+        "last_capture_ts_ns": 1_000_000,
+        "last_probe_observed_ts_ns": 3_800_000,
+        "last_pts_to_probe_ms": 2.8,
     }
 
 def test_unavailable_engine_reports_reason_and_returns_empty_result() -> None:
@@ -493,6 +497,7 @@ def test_deepstream_smoke_rejects_stale_nvinfer_config_before_start(tmp_path, ca
             roi_size=480,
             io_mode=4,
             batched_push_timeout_us=12000,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -538,6 +543,7 @@ def test_deepstream_smoke_rejects_changed_engine_before_start(tmp_path, capsys) 
             roi_size=480,
             io_mode=4,
             batched_push_timeout_us=12000,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -606,6 +612,7 @@ def test_deepstream_smoke_reports_dependency_unavailable_reason(
             roi_size=480,
             io_mode=2,
             batched_push_timeout_us=0,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
             report_json=str(report_path),
@@ -889,6 +896,7 @@ def test_deepstream_smoke_rejects_nvinfer_config_with_wrong_engine_path(tmp_path
             roi_size=480,
             io_mode=4,
             batched_push_timeout_us=12000,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -954,6 +962,10 @@ def test_deepstream_smoke_rejects_unobserved_latest_batches(tmp_path, monkeypatc
                 "last_inference_latency_ms": 2.0,
                 "latency_source": "capture_to_tensor_meta_done",
                 "timestamp_source": "gst_clock_base_time_pts",
+                "last_raw_pts_ns": 1_000_000,
+                "last_capture_ts_ns": 2_000_000,
+                "last_probe_observed_ts_ns": 4_000_000,
+                "last_pts_to_probe_ms": 2.0,
                 "last_detection_count": 0,
                 "last_error": "",
             }
@@ -980,6 +992,7 @@ def test_deepstream_smoke_rejects_unobserved_latest_batches(tmp_path, monkeypatc
             roi_size=480,
             io_mode=4,
             batched_push_timeout_us=12000,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -1090,6 +1103,7 @@ def test_deepstream_smoke_reports_terminal_backend_error(tmp_path, monkeypatch, 
             roi_size=480,
             io_mode=2,
             batched_push_timeout_us=0,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -1190,6 +1204,7 @@ def test_deepstream_smoke_rejects_batches_without_tensor_meta(tmp_path, monkeypa
             roi_size=480,
             io_mode=2,
             batched_push_timeout_us=0,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -1288,6 +1303,7 @@ def test_deepstream_smoke_rejects_fallback_timestamp_source(tmp_path, monkeypatc
             roi_size=480,
             io_mode=2,
             batched_push_timeout_us=0,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -1387,6 +1403,7 @@ def test_deepstream_smoke_rejects_non_roi_detection_batch(tmp_path, monkeypatch,
             roi_size=480,
             io_mode=2,
             batched_push_timeout_us=0,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
@@ -1486,6 +1503,7 @@ def test_deepstream_smoke_rejects_detection_center_outside_roi(tmp_path, monkeyp
             roi_size=480,
             io_mode=2,
             batched_push_timeout_us=0,
+            tracker_config="",
             seconds=0.0,
             poll_interval=0.02,
         )
