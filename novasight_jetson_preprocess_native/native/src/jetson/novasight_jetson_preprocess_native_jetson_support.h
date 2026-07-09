@@ -13,6 +13,7 @@ struct TensorRequest {
     int frame_id = 0;
     uint64_t capture_ts_ns = 0;
     int dmabuf_fd = -1;
+    uint64_t gst_buffer_ptr = 0;
     std::string resource_kind;
     std::string resource_memory;
     std::string resource_source;
