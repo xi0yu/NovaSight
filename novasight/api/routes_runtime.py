@@ -111,7 +111,7 @@ def start_runtime(request: Request) -> dict[str, Any]:
     runtime = request.app.state.runtime
     try:
         if (
-            _deepstream_selected(runtime.config)
+            _full_deepstream_selected(runtime.config)
             and runtime.pipeline is not None
             and getattr(runtime.pipeline, "running", False) is not True
         ):
@@ -119,7 +119,7 @@ def start_runtime(request: Request) -> dict[str, Any]:
         if runtime.pipeline is None:
             detection_source = (
                 _deepstream_detection_source(request)
-                if _deepstream_selected(runtime.config)
+                if _full_deepstream_selected(runtime.config)
                 else None
             )
             runtime.pipeline = RuntimePipeline(
@@ -154,9 +154,13 @@ def _clear_failed_runtime_pipeline(runtime: Any) -> None:
     _stop_existing_runtime_pipeline(runtime)
 
 
-def _deepstream_selected(config: Any) -> bool:
+def _full_deepstream_selected(config: Any) -> bool:
     inference = getattr(config, "inference", None)
     return str(getattr(inference, "backend", "")).lower() == "deepstream"
+
+
+def _deepstream_selected(config: Any) -> bool:
+    return _full_deepstream_selected(config)
 
 
 def _deepstream_detection_source(request: Request) -> DeepStreamDetectionBackend:
@@ -170,7 +174,7 @@ def stop_runtime(request: Request) -> dict[str, Any]:
         runtime.pipeline.stop()
         logger.info("runtime pipeline stopped")
         status = runtime.pipeline.status()
-        if _deepstream_selected(runtime.config):
+        if _full_deepstream_selected(runtime.config):
             runtime.pipeline = None
             runtime.running = False
             logger.info("deepstream runtime pipeline cleared after stop")

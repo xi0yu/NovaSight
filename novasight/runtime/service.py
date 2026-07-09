@@ -101,6 +101,8 @@ class RuntimeService:
         self._external_sensitivity_source = ""
         self._external_sensitivity_ts_ns = 0
         self._last_runtime_reset_reason = ""
+        self._accepted_batch_generation = -1
+        self._accepted_batch_capture_ts_ns = 0
         self._log_production_control_chain("startup")
 
     def state(self) -> RuntimeState:
@@ -288,6 +290,7 @@ class RuntimeService:
         self.executors.update_runtime_config(config)
         if calibration_changed:
             self._runtime_calibration_signature = new_calibration_signature
+            self._reset_detection_batch_cursor()
             self._reset_runtime_control_state("CALIBRATION_PROFILE_CHANGED")
         configure = getattr(self.inference, "configure", None)
         if callable(configure):
@@ -523,6 +526,33 @@ class RuntimeService:
             roi_offset_x=roi_offset_x,
             roi_offset_y=roi_offset_y,
         )
+        freshness_reason = self._detection_batch_freshness_reason(detection_batch)
+        if freshness_reason:
+            self._reset_runtime_control_state("DETECTION_BATCH_NOT_LATEST")
+            self.last_inference_reason = freshness_reason
+            self._set_detection_batch_pipeline_timings(
+                detection_batch,
+                total_start_ns=total_start_ns,
+                control_start_ns=None,
+                done_ns=time.monotonic_ns(),
+            )
+            self.last_inference_status = self._detection_batch_status_payload(
+                detection_batch,
+                width=int(width),
+                height=int(height),
+                now_ns=total_start_ns,
+                reason=self.last_inference_reason,
+                available=False,
+                mapped_detections=0,
+                source_width=resolved_source_width,
+                source_height=resolved_source_height,
+                source_geometry_source=source_geometry_source,
+                source_geometry_trusted=source_geometry_trusted,
+                roi_offset_x=resolved_roi_offset_x,
+                roi_offset_y=resolved_roi_offset_y,
+                extra={"latest_rejected": True},
+            )
+            return self._empty_runtime_frame_result()
         if detection_batch.coordinate_space != "roi":
             self._reset_runtime_control_state("DETECTION_BATCH_COORDINATE_SPACE_INVALID")
             self.last_inference_reason = "DetectionBatch coordinate_space must be roi"
@@ -691,6 +721,7 @@ class RuntimeService:
             width=int(width),
             height=int(height),
         )
+        self._record_accepted_detection_batch(detection_batch)
         control_start_ns = time.monotonic_ns()
         result = self.update_control_observation(context)
         done_ns = time.monotonic_ns()
@@ -751,7 +782,15 @@ class RuntimeService:
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "frame_id": detection_batch.frame_id,
+            "generation": int(detection_batch.generation or 0),
+            "source_sequence": int(detection_batch.source_sequence or 0),
             "capture_ts_ns": detection_batch.capture_ts_ns,
+            "publish_ts_ns": int(detection_batch.publish_ts_ns),
+            "clock_domain": str(detection_batch.clock_domain),
+            "input_age_ms": float(detection_batch.input_age_ms),
+            "inference_ms": float(detection_batch.inference_ms or detection_batch.inference_latency_ms),
+            "result_age_ms": float(detection_batch.result_age_ms),
+            "is_stale": bool(detection_batch.is_stale),
             "frame_age_ms": self._detection_batch_age_ms(detection_batch, now_ns=now_ns),
             "ran": True,
             "available": bool(available),
@@ -760,6 +799,7 @@ class RuntimeService:
             "raw_detections": len(detection_batch.detections),
             "mapped_detections": int(mapped_detections),
             "detection_batch_frame_id": detection_batch.frame_id,
+            "detection_batch_generation": int(detection_batch.generation or 0),
             "detection_batch_capture_ts_ns": detection_batch.capture_ts_ns,
             "inference_start_ts_ns": detection_batch.inference_start_ts_ns,
             "inference_end_ts_ns": detection_batch.inference_end_ts_ns,
@@ -789,6 +829,33 @@ class RuntimeService:
         if extra:
             payload.update(extra)
         return payload
+
+    def _detection_batch_freshness_reason(self, detection_batch: DetectionBatch) -> str:
+        if bool(getattr(detection_batch, "is_stale", False)):
+            return "DetectionBatch marked stale by producer"
+        generation = int(getattr(detection_batch, "generation", detection_batch.frame_id) or 0)
+        if generation <= self._accepted_batch_generation:
+            return (
+                "DetectionBatch generation must increase: "
+                f"{generation} <= {self._accepted_batch_generation}"
+            )
+        capture_ts_ns = int(detection_batch.capture_ts_ns)
+        if capture_ts_ns <= self._accepted_batch_capture_ts_ns:
+            return (
+                "DetectionBatch capture_ts_ns must increase: "
+                f"{capture_ts_ns} <= {self._accepted_batch_capture_ts_ns}"
+            )
+        return ""
+
+    def _record_accepted_detection_batch(self, detection_batch: DetectionBatch) -> None:
+        self._accepted_batch_generation = int(
+            getattr(detection_batch, "generation", detection_batch.frame_id) or 0
+        )
+        self._accepted_batch_capture_ts_ns = int(detection_batch.capture_ts_ns)
+
+    def _reset_detection_batch_cursor(self) -> None:
+        self._accepted_batch_generation = -1
+        self._accepted_batch_capture_ts_ns = 0
 
     def _detection_batch_geometry(
         self,
@@ -1172,6 +1239,14 @@ class RuntimeService:
                 detections=detections,
                 classes=classes,
                 coordinate_space="roi",
+                generation=frame.frame_id,
+                publish_ts_ns=postprocess_start_ns,
+                input_age_ms=max(0.0, (infer_start_ns - int(frame.capture_ts_ns)) / 1e6),
+                inference_ms=max(0.0, (postprocess_start_ns - infer_start_ns) / 1e6),
+                result_age_ms=max(0.0, (postprocess_start_ns - int(frame.capture_ts_ns)) / 1e6),
+                source_sequence=frame.frame_id,
+                is_stale=False,
+                clock_domain="monotonic",
             )
         except Exception as exc:
             self.last_inference_reason = str(exc)
@@ -1182,6 +1257,32 @@ class RuntimeService:
                 available=False,
                 reason=str(exc),
                 raw_detections=len(inference_result.detections),
+                debug=inference_result.debug,
+            )
+            control_start_ns = time.monotonic_ns()
+            result = self.update_control_observation(self._empty_frame_context(frame))
+            self._record_pipeline_timings(
+                total_start_ns,
+                roi_start_ns=roi_start_ns,
+                infer_start_ns=infer_start_ns,
+                postprocess_start_ns=postprocess_start_ns,
+                control_start_ns=control_start_ns,
+            )
+            return result
+        freshness_reason = self._detection_batch_freshness_reason(detection_batch)
+        if freshness_reason:
+            self._reset_runtime_control_state("DETECTION_BATCH_NOT_LATEST")
+            self.last_inference_reason = freshness_reason
+            self._record_inference_status(
+                frame=frame,
+                roi_frame=roi_frame,
+                ran=True,
+                available=False,
+                reason=freshness_reason,
+                raw_detections=len(inference_result.detections),
+                mapped_detections=0,
+                classes=detection_batch.classes,
+                detection_batch=detection_batch,
                 debug=inference_result.debug,
             )
             control_start_ns = time.monotonic_ns()
@@ -1216,6 +1317,7 @@ class RuntimeService:
             classes=detection_batch.classes,
             capture_ts_ns=detection_batch.capture_ts_ns,
         )
+        self._record_accepted_detection_batch(detection_batch)
         control_start_ns = time.monotonic_ns()
         result = self.update_control_observation(context)
         self._record_pipeline_timings(
@@ -1321,7 +1423,14 @@ class RuntimeService:
             "raw_detections": raw_detections,
             "mapped_detections": mapped_detections,
             "detection_batch_frame_id": detection_batch.frame_id if detection_batch is not None else 0,
+            "detection_batch_generation": int(detection_batch.generation or 0) if detection_batch is not None else 0,
             "detection_batch_capture_ts_ns": detection_batch.capture_ts_ns if detection_batch is not None else 0,
+            "detection_batch_publish_ts_ns": detection_batch.publish_ts_ns if detection_batch is not None else 0,
+            "detection_batch_source_sequence": int(detection_batch.source_sequence or 0) if detection_batch is not None else 0,
+            "detection_batch_clock_domain": detection_batch.clock_domain if detection_batch is not None else "",
+            "detection_batch_input_age_ms": detection_batch.input_age_ms if detection_batch is not None else 0.0,
+            "detection_batch_result_age_ms": detection_batch.result_age_ms if detection_batch is not None else 0.0,
+            "detection_batch_is_stale": detection_batch.is_stale if detection_batch is not None else False,
             "inference_start_ts_ns": detection_batch.inference_start_ts_ns if detection_batch is not None else 0,
             "inference_end_ts_ns": detection_batch.inference_end_ts_ns if detection_batch is not None else 0,
             "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms if detection_batch is not None else 0.0,

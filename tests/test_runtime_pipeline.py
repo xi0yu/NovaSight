@@ -12,6 +12,8 @@ from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext
 from novasight.runtime import (
     FailFastHandler,
+    FrameHandle,
+    LatestFrameBroker,
     RuntimeConfigStore,
     RuntimePipeline,
     RuntimeService,
@@ -30,6 +32,53 @@ def _frame(frame_id: int) -> CapturedFrame:
         capture_wait_ms=1.0,
         image=None,
     )
+
+
+def _handle(generation: int) -> FrameHandle:
+    return FrameHandle(
+        generation=generation,
+        frame_id=generation,
+        source_sequence=generation,
+        capture_ts_ns=time.monotonic_ns(),
+        clock_domain="monotonic",
+        pipeline_running_time_ns=None,
+        width=640,
+        height=640,
+        format="NV12",
+        resource=object(),
+    )
+
+
+def test_latest_frame_broker_overwrites_pending_frames() -> None:
+    broker = LatestFrameBroker()
+
+    broker.publish(_handle(100))
+    first = broker.acquire_latest(after_generation=-1, timeout_s=0.0)
+    for generation in range(101, 105):
+        broker.publish(_handle(generation))
+    second = broker.acquire_latest(after_generation=100, timeout_s=0.0)
+    for generation in range(105, 109):
+        broker.publish(_handle(generation))
+    third = broker.acquire_latest(after_generation=104, timeout_s=0.0)
+
+    assert [first.generation, second.generation, third.generation] == [100, 104, 108]
+    status = broker.status()
+    assert status["pending_depth"] == 0
+    assert status["max_pending_depth"] == 1
+    assert status["overwritten_frames"] == 6
+
+
+def test_latest_frame_broker_pending_depth_never_exceeds_one() -> None:
+    broker = LatestFrameBroker()
+
+    for generation in range(100):
+        broker.publish(_handle(generation))
+        assert broker.status()["pending_depth"] == 1
+
+    latest = broker.acquire_latest(after_generation=-1, timeout_s=0.0)
+
+    assert latest.generation == 99
+    assert broker.status()["pending_depth"] == 0
 
 
 def test_runtime_config_store_returns_isolated_snapshots() -> None:
@@ -196,6 +245,75 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
     assert status["consumed_frames"] == 2
     assert "queue" not in status
     assert "capture_frames" not in status
+
+
+def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.inference_input_deadline_ms = 10.0
+    stale = CapturedFrame(
+        frame_id=1,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns() - 100_000_000,
+        capture_wait_ms=1.0,
+        image=None,
+    )
+    fresh = CapturedFrame(
+        frame_id=2,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns(),
+        capture_wait_ms=1.0,
+        image=None,
+    )
+    frames = [stale, fresh]
+    processed: list[int] = []
+    processed_fresh = threading.Event()
+
+    def wait_preview_frame(*, after_frame_id: int | None = None, timeout_s: float = 0.0):
+        del timeout_s
+        for frame in frames:
+            if after_frame_id is None or frame.frame_id > after_frame_id:
+                if frame.frame_id == 2:
+                    return CapturedFrame(
+                        frame_id=2,
+                        width=2,
+                        height=2,
+                        pixel_format="BGR",
+                        ts_ns=time.monotonic_ns(),
+                        capture_wait_ms=1.0,
+                        image=None,
+                    )
+                return frame
+        return None
+
+    def process_captured_frame(frame: CapturedFrame) -> RuntimeFrameResult:
+        processed.append(frame.frame_id)
+        processed_fresh.set()
+        return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False)
+
+    capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+        wait_preview_frame=wait_preview_frame,
+    )
+    runtime = SimpleNamespace(
+        running=False,
+        config=cfg,
+        process_captured_frame=process_captured_frame,
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    pipeline.start()
+    assert processed_fresh.wait(1.0)
+    pipeline.stop()
+
+    assert processed == [2]
+    assert pipeline.stats.skipped_frames >= 1
+    assert "input frame age exceeds deadline" in (pipeline.stats.last_error or "")
 
 
 def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
@@ -786,6 +904,132 @@ def test_runtime_service_rejects_stale_detection_batch_before_control() -> None:
     assert service.last_pipeline_timings["capture_to_tensor_meta_ms"] == pytest.approx(0.001)
     assert service.last_pipeline_timings["handoff_ms"] >= 0.0
     assert service.last_pipeline_timings["postprocess_ms"] == pytest.approx(0.0)
+
+
+def test_runtime_service_rejects_detection_batch_marked_stale() -> None:
+    cfg = RuntimeConfig()
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("stale DetectionBatch must not execute"),
+        ),
+    )
+    now_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=21,
+        generation=21,
+        capture_ts_ns=now_ns,
+        inference_start_ts_ns=now_ns + 1_000,
+        inference_end_ts_ns=now_ns + 2_000,
+        detections=[],
+        classes=["0"],
+        coordinate_space="roi",
+        is_stale=True,
+        clock_domain="monotonic",
+    )
+
+    result = service.process_detection_batch(
+        batch,
+        width=480,
+        height=480,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=720,
+        roi_offset_y=300,
+    )
+
+    assert result.control_intents == []
+    assert service.last_frame_context is None
+    assert service.last_inference_status["available"] is False
+    assert service.last_inference_status["latest_rejected"] is True
+    assert service.last_inference_status["is_stale"] is True
+    assert "marked stale" in service.last_inference_status["reason"]
+
+
+def test_runtime_service_rejects_detection_batch_generation_and_capture_rollback() -> None:
+    cfg = RuntimeConfig()
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("empty detections should not emit"),
+        ),
+    )
+    now_ns = time.monotonic_ns()
+    first = DetectionBatch(
+        frame_id=30,
+        generation=30,
+        capture_ts_ns=now_ns,
+        inference_start_ts_ns=now_ns + 1_000,
+        inference_end_ts_ns=now_ns + 2_000,
+        detections=[],
+        classes=["0"],
+        coordinate_space="roi",
+    )
+    generation_rollback = DetectionBatch(
+        frame_id=31,
+        generation=29,
+        capture_ts_ns=now_ns + 10_000,
+        inference_start_ts_ns=now_ns + 11_000,
+        inference_end_ts_ns=now_ns + 12_000,
+        detections=[],
+        classes=["0"],
+        coordinate_space="roi",
+    )
+    capture_rollback = DetectionBatch(
+        frame_id=32,
+        generation=31,
+        capture_ts_ns=now_ns,
+        inference_start_ts_ns=now_ns + 13_000,
+        inference_end_ts_ns=now_ns + 14_000,
+        detections=[],
+        classes=["0"],
+        coordinate_space="roi",
+    )
+
+    accepted = service.process_detection_batch(
+        first,
+        width=480,
+        height=480,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=720,
+        roi_offset_y=300,
+    )
+    rejected_generation = service.process_detection_batch(
+        generation_rollback,
+        width=480,
+        height=480,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=720,
+        roi_offset_y=300,
+    )
+    generation_reason = service.last_inference_status["reason"]
+    generation_latest_rejected = service.last_inference_status["latest_rejected"]
+    rejected_capture = service.process_detection_batch(
+        capture_rollback,
+        width=480,
+        height=480,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=720,
+        roi_offset_y=300,
+    )
+
+    assert accepted.observation_updated is True
+    assert rejected_generation.control_intents == []
+    assert "generation must increase" in generation_reason
+    assert generation_latest_rejected is True
+    assert rejected_capture.control_intents == []
+    assert "capture_ts_ns must increase" in service.last_inference_status["reason"]
 
 
 def test_runtime_service_rejects_deepstream_untrusted_timestamp_source() -> None:

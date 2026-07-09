@@ -63,6 +63,12 @@ function formatBackendLabel(value: string): string {
   if (value === "onnxruntime") {
     return "ONNX Runtime";
   }
+  if (value === "nvmm_latest") {
+    return "NVMM Latest";
+  }
+  if (value === "deepstream") {
+    return "Full DeepStream experimental";
+  }
   return value || "未选择";
 }
 

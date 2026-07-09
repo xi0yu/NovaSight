@@ -155,7 +155,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "inference.backend",
                         "label": "推理后端",
                         "type": "select",
-                        "options": ["onnxruntime", "tensorrt", "deepstream"],
+                        "options": ["onnxruntime", "tensorrt", "nvmm_latest", "deepstream"],
                         "restart_required": True,
                     },
                     {
@@ -185,6 +185,14 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "min": 0,
                         "max": 1000000,
                         "restart_required": True,
+                    },
+                    {
+                        "path": "inference.inference_input_deadline_ms",
+                        "label": "推理输入新鲜度(ms)",
+                        "type": "float",
+                        "min": 0,
+                        "max": 1000,
+                        "restart_required": False,
                     },
                     {
                         "path": "inference.deepstream_tracker_config_path",

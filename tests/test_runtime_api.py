@@ -2063,6 +2063,37 @@ def test_runtime_start_returns_400_when_capture_not_running(tmp_path) -> None:
     assert app.state.runtime.running is False
 
 
+def test_runtime_start_nvmm_latest_uses_runtime_owned_latest_branch(tmp_path, monkeypatch) -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "nvmm_latest"
+    cfg.inference.enabled = False
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=cfg,
+    )
+    client = TestClient(app)
+    _activate(client)
+    monkeypatch.setattr(
+        "novasight.api.routes_runtime.build_deepstream_detection_source",
+        lambda _request: pytest.fail("nvmm_latest must not build Full DeepStream backend"),
+    )
+    app.state.capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+        wait_preview_frame=lambda *, after_frame_id=None, timeout_s=0.0: None,
+    )
+
+    response = client.post("/api/runtime/start")
+    stop_response = client.post("/api/runtime/stop")
+
+    assert response.status_code == 200
+    assert response.json()["detection_source"] == {}
+    assert stop_response.status_code == 200
+    assert app.state.runtime.running is False
+
+
 def test_runtime_local_trigger_endpoint_is_removed(tmp_path) -> None:
     app = create_app(
         data_dir=tmp_path / "data",

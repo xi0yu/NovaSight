@@ -2,6 +2,7 @@ from .config_store import RuntimeConfigStore
 from .detection_batch import detection_batch_to_frame_context, detection_batch_tracks
 from .failfast import FailFastHandler
 from .logging import configure_logging
+from .latest_frame import FrameHandle, LatestFrameBroker
 from .pipeline import RuntimePipeline
 from .recorder import (
     CONTROL_FRAME_FIELDS,
@@ -32,6 +33,8 @@ __all__ = [
     "RuntimePipeline",
     "RuntimeService",
     "RuntimeState",
+    "FrameHandle",
+    "LatestFrameBroker",
     "StatusHub",
     "CONTROL_FRAME_FIELDS",
     "ControlFrameCsvRecorder",

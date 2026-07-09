@@ -238,6 +238,16 @@ class RuntimePipeline:
             if not self._inference_enabled():
                 continue
             process_start_ns = time.monotonic_ns()
+            stale_input_reason = self._stale_inference_input_reason(
+                frame_capture_ts_ns=int(frame.capture_ts_ns),
+                now_ns=process_start_ns,
+            )
+            if stale_input_reason:
+                self.stats.last_error = stale_input_reason
+                self._record_skipped(process_start_ns, 1)
+                self._prune_window(self._skipped_window_ts_ns, process_start_ns)
+                self.stats.skipped_frames = len(self._skipped_window_ts_ns)
+                continue
             result = self.runtime.process_captured_frame(frame)
             self.stats.processed_frames += 1
             done_ns = time.monotonic_ns()
@@ -449,6 +459,24 @@ class RuntimePipeline:
         inference = getattr(config, "inference", None)
         return bool(getattr(consumers, "inference", True)) and bool(
             getattr(inference, "enabled", True)
+        )
+
+    def _stale_inference_input_reason(self, *, frame_capture_ts_ns: int, now_ns: int) -> str:
+        config = getattr(self.runtime, "config", None)
+        inference = getattr(config, "inference", None)
+        deadline_ms = float(getattr(inference, "inference_input_deadline_ms", 0.0) or 0.0)
+        if deadline_ms <= 0.0:
+            return ""
+        age_ms = max(0.0, (int(now_ns) - int(frame_capture_ts_ns)) / 1e6)
+        # Legacy unit seams use tiny synthetic timestamps. Only enforce the
+        # deadline for timestamps that plausibly belong to this monotonic clock.
+        if age_ms > max(3_600_000.0, deadline_ms * 100.0):
+            return ""
+        if age_ms <= deadline_ms:
+            return ""
+        return (
+            "inference input frame age exceeds deadline: "
+            f"{age_ms:.1f}ms > {deadline_ms:.1f}ms"
         )
 
     def _continuous_control_enabled(self) -> bool:

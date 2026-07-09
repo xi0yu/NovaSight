@@ -152,6 +152,14 @@ class DetectionBatch:
     classes: list[str] = field(default_factory=list)
     coordinate_space: DetectionCoordinateSpace = "roi"
     metadata: dict[str, object] = field(default_factory=dict)
+    generation: int | None = None
+    publish_ts_ns: int = 0
+    input_age_ms: float = 0.0
+    inference_ms: float = 0.0
+    result_age_ms: float = 0.0
+    source_sequence: int | None = None
+    is_stale: bool = False
+    clock_domain: str = "monotonic"
 
     def __post_init__(self) -> None:
         if int(self.frame_id) < 0:
@@ -162,9 +170,27 @@ class DetectionBatch:
             raise ValueError("DetectionBatch.inference_start_ts_ns must be positive")
         if int(self.inference_end_ts_ns) < int(self.inference_start_ts_ns):
             raise ValueError("DetectionBatch.inference_end_ts_ns must be >= inference_start_ts_ns")
+        generation = self.frame_id if self.generation is None else int(self.generation)
+        source_sequence = self.frame_id if self.source_sequence is None else int(self.source_sequence)
+        if generation < 0:
+            raise ValueError("DetectionBatch.generation must be >= 0")
+        if source_sequence < 0:
+            raise ValueError("DetectionBatch.source_sequence must be >= 0")
+        if int(self.publish_ts_ns) < 0:
+            raise ValueError("DetectionBatch.publish_ts_ns must be >= 0")
+        if not str(self.clock_domain).strip():
+            raise ValueError("DetectionBatch.clock_domain must be non-empty")
         object.__setattr__(self, "detections", list(self.detections))
         object.__setattr__(self, "classes", list(self.classes))
         object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "generation", generation)
+        object.__setattr__(self, "source_sequence", source_sequence)
+        object.__setattr__(self, "publish_ts_ns", int(self.publish_ts_ns))
+        object.__setattr__(self, "input_age_ms", float(self.input_age_ms))
+        object.__setattr__(self, "inference_ms", float(self.inference_ms))
+        object.__setattr__(self, "result_age_ms", float(self.result_age_ms))
+        object.__setattr__(self, "is_stale", bool(self.is_stale))
+        object.__setattr__(self, "clock_domain", str(self.clock_domain))
 
     @property
     def inference_latency_ms(self) -> float:

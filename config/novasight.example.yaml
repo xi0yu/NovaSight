@@ -30,6 +30,7 @@ inference:
   deepstream_tracker_config_path: ""
   deepstream_io_mode: 2
   deepstream_batched_push_timeout_us: 0
+  inference_input_deadline_ms: 55
 capture:
   device: /dev/video0
   preference: auto_high_fps

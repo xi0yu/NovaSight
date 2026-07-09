@@ -54,6 +54,7 @@ class InferenceConfig:
     deepstream_io_mode: int = 2
     deepstream_batched_push_timeout_us: int = 0
     deepstream_tracker_config_path: str = ""
+    inference_input_deadline_ms: float = 55.0
     confidence_threshold: float = 0.25
     nms_threshold: float = 0.45
     input_source: str = "source.default"
@@ -383,12 +384,16 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
     if cfg.roi.mode not in {"center", "manual"}:
         raise ValueError("unsupported ROI mode: must be center or manual")
-    if cfg.inference.backend not in {"onnxruntime", "tensorrt", "deepstream"}:
-        raise ValueError("runtime config key 'inference.backend' must be onnxruntime, tensorrt, or deepstream")
+    if cfg.inference.backend not in {"onnxruntime", "tensorrt", "deepstream", "nvmm_latest"}:
+        raise ValueError(
+            "runtime config key 'inference.backend' must be onnxruntime, tensorrt, deepstream, or nvmm_latest"
+        )
     if cfg.inference.deepstream_io_mode < 0:
         raise ValueError("runtime config key 'inference.deepstream_io_mode' must be >= 0")
     if cfg.inference.deepstream_batched_push_timeout_us < 0:
         raise ValueError("runtime config key 'inference.deepstream_batched_push_timeout_us' must be >= 0")
+    if cfg.inference.inference_input_deadline_ms < 0:
+        raise ValueError("runtime config key 'inference.inference_input_deadline_ms' must be >= 0")
     if cfg.inference.confidence_threshold < 0 or cfg.inference.confidence_threshold > 1:
         raise ValueError("runtime config key 'inference.confidence_threshold' must be >= 0 and <= 1")
     if cfg.inference.nms_threshold < 0 or cfg.inference.nms_threshold > 1:

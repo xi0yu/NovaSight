@@ -277,6 +277,7 @@ def test_runtime_config_defaults_include_inference_settings() -> None:
     assert cfg.inference.deepstream_config_path == ""
     assert cfg.inference.deepstream_io_mode == 2
     assert cfg.inference.deepstream_batched_push_timeout_us == 0
+    assert cfg.inference.inference_input_deadline_ms == 55.0
     assert cfg.inference.confidence_threshold == 0.25
     assert cfg.inference.nms_threshold == 0.45
     assert cfg.inference.input_source == "source.default"
@@ -300,6 +301,12 @@ def test_runtime_config_accepts_deepstream_backend_paths() -> None:
     assert cfg.inference.deepstream_config_path == "combat/default/deepstream.ini"
     assert cfg.inference.deepstream_io_mode == 4
     assert cfg.inference.deepstream_batched_push_timeout_us == 12000
+
+
+def test_runtime_config_accepts_nvmm_latest_backend() -> None:
+    cfg = parse_runtime_config({"inference": {"backend": "nvmm_latest"}})
+
+    assert cfg.inference.backend == "nvmm_latest"
 
 
 def test_runtime_config_round_trip(tmp_path: Path) -> None:
@@ -717,7 +724,12 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
         "inference.deepstream_config_path",
         "inference.deepstream_io_mode",
         "inference.deepstream_batched_push_timeout_us",
+        "inference.inference_input_deadline_ms",
         "inference.confidence_threshold",
         "inference.nms_threshold",
         "inference.input_source",
     }.issubset(paths)
+    backend_field = next(
+        field for field in inference_section["fields"] if field["path"] == "inference.backend"
+    )
+    assert "nvmm_latest" in backend_field["options"]
