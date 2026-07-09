@@ -1061,17 +1061,6 @@ export function StudioConsoleView({
     }
   }, [runtimeMainlineSelected, onRefresh]);
 
-  const ensureNvmmLatestMainlineConfig = useCallback(async () => {
-    const configBackend = readString(asRecord(inferenceConfig).backend, selectedRuntimeBackend);
-    const captureMemory = readString(asRecord(captureConfig).memory, "");
-    if (configBackend !== "nvmm_latest") {
-      await updateRuntimeConfigField("inference", "backend", "nvmm_latest");
-    }
-    if (captureMemory !== "nvmm") {
-      await updateRuntimeConfigField("capture", "memory", "nvmm");
-    }
-  }, [captureConfig, inferenceConfig, selectedRuntimeBackend]);
-
   const startInferenceThread = useCallback(async () => {
     setBusy("runtime.start");
     setLocalError(null);
@@ -1268,7 +1257,6 @@ export function StudioConsoleView({
     try {
       await runStage(0);
       await runStage(1, async () => {
-        await ensureNvmmLatestMainlineConfig();
         const captureState = await selectCaptureProfile(buildCapturePayload());
         assertCaptureLaunchState(captureState);
       });
@@ -1336,8 +1324,7 @@ export function StudioConsoleView({
     showLaunchToast,
     waitForLaunchFeedback,
     waitForRuntimeEvidence,
-    waitForRuntimeMainlineReady,
-    ensureNvmmLatestMainlineConfig
+    waitForRuntimeMainlineReady
   ]);
 
   const cancelMainlineLaunch = useCallback(async () => {

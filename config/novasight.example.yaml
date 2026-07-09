@@ -21,7 +21,7 @@ roi:
   offset_y: 0
 inference:
   enabled: true
-  backend: nvmm_latest
+  backend: onnxruntime
   confidence_threshold: 0.25
   nms_threshold: 0.45
   input_source: source.default
@@ -34,7 +34,7 @@ inference:
 capture:
   device: /dev/video0
   preference: auto_high_fps
-  memory: nvmm
+  memory: cpu
   pixel_format: ""
   width: 0
   height: 0
