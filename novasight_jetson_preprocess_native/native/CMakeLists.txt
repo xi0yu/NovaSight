@@ -60,30 +60,76 @@ elseif(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
         "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}"
         CACHE FILEPATH "Override path to libnvbufsurftransform"
     )
-    find_path(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
-        NAMES nvbufsurface.h
-        PATHS
-            /usr/src/jetson_multimedia_api/include
-            /opt/nvidia/deepstream/deepstream-7.1/sources/includes
-            /usr/include/aarch64-linux-gnu
-            /usr/include
+    set(_nvbuf_inc_candidates
+        /usr/src/jetson_multimedia_api/include
+        /opt/nvidia/deepstream/deepstream-7.1/sources/includes
+        /usr/include/aarch64-linux-gnu
+        /usr/include
     )
-    find_library(NOVASIGHT_NVBUFSURFACE_LIBRARY
-        NAMES nvbufsurface
-        PATHS
-            /usr/lib/aarch64-linux-gnu
-            /usr/lib/aarch64-linux-gnu/nvidia
-            /opt/nvidia/deepstream/deepstream-7.1/lib
-            /usr/lib
+    set(_nvbuf_lib_candidates
+        /usr/lib/aarch64-linux-gnu
+        /usr/lib/aarch64-linux-gnu/nvidia
+        /opt/nvidia/deepstream/deepstream-7.1/lib
+        /usr/lib
     )
-    find_library(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
-        NAMES nvbufsurftransform
-        PATHS
-            /usr/lib/aarch64-linux-gnu
-            /usr/lib/aarch64-linux-gnu/nvidia
-            /opt/nvidia/deepstream/deepstream-7.1/lib
-            /usr/lib
-    )
+    set(_nvbuf_inc_search ${_nvbuf_inc_candidates})
+    set(_nvbuf_lib_search ${_nvbuf_lib_candidates})
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR})
+        list(INSERT _nvbuf_inc_search 0 "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY})
+        get_filename_component(_env_lib_dir "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}" DIRECTORY)
+        if(_env_lib_dir)
+            list(INSERT _nvbuf_lib_search 0 "${_env_lib_dir}")
+        endif()
+        set(_nvbuf_lib_env_path "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY})
+        get_filename_component(_env_tx_dir "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}" DIRECTORY)
+        if(_env_tx_dir)
+            list(INSERT _nvbuf_lib_search 0 "${_env_tx_dir}")
+        endif()
+    endif()
+    foreach(_d IN LISTS _nvbuf_inc_search _nvbuf_lib_search)
+        if(IS_DIRECTORY "${_d}")
+            message(STATUS "novasight: probe ${_d} -> EXISTS")
+        else()
+            message(STATUS "novasight: probe ${_d} -> MISSING")
+        endif()
+    endforeach()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}
+            AND IS_DIRECTORY "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
+        set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
+            "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
+    else()
+        find_path(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
+            NAMES nvbufsurface.h
+            PATHS ${_nvbuf_inc_search}
+            NO_DEFAULT_PATH
+        )
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}
+            AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
+        set(NOVASIGHT_NVBUFSURFACE_LIBRARY
+            "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
+    else()
+        find_library(NOVASIGHT_NVBUFSURFACE_LIBRARY
+            NAMES nvbufsurface
+            PATHS ${_nvbuf_lib_search}
+            NO_DEFAULT_PATH
+        )
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}
+            AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}")
+        set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
+            "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}")
+    else()
+        find_library(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
+            NAMES nvbufsurftransform
+            PATHS ${_nvbuf_lib_search}
+            NO_DEFAULT_PATH
+        )
+    endif()
     set(_novasight_missing_requirements "")
     if(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR)
         list(APPEND _novasight_missing_requirements
