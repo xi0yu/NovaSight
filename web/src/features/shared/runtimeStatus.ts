@@ -7,6 +7,10 @@ export type RuntimeMainlineStatus = {
   pipelineLastError: string;
   terminalError: boolean;
   publishedBatches: number;
+  staleDroppedBatches: number;
+  windowStaleDroppedBatches: number;
+  maxPublishAgeMs: number;
+  lastPtsToProbeMs: number;
   tensorMetaFrames: number;
   postprocessFrames: number;
   inferenceCounter: number;
@@ -60,6 +64,26 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     captureStatistics.published_batches,
     detectionSource.published_batches
   );
+  const staleDroppedBatches = maxNumber(
+    statistics.stale_dropped_batches,
+    captureStatistics.stale_dropped_batches,
+    detectionSource.stale_dropped_batches
+  );
+  const windowStaleDroppedBatches = maxNumber(
+    statistics.window_stale_dropped_batches,
+    captureStatistics.window_stale_dropped_batches,
+    detectionSource.window_stale_dropped_batches
+  );
+  const maxPublishAgeMs = maxNumber(
+    statistics.max_publish_age_ms,
+    captureStatistics.max_publish_age_ms,
+    detectionSource.max_publish_age_ms
+  );
+  const lastPtsToProbeMs = maxNumber(
+    statistics.last_pts_to_probe_ms,
+    captureStatistics.last_pts_to_probe_ms,
+    detectionSource.last_pts_to_probe_ms
+  );
   const tensorMetaFrames = maxNumber(
     statistics.tensor_meta_frames,
     captureStatistics.tensor_meta_frames,
@@ -87,8 +111,19 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     inferenceCounter > 0 ||
     maxNumber(statistics.control_observation_counter, captureStatistics.control_observation_counter) > 0 ||
     maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
+  const staleDropFailure =
+    staleDroppedBatches > 0 &&
+    tensorMetaFrames > 0 &&
+    postprocessFrames > 0 &&
+    publishedBatches <= 0 &&
+    inferenceCounter <= 0;
+  const staleDropFailureMessage = staleDropFailure
+    ? `DeepStream 已产生 TensorMeta/Postprocess，但所有 DetectionBatch 均超过 ${maxPublishAgeMs || 55}ms 新鲜度阈值并在进入 runtime 前丢弃；PTS到Probe=${lastPtsToProbeMs.toFixed(1)}ms。`
+    : "";
+  const resolvedFailureMessage = staleDropFailureMessage || failureMessage;
   const progressSummary = [
     `published=${publishedBatches}`,
+    `stale=${staleDroppedBatches}`,
     `tensor=${tensorMetaFrames}`,
     `postprocess=${postprocessFrames}`,
     `consumed=${inferenceCounter}`
@@ -98,6 +133,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     runtime?.fatal_error !== null && runtime?.fatal_error !== undefined
       ? true
       : terminalError ||
+        staleDropFailure ||
         pipelineLastError !== "" ||
         (detectionSource.available === false && (running || failureMessage !== "")) ||
         (detectionSource.running === false && running && failureMessage !== "");
@@ -105,10 +141,14 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   return {
     running,
     failed,
-    failureMessage,
+    failureMessage: resolvedFailureMessage,
     pipelineLastError,
     terminalError,
     publishedBatches,
+    staleDroppedBatches,
+    windowStaleDroppedBatches,
+    maxPublishAgeMs,
+    lastPtsToProbeMs,
     tensorMetaFrames,
     postprocessFrames,
     inferenceCounter,
