@@ -217,7 +217,13 @@ class CaptureLoop(threading.Thread):
 
 def _appsink_pipeline(plan: PipelinePlan) -> str:
     pipeline = plan.generate_gst_launch_string()
-    sink = "appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+    latest_queue = (
+        "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream"
+    )
+    sink = (
+        f"{latest_queue} ! "
+        "appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+    )
     return pipeline.rsplit("!", 1)[0].strip() + f" ! {sink}"
 
 

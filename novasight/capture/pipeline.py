@@ -7,6 +7,9 @@ from novasight.roi import center_roi_region
 
 from .state import CaptureProfile
 
+LATEST_ONLY_QUEUE = "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream"
+
+
 @dataclass(frozen=True)
 class CaptureCandidate:
     label: str
@@ -31,7 +34,7 @@ def build_pipeline_candidates(profile: CaptureProfile) -> list[CaptureCandidate]
     height = profile.height
     fps = profile.fps
     fmt = profile.pixel_format.upper()
-    sink = "appsink drop=true max-buffers=1 sync=false"
+    sink = f"{LATEST_ONLY_QUEUE} ! appsink drop=true max-buffers=1 sync=false"
 
     mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
     nv12_caps = f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
@@ -128,7 +131,10 @@ def build_appsink_candidates(
     else:
         output_width = width
         output_height = height
-    sink = "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+    sink = (
+        f"{LATEST_ONLY_QUEUE} ! "
+        "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+    )
 
     mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
     nv12_caps = f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
@@ -243,7 +249,10 @@ def build_resource_appsink_candidates(
     else:
         output_width = width
         output_height = height
-    sink = "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+    sink = (
+        f"{LATEST_ONLY_QUEUE} ! "
+        "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+    )
 
     mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
     nv12_caps = f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"

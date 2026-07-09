@@ -15,6 +15,13 @@ from novasight.config import (
     save_runtime_config,
 )
 from novasight.config.schema import runtime_config_schema
+from novasight.capture.pipeline import (
+    LATEST_ONLY_QUEUE,
+    build_appsink_candidates,
+    build_pipeline_candidates,
+    build_resource_appsink_candidates,
+)
+from novasight.capture.state import CaptureProfile
 
 
 def test_packaging_includes_jetson_bridge_adapter_packages() -> None:
@@ -190,6 +197,32 @@ def test_runtime_config_defaults_are_stable() -> None:
     # Old attributes that drove the first prototype must not have leaked back.
     assert not hasattr(cfg, "model_path")
     assert not hasattr(cfg, "plugin_settings")
+
+
+def test_capture_gstreamer_candidates_have_upstream_latest_only_queue() -> None:
+    profile = CaptureProfile(
+        device="/dev/video0",
+        width=1920,
+        height=1080,
+        fps=120,
+        pixel_format="MJPG",
+        preference="manual",
+        selection_reason="test",
+    )
+
+    candidates = [
+        *build_pipeline_candidates(profile),
+        *build_appsink_candidates(profile, roi_size=640),
+        *build_resource_appsink_candidates(profile, roi_size=640),
+    ]
+
+    assert candidates
+    for candidate in candidates:
+        assert LATEST_ONLY_QUEUE in candidate.pipeline
+        assert "appsink" in candidate.pipeline
+        assert "max-buffers=1" in candidate.pipeline
+        assert "drop=true" in candidate.pipeline
+        assert candidate.pipeline.index(LATEST_ONLY_QUEUE) < candidate.pipeline.rindex("appsink")
 
 
 def test_runtime_config_defaults_include_experimental_angle_settings() -> None:
