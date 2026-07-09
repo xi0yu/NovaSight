@@ -509,12 +509,12 @@ class DeepStreamDetectionBackend:
                 self._postprocess_frames += 1
                 self._postprocess_window_ts_ns.append(inference_end_ts_ns)
             if self._batch_age_exceeds_publish_limit_locked(batch):
-                self._stale_dropped_batches += 1
-                self._stale_drop_window_ts_ns.append(inference_end_ts_ns)
-                self._prune_publish_window_locked(inference_end_ts_ns)
-                self._last_error = (
-                    "DeepStream DetectionBatch dropped before runtime: "
-                    f"age {self._batch_age_ms(batch):.1f}ms > {self.max_publish_age_ms:.1f}ms"
+                self._record_stale_drop_locked(
+                    inference_end_ts_ns,
+                    (
+                        "DeepStream DetectionBatch dropped before runtime: "
+                        f"age {self._batch_age_ms(batch):.1f}ms > {self.max_publish_age_ms:.1f}ms"
+                    ),
                 )
                 return
             self._last_result = batch
@@ -538,6 +538,12 @@ class DeepStreamDetectionBackend:
             )
         except Exception:
             return 0.0
+
+    def _record_stale_drop_locked(self, timestamp_ns: int, reason: str) -> None:
+        self._stale_dropped_batches += 1
+        self._stale_drop_window_ts_ns.append(int(timestamp_ns))
+        self._prune_publish_window_locked(int(timestamp_ns))
+        self._last_error = reason
 
     def _publish_window_fps_locked(self) -> float:
         return self._window_fps_locked(self._publish_window_ts_ns)
@@ -567,11 +573,48 @@ class DeepStreamDetectionBackend:
         nvinfer = pipeline.get_by_name("primary-infer")
         if nvinfer is None:
             raise RuntimeError("DeepStream pipeline missing primary-infer element")
+        sink_pad = nvinfer.get_static_pad("sink")
+        if sink_pad is None:
+            raise RuntimeError("DeepStream primary-infer element has no sink pad")
         src_pad = nvinfer.get_static_pad("src")
         if src_pad is None:
             raise RuntimeError("DeepStream primary-infer element has no src pad")
         Gst = importlib.import_module("gi.repository.Gst")
+        sink_pad.add_probe(Gst.PadProbeType.BUFFER, self._drop_stale_input_probe)
         src_pad.add_probe(Gst.PadProbeType.BUFFER, self._tensor_probe)
+
+    def _drop_stale_input_probe(self, _pad: Any, info: Any) -> Any:
+        Gst = importlib.import_module("gi.repository.Gst")
+        try:
+            buffer = info.get_buffer()
+            if buffer is None:
+                return Gst.PadProbeReturn.OK
+            observed_ns = time.monotonic_ns()
+            raw_pts_ns = _buffer_pts_ns(buffer)
+            capture_ts_ns = self._capture_ts_from_pts(raw_pts_ns, observed_ns=observed_ns)
+            age_ms = max(0.0, (int(observed_ns) - int(capture_ts_ns)) / 1e6)
+            with self._lock:
+                self._last_raw_pts_ns = raw_pts_ns
+                self._last_capture_ts_ns = int(capture_ts_ns)
+                self._last_probe_observed_ts_ns = int(observed_ns)
+                if (
+                    self._terminal_error
+                    or not self._running
+                    or self.max_publish_age_ms <= 0.0
+                    or age_ms <= self.max_publish_age_ms
+                ):
+                    return Gst.PadProbeReturn.OK
+                self._record_stale_drop_locked(
+                    observed_ns,
+                    f"DeepStream buffer dropped before nvinfer: age {age_ms:.1f}ms > {self.max_publish_age_ms:.1f}ms",
+                )
+                return Gst.PadProbeReturn.DROP
+        except Exception as exc:
+            self._record_terminal_error(
+                f"DeepStream stale input probe failed: {exc}",
+                release_pipeline=False,
+            )
+            return Gst.PadProbeReturn.OK
 
     def _tensor_probe(self, _pad: Any, info: Any) -> Any:
         Gst = importlib.import_module("gi.repository.Gst")
@@ -820,6 +863,18 @@ def _nearest_rank_percentile(values: list[float], percentile: float) -> float:
     rank = int(round((float(percentile) / 100.0) * (len(values) - 1)))
     rank = max(0, min(len(values) - 1, rank))
     return values[rank]
+
+
+def _buffer_pts_ns(buffer: Any) -> int:
+    value = getattr(buffer, "pts", None)
+    if value is None:
+        get_pts = getattr(buffer, "get_pts", None)
+        if callable(get_pts):
+            value = get_pts()
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _format_gst_error(message: Any) -> str:
