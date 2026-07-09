@@ -431,7 +431,55 @@ def test_nvmm_frame_resource_records_gst_buffer_pointer_when_dmabuf_is_absent() 
     class FakeBuffer:
         pts = 11
         dts = 22
+        # Simulate pygobject exposing a real GObject pointer via __gpointer__.
+        # The capture pipeline relies on this attribute rather than hash(obj)
+        # — the latter is Python's object id, not a real GstBuffer*, and
+        # would make the native bridge reinterpret_cast a garbage value
+        # and segfault inside gst_buffer_ref.
+        __gpointer__ = 0x7F00_AB12_3456_0000
 
+        def n_memory(self) -> int:
+            return 0
+
+    class FakeSample:
+        def __init__(self) -> None:
+            self.buffer = FakeBuffer()
+
+        def get_buffer(self) -> FakeBuffer:
+            return self.buffer
+
+        def get_caps(self) -> FakeCaps:
+            return FakeCaps()
+
+    resource = _sample_frame_resource(
+        FakeSample(),
+        SimpleNamespace(),
+        width=640,
+        height=640,
+        pixel_format="NV12",
+    )
+
+    assert resource is not None
+    assert resource.memory == "nvmm"
+    assert resource.dmabuf_fd is None
+    assert resource.gst_buffer_ptr == 0x7F00_AB12_3456_0000
+    assert resource.metadata["gst_buffer_ptr"] == 0x7F00_AB12_3456_0000
+
+
+def test_nvmm_frame_resource_omits_gst_buffer_pointer_without_real_pointer_attr() -> None:
+    # When the buffer exposes neither __gpointer__ nor __pointer__ nor gpointer,
+    # capture MUST NOT synthesize a pseudo-pointer from hash(obj). Dropping the
+    # hash() fallback means gst_buffer_ptr is None, which forces the bridge to
+    # raise a clean error instead of segfaulting on a bad cast.
+    class FakeFeatures:
+        def to_string(self) -> str:
+            return "memory:NVMM"
+
+    class FakeCaps:
+        def get_features(self, _index: int) -> FakeFeatures:
+            return FakeFeatures()
+
+    class FakeBuffer:
         def __hash__(self) -> int:
             return 987654
 
@@ -459,8 +507,8 @@ def test_nvmm_frame_resource_records_gst_buffer_pointer_when_dmabuf_is_absent() 
     assert resource is not None
     assert resource.memory == "nvmm"
     assert resource.dmabuf_fd is None
-    assert resource.gst_buffer_ptr == 987654
-    assert resource.metadata["gst_buffer_ptr"] == 987654
+    assert resource.gst_buffer_ptr is None
+    assert resource.metadata["gst_buffer_ptr"] is None
 
 
 def test_nvmm_gstreamer_sample_without_dmabuf_uses_gst_buffer_pointer_fallback(

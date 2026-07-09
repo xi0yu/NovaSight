@@ -747,6 +747,11 @@ def _valid_fd(value: Any) -> int | None:
 
 
 def _gobject_pointer(obj: Any) -> int | None:
+    # Only honor real GObject pointer attributes exposed by pygobject. Falling
+    # back to hash(obj) (Python's object id) produces an arbitrary positive
+    # integer that is _not_ a real GstBuffer*; the native bridge would then
+    # reinterpret_cast that id and crash inside gst_buffer_ref. Returning
+    # None here forces the bridge to surface a clean error instead.
     for attr in ("__gpointer__", "__pointer__", "gpointer"):
         try:
             value = getattr(obj, attr)
@@ -760,11 +765,7 @@ def _gobject_pointer(obj: Any) -> int | None:
         result = _valid_pointer(value)
         if result is not None:
             return result
-    try:
-        value = hash(obj)
-    except Exception:
-        return None
-    return _valid_pointer(value)
+    return None
 
 
 def _valid_pointer(value: Any) -> int | None:
