@@ -21,6 +21,7 @@ import {
   getModelArtifacts,
   getModelVersions,
   publishModel,
+  scanModelDirectory,
   selectCaptureProfile,
   startRuntimePipeline,
   stopCapture,
@@ -396,6 +397,7 @@ export function StudioConsoleView({
   const [selectedModelArtifactId, setSelectedModelArtifactId] = useState<number | "">("");
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [modelArtifacts, setModelArtifacts] = useState<ModelArtifact[]>([]);
+  const [modelCatalogRefreshKey, setModelCatalogRefreshKey] = useState(0);
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
   const [kmnetTestMs, setKmnetTestMs] = useState(300);
@@ -420,6 +422,8 @@ export function StudioConsoleView({
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
+  const loadedModelProjectIdRef = useRef<number | "">("");
+  const loadedModelVersionIdRef = useRef<number | "">("");
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
   const launchCancelledRef = useRef(false);
@@ -962,6 +966,7 @@ export function StudioConsoleView({
 
   useEffect(() => {
     if (selectedModelProjectId === "") {
+      loadedModelProjectIdRef.current = "";
       setModelVersions([]);
       setSelectedModelVersionId("");
       setModelArtifacts([]);
@@ -969,10 +974,14 @@ export function StudioConsoleView({
       return;
     }
     let cancelled = false;
-    setModelVersions([]);
-    setSelectedModelVersionId("");
-    setModelArtifacts([]);
-    setSelectedModelArtifactId("");
+    const projectChanged = loadedModelProjectIdRef.current !== selectedModelProjectId;
+    loadedModelProjectIdRef.current = selectedModelProjectId;
+    if (projectChanged) {
+      setModelVersions([]);
+      setSelectedModelVersionId("");
+      setModelArtifacts([]);
+      setSelectedModelArtifactId("");
+    }
     getModelVersions(selectedModelProjectId)
       .then((items) => {
         if (cancelled) {
@@ -1000,17 +1009,22 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [runtime?.active_model?.version?.id, selectedModelProjectId]);
+  }, [modelCatalogRefreshKey, runtime?.active_model?.version?.id, selectedModelProjectId]);
 
   useEffect(() => {
     if (selectedModelVersionId === "") {
+      loadedModelVersionIdRef.current = "";
       setModelArtifacts([]);
       setSelectedModelArtifactId("");
       return;
     }
     let cancelled = false;
-    setModelArtifacts([]);
-    setSelectedModelArtifactId("");
+    const versionChanged = loadedModelVersionIdRef.current !== selectedModelVersionId;
+    loadedModelVersionIdRef.current = selectedModelVersionId;
+    if (versionChanged) {
+      setModelArtifacts([]);
+      setSelectedModelArtifactId("");
+    }
     getModelArtifacts(selectedModelVersionId)
       .then((items) => {
         if (cancelled) {
@@ -1045,7 +1059,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [selectedModelVersionId]);
+  }, [modelCatalogRefreshKey, selectedModelVersionId]);
 
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
@@ -1731,9 +1745,24 @@ export function StudioConsoleView({
       const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
       setModelSwitchMessage(response.report?.message ?? "模型已切换，推理运行态已刷新。");
       await onRefresh();
+      setModelCatalogRefreshKey((current) => current + 1);
     } catch (err) {
       setLocalError(`模型切换失败，当前运行模型已保留：${getErrorMessage(err)}`);
       await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refreshModelCatalog = async () => {
+    setBusy("model.refresh");
+    setLocalError(null);
+    try {
+      await scanModelDirectory();
+      await onRefresh();
+      setModelCatalogRefreshKey((current) => current + 1);
+    } catch (err) {
+      setLocalError(`模型文件刷新失败：${getErrorMessage(err)}`);
     } finally {
       setBusy(null);
     }
@@ -2058,6 +2087,15 @@ export function StudioConsoleView({
           <div className="console-grid2">
             <div className="console-card">
               <SectionTitle title="模型设置" />
+              <button
+                className="console-button secondary console-full-button"
+                disabled={busy === "model.refresh"}
+                onClick={() => void refreshModelCatalog()}
+                type="button"
+              >
+                <NovaIcon name="refresh" size={15} />
+                {busy === "model.refresh" ? "刷新中..." : "刷新模型文件"}
+              </button>
               <label>模型文件</label>
               <select
                 value={selectedModelProjectId}
@@ -2211,7 +2249,6 @@ export function StudioConsoleView({
               <SectionTitle title="推理预览" />
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
-                imageEnabled={!runtimeMainlineSelected}
                 runtime={runtime}
                 roiSize={roiSize}
               />
@@ -3350,12 +3387,10 @@ function percent(value: number, total: number): string {
 
 function PreviewFrame({
   enabled,
-  imageEnabled = true,
   runtime,
   roiSize
 }: {
   enabled: boolean;
-  imageEnabled?: boolean;
   runtime: RuntimeState | null;
   roiSize: number;
 }) {
@@ -3372,7 +3407,7 @@ function PreviewFrame({
   const targetCy = readNullableNumber(target.cy);
   const targetAimX = readNullableNumber(target.aim_x) ?? targetCx;
   const targetAimY = readNullableNumber(target.aim_y) ?? targetCy;
-  const showImage = enabled && imageEnabled && runtime?.capture?.available;
+  const showImage = enabled && runtime?.capture?.available;
   const showOverlay = enabled && detections.length > 0;
   const selectedDetection = detections.find((item) => (
     targetDetectionIndex !== null

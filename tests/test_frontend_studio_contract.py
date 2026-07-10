@@ -17,6 +17,14 @@ DEVICES_VIEW = (
     / "devices"
     / "DevicesView.tsx"
 )
+DASHBOARD_VIEW = (
+    Path(__file__).resolve().parents[1]
+    / "web"
+    / "src"
+    / "features"
+    / "dashboard"
+    / "DashboardView.tsx"
+)
 
 
 def _roi_card_source() -> str:
@@ -38,6 +46,29 @@ def test_studio_mainline_mode_includes_tensorrt_runtime_backend() -> None:
 
     assert 'selectedRuntimeBackend === "nvmm_latest"' not in source
     assert 'new Set(["nvmm_latest", "tensorrt"])' in source
+
+
+def test_studio_mainline_preview_uses_capture_stream_image() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'imageEnabled={!runtimeMainlineSelected}' not in source
+    assert '{showImage ? <img alt="实时画面 / ROI"' in source
+
+
+def test_dashboard_mainline_preview_uses_capture_stream_image() -> None:
+    source = DASHBOARD_VIEW.read_text(encoding="utf-8")
+
+    assert "previewEnabled && !runtimeMainlineSelected" not in source
+    assert 'capture?.available && previewEnabled ? (' in source
+    assert "Tensor Overlay" not in source
+
+
+def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert "modelCatalogRefreshKey" in source
+    assert "refreshModelCatalog" in source
+    assert "[modelCatalogRefreshKey, selectedModelVersionId]" in source
 
 
 def test_devices_mainline_mode_includes_tensorrt_runtime_backend() -> None:

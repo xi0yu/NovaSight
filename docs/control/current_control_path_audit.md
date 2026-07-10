@@ -231,18 +231,18 @@ The current configuration schema exposes only `control.mode` plus nested `calibr
 
 ## Capture Content Evidence
 
-The NVMM path proves resource type, caps, dimensions, frame/generation monotonicity, timestamp age, overwrite count, and inference execution. It does not currently prove that pixels contain a valid nonblack source image. `GstResourceFrameSource` intentionally keeps `CapturedFrame.image=None`; the MJPEG preview therefore cannot encode this zero-copy resource without a separate GPU-to-preview conversion.
+The NVMM path proves resource type, caps, dimensions, frame/generation monotonicity, timestamp age, overwrite count, and inference execution. It does not by itself prove that pixels contain a valid nonblack source image. `GstResourceFrameSource` keeps `CapturedFrame.image=None` for inference and now receives a separate, leaky `preview_sink` branch from the same GStreamer pipeline. The branch holds only the latest CPU-readable preview sample; MJPEG mapping and encoding happen when a preview consumer requests it and never become TensorRT input.
 
 Capture telemetry now reports:
 
 ```text
 content_validation_status: not_integrated
 content_validation_reason: NVMM zero-copy frame has no GPU luma/variance probe
-preview_available: false
-preview_reason: NVMM zero-copy preview conversion is not integrated
+preview_available: true after the preview branch emits its first snapshot
+preview_reason: empty after successful MJPEG output
 ```
 
-These values are deliberate unavailable states, not capture failures. A real black/frozen-frame decision requires a native GPU luma/variance or sampled-thumbnail probe and thresholds validated on the Jetson capture card. Until that exists, frame arrival and successful inference must not be described as proof that the source image is visually correct.
+The content-validation values are deliberate unavailable states, not capture failures. The preview makes the real ROI visible to an operator, but automatic black/frozen-frame detection still requires a native GPU luma/variance or sampled-thumbnail probe and thresholds validated on the Jetson capture card. Until that exists, frame arrival and successful inference must not be described as proof that the source image is visually correct.
 
 ## Remaining Physical Uncertainty
 

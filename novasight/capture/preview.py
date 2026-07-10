@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from typing import Any
 
-from novasight.capture.source import CapturedFrame
+from novasight.capture.source import CapturedFrame, gstreamer_sample_to_bgr
 from novasight.contracts import Detection
 from novasight.roi import center_roi_frame
 
 MAX_PREVIEW_DETECTION_FRAME_LAG = 6
+logger = logging.getLogger("novasight.capture.preview")
 
 
 def render_preview_frame(
@@ -17,15 +20,26 @@ def render_preview_frame(
     roi_offset_x: int = 0,
     roi_offset_y: int = 0,
 ) -> Any:
+    preview_image = frame.image
+    if preview_image is None:
+        preview_image = getattr(frame, "preview_image", None)
+    if preview_image is None:
+        preview_resource = getattr(frame, "preview_resource", None)
+        if getattr(preview_resource, "kind", "") == "gstreamer_preview_sample":
+            try:
+                preview_image = gstreamer_sample_to_bgr(preview_resource.handle)
+            except Exception as exc:
+                logger.warning("preview sample conversion failed: %s", exc)
+    if preview_image is None:
+        return None
+    preview_frame = frame if preview_image is frame.image else replace(frame, image=preview_image)
     roi = center_roi_frame(
-        frame,
+        preview_frame,
         requested_size=roi_size,
         offset_x=roi_offset_x,
         offset_y=roi_offset_y,
     )
     image = roi.image
-    if image is None:
-        return image
     detections = _runtime_roi_detections(
         runtime,
         frame_id=frame.frame_id,

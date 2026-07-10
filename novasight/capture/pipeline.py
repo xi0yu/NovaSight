@@ -255,9 +255,19 @@ def build_resource_appsink_candidates(
     else:
         output_width = width
         output_height = height
-    sink = (
+    inference_sink = (
         f"{LATEST_ONLY_QUEUE} ! "
         "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false"
+    )
+    preview_sink = (
+        f"{LATEST_ONLY_QUEUE} ! nvvidconv ! "
+        f"video/x-raw,format=BGRx,width={output_width},height={output_height} ! "
+        "appsink name=preview_sink emit-signals=false max-buffers=1 drop=true sync=false"
+    )
+    split = (
+        "tee name=novasight_preview_split "
+        f"novasight_preview_split. ! {inference_sink} "
+        f"novasight_preview_split. ! {preview_sink}"
     )
 
     mjpg_caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
@@ -280,9 +290,9 @@ def build_resource_appsink_candidates(
         f"width={output_width},height={output_height}"
     )
     nvvidconv = f"nvvidconv{crop_properties}"
-    mjpg_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {resource_caps} ! {sink}"
-    nv12_tail = f"{nvvidconv} ! {resource_caps} ! {sink}"
-    yuyv_tail = f"{nvvidconv} ! {resource_caps} ! {sink}"
+    mjpg_tail = f"jpegparse ! nvv4l2decoder mjpeg=1 ! {nvvidconv} ! {resource_caps} ! {split}"
+    nv12_tail = f"{nvvidconv} ! {resource_caps} ! {split}"
+    yuyv_tail = f"{nvvidconv} ! {resource_caps} ! {split}"
 
     mjpg = [
         gst(

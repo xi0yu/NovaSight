@@ -301,7 +301,7 @@ def _mjpeg_frames(
             capture.record_preview_drop(target_fps=preview_fps)
             capture.state.preview_available = False
             capture.state.preview_reason = (
-                "NVMM zero-copy preview conversion is not integrated"
+                "NVMM preview branch has not produced a CPU snapshot"
                 if frame.image is None
                 else "capture stream jpeg encode failed"
             )

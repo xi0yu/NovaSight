@@ -48,6 +48,8 @@ class CapturedFrame:
     ts_ns: int
     capture_wait_ms: float
     image: Any
+    preview_image: Any | None = None
+    preview_resource: FrameResource | None = None
     frame_resource: FrameResource | None = None
     userspace_process_ms: float = 0.0
     source_ts_ns: int | None = None
@@ -296,6 +298,8 @@ class GstAppSinkFrameSource:
         self._pipeline = Gst.parse_launch(candidate.pipeline)
         self._closed = False
         self._appsink = self._pipeline.get_by_name("sink")
+        self._preview_appsink = self._pipeline.get_by_name("preview_sink")
+        self._latest_preview_resource = None
         if self._appsink is None:
             self._stop_pipeline()
             raise RuntimeError("appsink element not found")
@@ -407,6 +411,7 @@ class GstResourceFrameSource(GstAppSinkFrameSource):
             raise RuntimeError(
                 f"GStreamer resource appsink produced non GPU-accessible memory: {memory}"
             )
+        preview_resource = self._pull_latest_preview_resource(width=width, height=height)
         ready_ts_ns = time.monotonic_ns()
         self._frame_id += 1
         return CapturedFrame(
@@ -417,6 +422,7 @@ class GstResourceFrameSource(GstAppSinkFrameSource):
             ts_ns=receive_ts_ns,
             capture_wait_ms=(receive_ts_ns - t0) / 1e6,
             image=None,
+            preview_resource=preview_resource,
             frame_resource=frame_resource,
             userspace_process_ms=(ready_ts_ns - receive_ts_ns) / 1e6,
             source_backend=self.backend_label,
@@ -430,6 +436,25 @@ class GstResourceFrameSource(GstAppSinkFrameSource):
             roi_offset_x=self._candidate.roi_offset_x,
             roi_offset_y=self._candidate.roi_offset_y,
         )
+
+    def _pull_latest_preview_resource(self, *, width: int, height: int) -> FrameResource | None:
+        appsink = self._preview_appsink
+        if appsink is None:
+            return None
+        sample = appsink.try_pull_sample(0)
+        if sample is None:
+            return self._latest_preview_resource
+        resource = FrameResource(
+            kind="gstreamer_preview_sample",
+            handle=sample,
+            memory="cpu",
+            width=int(width),
+            height=int(height),
+            pixel_format="BGRX",
+            source="preview_sink",
+        )
+        self._latest_preview_resource = resource
+        return resource
 
 
 CpuCompatibleCaptureBackend = GstAppSinkFrameSource
@@ -884,6 +909,18 @@ def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int, str]:
         return image, width, height, str(fmt or "")
     finally:
         buffer.unmap(info)
+
+
+def gstreamer_sample_to_bgr(sample: Any) -> Any:
+    try:
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+    except Exception as exc:
+        raise RuntimeError(f"PyGObject Gst unavailable for preview conversion: {exc}") from exc
+    image, _width, _height, _format = _sample_to_bgr(sample, Gst)
+    return image
 
 
 def _sample_has_gpu_accessible_memory(sample: Any, buffer: Any) -> bool:

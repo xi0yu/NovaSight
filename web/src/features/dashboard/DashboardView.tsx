@@ -544,7 +544,7 @@ export function DashboardView({
             className="home-video"
             style={{ "--roi-display-size": `${roiSize}px` } as CSSProperties}
           >
-            {capture?.available && previewEnabled && !runtimeMainlineSelected ? (
+            {capture?.available && previewEnabled ? (
               <img alt="实时采集画面" src={streamUrl(configVersion, configVersion)} />
             ) : null}
             <div className="home-video-grid" />
@@ -574,7 +574,7 @@ export function DashboardView({
               {aimPointStyle ? <div className="home-aim-point" style={aimPointStyle} /> : null}
             </div>
             <div className="home-hud home-hud-left">
-              <span>预览 {runtimeMainlineSelected ? "Tensor Overlay" : previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
+              <span>预览 {previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
               <span>{captureMode(capture, configuredCaptureProfile)}</span>
               <span>ROI {roiSize}</span>
               <span>GPU 路线</span>

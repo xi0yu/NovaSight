@@ -244,6 +244,28 @@ def test_capture_gstreamer_candidates_have_upstream_latest_only_queue() -> None:
         assert candidate.pipeline.index(LATEST_ONLY_QUEUE) < candidate.pipeline.rindex("appsink")
 
 
+def test_nvmm_resource_candidates_include_decoupled_preview_branch() -> None:
+    profile = CaptureProfile(
+        device="/dev/video0",
+        width=1920,
+        height=1080,
+        fps=120,
+        pixel_format="MJPG",
+        preference="manual",
+        selection_reason="test",
+    )
+
+    candidates = build_resource_appsink_candidates(profile, roi_size=640)
+
+    assert candidates
+    for candidate in candidates:
+        assert candidate.pipeline.count("v4l2src") == 1
+        assert "tee name=novasight_preview_split" in candidate.pipeline
+        assert "appsink name=sink" in candidate.pipeline
+        assert "appsink name=preview_sink" in candidate.pipeline
+        assert "video/x-raw,format=BGRx,width=640,height=640" in candidate.pipeline
+
+
 def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings() -> None:
     cfg = RuntimeConfig()
 
