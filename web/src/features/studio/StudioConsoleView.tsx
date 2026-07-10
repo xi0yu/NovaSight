@@ -1958,18 +1958,26 @@ export function StudioConsoleView({
                   <option value="manual">手动偏移</option>
                 </select>
                 <label>ROI 尺寸</label>
-                <div className="console-row">
-                  <input
-                    type="range"
-                    min="256"
-                    max="640"
-                    step="64"
-                    value={roiSize}
-                    onChange={(event) => void updateConfigField("roi", "size", nearestRoiSize(Number(event.target.value)))}
-                  />
-                  <select value={roiSize} onChange={(event) => void updateConfigField("roi", "size", Number(event.target.value))}>
-                    {ROI_SIZE_CHOICES.map((size) => <option key={size} value={size}>{size}</option>)}
-                  </select>
+                <CommitNumberControl
+                  value={roiSize}
+                  min={256}
+                  max={640}
+                  step={16}
+                  digits={0}
+                  onCommit={(value) => updateConfigField("roi", "size", nearestRoiSize(value))}
+                />
+                <div className="mini-segmented roi-size-segmented" role="group" aria-label="ROI 尺寸">
+                  {ROI_SIZE_CHOICES.map((size) => (
+                    <button
+                      className={roiSize === size ? "active" : ""}
+                      disabled={busy === "roi.size"}
+                      key={size}
+                      onClick={() => void updateConfigField("roi", "size", size)}
+                      type="button"
+                    >
+                      {size}
+                    </button>
+                  ))}
                 </div>
                 <NumberControl label="水平偏移" value={roiOffsetX} min={-1280} max={1280} step={16} onCommit={(value) => updateConfigField("roi", "offset_x", Math.round(value))} />
                 <NumberControl label="垂直偏移" value={roiOffsetY} min={-720} max={720} step={16} onCommit={(value) => updateConfigField("roi", "offset_y", Math.round(value))} />
