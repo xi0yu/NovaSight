@@ -1041,38 +1041,15 @@ class RuntimeService:
                 "estimated_target_state": strategy_metadata.get("estimated_target_state"),
                 "compensated_target": strategy_metadata.get("compensated_target"),
             }
-            self.last_control = {
-                "frame_id": context.frame_id,
-                "capture_ts_ns": context.capture_ts_ns,
-                "control_now_ts_ns": control_now_ns,
-                "trajectory_generation": int(context.generation or context.frame_id),
-                "global_state": self._global_state_from_selection_state(selection.state),
-                "selector_state": selection.state,
-                "selection_reason": selection.reason,
-                "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
-                "candidate_filter": self._candidate_filter_payload(selector_debug),
-                "track_diagnostics": track_diagnostics,
-                "target_key": target_key,
-                "target_detection_index": self._target_detection_index(context, target),
-                "priority_rank": selection.priority_rank,
-                "distance_px": selection.distance_px,
-                "quality_score": selection.quality_score,
-                "inside_fov": selection.inside_fov,
-                "candidates": selection.candidates,
-                "pipeline": {
-                    "tracker": observer_debug,
-                    "aim_point": strategy_metadata.get("aim_point"),
-                    "estimated_target_state": strategy_metadata.get("estimated_target_state"),
-                    "compensated_target": strategy_metadata.get("compensated_target"),
-                    "latency_compensation": strategy_metadata.get("latency_compensation"),
-                },
-                "aim_point": strategy_metadata.get("aim_point"),
-                "estimated_target_state": strategy_metadata.get("estimated_target_state"),
-                "compensated_target": strategy_metadata.get("compensated_target"),
-                "latency_compensation": strategy_metadata.get("latency_compensation"),
-                "will_emit": False,
-                "observation_only": True,
-            }
+            # NOTE: do NOT overwrite self.last_control here. The frontend's
+            # aim-px/dy/raw-dy/PID/driver fields are derived from a
+            # fully-populated last_control produced by the control-loop tick
+            # in _control_intent_from_context. Clobbering it with this
+            # observation-only snapshot sends the UI to NaN/None on every
+            # frame whose observation outruns the next 16ms control tick,
+            # which is "almost always" because inference is sub-millisecond.
+            # The control tick thread owns last_control; we only own
+            # last_target and the K+1 frame context.
             self.last_execution = None
         return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
 
