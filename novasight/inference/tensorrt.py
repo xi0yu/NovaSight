@@ -12,7 +12,6 @@ from .input import (
     PreparedTensorInput,
     TensorInputShape,
     normalize_tensor_dtype,
-    parse_tensor_input_shape,
     prepare_tensor_input,
 )
 from .geometry import map_model_detections_to_roi_frame, preprocess_debug
@@ -195,12 +194,7 @@ class TensorRtInferenceEngine:
         self._last_preprocess_backend = ""
         self._last_preprocess_reason = ""
         self._last_preprocess_timings = {}
-        requested_shape = (
-            _tensor_input_shape_tuple(parse_tensor_input_shape(input_shape))
-            if str(input_shape or "").strip()
-            else None
-        )
-        self._load_engine(artifact_path, requested_shape=requested_shape)
+        self._load_engine(artifact_path, requested_shape=None)
         self._loaded = True
         self._warmup()
 
@@ -833,14 +827,7 @@ def _resolve_input_shape(
     engine_shape: tuple[int, ...],
     requested_shape: tuple[int, int, int, int] | None = None,
 ) -> tuple[tuple[int, ...], str, dict[str, tuple[int, ...]]]:
-    if requested_shape is not None:
-        _validate_requested_shape_matches_engine(requested_shape, engine_shape)
-        if -1 not in engine_shape:
-            return tuple(requested_shape), "requested_static", {}
-        profile_shapes = _read_input_profile_shapes(engine, input_name)
-        _validate_requested_shape_within_profile(requested_shape, profile_shapes)
-        return tuple(requested_shape), "requested", profile_shapes
-
+    del requested_shape
     if -1 not in engine_shape:
         return engine_shape, "engine_static", {}
 
@@ -853,64 +840,6 @@ def _resolve_input_shape(
         f"TensorRT dynamic input shape requires a static optimization profile opt shape, "
         f"got engine_shape={engine_shape} input={input_name} profile={profile_shapes}"
     )
-
-
-def _tensor_input_shape_tuple(shape: TensorInputShape) -> tuple[int, int, int, int]:
-    return (
-        int(shape.batch),
-        int(shape.channels),
-        int(shape.height),
-        int(shape.width),
-    )
-
-
-def _validate_requested_shape_matches_engine(
-    requested_shape: tuple[int, int, int, int],
-    engine_shape: tuple[int, ...],
-) -> None:
-    if len(requested_shape) != 4:
-        raise RuntimeError(f"requested input shape must be NCHW, got {requested_shape}")
-    if any(int(item) <= 0 for item in requested_shape):
-        raise RuntimeError(f"requested input shape values must be positive: {requested_shape}")
-    if len(engine_shape) != 4:
-        raise RuntimeError(f"unsupported TensorRT input shape: {engine_shape}")
-    mismatched_static_dims = [
-        (index, expected, actual)
-        for index, (expected, actual) in enumerate(zip(engine_shape, requested_shape))
-        if int(expected) > 0 and int(expected) != int(actual)
-    ]
-    if mismatched_static_dims:
-        raise RuntimeError(
-            "requested input shape does not match TensorRT engine shape: "
-            f"requested={requested_shape} engine={engine_shape}"
-        )
-
-
-def _validate_requested_shape_within_profile(
-    requested_shape: tuple[int, int, int, int],
-    profile_shapes: dict[str, tuple[int, ...]],
-) -> None:
-    minimum = profile_shapes.get("min", ())
-    maximum = profile_shapes.get("max", ())
-    if not minimum or not maximum:
-        return
-    if len(minimum) != 4 or len(maximum) != 4:
-        raise RuntimeError(
-            "TensorRT profile bounds must be NCHW for requested input shape: "
-            f"requested={requested_shape} profile={profile_shapes}"
-        )
-    out_of_bounds = [
-        (index, low, actual, high)
-        for index, (low, actual, high) in enumerate(
-            zip(minimum, requested_shape, maximum)
-        )
-        if int(actual) < int(low) or int(actual) > int(high)
-    ]
-    if out_of_bounds:
-        raise RuntimeError(
-            "requested input shape is outside TensorRT optimization profile: "
-            f"requested={requested_shape} profile={profile_shapes}"
-        )
 
 
 def _read_input_profile_shapes(engine: Any, input_name: str) -> dict[str, tuple[int, ...]]:

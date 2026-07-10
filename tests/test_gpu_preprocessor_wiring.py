@@ -120,6 +120,91 @@ def test_runtime_reconfigurator_rewires_gpu_preprocessor_for_nvmm_latest(
     assert isinstance(app.state.inference._gpu_preprocessor, JetsonGpuResourcePreprocessor)
 
 
+def test_runtime_reconfigurator_restarts_running_pipeline_after_roi_change_with_stale_runtime_flag(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.enabled = True
+    cfg.inference.backend = "nvmm_latest"
+    cfg.capture.backend = "nvmm_latest"
+    cfg.capture.memory = "nvmm"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=cfg,
+    )
+    profile = CaptureProfile(
+        device="/dev/video0",
+        pixel_format="MJPG",
+        width=2560,
+        height=1440,
+        fps=120,
+        preference="manual",
+        selection_reason="manual profile matched device capabilities",
+    )
+    state = CaptureRuntimeState(
+        available=True,
+        device="/dev/video0",
+        profile=profile,
+        backend="gst-resource:nvmm-mjpg-iomode2",
+    )
+    configure_calls: list[tuple[tuple[object, ...], dict[str, object], int]] = []
+
+    class Capture:
+        def __init__(self) -> None:
+            self.config = cfg.capture
+            self.roi_size = cfg.roi.size
+            self.roi_offset_x = cfg.roi.offset_x
+            self.roi_offset_y = cfg.roi.offset_y
+            self.source = object()
+            self.session = SimpleNamespace(running=True)
+            self.state = state
+            self.last_config_error = None
+
+        def configure(self, *args, **kwargs):
+            configure_calls.append((args, kwargs, self.roi_size))
+            return self.state
+
+    stopped: list[str] = []
+
+    class ExistingPipeline:
+        running = True
+
+        def stop(self) -> None:
+            stopped.append("stopped")
+
+    starts: list[str] = []
+
+    def start_pipeline(self):
+        starts.append("started")
+        self.runtime.running = True
+
+    app.state.capture = Capture()
+    app.state.runtime.pipeline = ExistingPipeline()
+    app.state.runtime.running = False
+    monkeypatch.setattr("novasight.runtime.pipeline.RuntimePipeline.start", start_pipeline)
+
+    next_cfg = RuntimeConfig()
+    next_cfg.inference.enabled = True
+    next_cfg.inference.backend = "nvmm_latest"
+    next_cfg.capture.backend = "nvmm_latest"
+    next_cfg.capture.memory = "nvmm"
+    next_cfg.roi.size = 320
+
+    report = RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert report.applied is True
+    assert stopped == ["stopped"]
+    assert starts == ["started"]
+    assert configure_calls[0][2] == 320
+    assert app.state.capture.roi_size == 320
+    assert app.state.runtime.config.roi.size == 320
+    assert app.state.runtime.config_store.status()["roi"]["size"] == 320
+    assert app.state.runtime.running is True
+    assert report.restart_required is True
+
+
 def test_runtime_service_update_config_rewires_gpu_preprocessor() -> None:
     cfg = RuntimeConfig()
     cfg.inference.enabled = True

@@ -119,6 +119,29 @@ function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
 }
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
+type CaptureBackendMode = "gst_cpu_latest" | "nvmm_latest";
+const CAPTURE_BACKEND_CHOICES: {
+  value: CaptureBackendMode;
+  label: string;
+  memory: "system" | "nvmm";
+  inferenceBackend: "tensorrt" | "nvmm_latest";
+  preprocessBackend: "cpu" | "cuda";
+}[] = [
+  {
+    value: "gst_cpu_latest",
+    label: "CPU latest",
+    memory: "system",
+    inferenceBackend: "tensorrt",
+    preprocessBackend: "cpu"
+  },
+  {
+    value: "nvmm_latest",
+    label: "NVMM latest",
+    memory: "nvmm",
+    inferenceBackend: "nvmm_latest",
+    preprocessBackend: "cuda"
+  }
+];
 const KMNET_RECOMMENDED = {
   host: "192.168.2.188",
   port: 8888,
@@ -506,6 +529,7 @@ export function StudioConsoleView({
   const configuredCaptureFps = readNumber(captureConfig.fps, 0);
   const roiConfig = nestedRecord(config, "roi");
   const inferenceConfig = nestedRecord(config, "inference");
+  const preprocessConfig = nestedRecord(config, "preprocess");
   const controlConfig = nestedRecord(config, "control");
   const calibrationConfig = nestedRecord(config, "calibration");
   const hardwareConfig = nestedRecord(config, "hardware");
@@ -520,6 +544,16 @@ export function StudioConsoleView({
   const selectedRuntimeBackend = readString(runtimeInference.selected, "");
   const mainlineRuntimeSelected = selectedRuntimeBackend === "nvmm_latest";
   const runtimeMainlineSelected = mainlineRuntimeSelected;
+  const captureBackendMode: CaptureBackendMode =
+    readString(captureConfig.backend, "gst_cpu_latest") === "nvmm_latest"
+      ? "nvmm_latest"
+      : "gst_cpu_latest";
+  const captureBackendChoice =
+    CAPTURE_BACKEND_CHOICES.find((choice) => choice.value === captureBackendMode) ??
+    CAPTURE_BACKEND_CHOICES[0];
+  const configuredCaptureMemory = readString(captureConfig.memory, captureBackendChoice.memory);
+  const configuredPreprocessBackend = readString(preprocessConfig.backend, captureBackendChoice.preprocessBackend);
+  const configuredInferenceBackend = readString(inferenceConfig.backend, captureBackendChoice.inferenceBackend);
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
@@ -1422,6 +1456,61 @@ export function StudioConsoleView({
     [onRefresh, runtimeConfig]
   );
 
+  const updateCaptureBackendMode = useCallback(
+    async (mode: CaptureBackendMode) => {
+      const choice =
+        CAPTURE_BACKEND_CHOICES.find((item) => item.value === mode) ??
+        CAPTURE_BACKEND_CHOICES[0];
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const next = base ? normalizeRuntimeConfig(base) : null;
+      if (!next) {
+        return;
+      }
+      const writeSeq = ++configWriteSeqRef.current;
+      pendingConfigWritesRef.current += 1;
+      setBusy("capture.backend");
+      setLocalError(null);
+      next.capture = {
+        ...asRecord(next.capture),
+        backend: choice.value,
+        memory: choice.memory
+      } as RuntimeConfig[string];
+      next.inference = {
+        ...asRecord(next.inference),
+        backend: choice.inferenceBackend
+      } as RuntimeConfig[string];
+      next.preprocess = {
+        ...asRecord(next.preprocess),
+        backend: choice.preprocessBackend
+      } as RuntimeConfig[string];
+      configDraftRef.current = next;
+      setConfigDraft(next);
+      try {
+        const result = await updateRuntimeConfig(next);
+        if (writeSeq === configWriteSeqRef.current) {
+          const applied = normalizeRuntimeConfig(result.config);
+          configDraftRef.current = applied;
+          setConfigDraft(applied);
+        }
+      } catch (err) {
+        setLocalError(`采集数据通路切换失败：${getErrorMessage(err)}`);
+        if (writeSeq === configWriteSeqRef.current) {
+          configDraftRef.current = null;
+          setConfigDraft(null);
+        }
+      } finally {
+        pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+        if (writeSeq === configWriteSeqRef.current) {
+          setBusy(null);
+        }
+        if (pendingConfigWritesRef.current === 0) {
+          await onRefresh();
+        }
+      }
+    },
+    [onRefresh, runtimeConfig]
+  );
+
   const resetExperimentalAngleDefaults = useCallback(async () => {
     const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
     const next = base ? normalizeRuntimeConfig(base) : null;
@@ -1820,6 +1909,27 @@ export function StudioConsoleView({
                 <h2 className="console-title">采集设备</h2>
                 <label>视频设备</label>
                 <input value={device} onChange={(event) => setDevice(event.target.value)} />
+                <label>数据通路</label>
+                <div className="mini-segmented capture-backend-segmented" role="group" aria-label="采集数据通路">
+                  {CAPTURE_BACKEND_CHOICES.map((choice) => (
+                    <button
+                      className={captureBackendMode === choice.value ? "active" : ""}
+                      disabled={busy === "capture.backend"}
+                      key={choice.value}
+                      onClick={() => void updateCaptureBackendMode(choice.value)}
+                      title={`${choice.value} / ${choice.memory}`}
+                      type="button"
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="console-kv compact-kv">
+                  <span>backend</span><b>{captureBackendMode}</b>
+                  <span>memory</span><b>{configuredCaptureMemory}</b>
+                  <span>preprocess</span><b>{configuredPreprocessBackend}</b>
+                  <span>inference</span><b>{configuredInferenceBackend}</b>
+                </div>
                 <label>采集格式</label>
                 <select value={selectedChoice ? choiceId(selectedChoice) : ""} onChange={(event) => setSelectedChoiceId(event.target.value)}>
                   {choices.map((choice) => (

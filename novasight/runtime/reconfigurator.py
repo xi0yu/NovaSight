@@ -52,7 +52,11 @@ class RuntimeReconfigurator:
         sections: list[ConfigSectionApplyResult] = []
         roi_changed = self._roi_changed(previous_config, config)
         pipeline_changed = self._pipeline_config_changed(previous_config, config)
-        was_running = bool(getattr(getattr(self.app.state, "runtime", None), "running", False))
+        runtime = getattr(self.app.state, "runtime", None)
+        pipeline = getattr(runtime, "pipeline", None) if runtime is not None else None
+        was_running = bool(getattr(runtime, "running", False)) or bool(
+            getattr(pipeline, "running", False)
+        )
 
         self._install_config(config)
         if pipeline_changed:
