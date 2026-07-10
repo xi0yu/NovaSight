@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
+    "icons:export": "node scripts/export-nova-icons.mjs",
     "typecheck": "tsc --noEmit",
+    "visual:audit": "node scripts/visual-system-audit.mjs",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

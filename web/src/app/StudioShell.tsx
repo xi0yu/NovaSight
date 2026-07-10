@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { NovaIcon } from "../components/visual";
 import { studioNavItems, type StudioViewId } from "./navigation";
 
 type StudioShellProps = {
@@ -23,7 +24,9 @@ export function StudioShell({
     <div className="studio-shell">
       <header className="studio-topbar">
         <div className="studio-brand">
-          <span className="brand-mark" aria-hidden="true"><span>NS</span></span>
+          <span className="brand-mark" aria-hidden="true">
+            <NovaIcon name="prediction-line" size={22} strokeWidth={1.9} />
+          </span>
           <div className="studio-brand-copy">
             <strong>NovaSight Studio</strong>
             <span>视觉控制工作台</span>
@@ -41,7 +44,7 @@ export function StudioShell({
       <aside className="studio-sidebar">
         <div className="studio-sidebar-section">
           <nav className="studio-nav" aria-label="工作台导航">
-            {studioNavItems.map((item, index) => (
+            {studioNavItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -49,7 +52,9 @@ export function StudioShell({
                 aria-current={item.id === activeView ? "page" : undefined}
                 onClick={() => onNavigate(item.id)}
               >
-                <span className="nav-item-index">{String(index + 1).padStart(2, "0")}</span>
+                <span className="nav-item-icon">
+                  <NovaIcon name={item.icon} size={20} />
+                </span>
                 <span className="nav-item-label">{item.label}</span>
                 <span className="nav-item-hint">{item.hint}</span>
                 {item.feature ? <span className="nav-item-feature">{item.feature}</span> : null}
@@ -67,7 +72,7 @@ export function StudioShell({
 
       <section className="studio-main">
         <nav className="mobile-nav" aria-label="移动端工作台导航">
-          {studioNavItems.map((item, index) => (
+          {studioNavItems.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -75,7 +80,7 @@ export function StudioShell({
               aria-current={item.id === activeView ? "page" : undefined}
               onClick={() => onNavigate(item.id)}
             >
-              <span className="mobile-nav-index">{String(index + 1).padStart(2, "0")}</span>
+              <NovaIcon name={item.icon} size={16} />
               <span className="mobile-nav-label">{item.label}</span>
               <span className="mobile-nav-hint">{item.hint}</span>
             </button>

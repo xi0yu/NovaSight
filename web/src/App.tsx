@@ -18,6 +18,7 @@ import {
 import { LicenseGate, LicenseView } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { StudioConsoleView } from "./features/studio/StudioConsoleView";
+import { VisualSystemView } from "./features/visual-system/VisualSystemView";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 
 type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
@@ -103,7 +104,13 @@ function getFallbackView(license: LicenseStatus | null): StudioViewId {
   return fallbackOrder.find((view) => canAccessView(view, license)) ?? "license";
 }
 
+const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
+
 export default function App() {
+  return visualSystemMode ? <VisualSystemView /> : <StudioApp />;
+}
+
+function StudioApp() {
   const [activeView, setActiveView] = useState<StudioViewId>("dashboard");
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);

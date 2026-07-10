@@ -1,4 +1,5 @@
 import { type LicenseStatus } from "../../api";
+import { NovaIcon, ThemeToggle } from "../../components/visual";
 import { InlineError, Panel } from "../../components/ui";
 import { LicensePanel } from "./LicensePanel";
 import { LICENSE_CACHE_KEY } from "./storage";
@@ -23,11 +24,14 @@ export function LicenseGate({
     <main className="app-shell license-shell">
       <section className="license-gate">
         <div className="brand-block">
-          <span className="brand-mark"><span>NS</span></span>
+          <span className="brand-mark">
+            <NovaIcon name="prediction-line" size={24} strokeWidth={1.9} />
+          </span>
           <div>
             <h1>NovaSight</h1>
             <p>请输入卡密后进入 Jetson 实时视觉工作台</p>
           </div>
+          <ThemeToggle />
         </div>
         <InlineError message={error} />
         {loading ? <div className="inline-note">正在校验本机授权状态。</div> : null}

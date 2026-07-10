@@ -30,6 +30,7 @@ import {
 } from "../../api";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
+import { NovaIcon, StatusBadge, ThemeToggle, type NovaIconName } from "../../components/visual";
 
 type ConsolePage = "capture" | "infer" | "params" | "stats" | "latency";
 
@@ -62,12 +63,12 @@ type LaunchStage = {
   caption: string;
 };
 
-const navItems: { id: ConsolePage; index: string; label: string }[] = [
-  { id: "capture", index: "01", label: "采集" },
-  { id: "infer", index: "02", label: "模型推理" },
-  { id: "params", index: "03", label: "参数设置" },
-  { id: "stats", index: "04", label: "统计" },
-  { id: "latency", index: "05", label: "采集延迟" }
+const navItems: { id: ConsolePage; index: string; label: string; icon: NovaIconName }[] = [
+  { id: "capture", index: "01", label: "采集", icon: "capture" },
+  { id: "infer", index: "02", label: "模型推理", icon: "inference" },
+  { id: "params", index: "03", label: "参数设置", icon: "control" },
+  { id: "stats", index: "04", label: "统计", icon: "performance" },
+  { id: "latency", index: "05", label: "采集延迟", icon: "latency" }
 ];
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
@@ -1854,17 +1855,28 @@ export function StudioConsoleView({
     <section className="console-app">
       <header className="console-top">
         <div className="console-brand">
-          <div className="console-logo" />
+          <div className="console-logo">
+            <NovaIcon name="prediction-line" size={24} strokeWidth={1.9} />
+          </div>
           NovaSight Studio
         </div>
         <div className="console-toolbar">
           <div className="console-group">
-            <div>项目：{projects[0]?.name ?? "默认项目"}⌄</div>
-            <div><span className="console-dot green" />设备：Jetson Orin Nano⌄</div>
+            <div className="console-toolbar-item">
+              <NovaIcon name="models" size={15} />
+              <span>项目：{projects[0]?.name ?? "默认项目"}</span>
+              <NovaIcon name="collapse" size={13} />
+            </div>
+            <div className="console-toolbar-item">
+              <NovaIcon name="jetson" size={15} />
+              <span>设备：Jetson Orin Nano</span>
+              <NovaIcon name="collapse" size={13} />
+            </div>
           </div>
           <div className="console-group">
-            <div><span className="console-dot" />{health?.ok ? "在线" : "离线"}</div>
-            <div className="console-pill">退出</div>
+            <StatusBadge status={health?.ok ? "normal" : "error"} icon={health?.ok ? "check-circle" : "plug-off"} label={health?.ok ? "后端在线" : "后端离线"} size="sm" />
+            <ThemeToggle />
+            <div className="console-pill"><NovaIcon name="account" size={14} />退出</div>
             <div className={realtimeStatusClass}>{realtimeStatusText} · {formatDate(lastUpdated)}</div>
           </div>
         </div>
@@ -1878,7 +1890,9 @@ export function StudioConsoleView({
             onClick={() => navigatePage(item.id)}
             type="button"
           >
-            <span>{item.index}</span>
+            <span className="console-nav-icon">
+              <NovaIcon name={item.icon} size={19} />
+            </span>
             <b>{item.label}</b>
           </button>
         ))}
@@ -1887,7 +1901,7 @@ export function StudioConsoleView({
       <main className="console-main">
         <section className="console-process">
           <div className="console-process-state">
-            <span className="console-dot" />
+            <NovaIcon name="activity-pulse" size={16} />
             {runtimeMainlineSelected
               ? `主链：${captureStatusText} · 推理：${inferenceStatusText}`
               : `采集：${captureStatusText} · 推理：${inferenceStatusText}`}
@@ -1898,7 +1912,8 @@ export function StudioConsoleView({
             onClick={() => void toggleCapture()}
             type="button"
           >
-            {captureMainRunning ? (runtimeMainlineSelected ? "▪ 停止主链" : "▪ 停止采集") : runtimeMainlineSelected ? "▶ 启动主链" : "▶ 启动采集"}
+            <NovaIcon name={captureMainRunning ? "stop" : "start"} size={16} />
+            {captureMainRunning ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
           </button>
           {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
             <button
@@ -1910,8 +1925,14 @@ export function StudioConsoleView({
               恢复推理线程
             </button>
           ) : null}
-          <button className="console-button" onClick={exportConfig} type="button">导出配置...</button>
-          <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">导入配置...</button>
+          <button className="console-button" onClick={exportConfig} type="button">
+            <NovaIcon name="export" size={16} />
+            导出配置
+          </button>
+          <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">
+            <NovaIcon name="import" size={16} />
+            导入配置
+          </button>
           <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
         </section>
 
@@ -1934,7 +1955,7 @@ export function StudioConsoleView({
           <div className="console-grid1">
             <div>
               <div className="console-card">
-                <h2 className="console-title">采集设备</h2>
+                <SectionTitle title="采集设备" />
                 <label>视频设备</label>
                 <input value={device} onChange={(event) => setDevice(event.target.value)} />
                 <label>数据通路</label>
@@ -1979,7 +2000,7 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <h2 className="console-title">ROI 裁剪</h2>
+                <SectionTitle title="ROI 裁剪" />
                 <label>ROI 模式</label>
                 <select value={roiOffsetX === 0 && roiOffsetY === 0 ? "center" : "manual"} disabled>
                   <option value="center">中心正方形</option>
@@ -2021,9 +2042,9 @@ export function StudioConsoleView({
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
           <div className="console-tabs">
-            <div className="console-tab active"><span className="console-dot dark" />配置1</div>
-            <div className="console-tab"><span className="console-dot" />配置2</div>
-            <div className="console-tab"><span className="console-dot" />配置3</div>
+            <div className="console-tab active"><NovaIcon name="model-verify" size={15} />配置1</div>
+            <div className="console-tab"><NovaIcon name="ai-model" size={15} />配置2</div>
+            <div className="console-tab"><NovaIcon name="ai-model" size={15} />配置3</div>
           </div>
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
@@ -2033,7 +2054,7 @@ export function StudioConsoleView({
           </div>
           <div className="console-grid2">
             <div className="console-card">
-              <h2 className="console-title">模型设置</h2>
+              <SectionTitle title="模型设置" />
               <label>模型文件</label>
               <select
                 value={selectedModelProjectId}
@@ -2184,7 +2205,7 @@ export function StudioConsoleView({
               </details>
             </div>
             <div className="console-card">
-              <h2 className="console-title">推理输出</h2>
+              <SectionTitle title="推理输出" />
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
                 imageEnabled={!runtimeMainlineSelected}
@@ -2284,7 +2305,7 @@ export function StudioConsoleView({
           </div>
           <div className="console-grid2">
             <div className="console-card">
-              <h2 className="console-title">鼠标移动算法</h2>
+              <SectionTitle title="鼠标移动算法" />
               <label>算法模式</label>
               <select
                 value={controlStrategy}
@@ -2416,7 +2437,7 @@ export function StudioConsoleView({
               </>
             </div>
             <div className="console-card">
-              <h2 className="console-title">控制量反馈</h2>
+              <SectionTitle title="控制量反馈" />
               <div className="console-kv control-feedback-kv">
                 <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
                 <span>算法模式</span><b>实验角度 PID</b>
@@ -2485,7 +2506,7 @@ export function StudioConsoleView({
               </div>
             </div>
             <div className="console-card">
-              <h2 className="console-title">kmNet 控制面板</h2>
+              <SectionTitle title="kmNet 控制面板" />
               <div className="kmnet-status-grid">
                 <div className={kmnetConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>连接</span>
@@ -2775,7 +2796,7 @@ export function StudioConsoleView({
             <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
           </div>
           <div className="console-card">
-            <h2 className="console-title">性能占比</h2>
+            <SectionTitle title="性能占比" />
             <Bar label="采集" width={35} />
             <Bar label="预处理" width={18} />
             <Bar label="推理" width={52} />
@@ -2792,7 +2813,7 @@ export function StudioConsoleView({
           </div>
           <div className="console-grid2">
             <div className="console-card">
-              <h2 className="console-title">延迟链路</h2>
+              <SectionTitle title="延迟链路" />
               <div className="console-timeline">
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
                 <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
@@ -2827,7 +2848,9 @@ export function StudioConsoleView({
           >
             <header className="launch-dialog-header">
               <div className="launch-dialog-title-wrap">
-                <div className="launch-dialog-icon" aria-hidden="true">▶</div>
+                <div className="launch-dialog-icon" aria-hidden="true">
+                  <NovaIcon name="start" size={22} strokeWidth={1.9} />
+                </div>
                 <div>
                   <h2 id="launch-dialog-title">启动视觉处理链路</h2>
                   <p>只展示必要启动阶段，不加载额外运行监控。</p>
@@ -2840,7 +2863,7 @@ export function StudioConsoleView({
                 onClick={closeLaunchDialog}
                 type="button"
               >
-                ×
+                <NovaIcon name="x-circle" size={18} />
               </button>
             </header>
 
@@ -2873,6 +2896,7 @@ export function StudioConsoleView({
 
             <footer className="launch-dialog-footer">
               <button className="console-button" onClick={() => void cancelMainlineLaunch()} type="button">
+                <NovaIcon name={launchStatus === "running" ? "pause-output" : "x-circle"} size={16} />
                 {launchStatus === "running" ? "取消启动" : "关闭"}
               </button>
               <button
@@ -2881,6 +2905,7 @@ export function StudioConsoleView({
                 onClick={launchStatus === "success" ? closeLaunchDialog : () => void startMainlineLaunch()}
                 type="button"
               >
+                <NovaIcon name={launchStatus === "running" ? "activity-pulse" : launchStatus === "success" ? "dashboard" : "start"} size={16} />
                 {launchStatus === "running" ? "正在启动" : launchStatus === "success" ? "进入工作台" : launchStatus === "failed" || launchStatus === "cancelled" ? "重新启动" : "开始启动"}
               </button>
             </footer>
@@ -3051,8 +3076,180 @@ function TextControl({
   );
 }
 
-function Metric({ title, value, small }: { title: string; value: string; small: string }) {
-  return <div className="console-metric">{title}<br />{value}<small>{small}</small></div>;
+function metricIconForTitle(title: string): NovaIconName {
+  if (title.includes("FPS")) {
+    return "fps";
+  }
+  if (title.includes("延迟") || title.includes("等待") || title.includes("帧间隔") || title.includes("端到端") || title.includes("队列")) {
+    return "latency";
+  }
+  if (title.includes("分辨率")) {
+    return "resolution";
+  }
+  if (title.includes("像素") || title.includes("格式")) {
+    return "frame";
+  }
+  if (title.includes("丢帧") || title.includes("跳过")) {
+    return "signal-lost";
+  }
+  if (title.includes("目标")) {
+    return "target";
+  }
+  if (title.includes("引擎")) {
+    return "engine";
+  }
+  if (title.includes("算法")) {
+    return "pid";
+  }
+  if (title.includes("触发")) {
+    return "activity-pulse";
+  }
+  if (title.includes("Kp")) {
+    return "gain";
+  }
+  if (title.includes("角度") || title.includes("FOV")) {
+    return "fov";
+  }
+  if (title.includes("限幅")) {
+    return "max-step";
+  }
+  if (title.includes("运行时长")) {
+    return "clock";
+  }
+  return "performance";
+}
+
+function cardIconForTitle(title: string): NovaIconName {
+  if (title.includes("采集")) {
+    return "capture";
+  }
+  if (title.includes("推理")) {
+    return "inference";
+  }
+  if (title.includes("系统")) {
+    return "system";
+  }
+  if (title.includes("诊断")) {
+    return "triangle-alert";
+  }
+  return "dashboard";
+}
+
+function sectionIconForTitle(title: string): NovaIconName {
+  if (title.includes("采集设备")) {
+    return "capture-card";
+  }
+  if (title.includes("ROI")) {
+    return "roi";
+  }
+  if (title.includes("模型")) {
+    return "models";
+  }
+  if (title.includes("推理输出")) {
+    return "output-tensor";
+  }
+  if (title.includes("算法")) {
+    return "pid";
+  }
+  if (title.includes("控制量")) {
+    return "output";
+  }
+  if (title.includes("kmNet")) {
+    return "hid";
+  }
+  if (title.includes("性能")) {
+    return "performance";
+  }
+  if (title.includes("延迟")) {
+    return "latency";
+  }
+  return "dashboard";
+}
+
+function sectionDescriptionForTitle(title: string): string {
+  if (title.includes("采集设备")) {
+    return "视频源、后端通路与 latest-frame 策略";
+  }
+  if (title.includes("ROI")) {
+    return "裁剪区域决定推理、预览和控制坐标基准";
+  }
+  if (title.includes("模型设置")) {
+    return "绑定当前运行模型和 TensorRT 引擎";
+  }
+  if (title.includes("推理输出")) {
+    return "查看 DetectionBatch、目标框和新鲜度";
+  }
+  if (title.includes("鼠标移动算法")) {
+    return "PD/PID、滤波、预测和输出限幅";
+  }
+  if (title.includes("控制量反馈")) {
+    return "控制决策、调度器和执行器状态";
+  }
+  if (title.includes("kmNet")) {
+    return "硬件连接、触发键和移动诊断";
+  }
+  if (title.includes("性能占比")) {
+    return "采集、预处理、推理和后处理耗时";
+  }
+  if (title.includes("延迟链路")) {
+    return "按阶段定位实时链路瓶颈";
+  }
+  if (title.includes("采集统计")) {
+    return "最新帧采集吞吐与丢弃情况";
+  }
+  if (title.includes("推理统计")) {
+    return "批次消费、新鲜度和阶段耗时";
+  }
+  if (title.includes("系统状态")) {
+    return "硬件资源和服务状态摘要";
+  }
+  if (title.includes("采集诊断")) {
+    return "队列积压、帧间隔和采集建议";
+  }
+  return "";
+}
+
+function SectionTitle({ title, icon }: { title: string; icon?: NovaIconName }) {
+  const description = sectionDescriptionForTitle(title);
+
+  return (
+    <h2 className="console-title">
+      <span className="console-title-icon">
+        <NovaIcon name={icon ?? sectionIconForTitle(title)} size={18} />
+      </span>
+      <span className="console-title-copy">
+        <span>{title}</span>
+        {description ? <small>{description}</small> : null}
+      </span>
+    </h2>
+  );
+}
+
+function Metric({
+  title,
+  value,
+  small,
+  icon,
+}: {
+  title: string;
+  value: string;
+  small: string;
+  icon?: NovaIconName;
+}) {
+  const resolvedIcon = icon ?? metricIconForTitle(title);
+
+  return (
+    <div className="console-metric" aria-label={`${title}: ${value} ${small}`}>
+      <span className="console-metric-head">
+        <span className="console-metric-icon">
+          <NovaIcon name={resolvedIcon} size={18} />
+        </span>
+        <span>{title}</span>
+      </span>
+      <strong>{value}</strong>
+      <small>{small}</small>
+    </div>
+  );
 }
 
 function ModuleSwitch({
@@ -3239,7 +3436,7 @@ function PreviewFrame({
 function KvCard({ title, rows, notice }: { title: string; rows: [string, string][]; notice?: ReactNode }) {
   return (
     <div className="console-card">
-      <h2 className="console-title">{title}</h2>
+      <SectionTitle icon={cardIconForTitle(title)} title={title} />
       {notice}
       <div className="console-kv">
         {rows.map(([key, value]) => (
