@@ -823,11 +823,9 @@ export function StudioConsoleView({
   const lastFrameAgeMs = readNumber(statistics?.last_frame_age_ms, 0);
   const controlLatencyGuardMs = 55;
   const inferenceThroughputHealthy = readNumber(statistics?.inference_fps, 0) > 0 || detectionBatchFps > 0;
-  const inferenceFreshnessGenerationLag = readNumber(inferenceTrace.generation_lag, 0);
   const inferenceStaleRejected =
     inferenceTrace.stale_rejected === true ||
-    inferenceTrace.latest_rejected === true ||
-    inferenceFreshnessGenerationLag > 0;
+    inferenceTrace.latest_rejected === true;
   const inferenceFreshnessBlocked =
     inferenceStaleRejected ||
     (
@@ -880,9 +878,12 @@ export function StudioConsoleView({
     inferenceTrace.generation ?? inferenceTrace.detection_batch_generation,
     Number.NaN
   );
+  const inferenceAcquiredGeneration = readNumber(inferenceTrace.acquired_generation, Number.NaN);
   const inferenceLatestGeneration = readNumber(inferenceTrace.latest_generation, Number.NaN);
+  const inferenceBrokerPublishedGeneration = readNumber(inferenceTrace.broker_published_generation, Number.NaN);
   const inferenceGenerationLag = readNumber(inferenceTrace.generation_lag, Number.NaN);
   const inferenceFrameIdLag = readNumber(inferenceTrace.frame_id_lag, Number.NaN);
+  const inferencePublishedSinceAcquire = readNumber(inferenceTrace.published_since_acquire, Number.NaN);
   const inferenceResultAgeMs = readNumber(
     inferenceTrace.result_age_ms ?? inferenceTrace.detection_batch_result_age_ms,
     Number.NaN
@@ -2224,9 +2225,12 @@ export function StudioConsoleView({
                 <span>主链原因</span><b>{runtimeInferenceReason || "-"}</b>
                 <span className="wide">主链详情</span><b className="wide">{runtimeInferenceDetail || "-"}</b>
                 <span>Batch generation</span><b>{formatNumber(inferenceBatchGeneration, 0)}</b>
-                <span>Latest generation</span><b>{formatNumber(inferenceLatestGeneration, 0)}</b>
-                <span>落后 generation</span><b>{formatNumber(inferenceGenerationLag, 0)}</b>
-                <span>落后 frame_id</span><b>{formatNumber(inferenceFrameIdLag, 0)}</b>
+                <span>Acquire generation</span><b>{formatNumber(inferenceAcquiredGeneration, 0)}</b>
+                <span>Accepted latest</span><b>{formatNumber(inferenceLatestGeneration, 0)}</b>
+                <span>Published generation</span><b>{formatNumber(inferenceBrokerPublishedGeneration, 0)}</b>
+                <span>推理期间发布</span><b>{formatNumber(inferencePublishedSinceAcquire, 0)}</b>
+                <span>结束时 generation 差</span><b>{formatNumber(inferenceGenerationLag, 0)}</b>
+                <span>结束时 frame_id 差</span><b>{formatNumber(inferenceFrameIdLag, 0)}</b>
                 <span>Batch age</span><b>{formatNumber(inferenceResultAgeMs, 1)} ms</b>
                 <span>Broker published</span><b>{formatNumber(latestBrokerPublishedGeneration, 0)}</b>
                 <span>Broker acquired</span><b>{formatNumber(latestBrokerAcquiredGeneration, 0)}</b>
@@ -2742,7 +2746,7 @@ export function StudioConsoleView({
                   <strong>吞吐正常，但批次新鲜度不合格</strong>
                   <span>
                     latest 推理有输出，但批次未进入控制；
-                    落后 {formatNumber(inferenceGenerationLag, 0)} 帧，
+                    结束时帧差 {formatNumber(inferenceGenerationLag, 0)}，
                     最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms。
                   </span>
                   <em>实时控制不会补完旧帧；过期或非 latest 的 DetectionBatch 会被丢弃。</em>
@@ -2755,7 +2759,8 @@ export function StudioConsoleView({
               ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
               ["跳过帧", formatNumber(statistics?.skipped_counter, 0)],
               ["旧 batch 丢弃", formatNumber(statistics?.stale_drop_count, 0)],
-              ["推理落后帧", formatNumber(inferenceGenerationLag, 0)],
+              ["推理期间发布", formatNumber(inferencePublishedSinceAcquire, 0)],
+              ["结束时帧差", formatNumber(inferenceGenerationLag, 0)],
               ["时间戳", shortTimestampSource(readString(statistics?.timestamp_source, "-"))],
               ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
               ["Batch age", formatNumber(inferenceResultAgeMs, 1)],

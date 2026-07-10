@@ -1223,26 +1223,35 @@ class RuntimeService:
             else int(getattr(frame, "generation", 0) or frame.frame_id)
         )
         acquired_frame_id = int(getattr(frame, "frame_id", 0) or acquired_generation)
-        latest_generation, latest_frame_id = self._latest_published_identity()
-        if latest_generation is None:
-            latest_generation = acquired_generation
-        if latest_frame_id is None:
-            latest_frame_id = acquired_frame_id
+        broker_published_generation, broker_published_frame_id = self._latest_published_identity()
+        published_generation = (
+            broker_published_generation
+            if broker_published_generation is not None
+            else acquired_generation
+        )
+        published_frame_id = (
+            broker_published_frame_id
+            if broker_published_frame_id is not None
+            else acquired_frame_id
+        )
         detection_generation = int(detection_batch.generation or detection_batch.frame_id)
         freshness_extra = {
             "acquired_generation": acquired_generation,
             "acquired_frame_id": acquired_frame_id,
-            "latest_generation": latest_generation,
-            "latest_frame_id": latest_frame_id,
-            "generation_lag": max(0, int(latest_generation) - detection_generation),
-            "frame_id_lag": max(0, int(latest_frame_id) - int(detection_batch.frame_id)),
+            "latest_generation": acquired_generation,
+            "latest_frame_id": acquired_frame_id,
+            "broker_published_generation": published_generation,
+            "broker_published_frame_id": published_frame_id,
+            "generation_lag": max(0, int(published_generation) - detection_generation),
+            "frame_id_lag": max(0, int(published_frame_id) - int(detection_batch.frame_id)),
+            "published_since_acquire": max(0, int(published_generation) - acquired_generation),
         }
         freshness_reason = self._detection_batch_freshness_reason(detection_batch)
         if not freshness_reason:
             freshness_reason = self._detection_batch_latest_generation_reason(
                 detection_batch,
-                latest_generation=latest_generation,
-                latest_frame_id=latest_frame_id,
+                latest_generation=acquired_generation,
+                latest_frame_id=acquired_frame_id,
             )
         if not freshness_reason:
             freshness_reason = self._detection_batch_stale_reason(

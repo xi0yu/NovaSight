@@ -778,14 +778,14 @@ def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
     assert "input frame age exceeds deadline" in (pipeline.stats.last_error or "")
 
 
-def test_runtime_service_drops_detection_when_newer_generation_arrives_during_inference() -> None:
+def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acquire() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "system"
     cfg.control.latency_reject_if_age_exceeds_ms = 55.0
 
     class Broker:
         def status(self) -> dict[str, int]:
-            return {"published_generation": 2}
+            return {"published_generation": 2, "published_frame_id": 2}
 
     service = RuntimeService(
         cfg,
@@ -794,7 +794,7 @@ def test_runtime_service_drops_detection_when_newer_generation_arrives_during_in
             selected="noop",
             status=lambda: {},
             update_runtime_config=lambda _cfg: None,
-            execute=lambda _intent: pytest.fail("expired DetectionBatch must not execute"),
+            execute=lambda _intent: pytest.fail("empty detections should not execute"),
         ),
         capture=SimpleNamespace(latest_frame_broker=Broker(), state=CaptureRuntimeState()),
         inference=SimpleNamespace(
@@ -821,19 +821,22 @@ def test_runtime_service_drops_detection_when_newer_generation_arrives_during_in
     result = service.process_captured_frame(frame, acquired_generation=1)
     state = service.state()
 
-    assert result.observation_updated is False
-    assert service.last_frame_context is None
-    assert service.last_inference_status["available"] is False
-    assert service.last_inference_status["stale_rejected"] is True
-    assert service.last_inference_status["latest_generation"] == 2
-    assert "latest generation" in service.last_inference_status["reason"]
-    assert state.statistics["stale_drop_count"] == 1
+    assert result.observation_updated is True
+    assert service.last_frame_context is not None
+    assert service.last_inference_status["available"] is True
+    assert service.last_inference_status.get("stale_rejected") is not True
+    assert service.last_inference_status["acquired_generation"] == 1
+    assert service.last_inference_status["latest_generation"] == 1
+    assert service.last_inference_status["broker_published_generation"] == 2
+    assert service.last_inference_status["generation_lag"] == 1
+    assert service.last_inference_status["published_since_acquire"] == 1
+    assert state.statistics["stale_drop_count"] == 0
     assert "control_observe_fps" in state.statistics
     assert "inference_ms" in state.statistics
     assert "postprocess_ms" in state.statistics
 
 
-def test_runtime_service_rechecks_latest_generation_after_inference_completes() -> None:
+def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "system"
     cfg.control.latency_reject_if_age_exceeds_ms = 55.0
@@ -868,7 +871,7 @@ def test_runtime_service_rechecks_latest_generation_after_inference_completes() 
             selected="noop",
             status=lambda: {},
             update_runtime_config=lambda _cfg: None,
-            execute=lambda _intent: pytest.fail("stale inference output must not execute"),
+            execute=lambda _intent: pytest.fail("empty detections should not execute"),
         ),
         capture=SimpleNamespace(latest_frame_broker=broker, state=CaptureRuntimeState()),
         inference=SimpleNamespace(
@@ -889,24 +892,26 @@ def test_runtime_service_rechecks_latest_generation_after_inference_completes() 
 
     result = service.process_captured_frame(frame, acquired_generation=1)
 
-    assert result.observation_updated is False
-    assert service.last_frame_context is None
-    assert service.last_inference_status["available"] is False
-    assert service.last_inference_status["stale_rejected"] is True
+    assert result.observation_updated is True
+    assert service.last_frame_context is not None
+    assert service.last_inference_status["available"] is True
+    assert service.last_inference_status.get("stale_rejected") is not True
     assert service.last_inference_status["acquired_generation"] == 1
-    assert service.last_inference_status["latest_generation"] == 2
+    assert service.last_inference_status["latest_generation"] == 1
+    assert service.last_inference_status["broker_published_generation"] == 2
     assert service.last_inference_status["generation_lag"] == 1
-    assert "latest generation" in service.last_inference_status["reason"]
+    assert service.last_inference_status["published_since_acquire"] == 1
+    assert service.stale_drop_count == 0
 
 
-def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_inference() -> None:
+def test_runtime_service_rejects_batch_older_than_acquired_generation() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "system"
     cfg.control.latency_reject_if_age_exceeds_ms = 55.0
 
     class Broker:
         def status(self) -> dict[str, int]:
-            return {"published_generation": 1, "published_frame_id": 2}
+            return {"published_generation": 2, "published_frame_id": 2}
 
     service = RuntimeService(
         cfg,
@@ -915,7 +920,7 @@ def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_infe
             selected="noop",
             status=lambda: {},
             update_runtime_config=lambda _cfg: None,
-            execute=lambda _intent: pytest.fail("expired DetectionBatch must not execute"),
+            execute=lambda _intent: pytest.fail("old acquired DetectionBatch must not execute"),
         ),
         capture=SimpleNamespace(latest_frame_broker=Broker(), state=CaptureRuntimeState()),
         inference=SimpleNamespace(
@@ -945,10 +950,9 @@ def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_infe
     assert service.last_frame_context is None
     assert service.last_inference_status["available"] is False
     assert service.last_inference_status["stale_rejected"] is True
-    assert service.last_inference_status["latest_generation"] == 1
-    assert service.last_inference_status["latest_frame_id"] == 2
-    assert ("latest frame_id" in service.last_inference_status["reason"]
-            or "latest generation" in service.last_inference_status["reason"])
+    assert service.last_inference_status["acquired_generation"] == 2
+    assert service.last_inference_status["latest_generation"] == 2
+    assert "latest generation" in service.last_inference_status["reason"]
 
 
 def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
