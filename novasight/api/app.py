@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -101,13 +102,17 @@ def create_app(
     app.state.runtime = runtime
     app.state.systemd_notifier = systemd_notifier
     app.state.instance_lock = instance_lock
+    app.state.kmnet_auto_connect_thread = None
+    app.state.capture_auto_restore_thread = None
 
     @app.on_event("startup")
     def start_process_lifecycle() -> None:
+        logger.info("application startup: acquiring instance lock")
         instance_lock.acquire()
         systemd_notifier.start()
-        _auto_connect_kmnet(executors, config)
-        _auto_restore_capture(capture, config)
+        app.state.kmnet_auto_connect_thread = _start_auto_connect_kmnet(executors, config)
+        app.state.capture_auto_restore_thread = _start_auto_restore_capture(capture, config)
+        logger.info("application startup: lifecycle ready")
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
@@ -173,6 +178,24 @@ def _auto_connect_kmnet(executors: ExecutorRegistry, config: RuntimeConfig) -> N
     )
 
 
+def _start_auto_connect_kmnet(
+    executors: ExecutorRegistry,
+    config: RuntimeConfig,
+) -> threading.Thread | None:
+    if not bool(getattr(config.hardware, "auto_connect", True)):
+        logger.info("kmNet auto-connect disabled")
+        return None
+    thread = threading.Thread(
+        target=_auto_connect_kmnet,
+        args=(executors, config),
+        name="novasight-kmnet-auto-connect",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("kmNet auto-connect scheduled in background")
+    return thread
+
+
 def _disconnect_kmnet(executors: ExecutorRegistry) -> None:
     kmnet = executors.executors.get("kmnet")
     disconnect = getattr(kmnet, "disconnect", None)
@@ -182,6 +205,26 @@ def _disconnect_kmnet(executors: ExecutorRegistry) -> None:
         disconnect()
     except Exception as exc:
         logger.warning("kmNet shutdown disconnect failed: %s", exc)
+
+
+def _start_auto_restore_capture(
+    capture: CaptureService,
+    config: RuntimeConfig,
+) -> threading.Thread | None:
+    source_default = str(getattr(getattr(config, "source", None), "default", "") or "").strip()
+    capture_cfg = getattr(config, "capture", None)
+    device = str(getattr(capture_cfg, "device", "") or "").strip()
+    if source_default != "capture" or not device:
+        return None
+    thread = threading.Thread(
+        target=_auto_restore_capture,
+        args=(capture, config),
+        name="novasight-capture-auto-restore",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("capture auto-restore scheduled in background device=%s", device)
+    return thread
 
 
 def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> None:
@@ -197,6 +240,7 @@ def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> Non
     device = str(getattr(capture_cfg, "device", "") or "").strip()
     if not device:
         return
+    logger.info("capture auto-restore starting device=%s", device)
     try:
         state = capture.configure(
             device=device,

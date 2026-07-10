@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -28,6 +29,7 @@ class KmNetExecutor:
         self.uuid = uuid
         self.monitor_port = monitor_port
         self.connected = False
+        self.connecting = False
         self.monitoring = False
         self.move_count = 0
         self.last_dx = 0
@@ -40,6 +42,9 @@ class KmNetExecutor:
         self.last_button_raw: dict[str, Any] = {}
         self._last_button_log_signature = ""
         self._last_button_log_s = 0.0
+        self._connection_lock = threading.Lock()
+        self._connection_generation = 0
+        self._connect_thread: threading.Thread | None = None
         result = load_kmnet_driver()
         self._driver: Any | None = result.module
         self.driver_source = result.source
@@ -67,6 +72,7 @@ class KmNetExecutor:
         return {
             "available": self.available(),
             "connected": self.connected,
+            "connecting": self.connecting,
             "monitoring": self.monitoring,
             "move_count": self.move_count,
             "last_dx": self.last_dx,
@@ -181,13 +187,40 @@ class KmNetExecutor:
         return self.execute(output)
 
     def connect(self) -> dict[str, Any]:
-        self._connect()
+        generation = self._begin_connect()
+        if generation is not None:
+            self._run_connect_attempt(generation)
+        return self.status()
+
+    def connect_async(self) -> dict[str, Any]:
+        generation = self._begin_connect()
+        if generation is None:
+            return self.status()
+        thread = threading.Thread(
+            target=self._run_connect_attempt,
+            args=(generation,),
+            name="novasight-kmnet-connect",
+            daemon=True,
+        )
+        with self._connection_lock:
+            self._connect_thread = thread
+        try:
+            thread.start()
+        except Exception:
+            with self._connection_lock:
+                if generation == self._connection_generation:
+                    self.connecting = False
+                    self._connect_thread = None
+            raise
         return self.status()
 
     def disconnect(self) -> dict[str, Any]:
-        self.connected = False
-        self.monitoring = False
-        self.last_error = ""
+        with self._connection_lock:
+            self._connection_generation += 1
+            self.connected = False
+            self.connecting = False
+            self.monitoring = False
+            self.last_error = ""
         return self.status()
 
     def execute(self, output: ControlOutput) -> ExecutionResult:
@@ -293,22 +326,48 @@ class KmNetExecutor:
             },
         )
 
-    def _connect(self) -> None:
+    def _begin_connect(self) -> int | None:
+        with self._connection_lock:
+            if self.connected or self.connecting:
+                return None
+            self._connection_generation += 1
+            self.connecting = True
+            self.last_error = ""
+            return self._connection_generation
+
+    def _run_connect_attempt(self, generation: int) -> None:
+        try:
+            self._connect(generation)
+        finally:
+            current_thread = threading.current_thread()
+            with self._connection_lock:
+                if generation == self._connection_generation:
+                    self.connecting = False
+                if self._connect_thread is current_thread:
+                    self._connect_thread = None
+
+    def _connect(self, generation: int) -> None:
         if self._driver is None:
             return
-        if self.connected:
-            return
         if self.port <= 0:
-            self.last_error = "kmNet port is not configured"
-            self.connected = False
+            with self._connection_lock:
+                if generation == self._connection_generation:
+                    self.last_error = "kmNet port is not configured"
+                    self.connected = False
             return
         try:
             self._call_init_driver()
-            self.connected = True
-            self.last_error = ""
+            monitoring = False
             if self.monitor_port > 0:
                 self._call_driver("monitor", int(self.monitor_port))
-                self.monitoring = True
+                monitoring = True
+            with self._connection_lock:
+                if generation != self._connection_generation:
+                    logger.info("kmNet connect result ignored after disconnect")
+                    return
+                self.connected = True
+                self.monitoring = monitoring
+                self.last_error = ""
             logger.info(
                 "kmNet connected host=%s port=%s monitor_port=%s",
                 self.host,
@@ -316,8 +375,12 @@ class KmNetExecutor:
                 self.monitor_port,
             )
         except Exception as exc:
-            self.last_error = f"kmNet init failed: {exc}"
-            self.connected = False
+            with self._connection_lock:
+                if generation != self._connection_generation:
+                    return
+                self.last_error = f"kmNet init failed: {exc}"
+                self.connected = False
+                self.monitoring = False
             logger.warning(
                 "kmNet connect failed host=%s port=%s monitor_port=%s error=%s",
                 self.host,

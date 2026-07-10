@@ -39,6 +39,9 @@ def list_executors(request: Request) -> dict[str, Any]:
 @router.post("/api/executors/kmnet/connect")
 def connect_kmnet(request: Request) -> dict[str, Any]:
     executor = _kmnet_executor(request)
+    connect_async = getattr(executor, "connect_async", None)
+    if callable(connect_async):
+        return connect_async()
     connect = getattr(executor, "connect", None)
     if not callable(connect):
         raise HTTPException(status_code=400, detail="kmNet executor does not support connect")

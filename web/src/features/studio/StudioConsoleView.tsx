@@ -705,6 +705,7 @@ export function StudioConsoleView({
     setConfigDraft(next);
   }, [runtimeConfig]);
   const kmnetConnected = kmnetStatus.connected === true;
+  const kmnetConnecting = kmnetStatus.connecting === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
   const kmnetButtonLeft = kmnetStatus.button_left === true;
   const kmnetButtonRight = kmnetStatus.button_right === true;
@@ -1622,19 +1623,19 @@ export function StudioConsoleView({
     setBusy("kmnet.toggle");
     setLocalError(null);
     try {
-      if (kmnetConnected) {
+      if (kmnetConnected || kmnetConnecting) {
         await disconnectKmNet();
       } else {
         await connectKmNet();
       }
       await onRefresh();
     } catch (err) {
-      setLocalError(`kmNet ${kmnetConnected ? "断开" : "连接"}失败：${getErrorMessage(err)}`);
+      setLocalError(`kmNet ${kmnetConnected || kmnetConnecting ? "断开" : "连接"}失败：${getErrorMessage(err)}`);
       await onRefresh();
     } finally {
       setBusy(null);
     }
-  }, [kmnetConnected, onRefresh]);
+  }, [kmnetConnected, kmnetConnecting, onRefresh]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -2507,7 +2508,7 @@ export function StudioConsoleView({
           ) : (
           <>
           <div className="console-metrics">
-            <Metric title="连接状态" value={kmnetConnected ? "已连接" : "未连接"} small={kmnetConnected ? "online" : "offline"} />
+            <Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"} small={kmnetConnected ? "online" : kmnetConnecting ? "connecting" : "offline"} />
             <Metric title="驱动状态" value={kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
             <Metric title="自动连接" value={kmnetAutoConnect ? "已启用" : "已关闭"} small="startup" />
@@ -2520,7 +2521,7 @@ export function StudioConsoleView({
               <div className="kmnet-status-grid">
                 <div className={kmnetConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>连接</span>
-                  <b>{kmnetConnected ? "已连接" : "未连接"}</b>
+                  <b>{kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}</b>
                 </div>
                 <div className={kmnetStatus.monitoring === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>按键</span>
@@ -2597,13 +2598,13 @@ export function StudioConsoleView({
               <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
               <div className="console-action-row">
                 <button
-                  className={kmnetConnected ? "console-button danger" : "console-button primary"}
-                  aria-pressed={kmnetConnected}
+                  className={kmnetConnected || kmnetConnecting ? "console-button danger" : "console-button primary"}
+                  aria-pressed={kmnetConnected || kmnetConnecting}
                   disabled={busy === "kmnet.toggle"}
                   onClick={() => void toggleHardwareConnection()}
                   type="button"
                 >
-                  {kmnetConnected ? "断开 kmNet" : "连接 kmNet"}
+                  {kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}
                 </button>
                 <button
                   className="console-button"
