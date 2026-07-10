@@ -70,11 +70,12 @@ const navItems: { id: ConsolePage; index: string; label: string }[] = [
   { id: "latency", index: "05", label: "采集延迟" }
 ];
 
-// The production mainline uses the NVIDIA/DeepStream data plane for capture,
-// decode, NVMM ROI, and format work, then hands the latest frame to NovaSight's
-// own TensorRT inference loop. It does not use the old automatic DeepStream
-// inference mailbox as the scheduler, so the launch dialog must wait on runtime latest-frame
-// consumption instead of DeepStream inference counters.
+const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
+
+// The production mainline uses GStreamer latest-frame capture, ROI, TensorRT
+// inference, and NovaSight's control loop. It does not use the old automatic
+// DeepStream inference mailbox as the scheduler, so the launch dialog waits on
+// runtime latest-frame consumption instead of DeepStream inference counters.
 const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
     label: "阶段 1 / 5",
@@ -89,7 +90,7 @@ const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
     label: "阶段 3 / 5",
     title: "启动主链运行管线",
-    caption: "请求后端启动 DeepStream 采集与 NovaSight 自定义 TensorRT 推理主链。"
+    caption: "请求后端启动采集、ROI、TensorRT 推理与控制主链。"
   },
   {
     label: "阶段 4 / 5",
@@ -541,9 +542,6 @@ export function StudioConsoleView({
   const inferenceTrace = asRecord(vision.inference);
   const runtimeInference = asRecord(runtime?.inference);
   const pipeline = asRecord(runtime?.pipeline);
-  const selectedRuntimeBackend = readString(runtimeInference.selected, "");
-  const mainlineRuntimeSelected = selectedRuntimeBackend === "nvmm_latest";
-  const runtimeMainlineSelected = mainlineRuntimeSelected;
   const captureBackendMode: CaptureBackendMode =
     readString(captureConfig.backend, "gst_cpu_latest") === "nvmm_latest"
       ? "nvmm_latest"
@@ -554,6 +552,9 @@ export function StudioConsoleView({
   const configuredCaptureMemory = readString(captureConfig.memory, captureBackendChoice.memory);
   const configuredPreprocessBackend = readString(preprocessConfig.backend, captureBackendChoice.preprocessBackend);
   const configuredInferenceBackend = readString(inferenceConfig.backend, captureBackendChoice.inferenceBackend);
+  const selectedRuntimeBackend = readString(runtimeInference.selected, configuredInferenceBackend);
+  const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
+  const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
@@ -575,7 +576,7 @@ export function StudioConsoleView({
     ? runtimeMainlineStatus.failed
       ? "主链故障"
       : runtimeMainlineRunning
-        ? "DeepStream采集+自定义推理运行中"
+        ? "采集+TensorRT+控制运行中"
       : mainlineLaunchPending
         ? "启动确认中"
         : runtimeInferenceConfigured

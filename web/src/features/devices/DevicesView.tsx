@@ -45,6 +45,7 @@ type CaptureInputSource = "capture" | "image";
 type ReadinessTone = "ready" | "warn" | "blocked";
 
 const ROI_SIZE_CHOICES = [640, 480, 320, 256];
+const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
 
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -59,6 +60,9 @@ function getNestedRecord(value: unknown, key: string): Record<string, unknown> |
 function formatBackendLabel(value: string): string {
   if (value === "nvmm_latest") {
     return "DeepStream采集 + 自定义推理";
+  }
+  if (value === "tensorrt") {
+    return "GStreamer latest + TensorRT";
   }
   return value || "未选择";
 }
@@ -400,10 +404,10 @@ export function DevicesView({
 
   const stopCaptureSession = useCallback(async () => {
     setStoppingCapture(true);
-      setCaptureError(undefined);
-      try {
-        const selected = runtime?.inference?.selected;
-      if (selected === "nvmm_latest") {
+    setCaptureError(undefined);
+    try {
+      const selected = typeof runtime?.inference?.selected === "string" ? runtime.inference.selected : "";
+      if (RUNTIME_MAINLINE_BACKENDS.has(selected)) {
         await stopRuntimePipeline();
       } else {
         await stopCapture();
@@ -500,19 +504,18 @@ export function DevicesView({
   const inferenceLoaded = inferenceStatus.loaded === true;
   const inferenceSupportsExecution = inferenceStatus.supports_execution !== false;
   const inferenceReason = typeof inferenceStatus.reason === "string" ? inferenceStatus.reason : "";
-  const inferredBackend = activeArtifact === "engine" ? "nvmm_latest" : "";
+  const inferredBackend = activeArtifact === "engine" ? "tensorrt" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
-  const nvmmLatestRuntimeSelected = inferenceSelected === "nvmm_latest";
-  const runtimeMainlineSelected = nvmmLatestRuntimeSelected;
+  const runtimeMainlineSelected = RUNTIME_MAINLINE_BACKENDS.has(inferenceSelected);
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
   const captureMainRunning = runtimeMainlineSelected ? runtimeMainlineRunning : capture?.available === true;
   const captureProfileConfigured = capture?.available === true || Boolean(capture?.profile);
   const mainlineInputReady = runtimeMainlineStatus.hasInferenceSignal;
   const mainlineRuntimeReady = runtimeMainlineStatus.hasRuntimeConsumption;
-  const mainlineBackendLabel = nvmmLatestRuntimeSelected
-    ? "DeepStream采集 + 自定义推理主链"
+  const mainlineBackendLabel = runtimeMainlineSelected
+    ? `${formatBackendLabel(inferenceSelected)} 主链`
     : "未选择主链";
   const mainlineRunLabel = runtimeMainlineStatus.failed
     ? "主链故障"
@@ -521,9 +524,7 @@ export function DevicesView({
         ? "主链已消费"
         : mainlineInputReady
           ? "等待 runtime 消费"
-          : nvmmLatestRuntimeSelected
-            ? "等待自定义推理输出"
-            : "等待 DetectionBatch"
+          : "等待 TensorRT 输出"
       : captureProfileConfigured
         ? "主链待启动"
         : "未启动";
