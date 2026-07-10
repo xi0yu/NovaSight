@@ -12,6 +12,7 @@ from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext
 from novasight.executors import BoxInputState
+from novasight.executors import ExecutionResult, ExecutorRegistry
 from novasight.inference.contracts import InferenceResult
 from novasight.runtime import (
     FailFastHandler,
@@ -923,6 +924,87 @@ def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, mon
     assert len(decision_logs) == 2
     assert "emit=False" in decision_logs[0].getMessage()
     assert "emit=True" in decision_logs[1].getMessage()
+
+
+def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_scheduler_and_kmnet() -> None:
+    class TriggeredKmNet:
+        executor_id = "kmnet"
+
+        def __init__(self) -> None:
+            self.outputs = []
+
+        def available(self) -> bool:
+            return True
+
+        def read_buttons(self) -> dict[str, object]:
+            return {
+                "available": True,
+                "left": True,
+                "right": False,
+                "reason": "",
+                "raw": {"source": "integration-test"},
+                "sample_ts_ns": time.monotonic_ns(),
+                "poll_ts_ns": time.monotonic_ns(),
+            }
+
+        def status(self, **_kwargs) -> dict[str, object]:
+            return {"available": True, "connected": True, "button_left": True}
+
+        def execute(self, output) -> ExecutionResult:
+            self.outputs.append(output)
+            return ExecutionResult(
+                executor_id="kmnet",
+                sent=True,
+                intent=output,
+                message="sent",
+                metadata={"driver_dx": int(output.dx), "driver_dy": int(output.dy)},
+            )
+
+    config = RuntimeConfig()
+    config.control.trigger_mode = "hardware"
+    config.control.mode = "universal_saturated"
+    kmnet = TriggeredKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.95, x1=360, y1=220, x2=520, y2=500)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    observation_result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=640,
+        roi_offset_y=220,
+    )
+    send_result = service.process_control_tick()
+
+    assert len(observation_result.control_intents) == 1
+    assert service.last_control is not None
+    assert service.last_control["pipeline"]["control_allowed"] is True
+    assert service.last_control["trigger_active"] is True
+    assert service.last_control["will_emit"] is True
+    assert service.last_control["dx"] != 0 or service.last_control["dy"] != 0
+    assert len(send_result.execution_results) == 1
+    assert send_result.execution_results[0].sent is True
+    assert len(kmnet.outputs) == 1
+    assert kmnet.outputs[0].dx != 0 or kmnet.outputs[0].dy != 0
 
 
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:
