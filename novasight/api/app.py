@@ -90,27 +90,16 @@ def create_app(
     systemd_notifier = SystemdNotifier(interval_s=watchdog_interval_from_env())
     instance_lock = InstanceLock()
 
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.config = config
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.config_path = Path(config_path)
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.models = models
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.executors = executors
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.hardware = hardware
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.license = LicenseStore(data_path / "license.json")
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.capture = capture
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.inference = inference
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.runtime = runtime
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.systemd_notifier = systemd_notifier
-    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.instance_lock = instance_lock
 
     @app.on_event("startup")
