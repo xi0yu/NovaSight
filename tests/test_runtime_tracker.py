@@ -211,6 +211,42 @@ def test_hungarian_assignment_finds_global_optimum_where_greedy_fails() -> None:
     assert sum(matrix[row][column] for row, column in assignment) == pytest.approx(3.1)
 
 
+def test_tracker_keeps_configured_kalman_confidence_gate_for_control_estimate() -> None:
+    tracker = RuntimeTracker(
+        TrackerConfig(
+            max_match_distance=1.5,
+            kalman=KalmanConfig(
+                acceleration_noise=2.0,
+                measurement_noise_x=4.0,
+                measurement_noise_y=4.0,
+                min_identity_confidence=0.99,
+            ),
+        )
+    )
+    first = _context(
+        1,
+        1_000_000_000,
+        [Detection(0, 0.9, x=100, y=200, w=40, h=100)],
+    )
+    second = _context(
+        2,
+        1_050_000_000,
+        [Detection(0, 0.9, x=104, y=200, w=40, h=100)],
+    )
+
+    tracker.update(_observations(first).observations, first.capture_ts_ns or 0, frame_id=1)
+    result = tracker.update(
+        _observations(second).observations,
+        second.capture_ts_ns or 0,
+        frame_id=2,
+    )
+
+    assert result.active_tracks[0].track_id == 1
+    assert result.debug["association_algorithm"] == "hungarian"
+    assert result.debug["tracks"][0]["identity_confidence"] < 0.99
+    assert result.debug["tracks"][0]["estimate"]["valid"] is False
+
+
 def test_target_selector_never_controls_lost_track() -> None:
     selector = RuntimeTargetSelector()
     first = _context(

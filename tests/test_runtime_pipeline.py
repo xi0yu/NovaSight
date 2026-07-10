@@ -13,7 +13,6 @@ from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext
 from novasight.inference.contracts import InferenceResult
 from novasight.runtime import (
-    DetectionBatchMailbox,
     FailFastHandler,
     FrameHandle,
     FreshnessGate,
@@ -192,6 +191,8 @@ def test_latest_frame_broker_exposes_proven_latest_frame_metadata() -> None:
             metadata={
                 "resource_memory": "system",
                 "capture_ts_source": "userspace_monotonic_receive",
+                "content_validation_status": "not_integrated",
+                "content_validation_reason": "frame content has not been measured",
             },
         )
     )
@@ -207,6 +208,8 @@ def test_latest_frame_broker_exposes_proven_latest_frame_metadata() -> None:
     assert status["published_format"] == "BGRx"
     assert status["published_resource_memory"] == "system"
     assert status["published_capture_ts_source"] == "userspace_monotonic_receive"
+    assert status["published_content_validation_status"] == "not_integrated"
+    assert status["published_content_validation_reason"] == "frame content has not been measured"
 
 
 def test_latest_frame_broker_rejects_stale_generation_publish() -> None:
@@ -314,156 +317,6 @@ def test_latest_frame_broker_pending_depth_never_exceeds_one() -> None:
 
     assert latest.generation == 99
     assert broker.status()["pending_depth"] == 0
-
-
-def test_detection_batch_mailbox_keeps_only_latest_generation() -> None:
-    mailbox = DetectionBatchMailbox()
-
-    for generation in range(100, 109):
-        now_ns = time.monotonic_ns()
-        mailbox.publish(
-            DetectionBatch(
-                frame_id=generation,
-                generation=generation,
-                capture_ts_ns=now_ns,
-                inference_start_ts_ns=now_ns + 1_000,
-                inference_end_ts_ns=now_ns + 2_000,
-                detections=[],
-                classes=[],
-                coordinate_space="roi",
-            )
-        )
-
-    latest = mailbox.acquire_latest(after_generation=100, timeout_s=0.0)
-    status = mailbox.status()
-
-    assert latest is not None
-    assert latest.generation == 108
-    assert status["pending_depth"] == 1
-    assert status["max_pending_depth"] == 1
-    assert status["overwritten_batches"] == 8
-
-
-def test_detection_batch_mailbox_rejects_stale_generation_publish() -> None:
-    mailbox = DetectionBatchMailbox()
-    now_ns = time.monotonic_ns()
-    mailbox.publish(
-        DetectionBatch(
-            frame_id=10,
-            generation=10,
-            capture_ts_ns=now_ns,
-            inference_start_ts_ns=now_ns + 1_000,
-            inference_end_ts_ns=now_ns + 2_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        )
-    )
-    mailbox.publish(
-        DetectionBatch(
-            frame_id=9,
-            generation=9,
-            capture_ts_ns=now_ns + 3_000,
-            inference_start_ts_ns=now_ns + 4_000,
-            inference_end_ts_ns=now_ns + 5_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        )
-    )
-
-    latest = mailbox.acquire_latest(after_generation=-1, timeout_s=0.0)
-    status = mailbox.status()
-
-    assert latest is not None
-    assert latest.generation == 10
-    assert latest.frame_id == 10
-    assert status["latest_generation"] == 10
-    assert status["latest_frame_id"] == 10
-    assert status["published_batches"] == 1
-    assert status["stale_published_batches"] == 1
-
-
-def test_detection_batch_mailbox_rejects_stale_frame_id_publish() -> None:
-    mailbox = DetectionBatchMailbox()
-    now_ns = time.monotonic_ns()
-    mailbox.publish(
-        DetectionBatch(
-            frame_id=20,
-            generation=20,
-            capture_ts_ns=now_ns,
-            inference_start_ts_ns=now_ns + 1_000,
-            inference_end_ts_ns=now_ns + 2_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        )
-    )
-    mailbox.publish(
-        DetectionBatch(
-            frame_id=19,
-            generation=21,
-            capture_ts_ns=now_ns + 3_000,
-            inference_start_ts_ns=now_ns + 4_000,
-            inference_end_ts_ns=now_ns + 5_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        )
-    )
-
-    latest = mailbox.acquire_latest(after_generation=-1, timeout_s=0.0)
-    status = mailbox.status()
-
-    assert latest is not None
-    assert latest.generation == 20
-    assert latest.frame_id == 20
-    assert status["latest_generation"] == 20
-    assert status["latest_frame_id"] == 20
-    assert status["published_batches"] == 1
-    assert status["stale_published_batches"] == 1
-
-
-def test_detection_batch_mailbox_rejects_capture_timestamp_rollback() -> None:
-    mailbox = DetectionBatchMailbox()
-    now_ns = time.monotonic_ns()
-    mailbox.publish(
-        DetectionBatch(
-            frame_id=20,
-            generation=20,
-            capture_ts_ns=now_ns,
-            inference_start_ts_ns=now_ns + 1_000,
-            inference_end_ts_ns=now_ns + 2_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        )
-    )
-    mailbox.publish(
-        DetectionBatch(
-            frame_id=21,
-            generation=21,
-            capture_ts_ns=now_ns - 1_000,
-            inference_start_ts_ns=now_ns + 3_000,
-            inference_end_ts_ns=now_ns + 4_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        )
-    )
-
-    latest = mailbox.acquire_latest(after_generation=-1, timeout_s=0.0)
-    status = mailbox.status()
-
-    assert latest is not None
-    assert latest.generation == 20
-    assert latest.frame_id == 20
-    assert latest.capture_ts_ns == now_ns
-    assert status["latest_generation"] == 20
-    assert status["latest_frame_id"] == 20
-    assert status["latest_capture_ts_ns"] == now_ns
-    assert status["published_batches"] == 1
-    assert status["stale_published_batches"] == 1
 
 
 def test_capture_session_publishes_captured_frames_to_latest_frame_broker() -> None:
@@ -578,6 +431,34 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
 
     assert runtime.running is False
     assert pipeline.running is False
+
+
+def test_runtime_pipeline_rejects_unloaded_model_before_threads_start() -> None:
+    cfg = RuntimeConfig()
+    capture = SimpleNamespace(
+        source=object(),
+        state=SimpleNamespace(available=True),
+        session=SimpleNamespace(running=True),
+    )
+    runtime = SimpleNamespace(
+        running=False,
+        config=cfg,
+        inference=SimpleNamespace(
+            status=lambda: {
+                "available": True,
+                "loaded": False,
+                "reason": "no active deployment",
+            }
+        ),
+    )
+    pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+
+    with pytest.raises(RuntimeError, match="推理模型未加载"):
+        pipeline.start()
+
+    assert runtime.running is False
+    assert pipeline.running is False
+    assert "no active deployment" in str(pipeline.stats.last_error)
 
 
 def test_runtime_pipeline_requires_gpu_bridge_for_nvmm_latest_inference() -> None:
@@ -871,6 +752,108 @@ def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acqui
     assert "postprocess_ms" in state.statistics
 
 
+def test_target_pipeline_diagnostics_explain_zero_decode_candidates(caplog) -> None:
+    cfg = RuntimeConfig()
+
+    class Broker:
+        def status(self) -> dict[str, int]:
+            return {"published_generation": 1, "published_frame_id": 1}
+
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("zero detections must not execute"),
+        ),
+        capture=SimpleNamespace(latest_frame_broker=Broker(), state=CaptureRuntimeState()),
+        inference=SimpleNamespace(
+            status=lambda: {"available": True, "loaded": True, "selected": "tensorrt"},
+            infer=lambda _frame: InferenceResult(
+                available=True,
+                detections=[],
+                classes=["target"],
+                debug={
+                    "timings": {},
+                    "preprocess": {"model_width": 320, "model_height": 320},
+                    "decode": {
+                        "raw_candidates": 8400,
+                        "max_score": 0.18,
+                        "threshold_candidates": 0,
+                        "nms_detections": 0,
+                    },
+                },
+            ),
+        ),
+    )
+    frame = CapturedFrame(
+        frame_id=1,
+        generation=1,
+        width=640,
+        height=640,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns(),
+        capture_wait_ms=1.0,
+        image=None,
+    )
+
+    with caplog.at_level("INFO", logger="novasight.runtime.service"):
+        service.process_captured_frame(frame, acquired_generation=1)
+
+    diagnostics = service.state().vision["target_pipeline"]
+    assert diagnostics["code"] == "CONFIDENCE_THRESHOLD_REJECTED"
+    assert diagnostics["stage"] == "inference_decode"
+    assert diagnostics["counts"]["decode_raw_candidates"] == 8400
+    assert diagnostics["counts"]["threshold_candidates"] == 0
+    assert "target pipeline blocked" in caplog.text
+
+
+def test_target_pipeline_diagnostics_explain_selection_fov_rejection() -> None:
+    cfg = RuntimeConfig()
+    cfg.control.target_fov_radius_px = 50.0
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("rejected target must not execute"),
+        ),
+    )
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.9, x1=0, y1=280, x2=40, y2=380)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=640,
+        roi_offset_y=220,
+    )
+
+    diagnostics = service.state().vision["target_pipeline"]
+    assert diagnostics["code"] == "OUTSIDE_TARGET_FOV"
+    assert diagnostics["stage"] == "target_filter"
+    assert diagnostics["counts"]["mapped_detections"] == 1
+    assert diagnostics["counts"]["tracker_active"] == 1
+    assert diagnostics["counts"]["inside_fov"] == 0
+    assert diagnostics["rejection_reasons"] == ["selection_fov"]
+
+
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "system"
@@ -1136,332 +1119,6 @@ def test_runtime_pipeline_consumes_frames_from_capture_session_thread() -> None:
         capture.stop("test complete")
 
 
-@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
-def test_runtime_pipeline_consumes_detection_batches_from_deepstream_source() -> None:
-    batch = DetectionBatch(
-        frame_id=42,
-        capture_ts_ns=1_000_000_000,
-        inference_start_ts_ns=1_000_001_000,
-        inference_end_ts_ns=1_000_002_000,
-        detections=[Detection(cls=0, score=0.9, x1=10, y1=20, x2=40, y2=80)],
-        classes=["0"],
-        coordinate_space="roi",
-    )
-    processed: list[tuple[int, int, int, int | None, int | None, int | None, int | None]] = []
-    processed_one = threading.Event()
-
-    class DetectionSource:
-        roi_width = 480
-        roi_height = 480
-        pipeline_config = SimpleNamespace(
-            capture_width=1920,
-            capture_height=1080,
-            roi_left=720,
-            roi_top=300,
-        )
-
-        def __init__(self) -> None:
-            self.running = False
-            self.started = False
-            self.stopped = False
-
-        def start(self) -> None:
-            self.running = True
-            self.started = True
-
-        def stop(self) -> None:
-            self.running = False
-            self.stopped = True
-
-        def latest_result(self, *, after_frame_id: int | None = None):
-            if after_frame_id is None or batch.frame_id > after_frame_id:
-                return batch
-            return None
-
-        def status(self) -> dict[str, object]:
-            return {
-                "selected": "deepstream",
-                "available": True,
-                "running": self.running,
-                "last_error": "",
-                "published_batches": 1,
-                "last_frame_id": batch.frame_id,
-                "pipeline": "large gst pipeline string",
-            }
-
-    def process_detection_batch(
-        detection_batch: DetectionBatch,
-        *,
-        width: int,
-        height: int,
-        source_width: int | None = None,
-        source_height: int | None = None,
-        roi_offset_x: int | None = None,
-        roi_offset_y: int | None = None,
-    ) -> None:
-        processed.append((
-            detection_batch.frame_id,
-            width,
-            height,
-            source_width,
-            source_height,
-            roi_offset_x,
-            roi_offset_y,
-        ))
-        processed_one.set()
-
-    source = DetectionSource()
-    runtime = SimpleNamespace(
-        running=False,
-        config=RuntimeConfig(),
-        process_detection_batch=process_detection_batch,
-        process_control_tick=lambda: None,
-    )
-    pipeline = RuntimePipeline(
-        capture=SimpleNamespace(),
-        runtime=runtime,
-        detection_source=source,
-    )
-
-    pipeline.start()
-    assert processed_one.wait(1.0)
-    pipeline.stop()
-
-    assert source.started is True
-    assert source.stopped is True
-    assert processed == [(42, 480, 480, 1920, 1080, 720, 300)]
-    status = pipeline.status()
-    assert status["consumed_detection_batches"] == 1
-    assert status["last_frame_id"] == 42
-    assert status["skipped_frames"] == 0
-    assert status["detection_batch_fps"] >= 0.0
-    assert status["detection_source"]["selected"] == "deepstream"
-    assert status["detection_source"]["published_batches"] == 1
-    assert "pipeline" not in status["detection_source"]
-
-
-@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
-def test_runtime_pipeline_resets_stats_between_detection_source_restarts() -> None:
-    batches = [
-        DetectionBatch(
-            frame_id=0,
-            capture_ts_ns=1_000_000_000,
-            inference_start_ts_ns=1_000_001_000,
-            inference_end_ts_ns=1_000_002_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        ),
-        DetectionBatch(
-            frame_id=1,
-            capture_ts_ns=1_000_100_000,
-            inference_start_ts_ns=1_000_101_000,
-            inference_end_ts_ns=1_000_102_000,
-            detections=[],
-            classes=[],
-            coordinate_space="roi",
-        ),
-    ]
-    processed: list[int] = []
-    processed_event = threading.Event()
-
-    class DetectionSource:
-        roi_width = 480
-        roi_height = 480
-
-        def __init__(self) -> None:
-            self.running = False
-            self.index = 0
-            self.delivered_this_run = False
-
-        def start(self) -> None:
-            self.running = True
-            self.delivered_this_run = False
-
-        def stop(self) -> None:
-            self.running = False
-
-        def latest_result(self, *, after_frame_id: int | None = None):
-            if self.delivered_this_run or self.index >= len(batches):
-                return None
-            batch = batches[self.index]
-            if after_frame_id is None or batch.frame_id > after_frame_id:
-                self.index += 1
-                self.delivered_this_run = True
-                return batch
-            return None
-
-        def status(self) -> dict[str, object]:
-            return {"available": True, "running": self.running}
-
-    def process_detection_batch(detection_batch: DetectionBatch, **_kwargs) -> None:
-        processed.append(detection_batch.frame_id)
-        processed_event.set()
-
-    source = DetectionSource()
-    runtime = SimpleNamespace(
-        running=False,
-        config=RuntimeConfig(),
-        process_detection_batch=process_detection_batch,
-        process_control_tick=lambda: None,
-    )
-    pipeline = RuntimePipeline(
-        capture=SimpleNamespace(),
-        runtime=runtime,
-        detection_source=source,
-    )
-
-    pipeline.start()
-    assert processed_event.wait(1.0)
-    pipeline.stop()
-    first_status = pipeline.status()
-    assert first_status["consumed_detection_batches"] == 1
-    assert first_status["last_frame_id"] == 0
-
-    processed_event.clear()
-    pipeline.start()
-    assert processed_event.wait(1.0)
-    pipeline.stop()
-    second_status = pipeline.status()
-
-    assert processed == [0, 1]
-    assert second_status["consumed_detection_batches"] == 1
-    assert second_status["processed_frames"] == 1
-    assert second_status["last_frame_id"] == 1
-
-
-@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
-def test_runtime_pipeline_does_not_count_rejected_batch_as_control_observation() -> None:
-    batch = DetectionBatch(
-        frame_id=5,
-        capture_ts_ns=1_000_000_000,
-        inference_start_ts_ns=1_000_001_000,
-        inference_end_ts_ns=1_000_002_000,
-        detections=[],
-        classes=[],
-        coordinate_space="roi",
-    )
-    processed_event = threading.Event()
-
-    class DetectionSource:
-        roi_width = 480
-        roi_height = 480
-
-        def __init__(self) -> None:
-            self.running = False
-            self.delivered = False
-
-        def start(self) -> None:
-            self.running = True
-
-        def stop(self) -> None:
-            self.running = False
-
-        def latest_result(self, *, after_frame_id: int | None = None):
-            if self.delivered or (after_frame_id is not None and batch.frame_id <= after_frame_id):
-                return None
-            self.delivered = True
-            return batch
-
-        def status(self) -> dict[str, object]:
-            return {"available": True, "running": self.running}
-
-    def process_detection_batch(_detection_batch: DetectionBatch, **_kwargs) -> RuntimeFrameResult:
-        processed_event.set()
-        return RuntimeFrameResult(
-            control_intents=[],
-            execution_results=[],
-            observation_updated=False,
-        )
-
-    source = DetectionSource()
-    runtime = SimpleNamespace(
-        running=False,
-        config=RuntimeConfig(),
-        process_detection_batch=process_detection_batch,
-        process_control_tick=lambda: None,
-    )
-    pipeline = RuntimePipeline(
-        capture=SimpleNamespace(),
-        runtime=runtime,
-        detection_source=source,
-    )
-
-    pipeline.start()
-    assert processed_event.wait(1.0)
-    pipeline.stop()
-    status = pipeline.status()
-
-    assert status["consumed_detection_batches"] == 1
-    assert status["processed_frames"] == 1
-    assert status["window_control_observations"] == 0
-    assert status["detection_batch_fps"] >= 0.0
-    assert status["control_observation_fps"] == 0.0
-
-
-@pytest.mark.skip(reason="legacy full DeepStream detection_source path removed")
-def test_runtime_pipeline_stops_deepstream_source_when_it_becomes_unavailable() -> None:
-    stopped = threading.Event()
-
-    class DetectionSource:
-        roi_width = 480
-        roi_height = 480
-
-        def __init__(self) -> None:
-            self.running = False
-            self.stop_count = 0
-
-        def start(self) -> None:
-            self.running = True
-
-        def stop(self) -> None:
-            self.running = False
-            self.stop_count += 1
-            stopped.set()
-
-        def latest_result(self, *, after_frame_id: int | None = None):
-            del after_frame_id
-            return None
-
-        def status(self) -> dict[str, object]:
-            if self.running:
-                self.running = False
-                return {
-                    "selected": "deepstream",
-                    "available": True,
-                    "running": False,
-                    "last_error": "nvinfer pipeline error",
-                }
-            return {
-                "selected": "deepstream",
-                "available": True,
-                "running": False,
-                "last_error": "nvinfer pipeline error",
-            }
-
-    source = DetectionSource()
-    runtime = SimpleNamespace(
-        running=False,
-        config=RuntimeConfig(),
-        process_detection_batch=lambda _batch, **_kwargs: pytest.fail("stopped source must not produce batches"),
-        process_control_tick=lambda: None,
-    )
-    pipeline = RuntimePipeline(
-        capture=SimpleNamespace(),
-        runtime=runtime,
-        detection_source=source,
-    )
-
-    pipeline.start()
-    try:
-        assert stopped.wait(1.0)
-        assert runtime.running is False
-        assert "nvinfer pipeline error" in (pipeline.stats.last_error or "")
-        assert source.stop_count >= 1
-    finally:
-        pipeline.stop()
-
-
 def test_detection_batch_copies_mutable_inputs() -> None:
     detections = [Detection(cls=0, score=0.9, x1=10, y1=20, x2=40, y2=80)]
     classes = ["body"]
@@ -1713,56 +1370,6 @@ def test_runtime_service_rejects_detection_batch_generation_and_capture_rollback
     assert "capture_ts_ns must increase" in service.last_inference_status["reason"]
 
 
-@pytest.mark.skip(reason="legacy DeepStream timestamp-source rejection removed")
-def test_runtime_service_rejects_deepstream_untrusted_timestamp_source() -> None:
-    cfg = RuntimeConfig()
-    service = RuntimeService(
-        cfg,
-        models=SimpleNamespace(),
-        executors=SimpleNamespace(
-            selected="noop",
-            status=lambda: {},
-            update_runtime_config=lambda _cfg: None,
-            execute=lambda _intent: pytest.fail("untrusted timestamp batch must not execute"),
-        ),
-    )
-    now_ns = time.monotonic_ns()
-    batch = DetectionBatch(
-        frame_id=18,
-        capture_ts_ns=now_ns,
-        inference_start_ts_ns=now_ns + 1_000,
-        inference_end_ts_ns=now_ns + 2_000,
-        detections=[Detection(cls=0, score=0.9, x1=10, y1=20, x2=40, y2=80)],
-        classes=["0"],
-        coordinate_space="roi",
-        metadata={"source": "deepstream", "timestamp_source": "first_probe_offset_pts"},
-    )
-
-    result = service.process_detection_batch(
-        batch,
-        width=480,
-        height=480,
-        source_width=1920,
-        source_height=1080,
-        roi_offset_x=720,
-        roi_offset_y=300,
-    )
-
-    assert result.control_intents == []
-    assert service.last_frame_context is None
-    assert service.last_control is not None
-    assert service.last_control["control_allowed"] is False
-    assert service.last_control["runtime_reset_reason"] == "DETECTION_BATCH_TIMESTAMP_SOURCE_INVALID"
-    assert service.last_inference_status["available"] is False
-    assert service.last_inference_status["mapped_detections"] == 0
-    assert service.last_inference_status["timestamp_source_invalid"] is True
-    assert service.last_inference_status["timestamp_source"] == "first_probe_offset_pts"
-    assert "timestamp_source must be gst_clock_base_time_pts" in service.last_inference_status["reason"]
-    assert service.last_inference_status["detection_batch_metadata"]["source"] == "deepstream"
-    assert service.last_pipeline_timings["engine_ms"] == pytest.approx(0.001)
-    assert service.last_pipeline_timings["control_ms"] == 0.0
-
-
 def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats() -> None:
     cfg = RuntimeConfig()
     service = RuntimeService(
@@ -1796,57 +1403,6 @@ def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats()
     assert state.statistics["control_observation_counter"] == 10
     assert state.statistics["control_observation_fps"] == pytest.approx(116.6)
     assert state.statistics["skipped_counter"] == 3
-
-
-@pytest.mark.skip(reason="legacy DeepStream TensorMeta contract removed")
-def test_runtime_service_rejects_deepstream_missing_tensor_meta_batch() -> None:
-    cfg = RuntimeConfig()
-    service = RuntimeService(
-        cfg,
-        models=SimpleNamespace(),
-        executors=SimpleNamespace(
-            selected="noop",
-            status=lambda: {},
-            update_runtime_config=lambda _cfg: None,
-            execute=lambda _intent: pytest.fail("missing tensor meta batch must not execute"),
-        ),
-    )
-    service.last_frame_context = FrameContext(
-        frame_id=6,
-        width=480,
-        height=480,
-        detections=[Detection(cls=0, score=0.9, x1=200, y1=200, x2=260, y2=280)],
-        classes=["0"],
-        capture_ts_ns=1_000_000,
-    )
-    batch = DetectionBatch(
-        frame_id=7,
-        capture_ts_ns=time.monotonic_ns(),
-        inference_start_ts_ns=time.monotonic_ns() + 1_000,
-        inference_end_ts_ns=time.monotonic_ns() + 2_000,
-        detections=[],
-        classes=["0"],
-        coordinate_space="roi",
-        metadata={
-            "source": "deepstream",
-            "timestamp_source": "gst_clock_base_time_pts",
-            "empty_reason": "missing_tensor_meta",
-        },
-    )
-
-    result = service.process_detection_batch(batch, width=480, height=480)
-
-    assert result.control_intents == []
-    assert service.last_frame_context is None
-    assert service.last_control is not None
-    assert service.last_control["control_allowed"] is False
-    assert service.last_control["runtime_reset_reason"] == "DETECTION_BATCH_MISSING_TENSOR_META"
-    assert service.last_inference_status["available"] is False
-    assert service.last_inference_status["missing_tensor_meta"] is True
-    assert service.last_inference_status["mapped_detections"] == 0
-    assert service.last_inference_status["detection_batch_metadata"]["empty_reason"] == (
-        "missing_tensor_meta"
-    )
 
 
 def test_runtime_service_rejects_non_roi_detection_batch() -> None:

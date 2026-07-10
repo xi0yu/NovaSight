@@ -81,7 +81,13 @@ class CommandScheduler:
         self._last_cancelled_dy = 0
         self._last_error = ""
 
-    def submit(self, output: ControlOutput, *, now_s: float | None = None) -> ScheduleDecision:
+    def submit(
+        self,
+        output: ControlOutput,
+        *,
+        now_s: float | None = None,
+        emit_immediately: bool = True,
+    ) -> ScheduleDecision:
         now = time.monotonic() if now_s is None else float(now_s)
         if self._cooldown_until_s > now:
             return ScheduleDecision(
@@ -107,10 +113,73 @@ class CommandScheduler:
                     "reason": "rejected outputs bypass scheduler state",
                 },
             )
+        if output.action == "move" and int(output.dx) == 0 and int(output.dy) == 0:
+            self.clear("ZERO_OUTPUT")
+            return ScheduleDecision(
+                output=None,
+                metadata={
+                    "stage": "scheduler",
+                    "action": "zero_output",
+                    "command_status": "idle",
+                    "sent_allowed": False,
+                    "cancel_reason": "ZERO_OUTPUT",
+                    "reason": "zero movement is not sent to the device",
+                },
+            )
 
         expired_reason = self._drop_expired(now)
         cancel_reason = self._cancel_pending_for_new_output(output)
         elapsed = now - self._last_emit_s if self._last_emit_s > 0 else self.min_interval_s
+        if not emit_immediately:
+            replaced = bool(self._pending_steps)
+            replaced_step_count = len(self._pending_steps)
+            replaced_remaining_dx = int(sum(step.dx for step in self._pending_steps))
+            replaced_remaining_dy = int(sum(step.dy for step in self._pending_steps))
+            command_id = self._next_command_id()
+            first_step, tail_steps, split_metadata = self._split_output(output)
+            steps = [first_step, *tail_steps]
+            self._pending_steps = deque(steps)
+            self._pending_parent = output
+            self._pending_created_s = now
+            self._pending_command_id = command_id
+            self._pending_expires_s = now + self._ttl_for(output)
+            self._pending_next_step_index = 0
+            self._pending_step_count = len(steps)
+            if replaced:
+                self._cancelled_pending += replaced_step_count
+            return ScheduleDecision(
+                output=None,
+                metadata={
+                    "stage": "scheduler",
+                    "action": "replace_plan",
+                    "command_id": command_id,
+                    "plan_id": command_id,
+                    "source_frame_id": output.source_frame_id,
+                    "source_track_id": output.source_track_id,
+                    "trajectory_generation": output.trajectory_generation,
+                    "created_ts_ns": int(now * 1_000_000_000),
+                    "expires_ts_ns": int(self._pending_expires_s * 1_000_000_000),
+                    "command_status": "pending",
+                    "step_index": None,
+                    "step_count": len(steps),
+                    "cancel_reason": cancel_reason or ("REPLACED_PENDING" if replaced else ""),
+                    "cancelled_remaining_dx": (
+                        self._last_cancelled_dx if cancel_reason else replaced_remaining_dx
+                    ),
+                    "cancelled_remaining_dy": (
+                        self._last_cancelled_dy if cancel_reason else replaced_remaining_dy
+                    ),
+                    "expired_reason": expired_reason,
+                    "sent_allowed": False,
+                    "reason": "scheduler tick owns device send",
+                    "ttl_ms": self._ttl_for(output) * 1000.0,
+                    "replaced_pending": replaced,
+                    **split_metadata,
+                    "pending_dx": float(sum(step.dx for step in self._pending_steps)),
+                    "pending_dy": float(sum(step.dy for step in self._pending_steps)),
+                    "pending_steps": len(self._pending_steps),
+                },
+            )
         if _interval_due(elapsed, self.min_interval_s):
             cancelled = len(self._pending_steps)
             self._cancelled_pending += cancelled

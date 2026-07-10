@@ -54,7 +54,7 @@ def test_kmnet_panel_has_dedicated_control_test_page() -> None:
         'activePage === "params" || activePage === "control-test"'
     )
     control_page_start = source.index(
-        '<Metric title="连接状态" value={kmnetConnected ? "已连接" : "未连接"}',
+        '<Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}',
         section_start,
     )
     section_end = source.index("</section>", control_page_start)
@@ -68,7 +68,8 @@ def test_kmnet_connection_button_uses_backend_runtime_state() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
     assert "const kmnetConnected = kmnetStatus.connected === true;" in source
-    assert '{kmnetConnected ? "断开 kmNet" : "连接 kmNet"}' in source
+    assert "const kmnetConnecting = kmnetStatus.connecting === true;" in source
+    assert '{kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}' in source
     assert 'enabled={kmnetAutoConnect}' in source
     assert 'updateConfigField("hardware", "auto_connect", enabled)' in source
 

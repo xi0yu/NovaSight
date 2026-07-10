@@ -240,9 +240,17 @@ def main(argv: list[str] | None = None) -> int:
             uuid=uuid,
             monitor_port=monitor_port,
         )
-        status = executor.status()
+        status = executor.connect()
         print(f"driver_available: {status['available']}")
         print(f"connected: {status['connected']}")
+        print(f"connection_stage: {status['connection_stage']}")
+        print(f"connect_error_stage: {status['last_connect_error_stage']}")
+        print(f"connect_error_type: {status['last_connect_error_type']}")
+        print(f"route_available: {status['route_available']}")
+        print(f"route_resolved_ip: {status['route_resolved_ip']}")
+        print(f"route_local_ip: {status['route_local_ip']}")
+        if status["route_error"]:
+            print(f"route_error: {status['route_error']}")
         print(f"host: {status['host']}")
         print(f"port: {status['port']}")
         print(f"monitor_port: {status['monitor_port']}")
@@ -252,6 +260,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"has_trace: {status['has_trace']}")
         print(f"has_left_button: {status['has_left_button']}")
         print(f"has_right_button: {status['has_right_button']}")
+        print(f"last_driver_call: {status['last_driver_call']}")
+        print(f"last_driver_call_duration_ms: {status['last_driver_call_duration_ms']:.3f}")
+        print(f"last_driver_rc: {status['last_driver_rc']}")
+        if status["last_driver_error"]:
+            print(f"last_driver_error: {status['last_driver_error']}")
         buttons = executor.read_buttons()
         print(f"buttons_available: {buttons['available']}")
         print(f"button_left: {buttons['left']}")
@@ -268,7 +281,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"last_dy: {refreshed['last_dy']}")
         if refreshed["last_error"]:
             print(f"reason: {refreshed['last_error']}")
-        return 0 if refreshed["available"] and refreshed["connected"] else 2
+        succeeded = bool(refreshed["available"] and refreshed["connected"])
+        executor.disconnect()
+        return 0 if succeeded else 2
     if args.command == "capture-smoke":
         from novasight.capture.service import CaptureService
 

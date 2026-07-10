@@ -41,6 +41,7 @@ class SystemdNotifier:
             address = "\0" + address[1:]
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(0.1)
                 sock.connect(address)
                 sock.sendall(message.encode("utf-8"))
         except OSError:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import Literal
 
@@ -251,7 +251,7 @@ class RuntimeTracker:
         for track in self._tracks.values():
             if track.status not in {"ACTIVE", "LOST"} or track.estimator is None:
                 continue
-            track.estimator.update_config(_association_kalman_config(self.config.kalman))
+            track.estimator.update_config(self.config.kalman)
             estimate = track.estimator.predict_only(
                 ts_ns=capture_ts_ns,
                 identity_confidence=track.identity_confidence,
@@ -363,7 +363,7 @@ class RuntimeTracker:
             )
             estimate = track.estimator.last_estimate
         else:
-            track.estimator.update_config(_association_kalman_config(self.config.kalman))
+            track.estimator.update_config(self.config.kalman)
             estimate = track.estimator.update(
                 measurement_x=observation.aim_x,
                 measurement_y=observation.aim_y,
@@ -440,7 +440,7 @@ class RuntimeTracker:
             x=x,
             y=y,
             ts_ns=capture_ts_ns,
-            config=_association_kalman_config(self.config.kalman),
+            config=self.config.kalman,
             identity_confidence=identity_confidence,
         )
 
@@ -569,21 +569,6 @@ class RuntimeTracker:
             },
             "estimate": _estimate_debug(track.estimate),
         }
-
-
-def _association_kalman_config(config: KalmanConfig) -> KalmanConfig:
-    return replace(
-        config,
-        max_predict_missing_ms=1_000_000_000.0,
-        max_predict_steps=1_000_000_000,
-        max_predict_dt_ms=1_000_000_000.0,
-        max_position_sigma_px=1_000_000_000.0,
-        max_covariance_trace=1_000_000_000_000.0,
-        nis_threshold=1_000_000_000_000.0,
-        nis_hard_reject=1_000_000_000_000.0,
-        min_identity_confidence=0.0,
-        min_prediction_confidence=0.0,
-    )
 
 
 def _linear_sum_assignment(cost_matrix: list[list[float]]) -> list[tuple[int, int]]:

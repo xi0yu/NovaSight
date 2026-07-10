@@ -856,7 +856,7 @@ def _sample_to_bgr(sample: Any, Gst: Any) -> tuple[Any, int, int, str]:
     if _sample_has_gpu_accessible_memory(sample, buffer):
         raise RuntimeError(
             "refusing to map GPU-accessible GStreamer sample into a CPU image; "
-            "use GstResourceFrameSource or CaptureLoop for NVMM/DMABUF/CUDA buffers"
+            "use GstResourceFrameSource for NVMM/DMABUF/CUDA buffers"
         )
     ok, info = buffer.map(Gst.MapFlags.READ)
     if not ok:

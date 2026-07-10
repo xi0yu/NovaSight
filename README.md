@@ -103,16 +103,17 @@ use signed `NS1.<payload>.<signature>` tokens with created time, activation time
 duration, tier, and feature permissions; plaintext keys are never returned by the
 API.
 
-## Temporary `gst_cpu_latest` Mainline
+## Jetson `nvmm_latest` Mainline
 
-The current stable control path is a CPU-readable GStreamer bridge into GPU
-TensorRT inference:
+The production control path keeps decoded frames in NVMM through native GPU
+preprocess and TensorRT inference:
 
 ```text
 GC553G2/V4L2 -> nvv4l2decoder -> nvvidconv ROI/resize
--> appsink system memory -> LatestFrameExchange capacity=1
--> CPU preprocess host tensor -> CUDA H2D -> TensorRT -> DetectionBatch
+-> appsink opaque NVMM resource -> LatestFrameBroker capacity=1
+-> native CUDA preprocess -> TensorRT -> DetectionBatch
 -> Tracker/Selector/Kalman/Controller/Scheduler
+-> kmNet
 ```
 
 This is not CPU inference. The runtime accepts only TensorRT `.engine`
@@ -123,20 +124,20 @@ Required config values:
 
 ```yaml
 capture:
-  backend: gst_cpu_latest
-  memory: system
+  backend: nvmm_latest
+  memory: nvmm
   latest_only: true
   appsink_max_buffers: 1
   queue_leaky: downstream
 preprocess:
-  backend: cpu
+  backend: cuda
   input_format: auto
   output_dtype: fp16
   normalize: true
   use_pinned_memory: true
   h2d_async: true
 inference:
-  backend: tensorrt
+  backend: nvmm_latest
   device: cuda
   require_gpu: true
   allow_cpu_fallback: false
@@ -152,6 +153,15 @@ Start with the example config:
 cp config/novasight.example.yaml config/novasight.yaml
 python3 -m novasight --host 0.0.0.0 --port 5174
 ```
+
+The example config restores `/dev/video0`, loads the active TensorRT deployment,
+and starts `RuntimePipeline` automatically. kmNet auto-connect runs independently.
+If no active model exists, the API remains available and the runtime reports an
+explicit model-not-loaded startup reason instead of entering a false running state.
+
+The current zero-copy path proves frame timing and GPU resource validity but does
+not yet compute GPU luma/variance. A disconnected capture-card black frame cannot
+be distinguished from a valid dark scene until that native content probe is added.
 
 Run a 60-second capture smoke on Jetson:
 
@@ -348,7 +358,7 @@ Inspect `/dev/video0` capabilities:
 python3 -m novasight doctor camera --device /dev/video0
 ```
 
-For the tested HDMI capture card, the temporary CPU bridge prefers:
+For diagnostics, the optional `gst_cpu_latest` CPU bridge prefers:
 
 ```text
 MJPG 1920x1080 @ 120
@@ -373,8 +383,7 @@ gst-launch-1.0 -v \
   appsink sync=false max-buffers=1 drop=true
 ```
 
-The future `nvmm_latest` path is still available for native bridge development,
-but it is explicit and requires `capture.backend=nvmm_latest`,
+The production `nvmm_latest` path requires `capture.backend=nvmm_latest`,
 `capture.memory=nvmm`, `preprocess.backend=cuda`, and
 `inference.backend=nvmm_latest`.
 

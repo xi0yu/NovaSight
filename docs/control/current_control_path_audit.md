@@ -32,6 +32,8 @@ CapturedFrame / DetectionBatch
 
 There is no `legacy`, `experimental_angle_pid`, LOS angular prediction, AimPoint EMA, LatencyCompensator, integral, or magnetic-assist send path. The two mapping modes cannot both execute for one observation.
 
+The shipped Jetson config uses `source.default: capture`. Application startup restores the configured capture device in a background thread, then starts `RuntimePipeline` only after capture is available and the active TensorRT model reports `loaded=true`. kmNet connection is started independently and does not block API startup.
+
 ## Source And Time Contracts
 
 - Capture sources assign monotonic `capture_ts_ns`; inference and control preserve it through `DetectionBatch` and `FrameContext`.
@@ -91,6 +93,8 @@ cost = 0.75 * normalized_distance + 0.25 * (1 - IoU)
 ```
 
 New tracks are `ACTIVE` immediately. An unmatched track becomes `LOST` and remains available only for future association. It is never emitted to TargetSelector or mouse control. A successful later match restores the same `track_id`; more than `max_missed_frames` consecutive misses removes the track.
+
+The configured Kalman NIS, covariance, missing-time, identity-confidence, and prediction-confidence gates are also the gates used by the estimate consumed by mouse prediction. There is no separate permissive association-only Kalman configuration that silently bypasses those values.
 
 Implementation:
 
@@ -180,7 +184,7 @@ scheduler_step_counts_axis * plan_step_capacity
 
 `CommandScheduler._split_steps()` uses cumulative rounding, so integer steps sum exactly to the feasible submitted budget and remain under the per-step limit.
 
-New observations submit under the same runtime lock used by Scheduler ticks. A new frame replaces the pending plan before another old step can be consumed. Trigger release, target loss, stale input, calibration changes, runtime stop, and device errors clear pending steps.
+New observations only replace the single pending plan; they never call the device. The continuous Scheduler tick is the only production device-send owner. Scheduler mutation is serialized separately from device I/O, and the potentially blocking kmNet call does not hold the runtime control-state lock. A new frame replaces pending old steps; a step already handed to the device is recorded as executed or failed and is never placed back into residual debt. Trigger release, target loss, stale input, calibration changes, runtime stop, and device errors clear pending steps.
 
 Implementation:
 
@@ -202,6 +206,12 @@ novasight/control/hid_output.py
 novasight/core/control_loop.py
 novasight/detection/kalman_estimator.py
 novasight/detection/target_selector.py
+novasight/hardware/kmbox_net.py
+novasight/hardware/factory.py
+novasight/hardware/heartbeat.py
+novasight/hardware/makcu.py
+novasight/runtime/detection_batch_mailbox.py
+novasight/capture/capture_loop.py
 ```
 
 The current configuration schema exposes only `control.mode` plus nested `calibrated_angular`, `universal_saturated`, and `shared` settings. Experimental-angle fields, AimPoint EMA fields, legacy latency compensation fields, integral state, and magnetic-assist fields exist only in one-way load migration or are discarded.
@@ -214,11 +224,30 @@ The current configuration schema exposes only `control.mode` plus nested `calibr
 - Repeated old observation control: no; control ticks consume pending steps only and never recalculate from `last_frame_context`.
 - Old plan handling: every new observation replaces pending steps; unexecuted counts are discarded.
 - Production chain count: one. Control-mapping modes: two, mutually exclusive.
+- Device-send owner count: one, the Scheduler tick thread.
+- Hardware trigger reads: cached kmNet monitor samples; control ticks do not issue synchronous button RPCs.
 
 `KmNetExecutor.diagnostic_move()` remains available to the CLI and executor diagnostic API. It is an explicit hardware test command, not a detection-driven mouse algorithm route, and it does not share controller state with the production loop.
+
+## Capture Content Evidence
+
+The NVMM path proves resource type, caps, dimensions, frame/generation monotonicity, timestamp age, overwrite count, and inference execution. It does not currently prove that pixels contain a valid nonblack source image. `GstResourceFrameSource` intentionally keeps `CapturedFrame.image=None`; the MJPEG preview therefore cannot encode this zero-copy resource without a separate GPU-to-preview conversion.
+
+Capture telemetry now reports:
+
+```text
+content_validation_status: not_integrated
+content_validation_reason: NVMM zero-copy frame has no GPU luma/variance probe
+preview_available: false
+preview_reason: NVMM zero-copy preview conversion is not integrated
+```
+
+These values are deliberate unavailable states, not capture failures. A real black/frozen-frame decision requires a native GPU luma/variance or sampled-thumbnail probe and thresholds validated on the Jetson capture card. Until that exists, frame arrival and successful inference must not be described as proof that the source image is visually correct.
 
 ## Remaining Physical Uncertainty
 
 The least certain value is the physical endpoint represented by `configured_actuation_delay_s`. Capture timestamps mark userspace receipt, and successful send timestamps do not reveal when the game consumes input or when that movement appears in a captured frame.
 
 The largest remaining control-model limitation is self-motion contamination of Kalman screen velocity. Recent successful counts conservatively reduce prediction, but they do not estimate and subtract camera-induced screen motion. That compensation must remain out of the live predictor until send-to-visual alignment is measured.
+
+The second physical uncertainty is capture content validity. No code path currently distinguishes a valid dark game scene from a disconnected capture-card black frame on the NVMM data plane.

@@ -207,9 +207,6 @@ def test_runtime_config_defaults_are_stable() -> None:
     cfg = RuntimeConfig()
 
     assert cfg.web.port == 5174
-    assert cfg.executor.default == "kmnet"
-    assert cfg.control.output_mode == "kmnet"
-    assert cfg.hardware.kind == "kmnet"
     assert cfg.hardware.auto_connect is True
     assert cfg.roi.size == 640
     assert cfg.roi.mode == "center"
@@ -272,19 +269,12 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.target_fov_radius_px == 180.0
     assert cfg.control.min_confidence == 0.25
     assert cfg.control.target_switch_delay_ms == 50.0
-    assert cfg.control.lost_target_timeout_ms == 120.0
     assert cfg.control.tracker_max_match_distance == 1.5
     assert cfg.control.tracker_position_cost_weight == 0.75
     assert cfg.control.tracker_iou_cost_weight == 0.25
     assert cfg.control.tracker_max_missed_frames == 2
-    assert cfg.control.tracker_confirm_frames == 2
     assert cfg.control.target_switch_min_preference_advantage == 0.08
     assert cfg.control.target_switch_min_continuity_score == 0.70
-    assert cfg.control.tracker_matching_distance_px == 140.0
-    assert cfg.control.tracker_ambiguity_margin == 0.08
-    assert cfg.control.tracker_delete_timeout_ms == 250.0
-    assert cfg.control.tracker_match_threshold == 0.65
-    assert cfg.control.tracker_mahalanobis_gate == 9.21
     assert cfg.control.kalman_acceleration_noise == 1200.0
     assert cfg.control.kalman_measurement_noise_x == 16.0
     assert cfg.control.kalman_measurement_noise_y == 16.0
@@ -342,8 +332,10 @@ def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
         }
     )
 
+    assert cfg.source.default == "null"
     assert cfg.capture.backend == "gst_cpu_latest"
     assert cfg.capture.memory == "system"
+    assert cfg.preprocess.backend == "cpu"
     assert cfg.inference.backend == "tensorrt"
     assert not hasattr(cfg.inference, "deepstream_manifest_path")
     assert not hasattr(cfg.inference, "deepstream_config_path")
@@ -374,7 +366,6 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     cfg.source.default = "image:/tmp/frame.jpg"
     cfg.calibration.profile_id = "arena-105"
     cfg.control.calibrated_angular.counts_per_360_y = 10010
-    cfg.executor.default = "kmnet"
 
     save_runtime_config(cfg, path)
     loaded = load_runtime_config(path)
@@ -383,7 +374,6 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     assert loaded.source.default == "image:/tmp/frame.jpg"
     assert loaded.calibration.profile_id == "arena-105"
     assert loaded.control.calibrated_angular.counts_per_360_y == 10010
-    assert loaded.executor.default == "kmnet"
 
 
 @pytest.mark.parametrize(
@@ -406,9 +396,11 @@ def test_runtime_config_missing_file_returns_defaults(tmp_path: Path) -> None:
 def test_example_runtime_config_loads_with_current_schema() -> None:
     cfg = load_runtime_config(Path("config/novasight.example.yaml"))
 
-    assert cfg.capture.backend == "gst_cpu_latest"
-    assert cfg.capture.memory == "system"
-    assert cfg.inference.backend == "tensorrt"
+    assert cfg.source.default == "capture"
+    assert cfg.capture.backend == "nvmm_latest"
+    assert cfg.capture.memory == "nvmm"
+    assert cfg.preprocess.backend == "cuda"
+    assert cfg.inference.backend == "nvmm_latest"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
     assert cfg.control.mode == "universal_saturated"
@@ -536,16 +528,12 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"target_fov_radius_px": 0}}, "control.target_fov_radius_px"),
         ({"control": {"min_confidence": 0.09}}, "control.min_confidence"),
         ({"control": {"target_switch_delay_ms": 501}}, "control.target_switch_delay_ms"),
-        ({"control": {"lost_target_timeout_ms": 201}}, "control.lost_target_timeout_ms"),
         ({"control": {"tracker_max_match_distance": 0}}, "control.tracker_max_match_distance"),
         ({"control": {"tracker_position_cost_weight": -0.1}}, "control.tracker_position_cost_weight"),
         ({"control": {"tracker_iou_cost_weight": -0.1}}, "control.tracker_iou_cost_weight"),
         ({"control": {"tracker_max_missed_frames": -1}}, "control.tracker_max_missed_frames"),
-        ({"control": {"tracker_confirm_frames": 0}}, "control.tracker_confirm_frames"),
         ({"control": {"target_switch_min_preference_advantage": -0.1}}, "control.target_switch_min_preference_advantage"),
         ({"control": {"target_switch_min_continuity_score": 1.5}}, "control.target_switch_min_continuity_score"),
-        ({"control": {"tracker_match_threshold": 1.5}}, "control.tracker_match_threshold"),
-        ({"control": {"tracker_mahalanobis_gate": 0}}, "control.tracker_mahalanobis_gate"),
         ({"control": {"kalman_max_predict_steps": 0}}, "control.kalman_max_predict_steps"),
         ({"control": {"kalman_min_prediction_confidence": 1.5}}, "control.kalman_min_prediction_confidence"),
         ({"control": {"kalman_nis_hard_reject": 8, "kalman_nis_threshold": 9}}, "control.kalman_nis_hard_reject"),
@@ -556,18 +544,31 @@ def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_
         parse_runtime_config(raw)
 
 
-def test_runtime_config_enforces_kmnet_only_runtime_paths() -> None:
+def test_runtime_config_has_one_kmnet_runtime_path() -> None:
     assert parse_runtime_config({"control": {"trigger_mode": "hardware"}}).control.trigger_mode == "hardware"
     assert parse_runtime_config({"control": {"trigger_mode": "always"}}).control.trigger_mode == "always"
 
     with pytest.raises(ValueError, match="control.trigger_mode.*hardware or always"):
         parse_runtime_config({"control": {"trigger_mode": "telemetry"}})
-    with pytest.raises(ValueError, match="control.output_mode.*kmnet"):
-        parse_runtime_config({"control": {"output_mode": "dry_run"}})
-    with pytest.raises(ValueError, match="executor.default.*kmnet"):
-        parse_runtime_config({"executor": {"default": "silent"}})
-    with pytest.raises(ValueError, match="hardware.kind.*kmnet"):
-        parse_runtime_config({"hardware": {"kind": "makcu"}})
+    migrated = parse_runtime_config(
+        {
+            "control": {
+                "output_mode": "dry_run",
+                "lost_target_timeout_ms": 120,
+                "tracker_confirm_frames": 2,
+                "tracker_matching_distance_px": 140,
+            },
+            "executor": {"default": "silent"},
+            "hardware": {"kind": "makcu", "serial_port": "/dev/ttyUSB0"},
+        }
+    )
+    assert not hasattr(migrated.control, "output_mode")
+    assert not hasattr(migrated.control, "lost_target_timeout_ms")
+    assert not hasattr(migrated.control, "tracker_confirm_frames")
+    assert not hasattr(migrated.control, "tracker_matching_distance_px")
+    assert not hasattr(migrated, "executor")
+    assert not hasattr(migrated.hardware, "kind")
+    assert not hasattr(migrated.hardware, "serial_port")
     with pytest.raises(ValueError, match="control.strategy.*experimental_angle_pid"):
         parse_runtime_config({"control": {"strategy": "pid"}})
 
@@ -748,7 +749,6 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
 
     assert {
         "control.trigger_mode",
-        "control.output_mode",
         "control.mode",
         "control.aim.y_ratio",
         "control.configured_actuation_delay_s",
@@ -780,7 +780,6 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.target_fov_radius_px",
         "control.min_confidence",
         "control.target_switch_delay_ms",
-        "control.lost_target_timeout_ms",
     }.issubset(paths)
     assert "control.pid_kp_x" not in paths
     assert "control.pid_kp_y" not in paths

@@ -62,6 +62,8 @@ class LatestFrameBroker:
         self._published_format = ""
         self._published_resource_memory = ""
         self._published_capture_ts_source = ""
+        self._published_content_validation_status = ""
+        self._published_content_validation_reason = ""
         self._acquired_generation = -1
         self._acquired_frame_id = -1
         self._published_frames = 0
@@ -141,6 +143,8 @@ class LatestFrameBroker:
             self._published_format = ""
             self._published_resource_memory = ""
             self._published_capture_ts_source = ""
+            self._published_content_validation_status = ""
+            self._published_content_validation_reason = ""
             self._acquired_generation = -1
             self._acquired_frame_id = -1
             self._published_frames = 0
@@ -171,6 +175,8 @@ class LatestFrameBroker:
                 "published_format": self._published_format,
                 "published_resource_memory": self._published_resource_memory,
                 "published_capture_ts_source": self._published_capture_ts_source,
+                "published_content_validation_status": self._published_content_validation_status,
+                "published_content_validation_reason": self._published_content_validation_reason,
                 "acquired_generation": self._acquired_generation,
                 "acquired_frame_id": self._acquired_frame_id,
                 "published_frames": self._published_frames,
@@ -190,6 +196,12 @@ class LatestFrameBroker:
         self._published_format = str(frame.format)
         self._published_resource_memory = str(frame.metadata.get("resource_memory") or "")
         self._published_capture_ts_source = str(frame.metadata.get("capture_ts_source") or "")
+        self._published_content_validation_status = str(
+            frame.metadata.get("content_validation_status") or ""
+        )
+        self._published_content_validation_reason = str(
+            frame.metadata.get("content_validation_reason") or ""
+        )
 
 
 LatestFrameExchange = LatestFrameBroker

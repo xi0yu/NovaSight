@@ -55,6 +55,8 @@ class CaptureStatistics:
     latest_frame_age_ms: float = 0.0
     appsink_caps: str = ""
     actual_pipeline_string: str = ""
+    content_validation_status: str = "not_integrated"
+    content_validation_reason: str = "frame content has not been measured"
 
 
 @dataclass
@@ -72,6 +74,8 @@ class CaptureRuntimeState:
     preview_frames: int = 0
     preview_output_frames: int = 0
     preview_dropped: int = 0
+    preview_available: bool = False
+    preview_reason: str = "preview has not produced a frame"
     recoveries: int = 0
     last_error: str | None = None
     statistics: CaptureStatistics = field(default_factory=CaptureStatistics)

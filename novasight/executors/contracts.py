@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from novasight.control import ControlOutput
@@ -13,6 +13,18 @@ class ExecutionResult:
     intent: ControlOutput
     message: str = ""
     metadata: dict | None = None
+
+
+@dataclass(frozen=True)
+class BoxInputState:
+    left: bool = False
+    right: bool = False
+    side: bool = False
+    raw: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def active(self) -> bool:
+        return self.left or self.right or self.side
 
 
 class Executor(Protocol):

@@ -163,25 +163,18 @@ class ControlConfig:
     min_confidence: float = 0.25
     target_fov_radius_px: float = 180.0
     target_switch_delay_ms: float = 50.0
-    lost_target_timeout_ms: float = 120.0
     target_lock_enabled: bool = True
     target_sticky_bias: float = 0.25
     candidate_ratio_max_aspect: float = 6.0
     candidate_quality_confidence_weight: float = 0.7
     candidate_quality_area_weight: float = 0.3
     class_priority_quality_margin: float = 0.08
-    tracker_confirm_frames: int = 2
     tracker_max_match_distance: float = 1.5
     tracker_position_cost_weight: float = 0.75
     tracker_iou_cost_weight: float = 0.25
     tracker_max_missed_frames: int = 2
     target_switch_min_preference_advantage: float = 0.08
     target_switch_min_continuity_score: float = 0.70
-    tracker_matching_distance_px: float = 140.0
-    tracker_ambiguity_margin: float = 0.08
-    tracker_delete_timeout_ms: float = 250.0
-    tracker_match_threshold: float = 0.65
-    tracker_mahalanobis_gate: float = 9.21
     kalman_acceleration_noise: float = 1200.0
     kalman_measurement_noise_x: float = 16.0
     kalman_measurement_noise_y: float = 16.0
@@ -207,12 +200,6 @@ class ControlConfig:
     scheduler_step_counts_y: int = 20
     scheduler_interval_ms: float = 4.0
     trigger_mode: str = "hardware"
-    output_mode: str = "kmnet"
-
-
-@dataclass
-class ExecutorConfig:
-    default: str = "kmnet"
 
 
 @dataclass
@@ -223,14 +210,11 @@ class LoggingConfig:
 
 @dataclass
 class HardwareConfig:
-    kind: str = "kmnet"
     auto_connect: bool = True
     host: str = "192.168.2.188"
     port: int = 8888
     uuid: str = "12345678"
     monitor_port: int = 5001
-    serial_port: str = ""
-    heartbeat_timeout_ms: float = 50.0
 
 
 @dataclass
@@ -246,7 +230,6 @@ class RuntimeConfig:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
-    executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
 
@@ -353,11 +336,25 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         hardware = dict(hardware)
         # The preceding kmNet executor accepted this key but forced it to False.
         hardware.pop("flip_dy", None)
+        for key in ("kind", "serial_port", "heartbeat_timeout_ms"):
+            hardware.pop(key, None)
         normalized["hardware"] = hardware
+    normalized.pop("executor", None)
     control = normalized.get("control")
     calibration = normalized.get("calibration")
     if isinstance(control, dict):
         control = dict(control)
+        for key in (
+            "output_mode",
+            "lost_target_timeout_ms",
+            "tracker_confirm_frames",
+            "tracker_matching_distance_px",
+            "tracker_ambiguity_margin",
+            "tracker_delete_timeout_ms",
+            "tracker_match_threshold",
+            "tracker_mahalanobis_gate",
+        ):
+            control.pop(key, None)
     if isinstance(calibration, dict):
         calibration = dict(calibration)
         _migrate_legacy_axis_signs(calibration)
@@ -500,7 +497,7 @@ def _migrate_legacy_mouse_control(
     _move_legacy_number(control, "command_interval_ms", "scheduler_interval_ms")
     _move_legacy_number(control, "scheduler_max_step_x", "scheduler_step_counts_x")
     _move_legacy_number(control, "scheduler_max_step_y", "scheduler_step_counts_y")
-    _move_legacy_number(control, "tracker_missing_timeout_ms", "lost_target_timeout_ms")
+    control.pop("tracker_missing_timeout_ms", None)
 
     legacy_stale_ms = control.pop("latency_reject_if_age_exceeds_ms", None)
     if legacy_stale_ms is not None:
@@ -761,7 +758,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "scheduler_interval_ms": (1.0, 10.0),
         "min_confidence": (0.10, 0.99),
         "target_switch_delay_ms": (0.0, 500.0),
-        "lost_target_timeout_ms": (0.0, 200.0),
     }
     for key, (minimum, maximum) in bounded_controls.items():
         value = float(getattr(cfg.control, key))
@@ -829,18 +825,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 1 and <= 20")
     if cfg.control.trigger_mode not in {"hardware", "always"}:
         raise ValueError("runtime config key 'control.trigger_mode' must be hardware or always")
-    if cfg.control.output_mode not in {"", "kmnet"}:
-        raise ValueError("runtime config key 'control.output_mode' must be kmnet")
-    if cfg.executor.default != "kmnet":
-        raise ValueError("runtime config key 'executor.default' must be kmnet")
-    if cfg.hardware.kind != "kmnet":
-        raise ValueError("runtime config key 'hardware.kind' must be kmnet")
     if cfg.control.candidate_ratio_max_aspect < 1:
         raise ValueError("runtime config key 'control.candidate_ratio_max_aspect' must be >= 1")
     if cfg.control.class_priority_quality_margin > 1:
         raise ValueError("runtime config key 'control.class_priority_quality_margin' must be <= 1")
-    if cfg.control.tracker_confirm_frames < 1:
-        raise ValueError("runtime config key 'control.tracker_confirm_frames' must be >= 1")
     if cfg.control.tracker_max_match_distance <= 0:
         raise ValueError("runtime config key 'control.tracker_max_match_distance' must be > 0")
     if cfg.control.tracker_position_cost_weight < 0:
@@ -855,10 +843,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.target_switch_min_preference_advantage' must be >= 0 and <= 1")
     if cfg.control.target_switch_min_continuity_score < 0 or cfg.control.target_switch_min_continuity_score > 1:
         raise ValueError("runtime config key 'control.target_switch_min_continuity_score' must be >= 0 and <= 1")
-    if cfg.control.tracker_match_threshold < 0 or cfg.control.tracker_match_threshold > 1:
-        raise ValueError("runtime config key 'control.tracker_match_threshold' must be >= 0 and <= 1")
     for key in (
-        "tracker_mahalanobis_gate",
         "kalman_acceleration_noise",
         "kalman_measurement_noise_x",
         "kalman_measurement_noise_y",

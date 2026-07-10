@@ -243,6 +243,12 @@ class CaptureSession:
             self.state.statistics.actual_pipeline_string = str(
                 getattr(frame, "actual_pipeline_string", "") or ""
             )
+            self.state.statistics.content_validation_status = "not_integrated"
+            self.state.statistics.content_validation_reason = (
+                "NVMM zero-copy frame has no GPU luma/variance probe"
+                if frame.image is None
+                else "CPU frame content metrics are not enabled"
+            )
             self.state.last_error = None
             self._condition.notify_all()
 
@@ -339,5 +345,11 @@ def _frame_handle_from_capture_frame(frame: CapturedFrame, *, generation: int) -
             "source_ts_ns": getattr(frame, "source_ts_ns", None),
             "source_ts_kind": str(getattr(frame, "source_ts_kind", "") or ""),
             "capture_ts_source": str(getattr(frame, "capture_ts_source", "monotonic")),
+            "content_validation_status": "not_integrated",
+            "content_validation_reason": (
+                "NVMM zero-copy frame has no GPU luma/variance probe"
+                if frame.image is None
+                else "CPU frame content metrics are not enabled"
+            ),
         },
     )

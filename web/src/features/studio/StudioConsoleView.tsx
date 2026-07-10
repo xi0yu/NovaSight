@@ -684,8 +684,6 @@ export function StudioConsoleView({
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
   const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
   const sharedInvertY = readBoolean(sharedControlConfig.invert_y, false);
-  const hardwareKind = readString(hardwareConfig.kind, "kmnet") || "kmnet";
-  const outputMode = readString(controlConfig.output_mode, "kmnet") || "kmnet";
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -705,6 +703,7 @@ export function StudioConsoleView({
     setConfigDraft(next);
   }, [runtimeConfig]);
   const kmnetConnected = kmnetStatus.connected === true;
+  const kmnetConnecting = kmnetStatus.connecting === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
   const kmnetButtonLeft = kmnetStatus.button_left === true;
   const kmnetButtonRight = kmnetStatus.button_right === true;
@@ -760,6 +759,14 @@ export function StudioConsoleView({
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
+  const targetPipeline = asRecord(vision.target_pipeline);
+  const targetPipelineCounts = asRecord(targetPipeline.counts);
+  const targetPipelineCode = readString(targetPipeline.code, "");
+  const targetPipelineStage = readString(targetPipeline.stage, "");
+  const targetPipelineMessage = readString(targetPipeline.message, "");
+  const targetPipelineRejections = Array.isArray(targetPipeline.rejection_reasons)
+    ? targetPipeline.rejection_reasons.map((item) => String(item)).join(", ")
+    : "";
   const selectorDebug = asRecord(control.selector_debug);
   const trackerRuntimeDebug = asRecord(selectorDebug.tracker);
   const trackDiagnostics = asRecord(control.track_diagnostics ?? target.track_diagnostics);
@@ -808,7 +815,7 @@ export function StudioConsoleView({
   const controlNoSendReason = execution.sent === true
     ? "已发送"
     : !controlHasTarget
-      ? readString(control.selection_reason, "无目标")
+      ? targetPipelineMessage || readString(control.selection_reason, "无目标")
       : control.will_emit !== true
         ? readString(control.trigger_reason, readString(control.reason, "控制门控未通过"))
         : kmnetStatus.connected !== true
@@ -1562,36 +1569,6 @@ export function StudioConsoleView({
     [onRefresh, runtimeConfig]
   );
 
-  const updateHardwareKind = useCallback(
-    async (_kind: string) => {
-      const next = cloneRuntimeConfig(runtimeConfig);
-      if (!next) {
-        return;
-      }
-      setBusy("hardware.kind");
-      setLocalError(null);
-      next.hardware = {
-        ...asRecord(next.hardware),
-        kind: "kmnet",
-        ...KMNET_RECOMMENDED
-      } as RuntimeConfig[string];
-      const control = {
-        ...asRecord(next.control),
-        output_mode: "kmnet"
-      };
-      next.control = control as RuntimeConfig[string];
-      try {
-        await updateRuntimeConfig(next);
-        await onRefresh();
-      } catch (err) {
-        setLocalError(`配置同步失败：${getErrorMessage(err)}`);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [onRefresh, runtimeConfig]
-  );
-
   const applyKmNetRecommended = useCallback(async () => {
     const next = cloneRuntimeConfig(runtimeConfig);
     if (!next) {
@@ -1601,12 +1578,7 @@ export function StudioConsoleView({
     setLocalError(null);
     next.hardware = {
       ...asRecord(next.hardware),
-      kind: "kmnet",
       ...KMNET_RECOMMENDED
-    } as RuntimeConfig[string];
-    next.control = {
-      ...asRecord(next.control),
-      output_mode: "kmnet"
     } as RuntimeConfig[string];
     try {
       await updateRuntimeConfig(next);
@@ -1622,19 +1594,19 @@ export function StudioConsoleView({
     setBusy("kmnet.toggle");
     setLocalError(null);
     try {
-      if (kmnetConnected) {
+      if (kmnetConnected || kmnetConnecting) {
         await disconnectKmNet();
       } else {
         await connectKmNet();
       }
       await onRefresh();
     } catch (err) {
-      setLocalError(`kmNet ${kmnetConnected ? "断开" : "连接"}失败：${getErrorMessage(err)}`);
+      setLocalError(`kmNet ${kmnetConnected || kmnetConnecting ? "断开" : "连接"}失败：${getErrorMessage(err)}`);
       await onRefresh();
     } finally {
       setBusy(null);
     }
-  }, [kmnetConnected, onRefresh]);
+  }, [kmnetConnected, kmnetConnecting, onRefresh]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -2322,6 +2294,7 @@ export function StudioConsoleView({
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
+            <Metric title="目标链路" value={targetPipelineCode || NO_SAMPLE} small={targetPipelineStage || NO_SAMPLE} />
             <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={readString(target.class_name, "") || "target"} />
             <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx, 1)} small="px" />
             <Metric title="实际发送" value={execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0) : NO_SAMPLE} small="counts" />
@@ -2332,7 +2305,13 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
                 <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
+                <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
+                <span>诊断代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
+                <span>诊断信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
                 <span>检测数量</span><b>{formatOptionalInteger(inferenceTrace.mapped_detections)}</b>
+                <span>解码 / 阈值 / NMS</span><b>{`${formatOptionalInteger(targetPipelineCounts.decode_raw_candidates)} / ${formatOptionalInteger(targetPipelineCounts.threshold_candidates)} / ${formatOptionalInteger(targetPipelineCounts.nms_detections)}`}</b>
+                <span>基础候选 / ACTIVE / FOV 内</span><b>{`${formatOptionalInteger(targetPipelineCounts.basic_candidates)} / ${formatOptionalInteger(targetPipelineCounts.tracker_active)} / ${formatOptionalInteger(targetPipelineCounts.inside_fov)}`}</b>
+                <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                 <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                 <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
@@ -2507,7 +2486,7 @@ export function StudioConsoleView({
           ) : (
           <>
           <div className="console-metrics">
-            <Metric title="连接状态" value={kmnetConnected ? "已连接" : "未连接"} small={kmnetConnected ? "online" : "offline"} />
+            <Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"} small={kmnetConnected ? "online" : kmnetConnecting ? "connecting" : "offline"} />
             <Metric title="驱动状态" value={kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
             <Metric title="自动连接" value={kmnetAutoConnect ? "已启用" : "已关闭"} small="startup" />
@@ -2520,7 +2499,7 @@ export function StudioConsoleView({
               <div className="kmnet-status-grid">
                 <div className={kmnetConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>连接</span>
-                  <b>{kmnetConnected ? "已连接" : "未连接"}</b>
+                  <b>{kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}</b>
                 </div>
                 <div className={kmnetStatus.monitoring === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>按键</span>
@@ -2550,25 +2529,27 @@ export function StudioConsoleView({
                   <span>执行器</span>
                   <b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 </div>
+                <div className="kmnet-status-tile">
+                  <span>连接阶段</span>
+                  <b>{readString(kmnetStatus.connection_stage, "-")}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>最近驱动调用</span>
+                  <b>{`${readString(kmnetStatus.last_driver_call, "-")} · ${formatNumber(kmnetStatus.last_driver_call_duration_ms, 2)} ms`}</b>
+                </div>
+                <div className={kmnetStatus.route_available === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                  <span>网络路由</span>
+                  <b>{kmnetStatus.route_available === true ? "已找到" : kmnetStatus.route_available === false ? "无路由" : "未检查"}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>源 IP / 目标 IP</span>
+                  <b>{`${readString(kmnetStatus.route_local_ip, "-")} / ${readString(kmnetStatus.route_resolved_ip, "-")}`}</b>
+                </div>
               </div>
               <div className="kmnet-driver-line">
                 <span>{compactDriverSource(kmnetStatus.driver_source)}</span>
                 <span>{readString(kmnetStatus.driver_python, "-")}</span>
               </div>
-              <label>硬件类型</label>
-              <select
-                value={hardwareKind}
-                onChange={(event) => void updateHardwareKind(event.target.value)}
-              >
-                <option value="kmnet">kmNet</option>
-              </select>
-              <label>输出执行器</label>
-              <select
-                value={outputMode}
-                onChange={(event) => void updateConfigField("control", "output_mode", event.target.value)}
-              >
-                <option value="kmnet">kmNet 实发</option>
-              </select>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
@@ -2597,13 +2578,13 @@ export function StudioConsoleView({
               <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
               <div className="console-action-row">
                 <button
-                  className={kmnetConnected ? "console-button danger" : "console-button primary"}
-                  aria-pressed={kmnetConnected}
+                  className={kmnetConnected || kmnetConnecting ? "console-button danger" : "console-button primary"}
+                  aria-pressed={kmnetConnected || kmnetConnecting}
                   disabled={busy === "kmnet.toggle"}
                   onClick={() => void toggleHardwareConnection()}
                   type="button"
                 >
-                  {kmnetConnected ? "断开 kmNet" : "连接 kmNet"}
+                  {kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}
                 </button>
                 <button
                   className="console-button"
@@ -2757,7 +2738,9 @@ export function StudioConsoleView({
                 {kmnetTestMessage ? <div className="kmnet-test-message">{kmnetTestMessage}</div> : null}
               </div>
               {readString(kmnetStatus.last_error, "") ? (
-                <div className="kmnet-error">{readString(kmnetStatus.last_error, "")}</div>
+                <div className="kmnet-error">
+                  {`[${readString(kmnetStatus.last_connect_error_stage, "unknown")}/${readString(kmnetStatus.last_connect_error_type, "unknown")}] ${readString(kmnetStatus.last_error, "")}`}
+                </div>
               ) : null}
             </div>
           </div>

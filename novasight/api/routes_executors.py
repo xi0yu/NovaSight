@@ -39,6 +39,9 @@ def list_executors(request: Request) -> dict[str, Any]:
 @router.post("/api/executors/kmnet/connect")
 def connect_kmnet(request: Request) -> dict[str, Any]:
     executor = _kmnet_executor(request)
+    connect_async = getattr(executor, "connect_async", None)
+    if callable(connect_async):
+        return connect_async()
     connect = getattr(executor, "connect", None)
     if not callable(connect):
         raise HTTPException(status_code=400, detail="kmNet executor does not support connect")
@@ -51,8 +54,11 @@ def disconnect_kmnet(request: Request) -> dict[str, Any]:
     disconnect = getattr(executor, "disconnect", None)
     if not callable(disconnect):
         raise HTTPException(status_code=400, detail="kmNet executor does not support disconnect")
-    scheduler = getattr(request.app.state.executors, "scheduler", None)
-    clear = getattr(scheduler, "clear", None)
+    registry = request.app.state.executors
+    clear = getattr(registry, "clear_scheduler", None)
+    scheduler = getattr(registry, "scheduler", None)
+    if not callable(clear):
+        clear = getattr(scheduler, "clear", None)
     if callable(clear):
         clear("KMNET_MANUAL_DISCONNECT")
     return disconnect()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -10,13 +11,17 @@ from fastapi.responses import JSONResponse
 from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig, load_runtime_config
 from novasight.executors import ExecutorRegistry
-from novasight.hardware import create_hardware_box
 from novasight.inference import InferenceRuntime
 from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.instance_lock import InstanceLock
 from novasight.license import LicenseStore
 from novasight.model_registry import ModelRegistry
-from novasight.runtime import ControlFrameCsvRecorder, ControlFrameParquetRecorder, RuntimeService
+from novasight.runtime import (
+    ControlFrameCsvRecorder,
+    ControlFrameParquetRecorder,
+    RuntimePipeline,
+    RuntimeService,
+)
 from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 
 from .routes_capture import router as capture_router
@@ -63,7 +68,6 @@ def create_app(
         data_dir=data_path / "models",
     )
     executors = ExecutorRegistry.from_config(config)
-    hardware = create_hardware_box(config)
     capture = CaptureService(
         config.capture,
         roi_size=config.roi.size,
@@ -82,7 +86,6 @@ def create_app(
         config=config,
         models=models,
         executors=executors,
-        hardware=hardware,
         capture=capture,
         inference=inference,
         recorder=_create_control_frame_recorder(config, data_path),
@@ -94,20 +97,29 @@ def create_app(
     app.state.config_path = Path(config_path)
     app.state.models = models
     app.state.executors = executors
-    app.state.hardware = hardware
     app.state.license = LicenseStore(data_path / "license.json")
     app.state.capture = capture
     app.state.inference = inference
     app.state.runtime = runtime
     app.state.systemd_notifier = systemd_notifier
     app.state.instance_lock = instance_lock
+    app.state.kmnet_auto_connect_thread = None
+    app.state.capture_auto_restore_thread = None
 
     @app.on_event("startup")
     def start_process_lifecycle() -> None:
+        logger.info("application startup: acquiring instance lock")
         instance_lock.acquire()
+        logger.info("application startup: instance lock acquired")
         systemd_notifier.start()
-        _auto_connect_kmnet(executors, config)
-        _auto_restore_capture(capture, config)
+        logger.info("application startup: systemd notifier started enabled=%s", systemd_notifier.enabled)
+        app.state.kmnet_auto_connect_thread = _start_auto_connect_kmnet(executors, config)
+        app.state.capture_auto_restore_thread = _start_auto_restore_capture(
+            capture,
+            config,
+            runtime,
+        )
+        logger.info("application startup: lifecycle ready")
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
@@ -173,6 +185,24 @@ def _auto_connect_kmnet(executors: ExecutorRegistry, config: RuntimeConfig) -> N
     )
 
 
+def _start_auto_connect_kmnet(
+    executors: ExecutorRegistry,
+    config: RuntimeConfig,
+) -> threading.Thread | None:
+    if not bool(getattr(config.hardware, "auto_connect", True)):
+        logger.info("kmNet auto-connect disabled")
+        return None
+    thread = threading.Thread(
+        target=_auto_connect_kmnet,
+        args=(executors, config),
+        name="novasight-kmnet-auto-connect",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("kmNet auto-connect scheduled in background")
+    return thread
+
+
 def _disconnect_kmnet(executors: ExecutorRegistry) -> None:
     kmnet = executors.executors.get("kmnet")
     disconnect = getattr(kmnet, "disconnect", None)
@@ -184,7 +214,32 @@ def _disconnect_kmnet(executors: ExecutorRegistry) -> None:
         logger.warning("kmNet shutdown disconnect failed: %s", exc)
 
 
-def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> None:
+def _start_auto_restore_capture(
+    capture: CaptureService,
+    config: RuntimeConfig,
+    runtime: RuntimeService | None = None,
+) -> threading.Thread | None:
+    source_default = str(getattr(getattr(config, "source", None), "default", "") or "").strip()
+    capture_cfg = getattr(config, "capture", None)
+    device = str(getattr(capture_cfg, "device", "") or "").strip()
+    if source_default != "capture" or not device:
+        return None
+    thread = threading.Thread(
+        target=_auto_restore_capture,
+        args=(capture, config, runtime),
+        name="novasight-capture-auto-restore",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("capture auto-restore scheduled in background device=%s", device)
+    return thread
+
+
+def _auto_restore_capture(
+    capture: CaptureService,
+    config: RuntimeConfig,
+    runtime: RuntimeService | None = None,
+) -> None:
     # Reopen the last selected capture device so the user does not have
     # to re-issue /api/capture/select on every backend boot. The runtime
     # config persists the last successful profile to YAML; if the user
@@ -197,6 +252,7 @@ def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> Non
     device = str(getattr(capture_cfg, "device", "") or "").strip()
     if not device:
         return
+    logger.info("capture auto-restore starting device=%s", device)
     try:
         state = capture.configure(
             device=device,
@@ -217,12 +273,33 @@ def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> Non
             if getattr(state, "profile", None) is not None
             else "<unknown>",
         )
+        _start_runtime_after_capture_restore(capture, runtime)
     else:
         logger.info(
             "capture auto-restore unavailable device=%s reason=%s",
             device,
             getattr(state, "last_error", "unknown"),
         )
+
+
+def _start_runtime_after_capture_restore(
+    capture: CaptureService,
+    runtime: RuntimeService | None,
+) -> None:
+    if runtime is None:
+        return
+    pipeline = runtime.pipeline
+    if pipeline is None:
+        pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+        runtime.pipeline = pipeline
+    if pipeline.running:
+        return
+    try:
+        pipeline.start()
+    except RuntimeError as exc:
+        logger.warning("runtime auto-start after capture restore failed: %s", exc)
+        return
+    logger.info("runtime auto-started after capture restore")
 
 
 def _install_studio_cors(app: FastAPI, config: RuntimeConfig) -> None:

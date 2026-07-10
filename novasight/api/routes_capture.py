@@ -299,8 +299,15 @@ def _mjpeg_frames(
         payload = _encode_jpeg(preview)
         if payload is None:
             capture.record_preview_drop(target_fps=preview_fps)
-            capture.state.last_error = "capture stream jpeg encode failed"
+            capture.state.preview_available = False
+            capture.state.preview_reason = (
+                "NVMM zero-copy preview conversion is not integrated"
+                if frame.image is None
+                else "capture stream jpeg encode failed"
+            )
             continue
+        capture.state.preview_available = True
+        capture.state.preview_reason = ""
         capture.record_preview_output(frame, target_fps=preview_fps)
         emitted += 1
         yield (

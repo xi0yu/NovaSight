@@ -267,30 +267,18 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.target_fov_radius_px", "label": "目标选择半径 px", "type": "float", "min": 1, "step": 1, "precision": 0, "restart_required": False},
                     {"path": "control.min_confidence", "label": "最低置信度", "type": "float", "min": 0.1, "max": 0.99, "step": 0.01, "precision": 2, "restart_required": False},
                     {"path": "control.target_switch_delay_ms", "label": "目标切换延迟 ms", "type": "float", "min": 0, "max": 500, "step": 1, "precision": 0, "restart_required": False},
-                    {"path": "control.lost_target_timeout_ms", "label": "目标丢失超时 ms", "type": "float", "min": 0, "max": 200, "step": 1, "precision": 0, "restart_required": False},
                     {"path": "control.trigger_mode", "label": "触发方式", "type": "select", "options": ["hardware", "always"], "restart_required": False},
-                    {"path": "control.output_mode", "label": "输出模式", "type": "select", "options": ["kmnet"], "restart_required": False},
-                ],
-            },
-            {
-                "id": "executor",
-                "label": "执行器",
-                "fields": [
-                    {"path": "executor.default", "label": "默认执行器", "type": "select", "options": ["kmnet"], "restart_required": False},
                 ],
             },
             {
                 "id": "hardware",
                 "label": "硬件盒子",
                 "fields": [
-                    {"path": "hardware.kind", "label": "硬件类型", "type": "select", "options": ["kmnet"], "restart_required": True},
                     {"path": "hardware.auto_connect", "label": "服务启动自动连接", "type": "bool", "restart_required": False},
                     {"path": "hardware.host", "label": "盒子地址", "type": "string", "restart_required": True},
                     {"path": "hardware.port", "label": "盒子端口", "type": "int", "min": 0, "max": 65535, "restart_required": True},
                     {"path": "hardware.uuid", "label": "kmNet UUID", "type": "string", "restart_required": True},
                     {"path": "hardware.monitor_port", "label": "kmNet 监听端口", "type": "int", "min": 0, "max": 65535, "restart_required": True},
-                    {"path": "hardware.serial_port", "label": "串口", "type": "string", "restart_required": True},
-                    {"path": "hardware.heartbeat_timeout_ms", "label": "心跳超时 ms", "type": "float", "min": 1, "restart_required": False},
                 ],
             },
             {
