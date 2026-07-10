@@ -32,10 +32,10 @@ import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle, type NovaIconName } from "../../components/visual";
 
-type ConsolePage = "capture" | "infer" | "params" | "stats" | "latency";
+type ConsolePage = "capture" | "infer" | "params" | "control-test" | "stats" | "latency";
 
 const DEFAULT_CONSOLE_PAGE: ConsolePage = "capture";
-const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "params", "stats", "latency"]);
+const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "params", "control-test", "stats", "latency"]);
 
 type StudioConsoleViewProps = {
   health: HealthResponse | null;
@@ -67,8 +67,9 @@ const navItems: { id: ConsolePage; index: string; label: string; icon: NovaIconN
   { id: "capture", index: "01", label: "采集", icon: "capture" },
   { id: "infer", index: "02", label: "模型推理", icon: "inference" },
   { id: "params", index: "03", label: "参数设置", icon: "control" },
-  { id: "stats", index: "04", label: "统计", icon: "performance" },
-  { id: "latency", index: "05", label: "采集延迟", icon: "latency" }
+  { id: "control-test", index: "04", label: "控制测试", icon: "kmbox" },
+  { id: "stats", index: "05", label: "统计", icon: "performance" },
+  { id: "latency", index: "06", label: "采集延迟", icon: "latency" }
 ];
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
@@ -450,6 +451,7 @@ export function StudioConsoleView({
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
   const [kmnetTestMs, setKmnetTestMs] = useState(300);
+  const [kmnetMoveKind, setKmnetMoveKind] = useState("raw");
   const [kmnetBezierX1, setKmnetBezierX1] = useState(-50);
   const [kmnetBezierY1, setKmnetBezierY1] = useState(-60);
   const [kmnetBezierX2, setKmnetBezierX2] = useState(70);
@@ -735,8 +737,8 @@ export function StudioConsoleView({
   const kalmanMinIdentityConfidence = readNumber(controlConfig.kalman_min_identity_confidence, 0.7);
   const kalmanMinPredictionConfidence = readNumber(controlConfig.kalman_min_prediction_confidence, 0.35);
   const kalmanPredictionDecayTauMs = readNumber(controlConfig.kalman_prediction_decay_tau_ms, 45);
-  const moveKind = readString(controlConfig.move_kind, "bezier");
-  const moveMs = readNumber(controlConfig.move_ms, 12);
+  const moveKind = kmnetMoveKind;
+  const moveMs = kmnetTestMs;
   const commandIntervalMs = readNumber(controlConfig.command_interval_ms, 1);
   const schedulerCommandTtlMs = readNumber(controlConfig.scheduler_command_ttl_ms, 35);
   const schedulerPredictedCommandTtlMs = readNumber(controlConfig.scheduler_predicted_command_ttl_ms, 18);
@@ -788,6 +790,10 @@ export function StudioConsoleView({
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
+  const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
+  const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 20);
+  const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 20);
+  const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
 
   useEffect(() => {
     if (!runtimeConfig || pendingConfigWritesRef.current > 0) {
@@ -2294,7 +2300,9 @@ export function StudioConsoleView({
           </div>
         </section>
 
-        <section className={activePage === "params" ? "console-page active" : "console-page"}>
+        <section className={activePage === "params" || activePage === "control-test" ? "console-page active" : "console-page"}>
+          {activePage === "params" ? (
+          <>
           <div className="console-metrics">
             <Metric title="主算法" value="实验角度 PID" small="control" />
             <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
@@ -2505,6 +2513,19 @@ export function StudioConsoleView({
                 <span className="wide">执行信息</span><b className="wide">{readString(execution.message, "-")}</b>
               </div>
             </div>
+          </div>
+          </>
+          ) : (
+          <>
+          <div className="console-metrics">
+            <Metric title="连接状态" value={kmnetConnected ? "已连接" : "未连接"} small={kmnetConnected ? "online" : "offline"} />
+            <Metric title="驱动状态" value={kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
+            <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
+            <Metric title="自动连接" value={kmnetAutoConnect ? "已启用" : "已关闭"} small="startup" />
+            <Metric title="发送次数" value={formatNumber(kmnetStatus.move_count, 0)} small="counts" />
+            <Metric title="最近移动" value={`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`} small="dx / dy" />
+          </div>
+          <div className="console-grid2 control-test-grid">
             <div className="console-card">
               <SectionTitle title="kmNet 控制面板" />
               <div className="kmnet-status-grid">
@@ -2563,10 +2584,16 @@ export function StudioConsoleView({
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
               <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
+              <ModuleSwitch
+                label="服务启动自动连接"
+                detail="后端启动完成后按当前地址连接 kmNet"
+                enabled={kmnetAutoConnect}
+                onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
+              />
               <label>移动 API</label>
               <select
                 value={moveKind}
-                onChange={(event) => void updateConfigField("control", "move_kind", event.target.value)}
+                onChange={(event) => setKmnetMoveKind(event.target.value)}
               >
                 <option value="raw">move：最快直移</option>
                 <option value="enc_raw">enc_move：加密直移</option>
@@ -2575,18 +2602,14 @@ export function StudioConsoleView({
                 <option value="bezier">move_beizer：贝塞尔曲线</option>
                 <option value="enc_bezier">enc_move_beizer：加密贝塞尔曲线</option>
               </select>
-              <NumberControl label="移动耗时 ms" value={moveMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "move_ms", Math.round(value))} />
               <label>命令调度</label>
-              <NumberControl label="步进间隔 ms" value={commandIntervalMs} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "command_interval_ms", value)} />
-              <NumberControl label="命令 TTL ms" value={schedulerCommandTtlMs} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "scheduler_command_ttl_ms", value)} />
-              <NumberControl label="预测命令 TTL ms" value={schedulerPredictedCommandTtlMs} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "scheduler_predicted_command_ttl_ms", value)} />
-              <NumberControl label="设备错误冷却 ms" value={schedulerDeviceErrorCooldownMs} min={0} max={2000} step={10} onCommit={(value) => updateConfigField("control", "scheduler_device_error_cooldown_ms", value)} />
-              <ModuleSwitch label="新帧取消旧命令" detail="新检测帧到达时丢弃未发送的旧命令尾部" enabled={schedulerCancelOnNewFrame} onToggle={(enabled) => updateConfigField("control", "scheduler_cancel_on_new_frame", enabled)} />
-              <ModuleSwitch label="方向反转取消" detail="方向变化时取消旧方向 pending，避免追旧世界" enabled={schedulerCancelOnDirectionChange} onToggle={(enabled) => updateConfigField("control", "scheduler_cancel_on_direction_change", enabled)} />
-              <ModuleSwitch label="目标切换取消" detail="Track 切换时清空旧目标 pending" enabled={schedulerCancelOnTrackChange} onToggle={(enabled) => updateConfigField("control", "scheduler_cancel_on_track_change", enabled)} />
+              <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
+              <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
+              <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
               <div className="console-action-row">
                 <button
                   className={kmnetConnected ? "console-button danger" : "console-button primary"}
+                  aria-pressed={kmnetConnected}
                   disabled={busy === "kmnet.toggle"}
                   onClick={() => void toggleHardwareConnection()}
                   type="button"
@@ -2749,6 +2772,8 @@ export function StudioConsoleView({
               ) : null}
             </div>
           </div>
+          </>
+          )}
         </section>
 
         <section className={activePage === "stats" ? "console-page active" : "console-page"}>

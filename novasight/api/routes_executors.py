@@ -51,6 +51,10 @@ def disconnect_kmnet(request: Request) -> dict[str, Any]:
     disconnect = getattr(executor, "disconnect", None)
     if not callable(disconnect):
         raise HTTPException(status_code=400, detail="kmNet executor does not support disconnect")
+    scheduler = getattr(request.app.state.executors, "scheduler", None)
+    clear = getattr(scheduler, "clear", None)
+    if callable(clear):
+        clear("KMNET_MANUAL_DISCONNECT")
     return disconnect()
 
 

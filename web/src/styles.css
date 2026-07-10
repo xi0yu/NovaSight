@@ -4650,6 +4650,10 @@ tbody tr:hover {
   line-height: 1.5;
 }
 
+.control-test-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .kmnet-status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

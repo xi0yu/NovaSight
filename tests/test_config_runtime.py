@@ -211,6 +211,7 @@ def test_runtime_config_defaults_are_stable() -> None:
     assert cfg.executor.default == "kmnet"
     assert cfg.control.output_mode == "kmnet"
     assert cfg.hardware.kind == "kmnet"
+    assert cfg.hardware.auto_connect is True
     assert cfg.roi.size == 640
     assert cfg.roi.mode == "center"
     assert cfg.calibration.profile_id == "default"
@@ -416,6 +417,7 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.calibration.fov_x_deg == 105
     assert cfg.calibration.counts_per_360_x == 9980
     assert cfg.calibration.invert_y is False
+    assert cfg.hardware.auto_connect is True
     assert cfg.control.aim.y_ratio == pytest.approx(0.22)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.004)
 
@@ -823,6 +825,19 @@ def test_runtime_config_schema_exposes_calibration_profile() -> None:
         "calibration.game_sensitivity_fingerprint",
         "calibration.projection_profile",
     }.issubset(paths)
+
+
+def test_runtime_config_schema_exposes_kmnet_auto_connect() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    hardware_section = next(section for section in schema["sections"] if section["id"] == "hardware")
+    fields = {field["path"]: field for field in hardware_section["fields"]}
+
+    assert fields["hardware.auto_connect"] == {
+        "path": "hardware.auto_connect",
+        "label": "服务启动自动连接",
+        "type": "bool",
+        "restart_required": False,
+    }
 
 
 def test_runtime_config_schema_exposes_editable_inference_fields() -> None:

@@ -293,6 +293,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 "label": "硬件盒子",
                 "fields": [
                     {"path": "hardware.kind", "label": "硬件类型", "type": "select", "options": ["kmnet"], "restart_required": True},
+                    {"path": "hardware.auto_connect", "label": "服务启动自动连接", "type": "bool", "restart_required": False},
                     {"path": "hardware.host", "label": "盒子地址", "type": "string", "restart_required": True},
                     {"path": "hardware.port", "label": "盒子端口", "type": "int", "min": 0, "max": 65535, "restart_required": True},
                     {"path": "hardware.uuid", "label": "kmNet UUID", "type": "string", "restart_required": True},

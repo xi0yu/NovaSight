@@ -106,10 +106,12 @@ def create_app(
     def start_process_lifecycle() -> None:
         instance_lock.acquire()
         systemd_notifier.start()
+        _auto_connect_kmnet(executors, config)
         _auto_restore_capture(capture, config)
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
+        _disconnect_kmnet(executors)
         systemd_notifier.stop()
         instance_lock.release()
 
@@ -141,6 +143,45 @@ def create_app(
     app.include_router(system_router)
     app.include_router(websocket_router)
     return app
+
+
+def _auto_connect_kmnet(executors: ExecutorRegistry, config: RuntimeConfig) -> None:
+    if not bool(getattr(config.hardware, "auto_connect", True)):
+        logger.info("kmNet auto-connect disabled")
+        return
+    kmnet = executors.executors.get("kmnet")
+    connect = getattr(kmnet, "connect", None)
+    if not callable(connect):
+        logger.warning("kmNet auto-connect unavailable: executor has no connect method")
+        return
+    try:
+        status = connect()
+    except Exception as exc:
+        logger.warning("kmNet auto-connect failed: %s", exc)
+        return
+    if status.get("connected") is True:
+        logger.info(
+            "kmNet auto-connected host=%s port=%s monitor_port=%s",
+            status.get("host"),
+            status.get("port"),
+            status.get("monitor_port"),
+        )
+        return
+    logger.warning(
+        "kmNet auto-connect did not connect: %s",
+        status.get("last_error") or status,
+    )
+
+
+def _disconnect_kmnet(executors: ExecutorRegistry) -> None:
+    kmnet = executors.executors.get("kmnet")
+    disconnect = getattr(kmnet, "disconnect", None)
+    if not callable(disconnect):
+        return
+    try:
+        disconnect()
+    except Exception as exc:
+        logger.warning("kmNet shutdown disconnect failed: %s", exc)
 
 
 def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> None:

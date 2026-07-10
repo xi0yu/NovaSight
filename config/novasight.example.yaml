@@ -96,6 +96,7 @@ logging:
   dir: logs
 hardware:
   kind: kmnet
+  auto_connect: true
   host: 192.168.2.188
   port: 8888
   uuid: "12345678"

@@ -202,6 +202,7 @@ class LoggingConfig:
 @dataclass
 class HardwareConfig:
     kind: str = "kmnet"
+    auto_connect: bool = True
     host: str = "192.168.2.188"
     port: int = 8888
     uuid: str = "12345678"
