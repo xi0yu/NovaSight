@@ -31,6 +31,7 @@ class InferenceRuntime:
         self._last_infer_error_logged = ""
         self._gpu_preprocessor = gpu_preprocessor
         self._engine_lock = threading.RLock()
+        self._prepare_lock = threading.Lock()
         self.engine = engine or TensorRtInferenceEngine()
         if not self.engine.available():
             self.engine = UnavailableInferenceEngine(
@@ -162,7 +163,7 @@ class InferenceRuntime:
             if hasattr(candidate, name):
                 setattr(candidate, name, value)
         try:
-            with self._engine_lock:
+            with self._prepare_lock:
                 candidate.load(artifact_path, classes, input_shape)
                 status = dict(candidate.status())
             status["loaded"] = status.get("loaded") is True

@@ -7,7 +7,7 @@ import re
 import shutil
 import threading
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.request import urlretrieve
@@ -32,6 +32,15 @@ from novasight.inference import parse_tensor_input_shape
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
 _MODEL_SYNC_LOCK = threading.RLock()
+_MODEL_SYNC_CACHE: dict[tuple[str, str], tuple[int, ...]] = {}
+
+
+@dataclass(frozen=True)
+class ModelDirectorySyncResult:
+    discovered_files: int
+    updated_files: int
+    cache_hits: int
+
 
 YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 YOLOV8N_CLASSES = [
@@ -277,10 +286,18 @@ def _classes_from_sidecar(sidecar: dict[str, Any]) -> list[str]:
     return [str(item) for item in classes_value if str(item).strip()] or ["target"]
 
 
-def _sync_models_directory(registry: ModelRegistry) -> None:
+def _sync_models_directory(
+    registry: ModelRegistry,
+    *,
+    force: bool = False,
+) -> ModelDirectorySyncResult:
     with _MODEL_SYNC_LOCK:
         roots = [Path(registry.data_dir), Path("models")]
         seen: set[Path] = set()
+        seen_cache_keys: set[tuple[str, str]] = set()
+        updated_files = 0
+        cache_hits = 0
+        registry_key = str(Path(registry.db_path).resolve(strict=False))
         for root in roots:
             if not root.exists() or not root.is_dir():
                 continue
@@ -292,10 +309,36 @@ def _sync_models_directory(registry: ModelRegistry) -> None:
                 if resolved in seen:
                     continue
                 seen.add(resolved)
-                _sync_model_file(registry, root, resolved)
+                cache_key = (registry_key, str(resolved))
+                seen_cache_keys.add(cache_key)
+                signature = _model_file_signature(resolved)
+                if not force and _MODEL_SYNC_CACHE.get(cache_key) == signature:
+                    cache_hits += 1
+                    continue
+                if _sync_model_file(registry, root, resolved, force=force):
+                    _MODEL_SYNC_CACHE[cache_key] = signature
+                    updated_files += 1
+        stale_keys = [
+            key
+            for key in _MODEL_SYNC_CACHE
+            if key[0] == registry_key and key not in seen_cache_keys
+        ]
+        for key in stale_keys:
+            _MODEL_SYNC_CACHE.pop(key, None)
+        return ModelDirectorySyncResult(
+            discovered_files=len(seen),
+            updated_files=updated_files,
+            cache_hits=cache_hits,
+        )
 
 
-def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> None:
+def _sync_model_file(
+    registry: ModelRegistry,
+    root: Path,
+    model_file: Path,
+    *,
+    force: bool = False,
+) -> bool:
     try:
         kind = _artifact_kind_from_filename(model_file.name)
         relative = model_file.relative_to(root)
@@ -332,8 +375,13 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
         if model_file.resolve(strict=False) != asset_path.resolve(strict=False):
             asset_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(model_file, asset_path)
-        checksum = _sha256(asset_path)
-        artifact_status = _artifact_registry_status(kind, asset_path)
+        inspection = inspect_model_artifact(asset_path, force=force)
+        checksum = inspection.sha256
+        artifact_status = (
+            _registry_status_from_scan(inspection.status)
+            if kind == "engine"
+            else "ready"
+        )
         existing_artifact = _find_artifact(registry, version.id, filename)
         if existing_artifact is None:
             registry.create_artifact(
@@ -349,9 +397,31 @@ def _sync_model_file(registry: ModelRegistry, root: Path, model_file: Path) -> N
                 artifact_status,
                 checksum=checksum,
             )
+        asset_cache_key = (
+            str(Path(registry.db_path).resolve(strict=False)),
+            str(asset_path.resolve(strict=False)),
+        )
+        _MODEL_SYNC_CACHE[asset_cache_key] = _model_file_signature(asset_path)
+        return True
     except (OSError, RegistryError) as exc:
         logger.warning("model directory sync skipped path=%s error=%s", model_file, exc)
-        return
+        return False
+
+
+def _model_file_signature(path: Path) -> tuple[int, ...]:
+    return (
+        *_path_stat_signature(path),
+        *_path_stat_signature(path.with_suffix(".json")),
+        *_path_stat_signature(path.with_name("model.manifest.json")),
+    )
+
+
+def _path_stat_signature(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (-1, -1)
+    return (int(stat.st_size), int(stat.st_mtime_ns))
 
 
 def _relative_registry_path(registry: ModelRegistry, path: Path | None) -> str:
@@ -677,22 +747,25 @@ def _model_switch_report(
 @router.get("/projects")
 def list_projects(request: Request) -> list[dict[str, Any]]:
     registry = _registry(request)
-    _sync_models_directory(registry)
     return [asdict(project) for project in registry.list_projects()]
 
 
 @router.get("/scan")
 @router.post("/scan")
-def scan_models(request: Request) -> dict[str, Any]:
+def scan_models(request: Request, force: bool = False) -> dict[str, Any]:
     registry = _registry(request)
     before = len(registry.list_projects())
-    _sync_models_directory(registry)
+    sync_result = _sync_models_directory(registry, force=force)
     projects = registry.list_projects()
-    artifacts = scan_model_artifacts(Path(registry.data_dir))
+    artifacts = scan_model_artifacts(Path(registry.data_dir), force=force)
     return {
         "projects": [asdict(project) for project in projects],
         "project_count": len(projects),
         "previous_project_count": before,
+        "discovered_files": sync_result.discovered_files,
+        "updated_files": sync_result.updated_files,
+        "cache_hits": sync_result.cache_hits,
+        "force": force,
         "artifacts": [
             _artifact_scan_payload(registry, artifact)
             for artifact in artifacts
@@ -994,7 +1067,6 @@ def publish(
             project_id=project_id,
             artifact_id=payload.artifact_id,
         )
-        paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         candidate, candidate_status = _prepare_runnable_artifact(
             request,
             artifact_path=artifact_path,
@@ -1002,6 +1074,7 @@ def publish(
             input_shape=input_shape,
         )
         input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
+        paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         try:
             deployment = registry.publish(
                 project_id=project_id,

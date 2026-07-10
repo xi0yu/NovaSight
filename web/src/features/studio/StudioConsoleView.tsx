@@ -410,6 +410,7 @@ export function StudioConsoleView({
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
+  const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
   const [launchStageIndex, setLaunchStageIndex] = useState(0);
@@ -1757,12 +1758,31 @@ export function StudioConsoleView({
   const refreshModelCatalog = async () => {
     setBusy("model.refresh");
     setLocalError(null);
+    setModelCatalogMessage("");
     try {
-      await scanModelDirectory();
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
+      setModelCatalogMessage("已从模型仓库缓存刷新列表。");
     } catch (err) {
-      setLocalError(`模型文件刷新失败：${getErrorMessage(err)}`);
+      setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rescanModelCatalog = async () => {
+    setBusy("model.scan");
+    setLocalError(null);
+    setModelCatalogMessage("");
+    try {
+      const result = await scanModelDirectory();
+      await onRefresh();
+      setModelCatalogRefreshKey((current) => current + 1);
+      setModelCatalogMessage(
+        `扫描完成：发现 ${result.discovered_files} 个文件，更新 ${result.updated_files} 个，缓存命中 ${result.cache_hits} 个。`
+      );
+    } catch (err) {
+      setLocalError(`模型目录扫描失败：${getErrorMessage(err)}`);
     } finally {
       setBusy(null);
     }
@@ -2087,15 +2107,27 @@ export function StudioConsoleView({
           <div className="console-grid2">
             <div className="console-card">
               <SectionTitle title="模型设置" />
-              <button
-                className="console-button secondary console-full-button"
-                disabled={busy === "model.refresh"}
-                onClick={() => void refreshModelCatalog()}
-                type="button"
-              >
-                <NovaIcon name="refresh" size={15} />
-                {busy === "model.refresh" ? "刷新中..." : "刷新模型文件"}
-              </button>
+              <div className="console-action-row">
+                <button
+                  className="console-button secondary"
+                  disabled={busy !== null}
+                  onClick={() => void refreshModelCatalog()}
+                  type="button"
+                >
+                  <NovaIcon name="refresh" size={15} />
+                  {busy === "model.refresh" ? "刷新中..." : "刷新列表"}
+                </button>
+                <button
+                  className="console-button"
+                  disabled={busy !== null}
+                  onClick={() => void rescanModelCatalog()}
+                  type="button"
+                >
+                  <NovaIcon name="model-verify" size={15} />
+                  {busy === "model.scan" ? "扫描中..." : "扫描新文件"}
+                </button>
+              </div>
+              {modelCatalogMessage ? <div className="model-switch-note good">{modelCatalogMessage}</div> : null}
               <label>模型文件</label>
               <select
                 value={selectedModelProjectId}
@@ -2135,7 +2167,7 @@ export function StudioConsoleView({
               ) : null}
               <button
                 className="console-button primary console-full-button"
-                disabled={busy === "model.switch" || selectedModelProjectId === "" || selectedSwitchArtifact === null}
+                disabled={busy !== null || selectedModelProjectId === "" || selectedSwitchArtifact === null}
                 onClick={switchModel}
                 type="button"
               >

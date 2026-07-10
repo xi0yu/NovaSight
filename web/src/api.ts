@@ -588,8 +588,17 @@ export function prepareYolov8nExample(): Promise<ModelPrepareResponse> {
   });
 }
 
-export function scanModelDirectory(): Promise<{ project_count: number; previous_project_count: number }> {
-  return requestJson<{ project_count: number; previous_project_count: number }>("/api/models/scan", {
+export type ModelScanResponse = {
+  project_count: number;
+  previous_project_count: number;
+  discovered_files: number;
+  updated_files: number;
+  cache_hits: number;
+  force: boolean;
+};
+
+export function scanModelDirectory(force = false): Promise<ModelScanResponse> {
+  return requestJson<ModelScanResponse>(`/api/models/scan?force=${force ? "true" : "false"}`, {
     method: "POST"
   });
 }

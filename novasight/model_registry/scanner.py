@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,8 @@ from .manifest import ModelManifest, read_manifest
 
 ModelScanStatus = Literal["ready", "need_confirm", "invalid", "unsupported"]
 SUPPORTED_MODEL_SUFFIXES = {".engine", ".onnx"}
+_MODEL_SCAN_LOCK = threading.RLock()
+_MODEL_SCAN_CACHE: dict[str, tuple[tuple[int, ...], "ModelArtifactScanResult"]] = {}
 
 
 @dataclass(frozen=True)
@@ -25,20 +28,42 @@ class ModelArtifactScanResult:
     manifest: ModelManifest | None = None
 
 
-def scan_model_artifacts(root: Path) -> list[ModelArtifactScanResult]:
+def scan_model_artifacts(
+    root: Path,
+    *,
+    force: bool = False,
+) -> list[ModelArtifactScanResult]:
     root = Path(root)
     if not root.exists():
         return []
     results = [
-        inspect_model_artifact(path)
+        inspect_model_artifact(path, force=force)
         for path in sorted(root.rglob("*"))
         if path.is_file() and path.suffix.lower() in SUPPORTED_MODEL_SUFFIXES
     ]
     return results
 
 
-def inspect_model_artifact(path: Path) -> ModelArtifactScanResult:
+def inspect_model_artifact(
+    path: Path,
+    *,
+    force: bool = False,
+) -> ModelArtifactScanResult:
     path = Path(path)
+    cache_key = str(path.resolve(strict=False))
+    signature = _artifact_signature(path)
+    if not force:
+        with _MODEL_SCAN_LOCK:
+            cached = _MODEL_SCAN_CACHE.get(cache_key)
+            if cached is not None and cached[0] == signature:
+                return cached[1]
+    result = _inspect_model_artifact_uncached(path)
+    with _MODEL_SCAN_LOCK:
+        _MODEL_SCAN_CACHE[cache_key] = (signature, result)
+    return result
+
+
+def _inspect_model_artifact_uncached(path: Path) -> ModelArtifactScanResult:
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_MODEL_SUFFIXES:
         return ModelArtifactScanResult(
@@ -109,3 +134,17 @@ def inspect_model_artifact(path: Path) -> ModelArtifactScanResult:
         model_fingerprint=manifest.model_fingerprint,
         manifest=manifest,
     )
+
+
+def _artifact_signature(path: Path) -> tuple[int, ...]:
+    artifact = _stat_signature(path)
+    manifest = _stat_signature(path.with_name("model.manifest.json"))
+    return (*artifact, *manifest)
+
+
+def _stat_signature(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (-1, -1)
+    return (int(stat.st_size), int(stat.st_mtime_ns))
