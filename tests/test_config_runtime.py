@@ -4,6 +4,7 @@ Covers the schema-enforced contract: round-trip, missing/empty inputs,
 unknown keys, and type errors. Defaults are exercised in one test, and
 unknown-key rejection is parametrized.
 """
+import math
 from pathlib import Path
 
 import pytest
@@ -419,18 +420,75 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.004)
 
 
-@pytest.mark.parametrize(
-    "legacy_key",
-    [
-        "experimental_angle_fov_x_deg",
-        "experimental_angle_counts_per_360",
-        "experimental_angle_sign_x",
-        "latency_estimated_actuation_delay_ms",
-    ],
-)
-def test_runtime_config_rejects_removed_control_route_keys(legacy_key: str) -> None:
-    with pytest.raises(ValueError, match=legacy_key):
-        parse_runtime_config({"control": {legacy_key: 1}})
+def test_runtime_config_migrates_legacy_axis_signs() -> None:
+    cfg = parse_runtime_config(
+        {"calibration": {"axis_sign_x": 1, "axis_sign_y": -1}}
+    )
+
+    assert cfg.calibration.invert_y is True
+    assert not hasattr(cfg.calibration, "axis_sign_x")
+    assert not hasattr(cfg.calibration, "axis_sign_y")
+
+
+def test_runtime_config_rejects_unrepresentable_legacy_x_inversion() -> None:
+    with pytest.raises(ValueError, match="axis_sign_x=-1.*cannot be migrated"):
+        parse_runtime_config(
+            {"calibration": {"axis_sign_x": -1, "axis_sign_y": 1}}
+        )
+
+
+def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
+    cfg = parse_runtime_config(
+        {
+            "runtime": {"freshness_threshold_ms": 60.0},
+            "calibration": {"axis_sign_x": 1, "axis_sign_y": -1},
+            "control": {
+                "min_confidence": 0.0,
+                "aim_ratio": 40.0,
+                "configured_extra_prediction_delay_ms": 2.0,
+                "latency_compensation_enabled": True,
+                "latency_compensation_scale": 0.7,
+                "latency_reject_if_age_exceeds_ms": 55.0,
+                "strategy": "experimental_angle_pid",
+                "command_interval_ms": 4.0,
+                "scheduler_max_step_x": 12,
+                "scheduler_max_step_y": 10,
+                "experimental_angle_fov_x_deg": 103.0,
+                "experimental_angle_counts_per_360": 9900.0,
+                "experimental_angle_kp_x": 0.4,
+                "experimental_angle_kp_y": 0.3,
+                "experimental_angle_kd": 0.02,
+                "experimental_angle_derivative_filter": 0.25,
+                "experimental_angle_deadzone_px": 1.5,
+                "experimental_angle_max_control_angle_deg": 3.0,
+                "experimental_angle_magnet_enabled": False,
+                "move_kind": "bezier",
+                "move_ms": 12,
+            },
+        }
+    )
+
+    assert cfg.calibration.fov_x_deg == pytest.approx(103.0)
+    assert cfg.calibration.counts_per_360_x == pytest.approx(9900.0)
+    assert cfg.calibration.counts_per_360_y == pytest.approx(9900.0)
+    assert cfg.calibration.invert_y is True
+    assert cfg.control.min_confidence == pytest.approx(0.10)
+    assert cfg.control.aim.y_ratio == pytest.approx(0.40)
+    assert cfg.control.configured_actuation_delay_s == pytest.approx(0.002)
+    assert cfg.control.prediction_strength == pytest.approx(0.7)
+    assert cfg.control.kp_x == pytest.approx(0.4)
+    assert cfg.control.kp_y == pytest.approx(0.3)
+    assert cfg.control.kd_x == pytest.approx(0.02)
+    assert cfg.control.kd_y == pytest.approx(0.02)
+    assert cfg.control.d_ema_alpha == pytest.approx(0.25)
+    assert cfg.control.deadzone_px_x == pytest.approx(1.5)
+    assert cfg.control.deadzone_px_y == pytest.approx(1.5)
+    assert cfg.control.max_output_rad_x == pytest.approx(math.radians(3.0))
+    assert cfg.control.max_output_rad_y == pytest.approx(math.radians(3.0))
+    assert cfg.control.scheduler_interval_ms == pytest.approx(4.0)
+    assert cfg.control.scheduler_step_counts_x == 12
+    assert cfg.control.scheduler_step_counts_y == 10
+    assert cfg.runtime.freshness_threshold_ms == pytest.approx(60.0)
 
 
 def test_runtime_config_validates_recording_format() -> None:
@@ -497,7 +555,7 @@ def test_runtime_config_enforces_kmnet_only_runtime_paths() -> None:
         parse_runtime_config({"executor": {"default": "silent"}})
     with pytest.raises(ValueError, match="hardware.kind.*kmnet"):
         parse_runtime_config({"hardware": {"kind": "makcu"}})
-    with pytest.raises(ValueError, match="unknown config key.*control.strategy"):
+    with pytest.raises(ValueError, match="control.strategy.*experimental_angle_pid"):
         parse_runtime_config({"control": {"strategy": "pid"}})
 
 

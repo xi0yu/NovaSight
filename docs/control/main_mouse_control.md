@@ -143,6 +143,18 @@ calibration.counts_per_360_y
 calibration.invert_y
 ```
 
+## Legacy Configuration Migration
+
+The runtime loader accepts the immediately preceding production schema and
+migrates its aim ratio, configured delay, PD gains, derivative EMA, deadzone,
+Scheduler interval/step limits, stale threshold, and calibration fields into
+this route. `calibration.axis_sign_y` maps to `calibration.invert_y`.
+
+`calibration.axis_sign_x=-1` is rejected with an explicit error because this
+route has no X-axis inversion setting. Silently discarding it would reverse the
+closed-loop control direction. Removed experimental fields that have no valid
+single-route equivalent are discarded during this one-way in-memory migration.
+
 ## Reset Rules
 
 - Target switch: reset observed-error history, D EMA, output history, residual, and pending plan.

@@ -325,7 +325,245 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         }:
             capture["backend"] = "gst_cpu_latest"
         normalized["capture"] = capture
+    control = normalized.get("control")
+    calibration = normalized.get("calibration")
+    if isinstance(control, dict):
+        control = dict(control)
+    if isinstance(calibration, dict):
+        calibration = dict(calibration)
+    if isinstance(control, dict):
+        if calibration is None:
+            calibration = {}
+        if isinstance(calibration, dict):
+            _migrate_legacy_control_calibration(control, calibration)
+        _migrate_legacy_mouse_control(control, normalized)
+        normalized["control"] = control
+    if isinstance(calibration, dict):
+        _migrate_legacy_axis_signs(calibration)
+        normalized["calibration"] = calibration
     return normalized
+
+
+def _migrate_legacy_control_calibration(
+    control: dict[str, Any],
+    calibration: dict[str, Any],
+) -> None:
+    legacy_fov = control.pop("experimental_angle_fov_x_deg", None)
+    if legacy_fov is not None and "fov_x_deg" not in calibration:
+        calibration["fov_x_deg"] = legacy_fov
+
+    legacy_counts = control.pop("experimental_angle_counts_per_360", None)
+    if legacy_counts is not None:
+        calibration.setdefault("counts_per_360_x", legacy_counts)
+        calibration.setdefault("counts_per_360_y", legacy_counts)
+
+    legacy_sign_x = control.pop("experimental_angle_sign_x", None)
+    legacy_sign_y = control.pop("experimental_angle_sign_y", None)
+    if legacy_sign_x is not None:
+        calibration.setdefault("axis_sign_x", legacy_sign_x)
+    if legacy_sign_y is not None:
+        calibration.setdefault("axis_sign_y", legacy_sign_y)
+
+
+def _migrate_legacy_axis_signs(calibration: dict[str, Any]) -> None:
+    legacy_sign_x = calibration.pop("axis_sign_x", None)
+    legacy_sign_y = calibration.pop("axis_sign_y", None)
+    if legacy_sign_x is not None:
+        sign_x = _legacy_axis_sign(legacy_sign_x, "calibration.axis_sign_x")
+        if sign_x != 1:
+            raise ValueError(
+                "legacy config key 'calibration.axis_sign_x=-1' cannot be migrated: "
+                "the single mouse-control route fixes positive X counts to positive X error"
+            )
+    if legacy_sign_y is not None:
+        sign_y = _legacy_axis_sign(legacy_sign_y, "calibration.axis_sign_y")
+        if "invert_y" not in calibration:
+            calibration["invert_y"] = sign_y < 0
+
+
+def _migrate_legacy_mouse_control(
+    control: dict[str, Any],
+    normalized: dict[str, Any],
+) -> None:
+    legacy_schema = any(
+        key in _LEGACY_MOUSE_CONTROL_MARKERS or key.startswith("experimental_angle_")
+        for key in control
+    )
+    legacy_strategy = control.get("strategy")
+    if legacy_strategy is not None and legacy_strategy != "experimental_angle_pid":
+        raise ValueError(
+            "legacy config key 'control.strategy' must be experimental_angle_pid"
+        )
+
+    legacy_aim_ratio = control.pop("aim_ratio", None)
+    if legacy_aim_ratio is not None:
+        aim = control.get("aim")
+        if aim is None:
+            aim = {}
+        if isinstance(aim, dict):
+            aim = dict(aim)
+            if "y_ratio" not in aim:
+                ratio = _legacy_number(legacy_aim_ratio, "control.aim_ratio") / 100.0
+                aim["y_ratio"] = round(max(0.0, min(1.0, ratio)), 2)
+            control["aim"] = aim
+
+    legacy_delay_ms = control.pop("configured_extra_prediction_delay_ms", None)
+    legacy_estimated_delay_ms = control.pop("latency_estimated_actuation_delay_ms", None)
+    if "configured_actuation_delay_s" not in control:
+        delay_ms = (
+            legacy_delay_ms
+            if legacy_delay_ms is not None
+            else legacy_estimated_delay_ms
+        )
+        if delay_ms is not None:
+            control["configured_actuation_delay_s"] = (
+                _legacy_number(delay_ms, "control.configured_extra_prediction_delay_ms")
+                / 1000.0
+            )
+
+    legacy_prediction_enabled = control.pop("latency_compensation_enabled", None)
+    if legacy_prediction_enabled is False:
+        control.setdefault("prediction_x_enabled", False)
+        control.setdefault("prediction_y_enabled", False)
+    _move_legacy_number(
+        control,
+        "latency_compensation_scale",
+        "prediction_strength",
+    )
+    _move_legacy_number(control, "experimental_angle_kp_x", "kp_x")
+    _move_legacy_number(control, "experimental_angle_kp_y", "kp_y")
+
+    legacy_kd = control.pop("experimental_angle_kd", None)
+    if legacy_kd is not None:
+        control.setdefault("kd_x", legacy_kd)
+        control.setdefault("kd_y", legacy_kd)
+    _move_legacy_number(
+        control,
+        "experimental_angle_derivative_filter",
+        "d_ema_alpha",
+    )
+
+    legacy_deadzone = control.pop("experimental_angle_deadzone_px", None)
+    if legacy_deadzone is not None:
+        control.setdefault("deadzone_px_x", legacy_deadzone)
+        control.setdefault("deadzone_px_y", legacy_deadzone)
+
+    legacy_max_angle_deg = control.pop("experimental_angle_max_control_angle_deg", None)
+    if legacy_max_angle_deg is not None:
+        max_angle_rad = math.radians(
+            _legacy_number(
+                legacy_max_angle_deg,
+                "control.experimental_angle_max_control_angle_deg",
+            )
+        )
+        control.setdefault("max_output_rad_x", max_angle_rad)
+        control.setdefault("max_output_rad_y", max_angle_rad)
+
+    _move_legacy_number(control, "command_interval_ms", "scheduler_interval_ms")
+    _move_legacy_number(control, "scheduler_max_step_x", "scheduler_step_counts_x")
+    _move_legacy_number(control, "scheduler_max_step_y", "scheduler_step_counts_y")
+    _move_legacy_number(control, "tracker_missing_timeout_ms", "lost_target_timeout_ms")
+
+    legacy_stale_ms = control.pop("latency_reject_if_age_exceeds_ms", None)
+    if legacy_stale_ms is not None:
+        runtime = normalized.get("runtime")
+        if runtime is None:
+            runtime = {}
+        if isinstance(runtime, dict):
+            runtime = dict(runtime)
+            runtime.setdefault("freshness_threshold_ms", legacy_stale_ms)
+            normalized["runtime"] = runtime
+
+    min_confidence = control.get("min_confidence")
+    if (
+        legacy_schema
+        and isinstance(min_confidence, (int, float))
+        and not isinstance(min_confidence, bool)
+    ):
+        control["min_confidence"] = max(0.10, float(min_confidence))
+
+    for key in tuple(control):
+        if key.startswith("experimental_angle_"):
+            control.pop(key, None)
+    for key in _REMOVED_LEGACY_CONTROL_KEYS:
+        control.pop(key, None)
+
+
+_REMOVED_LEGACY_CONTROL_KEYS = frozenset(
+    {
+        "max_abs_dx",
+        "max_abs_dy",
+        "fov_ratio",
+        "target_lost_grace_frames",
+        "target_switch_confirm_frames",
+        "kalman_enabled",
+        "aim_horizontal_percent",
+        "aim_offset_x_px",
+        "aim_offset_y_px",
+        "aim_ema_enabled",
+        "aim_ema_alpha",
+        "aim_max_anchor_jump_ratio",
+        "latency_max_compensation_ms",
+        "latency_max_compensation_px",
+        "latency_min_velocity_px_s",
+        "latency_max_velocity_px_s",
+        "latency_min_velocity_measurements",
+        "latency_min_velocity_confidence",
+        "strategy",
+        "scheduler_command_ttl_ms",
+        "scheduler_predicted_command_ttl_ms",
+        "scheduler_cancel_on_new_frame",
+        "scheduler_cancel_on_direction_change",
+        "scheduler_cancel_on_track_change",
+        "scheduler_queue_hard_limit",
+        "scheduler_device_error_cooldown_ms",
+        "move_kind",
+        "move_ms",
+        "trace_ms",
+        "bezier_curvature",
+    }
+)
+
+_LEGACY_MOUSE_CONTROL_MARKERS = _REMOVED_LEGACY_CONTROL_KEYS | frozenset(
+    {
+        "aim_ratio",
+        "configured_extra_prediction_delay_ms",
+        "latency_estimated_actuation_delay_ms",
+        "latency_compensation_enabled",
+        "latency_compensation_scale",
+        "latency_reject_if_age_exceeds_ms",
+        "command_interval_ms",
+        "scheduler_max_step_x",
+        "scheduler_max_step_y",
+        "tracker_missing_timeout_ms",
+    }
+)
+
+
+def _move_legacy_number(
+    values: dict[str, Any],
+    old_key: str,
+    new_key: str,
+) -> None:
+    legacy_value = values.pop(old_key, None)
+    if legacy_value is not None and new_key not in values:
+        values[new_key] = legacy_value
+
+
+def _legacy_axis_sign(value: Any, key: str) -> int:
+    numeric = _legacy_number(value, key)
+    if numeric not in {-1.0, 1.0}:
+        raise ValueError(f"legacy config key '{key}' must be -1 or 1")
+    return int(numeric)
+
+
+def _legacy_number(value: Any, key: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"legacy config key '{key}' must be a number")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"legacy config key '{key}' must be finite")
+    return numeric
 
 
 def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
