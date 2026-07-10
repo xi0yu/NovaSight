@@ -22,6 +22,36 @@ from .preprocess import DeviceTensor, GpuResourcePreprocessor, prepare_tensor
 logger = logging.getLogger("novasight.inference.tensorrt")
 
 
+def _decoder_candidate_columns(shape: tuple[int, ...]) -> int | None:
+    squeezed = tuple(int(item) for item in shape if int(item) != 1)
+    if len(squeezed) != 2:
+        return None
+    rows, columns = squeezed
+    transposed_from_channel_first = 4 < rows < columns
+    candidate_columns = rows if transposed_from_channel_first else columns
+    return candidate_columns if candidate_columns >= 5 else None
+
+
+def _select_detection_output_name(
+    output_names: list[str],
+    output_shapes: dict[str, tuple[int, ...]],
+    *,
+    class_count: int,
+) -> tuple[str | None, int | None]:
+    expected_columns = {4 + max(0, class_count), 5 + max(0, class_count), 6}
+    candidates: list[tuple[int, int, str, int]] = []
+    for index, name in enumerate(output_names):
+        columns = _decoder_candidate_columns(output_shapes.get(name, ()))
+        if columns is None:
+            continue
+        rank = 0 if columns in expected_columns else 1
+        candidates.append((rank, index, name, columns))
+    if not candidates:
+        return None, None
+    _rank, _index, name, columns = min(candidates)
+    return name, columns
+
+
 class TensorRtInferenceEngine:
     engine_id = "tensorrt"
 
@@ -58,6 +88,7 @@ class TensorRtInferenceEngine:
         self._output_dtypes: dict[str, str] = {}
         self._output_shape: tuple[int, ...] = ()
         self._output_dtype = ""
+        self._output_candidate_columns: int | None = None
         self._input_dtype = "float32"
         self._last_failure_logged = ""
         self._engine_input_shape: tuple[int, ...] = ()
@@ -104,6 +135,7 @@ class TensorRtInferenceEngine:
             "output_shape": "x".join(str(item) for item in self._output_shape),
             "output_name": self._output_name,
             "output_dtype": self._output_dtype,
+            "output_candidate_columns": self._output_candidate_columns,
             "engine_input_shape": "x".join(str(item) for item in self._engine_input_shape),
             "input_shape_source": self._input_shape_source,
             "host_input_pinned": self._host_input_pinned(),
@@ -407,10 +439,17 @@ class TensorRtInferenceEngine:
             self._host_outputs[name] = host_output
             context.set_tensor_address(name, int(device_output))
 
-        self._output_name = next(
-            (name for name in output_names if len(self._output_shapes[name]) == 3),
-            output_names[0],
+        self._output_name, self._output_candidate_columns = _select_detection_output_name(
+            output_names,
+            self._output_shapes,
+            class_count=len(self._classes),
         )
+        if self._output_name is None:
+            raise RuntimeError(
+                "unsupported TensorRT detection output contract; "
+                f"decoder expects one NxC/CxN tensor with at least 5 columns, "
+                f"outputs={self._output_shapes}"
+            )
         self._output_shape = self._output_shapes[self._output_name]
         self._output_dtype = self._output_dtypes.get(self._output_name, "")
         logger.info(
@@ -668,6 +707,7 @@ class TensorRtInferenceEngine:
         self._output_dtypes = {}
         self._output_shape = ()
         self._output_dtype = ""
+        self._output_candidate_columns = None
         self._input_dtype = "float32"
         self._output_name = ""
         self._engine_input_shape = ()

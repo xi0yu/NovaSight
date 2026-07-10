@@ -79,6 +79,125 @@ def test_artifact_inspection_reuses_hash_until_file_changes(tmp_path, monkeypatc
     assert hashes == [model_path, model_path]
 
 
+def test_model_replacement_keeps_deployed_artifact_file_immutable(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    source_path = source_root / "demo.engine"
+    source_path.write_bytes(b"first-engine")
+
+    assert routes_models._sync_model_file(registry, source_root, source_path)
+    project = registry.list_projects()[0]
+    version = registry.list_versions(project.id)[0]
+    first_artifact = registry.list_artifacts(version.id)[0]
+    registry.update_artifact_status(first_artifact.id, "ready")
+    registry.publish(project.id, first_artifact.id)
+    first_asset = registry.data_dir / project.name / version.version / first_artifact.path
+
+    source_path.write_bytes(b"replacement-engine")
+    assert routes_models._sync_model_file(registry, source_root, source_path)
+
+    versions = registry.list_versions(project.id)
+    artifacts = [
+        artifact
+        for item in versions
+        for artifact in registry.list_artifacts(item.id)
+    ]
+    active = registry.get_active_deployment()
+    assert active is not None
+    assert active.artifact_id == first_artifact.id
+    assert first_asset.read_bytes() == b"first-engine"
+    assert len(artifacts) == 2
+    assert artifacts[-1].id != first_artifact.id
+    assert artifacts[-1].checksum != first_artifact.checksum
+    assert len(versions) == 2
+    assert versions[-1].input_shape == version.input_shape
+    assert versions[-1].classes == version.classes
+
+
+def test_engine_replacement_without_sidecar_inherits_model_metadata(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    source_path = source_root / "demo.engine"
+    sidecar_path = source_root / "demo.json"
+    source_path.write_bytes(b"first-engine")
+    sidecar_path.write_text(
+        '{"classes": ["person", "head"], "input_shape": "1x3x320x320"}',
+        encoding="utf-8",
+    )
+
+    assert routes_models._sync_model_file(registry, source_root, source_path)
+    project = registry.list_projects()[0]
+    first_version = registry.list_versions(project.id)[0]
+    assert first_version.classes == ["person", "head"]
+    assert first_version.input_shape == "1x3x320x320"
+
+    sidecar_path.unlink()
+    source_path.write_bytes(b"replacement-engine")
+    assert routes_models._sync_model_file(registry, source_root, source_path)
+
+    replacement_version = registry.list_versions(project.id)[-1]
+    assert replacement_version.id != first_version.id
+    assert replacement_version.classes == ["person", "head"]
+    assert replacement_version.input_shape == "1x3x320x320"
+
+
+def test_publish_validates_pending_engine_before_marking_it_ready(tmp_path, monkeypatch) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["target"],
+        "1x3x640x640",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
+    artifact_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        "demo.engine",
+        "sha256:pending",
+        "pending",
+    )
+
+    class Inference:
+        def prepare(self, path, classes, input_shape):
+            assert path == artifact_path
+            assert classes == ["target"]
+            assert input_shape == "1x3x640x640"
+            return "candidate", {"loaded": True, "input_shape": input_shape}
+
+        def commit(self, candidate, **_kwargs):
+            assert candidate == "candidate"
+
+        def status(self):
+            return {"loaded": True, "selected": "tensorrt"}
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                models=registry,
+                inference=Inference(),
+                runtime=SimpleNamespace(pipeline=None),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        routes_models,
+        "_resume_runtime_pipeline_after_model_switch",
+        lambda *_args: None,
+    )
+
+    response = routes_models.publish(request, project.id, PublishRequest(artifact_id=artifact.id))
+
+    assert response["deployment"]["artifact_id"] == artifact.id
+    assert registry.get_artifact(artifact.id).status == "ready"
+
+
 def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatch) -> None:
     events: list[str] = []
     deployment = Deployment(

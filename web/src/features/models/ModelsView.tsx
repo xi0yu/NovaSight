@@ -139,9 +139,11 @@ export function ModelsView({
   const visibleRollbackFeedback =
     rollbackFeedback && rollbackFeedback.projectId === selectedProjectId ? rollbackFeedback : null;
   const activeProjectId = activeModel?.project?.id ?? null;
-  const readyArtifacts = artifacts.filter((artifact) => artifact.status === "ready");
-  const publishableArtifacts = readyArtifacts.filter(
-    (artifact) => artifact.kind === "engine" || artifact.kind === "onnx"
+  const publishableArtifacts = artifacts.filter(
+    (artifact) =>
+      (artifact.status === "ready" ||
+        (artifact.kind === "engine" && artifact.status === "pending")) &&
+      (artifact.kind === "engine" || artifact.kind === "onnx")
   );
 
   useEffect(() => {
@@ -701,7 +703,10 @@ export function ModelsView({
                     disabled={
                       rollingBack ||
                       publishingArtifactId !== null ||
-                      artifact.status !== "ready" ||
+                      !(
+                        artifact.status === "ready" ||
+                        (artifact.kind === "engine" && artifact.status === "pending")
+                      ) ||
                       !isRunnableArtifact(artifact)
                     }
                     title={
@@ -710,7 +715,11 @@ export function ModelsView({
                         : "训练权重不能直接推理，需要先导出 ONNX 或 Engine"
                     }
                   >
-                    {publishingArtifactId === artifact.id ? "绑定中..." : "用于推理"}
+                    {publishingArtifactId === artifact.id
+                      ? "绑定中..."
+                      : artifact.status === "pending"
+                        ? "验证并用于推理"
+                        : "用于推理"}
                   </button>
                 </aside>
               </article>
@@ -788,7 +797,7 @@ function isRunnableArtifact(artifact: ModelArtifact): boolean {
 function artifactRuntimeHint(artifact: ModelArtifact): string {
   if (artifact.kind === "engine") {
     return artifact.status === "pending"
-      ? "TensorRT Engine 等待模型扫描或转换验证。"
+      ? "TensorRT Engine 尚未验证；发布时会先安全加载，失败不会替换当前模型。"
       : "TensorRT Engine，发布后由自定义 TensorRT 主链加载。";
   }
   if (artifact.kind === "onnx") {

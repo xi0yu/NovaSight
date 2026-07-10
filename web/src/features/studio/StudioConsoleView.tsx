@@ -425,6 +425,7 @@ export function StudioConsoleView({
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
+  const preferLatestModelVersionRef = useRef(false);
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
   const launchCancelledRef = useRef(false);
@@ -747,7 +748,7 @@ export function StudioConsoleView({
     );
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
-      item.status === "ready" &&
+      (item.status === "ready" || (item.kind === "engine" && item.status === "pending")) &&
       (item.kind === "onnx" || item.kind === "engine") &&
       (selectedModelVersionId === "" || item.version_id === selectedModelVersionId)
   );
@@ -761,6 +762,12 @@ export function StudioConsoleView({
     sortedSwitchableArtifacts[0] ??
     null;
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
+  const blockedSwitchArtifacts = modelArtifacts.filter(
+    (item) =>
+      (item.kind === "onnx" || item.kind === "engine") &&
+      item.status !== "ready" &&
+      !(item.kind === "engine" && item.status === "pending")
+  );
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
@@ -978,6 +985,7 @@ export function StudioConsoleView({
     const projectChanged = loadedModelProjectIdRef.current !== selectedModelProjectId;
     loadedModelProjectIdRef.current = selectedModelProjectId;
     if (projectChanged) {
+      preferLatestModelVersionRef.current = false;
       setModelVersions([]);
       setSelectedModelVersionId("");
       setModelArtifacts([]);
@@ -989,7 +997,12 @@ export function StudioConsoleView({
           return;
         }
         setModelVersions(items);
+        const preferLatest = preferLatestModelVersionRef.current;
+        preferLatestModelVersionRef.current = false;
         setSelectedModelVersionId((current) => {
+          if (preferLatest) {
+            return items[items.length - 1]?.id ?? "";
+          }
           if (typeof current === "number" && items.some((item) => item.id === current)) {
             return current;
           }
@@ -1034,7 +1047,9 @@ export function StudioConsoleView({
         setModelArtifacts(items);
         const runnable = items
           .filter(
-            (item) => item.status === "ready" && (item.kind === "onnx" || item.kind === "engine")
+            (item) =>
+              (item.status === "ready" || (item.kind === "engine" && item.status === "pending")) &&
+              (item.kind === "onnx" || item.kind === "engine")
           )
           .sort((left, right) => {
             const leftRank = ARTIFACT_KIND_RANK[left.kind] ?? 99;
@@ -1759,11 +1774,16 @@ export function StudioConsoleView({
     setBusy("model.refresh");
     setLocalError(null);
     setModelCatalogMessage("");
+    preferLatestModelVersionRef.current = true;
     try {
+      const result = await scanModelDirectory(false);
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
-      setModelCatalogMessage("已从模型仓库缓存刷新列表。");
+      setModelCatalogMessage(
+        `刷新完成：发现 ${result.discovered_files} 个文件，更新 ${result.updated_files} 个，缓存命中 ${result.cache_hits} 个。`
+      );
     } catch (err) {
+      preferLatestModelVersionRef.current = false;
       setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
     } finally {
       setBusy(null);
@@ -1774,14 +1794,16 @@ export function StudioConsoleView({
     setBusy("model.scan");
     setLocalError(null);
     setModelCatalogMessage("");
+    preferLatestModelVersionRef.current = true;
     try {
-      const result = await scanModelDirectory();
+      const result = await scanModelDirectory(true);
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
       setModelCatalogMessage(
         `扫描完成：发现 ${result.discovered_files} 个文件，更新 ${result.updated_files} 个，缓存命中 ${result.cache_hits} 个。`
       );
     } catch (err) {
+      preferLatestModelVersionRef.current = false;
       setLocalError(`模型目录扫描失败：${getErrorMessage(err)}`);
     } finally {
       setBusy(null);
@@ -2115,7 +2137,7 @@ export function StudioConsoleView({
                   type="button"
                 >
                   <NovaIcon name="refresh" size={15} />
-                  {busy === "model.refresh" ? "刷新中..." : "刷新列表"}
+                  {busy === "model.refresh" ? "刷新中..." : "刷新模型"}
                 </button>
                 <button
                   className="console-button"
@@ -2124,7 +2146,7 @@ export function StudioConsoleView({
                   type="button"
                 >
                   <NovaIcon name="model-verify" size={15} />
-                  {busy === "model.scan" ? "扫描中..." : "扫描新文件"}
+                  {busy === "model.scan" ? "校验中..." : "强制重新校验"}
                 </button>
               </div>
               {modelCatalogMessage ? <div className="model-switch-note good">{modelCatalogMessage}</div> : null}
@@ -2171,8 +2193,20 @@ export function StudioConsoleView({
                 onClick={switchModel}
                 type="button"
               >
-                {busy === "model.switch" ? "安全切换中..." : "安全切换模型"}
+                {busy === "model.switch"
+                  ? "安全切换中..."
+                  : selectedSwitchArtifact?.status === "pending"
+                    ? "验证并切换模型"
+                    : "安全切换模型"}
               </button>
+              {selectedSwitchArtifact?.status === "pending" ? (
+                <p className="console-field-hint">未验证，可在切换时安全加载验证；验证失败不会替换当前运行模型。</p>
+              ) : null}
+              {selectedSwitchArtifact === null && blockedSwitchArtifacts.length > 0 ? (
+                <div className="model-switch-note bad">
+                  模型产物不可切换：{blockedSwitchArtifacts.map((item) => `${item.path} (${item.status})`).join("，")}。请修复模型或 manifest 后强制重新校验。
+                </div>
+              ) : null}
               <label>置信度阈值</label>
               <CommitNumberControl
                 value={confidence}
@@ -2255,9 +2289,11 @@ export function StudioConsoleView({
                   onChange={(event) => setSelectedModelArtifactId(Number(event.target.value))}
                 >
                   {sortedSwitchableArtifacts.map((item) => (
-                    <option key={item.id} value={item.id}>{item.kind} · {item.path}</option>
+                    <option key={item.id} value={item.id}>
+                      {item.kind} · {item.path}{item.status === "pending" ? " · 待验证" : ""}
+                    </option>
                   ))}
-                  {sortedSwitchableArtifacts.length === 0 ? <option value="">暂无 ONNX / engine ready 产物</option> : null}
+                  {sortedSwitchableArtifacts.length === 0 ? <option value="">暂无可验证的 ONNX / engine 产物</option> : null}
                 </select>
                 <div className="model-debug-grid">
                   <span>推荐产物</span><b>{preferredSwitchArtifact ? `${preferredSwitchArtifact.kind} · ${preferredSwitchArtifact.path}` : "-"}</b>

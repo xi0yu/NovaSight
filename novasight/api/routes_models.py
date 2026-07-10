@@ -23,9 +23,7 @@ from novasight.model_registry import (
     RegistryNotFoundError,
     RegistryValidationError,
     inspect_model_artifact,
-    read_manifest,
     scan_model_artifacts,
-    write_manifest,
 )
 from novasight.inference import parse_tensor_input_shape
 
@@ -148,6 +146,108 @@ def _find_artifact(registry: ModelRegistry, version_id: int, path: str):
             artifact
             for artifact in registry.list_artifacts(version_id)
             if artifact.path == path
+        ),
+        None,
+    )
+
+
+def _find_artifact_by_checksum(
+    registry: ModelRegistry,
+    *,
+    project_id: int,
+    kind: str,
+    checksum: str,
+    classes: list[str],
+    input_shape: str,
+):
+    for version in registry.list_versions(project_id):
+        if version.classes != classes or version.input_shape != input_shape:
+            continue
+        for artifact in registry.list_artifacts(version.id):
+            if artifact.kind == kind and artifact.checksum == checksum:
+                return version, artifact
+    return None, None
+
+
+def _checksum_token(checksum: str) -> str:
+    value = checksum.split(":", 1)[-1].strip().lower()
+    return value[:12] or "unknown"
+
+
+def _immutable_artifact_filename(filename: str, checksum: str) -> str:
+    path = Path(filename)
+    return f"{path.stem}.{_checksum_token(checksum)}{path.suffix.lower()}"
+
+
+def _version_content_token(
+    checksum: str,
+    *,
+    classes: list[str],
+    input_shape: str,
+) -> str:
+    metadata = json.dumps(
+        {"classes": classes, "input_shape": input_shape},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    metadata_token = hashlib.sha256(metadata.encode("utf-8")).hexdigest()[:8]
+    return f"{_checksum_token(checksum)}-{metadata_token}"
+
+
+def _select_artifact_version(
+    registry: ModelRegistry,
+    *,
+    project: Any,
+    requested_version_name: str,
+    kind: str,
+    source_path: str,
+    classes: list[str],
+    input_shape: str,
+    checksum: str,
+):
+    matched_version, matched_artifact = _find_artifact_by_checksum(
+        registry,
+        project_id=project.id,
+        kind=kind,
+        checksum=checksum,
+        classes=classes,
+        input_shape=input_shape,
+    )
+    if matched_version is not None:
+        return matched_version, matched_artifact
+
+    base_version = _find_version(registry, project.id, requested_version_name)
+    if base_version is None:
+        version_name = requested_version_name
+    else:
+        same_kind = any(
+            artifact.kind == kind
+            for artifact in registry.list_artifacts(base_version.id)
+        )
+        if not same_kind:
+            return base_version, None
+        content_token = _version_content_token(
+            checksum,
+            classes=classes,
+            input_shape=input_shape,
+        )
+        version_name = _safe_component(
+            f"{requested_version_name}-{content_token}",
+            content_token,
+        )
+        existing = _find_version(registry, project.id, version_name)
+        if existing is not None:
+            return existing, None
+
+    return (
+        registry.create_version(
+            project_id=project.id,
+            version=version_name,
+            source_kind=_source_kind_from_artifact(kind),
+            source_path=source_path,
+            classes=classes,
+            input_shape=input_shape,
         ),
         None,
     )
@@ -353,49 +453,88 @@ def _sync_model_file(
         sidecar = _model_sidecar(model_file)
         classes = _classes_from_sidecar(sidecar)
         input_shape = _detect_input_shape(model_file, sidecar)
-        project = _find_project_by_name(registry, project_name)
+        existing_project = _find_project_by_name(registry, project_name)
+        existing_version = (
+            _find_version(registry, existing_project.id, version_name)
+            if existing_project is not None
+            else None
+        )
+        if existing_version is not None:
+            if "classes" not in sidecar and "names" not in sidecar:
+                classes = list(existing_version.classes)
+            if (
+                kind == "engine"
+                and "input_shape" not in sidecar
+                and _detect_input_shape_from_filename(model_file) is None
+            ):
+                input_shape = existing_version.input_shape
+        inspection = inspect_model_artifact(model_file, force=force)
+        checksum = inspection.sha256
+        project = existing_project
         if project is None:
             project = registry.create_project(
                 name=project_name,
                 description="从服务端 models 目录自动发现的模型。",
             )
-        version = _find_version(registry, project.id, version_name)
-        if version is None:
-            version = registry.create_version(
-                project_id=project.id,
-                version=version_name,
-                source_kind=_source_kind_from_artifact(kind),
-                source_path=model_file.as_posix(),
-                classes=classes,
-                input_shape=input_shape,
+        requested_version = _find_version(registry, project.id, version_name)
+        managed_artifact = (
+            _find_artifact(registry, requested_version.id, filename)
+            if requested_version is not None
+            else None
+        )
+        if (
+            managed_artifact is not None
+            and managed_artifact.checksum == checksum
+            and model_file.resolve(strict=False).is_relative_to(
+                Path(registry.data_dir).resolve(strict=False)
             )
-        elif version.input_shape != input_shape:
-            version = registry.update_version_input_shape(version.id, input_shape)
-        asset_path = Path(registry.data_dir) / project.name / version.version / filename
-        if model_file.resolve(strict=False) != asset_path.resolve(strict=False):
+        ):
+            return True
+        version, existing_artifact = _select_artifact_version(
+            registry,
+            project=project,
+            requested_version_name=version_name,
+            kind=kind,
+            source_path=model_file.as_posix(),
+            classes=classes,
+            input_shape=input_shape,
+            checksum=checksum,
+        )
+        asset_filename = (
+            existing_artifact.path
+            if existing_artifact is not None
+            else _immutable_artifact_filename(filename, checksum)
+        )
+        asset_path = Path(registry.data_dir) / project.name / version.version / asset_filename
+        if (
+            model_file.resolve(strict=False) != asset_path.resolve(strict=False)
+            and (existing_artifact is None or not asset_path.is_file())
+        ):
             asset_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(model_file, asset_path)
-        inspection = inspect_model_artifact(asset_path, force=force)
-        checksum = inspection.sha256
         artifact_status = (
             _registry_status_from_scan(inspection.status)
             if kind == "engine"
             else "ready"
         )
-        existing_artifact = _find_artifact(registry, version.id, filename)
         if existing_artifact is None:
             registry.create_artifact(
                 version_id=version.id,
                 kind=kind,
-                path=filename,
+                path=asset_filename,
                 checksum=checksum,
                 status=artifact_status,
             )
-        elif existing_artifact.status != artifact_status or existing_artifact.checksum != checksum:
+        elif (
+            existing_artifact.status != artifact_status
+            and not (
+                existing_artifact.status == "ready"
+                and artifact_status == "pending"
+            )
+        ):
             registry.update_artifact_status(
                 existing_artifact.id,
                 artifact_status,
-                checksum=checksum,
             )
         asset_cache_key = (
             str(Path(registry.db_path).resolve(strict=False)),
@@ -554,8 +693,10 @@ def _resolve_runnable_artifact(
     artifact = registry.get_artifact(artifact_id)
     if artifact is None:
         raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
-    if artifact.status != "ready":
-        raise RegistryValidationError("only ready artifacts can be published")
+    if artifact.status not in {"ready", "pending"}:
+        raise RegistryValidationError(
+            f"artifact status does not allow safe validation: {artifact.status}"
+        )
     if artifact.kind not in {"onnx", "engine"}:
         raise RegistryValidationError(
             f"published artifact is not runnable inference artifact: {artifact.kind}"
@@ -605,7 +746,14 @@ def _prepare_runnable_artifact(
     if not callable(prepare):
         raise RegistryValidationError("inference runtime does not support safe model switching")
     try:
-        return prepare(artifact_path, classes, input_shape)
+        candidate, status = prepare(artifact_path, classes, input_shape)
+        if status.get("loaded") is not True:
+            _close_candidate(candidate)
+            reason = status.get("reason") or "candidate runtime did not report loaded=true"
+            raise RegistryValidationError(f"model switch rejected: {reason}")
+        return candidate, status
+    except RegistryValidationError:
+        raise
     except Exception as exc:
         reason = f"model switch rejected: {exc}"
         record_switch_error = getattr(inference, "record_switch_error", None)
@@ -845,46 +993,53 @@ async def upload_model(
             if input_shape.strip()
             else _detect_input_shape(tmp_path, {})
         )
+        checksum = _sha256(tmp_path)
         project = _find_project_by_name(registry, project_name)
         if project is None:
             project = registry.create_project(
                 name=project_name,
                 description=description,
             )
-        model_version = _find_version(registry, project.id, version)
-        if model_version is None:
-            model_version = registry.create_version(
-                project_id=project.id,
-                version=version,
-                source_kind=_source_kind_from_artifact(kind),
-                source_path=filename,
-                classes=_parse_classes(classes),
-                input_shape=resolved_input_shape,
-            )
-        elif model_version.input_shape != resolved_input_shape:
-            model_version = registry.update_version_input_shape(
-                model_version.id,
-                resolved_input_shape,
-            )
-        asset_path = Path(registry.data_dir) / project.name / model_version.version / filename
-        asset_path.parent.mkdir(parents=True, exist_ok=True)
-        asset_path.write_bytes(content)
-        checksum = _sha256(asset_path)
-        artifact_status = _artifact_registry_status(kind, asset_path)
-        artifact = _find_artifact(registry, model_version.id, filename)
+        model_version, artifact = _select_artifact_version(
+            registry,
+            project=project,
+            requested_version_name=version,
+            kind=kind,
+            source_path=filename,
+            classes=_parse_classes(classes),
+            input_shape=resolved_input_shape,
+            checksum=checksum,
+        )
+        asset_filename = (
+            artifact.path
+            if artifact is not None
+            else _immutable_artifact_filename(filename, checksum)
+        )
+        asset_path = (
+            Path(registry.data_dir)
+            / project.name
+            / model_version.version
+            / asset_filename
+        )
+        if artifact is None or not asset_path.is_file():
+            asset_path.parent.mkdir(parents=True, exist_ok=True)
+            asset_path.write_bytes(content)
+        artifact_status = _artifact_registry_status(kind, tmp_path)
         if artifact is None:
             artifact = registry.create_artifact(
                 version_id=model_version.id,
                 kind=kind,
-                path=filename,
+                path=asset_filename,
                 checksum=checksum,
                 status=artifact_status,
             )
-        elif artifact.checksum != checksum or artifact.status != artifact_status:
+        elif (
+            artifact.status != artifact_status
+            and not (artifact.status == "ready" and artifact_status == "pending")
+        ):
             artifact = registry.update_artifact_status(
                 artifact.id,
                 artifact_status,
-                checksum=checksum,
             )
     except RegistryError as exc:
         logger.warning("model upload rejected filename=%s error=%s", filename, exc)
@@ -1074,6 +1229,10 @@ def publish(
             input_shape=input_shape,
         )
         input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
+        get_artifact = getattr(registry, "get_artifact", None)
+        artifact = get_artifact(payload.artifact_id) if callable(get_artifact) else None
+        if artifact is not None and artifact.status == "pending":
+            registry.update_artifact_status(payload.artifact_id, "ready")
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         try:
             deployment = registry.publish(

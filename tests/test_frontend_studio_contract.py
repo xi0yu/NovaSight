@@ -71,16 +71,27 @@ def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
     assert "[modelCatalogRefreshKey, selectedModelVersionId]" in source
 
 
-def test_studio_separates_cached_refresh_from_disk_rescan() -> None:
+def test_studio_refreshes_changed_models_and_can_force_revalidation() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     refresh_start = source.index("const refreshModelCatalog")
     rescan_start = source.index("const rescanModelCatalog", refresh_start)
     handlers_end = source.index("const launchStages", rescan_start)
 
-    assert "scanModelDirectory" not in source[refresh_start:rescan_start]
-    assert "scanModelDirectory" in source[rescan_start:handlers_end]
-    assert '"刷新列表"' in source
-    assert '"扫描新文件"' in source
+    assert "scanModelDirectory(false)" in source[refresh_start:rescan_start]
+    assert "scanModelDirectory(true)" in source[rescan_start:handlers_end]
+    assert '"刷新模型"' in source
+    assert '"强制重新校验"' in source
+
+
+def test_studio_can_validate_and_switch_pending_engine() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'item.status === "ready" || (item.kind === "engine" && item.status === "pending")' in source
+    assert 'selectedSwitchArtifact?.status === "pending"' in source
+    assert '"验证并切换模型"' in source
+    assert "未验证，可在切换时安全加载验证" in source
+    assert "preferLatestModelVersionRef.current" in source
+    assert "模型产物不可切换" in source
 
 
 def test_devices_mainline_mode_includes_tensorrt_runtime_backend() -> None:
