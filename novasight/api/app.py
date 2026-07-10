@@ -109,7 +109,9 @@ def create_app(
     def start_process_lifecycle() -> None:
         logger.info("application startup: acquiring instance lock")
         instance_lock.acquire()
+        logger.info("application startup: instance lock acquired")
         systemd_notifier.start()
+        logger.info("application startup: systemd notifier started enabled=%s", systemd_notifier.enabled)
         app.state.kmnet_auto_connect_thread = _start_auto_connect_kmnet(executors, config)
         app.state.capture_auto_restore_thread = _start_auto_restore_capture(capture, config)
         logger.info("application startup: lifecycle ready")

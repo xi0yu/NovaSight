@@ -9,6 +9,7 @@ from novasight.config import RuntimeConfig
 from novasight.control import ControlOutput
 from novasight.executors.contracts import ExecutionResult
 from novasight.executors.kmnet_loader import load_kmnet_driver
+from novasight.executors.kmnet_process import KmNetDriverProcess
 
 logger = logging.getLogger("novasight.executors.kmnet")
 
@@ -47,6 +48,11 @@ class KmNetExecutor:
         self._connect_thread: threading.Thread | None = None
         result = load_kmnet_driver()
         self._driver: Any | None = result.module
+        self._driver_process = (
+            KmNetDriverProcess(driver_loader=load_kmnet_driver)
+            if result.available and result.source != "test"
+            else None
+        )
         self.driver_source = result.source
         self.driver_platform = result.platform
         self.driver_machine = result.machine
@@ -85,13 +91,13 @@ class KmNetExecutor:
             "host": self.host,
             "port": self.port,
             "monitor_port": self.monitor_port,
-            "has_move_auto": self._driver is not None and hasattr(self._driver, "move_auto"),
-            "has_enc_move": self._driver is not None and hasattr(self._driver, "enc_move"),
-            "has_enc_move_auto": self._driver is not None and hasattr(self._driver, "enc_move_auto"),
-            "has_move_bezier": self._driver is not None and hasattr(self._driver, "move_beizer"),
-            "has_trace": self._driver is not None and hasattr(self._driver, "trace"),
-            "has_left_button": self._driver is not None and hasattr(self._driver, "isdown_left"),
-            "has_right_button": self._driver is not None and hasattr(self._driver, "isdown_right"),
+            "has_move_auto": self._driver_has("move_auto"),
+            "has_enc_move": self._driver_has("enc_move"),
+            "has_enc_move_auto": self._driver_has("enc_move_auto"),
+            "has_move_bezier": self._driver_has("move_beizer"),
+            "has_trace": self._driver_has("trace"),
+            "has_left_button": self._driver_has("isdown_left"),
+            "has_right_button": self._driver_has("isdown_right"),
             "button_available": self.last_button_available,
             "button_left": self.last_button_left,
             "button_right": self.last_button_right,
@@ -221,6 +227,8 @@ class KmNetExecutor:
             self.connecting = False
             self.monitoring = False
             self.last_error = ""
+        if self._driver_process is not None:
+            self._driver_process.abort()
         return self.status()
 
     def execute(self, output: ControlOutput) -> ExecutionResult:
@@ -274,7 +282,7 @@ class KmNetExecutor:
             self.last_dx = dx
             self.last_dy = dy
             self.last_error = ""
-            if output.trace_ms > 0 and hasattr(self._driver, "trace"):
+            if output.trace_ms > 0 and self._driver_has("trace"):
                 self._call_driver("trace", 0, int(output.trace_ms))
             logger.info(
                 "kmNet output sent api=%s action=%s kind=%s dx=%s dy=%s source=%s",
@@ -391,9 +399,9 @@ class KmNetExecutor:
 
     def _move_auto(self, dx: int, dy: int, move_ms: int, *, encrypted: bool = False) -> tuple[str, Any]:
         name = "enc_move_auto" if encrypted else "move_auto"
-        if getattr(self._driver, name, None) is None:
+        if not self._driver_has(name):
             name = "enc_move" if encrypted else "move"
-        if getattr(self._driver, name, None) is None:
+        if not self._driver_has(name):
             fallback = "move"
             rc = self._call_driver(fallback, dx, dy)
             return fallback, rc
@@ -414,9 +422,9 @@ class KmNetExecutor:
     ) -> tuple[str, Any]:
         name = "enc_move_beizer" if encrypted else "move_beizer"
         alternate = "enc_move_bezier" if encrypted else "move_bezier"
-        if getattr(self._driver, name, None) is None:
+        if not self._driver_has(name):
             name = alternate
-        if getattr(self._driver, name, None) is None:
+        if not self._driver_has(name):
             fallback = "enc_move" if encrypted else "move"
             rc = self._call_driver(fallback, dx, dy)
             return fallback, rc
@@ -427,10 +435,13 @@ class KmNetExecutor:
     def _call_driver(self, name: str, *args: Any) -> Any:
         if self._driver is None:
             raise RuntimeError("driver unavailable")
-        fn = getattr(self._driver, name, None)
-        if fn is None:
+        if not self._driver_has(name):
             raise RuntimeError(f"driver function unavailable: {name}")
-        rc = fn(*args)
+        if self._driver_process is not None:
+            timeout_s = 3.0 if name == "init" else 2.0 if name == "monitor" else 1.0
+            rc = self._driver_process.call(name, *args, timeout_s=timeout_s)
+        else:
+            rc = getattr(self._driver, name)(*args)
         if name in {
             "init",
             "monitor",
@@ -454,12 +465,14 @@ class KmNetExecutor:
         return self._call_driver("init", self.host, str(self.port), self.uuid)
 
     def _read_button_raw(self, name: str) -> dict[str, Any]:
-        fn = getattr(self._driver, name, None)
-        if fn is None:
+        if not self._driver_has(name):
             return {"function": name, "exists": False, "value": None, "pressed": False}
-        value = fn()
+        value = self._call_driver(name)
         try:
             pressed = int(value) == 1
         except (TypeError, ValueError):
             pressed = bool(value)
         return {"function": name, "exists": True, "value": value, "pressed": pressed}
+
+    def _driver_has(self, name: str) -> bool:
+        return self._driver is not None and hasattr(self._driver, name)

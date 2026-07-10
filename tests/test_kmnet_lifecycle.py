@@ -140,6 +140,7 @@ def test_manual_disconnect_invalidates_inflight_connect_result() -> None:
     driver = BlockingDriver()
     executor = KmNetExecutor(host="192.0.2.1", port=8888, uuid="test")
     executor._driver = driver
+    executor._driver_process = None
 
     status = executor.connect_async()
 

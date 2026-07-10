@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import stat
 from pathlib import Path
 from typing import TextIO
 
@@ -16,12 +17,22 @@ class InstanceLock:
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("w", encoding="utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(self.path, flags, 0o644)
+        except OSError as exc:
+            raise RuntimeError(f"NovaSight instance lock cannot be opened: {self.path}") from exc
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise RuntimeError(f"NovaSight instance lock is not a regular file: {self.path}")
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             handle.close()
             raise RuntimeError(f"NovaSight instance lock is already held: {self.path}") from exc
+        handle.seek(0)
+        handle.truncate(0)
         handle.write(f"{os.getpid()}\n")
         handle.flush()
         self._handle = handle
