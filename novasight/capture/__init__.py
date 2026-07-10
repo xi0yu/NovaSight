@@ -1,5 +1,4 @@
 from .caps import parse_v4l2_formats, query_capabilities, run_v4l2_ctl
-from .capture_loop import CapturedBufferSlot, CaptureLoop, LatestFrameBuffer
 from .device_probe import DeviceCapability, DeviceProbe, PixelFormatCaps, ResolutionCaps
 from .pipeline import (
     CaptureCandidate,
@@ -41,15 +40,12 @@ __all__ = [
     "CaptureCapability",
     "CaptureCandidate",
     "CaptureFrame",
-    "CaptureLoop",
     "CapturedFrame",
-    "CapturedBufferSlot",
     "CpuCompatibleCaptureBackend",
     "FrameResource",
     "FrameSource",
     "GstAppSinkFrameSource",
     "GstResourceFrameSource",
-    "LatestFrameBuffer",
     "OpenCvFrameSource",
     "CapturePreference",
     "CaptureProfile",

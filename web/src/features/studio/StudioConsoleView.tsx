@@ -684,8 +684,6 @@ export function StudioConsoleView({
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
   const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
   const sharedInvertY = readBoolean(sharedControlConfig.invert_y, false);
-  const hardwareKind = readString(hardwareConfig.kind, "kmnet") || "kmnet";
-  const outputMode = readString(controlConfig.output_mode, "kmnet") || "kmnet";
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -761,6 +759,14 @@ export function StudioConsoleView({
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
+  const targetPipeline = asRecord(vision.target_pipeline);
+  const targetPipelineCounts = asRecord(targetPipeline.counts);
+  const targetPipelineCode = readString(targetPipeline.code, "");
+  const targetPipelineStage = readString(targetPipeline.stage, "");
+  const targetPipelineMessage = readString(targetPipeline.message, "");
+  const targetPipelineRejections = Array.isArray(targetPipeline.rejection_reasons)
+    ? targetPipeline.rejection_reasons.map((item) => String(item)).join(", ")
+    : "";
   const selectorDebug = asRecord(control.selector_debug);
   const trackerRuntimeDebug = asRecord(selectorDebug.tracker);
   const trackDiagnostics = asRecord(control.track_diagnostics ?? target.track_diagnostics);
@@ -809,7 +815,7 @@ export function StudioConsoleView({
   const controlNoSendReason = execution.sent === true
     ? "已发送"
     : !controlHasTarget
-      ? readString(control.selection_reason, "无目标")
+      ? targetPipelineMessage || readString(control.selection_reason, "无目标")
       : control.will_emit !== true
         ? readString(control.trigger_reason, readString(control.reason, "控制门控未通过"))
         : kmnetStatus.connected !== true
@@ -1563,36 +1569,6 @@ export function StudioConsoleView({
     [onRefresh, runtimeConfig]
   );
 
-  const updateHardwareKind = useCallback(
-    async (_kind: string) => {
-      const next = cloneRuntimeConfig(runtimeConfig);
-      if (!next) {
-        return;
-      }
-      setBusy("hardware.kind");
-      setLocalError(null);
-      next.hardware = {
-        ...asRecord(next.hardware),
-        kind: "kmnet",
-        ...KMNET_RECOMMENDED
-      } as RuntimeConfig[string];
-      const control = {
-        ...asRecord(next.control),
-        output_mode: "kmnet"
-      };
-      next.control = control as RuntimeConfig[string];
-      try {
-        await updateRuntimeConfig(next);
-        await onRefresh();
-      } catch (err) {
-        setLocalError(`配置同步失败：${getErrorMessage(err)}`);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [onRefresh, runtimeConfig]
-  );
-
   const applyKmNetRecommended = useCallback(async () => {
     const next = cloneRuntimeConfig(runtimeConfig);
     if (!next) {
@@ -1602,12 +1578,7 @@ export function StudioConsoleView({
     setLocalError(null);
     next.hardware = {
       ...asRecord(next.hardware),
-      kind: "kmnet",
       ...KMNET_RECOMMENDED
-    } as RuntimeConfig[string];
-    next.control = {
-      ...asRecord(next.control),
-      output_mode: "kmnet"
     } as RuntimeConfig[string];
     try {
       await updateRuntimeConfig(next);
@@ -2323,6 +2294,7 @@ export function StudioConsoleView({
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
+            <Metric title="目标链路" value={targetPipelineCode || NO_SAMPLE} small={targetPipelineStage || NO_SAMPLE} />
             <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={readString(target.class_name, "") || "target"} />
             <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx, 1)} small="px" />
             <Metric title="实际发送" value={execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0) : NO_SAMPLE} small="counts" />
@@ -2333,7 +2305,13 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
                 <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
+                <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
+                <span>诊断代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
+                <span>诊断信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
                 <span>检测数量</span><b>{formatOptionalInteger(inferenceTrace.mapped_detections)}</b>
+                <span>解码 / 阈值 / NMS</span><b>{`${formatOptionalInteger(targetPipelineCounts.decode_raw_candidates)} / ${formatOptionalInteger(targetPipelineCounts.threshold_candidates)} / ${formatOptionalInteger(targetPipelineCounts.nms_detections)}`}</b>
+                <span>基础候选 / ACTIVE / FOV 内</span><b>{`${formatOptionalInteger(targetPipelineCounts.basic_candidates)} / ${formatOptionalInteger(targetPipelineCounts.tracker_active)} / ${formatOptionalInteger(targetPipelineCounts.inside_fov)}`}</b>
+                <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                 <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                 <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
@@ -2572,20 +2550,6 @@ export function StudioConsoleView({
                 <span>{compactDriverSource(kmnetStatus.driver_source)}</span>
                 <span>{readString(kmnetStatus.driver_python, "-")}</span>
               </div>
-              <label>硬件类型</label>
-              <select
-                value={hardwareKind}
-                onChange={(event) => void updateHardwareKind(event.target.value)}
-              >
-                <option value="kmnet">kmNet</option>
-              </select>
-              <label>输出执行器</label>
-              <select
-                value={outputMode}
-                onChange={(event) => void updateConfigField("control", "output_mode", event.target.value)}
-              >
-                <option value="kmnet">kmNet 实发</option>
-              </select>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />

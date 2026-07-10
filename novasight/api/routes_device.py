@@ -75,7 +75,7 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "freshness_threshold_ms": config.runtime.freshness_threshold_ms,
             "roi_size": config.roi.size,
             "preview_fps": config.limits.stream_fps,
-            "output_mode": config.control.output_mode,
+            "output_mode": str(executor_status.get("selected", "kmnet") or "kmnet"),
             "inference_backend": config.inference.backend,
         },
         "runtime": {

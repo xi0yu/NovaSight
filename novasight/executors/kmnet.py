@@ -25,6 +25,7 @@ class KmNetExecutor:
         port: int = 0,
         uuid: str = "",
         monitor_port: int = 0,
+        button_poll_interval_s: float = 0.004,
     ) -> None:
         self.host = host
         self.port = port
@@ -53,8 +54,14 @@ class KmNetExecutor:
         self.last_button_available = False
         self.last_button_reason = ""
         self.last_button_raw: dict[str, Any] = {}
+        self.last_button_sample_ts_ns = 0
+        self.last_button_poll_ts_ns = 0
+        self.button_poll_interval_s = max(0.001, min(0.050, float(button_poll_interval_s)))
         self._last_button_log_signature = ""
         self._last_button_log_s = 0.0
+        self._button_state_lock = threading.Lock()
+        self._button_poll_stop = threading.Event()
+        self._button_poll_thread: threading.Thread | None = None
         self._connection_lock = threading.Lock()
         self._connection_generation = 0
         self._connect_thread: threading.Thread | None = None
@@ -83,14 +90,21 @@ class KmNetExecutor:
             port=config.hardware.port,
             uuid=config.hardware.uuid,
             monitor_port=config.hardware.monitor_port,
+            button_poll_interval_s=float(config.control.scheduler_interval_ms) / 1000.0,
         )
 
     def available(self) -> bool:
         return self._driver is not None
 
     def status(self, *, refresh_buttons: bool = False) -> dict[str, Any]:
-        if refresh_buttons and self._driver is not None and self.monitoring:
-            self.read_buttons()
+        del refresh_buttons
+        buttons = self.read_buttons()
+        sample_ts_ns = int(buttons["sample_ts_ns"])
+        sample_age_ms = (
+            max(0.0, (time.monotonic_ns() - sample_ts_ns) / 1_000_000.0)
+            if sample_ts_ns > 0
+            else None
+        )
         return {
             "available": self.available(),
             "connected": self.connected,
@@ -125,41 +139,32 @@ class KmNetExecutor:
             "has_trace": self._driver_has("trace"),
             "has_left_button": self._driver_has("isdown_left"),
             "has_right_button": self._driver_has("isdown_right"),
-            "button_available": self.last_button_available,
-            "button_left": self.last_button_left,
-            "button_right": self.last_button_right,
-            "button_reason": self.last_button_reason,
-            "button_raw": self.last_button_raw,
+            "button_available": buttons["available"],
+            "button_left": buttons["left"],
+            "button_right": buttons["right"],
+            "button_reason": buttons["reason"],
+            "button_raw": buttons["raw"],
+            "button_sample_ts_ns": sample_ts_ns,
+            "button_sample_age_ms": sample_age_ms,
+            "button_poll_ts_ns": buttons["poll_ts_ns"],
+            "button_polling": (
+                self._button_poll_thread is not None
+                and self._button_poll_thread.is_alive()
+            ),
+            "button_poll_interval_ms": self.button_poll_interval_s * 1000.0,
         }
 
     def read_buttons(self) -> dict[str, Any]:
-        if self._driver is None:
-            return self._record_buttons(False, False, False, self.last_error)
-        if not self.monitoring:
-            if not self.connected:
-                return self._record_buttons(False, False, False, "kmNet is not connected")
-            if self.monitor_port <= 0:
-                return self._record_buttons(False, False, False, "kmNet monitor_port is not configured")
-            try:
-                self._call_driver("monitor", int(self.monitor_port))
-                self.monitoring = True
-                logger.info("kmNet monitor auto-started port=%s", self.monitor_port)
-            except Exception as exc:
-                self.last_error = f"kmNet monitor start failed: {exc}"
-                return self._record_buttons(False, False, False, self.last_error)
-        try:
-            left_raw = self._read_button_raw("isdown_left")
-            right_raw = self._read_button_raw("isdown_right")
-            left = left_raw["pressed"]
-            right = right_raw["pressed"]
-            raw = {
-                "left": left_raw,
-                "right": right_raw,
+        with self._button_state_lock:
+            return {
+                "available": bool(self.last_button_available),
+                "left": bool(self.last_button_left),
+                "right": bool(self.last_button_right),
+                "reason": str(self.last_button_reason),
+                "raw": dict(self.last_button_raw),
+                "sample_ts_ns": int(self.last_button_sample_ts_ns),
+                "poll_ts_ns": int(self.last_button_poll_ts_ns),
             }
-        except Exception as exc:
-            self.last_error = f"kmNet button read failed: {exc}"
-            return self._record_buttons(False, False, False, self.last_error)
-        return self._record_buttons(True, left, right, "", raw=raw)
 
     def _record_buttons(
         self,
@@ -170,16 +175,38 @@ class KmNetExecutor:
         *,
         raw: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self.last_button_available = bool(available)
-        self.last_button_left = bool(left)
-        self.last_button_right = bool(right)
-        self.last_button_reason = str(reason or "")
-        self.last_button_raw = raw or {}
-        signature = f"available={available}|left={left}|right={right}|reason={reason}|raw={self.last_button_raw}"
         now = time.monotonic()
-        if signature != self._last_button_log_signature or now - self._last_button_log_s >= 1.0:
-            self._last_button_log_signature = signature
-            self._last_button_log_s = now
+        now_ns = time.monotonic_ns()
+        with self._button_state_lock:
+            self.last_button_poll_ts_ns = now_ns
+            self.last_button_available = bool(available)
+            self.last_button_left = bool(left)
+            self.last_button_right = bool(right)
+            self.last_button_reason = str(reason or "")
+            self.last_button_raw = dict(raw or {})
+            if available:
+                self.last_button_sample_ts_ns = now_ns
+            signature = (
+                f"available={available}|left={left}|right={right}|"
+                f"reason={reason}|raw={self.last_button_raw}"
+            )
+            should_log = (
+                signature != self._last_button_log_signature
+                or now - self._last_button_log_s >= 1.0
+            )
+            if should_log:
+                self._last_button_log_signature = signature
+                self._last_button_log_s = now
+            result = {
+                "available": bool(available),
+                "left": bool(left),
+                "right": bool(right),
+                "reason": str(reason or ""),
+                "raw": dict(self.last_button_raw),
+                "sample_ts_ns": int(self.last_button_sample_ts_ns),
+                "poll_ts_ns": int(self.last_button_poll_ts_ns),
+            }
+        if should_log:
             logger.info(
                 "kmNet buttons available=%s left=%s right=%s reason=%s raw=%s",
                 available,
@@ -188,13 +215,7 @@ class KmNetExecutor:
                 reason or "",
                 self.last_button_raw,
             )
-        return {
-            "available": bool(available),
-            "left": bool(left),
-            "right": bool(right),
-            "reason": str(reason or ""),
-            "raw": self.last_button_raw,
-        }
+        return result
 
     def diagnostic_move(
         self,
@@ -255,8 +276,15 @@ class KmNetExecutor:
             self.monitoring = False
             self.connection_stage = "idle"
             self.last_error = ""
+            button_poll_stop = self._button_poll_stop
+            button_poll_thread = self._button_poll_thread
+            self._button_poll_thread = None
+        button_poll_stop.set()
         if self._driver_process is not None:
             self._driver_process.abort()
+        if button_poll_thread is not None and button_poll_thread is not threading.current_thread():
+            button_poll_thread.join(timeout=0.5)
+        self._record_buttons(False, False, False, "kmNet is not connected")
         return self.status()
 
     def execute(self, output: ControlOutput) -> ExecutionResult:
@@ -452,6 +480,7 @@ class KmNetExecutor:
                     self.monitor_port,
                     exc,
                 )
+                self._record_buttons(False, False, False, self.last_error)
                 return
             with self._connection_lock:
                 if generation != self._connection_generation:
@@ -462,6 +491,10 @@ class KmNetExecutor:
                 self.last_connect_error_stage = ""
                 self.last_connect_error_type = ""
                 self.last_error = ""
+            self._record_buttons(False, False, False, "awaiting first kmNet button sample")
+            self._start_button_poller(generation)
+        else:
+            self._record_buttons(False, False, False, "kmNet monitor_port is not configured")
         logger.info(
             "kmNet connected host=%s port=%s monitor_port=%s monitoring=%s",
             self.host,
@@ -469,6 +502,66 @@ class KmNetExecutor:
             self.monitor_port,
             self.monitoring,
         )
+
+    def _start_button_poller(self, generation: int) -> None:
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=self._button_poll_loop,
+            args=(generation, stop),
+            name="novasight-kmnet-buttons",
+            daemon=True,
+        )
+        with self._connection_lock:
+            if generation != self._connection_generation or not self.monitoring:
+                return
+            previous_stop = self._button_poll_stop
+            self._button_poll_stop = stop
+            self._button_poll_thread = thread
+        previous_stop.set()
+        thread.start()
+
+    def _button_poll_loop(self, generation: int, stop: threading.Event) -> None:
+        while not stop.is_set():
+            with self._connection_lock:
+                active = (
+                    generation == self._connection_generation
+                    and self.connected
+                    and self.monitoring
+                )
+            if not active:
+                return
+            try:
+                left_raw = self._read_button_raw("isdown_left")
+                right_raw = self._read_button_raw("isdown_right")
+                with self._connection_lock:
+                    if generation != self._connection_generation:
+                        return
+                available = bool(left_raw["exists"] or right_raw["exists"])
+                reason = "" if available else "kmNet button query functions are unavailable"
+                self._record_buttons(
+                    available,
+                    bool(left_raw["pressed"]),
+                    bool(right_raw["pressed"]),
+                    reason,
+                    raw={"left": left_raw, "right": right_raw},
+                )
+            except Exception as exc:
+                with self._connection_lock:
+                    if generation != self._connection_generation:
+                        return
+                reason = f"kmNet button read failed: {exc}"
+                self.last_error = reason
+                self._record_buttons(False, False, False, reason)
+                if isinstance(exc, TimeoutError):
+                    with self._connection_lock:
+                        if generation == self._connection_generation:
+                            self.connected = False
+                            self.monitoring = False
+                            self.connection_stage = "failed"
+                            self.last_connect_error_stage = "button_poll"
+                            self.last_connect_error_type = "timeout"
+                    return
+            stop.wait(self.button_poll_interval_s)
 
     def _record_connect_failure(
         self,
@@ -556,7 +649,7 @@ class KmNetExecutor:
             else:
                 rc = getattr(self._driver, name)(*args)
             self.last_driver_rc = rc
-            if rc not in (None, 0):
+            if self._driver_return_code_is_error(name, rc):
                 raise RuntimeError(f"{name} failed rc={rc}")
         except Exception as exc:
             self.last_driver_error = str(exc)
@@ -579,6 +672,15 @@ class KmNetExecutor:
         }:
             logger.info("kmNet driver call name=%s args=%s rc=%s", name, args, rc)
         return rc
+
+    @staticmethod
+    def _driver_return_code_is_error(name: str, rc: Any) -> bool:
+        if name in {"isdown_left", "isdown_right"}:
+            try:
+                return int(rc) not in {0, 1}
+            except (TypeError, ValueError):
+                return True
+        return rc not in (None, 0)
 
     def _call_init_driver(self) -> Any:
         return self._call_driver("init", self.host, str(self.port), self.uuid)

@@ -70,7 +70,6 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     "control.target_fov_radius_px": _spec("control.target_fov_radius_px", "目标选择半径", 180.0, 1.0, 2000.0, 1.0, "px", "以 ROI 中心为圆心的目标候选范围。"),
     "control.min_confidence": _spec("control.min_confidence", "最低置信度", 0.25, 0.10, 0.99, 0.01, "ratio", "允许进入 Tracker 和控制链的最低检测置信度。"),
     "control.target_switch_delay_ms": _spec("control.target_switch_delay_ms", "目标切换延迟", 50.0, 0.0, 500.0, 1.0, "ms", "新目标持续满足切换条件后才提交切换的时间。"),
-    "control.lost_target_timeout_ms": _spec("control.lost_target_timeout_ms", "目标丢失超时", 120.0, 0.0, 200.0, 1.0, "ms", "短时漏检时允许 Kalman 维持目标的最长时间。"),
     "control.calibrated_angular.fov_x_deg": _spec("control.calibrated_angular.fov_x_deg", "水平 FOVX", 105.0, 30.0, 179.0, 0.1, "deg", "完整控制投影空间的水平视场角。"),
     "control.calibrated_angular.counts_per_360_x": _spec("control.calibrated_angular.counts_per_360_x", "水平每圈 counts", 9980.0, 1.0, 100000.0, 1.0, "counts", "X 轴旋转一整圈对应的设备 counts。"),
     "control.calibrated_angular.counts_per_360_y": _spec("control.calibrated_angular.counts_per_360_y", "垂直每圈 counts", 9980.0, 1.0, 100000.0, 1.0, "counts", "Y 轴旋转一整圈对应的设备 counts。"),

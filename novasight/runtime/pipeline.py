@@ -33,6 +33,7 @@ class PipelineStats:
 
 class RuntimePipeline:
     CAPTURE_NOT_STARTED_ERROR = "采集未启动，无法运行推理链路。"
+    INFERENCE_NOT_READY_ERROR = "推理模型未加载，无法启动实时控制主链。"
     GPU_PREPROCESSOR_NOT_READY_ERROR = (
         "NVMM TensorRT GPU preprocess is not ready; build the Jetson native "
         "preprocess library with `scripts/build_jetson_preprocess.sh` "
@@ -72,6 +73,7 @@ class RuntimePipeline:
         self._control_observation_window_ts_ns.clear()
         self._skipped_window_ts_ns.clear()
         self.stats = PipelineStats(started_at=time.time())
+        self._require_inference_ready()
         self._require_gpu_preprocessor_ready()
         self.runtime.running = True
         self._threads = [
@@ -145,6 +147,23 @@ class RuntimePipeline:
         message = f"{self.GPU_PREPROCESSOR_NOT_READY_ERROR} reason={reason}"
         if detail:
             message = f"{message}; detail={detail}"
+        self.stats.last_error = message
+        self.runtime.running = False
+        raise RuntimeError(message)
+
+    def _require_inference_ready(self) -> None:
+        if not self._inference_enabled():
+            return
+        inference = getattr(self.runtime, "inference", None)
+        status_fn = getattr(inference, "status", None)
+        if not callable(status_fn):
+            return
+        status = status_fn()
+        status = dict(status) if isinstance(status, dict) else {}
+        if status.get("loaded") is True:
+            return
+        reason = str(status.get("reason") or "no active TensorRT engine")
+        message = f"{self.INFERENCE_NOT_READY_ERROR} reason={reason}"
         self.stats.last_error = message
         self.runtime.running = False
         raise RuntimeError(message)

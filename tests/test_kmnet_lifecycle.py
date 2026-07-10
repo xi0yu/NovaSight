@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from novasight.api.app import (
+    _auto_restore_capture,
     _auto_connect_kmnet,
     _disconnect_kmnet,
     _start_auto_connect_kmnet,
@@ -89,6 +90,25 @@ class BlockingCapture:
         return SimpleNamespace(available=False)
 
 
+class AvailableCapture:
+    def configure(self, **_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            available=True,
+            profile=SimpleNamespace(pixel_format="MJPG", width=1920, height=1080, fps=120),
+        )
+
+
+class FakeRuntimePipeline:
+    running = False
+
+    def __init__(self) -> None:
+        self.start_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+        self.running = True
+
+
 class BlockingDriver:
     def __init__(self) -> None:
         self.init_started = threading.Event()
@@ -106,6 +126,38 @@ class MonitorFailureDriver:
 
     def monitor(self, _port: int) -> int:
         return 7
+
+
+class ButtonDriver:
+    def __init__(self) -> None:
+        self.left_reads = 0
+        self.right_reads = 0
+
+    def init(self, *_: object) -> int:
+        return 0
+
+    def monitor(self, _port: int) -> int:
+        return 0
+
+    def isdown_left(self) -> int:
+        self.left_reads += 1
+        return 1
+
+    def isdown_right(self) -> int:
+        self.right_reads += 1
+        return 0
+
+
+class BlockingButtonDriver(ButtonDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_started = threading.Event()
+        self.release_read = threading.Event()
+
+    def isdown_left(self) -> int:
+        self.read_started.set()
+        self.release_read.wait(timeout=2.0)
+        return super().isdown_left()
 
 
 class TimeoutDriverProcess:
@@ -186,8 +238,19 @@ def test_manual_disconnect_invalidates_inflight_connect_result() -> None:
     thread = executor._connect_thread
     if thread is not None:
         thread.join(timeout=1.0)
-
     assert executor.status()["connected"] is False
+
+
+def test_capture_restore_starts_existing_runtime_pipeline() -> None:
+    config = RuntimeConfig()
+    config.source.default = "capture"
+    pipeline = FakeRuntimePipeline()
+    runtime = SimpleNamespace(pipeline=pipeline)
+
+    _auto_restore_capture(AvailableCapture(), config, runtime)  # type: ignore[arg-type]
+
+    assert pipeline.start_calls == 1
+    assert pipeline.running is True
 
 
 def test_monitor_failure_does_not_hide_successful_device_connection() -> None:
@@ -205,6 +268,59 @@ def test_monitor_failure_does_not_hide_successful_device_connection() -> None:
     assert status["last_driver_call"] == "monitor"
     assert status["last_driver_rc"] == 7
     assert "monitor failed" in str(status["last_error"])
+
+
+def test_button_value_one_means_pressed_instead_of_driver_failure() -> None:
+    executor = KmNetExecutor(
+        host="192.0.2.1",
+        port=8888,
+        uuid="test",
+        monitor_port=5001,
+        button_poll_interval_s=0.050,
+    )
+    driver = ButtonDriver()
+    executor._driver = driver
+    executor._driver_process = None
+
+    executor.connect()
+    deadline = time.monotonic() + 0.5
+    while not executor.read_buttons()["available"] and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    try:
+        buttons = executor.read_buttons()
+        assert buttons["available"] is True
+        assert buttons["left"] is True
+        assert buttons["right"] is False
+        assert buttons["reason"] == ""
+    finally:
+        executor.disconnect()
+
+
+def test_read_buttons_returns_cached_state_without_waiting_for_driver() -> None:
+    executor = KmNetExecutor(
+        host="192.0.2.1",
+        port=8888,
+        uuid="test",
+        monitor_port=5001,
+    )
+    driver = BlockingButtonDriver()
+    executor._driver = driver
+    executor._driver_process = None
+
+    executor.connect()
+    assert driver.read_started.wait(timeout=0.2)
+
+    started_at = time.monotonic()
+    buttons = executor.read_buttons()
+    elapsed_s = time.monotonic() - started_at
+
+    driver.release_read.set()
+    executor.disconnect()
+
+    assert elapsed_s < 0.020
+    assert buttons["available"] is False
+    assert "awaiting first" in str(buttons["reason"])
 
 
 def test_init_timeout_reports_exact_connection_failure_stage() -> None:

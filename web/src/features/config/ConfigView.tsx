@@ -29,10 +29,8 @@ const DANGEROUS_CONFIG_PATHS = new Set([
   "capture.width",
   "capture.height",
   "capture.fps",
-  "hardware.kind",
   "hardware.host",
-  "hardware.port",
-  "hardware.serial_port"
+  "hardware.port"
 ]);
 
 export function getConfigValue(config: RuntimeConfig, path: string): ConfigValue {

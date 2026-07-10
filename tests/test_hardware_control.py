@@ -1,7 +1,6 @@
-"""Tests for hardware heartbeat, the mouse controller route, and command dispatch.
+"""Tests for the mouse controller route and command dispatch.
 
 Each test focuses on one observable contract:
-- Heartbeat suspends after a stale window.
 - RuntimeService owns the only production mouse-control route.
 - ExecutorRegistry must route production output through CommandScheduler
   before any device call.
@@ -18,10 +17,9 @@ from novasight.control import (
     CommandScheduler,
     ControlOutput,
 )
-from novasight.executors import ExecutorRegistry
+from novasight.executors import ExecutionResult, ExecutorRegistry
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.executors.kmnet_loader import KmNetLoadResult
-from novasight.hardware import HardwareHeartbeat
 from novasight.runtime import CONTROL_FRAME_FIELDS, RuntimeService, run_replay_acceptance
 
 
@@ -57,16 +55,6 @@ def _output(
     )
 
 
-def test_hardware_heartbeat_suspends_after_timeout() -> None:
-    heartbeat = HardwareHeartbeat(timeout_s=0.05)
-
-    assert heartbeat.should_suspend(now_s=1.0) is True
-    heartbeat.mark_seen(now_s=1.0)
-
-    assert heartbeat.should_suspend(now_s=1.02) is False
-    assert heartbeat.should_suspend(now_s=1.10) is True
-
-
 def test_removed_control_routes_are_not_importable() -> None:
     for module_name in (
         "novasight.control.angular",
@@ -86,13 +74,19 @@ def test_removed_control_routes_are_not_importable() -> None:
             raise AssertionError(f"legacy module still importable: {module_name}")
 
 
-def test_current_hardware_public_api_exposes_only_kmnet_runtime_adapter() -> None:
-    hardware_module = importlib.import_module("novasight.hardware")
-
-    assert "KmboxNetAdapter" in hardware_module.__all__
-    assert "create_hardware_box" in hardware_module.__all__
-    assert "MAKCUAdapter" not in hardware_module.__all__
-    assert not hasattr(hardware_module, "MAKCUAdapter")
+def test_removed_parallel_hardware_adapter_is_not_importable() -> None:
+    for module_name in (
+        "novasight.hardware.kmbox_net",
+        "novasight.hardware.factory",
+        "novasight.hardware.heartbeat",
+        "novasight.hardware.makcu",
+    ):
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            assert exc.name == module_name
+        else:
+            raise AssertionError(f"parallel hardware path still importable: {module_name}")
 
 
 def test_executor_registry_requires_scheduler_before_device_send() -> None:
@@ -118,6 +112,75 @@ def test_executor_registry_requires_scheduler_before_device_send() -> None:
     assert result.sent is False
     assert result.message == "command scheduler required"
     assert result.metadata["stage"] == "scheduler_required"
+    assert fake.calls == 0
+
+
+def test_new_observation_only_replaces_plan_and_scheduler_tick_owns_send() -> None:
+    class FakeExecutor:
+        executor_id = "kmnet"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def available(self) -> bool:
+            return True
+
+        def execute(self, output: ControlOutput) -> ExecutionResult:
+            self.calls += 1
+            return ExecutionResult(
+                executor_id=self.executor_id,
+                sent=True,
+                intent=output,
+                message="sent",
+            )
+
+    fake = FakeExecutor()
+    registry = ExecutorRegistry(
+        [fake],
+        default="kmnet",
+        scheduler=CommandScheduler(min_interval_s=0.0),
+    )
+
+    submitted = registry.execute(_intent(4, 2))
+
+    assert submitted.sent is False
+    assert submitted.message == "control command scheduled"
+    assert fake.calls == 0
+    assert registry.status()["scheduler"]["has_pending"] is True
+
+    sent = registry.tick_pending()
+
+    assert sent.sent is True
+    assert fake.calls == 1
+
+
+def test_zero_movement_never_reaches_kmnet_executor() -> None:
+    class FakeExecutor:
+        executor_id = "kmnet"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def available(self) -> bool:
+            return True
+
+        def execute(self, output: ControlOutput) -> ExecutionResult:
+            self.calls += 1
+            return ExecutionResult(self.executor_id, True, output)
+
+    fake = FakeExecutor()
+    registry = ExecutorRegistry(
+        [fake],
+        default="kmnet",
+        scheduler=CommandScheduler(min_interval_s=0.0),
+    )
+
+    result = registry.execute(_intent(0, 0))
+
+    assert result.sent is False
+    assert result.message == "zero control command ignored"
+    assert result.metadata["action"] == "zero_output"
+    assert registry.status()["scheduler"]["has_pending"] is False
     assert fake.calls == 0
 
 
@@ -204,7 +267,9 @@ def test_runtime_service_production_control_contract_is_static() -> None:
     assert "ControllerFactory" in mouse_source
     assert "RawAimPointProjector" in observation_source
 
-    submit_index = executor_source.index("decision = self.scheduler.submit(bounded)")
+    submit_index = executor_source.index(
+        "decision = self.scheduler.submit(bounded, emit_immediately=False)"
+    )
     send_index = executor_source.index("self.executors[self.selected].execute(bounded)")
     assert submit_index < send_index
     assert "command scheduler required" in executor_source

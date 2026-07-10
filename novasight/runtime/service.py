@@ -22,8 +22,7 @@ from novasight.control import (
     plan_step_capacity,
     target_motion_estimate_from_debug,
 )
-from novasight.executors import ExecutorRegistry
-from novasight.hardware import BoxInputState
+from novasight.executors import BoxInputState, ExecutorRegistry
 from novasight.inference import InferenceResult
 from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.model_registry import ModelRegistry
@@ -49,7 +48,6 @@ class RuntimeService:
         config: RuntimeConfig,
         models: ModelRegistry,
         executors: ExecutorRegistry,
-        hardware: Any | None = None,
         capture: Any | None = None,
         inference: Any | None = None,
         recorder: Any | None = None,
@@ -57,7 +55,6 @@ class RuntimeService:
         self.config = config
         self.models = models
         self.executors = executors
-        self.hardware = hardware
         self.capture = capture
         self.inference = inference
         self.recorder = recorder
@@ -322,7 +319,7 @@ class RuntimeService:
         calibrated = self.config.control.calibrated_angular
         shared = self.config.control.shared
         mode = self.config.control.mode
-        selected_executor = getattr(self.executors, "selected", None) or self.config.control.output_mode
+        selected_executor = getattr(self.executors, "selected", None) or "kmnet"
         logger.info(
             "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
@@ -452,7 +449,8 @@ class RuntimeService:
                 self._reset_control_motion_state()
                 self._clear_pending_commands("TRIGGER_INACTIVE")
                 return self._empty_runtime_frame_result()
-            result = tick_pending()
+        result = tick_pending()
+        with self._control_lock:
             self._last_control_tick_ns = time.monotonic_ns()
             self._record_executed_control(result)
             if str(result.message) == "no pending control command ready":
@@ -1674,11 +1672,8 @@ class RuntimeService:
             predicted_source=predicted_source,
             trajectory_generation=trajectory_generation,
         )
-        output_mode = str(
-            getattr(self.config.control, "output_mode", "")
-            or getattr(getattr(self.config, "executor", None), "default", "")
-        )
-        hardware_kind = str(getattr(getattr(self.config, "hardware", None), "kind", "none"))
+        output_mode = str(getattr(self.executors, "selected", "kmnet") or "kmnet")
+        hardware_kind = "kmnet"
         requires_trigger = trigger_mode != "always"
         control_allowed = bool(pipeline_debug.get("control_allowed", True))
         calibration_status = self._calibration_fingerprint_status()
@@ -1800,10 +1795,14 @@ class RuntimeService:
         return intent if can_emit else None
 
     def _clear_pending_commands(self, reason: str) -> None:
-        scheduler = getattr(self.executors, "scheduler", None)
-        clear = getattr(scheduler, "clear", None)
+        clear = getattr(self.executors, "clear_scheduler", None)
         if callable(clear):
             clear(reason)
+            return
+        scheduler = getattr(self.executors, "scheduler", None)
+        fallback_clear = getattr(scheduler, "clear", None)
+        if callable(fallback_clear):
+            fallback_clear(reason)
 
     def cancel_control(self, reason: str = "RUNTIME_STOPPED") -> None:
         with self._control_lock:
@@ -1973,7 +1972,35 @@ class RuntimeService:
         )
 
     def _log_no_control_target(self, context: FrameContext, selection: TargetSelection) -> None:
-        return
+        selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
+        diagnostics = self._target_pipeline_diagnostics(
+            selection=selection,
+            selector_debug=selector_debug,
+        )
+        signature = "|".join(
+            (
+                str(diagnostics["code"]),
+                str(diagnostics["stage"]),
+                ",".join(diagnostics["rejection_reasons"]),
+            )
+        )
+        if not self._should_log(
+            "_last_no_target_log_signature",
+            "_last_no_target_log_s",
+            signature,
+            interval_s=2.0,
+        ):
+            return
+        logger.warning(
+            "target pipeline blocked frame=%s code=%s stage=%s message=%s counts=%s "
+            "rejection_reasons=%s",
+            context.frame_id,
+            diagnostics["code"],
+            diagnostics["stage"],
+            diagnostics["message"],
+            diagnostics["counts"],
+            diagnostics["rejection_reasons"],
+        )
 
     def _log_box_input_state(self, state: BoxInputState, source: str) -> None:
         raw = getattr(state, "raw", {}) or {}
@@ -2081,10 +2108,6 @@ class RuntimeService:
         return result
 
     def _box_input_state(self) -> BoxInputState:
-        if str(getattr(getattr(self.config, "hardware", None), "kind", "none")).lower() != "kmnet":
-            state = BoxInputState(raw={"source": "kmnet_executor", "reason": "kmNet hardware is required"})
-            self._log_box_input_state(state, "kmnet_required")
-            return state
         button_reader = getattr(self.executors, "read_buttons", None)
         buttons: dict[str, Any] | None = None
         if callable(button_reader):
@@ -2351,18 +2374,159 @@ class RuntimeService:
 
     @classmethod
     def _candidate_filter_payload(cls, selector_debug: dict[str, Any]) -> dict[str, Any]:
-        candidates = selector_debug.get("candidates")
-        rejected = selector_debug.get("rejected")
+        tracked_filter = selector_debug.get("tracked_filter")
+        effective = tracked_filter if isinstance(tracked_filter, dict) else selector_debug
+        candidates = effective.get("candidates")
+        rejected = effective.get("rejected")
         selected = selector_debug.get("selected")
         return {
             "raw_candidates": cls._debug_int(selector_debug, "raw_candidates"),
-            "filtered_candidates": cls._debug_int(selector_debug, "filtered_candidates"),
-            "inside_fov": cls._debug_int(selector_debug, "inside_fov"),
-            "rejected_candidates": cls._debug_int(selector_debug, "rejected_candidates"),
+            "basic_filtered_candidates": cls._debug_int(selector_debug, "filtered_candidates"),
+            "filtered_candidates": cls._debug_int(effective, "filtered_candidates"),
+            "inside_fov": cls._debug_int(effective, "inside_fov"),
+            "rejected_candidates": cls._debug_int(effective, "rejected_candidates"),
             "candidates": cls._debug_dict_list(candidates),
             "rejected": cls._debug_dict_list(rejected),
             "selected": dict(selected) if isinstance(selected, dict) else None,
             "reason": str(selector_debug.get("reason") or ""),
+            "basic": {
+                "raw_candidates": cls._debug_int(selector_debug, "raw_candidates"),
+                "filtered_candidates": cls._debug_int(selector_debug, "filtered_candidates"),
+                "rejected_candidates": cls._debug_int(selector_debug, "rejected_candidates"),
+                "rejected": cls._debug_dict_list(selector_debug.get("rejected")),
+            },
+            "tracked": dict(tracked_filter) if isinstance(tracked_filter, dict) else None,
+        }
+
+    def _target_pipeline_diagnostics(
+        self,
+        *,
+        selection: TargetSelection | None = None,
+        selector_debug: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        inference = dict(self.last_inference_status or {})
+        debug = inference.get("debug")
+        debug = debug if isinstance(debug, dict) else {}
+        decode = debug.get("decode")
+        decode = decode if isinstance(decode, dict) else {}
+        control = dict(self.last_control or {})
+        current_selector_debug = selector_debug
+        if current_selector_debug is None:
+            stored_selector = control.get("selector_debug")
+            current_selector_debug = stored_selector if isinstance(stored_selector, dict) else {}
+        candidate = self._candidate_filter_payload(current_selector_debug)
+        tracker = current_selector_debug.get("tracker")
+        tracker = tracker if isinstance(tracker, dict) else {}
+        rejection_reasons = sorted(
+            {
+                str(item.get("reason"))
+                for item in candidate["rejected"]
+                if isinstance(item, dict) and item.get("reason")
+            }
+        )
+        counts = {
+            "decode_raw_candidates": self._debug_int(decode, "raw_candidates"),
+            "threshold_candidates": self._debug_int(decode, "threshold_candidates"),
+            "nms_detections": self._debug_int(decode, "nms_detections"),
+            "raw_detections": self._debug_int(inference, "raw_detections"),
+            "mapped_detections": self._debug_int(inference, "mapped_detections"),
+            "basic_candidates": int(candidate["basic"]["filtered_candidates"]),
+            "tracker_active": self._debug_int(tracker, "active_tracks"),
+            "tracker_lost": self._debug_int(tracker, "lost_track_count"),
+            "filtered_candidates": int(candidate["filtered_candidates"]),
+            "inside_fov": int(candidate["inside_fov"]),
+        }
+        selection_reason = (
+            str(selection.reason)
+            if selection is not None
+            else str(control.get("selection_reason") or candidate["reason"] or "")
+        )
+
+        if inference.get("ran") is not True and inference.get("source") != "detection_batch":
+            code, stage, message = "INFERENCE_NOT_RUN", "inference", str(
+                inference.get("reason") or "inference has not run"
+            )
+        elif inference.get("available") is not True:
+            code, stage, message = "INFERENCE_UNAVAILABLE", "inference", str(
+                inference.get("reason") or "inference result is unavailable"
+            )
+        elif counts["mapped_detections"] <= 0:
+            if decode and counts["decode_raw_candidates"] <= 0:
+                code, stage, message = (
+                    "DECODE_EMPTY_OUTPUT",
+                    "inference_decode",
+                    str(decode.get("reason") or "model output contains no decode candidates"),
+                )
+            elif decode and counts["threshold_candidates"] <= 0:
+                max_score = decode.get("max_score")
+                code, stage, message = (
+                    "CONFIDENCE_THRESHOLD_REJECTED",
+                    "inference_decode",
+                    f"no model candidate passed confidence threshold; max_score={max_score}",
+                )
+            elif decode and counts["nms_detections"] <= 0:
+                code, stage, message = (
+                    "NMS_EMPTY",
+                    "inference_decode",
+                    str(decode.get("reason") or "no detection remained after NMS"),
+                )
+            else:
+                code, stage, message = (
+                    "NO_MAPPED_DETECTIONS",
+                    "detection_mapping",
+                    str(inference.get("reason") or "inference produced no mapped detections"),
+                )
+        elif counts["basic_candidates"] <= 0:
+            basic_rejections = candidate["basic"]["rejected"]
+            rejection_reasons = sorted(
+                {
+                    str(item.get("reason"))
+                    for item in basic_rejections
+                    if isinstance(item, dict) and item.get("reason")
+                }
+            )
+            code, stage, message = (
+                "BASIC_CANDIDATE_REJECTED",
+                "basic_filter",
+                selection_reason or "all detections were rejected by class, confidence, or bbox validation",
+            )
+        elif counts["tracker_active"] <= 0:
+            code, stage, message = (
+                "TRACKER_NO_ACTIVE",
+                "tracker",
+                str(tracker.get("reason") or selection_reason or "tracker produced no ACTIVE track"),
+            )
+        elif counts["filtered_candidates"] <= 0 or counts["inside_fov"] <= 0:
+            reason_codes = set(rejection_reasons)
+            if reason_codes == {"selection_fov"}:
+                code = "OUTSIDE_TARGET_FOV"
+            elif reason_codes == {"confidence_filter"}:
+                code = "CONTROL_CONFIDENCE_REJECTED"
+            elif reason_codes == {"class_filter"}:
+                code = "CONTROL_CLASS_REJECTED"
+            elif reason_codes == {"ratio_check"}:
+                code = "BBOX_RATIO_REJECTED"
+            elif reason_codes == {"invalid_bbox"}:
+                code = "INVALID_BBOX"
+            else:
+                code = "TARGET_FILTER_REJECTED"
+            stage, message = "target_filter", selection_reason or "all ACTIVE tracks were rejected"
+        elif self.last_target is not None or (selection is not None and selection.target is not None):
+            code, stage, message = "TARGET_SELECTED", "selected", selection_reason or "target selected"
+        else:
+            selector_state = str(
+                selection.state if selection is not None else control.get("selector_state") or ""
+            )
+            code = "TARGET_SWITCH_PENDING" if selector_state == "switch_pending" else "TARGET_UNAVAILABLE"
+            stage, message = "target_selection", selection_reason or "no target selected"
+
+        return {
+            "code": code,
+            "stage": stage,
+            "message": message,
+            "selection_reason": selection_reason,
+            "rejection_reasons": rejection_reasons,
+            "counts": counts,
         }
 
     def _track_diagnostics_payload(
@@ -2650,6 +2814,7 @@ class RuntimeService:
                 "target": None,
                 "control": None,
                 "execution": self.last_execution,
+                "target_pipeline": self._target_pipeline_diagnostics(),
                 "trace": self._business_trace(None),
             }
         return {
@@ -2667,6 +2832,7 @@ class RuntimeService:
             "target": self.last_target,
             "control": self.last_control,
             "execution": self.last_execution,
+            "target_pipeline": self._target_pipeline_diagnostics(),
             "trace": self._business_trace(context),
         }
 

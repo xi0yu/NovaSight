@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+import threading
 import time
 from typing import Any
 
@@ -32,6 +33,7 @@ class ExecutorRegistry:
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
         self.scheduler = scheduler
+        self._scheduler_lock = threading.Lock()
 
     @classmethod
     def with_builtin_executors(
@@ -55,18 +57,25 @@ class ExecutorRegistry:
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
         return cls.with_builtin_executors(
             config=config,
-            default=config.control.output_mode or config.executor.default,
+            default="kmnet",
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
-        selected = config.control.output_mode or config.executor.default
+        selected = "kmnet"
         if selected not in self.executors:
             raise ValueError(f"unknown executor: {selected}")
         self.selected = selected
         self.policy = policy_from_config(config)
-        self.scheduler = scheduler_from_config(config)
+        kmnet = self.executors.get("kmnet")
+        if isinstance(kmnet, KmNetExecutor):
+            kmnet.button_poll_interval_s = max(
+                0.001,
+                min(0.050, float(config.control.scheduler_interval_ms) / 1000.0),
+            )
+        with self._scheduler_lock:
+            self.scheduler = scheduler_from_config(config)
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
         bounded = self.policy.apply(intent)
@@ -85,14 +94,20 @@ class ExecutorRegistry:
                 },
             )
         scheduler_metadata: dict[str, Any] | None = None
-        decision = self.scheduler.submit(bounded)
+        with self._scheduler_lock:
+            decision = self.scheduler.submit(bounded, emit_immediately=False)
         scheduler_metadata = decision.metadata
         if decision.output is None:
+            message = (
+                "zero control command ignored"
+                if scheduler_metadata.get("action") == "zero_output"
+                else "control command scheduled"
+            )
             return ExecutionResult(
                 executor_id=self.selected,
                 sent=False,
                 intent=bounded,
-                message="control command scheduled",
+                message=message,
                 metadata={
                     "stage": "scheduler",
                     "selected_executor": self.selected,
@@ -169,7 +184,8 @@ class ExecutorRegistry:
                     "selected_executor": self.selected,
                 },
             )
-        decision = self.scheduler.tick(now_s=now_s)
+        with self._scheduler_lock:
+            decision = self.scheduler.tick(now_s=now_s)
         scheduler_metadata = decision.metadata
         if decision.output is None:
             return ExecutionResult(
@@ -186,11 +202,12 @@ class ExecutorRegistry:
         device_send_start_ts_ns = time.monotonic_ns()
         result = self.executors[self.selected].execute(decision.output)
         device_send_end_ts_ns = time.monotonic_ns()
-        scheduler_execution_metadata = self.scheduler.record_execution_result(
-            sent=bool(result.sent),
-            message=str(result.message),
-            now_s=now_s,
-        )
+        with self._scheduler_lock:
+            scheduler_execution_metadata = self.scheduler.record_execution_result(
+                sent=bool(result.sent),
+                message=str(result.message),
+                now_s=now_s,
+            )
         metadata = dict(result.metadata or {})
         metadata.update(
             {
@@ -221,7 +238,7 @@ class ExecutorRegistry:
 
         return {
             "selected": self.selected,
-            "scheduler": self.scheduler.status() if self.scheduler is not None else {"enabled": False},
+            "scheduler": self._scheduler_status(),
             "executors": {
                 executor_id: executor_status(executor)
                 for executor_id, executor in self.executors.items()
@@ -234,6 +251,15 @@ class ExecutorRegistry:
         if not callable(reader):
             return {"available": False, "left": False, "right": False, "reason": "kmNet executor is unavailable"}
         return reader()
+
+    def clear_scheduler(self, reason: str) -> None:
+        with self._scheduler_lock:
+            if self.scheduler is not None:
+                self.scheduler.clear(reason)
+
+    def _scheduler_status(self) -> dict[str, Any]:
+        with self._scheduler_lock:
+            return self.scheduler.status() if self.scheduler is not None else {"enabled": False}
 
 
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:

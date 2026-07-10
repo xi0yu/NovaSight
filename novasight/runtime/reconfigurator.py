@@ -7,7 +7,6 @@ from typing import Any
 from novasight.config import RuntimeConfig, save_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.executors import ExecutorRegistry
-from novasight.hardware import create_hardware_box
 from novasight.inference.jetson import create_gpu_resource_preprocessor
 from novasight.runtime.pipeline import RuntimePipeline
 
@@ -257,24 +256,20 @@ class RuntimeReconfigurator:
         if current_executors is not None and not hardware_changed:
             current_executors.update_runtime_config(config)
             next_executors = current_executors
-            next_hardware = getattr(self.app.state, "hardware", None)
         else:
             next_executors = ExecutorRegistry.from_config(config)
-            next_hardware = create_hardware_box(config)
         self.app.state.config = config
         self.app.state.capture.config = config.capture
         self.app.state.capture.roi_size = config.roi.size
         self.app.state.capture.roi_offset_x = config.roi.offset_x
         self.app.state.capture.roi_offset_y = config.roi.offset_y
         self.app.state.executors = next_executors
-        self.app.state.hardware = next_hardware
         self.app.state.inference.configure(
             confidence_threshold=config.inference.confidence_threshold,
             nms_threshold=config.inference.nms_threshold,
             gpu_preprocessor=create_gpu_resource_preprocessor(config),
         )
         self.app.state.runtime.executors = self.app.state.executors
-        self.app.state.runtime.hardware = self.app.state.hardware
         self.app.state.runtime.update_config(config)
 
     def _rollback(
@@ -307,8 +302,7 @@ class RuntimeReconfigurator:
         if previous_config is None:
             return True
         return (
-            previous_config.hardware.kind != config.hardware.kind
-            or previous_config.hardware.host != config.hardware.host
+            previous_config.hardware.host != config.hardware.host
             or previous_config.hardware.port != config.hardware.port
             or previous_config.hardware.uuid != config.hardware.uuid
             or previous_config.hardware.monitor_port != config.hardware.monitor_port
