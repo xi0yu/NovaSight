@@ -32,7 +32,6 @@ from novasight.roi import center_roi_frame, center_roi_region
 from .config_store import RuntimeConfigStore
 from .control_timing import ControlTimingModel
 from .state import RuntimeFrameResult, RuntimeState
-from .candidates import aim_point
 from .detection_batch import detection_batch_to_frame_context
 from .freshness import FreshnessGate
 from .recorder import build_control_frame_record
@@ -95,6 +94,10 @@ class RuntimeService:
         self._log_production_control_chain("startup")
 
     def state(self) -> RuntimeState:
+        with self._control_lock:
+            inference_observation = dict(self.last_inference_status)
+            pipeline_timings = dict(self.last_pipeline_timings)
+            vision = self._vision_status()
         capture_state = getattr(self, "capture", None)
         inference_state = getattr(self, "inference", None)
         active_model = self._active_model()
@@ -129,18 +132,18 @@ class RuntimeService:
         latest_frame_age_ms = self._latest_frame_age_ms()
         if latest_frame_age_ms is not None:
             statistics["latest_frame_age_ms"] = latest_frame_age_ms
-        if isinstance(self.last_inference_status, dict):
-            statistics["batch_age_ms"] = float(self.last_inference_status.get("frame_age_ms") or 0.0)
-            statistics["preprocess_ms"] = float(self.last_inference_status.get("preprocess_ms") or 0.0)
-            statistics["h2d_ms"] = float(self.last_inference_status.get("h2d_ms") or 0.0)
+        if inference_observation:
+            statistics["batch_age_ms"] = float(inference_observation.get("frame_age_ms") or 0.0)
+            statistics["preprocess_ms"] = float(inference_observation.get("preprocess_ms") or 0.0)
+            statistics["h2d_ms"] = float(inference_observation.get("h2d_ms") or 0.0)
             statistics["host_frame_copy_ms"] = float(
-                self.last_inference_status.get("frame_copy_cost_ms")
-                or self.last_inference_status.get("frame_userspace_process_ms")
+                inference_observation.get("frame_copy_cost_ms")
+                or inference_observation.get("frame_userspace_process_ms")
                 or 0.0
             )
-        for key, value in self.last_pipeline_timings.items():
+        for key, value in pipeline_timings.items():
             statistics[f"stage_{key}"] = value
-        statistics["postprocess_ms"] = float(self.last_pipeline_timings.get("postprocess_ms", 0.0))
+        statistics["postprocess_ms"] = float(pipeline_timings.get("postprocess_ms", 0.0))
         if capture_payload:
             capture_payload["statistics"] = statistics
         return RuntimeState(
@@ -153,7 +156,7 @@ class RuntimeService:
             inference=self._runtime_inference_status(inference_state, active_model),
             config=self.config_store.status(),
             pipeline=self.pipeline.status() if self.pipeline is not None else {},
-            vision=self._vision_status(),
+            vision=vision,
             fatal_error=self.fatal_error,
         )
 
@@ -1877,7 +1880,15 @@ class RuntimeService:
     @staticmethod
     def _global_state_from_selection_state(state: Any) -> str:
         normalized = str(state or "").strip().lower()
-        if normalized in {"fresh", "locked", "acquire", "acquiring", "switch_committed", "committed_initial"}:
+        if normalized in {
+            "fresh",
+            "locked",
+            "acquire",
+            "acquiring",
+            "switch_hold",
+            "switch_committed",
+            "committed_initial",
+        }:
             return "TRACKING"
         if normalized in {"target_unavailable", "missing", "no_target", "reacquire", "lost", "switch_pending"}:
             return "TARGET_UNAVAILABLE"

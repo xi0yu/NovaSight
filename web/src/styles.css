@@ -5013,6 +5013,7 @@ tbody tr:hover {
   min-width: 8px;
   min-height: 8px;
   border-radius: 7px;
+  transition: left 50ms linear, top 50ms linear, width 50ms linear, height 50ms linear;
 }
 
 .console-detection-box.primary {

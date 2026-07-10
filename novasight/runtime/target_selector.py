@@ -350,6 +350,33 @@ class RuntimeTargetSelector:
             )
             self.last_debug["switch"] = switch
             if not switch["committed"]:
+                if locked is not None:
+                    locked_scored = scored_by_id.get(id(locked))
+                    self._remember(locked)
+                    if locked_scored is not None:
+                        self.last_debug["selected"] = candidate_debug(locked_scored)
+                    self.last_debug["selected_key"] = self._target_key(locked)
+                    return TargetSelection(
+                        target=locked,
+                        state="switch_hold",
+                        reason=switch["reason"],
+                        candidates=len(candidates),
+                        inside_fov=track_filter_result.inside_fov_count,
+                        locked=True,
+                        lost_count=self._lost_count,
+                        priority_rank=self._priority_rank(locked, priority),
+                        distance_px=self._aim_distance(
+                            locked,
+                            center_x,
+                            center_y,
+                            aim_ratio,
+                        ),
+                        quality_score=(
+                            locked_scored.quality.quality_score
+                            if locked_scored is not None
+                            else None
+                        ),
+                    )
                 return TargetSelection(
                     target=None,
                     state="switch_pending",

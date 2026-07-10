@@ -294,3 +294,87 @@ def test_target_selector_never_controls_lost_track() -> None:
     assert recovered.target is not None
     assert recovered.target.track_id == 1
     assert selector.last_debug["tracker"]["restored_track_ids"] == [1]
+
+
+def test_initial_target_is_committed_without_switch_delay() -> None:
+    selector = RuntimeTargetSelector()
+    context = _context(
+        1,
+        1_000_000_000,
+        [Detection(0, 0.9, x=300, y=240, w=40, h=100)],
+    )
+
+    selection = selector.select(
+        context,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        target_switch_delay_ms=500,
+    )
+
+    assert selection.target is not None
+    assert selection.state == "acquire"
+    assert selection.reason == "initial target committed"
+
+
+def test_switch_debounce_keeps_valid_locked_target_until_challenger_commits() -> None:
+    selector = RuntimeTargetSelector()
+    first = _context(
+        1,
+        1_000_000_000,
+        [Detection(0, 0.90, x=280, y=240, w=40, h=100)],
+    )
+    challenger = _context(
+        2,
+        1_020_000_000,
+        [
+            Detection(0, 0.90, x=280, y=240, w=40, h=100),
+            Detection(1, 0.95, x=300, y=240, w=40, h=100),
+        ],
+    )
+    committed_challenger = _context(
+        3,
+        1_140_000_000,
+        [
+            Detection(0, 0.90, x=280, y=240, w=40, h=100),
+            Detection(1, 0.95, x=300, y=240, w=40, h=100),
+        ],
+    )
+
+    initial = selector.select(
+        first,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        class_priority=[1, 0],
+        target_switch_delay_ms=100,
+    )
+    pending = selector.select(
+        challenger,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        class_priority=[1, 0],
+        target_switch_min_preference_advantage=0.0,
+        target_switch_min_continuity_score=0.0,
+        target_switch_delay_ms=100,
+    )
+    committed = selector.select(
+        committed_challenger,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        class_priority=[1, 0],
+        target_switch_min_preference_advantage=0.0,
+        target_switch_min_continuity_score=0.0,
+        target_switch_delay_ms=100,
+    )
+
+    assert initial.target is not None
+    assert pending.target is not None
+    assert pending.target.track_id == initial.target.track_id
+    assert pending.state == "switch_hold"
+    assert pending.locked is True
+    assert committed.target is not None
+    assert committed.target.track_id != initial.target.track_id
+    assert committed.state == "switch_committed"

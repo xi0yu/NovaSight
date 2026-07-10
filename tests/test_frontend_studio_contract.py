@@ -55,6 +55,15 @@ def test_studio_mainline_preview_uses_capture_stream_image() -> None:
     assert '{showImage ? <img alt="实时画面 / ROI"' in source
 
 
+def test_studio_preview_holds_one_transient_miss_and_keeps_box_nodes_stable() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert "PREVIEW_OVERLAY_HOLD_MS = 100" in source
+    assert "useStablePreviewOverlay" in source
+    assert 'key={`box-${item.index}-${item.className}`}' in source
+    assert 'key={`box-${item.index}-${item.x}-${item.y}`}' not in source
+
+
 def test_dashboard_mainline_preview_uses_capture_stream_image() -> None:
     source = DASHBOARD_VIEW.read_text(encoding="utf-8")
 

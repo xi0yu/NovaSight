@@ -3416,6 +3416,31 @@ type PreviewDetection = {
   index: number;
 };
 
+const PREVIEW_OVERLAY_HOLD_MS = 100;
+
+type PreviewOverlaySnapshot = {
+  detections: PreviewDetection[];
+  target: Record<string, unknown>;
+  updatedAtMs: number;
+};
+
+function useStablePreviewOverlay(
+  detections: PreviewDetection[],
+  target: Record<string, unknown>
+): { detections: PreviewDetection[]; target: Record<string, unknown> } {
+  const snapshotRef = useRef<PreviewOverlaySnapshot | null>(null);
+  const nowMs = Date.now();
+  if (detections.length > 0) {
+    snapshotRef.current = { detections, target, updatedAtMs: nowMs };
+    return { detections, target };
+  }
+  const previous = snapshotRef.current;
+  if (previous !== null && nowMs - previous.updatedAtMs <= PREVIEW_OVERLAY_HOLD_MS) {
+    return { detections: previous.detections, target: previous.target };
+  }
+  return { detections, target };
+}
+
 function readPreviewDetections(value: unknown): PreviewDetection[] {
   if (!Array.isArray(value)) {
     return [];
@@ -3468,8 +3493,11 @@ function PreviewFrame({
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
-  const detections = readPreviewDetections(vision.detection_items);
-  const target = asRecord(vision.target);
+  const liveDetections = readPreviewDetections(vision.detection_items);
+  const liveTarget = asRecord(vision.target);
+  const overlay = useStablePreviewOverlay(liveDetections, liveTarget);
+  const detections = overlay.detections;
+  const target = overlay.target;
   const targetDetectionIndex = readNullableNumber(target.target_detection_index);
   const targetCx = readNullableNumber(target.cx);
   const targetCy = readNullableNumber(target.cy);
@@ -3499,7 +3527,7 @@ function PreviewFrame({
                 return (
                   <line
                     className={selected ? "primary" : "secondary"}
-                    key={`line-${item.index}-${item.x}-${item.y}`}
+                    key={`line-${item.index}-${item.className}`}
                     x1={centerX}
                     y1={centerY}
                     x2={clampNumber(endX, 0, previewWidth)}
@@ -3514,7 +3542,7 @@ function PreviewFrame({
               return (
                 <span
                   className={selected ? "console-detection-box primary" : "console-detection-box secondary"}
-                  key={`box-${item.index}-${item.x}-${item.y}`}
+                  key={`box-${item.index}-${item.className}`}
                   style={{
                     left: percent(item.x, previewWidth),
                     top: percent(item.y, previewHeight),
