@@ -297,6 +297,27 @@ def test_button_value_one_means_pressed_instead_of_driver_failure() -> None:
         executor.disconnect()
 
 
+def test_button_poll_logging_only_reports_trigger_activation(caplog) -> None:
+    executor = KmNetExecutor()
+
+    with caplog.at_level("INFO", logger="novasight.executors.kmnet"):
+        executor._record_buttons(True, False, False, "", raw={"sample": "idle"})
+        executor._record_buttons(True, False, False, "", raw={"sample": "idle"})
+        executor._record_buttons(True, True, False, "", raw={"sample": "left"})
+        executor._record_buttons(True, True, False, "", raw={"sample": "left"})
+        executor._record_buttons(True, False, False, "", raw={"sample": "idle"})
+        executor._record_buttons(True, True, False, "", raw={"sample": "left"})
+
+    trigger_logs = [
+        record
+        for record in caplog.records
+        if record.name == "novasight.executors.kmnet"
+        and record.getMessage().startswith("kmNet trigger active")
+    ]
+    assert len(trigger_logs) == 2
+    assert all("left=True right=False" in record.getMessage() for record in trigger_logs)
+
+
 def test_read_buttons_returns_cached_state_without_waiting_for_driver() -> None:
     executor = KmNetExecutor(
         host="192.0.2.1",

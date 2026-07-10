@@ -57,8 +57,6 @@ class KmNetExecutor:
         self.last_button_sample_ts_ns = 0
         self.last_button_poll_ts_ns = 0
         self.button_poll_interval_s = max(0.001, min(0.050, float(button_poll_interval_s)))
-        self._last_button_log_signature = ""
-        self._last_button_log_s = 0.0
         self._button_state_lock = threading.Lock()
         self._button_poll_stop = threading.Event()
         self._button_poll_thread: threading.Thread | None = None
@@ -175,9 +173,13 @@ class KmNetExecutor:
         *,
         raw: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        now = time.monotonic()
         now_ns = time.monotonic_ns()
         with self._button_state_lock:
+            previous_left = bool(self.last_button_left)
+            previous_right = bool(self.last_button_right)
+            previous_trigger_active = bool(
+                self.last_button_available and (previous_left or previous_right)
+            )
             self.last_button_poll_ts_ns = now_ns
             self.last_button_available = bool(available)
             self.last_button_left = bool(left)
@@ -186,17 +188,15 @@ class KmNetExecutor:
             self.last_button_raw = dict(raw or {})
             if available:
                 self.last_button_sample_ts_ns = now_ns
-            signature = (
-                f"available={available}|left={left}|right={right}|"
-                f"reason={reason}|raw={self.last_button_raw}"
+            trigger_active = bool(available and (left or right))
+            should_log = bool(
+                trigger_active
+                and (
+                    not previous_trigger_active
+                    or bool(left) != previous_left
+                    or bool(right) != previous_right
+                )
             )
-            should_log = (
-                signature != self._last_button_log_signature
-                or now - self._last_button_log_s >= 1.0
-            )
-            if should_log:
-                self._last_button_log_signature = signature
-                self._last_button_log_s = now
             result = {
                 "available": bool(available),
                 "left": bool(left),
@@ -208,12 +208,10 @@ class KmNetExecutor:
             }
         if should_log:
             logger.info(
-                "kmNet buttons available=%s left=%s right=%s reason=%s raw=%s",
-                available,
+                "kmNet trigger active left=%s right=%s raw=%s",
                 left,
                 right,
-                reason or "",
-                self.last_button_raw,
+                result["raw"],
             )
         return result
 

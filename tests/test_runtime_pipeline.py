@@ -11,6 +11,7 @@ from novasight.capture.source import CapturedFrame, GstAppSinkFrameSource
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch, FrameContext
+from novasight.executors import BoxInputState
 from novasight.inference.contracts import InferenceResult
 from novasight.runtime import (
     FailFastHandler,
@@ -852,6 +853,76 @@ def test_target_pipeline_diagnostics_explain_selection_fov_rejection() -> None:
     assert diagnostics["counts"]["tracker_active"] == 1
     assert diagnostics["counts"]["inside_fov"] == 0
     assert diagnostics["rejection_reasons"] == ["selection_fov"]
+
+
+def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, monkeypatch) -> None:
+    monotonic_s = [100.0]
+    monkeypatch.setattr("novasight.runtime.service.time.monotonic", lambda: monotonic_s[0])
+    service = RuntimeService(
+        RuntimeConfig(),
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="kmnet",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+        ),
+    )
+    context = FrameContext(
+        frame_id=1,
+        width=640,
+        height=640,
+        capture_ts_ns=time.monotonic_ns(),
+        detections=[Detection(cls=0, score=0.9, x1=280, y1=240, x2=360, y2=400)],
+    )
+    target = context.detections[0]
+    command = SimpleNamespace(dx=4.0, dy=0.0, reason="test")
+
+    with caplog.at_level("INFO", logger="novasight.runtime.service"):
+        service._log_box_input_state(BoxInputState(), "hardware")
+        service._log_box_input_state(BoxInputState(), "hardware")
+        service._log_box_input_state(BoxInputState(left=True), "hardware")
+        monotonic_s[0] += 2.0
+        service._log_box_input_state(BoxInputState(left=True), "hardware")
+
+        service._log_control_decision(
+            context=context,
+            target=target,
+            command=command,
+            can_emit=False,
+            trigger_raw={"source": "kmnet_executor", "left": False, "right": False},
+            output_mode="kmnet",
+            hardware_kind="kmnet",
+            trigger_mode="hardware",
+        )
+        monotonic_s[0] += 2.0
+        service._log_control_decision(
+            context=context,
+            target=target,
+            command=command,
+            can_emit=False,
+            trigger_raw={"source": "kmnet_executor", "left": False, "right": False},
+            output_mode="kmnet",
+            hardware_kind="kmnet",
+            trigger_mode="hardware",
+        )
+        service._log_control_decision(
+            context=context,
+            target=target,
+            command=command,
+            can_emit=True,
+            trigger_raw={"source": "kmnet_executor", "left": True, "right": False},
+            output_mode="kmnet",
+            hardware_kind="kmnet",
+            trigger_mode="hardware",
+        )
+
+    box_logs = [record for record in caplog.records if record.getMessage().startswith("box input source=")]
+    decision_logs = [record for record in caplog.records if record.getMessage().startswith("control decision")]
+    assert len(box_logs) == 1
+    assert "active=True" in box_logs[0].getMessage()
+    assert len(decision_logs) == 2
+    assert "emit=False" in decision_logs[0].getMessage()
+    assert "emit=True" in decision_logs[1].getMessage()
 
 
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:

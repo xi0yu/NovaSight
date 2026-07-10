@@ -74,9 +74,8 @@ class RuntimeService:
             "reason": "推理尚未执行",
         }
         self._last_control_log_signature = ""
-        self._last_control_log_s = 0.0
         self._last_box_input_log_signature = ""
-        self._last_box_input_log_s = 0.0
+        self._last_no_target_log_signature = ""
         self._control_lock = threading.Lock()
         self._last_control_tick_ns = 0
         self._executed_control_samples: deque[tuple[int, int, int]] = deque()
@@ -1944,16 +1943,16 @@ class RuntimeService:
         trigger_mode: str,
     ) -> None:
         trigger_source = str(trigger_raw.get("source") or trigger_raw.get("mode") or trigger_raw.get("reason") or "")
+        target_key = self._control_target_key(target, context)
         signature = (
-            f"emit={can_emit}|out={output_mode}|hardware={hardware_kind}|"
+            f"target={target_key}|emit={can_emit}|out={output_mode}|hardware={hardware_kind}|"
             f"trigger={trigger_mode}|source={trigger_source}|"
             f"active={bool(trigger_raw.get('left') or trigger_raw.get('right') or trigger_raw.get('active'))}"
         )
-        now = time.monotonic()
-        if signature == self._last_control_log_signature and now - self._last_control_log_s < 1.0:
+        if signature == self._last_control_log_signature:
             return
         self._last_control_log_signature = signature
-        self._last_control_log_s = now
+        self._last_no_target_log_signature = ""
         logger.info(
             "control decision frame=%s age_ms=%.1f target_cls=%s score=%.3f dx=%.1f dy=%.1f emit=%s output=%s hardware=%s trigger=%s trigger_source=%s trigger_raw=%s reason=%s",
             context.frame_id,
@@ -1984,13 +1983,10 @@ class RuntimeService:
                 ",".join(diagnostics["rejection_reasons"]),
             )
         )
-        if not self._should_log(
-            "_last_no_target_log_signature",
-            "_last_no_target_log_s",
-            signature,
-            interval_s=2.0,
-        ):
+        if signature == self._last_no_target_log_signature:
             return
+        self._last_no_target_log_signature = signature
+        self._last_control_log_signature = ""
         logger.warning(
             "target pipeline blocked frame=%s code=%s stage=%s message=%s counts=%s "
             "rejection_reasons=%s",
@@ -2003,13 +1999,17 @@ class RuntimeService:
         )
 
     def _log_box_input_state(self, state: BoxInputState, source: str) -> None:
+        if not state.active:
+            self._last_box_input_log_signature = ""
+            return
         raw = getattr(state, "raw", {}) or {}
         signature = (
             f"box|source={source}|active={state.active}|left={state.left}|"
-            f"right={state.right}|side={state.side}|raw={raw}"
+            f"right={state.right}|side={state.side}"
         )
-        if not self._should_log("_last_box_input_log_signature", "_last_box_input_log_s", signature, interval_s=1.0):
+        if signature == self._last_box_input_log_signature:
             return
+        self._last_box_input_log_signature = signature
         logger.info(
             "box input source=%s active=%s left=%s right=%s side=%s raw=%s",
             source,
@@ -2019,16 +2019,6 @@ class RuntimeService:
             state.side,
             raw,
         )
-
-    def _should_log(self, signature_attr: str, time_attr: str, signature: str, *, interval_s: float) -> bool:
-        now = time.monotonic()
-        previous_signature = str(getattr(self, signature_attr, ""))
-        previous_s = float(getattr(self, time_attr, 0.0))
-        if signature == previous_signature and now - previous_s < interval_s:
-            return False
-        setattr(self, signature_attr, signature)
-        setattr(self, time_attr, now)
-        return True
 
     def _select_control_target(self, context: FrameContext) -> TargetSelection:
         minimum_dimension = max(1.0, float(min(context.width, context.height)))
