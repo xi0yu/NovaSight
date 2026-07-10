@@ -35,8 +35,11 @@ def _trace_payload() -> dict:
                 "velocity_confidence": 0.8,
             },
             "pipeline": {
+                "control_mode": "calibrated_angular",
                 "observed_error_x_px": 12.0,
                 "observed_error_y_px": -4.0,
+                "predicted_error_x_px": 15.0,
+                "predicted_error_y_px": -5.0,
                 "observed_error_x_rad": 0.012,
                 "observed_error_y_rad": -0.004,
                 "predicted_error_x_rad": 0.015,
@@ -49,8 +52,16 @@ def _trace_payload() -> dict:
                 "d_y_rad": -0.0002,
                 "limited_output_x_rad": 0.0047,
                 "limited_output_y_rad": -0.0016,
-                "counts_x_float": 7.4,
-                "counts_y_float": -2.1,
+                "theoretical_counts_x_float": 7.4,
+                "theoretical_counts_y_float": -2.1,
+                "mode_limited_counts_x_float": 7.0,
+                "mode_limited_counts_y_float": -2.0,
+                "deadzone_limited_counts_x_float": 7.0,
+                "deadzone_limited_counts_y_float": -2.0,
+                "slew_limited_counts_x_float": 5.4,
+                "slew_limited_counts_y_float": -2.0,
+                "feasible_counts_x_float": 5.4,
+                "feasible_counts_y_float": -2.0,
                 "residual_x_counts": 0.4,
                 "residual_y_counts": -0.1,
                 "final_dx": 5,
@@ -132,12 +143,17 @@ def test_control_trace_schema_serializes_units_and_correlation() -> None:
     }
     assert trace["control"]["control_now"]["clock_domain"] == "monotonic"
     assert trace["control"]["error_px"] == {"x": 12.0, "y": -4.0}
+    assert trace["control"]["predicted_error_px"] == {"x": 15.0, "y": -5.0}
+    assert trace["control"]["mode"] == "calibrated_angular"
     assert trace["control"]["error_rad"] == {"x": 0.012, "y": -0.004}
     assert trace["control"]["error_rate_rad_s"] == {"x": 0.18, "y": -0.07}
     assert trace["control"]["p_rad"] == {"x": 0.0042, "y": -0.0014}
     assert trace["control"]["d_rad"] == {"x": 0.0005, "y": -0.0002}
     assert trace["control"]["prediction_horizon_ms"] == 24.0
     assert trace["counts"]["planned_counts"] == {"x": 5.0, "y": -2.0}
+    assert trace["counts"]["theoretical_counts"] == {"x": 7.4, "y": -2.1}
+    assert trace["counts"]["slew_limited_counts"] == {"x": 5.4, "y": -2.0}
+    assert trace["counts"]["feasible_counts"] == {"x": 5.4, "y": -2.0}
     assert trace["counts"]["queued_counts"] == {"x": 0.0, "y": 0.0}
     assert trace["counts"]["sent_counts"] == {"x": 5.0, "y": -2.0}
     assert trace["counts"]["estimated_applied_counts"]["status"] == "unknown"

@@ -55,31 +55,37 @@ capture:
 calibration:
   profile_id: default
   profile_version: 1
-  fov_semantics: horizontal
-  fov_x_deg: 105
-  counts_per_360_x: 9980
-  counts_per_360_y: 9980
-  invert_y: false
   game_sensitivity_fingerprint: unverified-default
-  projection_profile: fixed_horizontal_fov
 control:
+  mode: universal_saturated
   aim:
     y_ratio: 0.22
+  calibrated_angular:
+    fov_x_deg: 105.0
+    counts_per_360_x: 9980.0
+    counts_per_360_y: 9980.0
+    kp_x: 1.0
+    kp_y: 1.0
+    kd_x: 0.0
+    kd_y: 0.0
+    d_ema_alpha: 0.30
+    max_angle_step_x_deg: 2.0
+    max_angle_step_y_deg: 1.5
+  universal_saturated:
+    response_scale_x_px: 160.0
+    response_scale_y_px: 120.0
+    max_step_x_counts: 30.0
+    max_step_y_counts: 24.0
+  shared:
+    max_count_slew_x: 10.0
+    max_count_slew_y: 8.0
+    deadzone_x_px: 0.0
+    deadzone_y_px: 0.0
+    invert_y: false
   configured_actuation_delay_s: 0.004
   prediction_strength: 1.0
   prediction_x_enabled: true
   prediction_y_enabled: true
-  kp_x: 0.35
-  kp_y: 0.24
-  kd_x: 0.0
-  kd_y: 0.0
-  d_ema_alpha: 0.25
-  deadzone_px_x: 0.0
-  deadzone_px_y: 0.0
-  max_output_rad_x: 0.0524
-  max_output_rad_y: 0.0524
-  max_output_rate_rad_s_x: 2.0
-  max_output_rate_rad_s_y: 2.0
   scheduler_step_counts_x: 20
   scheduler_step_counts_y: 20
   scheduler_interval_ms: 4.0

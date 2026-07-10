@@ -8,9 +8,11 @@ Each test focuses on one observable contract:
 """
 from __future__ import annotations
 
+import copy
 import importlib
 from pathlib import Path
 
+from novasight.config import RuntimeConfig
 from novasight.contracts import ControlIntent
 from novasight.control import (
     CommandScheduler,
@@ -20,7 +22,7 @@ from novasight.executors import ExecutorRegistry
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.executors.kmnet_loader import KmNetLoadResult
 from novasight.hardware import HardwareHeartbeat
-from novasight.runtime import CONTROL_FRAME_FIELDS, run_replay_acceptance
+from novasight.runtime import CONTROL_FRAME_FIELDS, RuntimeService, run_replay_acceptance
 
 
 def _intent(dx: float, dy: float, reason: str = "test") -> ControlIntent:
@@ -187,7 +189,7 @@ def test_runtime_service_production_control_contract_is_static() -> None:
     mouse_source = (root / "novasight" / "control" / "mouse.py").read_text(encoding="utf-8")
     observation_source = (root / "novasight" / "control" / "observation.py").read_text(encoding="utf-8")
 
-    assert "RawBBox+KalmanPrediction->ObservedD+PredictedP->RadLimits->Counts->CommandScheduler->kmNet" in service_source
+    assert "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController->SharedCountLimits->CommandScheduler->kmNet" in service_source
     assert "MouseController(" in service_source
     assert "MouseObservation(" in service_source
     assert "self.executors.execute(intent)" in service_source
@@ -197,12 +199,49 @@ def test_runtime_service_production_control_contract_is_static() -> None:
     assert "predicted_error_x_rad" in mouse_source
     assert "observed_error_x_rad" in mouse_source
     assert "d_raw_x" in mouse_source
+    assert "CalibratedAngularController" in mouse_source
+    assert "UniversalSaturatedController" in mouse_source
+    assert "ControllerFactory" in mouse_source
     assert "RawAimPointProjector" in observation_source
 
     submit_index = executor_source.index("decision = self.scheduler.submit(bounded)")
     send_index = executor_source.index("self.executors[self.selected].execute(bounded)")
     assert submit_index < send_index
     assert "command scheduler required" in executor_source
+
+
+def test_control_mode_switch_replaces_controller_and_clears_scheduler_state() -> None:
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.clear_reasons: list[str] = []
+
+        def clear(self, reason: str = "") -> None:
+            self.clear_reasons.append(reason)
+
+    class FakeExecutors:
+        selected = "kmnet"
+
+        def __init__(self) -> None:
+            self.scheduler = FakeScheduler()
+
+        def update_runtime_config(self, _config: RuntimeConfig) -> None:
+            return None
+
+    config = RuntimeConfig()
+    executors = FakeExecutors()
+    service = RuntimeService(config, models=object(), executors=executors)  # type: ignore[arg-type]
+    previous_controller = service.mouse_controller
+    previous_controller.state.residual_x_counts = 0.75
+    updated = copy.deepcopy(config)
+    updated.control.mode = "calibrated_angular"
+
+    service.update_config(updated)
+
+    assert previous_controller.mode == "universal_saturated"
+    assert service.mouse_controller is not previous_controller
+    assert service.mouse_controller.mode == "calibrated_angular"
+    assert service.mouse_controller.state.residual_x_counts == 0.0
+    assert "CONTROL_MODE_CHANGED" in executors.scheduler.clear_reasons
 
 
 def test_runtime_service_does_not_bypass_selector_or_cache_bbox_for_control() -> None:

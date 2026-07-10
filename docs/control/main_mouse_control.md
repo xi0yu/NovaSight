@@ -2,171 +2,155 @@
 
 Date: 2026-07-10
 
-Status: frozen single-route implementation contract.
+Status: frozen single-chain, dual-mode implementation contract.
 
 ## Route
 
 ```text
 DetectionBatch
--> target selection and continuity
--> current raw bbox
--> runtime Kalman update and future center prediction
--> observed and predicted bbox-relative aim points
+-> basic candidate filtering
+-> Hungarian Tracker / Kalman
+-> TargetSelector
+-> observed raw aim and predicted future aim
 -> trusted full control-space projection
--> P(predicted angle error) + D EMA(observed angle error derivative)
--> angle and angle-rate limits
--> rad-to-count calibration
--> fractional residual and feasible integer budget
+-> predicted pixel error
+-> exactly one mode controller
+-> shared count protection and fractional residual
 -> replaceable Scheduler plan
 -> kmNet
 ```
 
 Kalman is the only position predictor. There is no LOS prediction pass after Kalman.
 
-## Aim
+## Aim And Prediction
 
 ```text
 aim_x = bbox_left + bbox_width / 2
-aim_y = bbox_top + bbox_height * aim_y_ratio
+aim_y = bbox_top + bbox_height * control.aim.y_ratio
+
+frame_age_s = control_now_ts_ns - capture_ts_ns
+horizon_s = frame_age_s + configured_actuation_delay_s
+predicted_aim = filtered_aim
+  + kalman_velocity * horizon_s * prediction_strength * prediction_confidence
 ```
 
-`aim_y_ratio` has range `0.00..1.00`, precision `0.01`, and default `0.22`.
+`aim.y_ratio` is clamped to `0.00..1.00`, rounded to `0.01`, and defaults to `0.22`. Recent successful device counts conservatively reduce prediction confidence; they are not a self-motion subtraction model.
 
-Observed aim uses the current raw bbox. Predicted aim uses the Kalman future center and the same current bbox width, height, and `aim_y_ratio`.
+## Mode Selection
 
-## Projection
+`control.mode` accepts:
+
+```text
+universal_saturated
+calibrated_angular
+```
+
+`ControllerFactory` creates one controller. The inactive controller is not evaluated and cannot contribute counts. A mode change recreates the controller, clears its history and fractional residual, and cancels the current Scheduler plan before the next `DetectionBatch`.
+
+## Calibrated Angular
 
 The aim point must be mapped from ROI coordinates to the complete control projection before angle conversion.
 
 ```text
 focal_x = (control_width / 2) / tan(fov_x / 2)
-focal_y = focal_x
-error_x_rad = atan((aim_x - center_x) / focal_x)
-error_y_rad = atan((aim_y - center_y) / focal_y)
-```
+fov_y = 2 * atan(tan(fov_x / 2) * control_height / control_width)
+focal_y = (control_height / 2) / tan(fov_y / 2)
 
-`fov_x_deg` is restricted to `30.0..179.0`.
-
-## Prediction
-
-```text
-frame_age_s = control_now_ts_ns - capture_ts_ns
-horizon_s = frame_age_s + configured_actuation_delay_s
-prediction_confidence = kalman_confidence * identity_confidence * velocity_confidence
-predicted_center = raw_bbox_center + kalman_velocity * horizon_s * prediction_strength * prediction_confidence
-```
-
-`velocity_confidence` is an adaptive safety value based on successful counts sent during the recent 40ms window. It suppresses velocity extrapolation only; it does not disable the P controller.
-
-```text
-velocity_confidence = clamp(1 - sum(abs(dx) + abs(dy))_last_40ms / 80, 0, 1)
-```
-
-The 80-count zero-confidence threshold is an internal conservative constant, not a measured calibration.
-
-## PD
-
-```text
-d_raw = (observed_error_t - observed_error_previous) / measurement_dt_s
+predicted_error_rad = atan(predicted_error_px / focal)
+observed_error_rad = atan(observed_error_px / focal)
+d_raw = (observed_error_rad_t - observed_error_rad_previous) / measurement_dt_s
 d_ema = d_ema_alpha * d_raw + (1 - d_ema_alpha) * d_ema_previous
 output_rad = Kp * predicted_error_rad + Kd * d_ema
+limited_rad = clamp(output_rad, -max_angle_step_rad, max_angle_step_rad)
+counts_float = limited_rad * counts_per_360 / (2*pi)
 ```
 
-The first observation, target switch, invalid `measurement_dt`, and first real observation after a predicted-only gap use `D=0`.
+The first observation, target switch, and invalid measurement interval use `D=0`. D differentiates observed error only; prediction parameter changes cannot create a synthetic derivative spike.
 
-## Output
-
-Per axis:
+Parameters:
 
 ```text
-limited_rad = clamp(output_rad, -max_output_rad, max_output_rad)
-max_delta_rad = max_output_rate_rad_s * measurement_dt_s
-rate_limited_rad = previous_rad + clamp(limited_rad - previous_rad, -max_delta_rad, max_delta_rad)
-counts_float = rate_limited_rad * counts_per_360 / (2*pi)
+control.calibrated_angular.fov_x_deg
+control.calibrated_angular.counts_per_360_x
+control.calibrated_angular.counts_per_360_y
+control.calibrated_angular.kp_x / kp_y
+control.calibrated_angular.kd_x / kd_y
+control.calibrated_angular.d_ema_alpha
+control.calibrated_angular.max_angle_step_x_deg
+control.calibrated_angular.max_angle_step_y_deg
 ```
 
-Y inversion occurs after angle-to-count conversion.
+## Universal Saturated
 
-Residual handling:
+This mode maps full-control-space pixel error directly to counts and has no angle, PD, D EMA, FOV, or counts-per-360 dependency.
 
 ```text
-total = counts_float + previous_fractional_residual
-requested_integer = trunc(total)
-fractional_residual = total - requested_integer
-feasible_integer = clamp_to_scheduler_capacity(requested_integer)
+counts_x = max_step_x_counts * (2/pi) * atan(error_x_px / response_scale_x_px)
+counts_y = max_step_y_counts * (2/pi) * atan(error_y_px / response_scale_y_px)
 ```
 
-Clamped integer counts are not stored as debt.
+Near the center it is approximately linear. At large error it approaches the configured maximum without exceeding it.
+
+Parameters:
+
+```text
+control.universal_saturated.response_scale_x_px
+control.universal_saturated.response_scale_y_px
+control.universal_saturated.max_step_x_counts
+control.universal_saturated.max_step_y_counts
+```
+
+## Shared Output
+
+Both modes pass through the same sequence:
+
+```text
+mode counts
+-> observed-error pixel deadzone
+-> optional Y inversion
+-> per-observation count slew
+-> Scheduler-capacity feasible budget
+-> fractional residual integer conversion
+```
+
+```text
+slew_limited = previous_counts
+  + clamp(requested_counts - previous_counts, -max_count_slew, max_count_slew)
+
+total = feasible_counts + previous_fractional_residual
+integer_budget = trunc(total)
+fractional_residual = total - integer_budget
+```
+
+Clamped counts are discarded and never stored as hidden debt.
+
+Shared parameters:
+
+```text
+control.shared.deadzone_x_px / deadzone_y_px
+control.shared.max_count_slew_x / max_count_slew_y
+control.shared.invert_y
+control.scheduler_step_counts_x / scheduler_step_counts_y
+control.scheduler_interval_ms
+```
 
 ## Scheduler
 
-The internal maximum plan duration is 24ms. Capacity is derived from the configured step interval:
+The maximum plan duration is 24ms. Capacity is:
 
 ```text
 plan_step_capacity = floor(24ms / scheduler_interval_ms) + 1
 max_budget_axis = scheduler_step_counts_axis * plan_step_capacity
 ```
 
-Steps use cumulative rounding and conserve the feasible integer budget. The scheduler stores one current plan. New frame, target switch, direction change, trigger release, stale input, device failure, and runtime stop cancel pending steps.
+Cumulative rounding conserves the feasible integer budget. The Scheduler stores one current plan. A new frame, target switch, direction change, trigger release, stale input, device failure, runtime stop, or mode/config change cancels pending steps. Unexecuted counts are discarded.
 
-Plan expiry includes one additional Scheduler interval as timing tolerance; this does not add another planned step or extend the 24ms step schedule.
+## Migration And Removed Code
 
-## User Parameters
+The loader performs one-way migration from the preceding flat angular schema into `control.calibrated_angular` and `control.shared`, selecting `calibrated_angular` to preserve behavior. Fresh configurations default to `universal_saturated`.
 
-```text
-control.aim.y_ratio
-control.configured_actuation_delay_s
-control.prediction_strength
-control.prediction_x_enabled
-control.prediction_y_enabled
-control.kp_x
-control.kp_y
-control.kd_x
-control.kd_y
-control.d_ema_alpha
-control.deadzone_px_x
-control.deadzone_px_y
-control.max_output_rad_x
-control.max_output_rad_y
-control.max_output_rate_rad_s_x
-control.max_output_rate_rad_s_y
-control.scheduler_step_counts_x
-control.scheduler_step_counts_y
-control.scheduler_interval_ms
-control.target_fov_radius_px
-control.min_confidence
-control.target_switch_delay_ms
-control.lost_target_timeout_ms
-calibration.fov_x_deg
-calibration.counts_per_360_x
-calibration.counts_per_360_y
-calibration.invert_y
-```
-
-## Legacy Configuration Migration
-
-The runtime loader accepts the immediately preceding production schema and
-migrates its aim ratio, configured delay, PD gains, derivative EMA, deadzone,
-Scheduler interval/step limits, stale threshold, and calibration fields into
-this route. `calibration.axis_sign_y` maps to `calibration.invert_y`.
-
-`calibration.axis_sign_x=-1` is rejected with an explicit error because this
-route has no X-axis inversion setting. Silently discarding it would reverse the
-closed-loop control direction. Removed experimental fields that have no valid
-single-route equivalent are discarded during this one-way in-memory migration.
-Legacy `hardware.flip_dy` is also discarded: the preceding kmNet executor
-accepted that setting but forced it to `False`, so mapping it to `invert_y`
-would change actual device behavior during upgrade.
-
-## Reset Rules
-
-- Target switch: reset observed-error history, D EMA, output history, residual, and pending plan.
-- Target unavailable: reset controller and cancel plan.
-- Stale DetectionBatch: reset runtime control state and cancel plan.
-- Trigger release: reset controller and cancel plan.
-- Device error: cancel plan and enter Scheduler cooldown.
-- Runtime stop or fatal error: reset all control state and cancel plan.
+No production route exists for experimental-angle PID, integral control, magnetic assist, AimPoint position EMA, LOS angular prediction, LatencyCompensator, HID direct send, or alternate Scheduler queues.
 
 ## Deferred
 
-Self-motion subtraction, measured send-to-visual alignment, adaptive Kalman tuning, condition integral control, and pending-control observers are not part of this route.
+Self-motion subtraction, measured send-to-visual alignment, adaptive Kalman tuning, pixel-domain D for universal mode, condition integral control, and pending-control observers are not part of this implementation.

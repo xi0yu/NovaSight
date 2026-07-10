@@ -2,7 +2,7 @@
 
 Date: 2026-07-10
 
-Status: current implementation audit. This document describes the only production mouse algorithm route.
+Status: current implementation audit. This document describes one production chain with two mutually exclusive control-mapping modes.
 
 ## Current Mainline
 
@@ -10,23 +10,27 @@ Status: current implementation audit. This document describes the only productio
 CapturedFrame / DetectionBatch
 -> latest-only freshness gates
 -> ROI detections
+-> class + confidence basic candidate filter
+-> raw aim TrackObservation
+-> RuntimeTracker Kalman prediction + normalized-distance gate + Hungarian assignment
+-> ACTIVE tracks only
 -> RuntimeTargetSelector
--> RuntimeTracker + runtime KalmanEstimator
 -> current raw bbox
 -> observed aim from raw bbox
--> Kalman future bbox center
--> predicted aim from future bbox
+-> future aim from filtered Kalman aim + velocity
 -> full control-space projection
--> P(predicted angle error) + D(observed angle error derivative EMA)
--> per-axis angle and angle-rate limits
--> calibrated floating-point counts
+-> predicted pixel error
+-> ControllerFactory selects exactly one mapping:
+   calibrated_angular: full-space angle -> observed D EMA -> PD -> counts
+   universal_saturated: atan pixel saturation -> counts
+-> shared deadzone, direction, count slew, and feasible budget
 -> fractional residual
 -> feasible integer observation budget
 -> CommandScheduler bounded steps
 -> KmNetExecutor
 ```
 
-There is no `legacy`, `experimental_angle_pid`, LOS angular prediction, AimPoint EMA, or LatencyCompensator send path.
+There is no `legacy`, `experimental_angle_pid`, LOS angular prediction, AimPoint EMA, LatencyCompensator, integral, or magnetic-assist send path. The two mapping modes cannot both execute for one observation.
 
 ## Source And Time Contracts
 
@@ -60,7 +64,7 @@ observed_y = bbox_top + bbox_height * control.aim.y_ratio
 
 `aim.y_ratio` is clamped to `[0.00, 1.00]`, rounded to two decimals, and defaults to `0.22`. No horizontal offset or position-time EMA exists.
 
-The same bbox-relative anchor is applied to the Kalman-predicted bbox center. Prediction changes where the selected anchor is expected to move; it never changes the user's anchor ratio.
+The same raw aim point is the Tracker measurement. Prediction moves that selected aim point through the Tracker's filtered position and velocity; it never chooses a different bbox-relative anchor.
 
 Implementation:
 
@@ -68,22 +72,48 @@ Implementation:
 - `novasight/coordinates.py`
 - `novasight/runtime/service.py::_control_frame_metadata`
 
+## Tracker Contract
+
+The basic pre-Tracker filter applies only selectable class, the single minimum-confidence threshold, and mandatory finite bbox validation. FOV, candidate quality, class priority, target lock, and switch delay remain TargetSelector responsibilities after tracking.
+
+Each observation freezes the current user aim point:
+
+```text
+aim_x = (bbox_x1 + bbox_x2) / 2
+aim_y = bbox_y1 + bbox_height * aim_y_ratio
+```
+
+The Tracker Kalman state is `[aim_x, aim_y, vx, vy]`. Its `dt` is the difference between adjacent capture timestamps. Association predicts every retained track to the current capture timestamp, rejects class mismatches and pairs beyond the normalized distance gate, then solves the remaining global minimum-cost assignment with the Hungarian algorithm:
+
+```text
+normalized_distance = aim_distance / max(previous_bbox_height, detection_bbox_height)
+cost = 0.75 * normalized_distance + 0.25 * (1 - IoU)
+```
+
+New tracks are `ACTIVE` immediately. An unmatched track becomes `LOST` and remains available only for future association. It is never emitted to TargetSelector or mouse control. A successful later match restores the same `track_id`; more than `max_missed_frames` consecutive misses removes the track.
+
+Implementation:
+
+- `novasight/runtime/candidates.py::BasicCandidateFilter`
+- `novasight/runtime/tracker.py`
+- `novasight/runtime/target_selector.py`
+
 ## Prediction Contract
 
-The runtime Kalman estimator is the only position predictor. It estimates screen-space bbox center and velocity. That state contains target motion, camera-induced motion, and detection noise; it is not target-world velocity.
+The runtime Kalman estimator is the only position predictor. It estimates the screen-space aim point and velocity. That state contains target motion, camera-induced motion, and detection noise; it is not target-world velocity.
 
 For each axis:
 
 ```text
-predicted_center
-= raw_bbox_center
+predicted_aim
+= filtered_aim
    + kalman_velocity
    * prediction_horizon_s
    * prediction_strength
    * prediction_confidence
 ```
 
-The current raw bbox center is the prediction baseline; Kalman contributes only the future displacement. Therefore `prediction_strength=0` or zero prediction confidence returns exactly to the observed aim rather than retaining hidden Kalman position smoothing.
+The current filtered Kalman aim is the prediction baseline. Therefore `prediction_strength=0` disables future displacement but retains the Tracker's current measurement filtering. The raw bbox aim remains separately available for the observed D input.
 
 `prediction_confidence` combines Kalman/identity confidence with a conservative suppression factor derived from successful device counts sent in the recent 40ms window. Counts are recorded only after the device executor reports `sent=true`.
 
@@ -96,7 +126,11 @@ The 80-count threshold is a conservative implementation constant, not a calibrat
 
 The 20ms, 40ms, and 60ms executed-count windows are telemetry. They are not a self-motion subtraction model. Exact count-to-visual alignment remains deferred until send-to-visual delay is measured.
 
-## PD Contract
+## Controller Contracts
+
+`control.mode` is either `calibrated_angular` or `universal_saturated`. `ControllerFactory` creates one implementation when the runtime starts or configuration changes. Runtime reconfiguration first clears the old Scheduler plan and controller state.
+
+### Calibrated Angular
 
 The controller receives two points but produces one output:
 
@@ -111,17 +145,32 @@ d_ema = d_ema_alpha * d_raw + (1 - d_ema_alpha) * d_ema_previous
 u = Kp * predicted_error + Kd * d_ema
 ```
 
-The D term never differentiates predicted error. Prediction parameter changes therefore cannot create a synthetic D spike. A predicted-only/missing frame invalidates observed D history; the first real observation after the gap re-establishes the baseline with zero D.
+The D term never differentiates predicted error. Prediction parameter changes therefore cannot create a synthetic D spike. A missing frame emits no target and resets control state; the first restored real observation re-establishes the D baseline with zero derivative carry-over.
 
 Implementation: `novasight/control/mouse.py`.
+
+### Universal Saturated
+
+```text
+counts_axis
+= max_step_axis_counts
+  * (2 / pi)
+  * atan(predicted_error_axis_px / response_scale_axis_px)
+```
+
+This mode has no FOV, counts-per-360, PD, D history, or angle state. Small errors are approximately linear and large errors approach the configured count limit.
 
 ## Counts And Scheduler Contract
 
 ```text
-counts_float = limited_output_rad * counts_per_360 / (2*pi)
+calibrated_angular:
+  counts_float = limited_output_rad * counts_per_360 / (2*pi)
+
+universal_saturated:
+  counts_float = max_counts * (2/pi) * atan(error_px / response_scale_px)
 ```
 
-Y inversion is applied in the count mapper. Fractional residual stores only the sub-count fraction from integer conversion. Counts removed by feasible-budget clamping are discarded and never become hidden residual debt.
+Both modes then enter the same deadzone, Y inversion, count-slew, residual, and feasible-budget path. Fractional residual stores only the sub-count fraction from integer conversion. Counts removed by feasible-budget clamping are discarded and never become hidden residual debt.
 
 The scheduler plan capacity is derived from a fixed 24ms maximum plan duration and `scheduler_interval_ms`. Expiry adds one tick of timing tolerance so the last step scheduled at the 24ms boundary is not discarded. The controller caps each observation budget to:
 
@@ -155,7 +204,7 @@ novasight/detection/kalman_estimator.py
 novasight/detection/target_selector.py
 ```
 
-Configuration no longer accepts strategy selection, experimental-angle fields, AimPoint EMA fields, legacy latency compensation fields, or frame-count target-switch fields.
+The current configuration schema exposes only `control.mode` plus nested `calibrated_angular`, `universal_saturated`, and `shared` settings. Experimental-angle fields, AimPoint EMA fields, legacy latency compensation fields, integral state, and magnetic-assist fields exist only in one-way load migration or are discarded.
 
 ## Current Answers
 
@@ -164,7 +213,7 @@ Configuration no longer accepts strategy selection, experimental-angle fields, A
 - Mouse output: one feasible integer budget per new observation, split by Scheduler.
 - Repeated old observation control: no; control ticks consume pending steps only and never recalculate from `last_frame_context`.
 - Old plan handling: every new observation replaces pending steps; unexecuted counts are discarded.
-- Mainline count: one.
+- Production chain count: one. Control-mapping modes: two, mutually exclusive.
 
 `KmNetExecutor.diagnostic_move()` remains available to the CLI and executor diagnostic API. It is an explicit hardware test command, not a detection-driven mouse algorithm route, and it does not share controller state with the production loop.
 

@@ -4,7 +4,6 @@ Covers the schema-enforced contract: round-trip, missing/empty inputs,
 unknown keys, and type errors. Defaults are exercised in one test, and
 unknown-key rejection is parametrized.
 """
-import math
 from pathlib import Path
 
 import pytest
@@ -216,13 +215,7 @@ def test_runtime_config_defaults_are_stable() -> None:
     assert cfg.roi.mode == "center"
     assert cfg.calibration.profile_id == "default"
     assert cfg.calibration.profile_version == 1
-    assert cfg.calibration.fov_semantics == "horizontal"
-    assert cfg.calibration.fov_x_deg == 105.0
-    assert cfg.calibration.counts_per_360_x == 9980.0
-    assert cfg.calibration.counts_per_360_y == 9980.0
-    assert cfg.calibration.invert_y is False
     assert cfg.calibration.game_sensitivity_fingerprint == "unverified-default"
-    assert cfg.calibration.projection_profile == "fixed_horizontal_fov"
     # Old attributes that drove the first prototype must not have leaked back.
     assert not hasattr(cfg, "model_path")
     assert not hasattr(cfg, "plugin_settings")
@@ -254,25 +247,25 @@ def test_capture_gstreamer_candidates_have_upstream_latest_only_queue() -> None:
         assert candidate.pipeline.index(LATEST_ONLY_QUEUE) < candidate.pipeline.rindex("appsink")
 
 
-def test_runtime_config_defaults_include_single_mouse_control_settings() -> None:
+def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings() -> None:
     cfg = RuntimeConfig()
 
+    assert cfg.control.mode == "universal_saturated"
     assert cfg.control.aim.y_ratio == 0.22
     assert cfg.control.configured_actuation_delay_s == 0.004
     assert cfg.control.prediction_strength == 1.0
     assert cfg.control.prediction_x_enabled is True
     assert cfg.control.prediction_y_enabled is True
-    assert cfg.control.kp_x == 0.35
-    assert cfg.control.kp_y == 0.24
-    assert cfg.control.kd_x == 0.0
-    assert cfg.control.kd_y == 0.0
-    assert cfg.control.d_ema_alpha == 0.25
-    assert cfg.control.deadzone_px_x == 0.0
-    assert cfg.control.deadzone_px_y == 0.0
-    assert cfg.control.max_output_rad_x == 0.0524
-    assert cfg.control.max_output_rad_y == 0.0524
-    assert cfg.control.max_output_rate_rad_s_x == 2.0
-    assert cfg.control.max_output_rate_rad_s_y == 2.0
+    assert cfg.control.calibrated_angular.fov_x_deg == 105.0
+    assert cfg.control.calibrated_angular.counts_per_360_x == 9980.0
+    assert cfg.control.calibrated_angular.kp_x == 1.0
+    assert cfg.control.calibrated_angular.kd_x == 0.0
+    assert cfg.control.calibrated_angular.d_ema_alpha == 0.30
+    assert cfg.control.universal_saturated.response_scale_x_px == 160.0
+    assert cfg.control.universal_saturated.max_step_x_counts == 30.0
+    assert cfg.control.shared.deadzone_x_px == 0.0
+    assert cfg.control.shared.max_count_slew_x == 10.0
+    assert cfg.control.shared.invert_y is False
     assert cfg.control.scheduler_step_counts_x == 20
     assert cfg.control.scheduler_step_counts_y == 20
     assert cfg.control.scheduler_interval_ms == 4.0
@@ -280,6 +273,10 @@ def test_runtime_config_defaults_include_single_mouse_control_settings() -> None
     assert cfg.control.min_confidence == 0.25
     assert cfg.control.target_switch_delay_ms == 50.0
     assert cfg.control.lost_target_timeout_ms == 120.0
+    assert cfg.control.tracker_max_match_distance == 1.5
+    assert cfg.control.tracker_position_cost_weight == 0.75
+    assert cfg.control.tracker_iou_cost_weight == 0.25
+    assert cfg.control.tracker_max_missed_frames == 2
     assert cfg.control.tracker_confirm_frames == 2
     assert cfg.control.target_switch_min_preference_advantage == 0.08
     assert cfg.control.target_switch_min_continuity_score == 0.70
@@ -376,7 +373,7 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     cfg.web.port = 6000
     cfg.source.default = "image:/tmp/frame.jpg"
     cfg.calibration.profile_id = "arena-105"
-    cfg.calibration.counts_per_360_y = 10010
+    cfg.control.calibrated_angular.counts_per_360_y = 10010
     cfg.executor.default = "kmnet"
 
     save_runtime_config(cfg, path)
@@ -385,7 +382,7 @@ def test_runtime_config_round_trip(tmp_path: Path) -> None:
     assert loaded.web.port == 6000
     assert loaded.source.default == "image:/tmp/frame.jpg"
     assert loaded.calibration.profile_id == "arena-105"
-    assert loaded.calibration.counts_per_360_y == 10010
+    assert loaded.control.calibrated_angular.counts_per_360_y == 10010
     assert loaded.executor.default == "kmnet"
 
 
@@ -414,9 +411,10 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.inference.backend == "tensorrt"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
-    assert cfg.calibration.fov_x_deg == 105
-    assert cfg.calibration.counts_per_360_x == 9980
-    assert cfg.calibration.invert_y is False
+    assert cfg.control.mode == "universal_saturated"
+    assert cfg.control.calibrated_angular.fov_x_deg == 105
+    assert cfg.control.calibrated_angular.counts_per_360_x == 9980
+    assert cfg.control.shared.invert_y is False
     assert cfg.hardware.auto_connect is True
     assert cfg.control.aim.y_ratio == pytest.approx(0.22)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.004)
@@ -427,7 +425,7 @@ def test_runtime_config_migrates_legacy_axis_signs() -> None:
         {"calibration": {"axis_sign_x": 1, "axis_sign_y": -1}}
     )
 
-    assert cfg.calibration.invert_y is True
+    assert cfg.control.shared.invert_y is True
     assert not hasattr(cfg.calibration, "axis_sign_x")
     assert not hasattr(cfg.calibration, "axis_sign_y")
 
@@ -435,7 +433,7 @@ def test_runtime_config_migrates_legacy_axis_signs() -> None:
 def test_runtime_config_drops_legacy_noop_hardware_flip_dy() -> None:
     cfg = parse_runtime_config({"hardware": {"flip_dy": True}})
 
-    assert cfg.calibration.invert_y is False
+    assert cfg.control.shared.invert_y is False
     assert not hasattr(cfg.hardware, "flip_dy")
 
 
@@ -477,23 +475,24 @@ def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
         }
     )
 
-    assert cfg.calibration.fov_x_deg == pytest.approx(103.0)
-    assert cfg.calibration.counts_per_360_x == pytest.approx(9900.0)
-    assert cfg.calibration.counts_per_360_y == pytest.approx(9900.0)
-    assert cfg.calibration.invert_y is True
+    assert cfg.control.mode == "calibrated_angular"
+    assert cfg.control.calibrated_angular.fov_x_deg == pytest.approx(103.0)
+    assert cfg.control.calibrated_angular.counts_per_360_x == pytest.approx(9900.0)
+    assert cfg.control.calibrated_angular.counts_per_360_y == pytest.approx(9900.0)
+    assert cfg.control.shared.invert_y is True
     assert cfg.control.min_confidence == pytest.approx(0.10)
     assert cfg.control.aim.y_ratio == pytest.approx(0.40)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.002)
     assert cfg.control.prediction_strength == pytest.approx(0.7)
-    assert cfg.control.kp_x == pytest.approx(0.4)
-    assert cfg.control.kp_y == pytest.approx(0.3)
-    assert cfg.control.kd_x == pytest.approx(0.02)
-    assert cfg.control.kd_y == pytest.approx(0.02)
-    assert cfg.control.d_ema_alpha == pytest.approx(0.25)
-    assert cfg.control.deadzone_px_x == pytest.approx(1.5)
-    assert cfg.control.deadzone_px_y == pytest.approx(1.5)
-    assert cfg.control.max_output_rad_x == pytest.approx(math.radians(3.0))
-    assert cfg.control.max_output_rad_y == pytest.approx(math.radians(3.0))
+    assert cfg.control.calibrated_angular.kp_x == pytest.approx(0.4)
+    assert cfg.control.calibrated_angular.kp_y == pytest.approx(0.3)
+    assert cfg.control.calibrated_angular.kd_x == pytest.approx(0.02)
+    assert cfg.control.calibrated_angular.kd_y == pytest.approx(0.02)
+    assert cfg.control.calibrated_angular.d_ema_alpha == pytest.approx(0.25)
+    assert cfg.control.shared.deadzone_x_px == pytest.approx(1.5)
+    assert cfg.control.shared.deadzone_y_px == pytest.approx(1.5)
+    assert cfg.control.calibrated_angular.max_angle_step_x_deg == pytest.approx(3.0)
+    assert cfg.control.calibrated_angular.max_angle_step_y_deg == pytest.approx(3.0)
     assert cfg.control.scheduler_interval_ms == pytest.approx(4.0)
     assert cfg.control.scheduler_step_counts_x == 12
     assert cfg.control.scheduler_step_counts_y == 10
@@ -516,20 +515,21 @@ def test_runtime_config_validates_recording_format() -> None:
     [
         ({"calibration": {"profile_id": ""}}, "calibration.profile_id"),
         ({"calibration": {"profile_version": 0}}, "calibration.profile_version"),
-        ({"calibration": {"fov_semantics": "vertical"}}, "calibration.fov_semantics"),
-        ({"calibration": {"fov_x_deg": 180}}, "calibration.fov_x_deg"),
-        ({"calibration": {"counts_per_360_x": 0}}, "calibration.counts_per_360_x"),
-        ({"calibration": {"counts_per_360_y": 0}}, "calibration.counts_per_360_y"),
         ({"calibration": {"game_sensitivity_fingerprint": ""}}, "calibration.game_sensitivity_fingerprint"),
-        ({"calibration": {"projection_profile": "unknown"}}, "calibration.projection_profile"),
+        ({"control": {"mode": "mixed"}}, "control.mode"),
+        ({"control": {"calibrated_angular": {"fov_x_deg": 180}}}, "control.calibrated_angular.fov_x_deg"),
+        ({"control": {"calibrated_angular": {"counts_per_360_x": 0}}}, "control.calibrated_angular.counts_per_360_x"),
+        ({"control": {"calibrated_angular": {"counts_per_360_y": 0}}}, "control.calibrated_angular.counts_per_360_y"),
         ({"control": {"configured_actuation_delay_s": -0.001}}, "control.configured_actuation_delay_s"),
         ({"control": {"prediction_strength": 1.51}}, "control.prediction_strength"),
-        ({"control": {"kp_x": 2.01}}, "control.kp_x"),
-        ({"control": {"kd_y": -0.01}}, "control.kd_y"),
-        ({"control": {"d_ema_alpha": 0.0}}, "control.d_ema_alpha"),
-        ({"control": {"deadzone_px_x": 10.1}}, "control.deadzone_px_x"),
-        ({"control": {"max_output_rad_x": 0.0}}, "control.max_output_rad_x"),
-        ({"control": {"max_output_rate_rad_s_y": 0.0}}, "control.max_output_rate_rad_s_y"),
+        ({"control": {"calibrated_angular": {"kp_x": 2.01}}}, "control.calibrated_angular.kp_x"),
+        ({"control": {"calibrated_angular": {"kd_y": -0.01}}}, "control.calibrated_angular.kd_y"),
+        ({"control": {"calibrated_angular": {"d_ema_alpha": 0.0}}}, "control.calibrated_angular.d_ema_alpha"),
+        ({"control": {"calibrated_angular": {"max_angle_step_x_deg": 0.0}}}, "control.calibrated_angular.max_angle_step_x_deg"),
+        ({"control": {"universal_saturated": {"response_scale_x_px": 0.0}}}, "control.universal_saturated.response_scale_x_px"),
+        ({"control": {"universal_saturated": {"max_step_y_counts": 0.0}}}, "control.universal_saturated.max_step_y_counts"),
+        ({"control": {"shared": {"deadzone_x_px": 10.1}}}, "control.shared.deadzone_x_px"),
+        ({"control": {"shared": {"max_count_slew_y": 0.0}}}, "control.shared.max_count_slew_y"),
         ({"control": {"scheduler_interval_ms": 0.1}}, "control.scheduler_interval_ms"),
         ({"control": {"scheduler_step_counts_x": 0}}, "control.scheduler_step_counts_x"),
         ({"control": {"scheduler_step_counts_y": 21}}, "control.scheduler_step_counts_y"),
@@ -537,6 +537,10 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"min_confidence": 0.09}}, "control.min_confidence"),
         ({"control": {"target_switch_delay_ms": 501}}, "control.target_switch_delay_ms"),
         ({"control": {"lost_target_timeout_ms": 201}}, "control.lost_target_timeout_ms"),
+        ({"control": {"tracker_max_match_distance": 0}}, "control.tracker_max_match_distance"),
+        ({"control": {"tracker_position_cost_weight": -0.1}}, "control.tracker_position_cost_weight"),
+        ({"control": {"tracker_iou_cost_weight": -0.1}}, "control.tracker_iou_cost_weight"),
+        ({"control": {"tracker_max_missed_frames": -1}}, "control.tracker_max_missed_frames"),
         ({"control": {"tracker_confirm_frames": 0}}, "control.tracker_confirm_frames"),
         ({"control": {"target_switch_min_preference_advantage": -0.1}}, "control.target_switch_min_preference_advantage"),
         ({"control": {"target_switch_min_continuity_score": 1.5}}, "control.target_switch_min_continuity_score"),
@@ -737,7 +741,7 @@ def test_runtime_config_schema_exposes_capture_memory() -> None:
     assert fields["capture.backend"]["options"] == ["gst_cpu_latest", "nvmm_latest"]
 
 
-def test_runtime_config_schema_exposes_only_single_mouse_control_fields() -> None:
+def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields() -> None:
     schema = runtime_config_schema(RuntimeConfig())
     control_section = next(section for section in schema["sections"] if section["id"] == "control")
     paths = {field["path"] for field in control_section["fields"]}
@@ -745,22 +749,31 @@ def test_runtime_config_schema_exposes_only_single_mouse_control_fields() -> Non
     assert {
         "control.trigger_mode",
         "control.output_mode",
+        "control.mode",
         "control.aim.y_ratio",
         "control.configured_actuation_delay_s",
         "control.prediction_strength",
         "control.prediction_x_enabled",
         "control.prediction_y_enabled",
-        "control.kp_x",
-        "control.kp_y",
-        "control.kd_x",
-        "control.kd_y",
-        "control.d_ema_alpha",
-        "control.deadzone_px_x",
-        "control.deadzone_px_y",
-        "control.max_output_rad_x",
-        "control.max_output_rad_y",
-        "control.max_output_rate_rad_s_x",
-        "control.max_output_rate_rad_s_y",
+        "control.calibrated_angular.fov_x_deg",
+        "control.calibrated_angular.counts_per_360_x",
+        "control.calibrated_angular.counts_per_360_y",
+        "control.calibrated_angular.kp_x",
+        "control.calibrated_angular.kp_y",
+        "control.calibrated_angular.kd_x",
+        "control.calibrated_angular.kd_y",
+        "control.calibrated_angular.d_ema_alpha",
+        "control.calibrated_angular.max_angle_step_x_deg",
+        "control.calibrated_angular.max_angle_step_y_deg",
+        "control.universal_saturated.response_scale_x_px",
+        "control.universal_saturated.response_scale_y_px",
+        "control.universal_saturated.max_step_x_counts",
+        "control.universal_saturated.max_step_y_counts",
+        "control.shared.deadzone_x_px",
+        "control.shared.deadzone_y_px",
+        "control.shared.max_count_slew_x",
+        "control.shared.max_count_slew_y",
+        "control.shared.invert_y",
         "control.scheduler_step_counts_x",
         "control.scheduler_step_counts_y",
         "control.scheduler_interval_ms",
@@ -807,6 +820,8 @@ def test_runtime_config_schema_exposes_only_single_mouse_control_fields() -> Non
     assert "strategy" not in control_values
     assert "control.configured_extra_prediction_delay_ms" not in paths
     assert "control.latency_estimated_actuation_delay_ms" not in paths
+    assert "control.kp_x" not in paths
+    assert "control.deadzone_px_x" not in paths
 
 
 def test_runtime_config_schema_exposes_calibration_profile() -> None:
@@ -817,14 +832,10 @@ def test_runtime_config_schema_exposes_calibration_profile() -> None:
     assert {
         "calibration.profile_id",
         "calibration.profile_version",
-        "calibration.fov_semantics",
-        "calibration.fov_x_deg",
-        "calibration.counts_per_360_x",
-        "calibration.counts_per_360_y",
-        "calibration.invert_y",
         "calibration.game_sensitivity_fingerprint",
-        "calibration.projection_profile",
     }.issubset(paths)
+    assert "calibration.fov_x_deg" not in paths
+    assert "calibration.counts_per_360_x" not in paths
 
 
 def test_runtime_config_schema_exposes_kmnet_auto_connect() -> None:

@@ -211,6 +211,9 @@ class Track:
     box: BBox
     velocity_px_s: tuple[float, float]
     quality_score: float
+    observed_aim_px: tuple[float, float]
+    filtered_aim_px: tuple[float, float]
+    velocity_valid: bool
     missed_frames: int
     last_seen_ns: int
     is_predicted: bool
@@ -233,6 +236,9 @@ class Track:
         y2: float | None = None,
         velocity_px_s: tuple[float, float] | None = None,
         quality_score: float | None = None,
+        observed_aim_px: tuple[float, float] | None = None,
+        filtered_aim_px: tuple[float, float] | None = None,
+        velocity_valid: bool = False,
         missed_frames: int = 0,
         last_seen_ns: int = 0,
         is_predicted: bool = False,
@@ -249,6 +255,19 @@ class Track:
             "quality_score",
             float(self.score if quality_score is None else quality_score),
         )
+        observed_aim = observed_aim_px or (self.box.center_x, self.box.center_y)
+        filtered_aim = filtered_aim_px or observed_aim
+        object.__setattr__(
+            self,
+            "observed_aim_px",
+            (float(observed_aim[0]), float(observed_aim[1])),
+        )
+        object.__setattr__(
+            self,
+            "filtered_aim_px",
+            (float(filtered_aim[0]), float(filtered_aim[1])),
+        )
+        object.__setattr__(self, "velocity_valid", bool(velocity_valid))
         object.__setattr__(self, "missed_frames", int(missed_frames))
         object.__setattr__(self, "last_seen_ns", int(last_seen_ns))
         object.__setattr__(self, "is_predicted", bool(is_predicted))

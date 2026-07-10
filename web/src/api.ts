@@ -128,6 +128,9 @@ export type Statistics = {
   inference_counter: number;
   dropped_counter: number;
   skipped_counter: number;
+  published_frames?: number;
+  overwritten_frames?: number;
+  acquired_frames?: number;
   capture_fps: number;
   inference_fps: number;
   queue_latency?: number;
@@ -151,6 +154,9 @@ export type Statistics = {
   last_probe_observed_ts_ns?: number;
   last_pts_to_probe_ms?: number;
   last_frame_age_ms?: number;
+  latest_frame_age_ms?: number;
+  appsink_caps?: string;
+  actual_pipeline_string?: string;
   last_inference_latency_ms?: number;
   last_detection_count?: number;
 };

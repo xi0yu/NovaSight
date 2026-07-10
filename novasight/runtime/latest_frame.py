@@ -56,6 +56,12 @@ class LatestFrameBroker:
         self._pending: FrameHandle | None = None
         self._published_generation = -1
         self._published_frame_id = -1
+        self._published_capture_ts_ns = 0
+        self._published_width = 0
+        self._published_height = 0
+        self._published_format = ""
+        self._published_resource_memory = ""
+        self._published_capture_ts_source = ""
         self._acquired_generation = -1
         self._acquired_frame_id = -1
         self._published_frames = 0
@@ -83,6 +89,7 @@ class LatestFrameBroker:
                 self._pending = frame
                 self._published_generation = int(frame.generation)
                 self._published_frame_id = int(frame.frame_id)
+                self._record_published_frame(frame)
                 self._published_frames += 1
                 self._last_publish_ts_ns = time.monotonic_ns()
                 self._condition.notify_all()
@@ -90,6 +97,7 @@ class LatestFrameBroker:
                 self._pending = frame
                 self._published_generation = int(frame.generation)
                 self._published_frame_id = int(frame.frame_id)
+                self._record_published_frame(frame)
                 self._published_frames += 1
                 self._last_publish_ts_ns = time.monotonic_ns()
                 self._condition.notify_all()
@@ -127,6 +135,12 @@ class LatestFrameBroker:
             self._pending = None
             self._published_generation = -1
             self._published_frame_id = -1
+            self._published_capture_ts_ns = 0
+            self._published_width = 0
+            self._published_height = 0
+            self._published_format = ""
+            self._published_resource_memory = ""
+            self._published_capture_ts_source = ""
             self._acquired_generation = -1
             self._acquired_frame_id = -1
             self._published_frames = 0
@@ -146,6 +160,17 @@ class LatestFrameBroker:
                 "max_pending_depth": 1,
                 "published_generation": self._published_generation,
                 "published_frame_id": self._published_frame_id,
+                "published_capture_ts_ns": self._published_capture_ts_ns,
+                "published_frame_age_ms": (
+                    max(0.0, (time.monotonic_ns() - self._published_capture_ts_ns) / 1e6)
+                    if self._published_capture_ts_ns > 0
+                    else None
+                ),
+                "published_width": self._published_width,
+                "published_height": self._published_height,
+                "published_format": self._published_format,
+                "published_resource_memory": self._published_resource_memory,
+                "published_capture_ts_source": self._published_capture_ts_source,
                 "acquired_generation": self._acquired_generation,
                 "acquired_frame_id": self._acquired_frame_id,
                 "published_frames": self._published_frames,
@@ -157,6 +182,14 @@ class LatestFrameBroker:
                 "last_publish_ts_ns": self._last_publish_ts_ns,
                 "last_acquire_ts_ns": self._last_acquire_ts_ns,
             }
+
+    def _record_published_frame(self, frame: FrameHandle) -> None:
+        self._published_capture_ts_ns = int(frame.capture_ts_ns)
+        self._published_width = int(frame.width)
+        self._published_height = int(frame.height)
+        self._published_format = str(frame.format)
+        self._published_resource_memory = str(frame.metadata.get("resource_memory") or "")
+        self._published_capture_ts_source = str(frame.metadata.get("capture_ts_source") or "")
 
 
 LatestFrameExchange = LatestFrameBroker

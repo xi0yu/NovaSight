@@ -66,12 +66,12 @@ class RuntimeConfigStore:
                 "calibration": {
                     "profile_id": config.calibration.profile_id,
                     "profile_version": config.calibration.profile_version,
-                    "fov_x_deg": config.calibration.fov_x_deg,
-                    "counts_per_360_x": config.calibration.counts_per_360_x,
-                    "counts_per_360_y": config.calibration.counts_per_360_y,
-                    "invert_y": config.calibration.invert_y,
                     "game_sensitivity_fingerprint": config.calibration.game_sensitivity_fingerprint,
-                    "projection_profile": config.calibration.projection_profile,
+                    "control_mode": config.control.mode,
+                    "fov_x_deg": config.control.calibrated_angular.fov_x_deg,
+                    "counts_per_360_x": config.control.calibrated_angular.counts_per_360_x,
+                    "counts_per_360_y": config.control.calibrated_angular.counts_per_360_y,
+                    "invert_y": config.control.shared.invert_y,
                 },
                 "consumers": {
                     "preview": config.consumers.preview,

@@ -92,6 +92,7 @@ class ReplayAcceptanceGate:
     max_overshoot_count: int | None = None
     max_timestamp_error_count: int = 0
     min_predicted_count: int = 0
+    max_predicted_count: int | None = None
     min_missing_count: int = 0
     min_switch_count: int = 0
     min_device_failure_count: int = 0
@@ -269,7 +270,7 @@ def build_default_replay_acceptance_cases() -> tuple[ReplayAcceptanceCase, ...]:
             ),
             injection=ReplayInjection(miss_frame_ids=frozenset({2})),
             gate=ReplayAcceptanceGate(
-                min_predicted_count=1,
+                max_predicted_count=0,
                 min_missing_count=1,
                 required_reason_codes=frozenset({"SINGLE_FRAME_MISS_INJECTED"}),
             ),
@@ -400,6 +401,8 @@ def _evaluate_gate(result: ReplayResult, gate: ReplayAcceptanceGate) -> list[str
         )
     if metrics.predicted_count < gate.min_predicted_count:
         failures.append(f"predicted_count={metrics.predicted_count} < {gate.min_predicted_count}")
+    if gate.max_predicted_count is not None and metrics.predicted_count > gate.max_predicted_count:
+        failures.append(f"predicted_count={metrics.predicted_count} > {gate.max_predicted_count}")
     if metrics.missing_count < gate.min_missing_count:
         failures.append(f"missing_count={metrics.missing_count} < {gate.min_missing_count}")
     if metrics.switch_count < gate.min_switch_count:
@@ -487,7 +490,8 @@ def _acceptance_record(
             "control_height_px": control_height,
             "candidate_count": 1,
             "track_id": track_id,
-            "track_state": "CONFIRMED",
+            "track_state": "ACTIVE",
+            "control_mode": "calibrated_angular",
             "target_confidence": 0.92,
             "kalman_x_px": control_width * 0.5 + error_x_rad * 1000.0,
             "kalman_y_px": control_height * 0.5 + error_y_rad * 1000.0,
@@ -503,6 +507,8 @@ def _acceptance_record(
             "prediction_applied": abs(vx) > 0 or abs(vy) > 0,
             "observed_error_x_px": error_x_rad * 1000.0,
             "observed_error_y_px": error_y_rad * 1000.0,
+            "predicted_error_x_px": error_x_rad * 1000.0 + vx * 0.012,
+            "predicted_error_y_px": error_y_rad * 1000.0 + vy * 0.012,
             "observed_error_x_rad": error_x_rad,
             "observed_error_y_rad": error_y_rad,
             "predicted_error_x_rad": error_x_rad + vx * 0.000012,
@@ -515,10 +521,16 @@ def _acceptance_record(
             "requested_output_y_rad": error_y_rad * 0.35,
             "limited_output_x_rad": error_x_rad * 0.35,
             "limited_output_y_rad": error_y_rad * 0.35,
-            "counts_x_float": error_x_rad * 9980.0 / 6.283185307179586,
-            "counts_y_float": error_y_rad * 9980.0 / 6.283185307179586,
-            "requested_counts_x": count_x,
-            "requested_counts_y": count_y,
+            "theoretical_counts_x_float": error_x_rad * 9980.0 / 6.283185307179586,
+            "theoretical_counts_y_float": error_y_rad * 9980.0 / 6.283185307179586,
+            "mode_limited_counts_x_float": float(count_x),
+            "mode_limited_counts_y_float": float(count_y),
+            "deadzone_limited_counts_x_float": float(count_x),
+            "deadzone_limited_counts_y_float": float(count_y),
+            "slew_limited_counts_x_float": float(count_x),
+            "slew_limited_counts_y_float": float(count_y),
+            "feasible_counts_x_float": float(count_x),
+            "feasible_counts_y_float": float(count_y),
             "residual_x_counts": 0.0,
             "residual_y_counts": 0.0,
             "budget_clamped_x": False,
@@ -566,11 +578,7 @@ def _apply_injections(record: dict[str, Any], injection: ReplayInjection) -> lis
 
 
 def _apply_single_miss(record: dict[str, Any]) -> None:
-    record["candidate_count"] = 0
-    record["target_confidence"] = ""
-    record["track_state"] = "PREDICTING"
-    record["prediction_applied"] = True
-    record["global_state"] = record.get("global_state") or "predicting"
+    _apply_long_lost(record)
     record["reason_code"] = "SINGLE_FRAME_MISS_INJECTED"
 
 
@@ -732,7 +740,7 @@ def _truthy(value: Any) -> bool:
 
 def _is_missing_record(record: dict[str, Any]) -> bool:
     state = _text(record.get("track_state"))
-    if state in {"PREDICTING", "MISSING", "LOST"}:
+    if state == "LOST":
         return True
     candidate_count = _optional_int(record.get("candidate_count"))
     return candidate_count == 0

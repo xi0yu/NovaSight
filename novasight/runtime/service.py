@@ -12,10 +12,13 @@ from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.coordinates import CoordinateTransform
 from novasight.control import (
+    CalibratedAngularControllerConfig,
     MouseControllerConfig,
     MouseController,
     MouseObservation,
     RawAimPointProjector,
+    SharedOutputConfig,
+    UniversalSaturatedControllerConfig,
     plan_step_capacity,
     target_motion_estimate_from_debug,
 )
@@ -199,9 +202,16 @@ class RuntimeService:
         }
 
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
+        mode_changed = str(config.control.mode) != str(self.config.control.mode)
         new_calibration_signature = self._config_calibration_signature(config)
         calibration_changed = new_calibration_signature != self._runtime_calibration_signature
-        reset_reason = "CALIBRATION_PROFILE_CHANGED" if calibration_changed else "CONTROL_CONFIG_UPDATED"
+        reset_reason = (
+            "CONTROL_MODE_CHANGED"
+            if mode_changed
+            else "CALIBRATION_PROFILE_CHANGED"
+            if calibration_changed
+            else "CONTROL_CONFIG_UPDATED"
+        )
         with self._control_lock:
             self.config = config
             self.control_timing.reset()
@@ -221,7 +231,11 @@ class RuntimeService:
                 gpu_preprocessor=create_gpu_resource_preprocessor(config),
             )
         self._log_production_control_chain(
-            "calibration_profile_changed" if calibration_changed else "config_updated"
+            "control_mode_changed"
+            if mode_changed
+            else "calibration_profile_changed"
+            if calibration_changed
+            else "config_updated"
         )
         return self.config_store.replace(config)
 
@@ -259,17 +273,18 @@ class RuntimeService:
     @staticmethod
     def _config_calibration_signature(config: RuntimeConfig) -> tuple[Any, ...]:
         calibration = config.calibration
+        calibrated = config.control.calibrated_angular
+        shared = config.control.shared
         capture = config.capture
         roi = config.roi
         return (
             str(calibration.profile_id).strip(),
             int(calibration.profile_version),
-            str(calibration.fov_semantics).strip(),
-            float(calibration.fov_x_deg),
-            float(calibration.counts_per_360_x),
-            float(calibration.counts_per_360_y),
+            float(calibrated.fov_x_deg),
+            float(calibrated.counts_per_360_x),
+            float(calibrated.counts_per_360_y),
+            bool(shared.invert_y),
             str(calibration.game_sensitivity_fingerprint).strip(),
-            str(calibration.projection_profile).strip(),
             int(capture.width),
             int(capture.height),
             int(roi.size),
@@ -304,22 +319,25 @@ class RuntimeService:
 
     def _log_production_control_chain(self, event: str) -> None:
         calibration = self.config.calibration
+        calibrated = self.config.control.calibrated_angular
+        shared = self.config.control.shared
+        mode = self.config.control.mode
         selected_executor = getattr(self.executors, "selected", None) or self.config.control.output_mode
         logger.info(
             "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
             "counts_per_360_x=%.3f counts_per_360_y=%.3f invert_y=%s",
             event,
-            "RawBBox+KalmanPrediction->ObservedD+PredictedP->RadLimits->Counts->CommandScheduler->kmNet",
-            "mouse_control",
+            "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController->SharedCountLimits->CommandScheduler->kmNet",
+            mode,
             selected_executor,
             self.config.control.trigger_mode,
             calibration.profile_id,
             calibration.profile_version,
-            float(calibration.fov_x_deg),
-            float(calibration.counts_per_360_x),
-            float(calibration.counts_per_360_y),
-            bool(calibration.invert_y),
+            float(calibrated.fov_x_deg),
+            float(calibrated.counts_per_360_x),
+            float(calibrated.counts_per_360_y),
+            bool(shared.invert_y),
         )
 
     def _calibration_fingerprint_status(self) -> dict[str, Any]:
@@ -327,6 +345,17 @@ class RuntimeService:
         observed = str(self._external_sensitivity_fingerprint).strip()
         source = str(self._external_sensitivity_source).strip()
         updated_ts_ns = int(self._external_sensitivity_ts_ns or 0)
+        if self.config.control.mode != "calibrated_angular":
+            return {
+                "state": "not_required",
+                "control_allowed": True,
+                "expected_fingerprint": expected,
+                "observed_fingerprint": observed,
+                "source": source,
+                "updated_ts_ns": updated_ts_ns,
+                "reason_code": "",
+                "reason": "universal_saturated does not require angular calibration",
+            }
         if not observed:
             return {
                 "state": "unverified",
@@ -1850,15 +1879,9 @@ class RuntimeService:
     @staticmethod
     def _global_state_from_selection_state(state: Any) -> str:
         normalized = str(state or "").strip().lower()
-        if normalized in {"fresh", "locked", "switch_committed", "committed_initial"}:
+        if normalized in {"fresh", "locked", "acquire", "acquiring", "switch_committed", "committed_initial"}:
             return "TRACKING"
-        if normalized in {"acquire", "acquiring"}:
-            return "ACQUIRING"
-        if normalized == "predicting":
-            return "PREDICTING"
-        if normalized in {"identity_uncertain", "switch_pending"}:
-            return "IDENTITY_UNCERTAIN"
-        if normalized in {"target_unavailable", "missing", "no_target", "reacquire", "lost"}:
+        if normalized in {"target_unavailable", "missing", "no_target", "reacquire", "lost", "switch_pending"}:
             return "TARGET_UNAVAILABLE"
         if normalized == "cooldown":
             return "COOLDOWN"
@@ -2000,16 +2023,21 @@ class RuntimeService:
             quality_confidence_weight=float(getattr(self.config.control, "candidate_quality_confidence_weight", 0.7)),
             quality_area_weight=float(getattr(self.config.control, "candidate_quality_area_weight", 0.3)),
             class_priority_quality_margin=float(getattr(self.config.control, "class_priority_quality_margin", 0.08)),
-            tracker_confirm_frames=int(getattr(self.config.control, "tracker_confirm_frames", 2)),
+            tracker_max_match_distance=float(
+                getattr(self.config.control, "tracker_max_match_distance", 1.5)
+            ),
+            tracker_position_cost_weight=float(
+                getattr(self.config.control, "tracker_position_cost_weight", 0.75)
+            ),
+            tracker_iou_cost_weight=float(
+                getattr(self.config.control, "tracker_iou_cost_weight", 0.25)
+            ),
+            tracker_max_missed_frames=int(
+                getattr(self.config.control, "tracker_max_missed_frames", 2)
+            ),
             target_switch_min_preference_advantage=float(getattr(self.config.control, "target_switch_min_preference_advantage", 0.08)),
             target_switch_min_continuity_score=float(getattr(self.config.control, "target_switch_min_continuity_score", 0.70)),
             target_switch_delay_ms=float(self.config.control.target_switch_delay_ms),
-            tracker_matching_distance_px=float(getattr(self.config.control, "tracker_matching_distance_px", 140.0)),
-            tracker_ambiguity_margin=float(getattr(self.config.control, "tracker_ambiguity_margin", 0.08)),
-            lost_target_timeout_ms=float(self.config.control.lost_target_timeout_ms),
-            tracker_delete_timeout_ms=float(getattr(self.config.control, "tracker_delete_timeout_ms", 250.0)),
-            tracker_match_threshold=float(getattr(self.config.control, "tracker_match_threshold", 0.65)),
-            tracker_mahalanobis_gate=float(getattr(self.config.control, "tracker_mahalanobis_gate", 9.21)),
             kalman_acceleration_noise=float(getattr(self.config.control, "kalman_acceleration_noise", 1200.0)),
             kalman_measurement_noise_x=float(getattr(self.config.control, "kalman_measurement_noise_x", 16.0)),
             kalman_measurement_noise_y=float(getattr(self.config.control, "kalman_measurement_noise_y", 16.0)),
@@ -2026,7 +2054,7 @@ class RuntimeService:
         )
 
     def _active_aim_ratio(self) -> float:
-        return float(self.config.control.aim.y_ratio) * 100.0
+        return float(self.config.control.aim.y_ratio)
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
         selected = str(getattr(self.config.inference, "detection_class_filter", "all"))
@@ -2080,25 +2108,39 @@ class RuntimeService:
 
     def _create_mouse_controller(self, config: RuntimeConfig) -> MouseController:
         max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
+        calibrated = config.control.calibrated_angular
+        universal = config.control.universal_saturated
+        shared = config.control.shared
         return MouseController(
             MouseControllerConfig(
-                fov_x_deg=float(config.calibration.fov_x_deg),
-                counts_per_360_x=float(config.calibration.counts_per_360_x),
-                counts_per_360_y=float(config.calibration.counts_per_360_y),
-                invert_y=bool(config.calibration.invert_y),
-                kp_x=float(config.control.kp_x),
-                kp_y=float(config.control.kp_y),
-                kd_x=float(config.control.kd_x),
-                kd_y=float(config.control.kd_y),
-                d_ema_alpha=float(config.control.d_ema_alpha),
-                deadzone_px_x=float(config.control.deadzone_px_x),
-                deadzone_px_y=float(config.control.deadzone_px_y),
-                max_output_rad_x=float(config.control.max_output_rad_x),
-                max_output_rad_y=float(config.control.max_output_rad_y),
-                max_output_rate_rad_s_x=float(config.control.max_output_rate_rad_s_x),
-                max_output_rate_rad_s_y=float(config.control.max_output_rate_rad_s_y),
-                max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
-                max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
+                mode=str(config.control.mode),
+                calibrated_angular=CalibratedAngularControllerConfig(
+                    fov_x_deg=float(calibrated.fov_x_deg),
+                    counts_per_360_x=float(calibrated.counts_per_360_x),
+                    counts_per_360_y=float(calibrated.counts_per_360_y),
+                    kp_x=float(calibrated.kp_x),
+                    kp_y=float(calibrated.kp_y),
+                    kd_x=float(calibrated.kd_x),
+                    kd_y=float(calibrated.kd_y),
+                    d_ema_alpha=float(calibrated.d_ema_alpha),
+                    max_angle_step_x_rad=math.radians(float(calibrated.max_angle_step_x_deg)),
+                    max_angle_step_y_rad=math.radians(float(calibrated.max_angle_step_y_deg)),
+                ),
+                universal_saturated=UniversalSaturatedControllerConfig(
+                    response_scale_x_px=float(universal.response_scale_x_px),
+                    response_scale_y_px=float(universal.response_scale_y_px),
+                    max_step_x_counts=float(universal.max_step_x_counts),
+                    max_step_y_counts=float(universal.max_step_y_counts),
+                ),
+                shared=SharedOutputConfig(
+                    deadzone_x_px=float(shared.deadzone_x_px),
+                    deadzone_y_px=float(shared.deadzone_y_px),
+                    max_count_slew_x=float(shared.max_count_slew_x),
+                    max_count_slew_y=float(shared.max_count_slew_y),
+                    invert_y=bool(shared.invert_y),
+                    max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
+                    max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
+                ),
             )
         )
 
@@ -2197,14 +2239,12 @@ class RuntimeService:
         velocity_confidence = float(executed_control["velocity_confidence"])
         prediction_confidence = base_prediction_confidence * velocity_confidence
         prediction_scale = max(0.0, min(1.5, float(self.config.control.prediction_strength)))
-        predicted_center_x = float(target.cx)
-        predicted_center_y = float(target.cy)
+        predicted_roi_x = float(estimate.x)
+        predicted_roi_y = float(estimate.y)
         if bool(self.config.control.prediction_x_enabled):
-            predicted_center_x += float(estimate.vx) * horizon_s * prediction_scale * prediction_confidence
+            predicted_roi_x += float(estimate.vx) * horizon_s * prediction_scale * prediction_confidence
         if bool(self.config.control.prediction_y_enabled):
-            predicted_center_y += float(estimate.vy) * horizon_s * prediction_scale * prediction_confidence
-        predicted_roi_x = predicted_center_x
-        predicted_roi_y = predicted_center_y + (y_ratio - 0.5) * float(target.h)
+            predicted_roi_y += float(estimate.vy) * horizon_s * prediction_scale * prediction_confidence
 
         predicted_control_x = 0.0
         predicted_control_y = 0.0
@@ -2257,8 +2297,8 @@ class RuntimeService:
                 "kalman_y_px": estimate.y,
                 "kalman_vx_px_s": estimate.vx,
                 "kalman_vy_px_s": estimate.vy,
-                "predicted_center_x_roi_px": predicted_center_x,
-                "predicted_center_y_roi_px": predicted_center_y,
+                "prediction_origin_x_roi_px": estimate.x,
+                "prediction_origin_y_roi_px": estimate.y,
                 "predicted_aim_x_roi_px": predicted_roi_x,
                 "predicted_aim_y_roi_px": predicted_roi_y,
                 "raw_aim": raw_aim.debug_payload(),

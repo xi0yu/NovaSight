@@ -6,6 +6,7 @@ from typing import Iterable
 
 from novasight.contracts import Detection, FrameContext, Track
 from novasight.runtime.candidates import (
+    BasicCandidateFilter,
     CandidateFilter,
     CandidateFilterConfig,
     CandidateFilterResult,
@@ -83,7 +84,7 @@ class RuntimeTargetSelector:
         *,
         min_confidence: float,
         fov_ratio: float,
-        aim_ratio: float = 50.0,
+        aim_ratio: float = 0.5,
         class_filter: str = "all",
         class_priority: Iterable[int] = (),
         sticky_bias: float = 0.25,
@@ -93,13 +94,10 @@ class RuntimeTargetSelector:
         quality_confidence_weight: float = 0.7,
         quality_area_weight: float = 0.3,
         class_priority_quality_margin: float = 0.08,
-        tracker_confirm_frames: int = 2,
-        tracker_matching_distance_px: float = 140.0,
-        tracker_ambiguity_margin: float = 0.08,
-        lost_target_timeout_ms: float = 120.0,
-        tracker_delete_timeout_ms: float = 250.0,
-        tracker_match_threshold: float = 0.65,
-        tracker_mahalanobis_gate: float = 9.21,
+        tracker_max_match_distance: float = 1.5,
+        tracker_position_cost_weight: float = 0.75,
+        tracker_iou_cost_weight: float = 0.25,
+        tracker_max_missed_frames: int = 2,
         kalman_acceleration_noise: float = 1200.0,
         kalman_measurement_noise_x: float = 16.0,
         kalman_measurement_noise_y: float = 16.0,
@@ -117,10 +115,14 @@ class RuntimeTargetSelector:
         target_switch_min_continuity_score: float = 0.70,
         target_switch_delay_ms: float = 50.0,
     ) -> TargetSelection:
-        raw_candidates: list[Target] = list(context.tracks) or list(context.detections)
+        raw_candidates: list[Target] = list(context.detections)
         if context.width <= 0 or context.height <= 0:
             self._lost_count += 1 if self._locked is not None else 0
-            tracker_update = self.tracker.update(context, [])
+            tracker_update = self.tracker.update(
+                [],
+                int(context.capture_ts_ns or 0),
+                frame_id=context.frame_id,
+            )
             self.last_debug = {
                 "raw_candidates": len(raw_candidates),
                 "filtered_candidates": 0,
@@ -131,13 +133,10 @@ class RuntimeTargetSelector:
             return self._lost_or_clear(lost_grace_frames, "invalid frame geometry", 0, 0)
 
         self.tracker.config = TrackerConfig(
-            confirm_frames=max(1, int(tracker_confirm_frames)),
-            matching_distance_px=max(1.0, float(tracker_matching_distance_px)),
-            ambiguity_margin=max(0.0, float(tracker_ambiguity_margin)),
-            missing_timeout_ms=max(0.0, float(lost_target_timeout_ms)),
-            delete_timeout_ms=max(1.0, float(tracker_delete_timeout_ms)),
-            match_threshold=max(0.0, min(1.0, float(tracker_match_threshold))),
-            mahalanobis_gate=max(1e-6, float(tracker_mahalanobis_gate)),
+            max_match_distance=max(0.0, float(tracker_max_match_distance)),
+            position_cost_weight=max(0.0, float(tracker_position_cost_weight)),
+            iou_cost_weight=max(0.0, float(tracker_iou_cost_weight)),
+            max_missed_frames=max(0, int(tracker_max_missed_frames)),
             kalman=KalmanConfig(
                 enabled=True,
                 acceleration_noise=max(1e-6, float(kalman_acceleration_noise)),
@@ -155,71 +154,35 @@ class RuntimeTargetSelector:
                 prediction_decay_tau_ms=max(1.0, float(kalman_prediction_decay_tau_ms)),
             ),
         )
-        filter_result = self._filter_candidates(
+        filter_result = BasicCandidateFilter().apply(
             context,
-            raw_candidates,
-            min_confidence=min_confidence,
-            fov_ratio=fov_ratio,
-            aim_ratio=aim_ratio,
-            class_filter=class_filter,
-            ratio_max_aspect=ratio_max_aspect,
-            quality_confidence_weight=quality_confidence_weight,
-            quality_area_weight=quality_area_weight,
+            allowed_class_ids=parse_allowed_class_ids(class_filter),
+            min_confidence=max(0.0, min(1.0, float(min_confidence))),
+            aim_y_ratio=max(0.0, min(1.0, float(aim_ratio))),
         )
-        scored_candidates = filter_result.candidates
         filter_debug = filter_result.debug_payload()
-        if not scored_candidates:
-            tracker_update = self._update_tracker_without_candidates(context, filter_result)
-            if tracker_update.tracks:
-                return self._select_from_tracker_update(
-                    context,
-                    tracker_update,
-                    filter_debug,
-                    min_confidence=min_confidence,
-                    fov_ratio=fov_ratio,
-                    aim_ratio=aim_ratio,
-                    class_filter=class_filter,
-                    ratio_max_aspect=ratio_max_aspect,
-                    quality_confidence_weight=quality_confidence_weight,
-                    quality_area_weight=quality_area_weight,
-                    class_priority=class_priority,
-                    sticky_bias=sticky_bias,
-                    lock_enabled=lock_enabled,
-                    lost_grace_frames=lost_grace_frames,
-                    class_priority_quality_margin=class_priority_quality_margin,
-                    target_switch_min_preference_advantage=target_switch_min_preference_advantage,
-                    target_switch_min_continuity_score=target_switch_min_continuity_score,
-                    target_switch_delay_ms=target_switch_delay_ms,
-                )
-            self._lost_count += 1 if self._locked is not None else 0
-            self.last_debug = {
-                **filter_debug,
-                "min_confidence": float(min_confidence),
-                "class_filter": str(class_filter),
-                "reason": self._first_rejection_reason(filter_result),
-                "tracker": tracker_update.debug,
-            }
-            return self._lost_or_clear(
-                lost_grace_frames,
-                self._first_rejection_reason(filter_result),
-                0,
-                0,
-                state=tracker_update.state.lower(),
-            )
-
-        tracker_update = self.tracker.update(context, scored_candidates)
+        tracker_update = self.tracker.update(
+            filter_result.observations,
+            int(context.capture_ts_ns or 0),
+            frame_id=context.frame_id,
+        )
         if not tracker_update.tracks:
             self._lost_count += 1 if self._locked is not None else 0
+            unavailable_reason = (
+                self._first_basic_rejection_reason(filter_result.rejected)
+                if filter_result.rejected
+                else tracker_update.reason
+            )
             self.last_debug = {
                 **filter_debug,
                 "min_confidence": float(min_confidence),
                 "class_filter": str(class_filter),
-                "reason": tracker_update.reason,
+                "reason": unavailable_reason,
                 "tracker": tracker_update.debug,
             }
             return self._lost_or_clear(
                 lost_grace_frames,
-                tracker_update.reason,
+                unavailable_reason,
                 0,
                 0,
                 state=tracker_update.state.lower(),
@@ -301,7 +264,7 @@ class RuntimeTargetSelector:
 
         center_x = context.width / 2
         center_y = context.height / 2
-        aim_ratio = max(0.0, min(100.0, float(aim_ratio)))
+        aim_ratio = max(0.0, min(1.0, float(aim_ratio)))
         priority = {int(cls): rank for rank, cls in enumerate(class_priority)}
         locked = self._locked_match(candidates) if lock_enabled else None
         scored_by_id = {id(item.detection): item for item in scored_candidates}
@@ -422,16 +385,8 @@ class RuntimeTargetSelector:
             "to_key": best_key,
             "reason": "same locked target",
         }
-        selection_state = (
-            "predicting"
-            if tracker_update.state == "PREDICTING"
-            else "locked" if selected_locked else "fresh"
-        )
-        selection_reason = (
-            "valid Kalman prediction within limited prediction window"
-            if tracker_update.state == "PREDICTING"
-            else "按质量候选、类别优先级、距离和锁定偏好选择目标"
-        )
+        selection_state = "locked" if selected_locked else "fresh"
+        selection_reason = "按 ACTIVE track、类别优先级、距离和锁定偏好选择目标"
         return TargetSelection(
             target=best,
             state=selection_state,
@@ -443,19 +398,6 @@ class RuntimeTargetSelector:
             distance_px=self._aim_distance(best, center_x, center_y, aim_ratio),
             quality_score=best_scored.quality.quality_score,
         )
-
-    def _update_tracker_without_candidates(
-        self,
-        context: FrameContext,
-        filter_result: CandidateFilterResult,
-    ) -> TrackerUpdate:
-        if any(item.reason == "selection_fov" for item in filter_result.rejected):
-            return self.tracker.mark_unavailable(
-                "OUT_OF_ROI",
-                context=context,
-                reason="candidate outside selection fov",
-            )
-        return self.tracker.update(context, [])
 
     def _filter_candidates(
         self,
@@ -511,6 +453,17 @@ class RuntimeTargetSelector:
             return "no candidate after bbox validation"
         return "no candidate after candidate filter"
 
+    @staticmethod
+    def _first_basic_rejection_reason(rejected: list[dict]) -> str:
+        reasons = [str(item.get("reason") or "") for item in rejected]
+        if reasons and all(reason == "confidence_filter" for reason in reasons):
+            return "no candidate after confidence filter"
+        if reasons and all(reason == "class_filter" for reason in reasons):
+            return "no candidate after class filter"
+        if reasons and all(reason == "invalid_bbox" for reason in reasons):
+            return "no candidate after bbox validation"
+        return "no candidate after basic candidate filter"
+
     def _lost_or_clear(
         self,
         grace: int,
@@ -541,7 +494,9 @@ class RuntimeTargetSelector:
                 lost_count=self._lost_count,
             )
         lost_count = self._lost_count
-        self.reset()
+        self._locked = None
+        self._pending_switch = None
+        self._lost_count = 0
         return TargetSelection(
             None,
             state or "reacquire",
@@ -763,7 +718,7 @@ class RuntimeTargetSelector:
     @staticmethod
     def _aim_y(target: Target, aim_ratio: float) -> float:
         point_y = getattr(target, "point_y", None)
-        ratio = max(0.0, min(100.0, aim_ratio)) / 100.0
+        ratio = max(0.0, min(1.0, aim_ratio))
         return float(point_y(ratio)) if callable(point_y) else float(target.y) + float(target.h) * ratio
 
     def _aim_distance(self, target: Target, center_x: float, center_y: float, aim_ratio: float) -> float:

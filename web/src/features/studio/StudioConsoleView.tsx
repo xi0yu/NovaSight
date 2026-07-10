@@ -15,6 +15,7 @@ import {
   ModelProject,
   ModelVersion,
   RuntimeConfig,
+  RuntimeConfigValue,
   RuntimeState,
   getCaptureCapabilities,
   getModelArtifacts,
@@ -32,10 +33,10 @@ import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle, type NovaIconName } from "../../components/visual";
 
-type ConsolePage = "capture" | "infer" | "params" | "control-test" | "stats" | "latency";
+type ConsolePage = "capture" | "infer" | "control" | "params" | "control-test" | "stats" | "latency";
 
 const DEFAULT_CONSOLE_PAGE: ConsolePage = "capture";
-const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "params", "control-test", "stats", "latency"]);
+const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "control", "params", "control-test", "stats", "latency"]);
 
 type StudioConsoleViewProps = {
   health: HealthResponse | null;
@@ -66,10 +67,11 @@ type LaunchStage = {
 const navItems: { id: ConsolePage; index: string; label: string; icon: NovaIconName }[] = [
   { id: "capture", index: "01", label: "采集", icon: "capture" },
   { id: "infer", index: "02", label: "模型推理", icon: "inference" },
-  { id: "params", index: "03", label: "参数设置", icon: "control" },
-  { id: "control-test", index: "04", label: "控制测试", icon: "kmbox" },
-  { id: "stats", index: "05", label: "统计", icon: "performance" },
-  { id: "latency", index: "06", label: "采集延迟", icon: "latency" }
+  { id: "control", index: "03", label: "控制", icon: "control" },
+  { id: "params", index: "04", label: "参数设置", icon: "settings" },
+  { id: "control-test", index: "05", label: "控制测试", icon: "kmbox" },
+  { id: "stats", index: "06", label: "统计", icon: "performance" },
+  { id: "latency", index: "07", label: "采集延迟", icon: "latency" }
 ];
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
@@ -152,39 +154,6 @@ const KMNET_RECOMMENDED = {
   monitor_port: 5001
 };
 
-const EXPERIMENTAL_ANGLE_DEFAULTS = {
-  experimental_angle_kp_x: 0.35,
-  experimental_angle_kp_y: 0.24,
-  experimental_angle_ki: 0,
-  experimental_angle_kd: 0,
-  experimental_angle_integral_limit: 0,
-  experimental_angle_config_level: "basic",
-  experimental_angle_speed: 1,
-  experimental_angle_smooth_factor: 0,
-  experimental_angle_deadzone_px: 0,
-  experimental_angle_derivative_filter: 1,
-  experimental_angle_max_step_counts: 80,
-  experimental_angle_control_hz: 60,
-  experimental_angle_kalman_enabled: true,
-  experimental_angle_kalman_process_noise: 2,
-  experimental_angle_kalman_measurement_noise: 16,
-  experimental_angle_hungarian_enabled: true,
-  experimental_angle_matching_distance_px: 140,
-  experimental_angle_max_extrapolate_frames: 3,
-  experimental_angle_target_filter_enabled: true,
-  experimental_angle_target_filter_min_score: 0,
-  experimental_angle_target_filter_fov_ratio: 1,
-  experimental_angle_target_filter_same_class: false,
-  experimental_angle_prediction_lead_ms: 0,
-  experimental_angle_extrapolate_confidence_decay: 1,
-  experimental_angle_magnet_enabled: false,
-  experimental_angle_magnet_radius_px: 120,
-  experimental_angle_magnet_strength: 0.25,
-  experimental_angle_magnet_curve: 1,
-  experimental_angle_magnet_deadzone_px: 0,
-  experimental_angle_magnet_max_counts: 20
-};
-
 const ARTIFACT_KIND_RANK: Record<string, number> = {
   engine: 0,
   onnx: 1
@@ -245,67 +214,6 @@ function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-function readTraceStages(value: unknown): Record<string, unknown>[] {
-  const stages = asRecord(value).stages;
-  return Array.isArray(stages) ? stages.map(asRecord) : [];
-}
-
-type BusinessTraceGuidance = {
-  tone: "ok" | "blocked" | "failed";
-  title: string;
-  detail: string;
-  action: string;
-};
-
-function buildBusinessTraceGuidance(
-  trace: Record<string, unknown>,
-  stages: Record<string, unknown>[]
-): BusinessTraceGuidance {
-  const message = readString(trace.message, "等待运行状态");
-  const failedStage = stages.find((stage) => readString(stage.status) === "failed");
-  const blockedStage = stages.find((stage) => readString(stage.status) === "blocked");
-  const summaryStage = failedStage ?? blockedStage;
-  const summaryLabel = readString(summaryStage?.label, "链路");
-  const summaryMessage = readString(summaryStage?.message, message);
-  const staleBatch =
-    /DetectionBatch frame age exceeds control latency guard/i.test(message) ||
-    /DetectionBatch frame age exceeds control latency guard/i.test(summaryMessage) ||
-    /DetectionBatch generation is no longer latest generation/i.test(message) ||
-    /DetectionBatch generation is no longer latest generation/i.test(summaryMessage) ||
-    /DetectionBatch frame_id is no longer latest frame_id/i.test(message) ||
-    /DetectionBatch frame_id is no longer latest frame_id/i.test(summaryMessage);
-
-  if (staleBatch) {
-    const ageMatch = (message || summaryMessage).match(/([0-9.]+)ms\s*>\s*([0-9.]+)ms/);
-    const detail = ageMatch
-      ? `采集与 ROI 已有反馈，但 DetectionBatch age=${ageMatch[1]}ms，超过控制保护阈值 ${ageMatch[2]}ms。`
-      : "采集与 ROI 已有反馈，但推理结束时已有更新的 latest 帧，当前 DetectionBatch 被判定为旧结果。";
-    return {
-      tone: "failed",
-      title: "推理批次不是最新，控制链路已保护拦截",
-      detail,
-      action: "优先检查 latest 帧准入、TensorRT 推理耗时和 runtime 消费是否滞后；目标、控制、执行阻塞是后续影响。"
-    };
-  }
-
-  if (summaryStage) {
-    const status = readString(summaryStage.status, "blocked") === "failed" ? "failed" : "blocked";
-    return {
-      tone: status,
-      title: `${summaryLabel}阶段${status === "failed" ? "失败" : "阻塞"}`,
-      detail: summaryMessage || "当前阶段没有可继续消费的运行证据。",
-      action: "先处理该阶段原因，再观察后续目标、控制和执行是否恢复。"
-    };
-  }
-
-  return {
-    tone: "ok",
-    title: "主营链路已贯通",
-    detail: message,
-    action: "继续观察目标选择、控制量和执行输出是否稳定。"
-  };
-}
-
 function triggerModeLabel(value: string): string {
   if (value === "always") {
     return "总是启用";
@@ -320,18 +228,58 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
+const NO_SAMPLE = "—";
+const NOT_INSTRUMENTED = "未接入";
+const UNAVAILABLE = "不可用";
+
 function formatNumber(value: unknown, digits = 1): string {
   const number = readNumber(value, Number.NaN);
-  return Number.isFinite(number) ? number.toFixed(digits) : "待机";
+  return Number.isFinite(number) ? number.toFixed(digits) : NO_SAMPLE;
 }
 
 function formatPercent(value: unknown, digits = 1): string {
   const number = readNumber(value, Number.NaN);
-  return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : "待机";
+  return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : NO_SAMPLE;
 }
 
 function formatShape(value: unknown): string {
-  return Array.isArray(value) && value.length > 0 ? value.map((item) => String(item)).join("x") : "-";
+  if (Array.isArray(value) && value.length > 0) {
+    return value.map((item) => String(item)).join("x");
+  }
+  const text = readString(value, "").trim();
+  return text || NO_SAMPLE;
+}
+
+function formatOptionalNumber(value: unknown, digits = 1, unit = ""): string {
+  const number = readNullableNumber(value);
+  if (number === null) {
+    return NO_SAMPLE;
+  }
+  return `${number.toFixed(digits)}${unit ? ` ${unit}` : ""}`;
+}
+
+function formatOptionalInteger(value: unknown): string {
+  const number = readNullableNumber(value);
+  return number === null || number < 0 ? NO_SAMPLE : Math.trunc(number).toString();
+}
+
+function formatPoint(x: unknown, y: unknown, digits = 1, unit = ""): string {
+  const xNumber = readNullableNumber(x);
+  const yNumber = readNullableNumber(y);
+  if (xNumber === null || yNumber === null) {
+    return NO_SAMPLE;
+  }
+  const suffix = unit ? ` ${unit}` : "";
+  return `${xNumber.toFixed(digits)}, ${yNumber.toFixed(digits)}${suffix}`;
+}
+
+function formatDurationFromNs(start: unknown, end: unknown): string {
+  const startNs = readNullableNumber(start);
+  const endNs = readNullableNumber(end);
+  if (startNs === null || endNs === null || startNs <= 0 || endNs < startNs) {
+    return NO_SAMPLE;
+  }
+  return `${((endNs - startNs) / 1e6).toFixed(3)} ms`;
 }
 
 function shortTimestampSource(value: string): string {
@@ -527,7 +475,7 @@ export function StudioConsoleView({
 
   const capture = runtime?.capture;
   const statistics = runtime?.statistics ?? capture?.statistics;
-  const inferenceLatencyDisplay = statistics?.stage_engine_ms ?? statistics?.inference_latency;
+  const captureStatistics = asRecord(statistics);
   const config = configDraft ?? runtimeConfig;
   const captureConfig = nestedRecord(config, "capture");
   const configuredCaptureDevice = readString(captureConfig.device, "");
@@ -539,7 +487,6 @@ export function StudioConsoleView({
   const inferenceConfig = nestedRecord(config, "inference");
   const preprocessConfig = nestedRecord(config, "preprocess");
   const controlConfig = nestedRecord(config, "control");
-  const calibrationConfig = nestedRecord(config, "calibration");
   const hardwareConfig = nestedRecord(config, "hardware");
   const consumersConfig = nestedRecord(config, "consumers");
   const vision = asRecord(runtime?.vision);
@@ -565,7 +512,6 @@ export function StudioConsoleView({
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
-  const runtimeInferenceLoaded = runtimeInference.loaded === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
@@ -611,24 +557,11 @@ export function StudioConsoleView({
     : runtime?.running
       ? "运行中"
       : "已停止";
-  const engineStatusLabel = mainlineTerminalError
-    ? "管线故障"
-    : runtimeInferenceLoaded
-      ? "已加载"
-      : runtimeInferenceConfigured
-        ? "待启动"
-        : "未配置";
-  const mainlineStatusLabel = mainlineTerminalError
-    ? "管线故障"
-    : runtimeInferenceLoaded
-      ? "运行中"
-      : runtimeInferenceConfigured
-        ? "待启动"
-        : "未配置";
   const runtimeModelOutput = asRecord(runtimeInference.model_output);
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
   const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
   const executorStatus = asRecord(runtime?.executor);
+  const schedulerStatus = asRecord(executorStatus.scheduler);
   const executors = asRecord(executorStatus.executors);
   const kmnetStatus = asRecord(executors.kmnet);
   const selectedProfile = capture?.profile;
@@ -705,84 +638,52 @@ export function StudioConsoleView({
     runtimeInferenceReason,
     runtimeMainlineRunning
   ]);
-  const controlStrategy = "experimental_angle_pid";
+  const controlMode = readString(controlConfig.mode, "universal_saturated");
+  const aimConfig = nestedRecord(controlConfig, "aim");
+  const calibratedAngularConfig = nestedRecord(controlConfig, "calibrated_angular");
+  const universalSaturatedConfig = nestedRecord(controlConfig, "universal_saturated");
+  const sharedControlConfig = nestedRecord(controlConfig, "shared");
+  const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
+  const configuredActuationDelay = readNumber(controlConfig.configured_actuation_delay_s, 0.004);
+  const predictionStrength = readNumber(controlConfig.prediction_strength, 1.0);
+  const predictionXEnabled = readBoolean(controlConfig.prediction_x_enabled, true);
+  const predictionYEnabled = readBoolean(controlConfig.prediction_y_enabled, true);
   const controlMinConfidence = readNumber(controlConfig.min_confidence, 0);
-  const selectionFovRatio = readNumber(controlConfig.fov_ratio, 0.28);
-  const targetLostGraceFrames = readNumber(controlConfig.target_lost_grace_frames, 5);
+  const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
   const candidateQualityAreaWeight = readNumber(controlConfig.candidate_quality_area_weight, 0.3);
   const classPriorityQualityMargin = readNumber(controlConfig.class_priority_quality_margin, 0.08);
-  const trackerConfirmFrames = readNumber(controlConfig.tracker_confirm_frames, 2);
-  const trackerMatchingDistancePx = readNumber(controlConfig.tracker_matching_distance_px, 140);
-  const trackerAmbiguityMargin = readNumber(controlConfig.tracker_ambiguity_margin, 0.08);
-  const trackerMissingTimeoutMs = readNumber(controlConfig.tracker_missing_timeout_ms, 120);
-  const trackerDeleteTimeoutMs = readNumber(controlConfig.tracker_delete_timeout_ms, 250);
-  const trackerMatchThreshold = readNumber(controlConfig.tracker_match_threshold, 0.65);
-  const trackerMahalanobisGate = readNumber(controlConfig.tracker_mahalanobis_gate, 9.21);
+  const trackerMaxMatchDistance = readNumber(controlConfig.tracker_max_match_distance, 1.5);
+  const trackerPositionCostWeight = readNumber(controlConfig.tracker_position_cost_weight, 0.75);
+  const trackerIouCostWeight = readNumber(controlConfig.tracker_iou_cost_weight, 0.25);
+  const trackerMaxMissedFrames = readNumber(controlConfig.tracker_max_missed_frames, 2);
   const targetSwitchPreferenceAdvantage = readNumber(controlConfig.target_switch_min_preference_advantage, 0.08);
   const targetSwitchContinuityScore = readNumber(controlConfig.target_switch_min_continuity_score, 0.7);
-  const targetSwitchConfirmFrames = readNumber(controlConfig.target_switch_confirm_frames, 3);
-  const kalmanEnabled = readBoolean(controlConfig.kalman_enabled, true);
   const kalmanAccelerationNoise = readNumber(controlConfig.kalman_acceleration_noise, 1200);
   const kalmanMeasurementNoiseX = readNumber(controlConfig.kalman_measurement_noise_x, 16);
   const kalmanMeasurementNoiseY = readNumber(controlConfig.kalman_measurement_noise_y, 16);
-  const kalmanMaxPredictMissingMs = readNumber(controlConfig.kalman_max_predict_missing_ms, 80);
-  const kalmanMaxPredictSteps = readNumber(controlConfig.kalman_max_predict_steps, 5);
-  const kalmanMaxPredictDtMs = readNumber(controlConfig.kalman_max_predict_dt_ms, 35);
-  const kalmanMaxPositionSigmaPx = readNumber(controlConfig.kalman_max_position_sigma_px, 45);
-  const kalmanMaxCovarianceTrace = readNumber(controlConfig.kalman_max_covariance_trace, 5000);
-  const kalmanNisThreshold = readNumber(controlConfig.kalman_nis_threshold, 9.21);
-  const kalmanNisHardReject = readNumber(controlConfig.kalman_nis_hard_reject, 16);
-  const kalmanMinIdentityConfidence = readNumber(controlConfig.kalman_min_identity_confidence, 0.7);
-  const kalmanMinPredictionConfidence = readNumber(controlConfig.kalman_min_prediction_confidence, 0.35);
-  const kalmanPredictionDecayTauMs = readNumber(controlConfig.kalman_prediction_decay_tau_ms, 45);
   const moveKind = kmnetMoveKind;
   const moveMs = kmnetTestMs;
-  const commandIntervalMs = readNumber(controlConfig.command_interval_ms, 1);
-  const schedulerCommandTtlMs = readNumber(controlConfig.scheduler_command_ttl_ms, 35);
-  const schedulerPredictedCommandTtlMs = readNumber(controlConfig.scheduler_predicted_command_ttl_ms, 18);
-  const schedulerCancelOnNewFrame = readBoolean(controlConfig.scheduler_cancel_on_new_frame, true);
-  const schedulerCancelOnDirectionChange = readBoolean(controlConfig.scheduler_cancel_on_direction_change, true);
-  const schedulerCancelOnTrackChange = readBoolean(controlConfig.scheduler_cancel_on_track_change, true);
-  const schedulerDeviceErrorCooldownMs = readNumber(controlConfig.scheduler_device_error_cooldown_ms, 50);
-  const experimentalAngleKpX = readNumber(controlConfig.experimental_angle_kp_x, 0.35);
-  const experimentalAngleKpY = readNumber(controlConfig.experimental_angle_kp_y, 0.24);
-  const experimentalAngleKi = readNumber(controlConfig.experimental_angle_ki, 0);
-  const experimentalAngleKd = readNumber(controlConfig.experimental_angle_kd, 0);
-  const experimentalAngleIntegralLimit = readNumber(controlConfig.experimental_angle_integral_limit, 0);
-  const experimentalAngleConfigLevel = readString(controlConfig.experimental_angle_config_level, "basic");
-  const experimentalAngleSpeed = readNumber(controlConfig.experimental_angle_speed, 1);
-  const experimentalAngleSmoothFactor = readNumber(controlConfig.experimental_angle_smooth_factor, 0);
-  const experimentalAngleDeadzonePx = readNumber(controlConfig.experimental_angle_deadzone_px, 0);
-  const experimentalAngleDerivativeFilter = readNumber(controlConfig.experimental_angle_derivative_filter, 1);
-  const experimentalAngleAdvanced = experimentalAngleConfigLevel === "advanced" || experimentalAngleConfigLevel === "developer";
-  const experimentalAngleDeveloper = experimentalAngleConfigLevel === "developer";
-  const experimentalAngleFovX = readNumber(calibrationConfig.fov_x_deg, 105);
-  const experimentalAngleC360X = readNumber(calibrationConfig.counts_per_360_x, 9980);
-  const experimentalAngleC360Y = readNumber(calibrationConfig.counts_per_360_y, experimentalAngleC360X);
-  const experimentalAngleMaxStep = readNumber(controlConfig.experimental_angle_max_step_counts, 80);
-  const experimentalAngleControlHz = readNumber(controlConfig.experimental_angle_control_hz, 60);
-  const experimentalAngleSignX = readNumber(calibrationConfig.axis_sign_x, 1);
-  const experimentalAngleSignY = readNumber(calibrationConfig.axis_sign_y, 1);
-  const experimentalAngleKalmanEnabled = readBoolean(controlConfig.experimental_angle_kalman_enabled, true);
-  const experimentalAngleKalmanProcessNoise = readNumber(controlConfig.experimental_angle_kalman_process_noise, 2);
-  const experimentalAngleKalmanMeasurementNoise = readNumber(controlConfig.experimental_angle_kalman_measurement_noise, 16);
-  const experimentalAngleHungarianEnabled = readBoolean(controlConfig.experimental_angle_hungarian_enabled, true);
-  const experimentalAngleMatchingDistance = readNumber(controlConfig.experimental_angle_matching_distance_px, 140);
-  const experimentalAngleMaxExtrapolateFrames = readNumber(controlConfig.experimental_angle_max_extrapolate_frames, 3);
-  const experimentalAngleTargetFilterEnabled = readBoolean(controlConfig.experimental_angle_target_filter_enabled, true);
-  const experimentalAngleTargetFilterMinScore = readNumber(controlConfig.experimental_angle_target_filter_min_score, 0);
-  const experimentalAngleTargetFilterFovRatio = readNumber(controlConfig.experimental_angle_target_filter_fov_ratio, 1);
-  const experimentalAngleTargetFilterSameClass = readBoolean(controlConfig.experimental_angle_target_filter_same_class, false);
-  const experimentalAnglePredictionLeadMs = readNumber(controlConfig.experimental_angle_prediction_lead_ms, 0);
-  const experimentalAngleExtrapolateConfidenceDecay = readNumber(controlConfig.experimental_angle_extrapolate_confidence_decay, 1);
-  const experimentalAngleMagnetEnabled = readBoolean(controlConfig.experimental_angle_magnet_enabled, false);
-  const experimentalAngleMagnetRadiusPx = readNumber(controlConfig.experimental_angle_magnet_radius_px, 120);
-  const experimentalAngleMagnetStrength = readNumber(controlConfig.experimental_angle_magnet_strength, 0.25);
-  const experimentalAngleMagnetCurve = readNumber(controlConfig.experimental_angle_magnet_curve, 1);
-  const experimentalAngleMagnetDeadzonePx = readNumber(controlConfig.experimental_angle_magnet_deadzone_px, 0);
-  const experimentalAngleMagnetMaxCounts = readNumber(controlConfig.experimental_angle_magnet_max_counts, 20);
+  const calibratedFovX = readNumber(calibratedAngularConfig.fov_x_deg, 105);
+  const calibratedCountsPer360X = readNumber(calibratedAngularConfig.counts_per_360_x, 9980);
+  const calibratedCountsPer360Y = readNumber(calibratedAngularConfig.counts_per_360_y, 9980);
+  const calibratedKpX = readNumber(calibratedAngularConfig.kp_x, 1);
+  const calibratedKpY = readNumber(calibratedAngularConfig.kp_y, 1);
+  const calibratedKdX = readNumber(calibratedAngularConfig.kd_x, 0);
+  const calibratedKdY = readNumber(calibratedAngularConfig.kd_y, 0);
+  const calibratedDEmaAlpha = readNumber(calibratedAngularConfig.d_ema_alpha, 0.3);
+  const calibratedMaxAngleX = readNumber(calibratedAngularConfig.max_angle_step_x_deg, 2);
+  const calibratedMaxAngleY = readNumber(calibratedAngularConfig.max_angle_step_y_deg, 1.5);
+  const universalResponseScaleX = readNumber(universalSaturatedConfig.response_scale_x_px, 160);
+  const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 120);
+  const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 30);
+  const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 24);
+  const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 0);
+  const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 0);
+  const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
+  const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
+  const sharedInvertY = readBoolean(sharedControlConfig.invert_y, false);
   const hardwareKind = readString(hardwareConfig.kind, "kmnet") || "kmnet";
   const outputMode = readString(controlConfig.output_mode, "kmnet") || "kmnet";
   const triggerMode = readString(controlConfig.trigger_mode, "hardware");
@@ -860,6 +761,7 @@ export function StudioConsoleView({
   const target = asRecord(vision.target);
   const control = asRecord(vision.control);
   const selectorDebug = asRecord(control.selector_debug);
+  const trackerRuntimeDebug = asRecord(selectorDebug.tracker);
   const trackDiagnostics = asRecord(control.track_diagnostics ?? target.track_diagnostics);
   const diagnosticTracks = recordArray(trackDiagnostics.tracks);
   const selectedTrackId = finiteNumber(trackDiagnostics.selected_track_id);
@@ -868,16 +770,50 @@ export function StudioConsoleView({
       ? {}
       : diagnosticTracks.find((item) => readNumber(item.track_id, Number.NaN) === selectedTrackId) ?? {};
   const selectedTrackEstimate = asRecord(selectedTrackDebug.estimate);
-  const triggerRaw = asRecord(control.trigger_raw);
-  const triggerLeft = triggerRaw.left === true;
-  const triggerRight = triggerRaw.right === true;
-  const triggerAlwaysActive = triggerRaw.source === "always" && triggerRaw.active === true;
-  const businessTrace = asRecord(vision.trace);
-  const businessTraceStages = readTraceStages(vision.trace);
-  const businessTraceGuidance = buildBusinessTraceGuidance(businessTrace, businessTraceStages);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
-  const rawDetections = readNumber(inferenceTrace.raw_detections, 0);
-  const mappedDetections = readNumber(inferenceTrace.mapped_detections, 0);
+  const mouseObservation = asRecord(control.mouse_observation ?? target.mouse_observation);
+  const rawAimDebug = asRecord(mouseObservation.raw_aim);
+  const controlHasSample = Object.keys(control).length > 0;
+  const controlHasTarget = Object.keys(target).length > 0;
+  const controlCandidateCount = readNullableNumber(
+    control.candidates ?? selectorDebug.filtered_candidates
+  );
+  const controlTrackId = readNullableNumber(
+    target.track_id ?? trackDiagnostics.selected_track_id
+  );
+  const controlWidthPx = readNullableNumber(mouseObservation.control_width_px);
+  const controlHeightPx = readNullableNumber(mouseObservation.control_height_px);
+  const controlCenterX = controlWidthPx === null ? null : controlWidthPx * 0.5;
+  const controlCenterY = controlHeightPx === null ? null : controlHeightPx * 0.5;
+  const predictedAimX = readNullableNumber(mouseObservation.predicted_x_px ?? control.aim_x);
+  const predictedAimY = readNullableNumber(mouseObservation.predicted_y_px ?? control.aim_y);
+  const observedAimX = readNullableNumber(mouseObservation.observed_x_px ?? target.observed_aim_x);
+  const observedAimY = readNullableNumber(mouseObservation.observed_y_px ?? target.observed_aim_y);
+  const predictedErrorXPx =
+    predictedAimX !== null && controlCenterX !== null ? predictedAimX - controlCenterX : null;
+  const predictedErrorYPx =
+    predictedAimY !== null && controlCenterY !== null ? predictedAimY - controlCenterY : null;
+  const predictedErrorDistancePx =
+    predictedErrorXPx !== null && predictedErrorYPx !== null
+      ? Math.hypot(predictedErrorXPx, predictedErrorYPx)
+      : null;
+  const controlMeasurementDtS = readNullableNumber(controlPipeline.measurement_dt_s ?? mouseObservation.measurement_dt_s);
+  const controlPredictionHorizonS = readNullableNumber(mouseObservation.prediction_horizon_s);
+  const controlSendDuration = formatDurationFromNs(
+    execution.device_send_start_ts_ns ?? executionMeta.device_send_start_ts_ns,
+    execution.device_send_end_ts_ns ?? executionMeta.device_send_end_ts_ns
+  );
+  const controlActualDx = executionMeta.driver_dx ?? execution.output_dx ?? executionIntent.dx;
+  const controlActualDy = executionMeta.driver_dy ?? execution.output_dy ?? executionIntent.dy;
+  const controlNoSendReason = execution.sent === true
+    ? "已发送"
+    : !controlHasTarget
+      ? readString(control.selection_reason, "无目标")
+      : control.will_emit !== true
+        ? readString(control.trigger_reason, readString(control.reason, "控制门控未通过"))
+        : kmnetStatus.connected !== true
+          ? "设备未连接"
+          : readString(execution.message, readString(control.reason, "控制输出为零"));
   const inferenceRan = inferenceTrace.ran === true;
   const inferenceAvailable = inferenceTrace.available === true;
   const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
@@ -896,8 +832,35 @@ export function StudioConsoleView({
     Number.NaN
   );
   const latestFrameBroker = asRecord(pipeline.latest_frame_broker);
-  const latestBrokerPublishedGeneration = readNumber(latestFrameBroker.published_generation, Number.NaN);
-  const latestBrokerAcquiredGeneration = readNumber(latestFrameBroker.acquired_generation, Number.NaN);
+  const latestCaptureFrameId = readNullableNumber(latestFrameBroker.published_frame_id);
+  const latestCaptureGeneration = readNullableNumber(latestFrameBroker.published_generation);
+  const latestCaptureTsNs = readNullableNumber(latestFrameBroker.published_capture_ts_ns);
+  const latestCaptureAgeMs = readNullableNumber(
+    latestFrameBroker.published_frame_age_ms ?? captureStatistics.latest_frame_age_ms
+  );
+  const latestCaptureOutputWidth = readNullableNumber(latestFrameBroker.published_width);
+  const latestCaptureOutputHeight = readNullableNumber(latestFrameBroker.published_height);
+  const latestCaptureOutputFormat = readString(latestFrameBroker.published_format, "");
+  const latestCaptureOutputMemory = readString(latestFrameBroker.published_resource_memory, "");
+  const latestCaptureTimestampSource = readString(latestFrameBroker.published_capture_ts_source, "");
+  const capturePublishedFrames = readNullableNumber(
+    latestFrameBroker.published_frames ?? captureStatistics.published_frames
+  );
+  const captureOverwrittenFrames = readNullableNumber(
+    latestFrameBroker.overwritten_frames ?? captureStatistics.overwritten_frames
+  );
+  const captureDroppedFrames = readNullableNumber(
+    captureStatistics.dropped_counter ?? capture?.frames_dropped
+  );
+  const captureFramePeriodMs = readNullableNumber(capture?.frame_period_ms);
+  const captureArrivalFps = readNullableNumber(capture?.fps_capture ?? captureStatistics.capture_fps);
+  const captureBackendLabel = readString(capture?.backend, captureBackendMode);
+  const captureReason = readString(
+    capture?.last_error,
+    capture?.available === true
+      ? readString(capture?.profile?.selection_reason, "采集帧持续到达")
+      : "尚无采集样本"
+  );
   const inferenceDebug = asRecord(inferenceTrace.debug);
   const decodeDebug = asRecord(inferenceDebug.decode);
   const inferenceTimings = asRecord(inferenceDebug.timings);
@@ -914,6 +877,46 @@ export function StudioConsoleView({
   const inputPixelRatio = readNumber(inferenceTrace.input_pixel_ratio, readNumber(preprocessDebug.pixel_ratio, 0));
   const inputDensityWarning =
     inferenceTrace.input_density_warning === true || preprocessDebug.density_warning === true;
+  const inferenceFrameId = readNullableNumber(inferenceTrace.frame_id);
+  const inferenceCaptureTsNs = readNullableNumber(inferenceTrace.capture_ts_ns);
+  const inferenceStartTsNs = readNullableNumber(inferenceTrace.inference_start_ts_ns);
+  const inferenceEndTsNs = readNullableNumber(inferenceTrace.inference_end_ts_ns);
+  const inferenceStartAgeMs =
+    inferenceStartTsNs !== null && inferenceCaptureTsNs !== null && inferenceStartTsNs >= inferenceCaptureTsNs
+      ? (inferenceStartTsNs - inferenceCaptureTsNs) / 1e6
+      : null;
+  const inferenceEndAgeMs =
+    inferenceEndTsNs !== null && inferenceCaptureTsNs !== null && inferenceEndTsNs >= inferenceCaptureTsNs
+      ? (inferenceEndTsNs - inferenceCaptureTsNs) / 1e6
+      : readNullableNumber(inferenceResultAgeMs);
+  const inferenceInputDtype = readString(runtimeInference.input_dtype, "");
+  const inferenceInputLayout = readString(inferenceDebug.input_layout, "");
+  const inferencePreprocessMs = readNullableNumber(
+    inferenceTrace.preprocess_ms ?? inferenceTimings.native_preprocess_total_ms ?? inferenceTimings.numpy_tensor_ms
+  );
+  const inferenceUploadMs = readNullableNumber(
+    inferenceTrace.h2d_ms ?? trtTimings.h2d_enqueue_ms
+  );
+  const inferenceEnqueueMs = readNullableNumber(trtTimings.execute_enqueue_ms);
+  const inferenceSyncWaitMs = readNullableNumber(trtTimings.stream_sync_ms);
+  const inferenceTotalMs = readNullableNumber(
+    inferenceTrace.detection_batch_inference_latency_ms ?? inferenceTimings.execute_total_ms ?? statistics?.stage_engine_ms
+  );
+  const inferencePostprocessMs = readNullableNumber(
+    trtTimings.decode_ms ?? statistics?.stage_postprocess_ms
+  );
+  const inferenceRawCandidateCount = readNullableNumber(decodeDebug.raw_candidates);
+  const inferenceThresholdCandidateCount = readNullableNumber(decodeDebug.threshold_candidates);
+  const inferenceNmsDetectionCount = readNullableNumber(decodeDebug.nms_detections ?? inferenceTrace.mapped_detections);
+  const inferenceHighestConfidence = readNullableNumber(decodeDebug.max_score);
+  const inferenceOutputName = readString(runtimeInference.output_name, readString(runtimeModelOutput.name, ""));
+  const inferenceOutputShape = formatShape(
+    decodeDebug.output_shape ?? inferenceDebug.output_shape ?? runtimeInference.output_shape ?? runtimeModelOutput.shape
+  );
+  const inferenceParser = readString(runtimePostprocess.parser, readString(decodeDebug.selected_layout, ""));
+  const inferenceBatchPublished = (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0;
+  const inferenceBatchStale =
+    inferenceTrace.is_stale === true || inferenceTrace.stale_rejected === true || inferenceTrace.latest_rejected === true;
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
 
   useEffect(() => {
@@ -1448,7 +1451,7 @@ export function StudioConsoleView({
   }, [applyCapture, captureMainRunning, runtimeMainlineSelected, openMainlineLaunchDialog, stopCurrentCapture]);
 
   const updateConfigField = useCallback(
-    async (section: string, key: string, value: number | string | boolean | string[]) => {
+    async (section: string, key: string, value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const next = base ? normalizeRuntimeConfig(base) : null;
       if (!next) {
@@ -1489,6 +1492,19 @@ export function StudioConsoleView({
       }
     },
     [onRefresh, runtimeConfig]
+  );
+
+  const updateControlGroupField = useCallback(
+    async (group: "aim" | "calibrated_angular" | "universal_saturated" | "shared", key: string, value: RuntimeConfigValue) => {
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const control = nestedRecord(base, "control");
+      const groupValue = {
+        ...nestedRecord(control, group),
+        [key]: value
+      };
+      await updateConfigField("control", group, groupValue as RuntimeConfigValue);
+    },
+    [runtimeConfig, updateConfigField]
   );
 
   const updateCaptureBackendMode = useCallback(
@@ -1545,47 +1561,6 @@ export function StudioConsoleView({
     },
     [onRefresh, runtimeConfig]
   );
-
-  const resetExperimentalAngleDefaults = useCallback(async () => {
-    const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-    const next = base ? normalizeRuntimeConfig(base) : null;
-    if (!next) {
-      return;
-    }
-    const writeSeq = ++configWriteSeqRef.current;
-    pendingConfigWritesRef.current += 1;
-    setBusy("control.experimental_angle_reset");
-    setLocalError(null);
-    const control = {
-      ...asRecord(next.control),
-      ...EXPERIMENTAL_ANGLE_DEFAULTS
-    };
-    next.control = control as RuntimeConfig[string];
-    configDraftRef.current = next;
-    setConfigDraft(next);
-    try {
-      const result = await updateRuntimeConfig(next);
-      if (writeSeq === configWriteSeqRef.current) {
-        const applied = normalizeRuntimeConfig(result.config);
-        configDraftRef.current = applied;
-        setConfigDraft(applied);
-      }
-    } catch (err) {
-      setLocalError(`实验角度 PID 重置失败：${getErrorMessage(err)}`);
-      if (writeSeq === configWriteSeqRef.current) {
-        configDraftRef.current = null;
-        setConfigDraft(null);
-      }
-    } finally {
-      pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
-      if (writeSeq === configWriteSeqRef.current) {
-        setBusy(null);
-      }
-      if (pendingConfigWritesRef.current === 0) {
-        await onRefresh();
-      }
-    }
-  }, [onRefresh, runtimeConfig]);
 
   const updateHardwareKind = useCallback(
     async (_kind: string) => {
@@ -1952,10 +1927,10 @@ export function StudioConsoleView({
 
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="采集 FPS" value={formatNumber(statistics?.capture_fps ?? capture?.fps_capture, 1)} small="FPS" />
-            <Metric title="分辨率" value={displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : "待机"} small="config" />
-            <Metric title="像素格式" value={displayCaptureProfile?.pixel_format ?? "待机"} small="config" />
-            <Metric title="丢帧" value={String(statistics?.dropped_counter ?? capture?.frames_dropped ?? 0)} small="drop" />
+            <Metric title="采集状态" value={capture?.available === true ? "运行中" : "未运行"} small={captureBackendLabel || NO_SAMPLE} />
+            <Metric title="采集 FPS" value={formatOptionalNumber(captureArrivalFps, 1)} small="appsink arrival" />
+            <Metric title="最新帧龄" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="ms" />
+            <Metric title="LatestFrame 覆盖" value={formatOptionalInteger(captureOverwrittenFrames)} small="frames" />
           </div>
 
           <div className="console-grid1">
@@ -2037,10 +2012,60 @@ export function StudioConsoleView({
                 <NumberControl label="水平偏移" value={roiOffsetX} min={-1280} max={1280} step={16} onCommit={(value) => updateConfigField("roi", "offset_x", Math.round(value))} />
                 <NumberControl label="垂直偏移" value={roiOffsetY} min={-720} max={720} step={16} onCommit={(value) => updateConfigField("roi", "offset_y", Math.round(value))} />
                 <div className="console-kv compact-kv">
-                  <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : "等待采集"}</b>
-                  <span>ROI 区域</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}` : "等待采集"}</b>
+                  <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : NO_SAMPLE}</b>
+                  <span>ROI 区域</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}` : NO_SAMPLE}</b>
                   <span>坐标系</span><b>推理 / 预览 / 控制统一 ROI</b>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="console-grid2 diagnostic-grid" data-layer="capture">
+            <div className="console-card">
+              <SectionTitle title="采集基础状态" />
+              <div className="console-kv">
+                <span>采集状态</span><b>{capture?.available === true ? "运行中" : "未运行"}</b>
+                <span>采集原因</span><b>{captureReason || NO_SAMPLE}</b>
+                <span>采集设备</span><b>{capture?.device || configuredCaptureDevice || NO_SAMPLE}</b>
+                <span>采集后端</span><b>{captureBackendLabel || NO_SAMPLE}</b>
+                <span>输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
+                <span>输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
+                <span>输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(1)} FPS` : NO_SAMPLE}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="ROI 与输出帧" />
+              <div className="console-kv">
+                <span>ROI 原点</span><b>{sourceWidth > 0 ? `${roiX}, ${roiY}` : NO_SAMPLE}</b>
+                <span>ROI 尺寸</span><b>{`${roiSize}x${roiSize}`}</b>
+                <span>采集输出尺寸</span><b>{latestCaptureOutputWidth !== null && latestCaptureOutputHeight !== null && latestCaptureOutputWidth > 0 && latestCaptureOutputHeight > 0 ? `${latestCaptureOutputWidth}x${latestCaptureOutputHeight}` : NO_SAMPLE}</b>
+                <span>输出像素格式</span><b>{latestCaptureOutputFormat || NO_SAMPLE}</b>
+                <span>内存类型</span><b>{latestCaptureOutputMemory || NO_SAMPLE}</b>
+                <span>appsink caps</span><b>{readString(captureStatistics.appsink_caps, "") || NO_SAMPLE}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="最新帧状态" />
+              <div className="console-kv">
+                <span>最新 frame_id</span><b>{formatOptionalInteger(latestCaptureFrameId)}</b>
+                <span>最新 generation</span><b>{formatOptionalInteger(latestCaptureGeneration)}</b>
+                <span>最新帧时间戳</span><b>{latestCaptureTsNs !== null && latestCaptureTsNs > 0 ? `${Math.trunc(latestCaptureTsNs)} ns` : NO_SAMPLE}</b>
+                <span>时间戳来源</span><b>{latestCaptureTimestampSource || NO_SAMPLE}</b>
+                <span>最新帧龄</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
+                <span>帧到达间隔</span><b>{formatOptionalNumber(captureFramePeriodMs, 2, "ms")}</b>
+                <span>LatestFrame 覆盖次数</span><b>{formatOptionalInteger(captureOverwrittenFrames)}</b>
+                <span>采集丢帧数</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
+                <span>已发布 / 已取得</span><b>{`${formatOptionalInteger(capturePublishedFrames)} / ${formatOptionalInteger(latestFrameBroker.acquired_frames)}`}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="采集性能" />
+              <div className="console-kv">
+                <span>采集 FPS</span><b>{formatOptionalNumber(captureStatistics.capture_fps, 1, "FPS")}</b>
+                <span>appsink 到达 FPS</span><b>{formatOptionalNumber(captureArrivalFps, 1, "FPS")}</b>
+                <span>采集抖动</span><b>{NOT_INSTRUMENTED}</b>
+                <span>采集到应用层延迟</span><b>{latestCaptureTimestampSource === "userspace_monotonic_receive" ? UNAVAILABLE : NOT_INSTRUMENTED}</b>
+                <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
               </div>
             </div>
           </div>
@@ -2054,9 +2079,9 @@ export function StudioConsoleView({
           </div>
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
-            <Metric title="推理延迟" value={formatNumber(inferenceLatencyDisplay, 1)} small="ms" />
-            <Metric title="目标数量" value={String(detections)} small="objects" />
-            <Metric title="引擎状态" value={engineStatusLabel} small={readString(runtime?.inference?.selected, "engine")} />
+            <Metric title="推理状态" value={inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"} small={selectedRuntimeBackend || NO_SAMPLE} />
+            <Metric title="推理总耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
+            <Metric title="NMS 后检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="detections" />
           </div>
           <div className="console-grid2">
             <div className="console-card">
@@ -2211,85 +2236,20 @@ export function StudioConsoleView({
               </details>
             </div>
             <div className="console-card">
-              <SectionTitle title="推理输出" />
+              <SectionTitle title="推理预览" />
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
                 imageEnabled={!runtimeMainlineSelected}
                 runtime={runtime}
                 roiSize={roiSize}
               />
-              <div className="business-trace">
-                <div className="business-trace-head">
-                  <span>主营链路诊断</span>
-                  <b>{readString(businessTrace.message, "等待运行状态")}</b>
-                </div>
-                <div className={`business-trace-guidance ${businessTraceGuidance.tone}`}>
-                  <strong>{businessTraceGuidance.title}</strong>
-                  <span>{businessTraceGuidance.detail}</span>
-                  <em>{businessTraceGuidance.action}</em>
-                </div>
-                <div className="business-trace-steps">
-                  {businessTraceStages.map((stage) => (
-                    <div className={`business-trace-step ${readString(stage.status, "blocked")}`} key={readString(stage.id, readString(stage.label, ""))}>
-                      <span>{readString(stage.label, "-")}</span>
-                      <b>{readString(stage.message, "-")}</b>
-                      <small>{readString(stage.detail, "") || readString(stage.status, "-")}</small>
-                    </div>
-                  ))}
-                  {businessTraceStages.length === 0 ? (
-                    <div className="business-trace-step blocked">
-                      <span>链路</span>
-                      <b>等待运行状态</b>
-                      <small>暂无 trace</small>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
               <div className="console-kv">
-                <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
-                <span>推理原因</span><b>{inferenceReason || "-"}</b>
-                <span>主链状态</span><b>{mainlineStatusLabel}</b>
-                <span>主链原因</span><b>{runtimeInferenceReason || "-"}</b>
-                <span className="wide">主链详情</span><b className="wide">{runtimeInferenceDetail || "-"}</b>
-                <span>Batch generation</span><b>{formatNumber(inferenceBatchGeneration, 0)}</b>
-                <span>Acquire generation</span><b>{formatNumber(inferenceAcquiredGeneration, 0)}</b>
-                <span>Accepted latest</span><b>{formatNumber(inferenceLatestGeneration, 0)}</b>
-                <span>Published generation</span><b>{formatNumber(inferenceBrokerPublishedGeneration, 0)}</b>
-                <span>推理期间发布</span><b>{formatNumber(inferencePublishedSinceAcquire, 0)}</b>
-                <span>结束时 generation 差</span><b>{formatNumber(inferenceGenerationLag, 0)}</b>
-                <span>结束时 frame_id 差</span><b>{formatNumber(inferenceFrameIdLag, 0)}</b>
-                <span>Batch age</span><b>{formatNumber(inferenceResultAgeMs, 1)} ms</b>
-                <span>Broker published</span><b>{formatNumber(latestBrokerPublishedGeneration, 0)}</b>
-                <span>Broker acquired</span><b>{formatNumber(latestBrokerAcquiredGeneration, 0)}</b>
-                <span>raw 检测</span><b>{String(rawDetections)}</b>
-                <span>前端检测</span><b>{String(mappedDetections)}</b>
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
                 <span>模型输入</span><b>{modelInputWidth && modelInputHeight ? `${modelInputWidth}x${modelInputHeight}` : "-"}</b>
                 <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
                 <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio, 1) : "-"}</b>
-                <span>输出形状</span><b>{formatShape(decodeDebug.output_shape ?? inferenceDebug.output_shape)}</b>
-                <span>运行输出</span><b>{deepstreamModelOutputSummary}</b>
-                <span>运行类别</span><b>{formatNumber(runtimeModelOutput.class_count, 0)}</b>
-                <span>运行解析器</span><b>{runtimePostprocessParser}</b>
-                <span>运行置信度</span><b>{formatNumber(runtimePostprocessConfidence, 2)}</b>
-                <span>运行 NMS</span><b>{formatNumber(runtimePostprocessNms, 2)}</b>
-                <span className="wide">运行类别名</span><b className="wide">{deepstreamClassNamesSummary}</b>
-                <span>输入准备</span><b>{formatNumber(inferenceTimings.numpy_tensor_ms, 1)} ms</b>
-                <span>推理总耗时</span><b>{formatNumber(inferenceTimings.execute_total_ms, 1)} ms</b>
-                <span>GPU 等待</span><b>{formatNumber(trtTimings.stream_sync_ms, 1)} ms</b>
-                <span>解码/NMS</span><b>{formatNumber(trtTimings.decode_ms, 1)} ms</b>
-                <span>解码布局</span><b>{readString(decodeDebug.selected_layout, "-")}</b>
-                <span>最大分数</span><b>{formatNumber(decodeDebug.max_score, 3)}</b>
-                <span>阈值前候选</span><b>{String(readNumber(decodeDebug.raw_candidates, 0))}</b>
-                <span>过阈值候选</span><b>{String(readNumber(decodeDebug.threshold_candidates, 0))}</b>
-                <span>NMS 后候选</span><b>{String(readNumber(decodeDebug.nms_detections, 0))}</b>
-                <span>当前类别</span><b>{readString(target.class_name, "-")}</b>
-                <span>最高置信度</span><b>{target.score ? Number(target.score).toFixed(2) : "-"}</b>
-                <span>目标框中心</span><b>{`${formatNumber(target.box_cx ?? target.cx, 1)}, ${formatNumber(target.box_cy ?? target.cy, 1)}`}</b>
-                <span>瞄准点</span><b>{`${formatNumber(target.aim_x, 1)}, ${formatNumber(target.aim_y, 1)}`}</b>
-                <span>候选框数量</span><b>{detections}</b>
-                <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
-                <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
+                <span>输入资源</span><b>{readString(inferenceTrace.input_resource_memory, "") || NO_SAMPLE}</b>
+                <span>坐标空间</span><b>{readString(inferenceTrace.detection_coordinate_space, "") || NO_SAMPLE}</b>
               </div>
               {inputDensityWarning ? (
                 <div className="inference-density-warning">
@@ -2298,222 +2258,251 @@ export function StudioConsoleView({
               ) : null}
             </div>
           </div>
+          <div className="console-grid2 diagnostic-grid" data-layer="inference">
+            <div className="console-card">
+              <SectionTitle title="推理调度" />
+              <div className="console-kv">
+                <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
+                <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
+                <span>当前推理 frame_id</span><b>{formatOptionalInteger(inferenceFrameId)}</b>
+                <span>Acquire generation</span><b>{formatOptionalInteger(inferenceAcquiredGeneration)}</b>
+                <span>Batch generation</span><b>{formatOptionalInteger(inferenceBatchGeneration)}</b>
+                <span>推理开始帧龄</span><b>{formatOptionalNumber(inferenceStartAgeMs, 2, "ms")}</b>
+                <span>推理结束帧龄</span><b>{formatOptionalNumber(inferenceEndAgeMs, 2, "ms")}</b>
+                <span>推理期间到达新帧数</span><b>{formatOptionalInteger(inferencePublishedSinceAcquire)}</b>
+                <span>结束时 generation 差</span><b>{formatOptionalInteger(inferenceGenerationLag)}</b>
+                <span>结束时 frame_id 差</span><b>{formatOptionalInteger(inferenceFrameIdLag)}</b>
+                <span>过期结果丢弃次数</span><b>{formatOptionalInteger(statistics?.stale_drop_count)}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="模型输入" />
+              <div className="console-kv">
+                <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
+                <span>推理后端</span><b>{selectedRuntimeBackend || NO_SAMPLE}</b>
+                <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
+                <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
+                <span>输入数据类型</span><b>{inferenceInputDtype || NO_SAMPLE}</b>
+                <span>输入布局</span><b>{inferenceInputLayout || NOT_INSTRUMENTED}</b>
+                <span>输入准备耗时</span><b>{formatOptionalNumber(inferencePreprocessMs, 3, "ms")}</b>
+                <span>CUDA 上传耗时</span><b>{formatOptionalNumber(inferenceUploadMs, 3, "ms")}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="TensorRT 执行" />
+              <div className="console-kv">
+                <span>TensorRT enqueue 耗时</span><b>{formatOptionalNumber(inferenceEnqueueMs, 3, "ms")}</b>
+                <span>GPU 核心执行耗时</span><b>{NOT_INSTRUMENTED}</b>
+                <span>CUDA stream 同步等待</span><b>{formatOptionalNumber(inferenceSyncWaitMs, 3, "ms")}</b>
+                <span>推理核心耗时</span><b>{NOT_INSTRUMENTED}</b>
+                <span>推理线程总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 3, "ms")}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="输出与后处理" />
+              <div className="console-kv">
+                <span>输出 Tensor 名称</span><b>{inferenceOutputName || NO_SAMPLE}</b>
+                <span>输出形状</span><b>{inferenceOutputShape}</b>
+                <span>输出布局 / 解析器</span><b>{inferenceParser || NO_SAMPLE}</b>
+                <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
+                <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
+                <span>解析前候选数</span><b>{formatOptionalInteger(inferenceRawCandidateCount)}</b>
+                <span>置信度过滤后候选数</span><b>{formatOptionalInteger(inferenceThresholdCandidateCount)}</b>
+                <span>NMS 后检测数</span><b>{formatOptionalInteger(inferenceNmsDetectionCount)}</b>
+                <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
+                <span>后处理耗时</span><b>{formatOptionalNumber(inferencePostprocessMs, 3, "ms")}</b>
+                <span>DetectionBatch 状态</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchStale ? "已过期" : inferenceAvailable ? "可消费" : "不可用"}</b>
+                <span>DetectionBatch published</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
+                <span>DetectionBatch age</span><b>{formatOptionalNumber(inferenceResultAgeMs, 2, "ms")}</b>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className={activePage === "control" ? "console-page active" : "console-page"}>
+          <div className="console-metrics">
+            <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
+            <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={readString(target.class_name, "") || "target"} />
+            <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx, 1)} small="px" />
+            <Metric title="实际发送" value={execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0) : NO_SAMPLE} small="counts" />
+          </div>
+          <div className="console-grid2 diagnostic-grid" data-layer="control">
+            <div className="console-card">
+              <SectionTitle title="目标选择" />
+              <div className="console-kv">
+                <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
+                <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
+                <span>检测数量</span><b>{formatOptionalInteger(inferenceTrace.mapped_detections)}</b>
+                <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
+                <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
+                <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
+                <span>目标类别</span><b>{readString(target.class_name, "") || NO_SAMPLE}</b>
+                <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
+                <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
+                <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
+                <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1, 1)} -> ${formatPoint(target.x2, target.y2, 1)}` : NO_SAMPLE}</b>
+                <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, 1, "px")}</b>
+                <span>Tracker 关联</span><b>{readString(trackerRuntimeDebug.association_algorithm, "") || NO_SAMPLE}</b>
+                <span>ACTIVE / LOST</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.active_tracks ?? trackerRuntimeDebug.available_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.lost_track_count)}`}</b>
+                <span>本轮恢复 track</span><b>{Array.isArray(trackerRuntimeDebug.restored_track_ids) && trackerRuntimeDebug.restored_track_ids.length > 0 ? trackerRuntimeDebug.restored_track_ids.join(", ") : NO_SAMPLE}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="瞄准点与预测" />
+              <div className="console-kv">
+                <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, 1, "px")}</b>
+                <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
+                <span>Kalman filtered aim</span><b>{formatPoint(selectedTrackDebug.filtered_x ?? selectedTrackEstimate.x, selectedTrackDebug.filtered_y ?? selectedTrackEstimate.y, 1, "px")}</b>
+                <span>目标估计速度</span><b>{formatPoint(selectedTrackDebug.velocity_x ?? selectedTrackEstimate.vx, selectedTrackDebug.velocity_y ?? selectedTrackEstimate.vy, 1, "px/s")}</b>
+                <span>速度有效</span><b>{selectedTrackDebug.velocity_valid === true ? "是" : selectedTrackDebug.velocity_valid === false ? "否" : NO_SAMPLE}</b>
+                <span>预测时长</span><b>{controlPredictionHorizonS === null ? NO_SAMPLE : `${(controlPredictionHorizonS * 1000).toFixed(2)} ms`}</b>
+                <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
+                <span>预测置信度</span><b>{formatPercent(mouseObservation.prediction_confidence, 1)}</b>
+                <span>预测来源</span><b>{readString(mouseObservation.prediction_source, "") || NO_SAMPLE}</b>
+                <span>X 预测</span><b>{readBoolean(controlConfig.prediction_x_enabled, true) ? "启用" : "禁用"}</b>
+                <span>Y 预测</span><b>{readBoolean(controlConfig.prediction_y_enabled, true) ? "启用" : "禁用"}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="误差与角度" />
+              <div className="console-kv">
+                <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, 1, "px")}</b>
+                <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
+                <span>predicted error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
+                <span>observed error rad</span><b>{formatPoint(controlPipeline.observed_error_x_rad, controlPipeline.observed_error_y_rad, 6, "rad")}</b>
+                <span>predicted error rad</span><b>{formatPoint(controlPipeline.predicted_error_x_rad, controlPipeline.predicted_error_y_rad, 6, "rad")}</b>
+                <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
+                <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
+                <span>焦距 X / Y</span><b>{formatPoint(controlPipeline.focal_x_px, controlPipeline.focal_y_px, 2, "px")}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="控制器输出" />
+              <div className="console-kv">
+                <span>控制模式</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? "精确标定" : "通用适配"}</b>
+                <span>Kp X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKpX, calibratedKpY, 2) : NO_SAMPLE}</b>
+                <span>Kd X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKdX, calibratedKdY, 2) : NO_SAMPLE}</b>
+                <span>D 原始值</span><b>{formatPoint(controlPipeline.d_raw_x_rad_s, controlPipeline.d_raw_y_rad_s, 5, "rad/s")}</b>
+                <span>D EMA 值</span><b>{formatPoint(controlPipeline.d_ema_x_rad_s, controlPipeline.d_ema_y_rad_s, 5, "rad/s")}</b>
+                <span>P 项输出</span><b>{formatPoint(controlPipeline.p_x_rad, controlPipeline.p_y_rad, 6, "rad")}</b>
+                <span>D 项输出</span><b>{formatPoint(controlPipeline.d_x_rad, controlPipeline.d_y_rad, 6, "rad")}</b>
+                <span>角度控制量</span><b>{formatPoint(controlPipeline.requested_output_x_rad, controlPipeline.requested_output_y_rad, 6, "rad")}</b>
+                <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
+                <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
+                <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
+                <span>死区后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
+                <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
+                <span>可行预算 counts</span><b>{formatPoint(controlPipeline.feasible_counts_x_float, controlPipeline.feasible_counts_y_float, 2)}</b>
+                <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
+              </div>
+            </div>
+            <div className="console-card">
+              <SectionTitle title="Scheduler 与设备发送" />
+              <div className="console-kv">
+                <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
+                <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
+                <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
+                <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
+                <span>待执行 counts</span><b>{formatPoint(schedulerStatus.pending_dx, schedulerStatus.pending_dy, 0, "counts")}</b>
+                <span>本次发送 counts</span><b>{execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0, "counts") : NO_SAMPLE}</b>
+                <span>剩余 pending steps</span><b>{formatOptionalInteger(schedulerStatus.pending_steps)}</b>
+                <span>inflight 估计</span><b>{NOT_INSTRUMENTED}</b>
+                <span>发送频率</span><b>{NOT_INSTRUMENTED}</b>
+                <span>设备发送耗时</span><b>{controlSendDuration}</b>
+                <span>最后发送时间</span><b>{formatOptionalInteger(execution.device_send_end_ts_ns ?? executionMeta.device_send_end_ts_ns)}</b>
+                <span>旧计划截断次数</span><b>{formatOptionalInteger(schedulerStatus.cancelled_pending)}</b>
+                <span>最近取消原因</span><b>{readString(schedulerStatus.last_cancel_reason, "") || NO_SAMPLE}</b>
+                <span>设备连接</span><b>{kmnetConnected ? "已连接" : "未连接"}</b>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section className={activePage === "params" || activePage === "control-test" ? "console-page active" : "console-page"}>
           {activePage === "params" ? (
           <>
-          <div className="console-metrics">
-            <Metric title="主算法" value="实验角度 PID" small="control" />
-            <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-            <Metric title="Kp X" value={experimentalAngleKpX.toFixed(2)} small="axis x" />
-            <Metric title="Kp Y" value={experimentalAngleKpY.toFixed(2)} small="axis y" />
-            <Metric title="角度/FOV" value={experimentalAngleFovX.toFixed(0)} small="deg" />
-            <Metric title="限幅" value={experimentalAngleMaxStep.toFixed(0)} small="counts" />
-          </div>
-          <div className="console-grid2">
-            <div className="console-card">
-              <SectionTitle title="鼠标移动算法" />
-              <label>算法模式</label>
-              <select
-                value={controlStrategy}
-                onChange={(event) => void updateConfigField("control", "strategy", event.target.value)}
-              >
-                <option value="experimental_angle_pid">实验角度 PID</option>
-              </select>
-              <label>触发方式</label>
-              <select
-                value={triggerMode}
-                onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}
-              >
-                <option value="hardware">kmNet 硬件按键触发</option>
-                <option value="always">总是启用</option>
-              </select>
-              <p className="console-field-hint">
-                当前运行只允许 kmNet。选择“总是启用”只跳过按键门控，不跳过目标、标定、过期、COOLDOWN 和设备错误保护。
-              </p>
-              <label>目标保持</label>
-              <p className="console-field-hint">
-                检测短暂丢失时继续沿用最近目标；超过容忍帧数后释放目标，避免误跟踪。
-              </p>
-              <NumberControl label="丢失容忍帧" value={targetLostGraceFrames} min={0} max={30} step={1} onCommit={(value) => updateConfigField("control", "target_lost_grace_frames", Math.round(value))} />
-              <details className="model-debug-details" open={experimentalAngleAdvanced}>
-                <summary>生产候选过滤与目标切换</summary>
-                <NumberControl label="最低控制置信度" value={controlMinConfidence} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "min_confidence", value)} />
-                <NumberControl label="Selection FOV 比例" value={selectionFovRatio} min={0.01} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "fov_ratio", value)} />
-                <NumberControl label="候选框最大宽高比" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
-                <NumberControl label="质量权重：置信度" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
-                <NumberControl label="质量权重：面积" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
-                <NumberControl label="类别优先容忍" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
-                <NumberControl label="Track 确认帧数" value={trackerConfirmFrames} min={1} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_confirm_frames", Math.round(value))} />
-                <NumberControl label="Track 匹配距离 px" value={trackerMatchingDistancePx} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "tracker_matching_distance_px", value)} />
-                <NumberControl label="身份歧义边界" value={trackerAmbiguityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_ambiguity_margin", value)} />
-                <NumberControl label="Track 漏检超时 ms" value={trackerMissingTimeoutMs} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "tracker_missing_timeout_ms", value)} />
-                <NumberControl label="Track 删除超时 ms" value={trackerDeleteTimeoutMs} min={1} max={2000} step={1} onCommit={(value) => updateConfigField("control", "tracker_delete_timeout_ms", value)} />
-                <NumberControl label="匹配代价上限" value={trackerMatchThreshold} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_match_threshold", value)} />
-                <NumberControl label="马氏门控" value={trackerMahalanobisGate} min={0.001} max={100} step={0.1} onCommit={(value) => updateConfigField("control", "tracker_mahalanobis_gate", value)} />
-                <NumberControl label="切换优势阈值" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
-                <NumberControl label="切换连续性阈值" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
-                <NumberControl label="切换确认帧数" value={targetSwitchConfirmFrames} min={1} max={10} step={1} onCommit={(value) => updateConfigField("control", "target_switch_confirm_frames", Math.round(value))} />
-              </details>
-              <details className="model-debug-details" open={experimentalAngleDeveloper}>
-                <summary>生产 Kalman 高级参数</summary>
-                <ModuleSwitch label="启用 Kalman 估计" detail="用于 Track 预测、漏检续控和身份稳定" enabled={kalmanEnabled} onToggle={(enabled) => updateConfigField("control", "kalman_enabled", enabled)} />
-                <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
-                <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
-                <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
-                <NumberControl label="最大漏检预测 ms" value={kalmanMaxPredictMissingMs} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_max_predict_missing_ms", value)} />
-                <NumberControl label="最大预测步数" value={kalmanMaxPredictSteps} min={1} max={30} step={1} onCommit={(value) => updateConfigField("control", "kalman_max_predict_steps", Math.round(value))} />
-                <NumberControl label="单步最大 dt ms" value={kalmanMaxPredictDtMs} min={1} max={200} step={1} onCommit={(value) => updateConfigField("control", "kalman_max_predict_dt_ms", value)} />
-                <NumberControl label="最大位置 sigma px" value={kalmanMaxPositionSigmaPx} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "kalman_max_position_sigma_px", value)} />
-                <NumberControl label="最大协方差迹" value={kalmanMaxCovarianceTrace} min={1} max={100000} step={100} onCommit={(value) => updateConfigField("control", "kalman_max_covariance_trace", value)} />
-                <NumberControl label="NIS 阈值" value={kalmanNisThreshold} min={0.001} max={100} step={0.1} onCommit={(value) => updateConfigField("control", "kalman_nis_threshold", value)} />
-                <NumberControl label="NIS 硬拒收" value={kalmanNisHardReject} min={0.001} max={200} step={0.1} onCommit={(value) => updateConfigField("control", "kalman_nis_hard_reject", value)} />
-                <NumberControl label="最低身份可信度" value={kalmanMinIdentityConfidence} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "kalman_min_identity_confidence", value)} />
-                <NumberControl label="最低预测可信度" value={kalmanMinPredictionConfidence} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "kalman_min_prediction_confidence", value)} />
-                <NumberControl label="预测衰减 tau ms" value={kalmanPredictionDecayTauMs} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_prediction_decay_tau_ms", value)} />
-              </details>
-
-              <>
-                  <label>实验角度 PID 参数</label>
-                  <p className="console-field-hint">
-                    bbox 中心给 ROI 像素误差；整张采集画面计算焦距；PID 控制角度；最后换算 kmNet counts。Y 方向只交给执行层统一翻转。
-                  </p>
-                  <button
-                    className="console-button"
-                    disabled={busy === "control.experimental_angle_reset"}
-                    onClick={() => void resetExperimentalAngleDefaults()}
-                    type="button"
-                  >
-                    重置实验角度 PID 默认值
-                  </button>
-                  <label>配置级别</label>
-                  <select value={experimentalAngleConfigLevel} onChange={(event) => void updateConfigField("control", "experimental_angle_config_level", event.target.value)}>
-                    <option value="basic">Level 1 普通用户</option>
-                    <option value="advanced">Level 2 高级用户</option>
-                    <option value="developer">Level 3 开发者</option>
-                  </select>
-                  <label>Level 1 普通参数</label>
-                  <NumberControl label="跟枪速度 Speed" value={experimentalAngleSpeed} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_speed", value)} />
-                  <NumberControl label="平滑程度 Smooth" value={experimentalAngleSmoothFactor} min={0} max={0.95} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_smooth_factor", value)} />
-                  <NumberControl label="预测强度 Prediction ms" value={experimentalAnglePredictionLeadMs} min={0} max={120} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_prediction_lead_ms", value)} />
-                  <NumberControl label="最大速度 Max Speed" value={experimentalAngleMaxStep} min={1} max={500} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_step_counts", value)} />
-                  <NumberControl label="死区 Dead Zone" value={experimentalAngleDeadzonePx} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_deadzone_px", value)} />
-                  {experimentalAngleAdvanced ? (
-                    <>
-                      <label>Level 2 高级参数</label>
-                  <NumberControl label="Kp X" value={experimentalAngleKpX} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kp_x", value)} />
-                  <NumberControl label="Kp Y" value={experimentalAngleKpY} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kp_y", value)} />
-                  <NumberControl label="Ki" value={experimentalAngleKi} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_ki", value)} />
-                  <NumberControl label="Kd" value={experimentalAngleKd} min={-1} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_kd", value)} />
-                  <NumberControl label="积分限幅 rad·s" value={experimentalAngleIntegralLimit} min={0} max={2} step={0.001} onCommit={(value) => updateConfigField("control", "experimental_angle_integral_limit", value)} />
-                      <NumberControl label="D 项滤波" value={experimentalAngleDerivativeFilter} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_derivative_filter", value)} />
-                  <NumberControl label="水平 FOVX" value={experimentalAngleFovX} min={1} max={179} step={1} onCommit={(value) => updateConfigField("calibration", "fov_x_deg", value)} />
-                  <NumberControl label="X 每圈 counts" value={experimentalAngleC360X} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("calibration", "counts_per_360_x", value)} />
-                  <NumberControl label="Y 每圈 counts" value={experimentalAngleC360Y} min={1} max={50000} step={10} onCommit={(value) => updateConfigField("calibration", "counts_per_360_y", value)} />
-                  <NumberControl label="控制频率 Hz" value={experimentalAngleControlHz} min={1} max={240} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_control_hz", value)} />
-                  <NumberControl label="X 轴方向" value={experimentalAngleSignX < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("calibration", "axis_sign_x", value < 0 ? -1 : 1)} />
-                  <NumberControl label="Y 轴方向" value={experimentalAngleSignY < 0 ? -1 : 1} min={-1} max={1} step={2} onCommit={(value) => updateConfigField("calibration", "axis_sign_y", value < 0 ? -1 : 1)} />
-                    </>
-                  ) : null}
-                  {experimentalAngleDeveloper ? (
-                    <>
-                      <label>Level 3 开发者参数</label>
-                      <p className="console-field-hint">开发者层显示完整 runtime 状态：Error(px/rad)、Velocity(px/s)、Prediction(px)、PID(P/I/D)、Output(counts)、Latency、dt 可在运行反馈里查看。</p>
-                      <label>目标过滤</label>
-                      <ModuleSwitch label="启用目标过滤" detail="过滤进入 Kalman / 匈牙利的候选框" enabled={experimentalAngleTargetFilterEnabled} onToggle={(enabled) => updateConfigField("control", "experimental_angle_target_filter_enabled", enabled)} />
-                      <NumberControl label="过滤置信度" value={experimentalAngleTargetFilterMinScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_target_filter_min_score", value)} />
-                      <NumberControl label="过滤 FOV 比例" value={experimentalAngleTargetFilterFovRatio} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_target_filter_fov_ratio", value)} />
-                      <ModuleSwitch label="只保留同类目标" detail="只让当前目标同类别 detection 进入 tracker" enabled={experimentalAngleTargetFilterSameClass} onToggle={(enabled) => updateConfigField("control", "experimental_angle_target_filter_same_class", enabled)} />
-                      <label>Kalman 预测 / 匈牙利匹配</label>
-                      <ModuleSwitch label="卡尔曼滤波" detail="稳定并预测检测框中心" enabled={experimentalAngleKalmanEnabled} onToggle={(enabled) => updateConfigField("control", "experimental_angle_kalman_enabled", enabled)} />
-                      <NumberControl label="过程噪声" value={experimentalAngleKalmanProcessNoise} min={0.001} max={200} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_process_noise", value)} />
-                      <NumberControl label="测量噪声" value={experimentalAngleKalmanMeasurementNoise} min={0.001} max={500} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_kalman_measurement_noise", value)} />
-                      <ModuleSwitch label="匈牙利匹配" detail="多目标时保持 track 与 detection 对应关系" enabled={experimentalAngleHungarianEnabled} onToggle={(enabled) => updateConfigField("control", "experimental_angle_hungarian_enabled", enabled)} />
-                      <NumberControl label="匹配距离 px" value={experimentalAngleMatchingDistance} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_matching_distance_px", value)} />
-                      <NumberControl label="最大外推帧" value={experimentalAngleMaxExtrapolateFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_max_extrapolate_frames", Math.round(value))} />
-                      <NumberControl label="外推置信衰减" value={experimentalAngleExtrapolateConfidenceDecay} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_extrapolate_confidence_decay", value)} />
-                      <label>磁性吸附</label>
-                      <ModuleSwitch label="启用磁性吸附" detail="按目标距离补充 counts，方便单独排查磁性手感" enabled={experimentalAngleMagnetEnabled} onToggle={(enabled) => updateConfigField("control", "experimental_angle_magnet_enabled", enabled)} />
-                      <NumberControl label="磁性半径 px" value={experimentalAngleMagnetRadiusPx} min={1} max={1000} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_radius_px", value)} />
-                      <NumberControl label="磁性强度" value={experimentalAngleMagnetStrength} min={0} max={3} step={0.01} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_strength", value)} />
-                      <NumberControl label="磁性曲线" value={experimentalAngleMagnetCurve} min={0.1} max={5} step={0.1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_curve", value)} />
-                      <NumberControl label="磁性死区 px" value={experimentalAngleMagnetDeadzonePx} min={0} max={100} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_deadzone_px", value)} />
-                      <NumberControl label="磁性限幅 counts" value={experimentalAngleMagnetMaxCounts} min={0} max={200} step={1} onCommit={(value) => updateConfigField("control", "experimental_angle_magnet_max_counts", value)} />
-                    </>
-                  ) : null}
-              </>
+            <div className="console-metrics">
+              <Metric title="控制模式" value={controlMode === "calibrated_angular" ? "精确标定" : "通用适配"} small={controlMode} />
+              <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
+              <Metric title="瞄点 Y" value={aimYRatio.toFixed(2)} small="bbox ratio" />
+              <Metric title="预测强度" value={predictionStrength.toFixed(2)} small="Kalman" />
+              <Metric title="Scheduler" value={`${schedulerIntervalMs.toFixed(1)} ms`} small={`${schedulerStepCountsX}/${schedulerStepCountsY} counts`} />
             </div>
-            <div className="console-card">
-              <SectionTitle title="控制量反馈" />
-              <div className="console-kv control-feedback-kv">
-                <span>当前目标</span><b>{readString(target.class_name, "-")}</b>
-                <span>算法模式</span><b>实验角度 PID</b>
-                <span>目标序号</span><b>{formatNumber(control.target_detection_index ?? target.target_detection_index, 0)}</b>
-                <span>选择状态</span><b>{readString(control.selector_state, "-")}</b>
-                <span>选择原因</span><b>{readString(control.selection_reason, "-")}</b>
-                <span>Track ID</span><b>{formatNumber(trackDiagnostics.selected_track_id, 0)}</b>
-                <span>Track 状态</span><b>{readString(trackDiagnostics.selected_track_state, readString(trackDiagnostics.tracker_state, "-"))}</b>
-                <span>连续性</span><b>{formatPercent(trackDiagnostics.selected_continuity_score, 1)}</b>
-                <span>身份可信度</span><b>{formatPercent(trackDiagnostics.selected_identity_confidence, 1)}</b>
-                <span>missing</span><b>{formatNumber(trackDiagnostics.selected_missing_ms, 1)} ms</b>
-                <span>NIS/马氏</span><b>{formatNumber(trackDiagnostics.selected_mahalanobis ?? selectedTrackEstimate.nis, 2)}</b>
-                <span>sigma</span><b>{formatNumber(selectedTrackEstimate.position_sigma_px, 1)} px</b>
-                <span>cov trace</span><b>{formatNumber(selectedTrackEstimate.cov_trace, 1)}</b>
-                <span>预测可信度</span><b>{formatPercent(selectedTrackEstimate.prediction_confidence, 1)}</b>
-                <span>切换状态</span><b>{readString(trackDiagnostics.switch_state, "-")}</b>
-                <span>aim dx</span><b>{formatNumber(control.aim_error_x, 1)}</b>
-                <span>aim dy</span><b>{formatNumber(control.aim_error_y, 1)}</b>
-                <span>raw dx</span><b>{formatNumber(control.raw_error_x, 1)}</b>
-                <span>raw dy</span><b>{formatNumber(control.raw_error_y, 1)}</b>
-                <span>aim y ratio</span><b>{formatNumber(control.aim_y_ratio ?? control.aim_ratio, 0)}%</b>
-                <span>控制帧龄</span><b>{formatNumber(control.frame_age_ms, 1)} ms</b>
-                <span>aim point</span><b>{`${formatNumber(control.aim_x, 1)}, ${formatNumber(control.aim_y, 1)}`}</b>
-                <span>预测点</span><b>{`${formatNumber(controlPipeline.predicted_x, 1)}, ${formatNumber(controlPipeline.predicted_y, 1)}`}</b>
-                <span>预测提前</span><b>{formatNumber(controlPipeline.prediction_lead_ms, 1)} ms</b>
-                <span>预测速度</span><b>{`${formatNumber(controlPipeline.prediction_velocity_x_px_s, 0)} / ${formatNumber(controlPipeline.prediction_velocity_y_px_s, 0)} px/s`}</b>
-                <span>预测补偿</span><b>{`${formatNumber(controlPipeline.prediction_lead_x_px, 1)} / ${formatNumber(controlPipeline.prediction_lead_y_px, 1)} px`}</b>
-                <span>Y 坐标约定</span><b>{readString(controlPipeline.coordinate_y, "-")}</b>
-                <span>FOV / c360</span><b>{`${formatNumber(controlPipeline.fov_deg, 0)} / ${formatNumber(controlPipeline.c360, 0)}`}</b>
-                <span>FOV counts X</span><b>{formatNumber(controlPipeline.fov_counts_x, 1)}</b>
-                <span>FOV counts Y</span><b>{formatNumber(controlPipeline.fov_counts_y, 1)}</b>
-                <span>动作门控</span><b>{`${formatNumber(controlPipeline.motion_coef_x, 2)} / ${formatNumber(controlPipeline.motion_coef_y, 2)}`}</b>
-                <span>预测开关</span><b>{controlPipeline.prediction_enabled === false ? "关闭" : "开启"}</b>
-                <span>D 开关</span><b>{controlPipeline.derivative_enabled === false ? "关闭" : "开启"}</b>
-                <span>PID P</span><b>{`${formatNumber(controlPipeline.p_x, 1)} / ${formatNumber(controlPipeline.p_y, 1)}`}</b>
-                <span>PID I</span><b>{`${formatNumber(controlPipeline.i_x, 1)} / ${formatNumber(controlPipeline.i_y, 1)}`}</b>
-                <span>PID D</span><b>{`${formatNumber(controlPipeline.d_x, 1)} / ${formatNumber(controlPipeline.d_y, 1)}`}</b>
-                <span>D 原始值</span><b>{`${formatNumber(controlPipeline.raw_d_x, 1)} / ${formatNumber(controlPipeline.raw_d_y, 1)}`}</b>
-                <span>D 限幅</span><b>{controlPipeline.d_limited_x || controlPipeline.d_limited_y ? "已触发" : "未触发"}</b>
-                <span>策略 dx</span><b>{formatNumber(control.dx, 1)}</b>
-                <span>策略 dy</span><b>{formatNumber(control.dy, 1)}</b>
-                <span>FOV 内候选</span><b>{formatNumber(control.inside_fov, 0)}</b>
-                <span>FOV 半径</span><b>{formatNumber(selectorDebug.fov_radius, 1)}</b>
-                <span>过滤后候选</span><b>{formatNumber(selectorDebug.filtered_candidates, 0)}</b>
-                <span>目标距离</span><b>{formatNumber(control.distance_px, 1)}</b>
-                <span>触发方式</span><b>{triggerModeLabel(readString(control.trigger_mode, triggerMode))}</b>
-                <span>kmNet 按键</span><b>{`L:${triggerLeft ? "1" : "0"} R:${triggerRight ? "1" : "0"}`}</b>
-                <span>输出状态</span><b>{control.will_emit === true ? "允许输出" : "等待触发"}</b>
-                <span>触发要求</span><b>{readString(control.trigger_requirement, control.trigger_required === true ? "需要按键触发" : "无需触发")}</b>
-                <span>触发信息</span><b>{readString(control.trigger_reason, "-") || "-"}</b>
-                <span>always 状态</span><b>{triggerAlwaysActive ? "已启用" : "-"}</b>
-                <span>执行器</span><b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
-                <span>发送结果</span><b>{execution.sent === true ? "已发送" : execution.sent === false ? "未发送" : "-"}</b>
-                <span>移动 API</span><b>{readString(execution.move_kind, moveKind)}</b>
-                <span>执行阶段</span><b>{readString(executionMeta.stage, "-")}</b>
-                <span>Driver API</span><b>{readString(executionMeta.api_name, "-")}</b>
-                <span>Driver rc</span><b>{String(executionMeta.driver_rc ?? "-")}</b>
-                <span>最终 dx</span><b>{formatNumber(execution.output_dx ?? executionIntent.dx, 1)}</b>
-                <span>最终 dy</span><b>{formatNumber(execution.output_dy ?? executionIntent.dy, 1)}</b>
-                <span>Driver dx</span><b>{formatNumber(executionMeta.driver_dx, 1)}</b>
-                <span>Driver dy</span><b>{formatNumber(executionMeta.driver_dy, 1)}</b>
-                <span>kmNet 次数</span><b>{formatNumber(kmnetStatus.move_count, 0)}</b>
-                <span>kmNet 最近</span><b>{`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`}</b>
-                <span>限幅</span><b>{(execution.clipped ?? executionIntent.clipped) === true ? "已限幅" : (execution.clipped ?? executionIntent.clipped) === false ? "未限幅" : "-"}</b>
-                <span className="wide">执行信息</span><b className="wide">{readString(execution.message, "-")}</b>
+            <div className="console-grid2">
+              <div className="console-card">
+                <SectionTitle title="控制模式与共享链路" />
+                <label>控制模式</label>
+                <select value={controlMode} onChange={(event) => void updateConfigField("control", "mode", event.target.value)}>
+                  <option value="universal_saturated">通用适配</option>
+                  <option value="calibrated_angular">精确标定</option>
+                </select>
+                <label>触发方式</label>
+                <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
+                  <option value="hardware">kmNet 硬件按键触发</option>
+                  <option value="always">总是启用</option>
+                </select>
+                <NumberControl label="瞄点垂直比例" value={aimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)} />
+                <NumberControl label="估计执行延迟 s" value={configuredActuationDelay} min={0} max={0.1} step={0.001} onCommit={(value) => updateConfigField("control", "configured_actuation_delay_s", value)} />
+                <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
+                <ModuleSwitch label="预测 X" detail="使用 Tracker Kalman 未来 X 位置" enabled={predictionXEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_x_enabled", enabled)} />
+                <ModuleSwitch label="预测 Y" detail="使用 Tracker Kalman 未来 Y 位置" enabled={predictionYEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_y_enabled", enabled)} />
+                <NumberControl label="X 像素死区" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
+                <NumberControl label="Y 像素死区" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
+                <NumberControl label="X counts 变化限制" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
+                <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
+                <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
+                <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
+                <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
+                <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
+              </div>
+
+              <div className="console-card">
+                <SectionTitle title={controlMode === "calibrated_angular" ? "精确标定参数" : "通用适配参数"} />
+                {controlMode === "calibrated_angular" ? (
+                  <>
+                    <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
+                    <NumberControl label="X 每圈 counts" value={calibratedCountsPer360X} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_x", value)} />
+                    <NumberControl label="Y 每圈 counts" value={calibratedCountsPer360Y} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_y", value)} />
+                    <NumberControl label="Kp X" value={calibratedKpX} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_x", value)} />
+                    <NumberControl label="Kp Y" value={calibratedKpY} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_y", value)} />
+                    <NumberControl label="Kd X" value={calibratedKdX} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_x", value)} />
+                    <NumberControl label="Kd Y" value={calibratedKdY} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_y", value)} />
+                    <NumberControl label="D 项 EMA" value={calibratedDEmaAlpha} min={0.01} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "d_ema_alpha", value)} />
+                    <NumberControl label="X 最大角度步长 deg" value={calibratedMaxAngleX} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_x_deg", value)} />
+                    <NumberControl label="Y 最大角度步长 deg" value={calibratedMaxAngleY} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_y_deg", value)} />
+                  </>
+                ) : (
+                  <>
+                    <NumberControl label="水平响应尺度 px" value={universalResponseScaleX} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_x_px", value)} />
+                    <NumberControl label="垂直响应尺度 px" value={universalResponseScaleY} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_y_px", value)} />
+                    <NumberControl label="最大水平移动 counts" value={universalMaxStepX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_x_counts", value)} />
+                    <NumberControl label="最大垂直移动 counts" value={universalMaxStepY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_y_counts", value)} />
+                  </>
+                )}
+                <details className="model-debug-details">
+                  <summary>候选过滤、Hungarian Tracker 与目标切换</summary>
+                  <NumberControl label="最低控制置信度" value={controlMinConfidence} min={0.1} max={0.99} step={0.01} onCommit={(value) => updateConfigField("control", "min_confidence", value)} />
+                  <NumberControl label="目标选择半径 px" value={targetFovRadiusPx} min={1} max={4000} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
+                  <NumberControl label="候选框最大宽高比" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
+                  <NumberControl label="质量权重：置信度" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
+                  <NumberControl label="质量权重：面积" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
+                  <NumberControl label="类别优先容忍" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
+                  <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
+                  <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
+                  <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
+                  <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
+                  <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
+                  <NumberControl label="切换优势阈值" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
+                  <NumberControl label="切换连续性阈值" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
+                </details>
+                <details className="model-debug-details">
+                  <summary>Tracker Kalman 参数</summary>
+                  <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
+                  <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
+                  <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
+                </details>
               </div>
             </div>
-          </div>
           </>
           ) : (
           <>
