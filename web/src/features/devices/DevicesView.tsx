@@ -40,7 +40,7 @@ type DevicesViewProps = {
   initialSection?: SettingsSection;
 };
 
-type SettingsSection = "capture" | "inference" | "algorithm";
+type SettingsSection = "capture" | "inference";
 type CaptureInputSource = "capture" | "image";
 type ReadinessTone = "ready" | "warn" | "blocked";
 
@@ -471,7 +471,6 @@ export function DevicesView({
   const configSource = runtimeConfig ?? runtime?.config;
   const roiConfig = getNestedRecord(configSource, "roi");
   const inferenceConfig = getNestedRecord(configSource, "inference");
-  const controlConfig = getNestedRecord(configSource, "control");
   const roiSize = typeof roiConfig?.size === "number" ? roiConfig.size : 640;
   const sourceConfig = getNestedRecord(configSource, "source");
   const activeSource = String(sourceConfig?.default ?? runtime?.source ?? "null");
@@ -587,18 +586,6 @@ export function DevicesView({
       tone: inferenceEnabled ? "ready" : "blocked"
     }
   ];
-  const controlStrategy = "experimental_angle_pid";
-  const fovRatio = readNumber(controlConfig, "fov_ratio", 0.28);
-  const maxAbsDx = readNumber(controlConfig, "max_abs_dx", 120);
-  const maxAbsDy = readNumber(controlConfig, "max_abs_dy", 120);
-  const minConfidence = readNumber(controlConfig, "min_confidence", 0);
-  const experimentalAngleKpX = readNumber(controlConfig, "experimental_angle_kp_x", 0.35);
-  const experimentalAngleKpY = readNumber(controlConfig, "experimental_angle_kp_y", 0.24);
-  const experimentalAngleKi = readNumber(controlConfig, "experimental_angle_ki", 0);
-  const experimentalAngleKd = readNumber(controlConfig, "experimental_angle_kd", 0);
-  const experimentalAngleIntegralLimit = readNumber(controlConfig, "experimental_angle_integral_limit", 0);
-  const experimentalAngleMaxStep = readNumber(controlConfig, "experimental_angle_max_step_counts", 80);
-
   useEffect(() => {
     setSelectedSource(normalizedActiveSource);
   }, [normalizedActiveSource]);
@@ -632,7 +619,6 @@ export function DevicesView({
           {[
             ["capture", "采集设置", "设备 / 图片输入 / Profile"],
             ["inference", "推理设置", "ROI / 检测阈值 / 后端"],
-            ["algorithm", "算法设置", "FOV / PID / 输出限幅"],
           ].map(([id, label, desc]) => (
             <button
               className={activeSection === id ? "settings-tab active" : "settings-tab"}
@@ -669,13 +655,6 @@ export function DevicesView({
               ready: runtimeMainlineSelected
                 ? inferenceEnabled && mainlineInputReady && activeModelName !== "未发布模型"
                 : inferenceEnabled && activeModelName !== "未发布模型"
-            },
-            {
-              id: "algorithm",
-              label: "控制输出",
-              value: "实验角度 PID",
-              detail: `X/Y 限幅 ${maxAbsDx}/${maxAbsDy}`,
-              ready: maxAbsDx > 0 && maxAbsDy > 0
             }
           ].map((step, index) => (
             <button
@@ -1132,13 +1111,6 @@ export function DevicesView({
                   />
                 </div>
 
-                <div className="settings-next-row">
-                  <span>推理参数确认后，下一步调整 FOV、PID 和输出限幅，避免控制量过冲。</span>
-                  <button className="button compact-button" type="button" onClick={() => setActiveSection("algorithm")}>
-                    继续调控制量
-                  </button>
-                </div>
-
                 <div className={!inferenceSupportsExecution || inferenceReason ? "model-binding-card warn" : "model-binding-card"}>
                   <div>
                     <span>模型仓库绑定</span>
@@ -1167,139 +1139,6 @@ export function DevicesView({
           </section>
         ) : null}
 
-        {activeSection === "algorithm" ? (
-          <section className="settings-console commercial-console">
-            <aside className="settings-console-sidebar">
-              <div className="settings-side-head">
-                <strong>控制量调整</strong>
-                <span>把补偿目标点转换成角度误差，再由角度 PID 和标定 Profile 输出 counts。</span>
-              </div>
-              <dl className="settings-summary-list">
-                <div>
-                  <dt>策略</dt>
-                  <dd>实验角度 PID</dd>
-                </div>
-                <div>
-                  <dt>FOV</dt>
-                  <dd>Selection {formatThreshold(fovRatio)}</dd>
-                </div>
-                <div>
-                  <dt>限幅</dt>
-                  <dd>X {maxAbsDx} / Y {maxAbsDy}</dd>
-                </div>
-                <div>
-                  <dt>角度 PID</dt>
-                  <dd>Kp {experimentalAngleKpX}/{experimentalAngleKpY} · Ki {experimentalAngleKi} · Kd {experimentalAngleKd} · 积分 {experimentalAngleIntegralLimit}</dd>
-                </div>
-              </dl>
-              <div className="control-safety-note">
-                <strong>安全顺序</strong>
-                <span>先确认标定 Profile，再逐步提高 Kp；如果抖动明显，优先降低 Kd 或提高目标过滤质量。</span>
-              </div>
-            </aside>
-
-            <div className="settings-console-main">
-              <div className="settings-status-strip compact-strip">
-                <div>
-                  <span>最低置信度</span>
-                  <strong>{formatThreshold(minConfidence)}</strong>
-                </div>
-                <div>
-                  <span>Kp X/Y</span>
-                  <strong>{experimentalAngleKpX} / {experimentalAngleKpY}</strong>
-                </div>
-                <div>
-                  <span>单帧限幅</span>
-                  <strong>{experimentalAngleMaxStep}</strong>
-                </div>
-                <div>
-                  <span>输出上限</span>
-                  <strong>{maxAbsDx} / {maxAbsDy}</strong>
-                </div>
-              </div>
-
-              <div className="settings-panel">
-                <div className="settings-panel-head">
-                  <div>
-                    <h3>算法与输出边界</h3>
-                    <p>参数会实时同步到后端运行配置。FOV 决定可追踪区域，限幅决定最终控制量边界。</p>
-                  </div>
-                </div>
-
-                <div className="algorithm-choice-row">
-                  <button className="algorithm-choice active" type="button">
-                    <strong>实验角度 PID</strong>
-                    <span>CompensatedTarget → 角度误差 → Angular PD → 标定 counts → kmNet</span>
-                  </button>
-                </div>
-
-                <div className="commercial-grid">
-                  <NumberField
-                    label="FOV 比例"
-                    value={fovRatio}
-                    busy={configBusy === "control.fov_ratio"}
-                    min={0.01}
-                    max={1}
-                    step={0.01}
-                    onCommit={(value) => void updateRuntimeField("control", "fov_ratio", value)}
-                  />
-                  <NumberField
-                    label="X 限幅"
-                    value={maxAbsDx}
-                    busy={configBusy === "control.max_abs_dx"}
-                    min={0}
-                    step={1}
-                    onCommit={(value) => void updateRuntimeField("control", "max_abs_dx", value)}
-                  />
-                  <NumberField
-                    label="Y 限幅"
-                    value={maxAbsDy}
-                    busy={configBusy === "control.max_abs_dy"}
-                    min={0}
-                    step={1}
-                    onCommit={(value) => void updateRuntimeField("control", "max_abs_dy", value)}
-                  />
-                  <NumberField
-                    label="最低置信度"
-                    value={minConfidence}
-                    busy={configBusy === "control.min_confidence"}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    onCommit={(value) => void updateRuntimeField("control", "min_confidence", value)}
-                  />
-                </div>
-
-                <div className="control-block">
-                  <div className="control-block-head">
-                    <strong>实验角度 PID</strong>
-                    <span>控制器只处理角度误差；FOV、每圈 counts 和轴方向来自标定 Profile。</span>
-                  </div>
-                  <div className="commercial-grid dense">
-                    {[
-                      ["experimental_angle_kp_x", "Kp X", 0.35],
-                      ["experimental_angle_kp_y", "Kp Y", 0.24],
-                      ["experimental_angle_ki", "Ki", 0],
-                      ["experimental_angle_kd", "Kd", 0],
-                      ["experimental_angle_integral_limit", "积分限幅", 0],
-                      ["experimental_angle_max_step_counts", "单帧限幅", 80],
-                    ].map(([key, label, fallback]) => (
-                      <NumberField
-                        key={key}
-                        label={String(label)}
-                        value={readNumber(controlConfig, String(key), Number(fallback))}
-                        busy={configBusy === `control.${key}`}
-                        min={0}
-                        step={0.01}
-                        onCommit={(value) => void updateRuntimeField("control", String(key), value)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-        ) : null}
       </main>
 
     </div>

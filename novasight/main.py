@@ -137,14 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.host is not None:
         cfg.web.host = args.host
     if args.port is not None:
-        print(
-            "error: doctor requires a subcommand: camera, jetson-bridge, "
-            "jetson-preflight, jetson-native-build, jetson-native-smoke, "
-            "jetson-zero-copy, jetson-zero-copy-report, deepstream-smoke, "
-            "deepstream-smoke-report, gst-cpu-latest-smoke, "
-            "gst-cpu-latest-smoke-report, kmnet",
-            file=sys.stderr,
-        )
+        cfg.web.port = args.port
     configure_logging(cfg)
     if args.command == "doctor" and args.doctor_command is None:
         print(

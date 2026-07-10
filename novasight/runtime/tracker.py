@@ -1,105 +1,94 @@
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
-from math import isfinite, log
+from dataclasses import dataclass, field, replace
+from math import isfinite
 from typing import Literal
 
 from novasight.contracts import BBox, FrameContext, Track
-from novasight.runtime.candidates import ScoredCandidate
+from novasight.runtime.candidates import TrackObservation
 from novasight.runtime.kalman import EstimatedState, KalmanConfig, KalmanEstimator
 
 
-TrackState = Literal[
-    "TENTATIVE",
-    "CONFIRMED",
-    "MISSING",
-    "PREDICTING",
-    "IDENTITY_UNCERTAIN",
-    "OUT_OF_ROI",
-    "LOST",
-    "DELETED",
-]
+TrackState = Literal["ACTIVE", "LOST", "REMOVED"]
+GlobalTrackerState = Literal["IDLE", "TRACKING", "LOST", "COOLDOWN", "DISABLED"]
 
-GlobalTrackerState = Literal[
-    "IDLE",
-    "ACQUIRING",
-    "TRACKING",
-    "PREDICTING",
-    "IDENTITY_UNCERTAIN",
-    "TARGET_UNAVAILABLE",
-    "LOST",
-    "COOLDOWN",
-    "DISABLED",
-]
+_FORBIDDEN_COST = 1_000_000.0
 
 
 @dataclass(frozen=True)
 class TrackerConfig:
-    confirm_frames: int = 2
-    matching_distance_px: float = 140.0
-    ambiguity_margin: float = 0.08
-    missing_timeout_ms: float = 120.0
-    delete_timeout_ms: float = 250.0
-    max_size_ratio: float = 2.0
-    position_weight: float = 0.55
-    iou_weight: float = 0.30
-    size_weight: float = 0.15
-    match_threshold: float = 0.65
-    mahalanobis_gate: float = 9.21
+    max_match_distance: float = 1.5
+    position_cost_weight: float = 0.75
+    iou_cost_weight: float = 0.25
+    max_missed_frames: int = 2
     kalman: KalmanConfig = field(default_factory=KalmanConfig)
 
 
 @dataclass
 class TrackRecord:
     track_id: int
-    cls: int
-    score: float
-    box: BBox
-    state: TrackState = "TENTATIVE"
-    hits: int = 1
-    misses: int = 0
-    first_ts_ns: int = 0
-    last_ts_ns: int = 0
-    last_match_cost: float | None = None
-    last_mahalanobis: float | None = None
-    identity_confidence: float = 1.0
-    switch_committed: bool = False
+    class_id: int
+    confidence: float
+    bbox: BBox
+    observed_aim_x: float
+    observed_aim_y: float
+    filtered_x: float
+    filtered_y: float
+    velocity_x: float
+    velocity_y: float
+    last_capture_ts_ns: int
+    status: TrackState = "ACTIVE"
+    hit_count: int = 1
+    missed_count: int = 0
+    velocity_valid: bool = False
     estimator: KalmanEstimator | None = None
     estimate: EstimatedState | None = None
+    last_match_cost: float | None = None
+    last_normalized_distance: float | None = None
+    last_iou: float | None = None
+    identity_confidence: float = 1.0
 
-    def as_track(self) -> Track:
-        box = self.box
-        if self.state == "PREDICTING" and self.estimate is not None and self.estimate.valid:
-            box = BBox.from_cxcywh(
-                self.estimate.x,
-                self.estimate.y,
-                max(1.0, self.box.width),
-                max(1.0, self.box.height),
-            )
+    def to_output(self) -> Track:
         return Track(
             track_id=self.track_id,
-            cls=self.cls,
-            score=self.score,
-            box=box,
-            velocity_px_s=(
-                (float(self.estimate.vx), float(self.estimate.vy))
-                if self.estimate is not None and self.estimate.valid
-                else (0.0, 0.0)
-            ),
-            missed_frames=self.misses,
-            last_seen_ns=self.last_ts_ns,
-            is_predicted=self.state == "PREDICTING",
-            is_stale=self.state in {"MISSING", "LOST", "OUT_OF_ROI"},
+            cls=self.class_id,
+            score=self.confidence,
+            box=self.bbox,
+            velocity_px_s=(self.velocity_x, self.velocity_y),
+            observed_aim_px=(self.observed_aim_x, self.observed_aim_y),
+            filtered_aim_px=(self.filtered_x, self.filtered_y),
+            velocity_valid=self.velocity_valid,
+            missed_frames=self.missed_count,
+            last_seen_ns=self.last_capture_ts_ns,
+            is_predicted=False,
+            is_stale=False,
         )
 
 
 @dataclass(frozen=True)
-class TrackerUpdate:
-    tracks: list[Track]
+class TrackerResult:
+    active_tracks: list[Track]
+    lost_track_count: int
+    created_track_ids: list[int]
+    restored_track_ids: list[int]
+    removed_track_ids: list[int]
     state: str
     reason: str
     debug: dict
+
+    @property
+    def tracks(self) -> list[Track]:
+        return self.active_tracks
+
+
+TrackerUpdate = TrackerResult
+
+
+@dataclass(frozen=True)
+class _AssociationEdge:
+    cost: float
+    normalized_distance: float
+    iou: float
 
 
 class RuntimeTracker:
@@ -107,120 +96,126 @@ class RuntimeTracker:
         self.config = config or TrackerConfig()
         self._tracks: dict[int, TrackRecord] = {}
         self._next_track_id = 1
+        self._last_capture_ts_ns: int | None = None
         self._last_frame_id: int | None = None
         self.last_debug: dict = {}
 
     def reset(self) -> None:
         self._tracks.clear()
         self._next_track_id = 1
+        self._last_capture_ts_ns = None
         self._last_frame_id = None
         self.last_debug = {}
 
     def update(
         self,
-        context: FrameContext,
-        candidates: list[ScoredCandidate],
+        observations: list[TrackObservation],
+        capture_ts_ns: int,
         *,
-        now_ns: int | None = None,
-    ) -> TrackerUpdate:
-        now = _frame_ts(context, now_ns)
-        if self._last_frame_id == int(context.frame_id):
-            return self._repeat_frame_update(context, candidates, now)
-        self._last_frame_id = int(context.frame_id)
-        self._expire_deleted(now)
-        assignments: list[tuple[int, int, float]] = []
-        uncertain_tracks: set[int] = set()
-        used_tracks: set[int] = set()
-        used_candidates: set[int] = set()
+        frame_id: int | None = None,
+    ) -> TrackerResult:
+        capture_ts = int(capture_ts_ns)
+        if capture_ts <= 0:
+            return self._unchanged_result(
+                capture_ts_ns=capture_ts,
+                frame_id=frame_id,
+                reason="capture_ts_ns must be positive",
+            )
+        if self._last_capture_ts_ns is not None and capture_ts <= self._last_capture_ts_ns:
+            reason = (
+                "repeat observation; tracker state unchanged"
+                if capture_ts == self._last_capture_ts_ns
+                else "non-monotonic capture_ts_ns; tracker state unchanged"
+            )
+            return self._unchanged_result(
+                capture_ts_ns=capture_ts,
+                frame_id=frame_id,
+                reason=reason,
+            )
 
-        feasible_by_track = {
-            track_id: self._feasible_candidates(track, candidates, now)
-            for track_id, track in self._tracks.items()
-            if track.state not in {"LOST", "DELETED", "OUT_OF_ROI"}
-        }
-        for track_id, feasible in feasible_by_track.items():
-            if len(feasible) < 2:
-                continue
-            best_cost = feasible[0][1]
-            second_cost = feasible[1][1]
-            if second_cost - best_cost < max(0.0, self.config.ambiguity_margin):
-                track = self._tracks[track_id]
-                track.state = "IDENTITY_UNCERTAIN"
-                track.identity_confidence = max(0.0, second_cost - best_cost)
-                uncertain_tracks.add(track_id)
+        self._last_capture_ts_ns = capture_ts
+        self._last_frame_id = int(frame_id) if frame_id is not None else None
+        self._predict_tracks(capture_ts)
+        track_ids = sorted(self._tracks)
+        cost_matrix, edges = self._association_costs(track_ids, observations)
+        matches = self._hungarian_matches(track_ids, observations, cost_matrix, edges)
+        matched_track_ids = {track_id for track_id, _, _ in matches}
+        matched_observation_indexes = {observation_index for _, observation_index, _ in matches}
+        created_track_ids: list[int] = []
+        restored_track_ids: list[int] = []
+        removed_track_ids: list[int] = []
 
-        pairs: list[tuple[float, int, int]] = []
-        for track_id, feasible in feasible_by_track.items():
-            if track_id in uncertain_tracks:
-                continue
-            for candidate_index, cost in feasible:
-                if cost <= self.config.match_threshold:
-                    pairs.append((cost, track_id, candidate_index))
+        for track_id, observation_index, edge in matches:
+            track = self._tracks[track_id]
+            was_lost = track.status == "LOST"
+            self._update_matched_track(
+                track,
+                observations[observation_index],
+                edge=edge,
+                capture_ts_ns=capture_ts,
+            )
+            if was_lost:
+                restored_track_ids.append(track_id)
 
-        for cost, track_id, candidate_index in sorted(pairs, key=lambda item: item[0]):
-            if track_id in used_tracks or candidate_index in used_candidates:
+        for track_id in track_ids:
+            if track_id not in matched_track_ids:
+                self._mark_lost(self._tracks[track_id])
+
+        for observation_index, observation in enumerate(observations):
+            if observation_index in matched_observation_indexes:
                 continue
-            self._update_track(self._tracks[track_id], candidates[candidate_index], cost, now)
-            used_tracks.add(track_id)
-            used_candidates.add(candidate_index)
-            assignments.append((track_id, candidate_index, cost))
+            track = self._create_track(observation, capture_ts_ns=capture_ts)
+            created_track_ids.append(track.track_id)
 
         for track_id, track in list(self._tracks.items()):
-            if track_id in used_tracks or track.state in {"LOST", "DELETED", "OUT_OF_ROI"}:
-                continue
-            if track_id in uncertain_tracks:
-                continue
-            self._mark_missing(track, now, allow_prediction=not candidates)
+            if track.status == "LOST" and track.missed_count > max(0, int(self.config.max_missed_frames)):
+                track.status = "REMOVED"
+                removed_track_ids.append(track_id)
+                self._tracks.pop(track_id, None)
 
-        for index, candidate in enumerate(candidates):
-            if index not in used_candidates:
-                self._new_track(candidate, now)
-
-        self._expire_deleted(now)
-        available = [track.as_track() for track in self._tracks.values() if self._track_control_candidate(track)]
-        state = self._summary_state()
-        reason = self._summary_reason(state)
-        self.last_debug = {
-            "enabled": True,
-            "state": state,
-            "reason": reason,
-            "tracks": [self._track_debug(track, now) for track in self._tracks.values()],
-            "available_tracks": len(available),
-            "assignments": [
-                {"track_id": track_id, "candidate_index": candidate_index, "cost": cost}
-                for track_id, candidate_index, cost in assignments
-            ],
-            "identity_uncertain_tracks": sorted(uncertain_tracks),
-            "candidates": len(candidates),
-            "config": self._config_debug(),
-        }
-        return TrackerUpdate(tracks=available, state=state, reason=reason, debug=self.last_debug)
-
-    def _repeat_frame_update(
-        self,
-        context: FrameContext,
-        candidates: list[ScoredCandidate],
-        now_ns: int,
-    ) -> TrackerUpdate:
-        available = [track.as_track() for track in self._tracks.values() if self._track_control_candidate(track)]
-        state = self._summary_state()
-        reason = "repeat frame; tracker state unchanged"
-        self.last_debug = {
-            "enabled": True,
-            "state": state,
-            "reason": reason,
-            "frame_id": int(context.frame_id),
-            "repeat_frame": True,
-            "tracks": [self._track_debug(track, now_ns) for track in self._tracks.values()],
-            "available_tracks": len(available),
-            "assignments": [],
-            "identity_uncertain_tracks": [
-                track.track_id for track in self._tracks.values() if track.state == "IDENTITY_UNCERTAIN"
-            ],
-            "candidates": len(candidates),
-            "config": self._config_debug(),
-        }
-        return TrackerUpdate(tracks=available, state=state, reason=reason, debug=self.last_debug)
+        active_records = [
+            track for track in self._tracks.values() if track.status == "ACTIVE"
+        ]
+        active_records.sort(key=lambda item: item.track_id)
+        active_tracks = [track.to_output() for track in active_records]
+        lost_count = sum(track.status == "LOST" for track in self._tracks.values())
+        state: GlobalTrackerState = "TRACKING" if active_tracks else "LOST" if lost_count else "IDLE"
+        reason = {
+            "TRACKING": "active tracks updated from current detections",
+            "LOST": "tracks retained for association but excluded from control",
+            "IDLE": "no active or retained tracks",
+        }[state]
+        assignment_debug = [
+            {
+                "track_id": track_id,
+                "detection_index": observations[observation_index].detection_index,
+                "cost": edge.cost,
+                "normalized_distance": edge.normalized_distance,
+                "iou": edge.iou,
+            }
+            for track_id, observation_index, edge in matches
+        ]
+        self.last_debug = self._debug_payload(
+            state=state,
+            reason=reason,
+            capture_ts_ns=capture_ts,
+            frame_id=frame_id,
+            observations=observations,
+            assignments=assignment_debug,
+            created_track_ids=created_track_ids,
+            restored_track_ids=restored_track_ids,
+            removed_track_ids=removed_track_ids,
+        )
+        return TrackerResult(
+            active_tracks=active_tracks,
+            lost_track_count=lost_count,
+            created_track_ids=created_track_ids,
+            restored_track_ids=restored_track_ids,
+            removed_track_ids=removed_track_ids,
+            state=state,
+            reason=reason,
+            debug=self.last_debug,
+        )
 
     def mark_unavailable(
         self,
@@ -229,320 +224,440 @@ class RuntimeTracker:
         context: FrameContext,
         reason: str,
         now_ns: int | None = None,
-    ) -> TrackerUpdate:
-        now = _frame_ts(context, now_ns)
-        global_state = _unavailable_global_state(state)
-        track_state = _unavailable_track_state(state)
-        for track in self._tracks.values():
-            if track.state not in {"DELETED", "LOST"}:
-                track.state = track_state
-                track.misses += 1
-                track.last_ts_ns = now
+    ) -> TrackerResult:
+        capture_ts_ns = int(now_ns or context.capture_ts_ns or 0)
+        result = self.update([], capture_ts_ns, frame_id=context.frame_id)
+        global_state = str(state or "").strip().upper()
+        if global_state not in {"COOLDOWN", "DISABLED"}:
+            global_state = result.state
         self.last_debug = {
-            "enabled": True,
+            **result.debug,
             "state": global_state,
             "reason": reason,
             "unavailable_state": str(state),
-            "tracks": [self._track_debug(track, now) for track in self._tracks.values()],
-            "available_tracks": 0,
-            "assignments": [],
-            "identity_uncertain_tracks": [],
-            "candidates": 0,
-            "config": self._config_debug(),
         }
-        return TrackerUpdate(tracks=[], state=global_state, reason=reason, debug=self.last_debug)
-
-    def _feasible_candidates(
-        self,
-        track: TrackRecord,
-        candidates: list[ScoredCandidate],
-        now_ns: int,
-    ) -> list[tuple[int, float]]:
-        feasible: list[tuple[int, float]] = []
-        for index, candidate in enumerate(candidates):
-            detection = candidate.detection
-            if int(detection.cls) != int(track.cls):
-                continue
-            if not _finite_box(detection.box) or not _finite_box(track.box):
-                continue
-            predicted_x, predicted_y = self._predicted_center(track)
-            distance = _point_distance(predicted_x, predicted_y, detection.box.center_x, detection.box.center_y)
-            if distance > self.config.matching_distance_px:
-                continue
-            nis = self._candidate_nis(track, detection.box, now_ns)
-            if nis is not None and (
-                not isfinite(nis) or nis > float(self.config.mahalanobis_gate)
-            ):
-                continue
-            cost = self._cost(track, candidate, predicted_x, predicted_y, nis)
-            if isfinite(cost):
-                feasible.append((index, cost))
-        return sorted(feasible, key=lambda item: item[1])
-
-    def _cost(
-        self,
-        track: TrackRecord,
-        candidate: ScoredCandidate,
-        predicted_x: float,
-        predicted_y: float,
-        nis: float | None,
-    ) -> float:
-        det = candidate.detection
-        distance = _point_distance(predicted_x, predicted_y, det.box.center_x, det.box.center_y)
-        d_pred = _clamp01(distance / max(1.0, self.config.matching_distance_px))
-        if nis is not None:
-            d_pred = _clamp01(nis / max(1e-6, float(self.config.mahalanobis_gate)))
-        d_iou = 1.0 - _iou(track.box, det.box)
-        area_track = max(1e-6, track.box.area)
-        area_det = max(1e-6, det.box.area)
-        d_size = abs(log(area_det / area_track)) / log(max(1.01, self.config.max_size_ratio))
-        d_size = _clamp01(d_size)
-        wp = max(0.0, self.config.position_weight)
-        wi = max(0.0, self.config.iou_weight)
-        ws = max(0.0, self.config.size_weight)
-        total = wp + wi + ws
-        if total <= 0:
-            return d_pred
-        return (wp * d_pred + wi * d_iou + ws * d_size) / total
-
-    def _new_track(self, candidate: ScoredCandidate, now_ns: int) -> TrackRecord:
-        detection = candidate.detection
-        hits = 1
-        state: TrackState = "CONFIRMED" if hits >= self.config.confirm_frames else "TENTATIVE"
-        track = TrackRecord(
-            track_id=self._next_track_id,
-            cls=int(detection.cls),
-            score=float(detection.score),
-            box=detection.box,
-            state=state,
-            hits=hits,
-            first_ts_ns=now_ns,
-            last_ts_ns=now_ns,
+        return TrackerResult(
+            active_tracks=[],
+            lost_track_count=result.lost_track_count,
+            created_track_ids=result.created_track_ids,
+            restored_track_ids=result.restored_track_ids,
+            removed_track_ids=result.removed_track_ids,
+            state=global_state,
+            reason=reason,
+            debug=self.last_debug,
         )
-        track.estimator = KalmanEstimator(
-            track_id=track.track_id,
-            x=detection.box.center_x,
-            y=detection.box.center_y,
-            ts_ns=now_ns,
-            config=self.config.kalman,
-            identity_confidence=track.identity_confidence,
-        )
-        track.estimate = track.estimator.last_estimate
-        self._next_track_id += 1
-        self._tracks[track.track_id] = track
-        return track
 
-    def _update_track(
-        self,
-        track: TrackRecord,
-        candidate: ScoredCandidate,
-        cost: float,
-        now_ns: int,
-    ) -> None:
-        detection = candidate.detection
-        previous_state = track.state
-        previous_center_x = track.box.center_x
-        previous_center_y = track.box.center_y
-        previous_ts_ns = int(track.last_ts_ns or now_ns)
-        track.score = float(detection.score)
-        track.box = detection.box
-        track.hits += 1
-        track.misses = 0
-        track.last_ts_ns = now_ns
-        track.last_match_cost = cost
-        track.identity_confidence = _clamp01(1.0 - cost)
-        if track.estimator is None:
-            track.estimator = KalmanEstimator(
-                track_id=track.track_id,
-                x=detection.box.center_x,
-                y=detection.box.center_y,
-                ts_ns=now_ns,
-                config=self.config.kalman,
+    def _predict_tracks(self, capture_ts_ns: int) -> None:
+        for track in self._tracks.values():
+            if track.status not in {"ACTIVE", "LOST"} or track.estimator is None:
+                continue
+            track.estimator.update_config(_association_kalman_config(self.config.kalman))
+            estimate = track.estimator.predict_only(
+                ts_ns=capture_ts_ns,
                 identity_confidence=track.identity_confidence,
             )
-        else:
-            track.estimator.update_config(self.config.kalman)
-        track.last_mahalanobis = track.estimator.measurement_nis(
-            detection.box.center_x,
-            detection.box.center_y,
-            now_ns,
+            track.estimate = estimate
+            if isfinite(estimate.x) and isfinite(estimate.y):
+                track.filtered_x = float(estimate.x)
+                track.filtered_y = float(estimate.y)
+            if isfinite(estimate.vx) and isfinite(estimate.vy):
+                track.velocity_x = float(estimate.vx)
+                track.velocity_y = float(estimate.vy)
+
+    def _association_costs(
+        self,
+        track_ids: list[int],
+        observations: list[TrackObservation],
+    ) -> tuple[list[list[float]], dict[tuple[int, int], _AssociationEdge]]:
+        matrix: list[list[float]] = []
+        edges: dict[tuple[int, int], _AssociationEdge] = {}
+        for row, track_id in enumerate(track_ids):
+            track = self._tracks[track_id]
+            costs: list[float] = []
+            for column, observation in enumerate(observations):
+                edge = self._association_edge(track, observation)
+                if edge is None:
+                    costs.append(_FORBIDDEN_COST)
+                    continue
+                costs.append(edge.cost)
+                edges[(row, column)] = edge
+            matrix.append(costs)
+        return matrix, edges
+
+    def _association_edge(
+        self,
+        track: TrackRecord,
+        observation: TrackObservation,
+    ) -> _AssociationEdge | None:
+        if track.status not in {"ACTIVE", "LOST"}:
+            return None
+        if track.class_id != observation.class_id:
+            return None
+        if not _finite_box(track.bbox) or not _finite_box(observation.bbox):
+            return None
+        distance_px = _point_distance(
+            track.filtered_x,
+            track.filtered_y,
+            observation.aim_x,
+            observation.aim_y,
         )
-        track.estimate = track.estimator.update(
-            measurement_x=detection.box.center_x,
-            measurement_y=detection.box.center_y,
-            ts_ns=now_ns,
-            identity_confidence=track.identity_confidence,
+        reference_height = max(track.bbox.height, observation.bbox.height)
+        if not isfinite(reference_height) or reference_height <= 0:
+            return None
+        normalized_distance = distance_px / reference_height
+        if (
+            not isfinite(normalized_distance)
+            or normalized_distance > max(0.0, float(self.config.max_match_distance))
+        ):
+            return None
+        iou = _iou(track.bbox, observation.bbox)
+        position_weight = max(0.0, float(self.config.position_cost_weight))
+        iou_weight = max(0.0, float(self.config.iou_cost_weight))
+        total_weight = position_weight + iou_weight
+        if total_weight <= 0:
+            position_weight = 1.0
+            total_weight = 1.0
+        cost = (
+            position_weight * normalized_distance
+            + iou_weight * (1.0 - iou)
+        ) / total_weight
+        return _AssociationEdge(
+            cost=float(cost),
+            normalized_distance=float(normalized_distance),
+            iou=float(iou),
         )
-        dt_s = (int(now_ns) - previous_ts_ns) / 1e9
-        if isfinite(dt_s) and dt_s > 0:
-            observed_vx = (detection.box.center_x - previous_center_x) / dt_s
-            observed_vy = (detection.box.center_y - previous_center_y) / dt_s
-            velocity_weight = 0.60 if track.hits <= 2 else 0.35
-            track.estimate = track.estimator.apply_velocity_hint(
-                vx=observed_vx,
-                vy=observed_vy,
-                ts_ns=now_ns,
-                weight=velocity_weight,
-            )
-        if track.hits >= self.config.confirm_frames:
-            track.state = "CONFIRMED"
-        else:
-            track.state = "TENTATIVE"
-        track.switch_committed = previous_state in {"TENTATIVE", "MISSING", "IDENTITY_UNCERTAIN"} and track.state == "CONFIRMED"
-
-    def _mark_missing(self, track: TrackRecord, now_ns: int, *, allow_prediction: bool) -> None:
-        track.misses += 1
-        if track.estimator is not None:
-            track.estimator.update_config(self.config.kalman)
-            track.estimate = track.estimator.predict_only(
-                ts_ns=now_ns,
-                identity_confidence=track.identity_confidence,
-            )
-        missing_ms = (now_ns - int(track.last_ts_ns or now_ns)) / 1e6
-        if missing_ms > self.config.missing_timeout_ms:
-            track.state = "LOST"
-        elif track.state == "TENTATIVE":
-            track.state = "LOST"
-        elif allow_prediction and track.estimate is not None and track.estimate.valid and track.estimate.predicted:
-            track.state = "PREDICTING"
-        else:
-            track.state = "MISSING"
-
-    def _expire_deleted(self, now_ns: int) -> None:
-        for track_id, track in list(self._tracks.items()):
-            if track.state not in {"LOST", "OUT_OF_ROI"}:
-                continue
-            age_ms = (now_ns - int(track.last_ts_ns or now_ns)) / 1e6
-            if age_ms > self.config.delete_timeout_ms:
-                track.state = "DELETED"
-                self._tracks.pop(track_id, None)
-
-    def _summary_state(self) -> GlobalTrackerState:
-        states = {track.state for track in self._tracks.values()}
-        if "IDENTITY_UNCERTAIN" in states:
-            return "IDENTITY_UNCERTAIN"
-        if "CONFIRMED" in states:
-            return "TRACKING"
-        if "PREDICTING" in states:
-            return "PREDICTING"
-        if "MISSING" in states:
-            return "TARGET_UNAVAILABLE"
-        if "TENTATIVE" in states:
-            return "ACQUIRING"
-        if "OUT_OF_ROI" in states:
-            return "TARGET_UNAVAILABLE"
-        if "LOST" in states:
-            return "LOST"
-        return "IDLE"
 
     @staticmethod
-    def _summary_reason(state: str) -> str:
-        return {
-            "IDENTITY_UNCERTAIN": "association ambiguity margin violated",
-            "TRACKING": "confirmed track available",
-            "PREDICTING": "confirmed track temporarily missing; valid prediction available",
-            "ACQUIRING": "tentative track awaiting confirmation",
-            "TARGET_UNAVAILABLE": "track moved outside ROI/FOV",
-            "LOST": "track lost",
-            "COOLDOWN": "device output is cooling down",
-            "DISABLED": "tracker disabled by runtime gate",
-            "IDLE": "no active tracks",
-        }.get(state, state)
+    def _hungarian_matches(
+        track_ids: list[int],
+        observations: list[TrackObservation],
+        cost_matrix: list[list[float]],
+        edges: dict[tuple[int, int], _AssociationEdge],
+    ) -> list[tuple[int, int, _AssociationEdge]]:
+        if not track_ids or not observations:
+            return []
+        matches: list[tuple[int, int, _AssociationEdge]] = []
+        for row, column in _linear_sum_assignment(cost_matrix):
+            edge = edges.get((row, column))
+            if edge is not None:
+                matches.append((track_ids[row], column, edge))
+        return matches
 
-    def _track_debug(self, track: TrackRecord, now_ns: int) -> dict:
+    def _update_matched_track(
+        self,
+        track: TrackRecord,
+        observation: TrackObservation,
+        *,
+        edge: _AssociationEdge,
+        capture_ts_ns: int,
+    ) -> None:
+        previous_capture_ts_ns = track.last_capture_ts_ns
+        track.identity_confidence = _clamp01(1.0 - edge.cost)
+        if track.estimator is None:
+            track.estimator = self._new_estimator(
+                track_id=track.track_id,
+                x=observation.aim_x,
+                y=observation.aim_y,
+                capture_ts_ns=capture_ts_ns,
+                identity_confidence=track.identity_confidence,
+            )
+            estimate = track.estimator.last_estimate
+        else:
+            track.estimator.update_config(_association_kalman_config(self.config.kalman))
+            estimate = track.estimator.update(
+                measurement_x=observation.aim_x,
+                measurement_y=observation.aim_y,
+                ts_ns=capture_ts_ns,
+                identity_confidence=track.identity_confidence,
+            )
+        track.estimate = estimate
+        track.class_id = observation.class_id
+        track.confidence = observation.confidence
+        track.bbox = observation.bbox
+        track.observed_aim_x = observation.aim_x
+        track.observed_aim_y = observation.aim_y
+        track.filtered_x = estimate.x
+        track.filtered_y = estimate.y
+        track.velocity_x = estimate.vx
+        track.velocity_y = estimate.vy
+        track.last_capture_ts_ns = capture_ts_ns
+        track.hit_count += 1
+        track.missed_count = 0
+        track.status = "ACTIVE"
+        track.velocity_valid = capture_ts_ns > previous_capture_ts_ns and track.hit_count >= 2
+        track.last_match_cost = edge.cost
+        track.last_normalized_distance = edge.normalized_distance
+        track.last_iou = edge.iou
+
+    def _mark_lost(self, track: TrackRecord) -> None:
+        track.status = "LOST"
+        track.missed_count += 1
+
+    def _create_track(
+        self,
+        observation: TrackObservation,
+        *,
+        capture_ts_ns: int,
+    ) -> TrackRecord:
+        track_id = self._next_track_id
+        self._next_track_id += 1
+        estimator = self._new_estimator(
+            track_id=track_id,
+            x=observation.aim_x,
+            y=observation.aim_y,
+            capture_ts_ns=capture_ts_ns,
+            identity_confidence=1.0,
+        )
+        track = TrackRecord(
+            track_id=track_id,
+            class_id=observation.class_id,
+            confidence=observation.confidence,
+            bbox=observation.bbox,
+            observed_aim_x=observation.aim_x,
+            observed_aim_y=observation.aim_y,
+            filtered_x=observation.aim_x,
+            filtered_y=observation.aim_y,
+            velocity_x=0.0,
+            velocity_y=0.0,
+            last_capture_ts_ns=capture_ts_ns,
+            estimator=estimator,
+            estimate=estimator.last_estimate,
+        )
+        self._tracks[track_id] = track
+        return track
+
+    def _new_estimator(
+        self,
+        *,
+        track_id: int,
+        x: float,
+        y: float,
+        capture_ts_ns: int,
+        identity_confidence: float,
+    ) -> KalmanEstimator:
+        return KalmanEstimator(
+            track_id=track_id,
+            x=x,
+            y=y,
+            ts_ns=capture_ts_ns,
+            config=_association_kalman_config(self.config.kalman),
+            identity_confidence=identity_confidence,
+        )
+
+    def _unchanged_result(
+        self,
+        *,
+        capture_ts_ns: int,
+        frame_id: int | None,
+        reason: str,
+    ) -> TrackerResult:
+        active_records = sorted(
+            (track for track in self._tracks.values() if track.status == "ACTIVE"),
+            key=lambda item: item.track_id,
+        )
+        active_tracks = [track.to_output() for track in active_records]
+        lost_count = sum(track.status == "LOST" for track in self._tracks.values())
+        state: GlobalTrackerState = "TRACKING" if active_tracks else "LOST" if lost_count else "IDLE"
+        self.last_debug = self._debug_payload(
+            state=state,
+            reason=reason,
+            capture_ts_ns=capture_ts_ns,
+            frame_id=frame_id,
+            observations=[],
+            assignments=[],
+            created_track_ids=[],
+            restored_track_ids=[],
+            removed_track_ids=[],
+            repeat_observation=True,
+        )
+        return TrackerResult(
+            active_tracks=active_tracks,
+            lost_track_count=lost_count,
+            created_track_ids=[],
+            restored_track_ids=[],
+            removed_track_ids=[],
+            state=state,
+            reason=reason,
+            debug=self.last_debug,
+        )
+
+    def _debug_payload(
+        self,
+        *,
+        state: str,
+        reason: str,
+        capture_ts_ns: int,
+        frame_id: int | None,
+        observations: list[TrackObservation],
+        assignments: list[dict],
+        created_track_ids: list[int],
+        restored_track_ids: list[int],
+        removed_track_ids: list[int],
+        repeat_observation: bool = False,
+    ) -> dict:
+        active_count = sum(track.status == "ACTIVE" for track in self._tracks.values())
+        lost_count = sum(track.status == "LOST" for track in self._tracks.values())
+        return {
+            "enabled": True,
+            "association_algorithm": "hungarian",
+            "state": state,
+            "reason": reason,
+            "frame_id": frame_id,
+            "capture_ts_ns": capture_ts_ns,
+            "repeat_frame": repeat_observation,
+            "tracks": [
+                self._track_debug(track)
+                for track in sorted(self._tracks.values(), key=lambda item: item.track_id)
+            ],
+            "available_tracks": active_count,
+            "active_tracks": active_count,
+            "lost_track_count": lost_count,
+            "assignments": assignments,
+            "created_track_ids": list(created_track_ids),
+            "restored_track_ids": list(restored_track_ids),
+            "removed_track_ids": list(removed_track_ids),
+            "identity_uncertain_tracks": [],
+            "candidates": len(observations),
+            "config": {
+                "max_match_distance": self.config.max_match_distance,
+                "position_cost_weight": self.config.position_cost_weight,
+                "iou_cost_weight": self.config.iou_cost_weight,
+                "max_missed_frames": self.config.max_missed_frames,
+                "kalman": {
+                    "acceleration_noise": self.config.kalman.acceleration_noise,
+                    "measurement_noise_x": self.config.kalman.measurement_noise_x,
+                    "measurement_noise_y": self.config.kalman.measurement_noise_y,
+                },
+            },
+        }
+
+    def _track_debug(self, track: TrackRecord) -> dict:
+        current_capture_ts_ns = int(self._last_capture_ts_ns or track.last_capture_ts_ns)
         return {
             "track_id": track.track_id,
-            "state": track.state,
-            "cls": track.cls,
-            "score": track.score,
-            "hits": track.hits,
-            "misses": track.misses,
-            "missing_ms": max(0.0, (now_ns - int(track.last_ts_ns or now_ns)) / 1e6),
+            "state": track.status,
+            "status": track.status,
+            "cls": track.class_id,
+            "class_id": track.class_id,
+            "score": track.confidence,
+            "confidence": track.confidence,
+            "hits": track.hit_count,
+            "hit_count": track.hit_count,
+            "misses": track.missed_count,
+            "missed_count": track.missed_count,
+            "missing_ms": max(
+                0.0,
+                (current_capture_ts_ns - track.last_capture_ts_ns) / 1e6,
+            ),
+            "last_capture_ts_ns": track.last_capture_ts_ns,
+            "observed_aim_x": track.observed_aim_x,
+            "observed_aim_y": track.observed_aim_y,
+            "filtered_x": track.filtered_x,
+            "filtered_y": track.filtered_y,
+            "velocity_x": track.velocity_x,
+            "velocity_y": track.velocity_y,
+            "velocity_valid": track.velocity_valid,
             "identity_confidence": track.identity_confidence,
             "last_match_cost": track.last_match_cost,
-            "mahalanobis": track.last_mahalanobis,
-            "switch_committed": track.switch_committed,
+            "normalized_distance": track.last_normalized_distance,
+            "iou": track.last_iou,
             "bbox": {
-                "x1": track.box.x1,
-                "y1": track.box.y1,
-                "x2": track.box.x2,
-                "y2": track.box.y2,
+                "x1": track.bbox.x1,
+                "y1": track.bbox.y1,
+                "x2": track.bbox.x2,
+                "y2": track.bbox.y2,
             },
             "estimate": _estimate_debug(track.estimate),
         }
 
-    @staticmethod
-    def _track_control_candidate(track: TrackRecord) -> bool:
-        if track.state == "CONFIRMED":
-            return True
-        return (
-            track.state == "PREDICTING"
-            and track.estimate is not None
-            and track.estimate.valid
-            and track.estimate.predicted
+
+def _association_kalman_config(config: KalmanConfig) -> KalmanConfig:
+    return replace(
+        config,
+        max_predict_missing_ms=1_000_000_000.0,
+        max_predict_steps=1_000_000_000,
+        max_predict_dt_ms=1_000_000_000.0,
+        max_position_sigma_px=1_000_000_000.0,
+        max_covariance_trace=1_000_000_000_000.0,
+        nis_threshold=1_000_000_000_000.0,
+        nis_hard_reject=1_000_000_000_000.0,
+        min_identity_confidence=0.0,
+        min_prediction_confidence=0.0,
+    )
+
+
+def _linear_sum_assignment(cost_matrix: list[list[float]]) -> list[tuple[int, int]]:
+    """Return a deterministic minimum-cost rectangular assignment in O(n^3)."""
+    if not cost_matrix or not cost_matrix[0]:
+        return []
+    row_count = len(cost_matrix)
+    column_count = len(cost_matrix[0])
+    if any(len(row) != column_count for row in cost_matrix):
+        raise ValueError("cost matrix rows must have equal length")
+    transposed = row_count > column_count
+    matrix = (
+        [[float(cost_matrix[row][column]) for row in range(row_count)] for column in range(column_count)]
+        if transposed
+        else [[float(value) for value in row] for row in cost_matrix]
+    )
+    rows = len(matrix)
+    columns = len(matrix[0])
+    u = [0.0] * (rows + 1)
+    v = [0.0] * (columns + 1)
+    p = [0] * (columns + 1)
+    way = [0] * (columns + 1)
+    for row in range(1, rows + 1):
+        p[0] = row
+        min_values = [float("inf")] * (columns + 1)
+        used = [False] * (columns + 1)
+        column0 = 0
+        while True:
+            used[column0] = True
+            row0 = p[column0]
+            delta = float("inf")
+            column1 = 0
+            for column in range(1, columns + 1):
+                if used[column]:
+                    continue
+                current = matrix[row0 - 1][column - 1] - u[row0] - v[column]
+                if current < min_values[column]:
+                    min_values[column] = current
+                    way[column] = column0
+                if min_values[column] < delta:
+                    delta = min_values[column]
+                    column1 = column
+            for column in range(columns + 1):
+                if used[column]:
+                    u[p[column]] += delta
+                    v[column] -= delta
+                else:
+                    min_values[column] -= delta
+            column0 = column1
+            if p[column0] == 0:
+                break
+        while True:
+            column1 = way[column0]
+            p[column0] = p[column1]
+            column0 = column1
+            if column0 == 0:
+                break
+    assignment: list[tuple[int, int]] = []
+    for column in range(1, columns + 1):
+        if p[column] == 0:
+            continue
+        row_index = p[column] - 1
+        column_index = column - 1
+        assignment.append(
+            (column_index, row_index) if transposed else (row_index, column_index)
         )
-
-    def _config_debug(self) -> dict:
-        return {
-            "confirm_frames": self.config.confirm_frames,
-            "matching_distance_px": self.config.matching_distance_px,
-            "ambiguity_margin": self.config.ambiguity_margin,
-            "missing_timeout_ms": self.config.missing_timeout_ms,
-            "delete_timeout_ms": self.config.delete_timeout_ms,
-            "max_size_ratio": self.config.max_size_ratio,
-            "weights": {
-                "position": self.config.position_weight,
-                "iou": self.config.iou_weight,
-                "size": self.config.size_weight,
-            },
-            "match_threshold": self.config.match_threshold,
-            "mahalanobis_gate": self.config.mahalanobis_gate,
-            "kalman": {
-                "enabled": self.config.kalman.enabled,
-                "acceleration_noise": self.config.kalman.acceleration_noise,
-                "measurement_noise_x": self.config.kalman.measurement_noise_x,
-                "measurement_noise_y": self.config.kalman.measurement_noise_y,
-                "max_predict_missing_ms": self.config.kalman.max_predict_missing_ms,
-                "max_predict_steps": self.config.kalman.max_predict_steps,
-                "max_predict_dt_ms": self.config.kalman.max_predict_dt_ms,
-                "max_position_sigma_px": self.config.kalman.max_position_sigma_px,
-                "max_covariance_trace": self.config.kalman.max_covariance_trace,
-                "nis_threshold": self.config.kalman.nis_threshold,
-                "nis_hard_reject": self.config.kalman.nis_hard_reject,
-                "min_identity_confidence": self.config.kalman.min_identity_confidence,
-                "min_prediction_confidence": self.config.kalman.min_prediction_confidence,
-                "prediction_decay_tau_ms": self.config.kalman.prediction_decay_tau_ms,
-            },
-        }
-
-    def _predicted_center(self, track: TrackRecord) -> tuple[float, float]:
-        estimate = track.estimate
-        if estimate is None:
-            return track.box.center_x, track.box.center_y
-        return estimate.x, estimate.y
-
-    def _candidate_nis(self, track: TrackRecord, box: BBox, now_ns: int) -> float | None:
-        estimator = track.estimator
-        if estimator is None or not self.config.kalman.enabled:
-            return None
-        estimator.update_config(self.config.kalman)
-        return estimator.measurement_nis(box.center_x, box.center_y, now_ns)
-
-
-def _frame_ts(context: FrameContext, now_ns: int | None) -> int:
-    if now_ns is not None:
-        return int(now_ns)
-    if isinstance(context.capture_ts_ns, int) and context.capture_ts_ns > 0:
-        return int(context.capture_ts_ns)
-    return time.monotonic_ns()
+    return sorted(assignment)
 
 
 def _finite_box(box: BBox) -> bool:
-    return all(isfinite(float(value)) for value in (box.x1, box.y1, box.x2, box.y2)) and box.area > 0
-
-
-def _center_distance(left: BBox, right: BBox) -> float:
-    return ((left.center_x - right.center_x) ** 2 + (left.center_y - right.center_y) ** 2) ** 0.5
+    return all(
+        isfinite(float(value))
+        for value in (box.x1, box.y1, box.x2, box.y2)
+    ) and box.area > 0
 
 
 def _point_distance(x1: float, y1: float, x2: float, y2: float) -> float:
@@ -575,9 +690,7 @@ def _iou(left: BBox, right: BBox) -> float:
     iy1 = max(left.y1, right.y1)
     ix2 = min(left.x2, right.x2)
     iy2 = min(left.y2, right.y2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    intersection = iw * ih
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
     union = left.area + right.area - intersection
     if union <= 0:
         return 0.0
@@ -588,17 +701,9 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def _unavailable_global_state(state: str) -> GlobalTrackerState:
-    normalized = str(state or "").strip().upper()
-    if normalized in {"COOLDOWN", "DISABLED", "LOST"}:
-        return normalized  # type: ignore[return-value]
-    return "TARGET_UNAVAILABLE"
-
-
-def _unavailable_track_state(state: str) -> TrackState:
-    normalized = str(state or "").strip().upper()
-    if normalized == "OUT_OF_ROI":
-        return "OUT_OF_ROI"
-    if normalized == "LOST":
-        return "LOST"
-    return "LOST"
+__all__ = [
+    "RuntimeTracker",
+    "TrackerConfig",
+    "TrackerResult",
+    "TrackerUpdate",
+]

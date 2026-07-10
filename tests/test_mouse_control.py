@@ -6,37 +6,66 @@ import pytest
 
 from novasight.contracts import Track
 from novasight.control import (
+    CALIBRATED_ANGULAR,
+    UNIVERSAL_SATURATED,
+    CalibratedAngularController,
+    CalibratedAngularControllerConfig,
+    ControllerFactory,
     MouseController,
     MouseControllerConfig,
     MouseObservation,
     RawAimPointProjector,
+    SharedOutputConfig,
+    UniversalSaturatedController,
+    UniversalSaturatedControllerConfig,
     normalize_aim_y_ratio,
 )
 from novasight.coordinates import CoordinateTransform
 
 
-def _config(**overrides: float | int | bool) -> MouseControllerConfig:
-    values: dict[str, float | int | bool] = {
+def _config(
+    *,
+    mode: str = CALIBRATED_ANGULAR,
+    calibrated: dict[str, float] | None = None,
+    universal: dict[str, float] | None = None,
+    shared: dict[str, float | int | bool] | None = None,
+) -> MouseControllerConfig:
+    calibrated_values = {
         "fov_x_deg": 90.0,
         "counts_per_360_x": 1000.0,
         "counts_per_360_y": 1000.0,
-        "invert_y": False,
         "kp_x": 1.0,
         "kp_y": 1.0,
         "kd_x": 0.0,
         "kd_y": 0.0,
         "d_ema_alpha": 1.0,
-        "deadzone_px_x": 0.0,
-        "deadzone_px_y": 0.0,
-        "max_output_rad_x": 10.0,
-        "max_output_rad_y": 10.0,
-        "max_output_rate_rad_s_x": 1000.0,
-        "max_output_rate_rad_s_y": 1000.0,
+        "max_angle_step_x_rad": 10.0,
+        "max_angle_step_y_rad": 10.0,
+    }
+    universal_values = {
+        "response_scale_x_px": 100.0,
+        "response_scale_y_px": 100.0,
+        "max_step_x_counts": 100.0,
+        "max_step_y_counts": 100.0,
+    }
+    shared_values: dict[str, float | int | bool] = {
+        "deadzone_x_px": 0.0,
+        "deadzone_y_px": 0.0,
+        "max_count_slew_x": 1000.0,
+        "max_count_slew_y": 1000.0,
+        "invert_y": False,
         "max_budget_counts_x": 1000,
         "max_budget_counts_y": 1000,
     }
-    values.update(overrides)
-    return MouseControllerConfig(**values)
+    calibrated_values.update(calibrated or {})
+    universal_values.update(universal or {})
+    shared_values.update(shared or {})
+    return MouseControllerConfig(
+        mode=mode,
+        calibrated_angular=CalibratedAngularControllerConfig(**calibrated_values),
+        universal_saturated=UniversalSaturatedControllerConfig(**universal_values),
+        shared=SharedOutputConfig(**shared_values),
+    )
 
 
 def _observation(
@@ -126,7 +155,7 @@ def test_raw_aim_rejects_untrusted_projection_geometry() -> None:
 
 
 def test_mouse_controller_uses_predicted_error_for_p() -> None:
-    controller = MouseController(_config(kd_x=0.0, kp_y=0.0))
+    controller = MouseController(_config(calibrated={"kd_x": 0.0, "kp_y": 0.0}))
 
     command = controller.calculate(
         _observation(frame_id=1, observed_x=120.0, predicted_x=160.0)
@@ -139,7 +168,9 @@ def test_mouse_controller_uses_predicted_error_for_p() -> None:
 
 
 def test_mouse_controller_derivative_uses_observed_error_not_predicted_error() -> None:
-    controller = MouseController(_config(kp_x=0.0, kp_y=0.0, kd_x=1.0))
+    controller = MouseController(
+        _config(calibrated={"kp_x": 0.0, "kp_y": 0.0, "kd_x": 1.0})
+    )
     controller.calculate(_observation(frame_id=1, observed_x=120.0, predicted_x=120.0))
 
     command = controller.calculate(
@@ -152,7 +183,7 @@ def test_mouse_controller_derivative_uses_observed_error_not_predicted_error() -
 
 
 def test_mouse_controller_derivative_damps_error_approaching_center() -> None:
-    controller = MouseController(_config(kd_x=0.1, kp_y=0.0))
+    controller = MouseController(_config(calibrated={"kd_x": 0.1, "kp_y": 0.0}))
     controller.calculate(_observation(frame_id=1, observed_x=160.0))
 
     command = controller.calculate(_observation(frame_id=2, observed_x=140.0))
@@ -163,7 +194,9 @@ def test_mouse_controller_derivative_damps_error_approaching_center() -> None:
 
 
 def test_mouse_controller_target_switch_resets_derivative_and_residual() -> None:
-    controller = MouseController(_config(kp_x=0.0, kp_y=0.0, kd_x=1.0))
+    controller = MouseController(
+        _config(calibrated={"kp_x": 0.0, "kp_y": 0.0, "kd_x": 1.0})
+    )
     controller.calculate(_observation(frame_id=1, target_id=7, observed_x=150.0))
     controller.state.residual_x_counts = 0.75
 
@@ -190,7 +223,7 @@ def test_mouse_controller_rejects_duplicate_observation() -> None:
 def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
     desired_rad = 0.4 * math.tau / 1000.0
     observed_x = 100.0 + math.tan(desired_rad) * 100.0
-    controller = MouseController(_config(kp_y=0.0))
+    controller = MouseController(_config(calibrated={"kp_y": 0.0}))
 
     outputs = [
         controller.calculate(
@@ -208,9 +241,93 @@ def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
 
 
 def test_mouse_controller_inverts_y_only_in_count_mapping() -> None:
-    controller = MouseController(_config(kp_x=0.0, invert_y=True))
+    controller = MouseController(
+        _config(calibrated={"kp_x": 0.0}, shared={"invert_y": True})
+    )
 
     command = controller.calculate(_observation(frame_id=1, observed_y=150.0))
 
     assert command.debug["limited_output_y_rad"] > 0.0
     assert command.dy < 0
+
+
+def test_mouse_controller_distinguishes_theoretical_and_limited_counts() -> None:
+    controller = MouseController(
+        _config(
+            calibrated={"kp_y": 0.0, "max_angle_step_x_rad": 0.1},
+        )
+    )
+
+    command = controller.calculate(
+        _observation(frame_id=1, observed_x=180.0, predicted_x=180.0)
+    )
+
+    assert command.debug["theoretical_counts_x_float"] > command.debug["mode_limited_counts_x_float"]
+    assert command.debug["mode_limited_counts_x_float"] == pytest.approx(
+        command.debug["feasible_counts_x_float"]
+    )
+
+
+def test_controller_factory_creates_only_requested_mode() -> None:
+    calibrated = ControllerFactory.create(_config(mode=CALIBRATED_ANGULAR))
+    universal = ControllerFactory.create(_config(mode=UNIVERSAL_SATURATED))
+
+    assert isinstance(calibrated, CalibratedAngularController)
+    assert not isinstance(calibrated, UniversalSaturatedController)
+    assert isinstance(universal, UniversalSaturatedController)
+    assert not isinstance(universal, CalibratedAngularController)
+
+
+def test_universal_saturated_zero_sign_and_bound() -> None:
+    controller = MouseController(
+        _config(
+            mode=UNIVERSAL_SATURATED,
+            universal={
+                "response_scale_x_px": 20.0,
+                "response_scale_y_px": 20.0,
+                "max_step_x_counts": 30.0,
+                "max_step_y_counts": 24.0,
+            },
+        )
+    )
+
+    zero = controller.calculate(_observation(frame_id=1, observed_x=100, observed_y=100))
+    positive = controller.calculate(_observation(frame_id=2, observed_x=10_000, observed_y=10_000))
+    negative = controller.calculate(_observation(frame_id=3, observed_x=-10_000, observed_y=-10_000))
+
+    assert (zero.dx, zero.dy) == (0, 0)
+    assert 0 < positive.dx <= 30
+    assert 0 < positive.dy <= 24
+    assert -30 <= negative.dx < 0
+    assert -24 <= negative.dy < 0
+    assert "d_raw_x_rad_s" not in positive.debug
+
+
+def test_universal_response_scale_controls_near_center_gain() -> None:
+    fast = MouseController(
+        _config(mode=UNIVERSAL_SATURATED, universal={"response_scale_x_px": 20.0})
+    )
+    soft = MouseController(
+        _config(mode=UNIVERSAL_SATURATED, universal={"response_scale_x_px": 200.0})
+    )
+
+    fast_command = fast.calculate(_observation(frame_id=1, observed_x=110, observed_y=100))
+    soft_command = soft.calculate(_observation(frame_id=1, observed_x=110, observed_y=100))
+
+    assert fast_command.dx > soft_command.dx > 0
+
+
+def test_shared_count_slew_limits_adjacent_observation_change() -> None:
+    controller = MouseController(
+        _config(
+            mode=UNIVERSAL_SATURATED,
+            shared={"max_count_slew_x": 3.0},
+        )
+    )
+    controller.calculate(_observation(frame_id=1, observed_x=100, observed_y=100))
+
+    command = controller.calculate(_observation(frame_id=2, observed_x=10_000, observed_y=100))
+
+    assert command.debug["directed_counts_x_float"] > 3.0
+    assert command.debug["slew_limited_counts_x_float"] == pytest.approx(3.0)
+    assert command.dx == 3

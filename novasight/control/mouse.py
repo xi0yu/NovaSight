@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any
+from typing import Any, Protocol
+
+
+CALIBRATED_ANGULAR = "calibrated_angular"
+UNIVERSAL_SATURATED = "universal_saturated"
+CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED})
 
 
 @dataclass(frozen=True)
@@ -40,62 +45,274 @@ class MouseObservation:
 
 
 @dataclass(frozen=True, slots=True)
-class MouseControllerConfig:
+class Vec2:
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerInput:
+    predicted_error_px: Vec2
+    observed_error_px: Vec2
+    control_size_px: Vec2
+    dt_s: float | None
+    observed_history_valid: bool
+    observed_valid: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerComputation:
+    counts: Vec2
+    debug: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CalibratedAngularControllerConfig:
     fov_x_deg: float
     counts_per_360_x: float
     counts_per_360_y: float
-    invert_y: bool
     kp_x: float
     kp_y: float
     kd_x: float
     kd_y: float
     d_ema_alpha: float
-    deadzone_px_x: float
-    deadzone_px_y: float
-    max_output_rad_x: float
-    max_output_rad_y: float
-    max_output_rate_rad_s_x: float
-    max_output_rate_rad_s_y: float
+    max_angle_step_x_rad: float
+    max_angle_step_y_rad: float
+
+
+@dataclass(frozen=True, slots=True)
+class UniversalSaturatedControllerConfig:
+    response_scale_x_px: float
+    response_scale_y_px: float
+    max_step_x_counts: float
+    max_step_y_counts: float
+
+
+@dataclass(frozen=True, slots=True)
+class SharedOutputConfig:
+    deadzone_x_px: float
+    deadzone_y_px: float
+    max_count_slew_x: float
+    max_count_slew_y: float
+    invert_y: bool
     max_budget_counts_x: int
     max_budget_counts_y: int
+
+
+@dataclass(frozen=True, slots=True)
+class MouseControllerConfig:
+    mode: str
+    calibrated_angular: CalibratedAngularControllerConfig
+    universal_saturated: UniversalSaturatedControllerConfig
+    shared: SharedOutputConfig
+
+
+class ControlController(Protocol):
+    mode: str
+
+    def reset(self) -> None:
+        ...
+
+    def compute_counts(self, value: ControllerInput) -> ControllerComputation:
+        ...
+
+
+@dataclass(slots=True)
+class _CalibratedAngularState:
+    previous_observed_error_rad: Vec2 = field(default_factory=lambda: Vec2(0.0, 0.0))
+    derivative_ema_rad_s: Vec2 = field(default_factory=lambda: Vec2(0.0, 0.0))
+    history_valid: bool = False
+
+    def reset(self) -> None:
+        self.previous_observed_error_rad = Vec2(0.0, 0.0)
+        self.derivative_ema_rad_s = Vec2(0.0, 0.0)
+        self.history_valid = False
+
+
+class CalibratedAngularController:
+    mode = CALIBRATED_ANGULAR
+
+    def __init__(self, config: CalibratedAngularControllerConfig) -> None:
+        self.config = config
+        self.state = _CalibratedAngularState()
+
+    def reset(self) -> None:
+        self.state.reset()
+
+    def compute_counts(self, value: ControllerInput) -> ControllerComputation:
+        geometry = _projection_geometry(
+            value.control_size_px.x,
+            value.control_size_px.y,
+            self.config.fov_x_deg,
+        )
+        if geometry is None:
+            raise ValueError("CONTROL_PROJECTION_INVALID")
+        focal_x, focal_y = geometry
+        observed_rad = Vec2(
+            math.atan(value.observed_error_px.x / focal_x),
+            math.atan(value.observed_error_px.y / focal_y),
+        )
+        predicted_rad = Vec2(
+            math.atan(value.predicted_error_px.x / focal_x),
+            math.atan(value.predicted_error_px.y / focal_y),
+        )
+        dt_valid = _valid_measurement_dt(value.dt_s)
+        if (
+            not self.state.history_valid
+            or not value.observed_history_valid
+            or not value.observed_valid
+            or not dt_valid
+        ):
+            d_raw = Vec2(0.0, 0.0)
+            self.state.derivative_ema_rad_s = Vec2(0.0, 0.0)
+        else:
+            assert value.dt_s is not None
+            d_raw = Vec2(
+                (observed_rad.x - self.state.previous_observed_error_rad.x) / value.dt_s,
+                (observed_rad.y - self.state.previous_observed_error_rad.y) / value.dt_s,
+            )
+            alpha = _clamp(self.config.d_ema_alpha, 0.01, 1.0)
+            self.state.derivative_ema_rad_s = Vec2(
+                alpha * d_raw.x + (1.0 - alpha) * self.state.derivative_ema_rad_s.x,
+                alpha * d_raw.y + (1.0 - alpha) * self.state.derivative_ema_rad_s.y,
+            )
+
+        p_rad = Vec2(
+            self.config.kp_x * predicted_rad.x,
+            self.config.kp_y * predicted_rad.y,
+        )
+        d_rad = Vec2(
+            self.config.kd_x * self.state.derivative_ema_rad_s.x,
+            self.config.kd_y * self.state.derivative_ema_rad_s.y,
+        )
+        requested_rad = Vec2(p_rad.x + d_rad.x, p_rad.y + d_rad.y)
+        limited_rad = Vec2(
+            _clamp_axis(requested_rad.x, self.config.max_angle_step_x_rad),
+            _clamp_axis(requested_rad.y, self.config.max_angle_step_y_rad),
+        )
+        theoretical_counts = Vec2(
+            requested_rad.x * self.config.counts_per_360_x / math.tau,
+            requested_rad.y * self.config.counts_per_360_y / math.tau,
+        )
+        limited_counts = Vec2(
+            limited_rad.x * self.config.counts_per_360_x / math.tau,
+            limited_rad.y * self.config.counts_per_360_y / math.tau,
+        )
+
+        if value.observed_valid:
+            self.state.previous_observed_error_rad = observed_rad
+            self.state.history_valid = True
+        else:
+            self.state.history_valid = False
+
+        return ControllerComputation(
+            counts=limited_counts,
+            debug={
+                "focal_x_px": focal_x,
+                "focal_y_px": focal_y,
+                "observed_error_x_rad": observed_rad.x,
+                "observed_error_y_rad": observed_rad.y,
+                "predicted_error_x_rad": predicted_rad.x,
+                "predicted_error_y_rad": predicted_rad.y,
+                "p_x_rad": p_rad.x,
+                "p_y_rad": p_rad.y,
+                "d_x_rad": d_rad.x,
+                "d_y_rad": d_rad.y,
+                "d_raw_x_rad_s": d_raw.x,
+                "d_raw_y_rad_s": d_raw.y,
+                "d_ema_x_rad_s": self.state.derivative_ema_rad_s.x,
+                "d_ema_y_rad_s": self.state.derivative_ema_rad_s.y,
+                "requested_output_x_rad": requested_rad.x,
+                "requested_output_y_rad": requested_rad.y,
+                "limited_output_x_rad": limited_rad.x,
+                "limited_output_y_rad": limited_rad.y,
+                "theoretical_counts_x_float": theoretical_counts.x,
+                "theoretical_counts_y_float": theoretical_counts.y,
+                "mode_limited_counts_x_float": limited_counts.x,
+                "mode_limited_counts_y_float": limited_counts.y,
+            },
+        )
+
+
+class UniversalSaturatedController:
+    mode = UNIVERSAL_SATURATED
+
+    def __init__(self, config: UniversalSaturatedControllerConfig) -> None:
+        self.config = config
+
+    def reset(self) -> None:
+        return None
+
+    def compute_counts(self, value: ControllerInput) -> ControllerComputation:
+        counts = Vec2(
+            _saturated_axis(
+                value.predicted_error_px.x,
+                self.config.response_scale_x_px,
+                self.config.max_step_x_counts,
+            ),
+            _saturated_axis(
+                value.predicted_error_px.y,
+                self.config.response_scale_y_px,
+                self.config.max_step_y_counts,
+            ),
+        )
+        return ControllerComputation(
+            counts=counts,
+            debug={
+                "response_scale_x_px": self.config.response_scale_x_px,
+                "response_scale_y_px": self.config.response_scale_y_px,
+                "max_step_x_counts": self.config.max_step_x_counts,
+                "max_step_y_counts": self.config.max_step_y_counts,
+                "theoretical_counts_x_float": counts.x,
+                "theoretical_counts_y_float": counts.y,
+                "mode_limited_counts_x_float": counts.x,
+                "mode_limited_counts_y_float": counts.y,
+            },
+        )
+
+
+class ControllerFactory:
+    @staticmethod
+    def create(config: MouseControllerConfig) -> ControlController:
+        if config.mode == CALIBRATED_ANGULAR:
+            return CalibratedAngularController(config.calibrated_angular)
+        if config.mode == UNIVERSAL_SATURATED:
+            return UniversalSaturatedController(config.universal_saturated)
+        raise ValueError(f"unsupported mouse control mode: {config.mode}")
 
 
 @dataclass(slots=True)
 class MouseControllerState:
     target_id: int | None = None
     frame_id: int | None = None
-    capture_ts_ns: int | None = None
-    observed_error_x_rad: float = 0.0
-    observed_error_y_rad: float = 0.0
-    observed_history_valid: bool = False
-    d_ema_x_rad_s: float = 0.0
-    d_ema_y_rad_s: float = 0.0
-    output_x_rad: float = 0.0
-    output_y_rad: float = 0.0
     residual_x_counts: float = 0.0
     residual_y_counts: float = 0.0
+    previous_counts: Vec2 = field(default_factory=lambda: Vec2(0.0, 0.0))
+    output_history_valid: bool = False
 
     def reset(self) -> None:
         self.target_id = None
         self.frame_id = None
-        self.capture_ts_ns = None
-        self.observed_error_x_rad = 0.0
-        self.observed_error_y_rad = 0.0
-        self.observed_history_valid = False
-        self.d_ema_x_rad_s = 0.0
-        self.d_ema_y_rad_s = 0.0
-        self.output_x_rad = 0.0
-        self.output_y_rad = 0.0
         self.residual_x_counts = 0.0
         self.residual_y_counts = 0.0
+        self.previous_counts = Vec2(0.0, 0.0)
+        self.output_history_valid = False
 
 
 class MouseController:
+    """Single production entry that owns exactly one mode controller."""
+
     def __init__(self, config: MouseControllerConfig) -> None:
         self.config = config
+        self.controller = ControllerFactory.create(config)
         self.state = MouseControllerState()
 
+    @property
+    def mode(self) -> str:
+        return self.controller.mode
+
     def reset(self) -> None:
+        self.controller.reset()
         self.state.reset()
 
     def calculate(self, observation: MouseObservation) -> MoveCommand:
@@ -107,160 +324,124 @@ class MouseController:
             return self._zero(observation.invalid_reason or "MOUSE_OBSERVATION_INVALID")
         if self.state.frame_id == observation.frame_id:
             return self._zero("DUPLICATE_OBSERVATION")
-
-        geometry = _projection_geometry(
-            observation.control_width_px,
-            observation.control_height_px,
-            self.config.fov_x_deg,
-        )
-        if geometry is None:
+        if not _valid_control_space(observation.control_width_px, observation.control_height_px):
             self.reset()
             return self._zero("CONTROL_PROJECTION_INVALID")
-        center_x, center_y, focal_x, focal_y = geometry
-        observed_error_x_px = observation.observed_x_px - center_x
-        observed_error_y_px = observation.observed_y_px - center_y
-        predicted_error_x_px = observation.predicted_x_px - center_x
-        predicted_error_y_px = observation.predicted_y_px - center_y
-        observed_error_x_rad = math.atan(observed_error_x_px / focal_x)
-        observed_error_y_rad = math.atan(observed_error_y_px / focal_y)
-        predicted_error_x_rad = math.atan(predicted_error_x_px / focal_x)
-        predicted_error_y_rad = math.atan(predicted_error_y_px / focal_y)
 
         switched = self.state.target_id is not None and self.state.target_id != observation.target_id
         if switched:
-            self.state.reset()
-        dt = observation.measurement_dt_s
-        dt_valid = dt is not None and math.isfinite(dt) and 0.0 < dt <= 0.2
-        if (
-            switched
-            or self.state.target_id is None
-            or not self.state.observed_history_valid
-            or not observation.observed_valid
-            or not dt_valid
-        ):
-            d_raw_x = 0.0
-            d_raw_y = 0.0
-            self.state.d_ema_x_rad_s = 0.0
-            self.state.d_ema_y_rad_s = 0.0
-        else:
-            assert dt is not None
-            d_raw_x = (observed_error_x_rad - self.state.observed_error_x_rad) / dt
-            d_raw_y = (observed_error_y_rad - self.state.observed_error_y_rad) / dt
-            alpha = _clamp(self.config.d_ema_alpha, 0.01, 1.0)
-            self.state.d_ema_x_rad_s = alpha * d_raw_x + (1.0 - alpha) * self.state.d_ema_x_rad_s
-            self.state.d_ema_y_rad_s = alpha * d_raw_y + (1.0 - alpha) * self.state.d_ema_y_rad_s
+            self.reset()
 
-        x_dead = abs(observed_error_x_px) <= max(0.0, self.config.deadzone_px_x)
-        y_dead = abs(observed_error_y_px) <= max(0.0, self.config.deadzone_px_y)
-        p_x_rad = self.config.kp_x * predicted_error_x_rad
-        p_y_rad = self.config.kp_y * predicted_error_y_rad
-        d_x_rad = self.config.kd_x * self.state.d_ema_x_rad_s
-        d_y_rad = self.config.kd_y * self.state.d_ema_y_rad_s
-        requested_x_rad = 0.0 if x_dead else p_x_rad + d_x_rad
-        requested_y_rad = 0.0 if y_dead else p_y_rad + d_y_rad
-        limited_x_rad = _clamp_axis(requested_x_rad, self.config.max_output_rad_x)
-        limited_y_rad = _clamp_axis(requested_y_rad, self.config.max_output_rad_y)
-
-        if self.state.target_id == observation.target_id and dt_valid:
-            assert dt is not None
-            limited_x_rad = _rate_limit(
-                limited_x_rad,
-                self.state.output_x_rad,
-                self.config.max_output_rate_rad_s_x,
-                dt,
+        center_x = observation.control_width_px * 0.5
+        center_y = observation.control_height_px * 0.5
+        observed_error = Vec2(
+            observation.observed_x_px - center_x,
+            observation.observed_y_px - center_y,
+        )
+        predicted_error = Vec2(
+            observation.predicted_x_px - center_x,
+            observation.predicted_y_px - center_y,
+        )
+        try:
+            computation = self.controller.compute_counts(
+                ControllerInput(
+                    predicted_error_px=predicted_error,
+                    observed_error_px=observed_error,
+                    control_size_px=Vec2(
+                        observation.control_width_px,
+                        observation.control_height_px,
+                    ),
+                    dt_s=observation.measurement_dt_s,
+                    observed_history_valid=not switched and self.state.target_id is not None,
+                    observed_valid=observation.observed_valid,
+                )
             )
-            limited_y_rad = _rate_limit(
-                limited_y_rad,
-                self.state.output_y_rad,
-                self.config.max_output_rate_rad_s_y,
-                dt,
+        except ValueError as exc:
+            self.reset()
+            return self._zero(str(exc))
+
+        shared = self.config.shared
+        deadzone_limited = Vec2(
+            0.0 if abs(observed_error.x) <= shared.deadzone_x_px else computation.counts.x,
+            0.0 if abs(observed_error.y) <= shared.deadzone_y_px else computation.counts.y,
+        )
+        directed_counts = Vec2(
+            deadzone_limited.x,
+            -deadzone_limited.y if shared.invert_y else deadzone_limited.y,
+        )
+        slew_limited = directed_counts
+        if self.state.output_history_valid:
+            slew_limited = Vec2(
+                _slew_limit(directed_counts.x, self.state.previous_counts.x, shared.max_count_slew_x),
+                _slew_limit(directed_counts.y, self.state.previous_counts.y, shared.max_count_slew_y),
             )
+        feasible_counts = Vec2(
+            _clamp_axis(slew_limited.x, shared.max_budget_counts_x),
+            _clamp_axis(slew_limited.y, shared.max_budget_counts_y),
+        )
 
-        counts_x_float = limited_x_rad * self.config.counts_per_360_x / math.tau
-        counts_y_float = limited_y_rad * self.config.counts_per_360_y / math.tau
-        if self.config.invert_y:
-            counts_y_float = -counts_y_float
-        total_x = counts_x_float + self.state.residual_x_counts
-        total_y = counts_y_float + self.state.residual_y_counts
-        requested_counts_x = math.trunc(total_x)
-        requested_counts_y = math.trunc(total_y)
-        self.state.residual_x_counts = total_x - requested_counts_x
-        self.state.residual_y_counts = total_y - requested_counts_y
-        counts_x = int(_clamp_axis(requested_counts_x, self.config.max_budget_counts_x))
-        counts_y = int(_clamp_axis(requested_counts_y, self.config.max_budget_counts_y))
-
+        total_x = feasible_counts.x + self.state.residual_x_counts
+        total_y = feasible_counts.y + self.state.residual_y_counts
+        counts_x = math.trunc(total_x)
+        counts_y = math.trunc(total_y)
+        self.state.residual_x_counts = total_x - counts_x
+        self.state.residual_y_counts = total_y - counts_y
         self.state.target_id = observation.target_id
         self.state.frame_id = observation.frame_id
-        self.state.capture_ts_ns = observation.capture_ts_ns
-        if observation.observed_valid:
-            self.state.observed_error_x_rad = observed_error_x_rad
-            self.state.observed_error_y_rad = observed_error_y_rad
-            self.state.observed_history_valid = True
-        else:
-            self.state.observed_history_valid = False
-        self.state.output_x_rad = limited_x_rad
-        self.state.output_y_rad = limited_y_rad
+        self.state.previous_counts = feasible_counts
+        self.state.output_history_valid = True
 
+        debug = {
+            "algorithm": self.mode,
+            "control_mode": self.mode,
+            "control_allowed": True,
+            "frame_id": observation.frame_id,
+            "target_id": observation.target_id,
+            "measurement_dt_s": observation.measurement_dt_s,
+            "prediction_horizon_s": observation.prediction_horizon_s,
+            "target_confidence": observation.target_confidence,
+            "prediction_confidence": observation.prediction_confidence,
+            "observed_x_px": observation.observed_x_px,
+            "observed_y_px": observation.observed_y_px,
+            "predicted_x_px": observation.predicted_x_px,
+            "predicted_y_px": observation.predicted_y_px,
+            "observed_error_x_px": observed_error.x,
+            "observed_error_y_px": observed_error.y,
+            "predicted_error_x_px": predicted_error.x,
+            "predicted_error_y_px": predicted_error.y,
+            **computation.debug,
+            "deadzone_limited_counts_x_float": deadzone_limited.x,
+            "deadzone_limited_counts_y_float": deadzone_limited.y,
+            "directed_counts_x_float": directed_counts.x,
+            "directed_counts_y_float": directed_counts.y,
+            "slew_limited_counts_x_float": slew_limited.x,
+            "slew_limited_counts_y_float": slew_limited.y,
+            "feasible_counts_x_float": feasible_counts.x,
+            "feasible_counts_y_float": feasible_counts.y,
+            "budget_clamped_x": feasible_counts.x != slew_limited.x,
+            "budget_clamped_y": feasible_counts.y != slew_limited.y,
+            "residual_x_counts": self.state.residual_x_counts,
+            "residual_y_counts": self.state.residual_y_counts,
+            "final_dx": counts_x,
+            "final_dy": counts_y,
+        }
         return MoveCommand(
             dx=counts_x,
             dy=counts_y,
             confidence=observation.target_confidence,
             reason="mouse_control",
-            debug={
-                "algorithm": "mouse_control",
-                "control_allowed": True,
-                "frame_id": observation.frame_id,
-                "target_id": observation.target_id,
-                "measurement_dt_s": dt,
-                "prediction_horizon_s": observation.prediction_horizon_s,
-                "target_confidence": observation.target_confidence,
-                "prediction_confidence": observation.prediction_confidence,
-                "observed_x_px": observation.observed_x_px,
-                "observed_y_px": observation.observed_y_px,
-                "predicted_x_px": observation.predicted_x_px,
-                "predicted_y_px": observation.predicted_y_px,
-                "observed_error_x_px": observed_error_x_px,
-                "observed_error_y_px": observed_error_y_px,
-                "observed_error_x_rad": observed_error_x_rad,
-                "observed_error_y_rad": observed_error_y_rad,
-                "predicted_error_x_rad": predicted_error_x_rad,
-                "predicted_error_y_rad": predicted_error_y_rad,
-                "focal_x_px": focal_x,
-                "focal_y_px": focal_y,
-                "p_x_rad": p_x_rad,
-                "p_y_rad": p_y_rad,
-                "d_x_rad": d_x_rad,
-                "d_y_rad": d_y_rad,
-                "d_raw_x_rad_s": d_raw_x,
-                "d_raw_y_rad_s": d_raw_y,
-                "d_ema_x_rad_s": self.state.d_ema_x_rad_s,
-                "d_ema_y_rad_s": self.state.d_ema_y_rad_s,
-                "requested_output_x_rad": requested_x_rad,
-                "requested_output_y_rad": requested_y_rad,
-                "limited_output_x_rad": limited_x_rad,
-                "limited_output_y_rad": limited_y_rad,
-                "counts_x_float": counts_x_float,
-                "counts_y_float": counts_y_float,
-                "requested_counts_x": requested_counts_x,
-                "requested_counts_y": requested_counts_y,
-                "budget_clamped_x": counts_x != requested_counts_x,
-                "budget_clamped_y": counts_y != requested_counts_y,
-                "residual_x_counts": self.state.residual_x_counts,
-                "residual_y_counts": self.state.residual_y_counts,
-                "final_dx": counts_x,
-                "final_dy": counts_y,
-            },
+            debug=debug,
         )
 
-    @staticmethod
-    def _zero(reason: str) -> MoveCommand:
+    def _zero(self, reason: str) -> MoveCommand:
         return MoveCommand(
             dx=0,
             dy=0,
             confidence=0.0,
             reason=reason,
             debug={
-                "algorithm": "mouse_control",
+                "algorithm": self.mode,
+                "control_mode": self.mode,
                 "control_allowed": False,
                 "final_dx": 0,
                 "final_dy": 0,
@@ -269,25 +450,35 @@ class MouseController:
         )
 
 
-def _projection_geometry(
-    width: float,
-    height: float,
-    fov_x_deg: float,
-) -> tuple[float, float, float, float] | None:
-    if not all(math.isfinite(value) and value > 0.0 for value in (width, height)):
+def _projection_geometry(width: float, height: float, fov_x_deg: float) -> tuple[float, float] | None:
+    if not _valid_control_space(width, height):
         return None
     if not math.isfinite(fov_x_deg) or not 0.0 < fov_x_deg < 180.0:
         return None
     fov_x_rad = math.radians(fov_x_deg)
-    focal = width / (2.0 * math.tan(fov_x_rad * 0.5))
-    if not math.isfinite(focal) or focal <= 0.0:
+    focal_x = width / (2.0 * math.tan(fov_x_rad * 0.5))
+    fov_y_rad = 2.0 * math.atan(math.tan(fov_x_rad * 0.5) * height / width)
+    focal_y = height / (2.0 * math.tan(fov_y_rad * 0.5))
+    if not all(math.isfinite(value) and value > 0.0 for value in (focal_x, focal_y)):
         return None
-    return width * 0.5, height * 0.5, focal, focal
+    return focal_x, focal_y
 
 
-def _rate_limit(requested: float, previous: float, rate_rad_s: float, dt_s: float) -> float:
-    max_delta = max(0.0, float(rate_rad_s)) * max(0.0, float(dt_s))
-    return previous + _clamp(requested - previous, -max_delta, max_delta)
+def _valid_control_space(width: float, height: float) -> bool:
+    return all(math.isfinite(value) and value > 0.0 for value in (width, height))
+
+
+def _valid_measurement_dt(dt_s: float | None) -> bool:
+    return dt_s is not None and math.isfinite(dt_s) and 0.0 < dt_s <= 0.2
+
+
+def _saturated_axis(error_px: float, response_scale_px: float, max_counts: float) -> float:
+    return max_counts * (2.0 / math.pi) * math.atan(error_px / response_scale_px)
+
+
+def _slew_limit(requested: float, previous: float, max_slew: float) -> float:
+    limit = max(0.0, float(max_slew))
+    return previous + _clamp(requested - previous, -limit, limit)
 
 
 def _clamp_axis(value: float | int, limit: float | int) -> float:

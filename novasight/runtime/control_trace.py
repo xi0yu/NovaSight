@@ -8,7 +8,7 @@ from typing import Any
 
 
 CONTROL_TRACE_SCHEMA_NAME = "novasight.control_trace"
-CONTROL_TRACE_SCHEMA_VERSION = 1
+CONTROL_TRACE_SCHEMA_VERSION = 2
 MONOTONIC_CLOCK_DOMAIN = "monotonic"
 UNKNOWN_REASON_DEVICE_FEEDBACK = "device_feedback_unavailable"
 
@@ -25,6 +25,7 @@ CONTROL_TRACE_FIELD_UNITS: dict[str, str] = {
     "control.control_now": "ns",
     "control.prediction_horizon": "ms",
     "control.error_px": "px",
+    "control.predicted_error_px": "px",
     "control.error_rad": "rad",
     "control.error_rate_rad_s": "rad/s",
     "control.p": "rad",
@@ -33,6 +34,11 @@ CONTROL_TRACE_FIELD_UNITS: dict[str, str] = {
     "control.prediction_delta_rad": "rad",
     "control.prediction_velocity_term": "rad",
     "counts.planned": "counts",
+    "counts.theoretical": "counts",
+    "counts.mode_limited": "counts",
+    "counts.deadzone_limited": "counts",
+    "counts.slew_limited": "counts",
+    "counts.feasible": "counts",
     "counts.queued": "counts",
     "counts.sent": "counts",
     "counts.estimated_applied": "counts",
@@ -186,6 +192,7 @@ def build_control_trace_record(
             "missing_ms": _optional_number(track.get("selected_missing_ms")),
         },
         "control": {
+            "mode": _text(pipeline.get("control_mode")),
             "control_now": _timestamp(
                 _first_int(control_payload.get("control_now_ts_ns"), control_payload.get("control_start_ts_ns")),
                 MONOTONIC_CLOCK_DOMAIN,
@@ -199,6 +206,7 @@ def build_control_trace_record(
             "prediction_delta_rad": prediction_delta_rad,
             "prediction_velocity_term_rad": prediction_velocity_term,
             "error_px": _axis_pair(pipeline.get("observed_error_x_px"), pipeline.get("observed_error_y_px")),
+            "predicted_error_px": _axis_pair(pipeline.get("predicted_error_x_px"), pipeline.get("predicted_error_y_px")),
             "error_rad": _axis_pair(pipeline.get("observed_error_x_rad"), pipeline.get("observed_error_y_rad")),
             "predicted_error_rad": _axis_pair(pipeline.get("predicted_error_x_rad"), pipeline.get("predicted_error_y_rad")),
             "error_rate_rad_s": _axis_pair(pipeline.get("d_ema_x_rad_s"), pipeline.get("d_ema_y_rad_s")),
@@ -213,12 +221,16 @@ def build_control_trace_record(
         },
         "counts": {
             "planned_counts": _axis_pair(control_payload.get("dx"), control_payload.get("dy")),
+            "theoretical_counts": _axis_pair(pipeline.get("theoretical_counts_x_float"), pipeline.get("theoretical_counts_y_float")),
+            "mode_limited_counts": _axis_pair(pipeline.get("mode_limited_counts_x_float"), pipeline.get("mode_limited_counts_y_float")),
+            "deadzone_limited_counts": _axis_pair(pipeline.get("deadzone_limited_counts_x_float"), pipeline.get("deadzone_limited_counts_y_float")),
+            "slew_limited_counts": _axis_pair(pipeline.get("slew_limited_counts_x_float"), pipeline.get("slew_limited_counts_y_float")),
+            "feasible_counts": _axis_pair(pipeline.get("feasible_counts_x_float"), pipeline.get("feasible_counts_y_float")),
             "queued_counts": _axis_pair(scheduler.get("pending_dx"), scheduler.get("pending_dy")),
             "sent_counts": sent_counts,
             "estimated_applied_counts": _unknown_axis_pair(UNKNOWN_REASON_DEVICE_FEEDBACK),
             "unobserved_counts": _unknown_axis_pair(UNKNOWN_REASON_DEVICE_FEEDBACK),
             "residual_counts": _axis_pair(pipeline.get("residual_x_counts"), pipeline.get("residual_y_counts")),
-            "raw_counts": _axis_pair(pipeline.get("counts_x_float"), pipeline.get("counts_y_float")),
             "final_counts": _axis_pair(pipeline.get("final_dx"), pipeline.get("final_dy")),
         },
         "scheduler": {

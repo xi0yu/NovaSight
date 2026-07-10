@@ -174,6 +174,41 @@ def test_latest_frame_broker_overwrites_pending_frames() -> None:
     assert status["busy_drop_count"] == 6
 
 
+def test_latest_frame_broker_exposes_proven_latest_frame_metadata() -> None:
+    broker = LatestFrameBroker()
+    capture_ts_ns = time.monotonic_ns()
+    broker.publish(
+        FrameHandle(
+            generation=7,
+            frame_id=11,
+            source_sequence=11,
+            capture_ts_ns=capture_ts_ns,
+            clock_domain="monotonic",
+            pipeline_running_time_ns=None,
+            width=480,
+            height=480,
+            format="BGRx",
+            resource=object(),
+            metadata={
+                "resource_memory": "system",
+                "capture_ts_source": "userspace_monotonic_receive",
+            },
+        )
+    )
+
+    status = broker.status()
+
+    assert status["published_generation"] == 7
+    assert status["published_frame_id"] == 11
+    assert status["published_capture_ts_ns"] == capture_ts_ns
+    assert status["published_frame_age_ms"] >= 0.0
+    assert status["published_width"] == 480
+    assert status["published_height"] == 480
+    assert status["published_format"] == "BGRx"
+    assert status["published_resource_memory"] == "system"
+    assert status["published_capture_ts_source"] == "userspace_monotonic_receive"
+
+
 def test_latest_frame_broker_rejects_stale_generation_publish() -> None:
     released: list[str] = []
     broker = LatestFrameBroker()

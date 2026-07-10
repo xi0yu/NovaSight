@@ -4,10 +4,87 @@ from dataclasses import dataclass, field
 from math import isfinite
 from typing import Iterable
 
-from novasight.contracts import Detection, FrameContext, Track
+from novasight.contracts import BBox, Detection, FrameContext, Track
 
 
 Target = Detection | Track
+
+
+@dataclass(frozen=True)
+class TrackObservation:
+    detection_index: int
+    class_id: int
+    confidence: float
+    bbox: BBox
+    aim_x: float
+    aim_y: float
+    capture_ts_ns: int
+
+
+@dataclass(frozen=True)
+class BasicCandidateFilterResult:
+    observations: list[TrackObservation]
+    rejected: list[dict]
+    raw_count: int
+
+    def debug_payload(self) -> dict:
+        return {
+            "raw_candidates": self.raw_count,
+            "filtered_candidates": len(self.observations),
+            "rejected_candidates": len(self.rejected),
+            "rejected": list(self.rejected),
+        }
+
+
+class BasicCandidateFilter:
+    """Build tracker observations using only class, confidence, and bbox validity."""
+
+    def apply(
+        self,
+        context: FrameContext,
+        *,
+        allowed_class_ids: set[int] | None,
+        min_confidence: float,
+        aim_y_ratio: float,
+    ) -> BasicCandidateFilterResult:
+        observations: list[TrackObservation] = []
+        rejected: list[dict] = []
+        ratio = max(0.0, min(1.0, float(aim_y_ratio)))
+        capture_ts_ns = int(context.capture_ts_ns or 0)
+        for detection_index, detection in enumerate(context.detections):
+            reason = ""
+            if allowed_class_ids is not None and int(detection.cls) not in allowed_class_ids:
+                reason = "class_filter"
+            elif float(detection.score) < float(min_confidence):
+                reason = "confidence_filter"
+            elif not _bbox_valid(detection, context):
+                reason = "invalid_bbox"
+            if reason:
+                rejected.append(
+                    {
+                        "detection_index": detection_index,
+                        "class_id": int(detection.cls),
+                        "confidence": float(detection.score),
+                        "reason": reason,
+                    }
+                )
+                continue
+            observations.append(
+                TrackObservation(
+                    detection_index=detection_index,
+                    class_id=int(detection.cls),
+                    confidence=float(detection.score),
+                    bbox=detection.box,
+                    aim_x=float(detection.box.center_x),
+                    aim_y=float(detection.box.y1 + detection.box.height * ratio),
+                    capture_ts_ns=capture_ts_ns,
+                )
+            )
+        return BasicCandidateFilterResult(
+            observations=observations,
+            rejected=rejected,
+            raw_count=len(context.detections),
+        )
 
 
 @dataclass(frozen=True)
@@ -183,8 +260,11 @@ def parse_allowed_class_ids(value: str) -> set[int] | None:
 
 
 def aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
+    filtered_aim = getattr(target, "filtered_aim_px", None)
+    if isinstance(target, Track) and filtered_aim is not None:
+        return float(filtered_aim[0]), float(filtered_aim[1])
     point_y = getattr(target, "point_y", None)
-    ratio = max(0.0, min(100.0, float(aim_ratio))) / 100.0
+    ratio = max(0.0, min(1.0, float(aim_ratio)))
     aim_y = float(point_y(ratio)) if callable(point_y) else float(target.y) + float(target.h) * ratio
     return float(target.cx), aim_y
 

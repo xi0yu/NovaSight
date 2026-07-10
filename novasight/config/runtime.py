@@ -118,13 +118,7 @@ class CaptureConfig:
 class CalibrationConfig:
     profile_id: str = "default"
     profile_version: int = 1
-    fov_semantics: str = "horizontal"
-    fov_x_deg: float = 105.0
-    counts_per_360_x: float = 9980.0
-    counts_per_360_y: float = 9980.0
-    invert_y: bool = False
     game_sensitivity_fingerprint: str = "unverified-default"
-    projection_profile: str = "fixed_horizontal_fov"
 
 
 @dataclass
@@ -133,7 +127,39 @@ class AimConfig:
 
 
 @dataclass
+class CalibratedAngularConfig:
+    fov_x_deg: float = 105.0
+    counts_per_360_x: float = 9980.0
+    counts_per_360_y: float = 9980.0
+    kp_x: float = 1.0
+    kp_y: float = 1.0
+    kd_x: float = 0.0
+    kd_y: float = 0.0
+    d_ema_alpha: float = 0.30
+    max_angle_step_x_deg: float = 2.0
+    max_angle_step_y_deg: float = 1.5
+
+
+@dataclass
+class UniversalSaturatedConfig:
+    response_scale_x_px: float = 160.0
+    response_scale_y_px: float = 120.0
+    max_step_x_counts: float = 30.0
+    max_step_y_counts: float = 24.0
+
+
+@dataclass
+class SharedControlConfig:
+    max_count_slew_x: float = 10.0
+    max_count_slew_y: float = 8.0
+    deadzone_x_px: float = 0.0
+    deadzone_y_px: float = 0.0
+    invert_y: bool = False
+
+
+@dataclass
 class ControlConfig:
+    mode: str = "universal_saturated"
     min_confidence: float = 0.25
     target_fov_radius_px: float = 180.0
     target_switch_delay_ms: float = 50.0
@@ -145,6 +171,10 @@ class ControlConfig:
     candidate_quality_area_weight: float = 0.3
     class_priority_quality_margin: float = 0.08
     tracker_confirm_frames: int = 2
+    tracker_max_match_distance: float = 1.5
+    tracker_position_cost_weight: float = 0.75
+    tracker_iou_cost_weight: float = 0.25
+    tracker_max_missed_frames: int = 2
     target_switch_min_preference_advantage: float = 0.08
     target_switch_min_continuity_score: float = 0.70
     tracker_matching_distance_px: float = 140.0
@@ -166,21 +196,13 @@ class ControlConfig:
     kalman_min_prediction_confidence: float = 0.35
     kalman_prediction_decay_tau_ms: float = 45.0
     aim: AimConfig = field(default_factory=AimConfig)
+    calibrated_angular: CalibratedAngularConfig = field(default_factory=CalibratedAngularConfig)
+    universal_saturated: UniversalSaturatedConfig = field(default_factory=UniversalSaturatedConfig)
+    shared: SharedControlConfig = field(default_factory=SharedControlConfig)
     configured_actuation_delay_s: float = 0.004
     prediction_strength: float = 1.0
     prediction_x_enabled: bool = True
     prediction_y_enabled: bool = True
-    kp_x: float = 0.35
-    kp_y: float = 0.24
-    kd_x: float = 0.0
-    kd_y: float = 0.0
-    d_ema_alpha: float = 0.25
-    deadzone_px_x: float = 0.0
-    deadzone_px_y: float = 0.0
-    max_output_rad_x: float = 0.0524
-    max_output_rad_y: float = 0.0524
-    max_output_rate_rad_s_x: float = 2.0
-    max_output_rate_rad_s_y: float = 2.0
     scheduler_step_counts_x: int = 20
     scheduler_step_counts_y: int = 20
     scheduler_interval_ms: float = 4.0
@@ -338,15 +360,22 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         control = dict(control)
     if isinstance(calibration, dict):
         calibration = dict(calibration)
+        _migrate_legacy_axis_signs(calibration)
+        if control is None and any(
+            key in calibration
+            for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y", "invert_y")
+        ):
+            control = {}
     if isinstance(control, dict):
         if calibration is None:
             calibration = {}
         if isinstance(calibration, dict):
             _migrate_legacy_control_calibration(control, calibration)
         _migrate_legacy_mouse_control(control, normalized)
+        if isinstance(calibration, dict):
+            _migrate_dual_control_modes(control, calibration)
         normalized["control"] = control
     if isinstance(calibration, dict):
-        _migrate_legacy_axis_signs(calibration)
         normalized["calibration"] = calibration
     return normalized
 
@@ -401,6 +430,8 @@ def _migrate_legacy_mouse_control(
         raise ValueError(
             "legacy config key 'control.strategy' must be experimental_angle_pid"
         )
+    if legacy_schema:
+        control.setdefault("mode", "calibrated_angular")
 
     legacy_aim_ratio = control.pop("aim_ratio", None)
     if legacy_aim_ratio is not None:
@@ -494,6 +525,74 @@ def _migrate_legacy_mouse_control(
             control.pop(key, None)
     for key in _REMOVED_LEGACY_CONTROL_KEYS:
         control.pop(key, None)
+
+
+def _migrate_dual_control_modes(
+    control: dict[str, Any],
+    calibration: dict[str, Any],
+) -> None:
+    calibrated = control.get("calibrated_angular")
+    if calibrated is None:
+        calibrated = {}
+    if not isinstance(calibrated, dict):
+        return
+    calibrated = dict(calibrated)
+    universal = control.get("universal_saturated")
+    if universal is None:
+        universal = {}
+    if not isinstance(universal, dict):
+        return
+    shared = control.get("shared")
+    if shared is None:
+        shared = {}
+    if not isinstance(shared, dict):
+        return
+    shared = dict(shared)
+
+    legacy_calibrated_fields = {
+        "kp_x": "kp_x",
+        "kp_y": "kp_y",
+        "kd_x": "kd_x",
+        "kd_y": "kd_y",
+        "d_ema_alpha": "d_ema_alpha",
+    }
+    legacy_mode_detected = any(key in control for key in legacy_calibrated_fields) or any(
+        key in calibration
+        for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y")
+    )
+    for old_key, new_key in legacy_calibrated_fields.items():
+        value = control.pop(old_key, None)
+        if value is not None:
+            calibrated.setdefault(new_key, value)
+
+    for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y"):
+        value = calibration.pop(key, None)
+        if value is not None:
+            calibrated.setdefault(key, value)
+
+    for axis in ("x", "y"):
+        old_key = f"max_output_rad_{axis}"
+        value = control.pop(old_key, None)
+        if value is not None:
+            numeric = _legacy_number(value, f"control.{old_key}")
+            calibrated.setdefault(f"max_angle_step_{axis}_deg", math.degrees(numeric))
+        control.pop(f"max_output_rate_rad_s_{axis}", None)
+
+        deadzone = control.pop(f"deadzone_px_{axis}", None)
+        if deadzone is not None:
+            shared.setdefault(f"deadzone_{axis}_px", deadzone)
+
+    invert_y = calibration.pop("invert_y", None)
+    if invert_y is not None:
+        shared.setdefault("invert_y", invert_y)
+    calibration.pop("fov_semantics", None)
+    calibration.pop("projection_profile", None)
+
+    if legacy_mode_detected:
+        control.setdefault("mode", "calibrated_angular")
+    control["calibrated_angular"] = calibrated
+    control["universal_saturated"] = dict(universal)
+    control["shared"] = shared
 
 
 _REMOVED_LEGACY_CONTROL_KEYS = frozenset(
@@ -647,33 +746,18 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'calibration.profile_id' must be non-empty")
     if cfg.calibration.profile_version < 1:
         raise ValueError("runtime config key 'calibration.profile_version' must be >= 1")
-    if cfg.calibration.fov_semantics != "horizontal":
-        raise ValueError("runtime config key 'calibration.fov_semantics' must be horizontal")
-    if cfg.calibration.fov_x_deg <= 0 or cfg.calibration.fov_x_deg >= 180:
-        raise ValueError("runtime config key 'calibration.fov_x_deg' must be > 0 and < 180")
-    if cfg.calibration.counts_per_360_x < 1:
-        raise ValueError("runtime config key 'calibration.counts_per_360_x' must be >= 1")
-    if cfg.calibration.counts_per_360_y < 1:
-        raise ValueError("runtime config key 'calibration.counts_per_360_y' must be >= 1")
     if not cfg.calibration.game_sensitivity_fingerprint.strip():
         raise ValueError("runtime config key 'calibration.game_sensitivity_fingerprint' must be non-empty")
-    if cfg.calibration.projection_profile != "fixed_horizontal_fov":
-        raise ValueError("runtime config key 'calibration.projection_profile' must be fixed_horizontal_fov")
-    if cfg.calibration.fov_x_deg < 30.0 or cfg.calibration.fov_x_deg > 179.0:
-        raise ValueError("runtime config key 'calibration.fov_x_deg' must be >= 30 and <= 179")
+    if cfg.control.mode not in {"calibrated_angular", "universal_saturated"}:
+        raise ValueError(
+            "runtime config key 'control.mode' must be calibrated_angular or universal_saturated"
+        )
     if not math.isfinite(float(cfg.control.aim.y_ratio)):
         raise ValueError("runtime config key 'control.aim.y_ratio' must be finite")
     cfg.control.aim.y_ratio = round(max(0.0, min(1.0, float(cfg.control.aim.y_ratio))), 2)
     bounded_controls = {
         "configured_actuation_delay_s": (0.0, 0.1),
         "prediction_strength": (0.0, 1.5),
-        "kp_x": (0.0, 2.0),
-        "kp_y": (0.0, 2.0),
-        "kd_x": (0.0, 1.0),
-        "kd_y": (0.0, 1.0),
-        "d_ema_alpha": (0.01, 1.0),
-        "deadzone_px_x": (0.0, 10.0),
-        "deadzone_px_y": (0.0, 10.0),
         "scheduler_interval_ms": (1.0, 10.0),
         "min_confidence": (0.10, 0.99),
         "target_switch_delay_ms": (0.0, 500.0),
@@ -685,15 +769,60 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(
                 f"runtime config key 'control.{key}' must be >= {minimum} and <= {maximum}"
             )
-    for key in (
-        "max_output_rad_x",
-        "max_output_rad_y",
-        "max_output_rate_rad_s_x",
-        "max_output_rate_rad_s_y",
-        "target_fov_radius_px",
-    ):
+    for key in ("target_fov_radius_px",):
         if not math.isfinite(float(getattr(cfg.control, key))) or float(getattr(cfg.control, key)) <= 0.0:
             raise ValueError(f"runtime config key 'control.{key}' must be finite and > 0")
+    calibrated = cfg.control.calibrated_angular
+    calibrated_bounds = {
+        "fov_x_deg": (30.0, 179.0),
+        "kp_x": (0.0, 2.0),
+        "kp_y": (0.0, 2.0),
+        "kd_x": (0.0, 1.0),
+        "kd_y": (0.0, 1.0),
+        "d_ema_alpha": (0.01, 1.0),
+    }
+    for key, (minimum, maximum) in calibrated_bounds.items():
+        value = float(getattr(calibrated, key))
+        if not math.isfinite(value) or value < minimum or value > maximum:
+            raise ValueError(
+                f"runtime config key 'control.calibrated_angular.{key}' must be >= {minimum} and <= {maximum}"
+            )
+    for key in (
+        "counts_per_360_x",
+        "counts_per_360_y",
+        "max_angle_step_x_deg",
+        "max_angle_step_y_deg",
+    ):
+        value = float(getattr(calibrated, key))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"runtime config key 'control.calibrated_angular.{key}' must be finite and > 0"
+            )
+    universal = cfg.control.universal_saturated
+    for key in (
+        "response_scale_x_px",
+        "response_scale_y_px",
+        "max_step_x_counts",
+        "max_step_y_counts",
+    ):
+        value = float(getattr(universal, key))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"runtime config key 'control.universal_saturated.{key}' must be finite and > 0"
+            )
+    shared = cfg.control.shared
+    for key in ("deadzone_x_px", "deadzone_y_px"):
+        value = float(getattr(shared, key))
+        if not math.isfinite(value) or value < 0.0 or value > 10.0:
+            raise ValueError(
+                f"runtime config key 'control.shared.{key}' must be >= 0 and <= 10"
+            )
+    for key in ("max_count_slew_x", "max_count_slew_y"):
+        value = float(getattr(shared, key))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"runtime config key 'control.shared.{key}' must be finite and > 0"
+            )
     for key in ("scheduler_step_counts_x", "scheduler_step_counts_y"):
         value = int(getattr(cfg.control, key))
         if value < 1 or value > 20:
@@ -712,6 +841,16 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.class_priority_quality_margin' must be <= 1")
     if cfg.control.tracker_confirm_frames < 1:
         raise ValueError("runtime config key 'control.tracker_confirm_frames' must be >= 1")
+    if cfg.control.tracker_max_match_distance <= 0:
+        raise ValueError("runtime config key 'control.tracker_max_match_distance' must be > 0")
+    if cfg.control.tracker_position_cost_weight < 0:
+        raise ValueError("runtime config key 'control.tracker_position_cost_weight' must be >= 0")
+    if cfg.control.tracker_iou_cost_weight < 0:
+        raise ValueError("runtime config key 'control.tracker_iou_cost_weight' must be >= 0")
+    if cfg.control.tracker_position_cost_weight + cfg.control.tracker_iou_cost_weight <= 0:
+        raise ValueError("runtime config key 'control.tracker_position_cost_weight' and 'control.tracker_iou_cost_weight' must have a positive sum")
+    if cfg.control.tracker_max_missed_frames < 0:
+        raise ValueError("runtime config key 'control.tracker_max_missed_frames' must be >= 0")
     if cfg.control.target_switch_min_preference_advantage < 0 or cfg.control.target_switch_min_preference_advantage > 1:
         raise ValueError("runtime config key 'control.target_switch_min_preference_advantage' must be >= 0 and <= 1")
     if cfg.control.target_switch_min_continuity_score < 0 or cfg.control.target_switch_min_continuity_score > 1:
