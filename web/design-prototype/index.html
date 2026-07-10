@@ -1,0 +1,1022 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NovaSight · Design Prototype (Refined × 3)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&family=Albert+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <style>
+    /* ============================================================
+       Aesthetic Direction
+       - Refined (default): Newsreader display + Albert Sans body + JetBrains Mono
+       - Subtle on-tone gradients, no rainbow
+       - Cool neutral palette, near-white #F5F6F8, near-black #1A1D24
+       - 4px scale, panel 16r, button 10r
+       - Quiet motion (200ms ease, no entrance choreography)
+       ============================================================ */
+    :root {
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-10: 40px;
+      --space-12: 56px;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 1px 2px rgba(15, 18, 30, 0.04);
+      --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 8px 24px rgba(15, 18, 30, 0.06), 0 1px 2px rgba(15, 18, 30, 0.04);
+      --shadow-3: 0 1px 0 rgba(255, 255, 255, 0.8) inset, 0 20px 48px rgba(15, 18, 30, 0.10);
+      --hairline: rgba(15, 18, 30, 0.08);
+      --hairline-strong: rgba(15, 18, 30, 0.14);
+
+      /* Theme: REFINED (default) */
+      --bg: #F5F6F8;
+      --bg-2: #ECEEF2;
+      --surface: rgba(255, 255, 255, 0.78);
+      --surface-strong: rgba(255, 255, 255, 0.94);
+      --text: #1A1D24;
+      --text-2: #4A5060;
+      --text-3: #797F8D;
+      --text-disabled: #A6ABB6;
+      --brand: #2D6BFF;
+      --brand-soft: rgba(45, 107, 255, 0.10);
+      --brand-border: rgba(45, 107, 255, 0.22);
+      --realtime: #2BA8C2;
+      --realtime-soft: rgba(43, 168, 194, 0.10);
+      --warn: #C87A0C;
+      --bad: #C2343A;
+      --good: #1A8C5B;
+      --code-bg: #0F1115;
+
+      --font-display: "Newsreader", "Songti SC", Georgia, serif;
+      --font-body: "Albert Sans", -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+      --font-size: 14px;
+      --scale-ratio: 1.25;
+    }
+
+    /* Theme: EXPRESSIVE (dark, realtime glow) */
+    [data-theme="expressive"] {
+      --bg: #0A0D14;
+      --bg-2: #11141D;
+      --surface: rgba(255, 255, 255, 0.04);
+      --surface-strong: rgba(255, 255, 255, 0.08);
+      --text: #F4F7FB;
+      --text-2: #B3BBCC;
+      --text-3: #707A8C;
+      --text-disabled: #4B5360;
+      --brand: #4A9EFF;
+      --brand-soft: rgba(74, 158, 255, 0.14);
+      --brand-border: rgba(74, 158, 255, 0.32);
+      --realtime: #6AFFE0;
+      --realtime-soft: rgba(106, 255, 224, 0.14);
+      --warn: #E0A740;
+      --bad: #E45C66;
+      --good: #4AD8A2;
+      --code-bg: #050810;
+      --hairline: rgba(255, 255, 255, 0.10);
+      --hairline-strong: rgba(255, 255, 255, 0.18);
+    }
+
+    /* Theme: BRUTALIST (sharp, mono dominant) */
+    [data-theme="brutalist"] {
+      --bg: #ECECEA;
+      --bg-2: #DEDEDE;
+      --surface: rgba(255, 255, 255, 0.92);
+      --surface-strong: #FFFFFF;
+      --text: #0A0A0A;
+      --text-2: #2A2A2A;
+      --text-3: #5A5A5A;
+      --text-disabled: #8C8C8C;
+      --brand: #D93B0F;
+      --brand-soft: rgba(217, 59, 15, 0.10);
+      --brand-border: rgba(217, 59, 15, 0.40);
+      --realtime: #0F4DBC;
+      --realtime-soft: rgba(15, 77, 188, 0.10);
+      --warn: #B96A00;
+      --bad: #B00020;
+      --good: #0F7A3D;
+      --code-bg: #0A0A0A;
+      --radius-sm: 0;
+      --radius-md: 0;
+      --radius-lg: 0;
+      --shadow-1: 0 0 0 1px rgba(0, 0, 0, 0.9);
+      --shadow-2: 4px 4px 0 0 rgba(0, 0, 0, 0.95);
+      --shadow-3: 6px 6px 0 0 rgba(0, 0, 0, 0.95);
+      --hairline: rgba(0, 0, 0, 0.9);
+      --hairline-strong: rgba(0, 0, 0, 1);
+      --font-display: "Space Mono", "Courier New", monospace;
+      --font-body: "Space Mono", "Courier New", monospace;
+      --font-mono: "Space Mono", "Courier New", monospace;
+    }
+
+    /* Theme: MONOSPACE DEV (terminal) */
+    [data-theme="mono"] {
+      --bg: #0E1116;
+      --bg-2: #181C24;
+      --surface: rgba(255, 255, 255, 0.03);
+      --surface-strong: rgba(255, 255, 255, 0.06);
+      --text: #E6EAF2;
+      --text-2: #9DA7B8;
+      --text-3: #5C6573;
+      --text-disabled: #3D434E;
+      --brand: #7BD88F;
+      --brand-soft: rgba(123, 216, 143, 0.12);
+      --brand-border: rgba(123, 216, 143, 0.30);
+      --realtime: #FFCC66;
+      --realtime-soft: rgba(255, 204, 102, 0.12);
+      --warn: #FFB454;
+      --bad: #FF6E6E;
+      --good: #7BD88F;
+      --code-bg: #05080C;
+      --hairline: rgba(255, 255, 255, 0.10);
+      --hairline-strong: rgba(255, 255, 255, 0.18);
+      --font-display: "JetBrains Mono", "SF Mono", monospace;
+      --font-body: "JetBrains Mono", "SF Mono", monospace;
+      --font-mono: "JetBrains Mono", "SF Mono", monospace;
+    }
+
+    /* Reset */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-body);
+      font-size: var(--font-size);
+      line-height: 1.5;
+      color: var(--text);
+      background:
+        radial-gradient(900px 500px at 80% -10%, var(--brand-soft), transparent 60%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      letter-spacing: 0;
+      min-height: 100vh;
+      transition: background-color 240ms ease, color 240ms ease;
+    }
+    a { color: inherit; text-decoration: none; }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    h1, h2, h3, p { margin: 0; }
+    h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }
+    p { text-wrap: pretty; }
+
+    /* App shell */
+    .app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+
+    /* Top bar — glass + hairline */
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: grid; grid-template-columns: 240px 1fr auto; align-items: center;
+      gap: var(--space-6);
+      padding: var(--space-3) var(--space-6);
+      background: var(--surface);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid var(--hairline);
+    }
+    .brand { display: flex; align-items: center; gap: var(--space-3); }
+    .brand-mark {
+      width: 28px; height: 28px; display: grid; place-items: center;
+      border-radius: var(--radius-sm); color: #fff; font-family: var(--font-display);
+      background: var(--brand); box-shadow: 0 0 0 1px var(--brand-border), 0 4px 12px var(--brand-soft);
+    }
+    .brand-text { display: grid; gap: 2px; min-width: 0; }
+    .brand-text strong { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+    .brand-text span { color: var(--text-3); font-size: 11px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
+    [data-context="landing"] .brand-text span { display: none; }
+    .breadcrumbs { display: flex; align-items: center; gap: var(--space-2); color: var(--text-3); font-size: 13px; }
+    .breadcrumbs strong { color: var(--text); font-weight: 500; }
+    .breadcrumbs .sep { color: var(--text-disabled); }
+    .topbar-right { display: flex; align-items: center; gap: var(--space-3); }
+
+    /* Surface toggle: which context to show */
+    .context-toggle {
+      display: inline-flex; padding: 3px; border-radius: 999px;
+      background: var(--bg-2); border: 1px solid var(--hairline);
+    }
+    .context-toggle button {
+      min-height: 30px; padding: 0 14px; border: 0; background: transparent;
+      color: var(--text-2); font-weight: 500; font-size: 12px; border-radius: 999px;
+      cursor: pointer; transition: background 160ms ease, color 160ms ease;
+    }
+    .context-toggle button:hover { color: var(--text); }
+    .context-toggle button[aria-pressed="true"] {
+      background: var(--surface-strong); color: var(--text);
+      box-shadow: var(--shadow-1);
+    }
+
+    /* Pill status */
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 500;
+      background: var(--realtime-soft); color: var(--realtime);
+      border: 1px solid color-mix(in srgb, var(--realtime) 28%, transparent);
+    }
+    .pill .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+    .pill[data-tone="warn"] { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 28%, transparent); }
+    .pill[data-tone="bad"] { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 28%, transparent); }
+    .pill[data-tone="idle"] { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline); }
+
+    /* Button */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      min-height: 36px; padding: 0 var(--space-4); font: inherit; font-weight: 500; font-size: 13px;
+      border-radius: var(--radius-md); border: 1px solid var(--hairline);
+      background: var(--surface-strong); color: var(--text); cursor: pointer;
+      transition: transform 100ms ease-out, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    .btn:hover { background: color-mix(in srgb, var(--text) 4%, var(--surface-strong)); }
+    .btn:active { transform: scale(0.97); }
+    .btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--brand); color: #fff; border-color: transparent;
+      box-shadow: 0 0 0 1px var(--brand-border), 0 6px 16px var(--brand-soft);
+    }
+    .btn-primary:hover { background: color-mix(in srgb, var(--brand) 88%, #000); }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--text-2); }
+    .btn-ghost:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+    [data-theme="expressive"] .btn-primary { color: #0A0D14; }
+    [data-theme="brutalist"] .btn-primary { color: #fff; }
+    [data-theme="mono"] .btn-primary { color: #0E1116; }
+
+    /* Layout */
+    .layout { display: grid; grid-template-columns: 64px minmax(0, 1fr); min-height: calc(100vh - 60px); }
+    .rail {
+      border-right: 1px solid var(--hairline);
+      background: var(--surface);
+      backdrop-filter: blur(12px);
+      padding: var(--space-3) var(--space-2);
+    }
+    .rail-item {
+      width: 44px; height: 44px; display: grid; place-items: center;
+      border: 0; background: transparent; border-radius: var(--radius-md);
+      color: var(--text-3); cursor: pointer;
+      transition: background 160ms ease, color 160ms ease, transform 100ms ease;
+      position: relative;
+    }
+    .rail-item:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+    .rail-item:active { transform: scale(0.94); }
+    .rail-item:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .switch:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .rail-item[aria-current="page"] { color: var(--brand); background: var(--brand-soft); }
+    .rail-item[aria-current="page"]::before {
+      content: ""; position: absolute; left: -10px; top: 10px; bottom: 10px;
+      width: 2px; border-radius: 2px; background: var(--brand);
+    }
+    .rail-spacer { flex: 1; }
+
+    main { padding: var(--space-6) var(--space-6) var(--space-10); min-width: 0; max-width: 1440px; margin: 0 auto; width: 100%; }
+    .page-head { display: flex; align-items: end; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-6); }
+    .page-title { font-size: 28px; line-height: 1.1; letter-spacing: -0.02em; font-weight: 600; }
+    .page-title small { display: block; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-top: 8px; }
+    .page-sub { color: var(--text-2); max-width: 56ch; font-size: 14px; }
+
+    .grid-2 { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.82fr); gap: var(--space-4); align-items: start; }
+    @media (max-width: 1100px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    /* Panel */
+    .panel {
+      background: var(--surface-strong);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-2);
+      overflow: hidden;
+    }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--hairline); }
+    .panel-title { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; font-family: var(--font-body); }
+    .panel-title small { display: block; font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-top: 4px; }
+    .panel-body { padding: var(--space-5); }
+    .panel-foot { padding: var(--space-3) var(--space-5); border-top: 1px solid var(--hairline); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--text-3); font-size: 12px; font-family: var(--font-mono); }
+
+    /* Metric grid */
+    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+    @media (max-width: 720px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
+    .metric {
+      position: relative; overflow: hidden;
+      background: var(--surface-strong);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+    }
+    .metric::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5); }
+    .metric .k { font-size: 11px; color: var(--text-3); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--font-mono); }
+    .metric .v { font-family: var(--font-mono); font-size: 26px; font-weight: 600; margin-top: 6px; letter-spacing: -0.01em; }
+    .metric .u { color: var(--text-3); font-size: 12px; font-weight: 500; margin-left: 4px; }
+    .metric .delta { display: inline-block; margin-left: 8px; font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+    .metric .delta.good { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+    .metric .delta.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+    .metric .bar { height: 4px; background: color-mix(in srgb, var(--text) 6%, transparent); border-radius: 999px; margin-top: var(--space-3); overflow: hidden; }
+    .metric .bar i { display: block; height: 100%; background: var(--realtime); border-radius: inherit; }
+    .metric .bar i.good { background: var(--good); }
+    .metric .bar i.warn { background: var(--warn); }
+    .metric .bar i.bad { background: var(--bad); }
+
+    /* Stage: real placeholder (not fake illustration) */
+    .stage {
+      position: relative; aspect-ratio: 16/9; overflow: hidden;
+      background:
+        repeating-linear-gradient(45deg, color-mix(in srgb, var(--code-bg) 92%, transparent) 0 10px, color-mix(in srgb, var(--code-bg) 84%, transparent) 10px 20px);
+      border-radius: var(--radius-md);
+    }
+    .stage-label {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      color: color-mix(in srgb, #fff 56%, transparent);
+      font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.04em;
+    }
+    .stage-hud { position: absolute; top: var(--space-3); right: var(--space-3); display: flex; gap: 6px; flex-wrap: wrap; }
+    .stage-hud span {
+      padding: 3px 8px; border-radius: 999px; font-size: 11px; font-family: var(--font-mono);
+      background: rgba(0, 0, 0, 0.45); color: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(8px);
+    }
+    .det-box { position: absolute; border: 1.5px solid var(--realtime); box-shadow: 0 0 0 1px color-mix(in srgb, var(--realtime) 30%, transparent); }
+    .det-box b { position: absolute; top: -19px; left: -1px; padding: 1px 6px; font-family: var(--font-mono); font-size: 10px; background: var(--realtime); color: #0A0D14; border-radius: 3px; font-weight: 600; }
+    .det-box.target { border-color: var(--brand); box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 40%, transparent); }
+    .det-box.target b { background: var(--brand); color: #fff; }
+    [data-theme="expressive"] .det-box b { color: #0A0D14; }
+    [data-theme="expressive"] .det-box.target b { color: #0A0D14; }
+
+    /* Row list */
+    .row { display: grid; grid-template-columns: 32px 1fr auto auto; gap: var(--space-3); align-items: center; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); background: var(--surface-strong); border: 1px solid var(--hairline); }
+    .row .ico { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--brand-soft); color: var(--brand); }
+    .row .name { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; }
+    .row .desc { color: var(--text-3); font-size: 12px; margin-top: 2px; font-family: var(--font-mono); }
+    .row + .row { margin-top: var(--space-2); }
+
+    /* Switch */
+    .switch { width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--text) 16%, transparent); cursor: pointer; transition: background 200ms ease; }
+    .switch i { display: block; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.20); transition: transform 200ms cubic-bezier(0.2, 0, 0, 1); }
+    .switch.on { background: var(--good); }
+    .switch.on i { transform: translateX(16px); }
+
+    /* Diagnostic strip (Apple-style side-by-side labels) */
+    .diag { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); background: var(--surface-strong); border: 1px solid var(--hairline); }
+    .diag .line { display: grid; grid-template-columns: 80px 1fr; gap: var(--space-3); align-items: baseline; }
+    .diag .line code { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .diag .line strong { font-weight: 500; }
+
+    /* Landing overrides */
+    body[data-context="landing"] .topbar { grid-template-columns: 200px 1fr auto; }
+    body[data-context="landing"] main { max-width: 1200px; }
+    .hero { padding: var(--space-10) 0 var(--space-8); }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      background: var(--brand-soft); color: var(--brand);
+      font-size: 12px; font-weight: 500; letter-spacing: 0.04em;
+      border: 1px solid var(--brand-border);
+    }
+    .eyebrow .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+    h1.display { font-size: clamp(36px, 5.4vw, 56px); line-height: 1.1; letter-spacing: -0.01em; font-weight: 600; margin: var(--space-4) 0 var(--space-4); max-width: none; word-break: keep-all; overflow-wrap: normal; }
+    h1.display em { font-style: normal; font-weight: 600; color: var(--brand); white-space: nowrap; }
+    .lead { font-size: 16px; line-height: 1.55; color: var(--text-2); max-width: 56ch; }
+    .cta-row { display: flex; gap: var(--space-3); margin-top: var(--space-6); }
+    .cta-row .btn-primary { min-height: 44px; padding: 0 var(--space-5); font-size: 14px; }
+
+    .preview {
+      margin-top: var(--space-8); position: relative; aspect-ratio: 16/9;
+      background: var(--code-bg); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-3); border: 1px solid var(--hairline); overflow: hidden;
+    }
+    .switch { width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--text) 16%, transparent); cursor: pointer; transition: background 200ms ease; }
+    .switch:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .section { margin-top: var(--space-12); }
+    .section-head { display: flex; align-items: end; justify-content: space-between; margin-bottom: var(--space-4); gap: var(--space-4); }
+    .section-head h2 { font-size: 24px; line-height: 1.15; font-weight: 600; letter-spacing: -0.015em; }
+    .section-head p { color: var(--text-3); font-size: 13px; max-width: 42ch; }
+
+    .games { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+    @media (max-width: 900px) { .games { grid-template-columns: repeat(2, 1fr); } }
+    .game {
+      text-align: left; padding: var(--space-4); border-radius: var(--radius-md);
+      background: var(--surface-strong); border: 1px solid var(--hairline);
+      color: var(--text); cursor: pointer; transition: transform 120ms ease-out, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    .game:hover { border-color: var(--hairline-strong); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+    .game:active { transform: scale(0.99); }
+    .game .name { font-size: 14px; font-weight: 600; }
+    .game .sub { color: var(--text-3); font-size: 12px; margin-top: 4px; font-family: var(--font-mono); }
+    .game .tag { display: inline-block; margin-top: var(--space-3); padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 500; font-family: var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; background: var(--realtime-soft); color: var(--realtime); }
+
+    .spec { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); margin-top: var(--space-12); }
+    .spec-card { padding: var(--space-5); border-radius: var(--radius-md); background: var(--surface-strong); border: 1px solid var(--hairline); }
+    .spec-card .k { color: var(--text-3); font-size: 11px; font-weight: 500; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; }
+    .spec-card .v { font-family: var(--font-mono); font-size: 28px; font-weight: 600; margin-top: 8px; letter-spacing: -0.01em; }
+    .spec-card p { color: var(--text-2); font-size: 13px; line-height: 1.5; margin-top: var(--space-2); }
+
+    /* Hide context we are not showing */
+    [data-context="console"] .only-landing,
+    [data-context="landing"] .only-console { display: none; }
+    [data-context="landing"] .layout { grid-template-columns: minmax(0, 1fr); }
+    [data-context="landing"] .rail { display: none; }
+    [data-context="landing"] .layout > main { max-width: 1200px; margin: 0 auto; padding-left: var(--space-6); padding-right: var(--space-6); }
+
+    /* ============================================================
+       Tweak panel (host protocol)
+       ============================================================ */
+    .tweaks {
+      position: fixed; right: 24px; bottom: 24px; z-index: 50;
+      width: 280px; padding: var(--space-4);
+      background: var(--surface-strong); border: 1px solid var(--hairline);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-3);
+      backdrop-filter: blur(20px);
+    }
+    .tweaks[hidden] { display: none; }
+    .tweaks h3 { font-size: 11px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); font-weight: 500; margin-bottom: var(--space-3); }
+    .tweaks .field { display: grid; gap: 6px; margin-bottom: var(--space-3); }
+    .tweaks .field label { font-size: 12px; color: var(--text-2); }
+    .tweaks select { width: 100%; min-height: 32px; padding: 0 8px; border-radius: var(--radius-sm); border: 1px solid var(--hairline); background: var(--surface); color: var(--text); }
+    .tweaks .meta { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); }
+
+    /* ============================================================
+       Reduced motion
+    /* ============================================================
+       Launch overlay + preview modal + skeleton + error + pulse
+       ============================================================ */
+    .launch, .preview-modal { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; }
+    .launch[hidden], .preview-modal[hidden] { display: none; }
+    .launch-backdrop, .preview-backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(12px) saturate(140%); opacity: 0; transition: opacity 220ms ease; }
+    .launch.is-open .launch-backdrop, .preview-modal.is-open .preview-backdrop { opacity: 1; }
+    .launch-card, .preview-card { position: relative; z-index: 1; width: min(420px, 92vw); padding: var(--space-6); background: var(--surface-strong); border: 1px solid var(--hairline); border-radius: var(--radius-lg); box-shadow: var(--shadow-3); text-align: center; transform: scale(0.92) translateY(8px); opacity: 0; transition: transform 220ms cubic-bezier(0.2, 0, 0, 1), opacity 220ms ease; }
+    .preview-card { width: min(820px, 92vw); text-align: left; }
+    .launch.is-open .launch-card, .preview-modal.is-open .preview-card { transform: scale(1) translateY(0); opacity: 1; }
+    .launch-ring { position: relative; width: 120px; height: 120px; margin: 0 auto var(--space-4); color: var(--realtime); }
+    .ring-bg { color: var(--hairline); }
+    .ring-fg { transition: stroke-dashoffset 520ms cubic-bezier(0.2, 0, 0, 1); }
+    .launch-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 2px; }
+    .launch-pct strong { font-family: var(--font-mono); font-size: 32px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+    .launch-pct span { color: var(--text-3); font-size: 14px; }
+    .launch-title { font-size: 16px; font-weight: 600; margin-bottom: var(--space-2); font-family: var(--font-body); }
+    .launch-status { color: var(--text-2); font-size: 13px; margin-bottom: var(--space-4); min-height: 1.5em; }
+    .preview-name { font-size: 18px; font-weight: 600; margin-bottom: var(--space-4); }
+    .preview-close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text-2); border-radius: 999px; cursor: pointer; font-size: 18px; line-height: 1; display: grid; place-items: center; }
+    .preview-close:hover { color: var(--text); background: var(--bg-2); }
+    .preview-actions { display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4); }
+    [data-theme="brutalist"] .launch-card, [data-theme="brutalist"] .preview-card, [data-theme="brutalist"] .preview-close { border-radius: 0; border-width: 2px; box-shadow: 6px 6px 0 0 rgba(0,0,0,0.95); }
+
+    .skel .skel-bar { display: block; background: linear-gradient(90deg, color-mix(in srgb, var(--text) 6%, transparent) 0%, color-mix(in srgb, var(--text) 12%, transparent) 50%, color-mix(in srgb, var(--text) 6%, transparent) 100%); background-size: 200% 100%; animation: skel-shimmer 1.4s ease-in-out infinite; border-radius: 6px; min-height: 22px; }
+    @keyframes skel-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+    .error-strip { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bad) 10%, var(--surface-strong)); border: 1px solid color-mix(in srgb, var(--bad) 28%, transparent); }
+    .error-strip strong { color: var(--bad); font-size: 13px; font-weight: 600; }
+    .error-strip span { color: var(--text-2); font-size: 12px; font-family: var(--font-mono); }
+
+    .pill .dot { transition: transform 200ms ease; }
+    .pill.is-pulsing .dot { animation: dot-pulse 1.6s ease-in-out infinite; }
+    @keyframes dot-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.4); } }
+    #realtime-pill { cursor: pointer; user-select: none; }
+    #realtime-pill:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+    [data-context="console"] .det-box { transition: left 800ms cubic-bezier(0.2, 0, 0, 1), top 800ms cubic-bezier(0.2, 0, 0, 1), width 800ms cubic-bezier(0.2, 0, 0, 1), height 800ms cubic-bezier(0.2, 0, 0, 1); }
+    [data-context="console"] .det-box b { transition: color 200ms ease; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+
+    /* Brutalist overrides — sharp + thick borders */
+    [data-theme="brutalist"] .panel { border-width: 2px; }
+    [data-theme="brutalist"] .topbar { background: #fff; border-bottom: 2px solid #000; }
+    [data-theme="brutalist"] .rail-item[aria-current="page"] { background: #000; color: #fff; }
+    [data-theme="brutalist"] .rail-item[aria-current="page"]::before { display: none; }
+    [data-theme="brutalist"] .btn { font-weight: 700; }
+    [data-theme="brutalist"] .metric::after { display: none; }
+    [data-theme="brutalist"] .panel-head { border-bottom: 2px solid #000; }
+    [data-theme="brutalist"] .panel-foot { border-top: 2px solid #000; }
+    [data-theme="brutalist"] .eyebrow { background: #000; color: #fff; border: 2px solid #000; }
+    [data-theme="brutalist"] .pill .dot { box-shadow: none; }
+    [data-theme="brutalist"] .panel,
+    [data-theme="brutalist"] .row,
+    [data-theme="brutalist"] .metric,
+    [data-theme="brutalist"] .game,
+    [data-theme="brutalist"] .spec-card,
+    [data-theme="brutalist"] .tweaks { border-radius: 0; }
+    [data-theme="brutalist"] body { background: var(--bg); }
+    [data-theme="mono"] body { background: var(--bg); }
+  </style>
+</head>
+<body data-context="console" data-theme="refined">
+  <div class="app">
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">N</span>
+        <div class="brand-text">
+          <strong>NovaSight</strong>
+          <span>Realtime Vision Console</span>
+        </div>
+      </div>
+
+      <div class="breadcrumbs only-console">
+        <span>项目</span><span class="sep">/</span>
+        <strong>默认项目</strong><span class="sep">/</span>
+        <span data-bind="active">总览</span>
+      </div>
+      <div class="breadcrumbs only-landing" style="display:none">
+        <strong>NovaSight</strong><span class="sep">/</span>
+        <span>营销入口</span>
+      </div>
+
+      <div class="topbar-right">
+        <div class="context-toggle" role="tablist" aria-label="切换上下文">
+          <button id="ctx-console" aria-pressed="true" type="button">控制台</button>
+          <button id="ctx-landing" aria-pressed="false" type="button">Landing</button>
+        </div>
+        <span class="pill is-pulsing" id="realtime-pill" data-tone="good" role="status" tabindex="0" aria-label="实时状态，点击切换"><span class="dot"></span><span class="pill-label">实时已连接</span></span>
+        <button class="btn btn-primary" id="primary-cta" type="button">
+          <span class="only-console">启动主链路</span>
+          <span class="only-landing" style="display:none">一键启动 →</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <!-- RAIL (console only) -->
+      <aside class="rail only-console" aria-label="工作台导航">
+        <button class="rail-item" aria-current="page" aria-label="总览" title="总览">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </button>
+        <button class="rail-item" aria-label="设置" title="设置">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        </button>
+        <button class="rail-item" aria-label="模型" title="模型">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v12l8 4 8-4V6z"/><path d="m4 6 8 4 8-4"/><path d="M12 22V10"/></svg>
+        </button>
+        <button class="rail-item" aria-label="配置" title="配置">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg>
+        </button>
+        <button class="rail-item" aria-label="授权" title="授权">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        </button>
+        <div class="rail-spacer"></div>
+      </aside>
+
+      <main>
+        <!-- ============================ CONSOLE ============================ -->
+        <section class="only-console">
+          <div class="page-head">
+            <div>
+              <h1 class="page-title">总览<small>Workspace / Dashboard</small></h1>
+              <p class="page-sub" style="margin-top:8px">采集、推理、预测、控制的实时指挥中心。所有指标为设备端 last-frame 视图的瞬时态。</p>
+            </div>
+            <div style="display:flex; gap:var(--space-2);">
+              <button class="btn btn-ghost" type="button">导出报告</button>
+              <button class="btn" type="button">刷新</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <!-- Primary panel: stage + metrics -->
+            <section class="panel">
+              <div class="panel-head">
+                <h2 class="panel-title">主链路预览<small>1920×1080 · 60 FPS · GStreamer latest-frame</small></h2>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn btn-ghost" id="action-toggle-skeleton" type="button">骨架</button>
+                  <button class="btn btn-ghost" id="action-toggle-error" type="button">错误</button>
+                  <button class="btn btn-ghost" type="button">暂停</button>
+                  <button class="btn" type="button">重新校准</button>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div class="stage" role="img" aria-label="实时视频预览占位">
+                  <div class="stage-label">product shot (1920 × 1080)</div>
+                  <div class="stage-hud">
+                    <span>60 FPS</span><span>12.4 ms</span><span>target 0.93</span>
+                  </div>
+                  <div class="det-box" style="left:18%; top:24%; width:24%; height:42%;"><b>candidate 0.78</b></div>
+                  <div class="det-box target" style="left:52%; top:30%; width:22%; height:38%;"><b>target 0.93</b></div>
+                </div>
+
+                <div id="metric-real" class="metric-grid" style="margin-top: var(--space-4);">
+                  <div class="metric"><div class="k">FPS</div><div class="v" id="m-fps">59.8<span class="u">hz</span></div><div class="bar"><i class="good" style="width:99%"></i></div></div>
+                  <div class="metric"><div class="k">Latency</div><div class="v" id="m-latency">12.4<span class="u">ms</span></div><div class="bar"><i class="good" style="width:24%"></i></div></div>
+                  <div class="metric"><div class="k">GPU</div><div class="v" id="m-gpu">72<span class="u">%</span></div><div class="bar"><i class="warn" style="width:72%"></i></div></div>
+                  <div class="metric"><div class="k">Hit-rate</div><div class="v" id="m-hit">0.93</div><div class="bar"><i class="good" style="width:93%"></i></div></div>
+                </div>
+                <div id="metric-skeleton" class="metric-grid" hidden style="margin-top: var(--space-4);">
+                  <div class="metric skel"><div class="k">FPS</div><div class="v skel-bar"></div><div class="bar"><i class="skel-bar" style="width:60%"></i></div></div>
+                  <div class="metric skel"><div class="k">Latency</div><div class="v skel-bar"></div><div class="bar"><i class="skel-bar" style="width:40%"></i></div></div>
+                  <div class="metric skel"><div class="k">GPU</div><div class="v skel-bar"></div><div class="bar"><i class="skel-bar" style="width:55%"></i></div></div>
+                  <div class="metric skel"><div class="k">Hit-rate</div><div class="v skel-bar"></div><div class="bar"><i class="skel-bar" style="width:75%"></i></div></div>
+                </div>
+                <div id="error-strip" class="error-strip" hidden role="status">
+                  <strong>请求失败</strong>
+                  <span>500 Internal Server Error · 后端 /api/health 未响应</span>
+                </div>
+              </div>
+              <div class="panel-foot">
+                <span>uptime 4h 21m</span>
+                <span>last frame 12.4 ms ago</span>
+              </div>
+            </section>
+
+            <!-- Right column: consumers + diagnostic -->
+            <section class="panel">
+              <div class="panel-head">
+                <h2 class="panel-title">消费者<small>Tracking / Prediction / Control</small></h2>
+                <button class="btn btn-ghost" type="button">管理</button>
+              </div>
+              <div class="panel-body">
+                <div class="row" data-consumer="tracking">
+                  <span class="ico" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 12h2M19 12h2M12 3v2M12 19v2"/></svg>
+                  </span>
+                  <div>
+                    <div class="name">目标追踪</div>
+                    <div class="desc">YOLO + Kalman · 30ms lookahead</div>
+                  </div>
+                  <span class="pill" data-tone="good"><span class="dot"></span><span class="pill-label">运行中</span></span>
+                  <button class="switch on" aria-label="切换 目标追踪" aria-checked="true" role="switch"><i></i></button>
+                </div>
+                <div class="row" data-consumer="prediction">
+                  <span class="ico" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17 9 11l4 4 8-8"/><path d="M14 7h7v7"/></svg>
+                  </span>
+                  <div>
+                    <div class="name">轨迹预测</div>
+                    <div class="desc">300ms ahead · 置信度 0.87</div>
+                  </div>
+                  <span class="pill" data-tone="good"><span class="dot"></span><span class="pill-label">已连接</span></span>
+                  <button class="switch on" aria-label="切换 轨迹预测" aria-checked="true" role="switch"><i></i></button>
+                </div>
+                <div class="row" data-consumer="control">
+                  <span class="ico" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 10h18"/></svg>
+                  </span>
+                  <div>
+                    <div class="name">控制下发</div>
+                    <div class="desc">PD controller · emergency stop ready</div>
+                  </div>
+                  <span class="pill" data-tone="idle"><span class="dot"></span><span class="pill-label">已停止</span></span>
+                  <button class="switch" aria-label="切换 控制下发" aria-checked="false" role="switch"><i></i></button>
+                </div>
+
+                <div class="diag" style="margin-top: var(--space-4);">
+                  <div class="line"><code>backend</code><strong>gst-nvmm-latest-frame</strong></div>
+                  <div class="line"><code>profile</code><strong>NV12 · 1080p · 60fps</strong></div>
+                  <div class="line"><code>device</code><strong>Jetson Orin · serial 0x4A2F</strong></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <!-- ============================ LANDING ============================ -->
+        <section class="only-landing" style="display:none">
+          <div class="hero">
+            <span class="eyebrow"><span class="dot"></span>Realtime AI Vision</span>
+            <h1 class="display">游戏视觉体验的 <em>实时 AI</em> 工作台</h1>
+            <p class="lead">8 个 FPS 场景的统一启动入口。点击任意游戏查看 Hero 图与 AI 识别分析图，点击启动按钮进入控制台。</p>
+            <div class="cta-row">
+              <button class="btn btn-primary" id="hero-cta" type="button">一键启动 →</button>
+              <button class="btn" type="button">查看文档</button>
+            </div>
+
+            <div class="preview" role="img" aria-label="实时识别预览">
+              <div class="stage-label">product shot (1920 × 1080)</div>
+              <div class="det-box" style="left:14%; top:22%; width:22%; height:38%;"><b>candidate 0.78</b></div>
+              <div class="det-box target" style="left:54%; top:30%; width:24%; height:40%;"><b>target 0.93</b></div>
+            </div>
+          </div>
+
+          <section class="section">
+            <div class="section-head">
+              <h2>选择 FPS 场景</h2>
+              <p>为每个游戏预设识别参数与控制策略。</p>
+            </div>
+            <div class="games">
+              <button class="game" type="button"><div class="name">Delta Force</div><div class="sub">三角洲行动</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">CrossFire</div><div class="sub">穿越火线</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">VALORANT</div><div class="sub">无畏契约</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">CS2</div><div class="sub">反恐精英 2</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">PUBG</div><div class="sub">绝地求生</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">Arena Breakout</div><div class="sub">暗区突围：无限</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">Overwatch 2</div><div class="sub">守望先锋 2</div><span class="tag">已优化</span></button>
+              <button class="game" type="button"><div class="name">CS Online</div><div class="sub">反恐精英 Online</div><span class="tag">已优化</span></button>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>可量化的能力</h2><p>从识别延迟到控制下发，端到端观测。</p></div>
+            <div class="spec">
+              <div class="spec-card"><div class="k">识别延迟</div><div class="v">12 ms</div><p>采集到控制环路的端到端 P95。</p></div>
+              <div class="spec-card"><div class="k">目标锁定</div><div class="v">≥ 60 FPS</div><p>1080p 输入下保持 60 FPS 同时输出控制命令。</p></div>
+              <div class="spec-card"><div class="k">误触发率</div><div class="v">0.4 %</div><p>候选框过滤 + 时间窗口稳定器，部署可调。</p></div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Tweak panel — single source of truth for variations
+       ============================================================ -->
+  <aside class="tweaks" id="tweaks" aria-label="Tweaks">
+    <h3>Tweaks</h3>
+    <div class="field">
+      <label for="tweak-context">Context</label>
+      <select id="tweak-context">
+        <option value="console">控制台</option>
+        <option value="landing">Landing</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="tweak-theme">Theme</label>
+      <select id="tweak-theme">
+        <option value="refined">Refined · 克制专业</option>
+        <option value="expressive">Expressive · 实时 AI 光感</option>
+        <option value="brutalist">Brutalist · 原始装置</option>
+        <option value="mono">Monospace · 终端 / Dev</option>
+      </select>
+    </div>
+    <div class="meta" id="tweak-meta">refined / console</div>
+  </aside>
+  <!-- ============================================================
+       Launch overlay (console + landing)
+       ============================================================ -->
+  <div class="launch" id="launch" hidden role="dialog" aria-modal="true" aria-labelledby="launch-title">
+    <div class="launch-backdrop"></div>
+    <div class="launch-card">
+      <div class="launch-ring" aria-hidden="true">
+        <svg viewBox="0 0 120 120" width="120" height="120">
+          <circle cx="60" cy="60" r="54" fill="none" stroke="currentColor" stroke-width="6" class="ring-bg"/>
+          <circle cx="60" cy="60" r="54" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" class="ring-fg" style="--ring-dash:339.292px"/>
+        </svg>
+        <div class="launch-pct"><strong id="launch-pct">0</strong><span>%</span></div>
+      </div>
+      <h2 id="launch-title" class="launch-title">启动主链路</h2>
+      <p class="launch-status" id="launch-status">准备资源…</p>
+      <button class="btn btn-ghost" id="launch-cancel" type="button">取消</button>
+    </div>
+  </div>
+
+  <!-- Game preview modal (landing) -->
+  <div class="preview-modal" id="preview-modal" hidden role="dialog" aria-modal="true" aria-labelledby="preview-name">
+    <div class="preview-backdrop"></div>
+    <div class="preview-card">
+      <button class="preview-close" id="preview-close" type="button" aria-label="关闭预览">×</button>
+      <h2 id="preview-name" class="preview-name">—</h2>
+      <div id="preview-stage" class="stage" role="img" aria-label="AI 识别预览">
+        <div class="stage-label">AI 识别预览</div>
+        <div class="stage-hud"><span>60 FPS</span><span>12.4 ms</span></div>
+        <div class="det-box" style="left:18%; top:24%; width:24%; height:42%;"><b>candidate 0.78</b></div>
+        <div class="det-box target" style="left:52%; top:30%; width:22%; height:38%;"><b>target 0.93</b></div>
+      </div>
+      <div class="preview-actions">
+        <button class="btn btn-ghost" id="preview-back" type="button">返回场景</button>
+        <button class="btn btn-primary" id="landing-cta" type="button">一键启动 →</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ============================================================
+       TWEAK_DEFAULTS — host rewrites between markers
+       ============================================================ */
+    const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+      "context": "console",
+      "theme": "refined"
+    }/*EDITMODE-END*/;
+
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+    function applyTweaks(state) {
+      const { context, theme } = state;
+      document.body.dataset.context = context;
+      document.body.dataset.theme = theme;
+      $$(".only-console, .only-landing").forEach((el) => { el.style.display = ""; });
+      $$(".only-console").forEach((el) => { el.style.display = context === "console" ? "" : "none"; });
+      $$(".only-landing").forEach((el) => { el.style.display = context === "landing" ? "" : "none"; });
+      $$("#ctx-console, #ctx-landing").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "ctx-" + context)));
+      $("#tweak-meta").textContent = `${theme} / ${context}`;
+    }
+
+    function bindTweaks(state) {
+      $("#tweak-context").value = state.context;
+      $("#tweak-theme").value = state.theme;
+      $("#tweak-context").addEventListener("change", (e) => { state.context = e.target.value; applyTweaks(state); persist(state); });
+      $("#tweak-theme").addEventListener("change", (e) => { state.theme = e.target.value; applyTweaks(state); persist(state); });
+      $("#ctx-console").addEventListener("click", () => { state.context = "console"; $("#tweak-context").value = "console"; applyTweaks(state); persist(state); });
+      $("#ctx-landing").addEventListener("click", () => { state.context = "landing"; $("#tweak-context").value = "landing"; applyTweaks(state); persist(state); });
+    }
+
+    function persist(state) {
+      try { localStorage.setItem("ns-tweaks", JSON.stringify(state)); } catch (e) {}
+      window.parent?.postMessage({ type: "__edit_mode_set_keys", edits: state }, "*");
+    }
+
+    function loadState() {
+      try { const v = JSON.parse(localStorage.getItem("ns-tweaks") || "null"); if (v && typeof v === "object") return { ...TWEAK_DEFAULTS, ...v }; } catch (e) {}
+      return { ...TWEAK_DEFAULTS };
+    }
+
+    /* Realtime status cycle */
+    const realtimeStates = [
+      { tone: "good", label: "实时已连接" },
+      { tone: "warn", label: "实时 数据陈旧" },
+      { tone: "bad", label: "实时 已断开" }
+    ];
+    let realtimeIndex = 0;
+    let realtimeTimer = null;
+    function setRealtime(state) {
+      const pill = $("#realtime-pill");
+      if (!pill) return;
+      pill.dataset.tone = state.tone;
+      const labelEl = pill.querySelector(".pill-label");
+      if (labelEl) labelEl.textContent = state.label;
+      pill.classList.toggle("is-pulsing", state.tone === "good");
+    }
+    function startRealtimeCycle() {
+      stopRealtimeCycle();
+      realtimeTimer = setInterval(() => {
+        realtimeIndex = (realtimeIndex + 1) % realtimeStates.length;
+        setRealtime(realtimeStates[realtimeIndex]);
+      }, 5500);
+    }
+    function stopRealtimeCycle() { if (realtimeTimer) clearInterval(realtimeTimer); realtimeTimer = null; }
+
+    /* Consumer switch toggles */
+    const consumerState = {
+      tracking: { on: true, tone: "good", label: "运行中" },
+      prediction: { on: true, tone: "good", label: "已连接" },
+      control: { on: false, tone: "idle", label: "已停止" }
+    };
+    function setConsumer(name, on) {
+      const c = consumerState[name];
+      c.on = on;
+      if (name === "control") { c.label = on ? "下发中" : "已停止"; c.tone = on ? "good" : "idle"; }
+      else if (name === "prediction") { c.label = on ? "已连接" : "未连接"; c.tone = on ? "good" : "warn"; }
+      else if (name === "tracking") { c.label = on ? "运行中" : "已停止"; c.tone = on ? "good" : "idle"; }
+      const row = document.querySelector(`[data-consumer="${name}"]`);
+      if (!row) return;
+      const sw = row.querySelector(".switch");
+      sw.classList.toggle("on", on);
+      sw.setAttribute("aria-checked", String(on));
+      const pill = row.querySelector(".pill");
+      pill.dataset.tone = c.tone;
+      const labelEl = pill.querySelector(".pill-label");
+      if (labelEl) labelEl.textContent = c.label;
+    }
+
+    /* Live detection jitter */
+    const detBoxes = $$(".det-box");
+    function tickDetections() {
+      detBoxes.forEach((b) => {
+        const x = 14 + Math.random() * 50;
+        const y = 22 + Math.random() * 22;
+        const w = 18 + Math.random() * 12;
+        const h = 32 + Math.random() * 16;
+        b.style.left = x + "%";
+        b.style.top = y + "%";
+        b.style.width = w + "%";
+        b.style.height = h + "%";
+        const isTarget = b.classList.contains("target");
+        const conf = isTarget ? (0.85 + Math.random() * 0.12).toFixed(2) : (0.55 + Math.random() * 0.3).toFixed(2);
+        const label = b.querySelector("b");
+        if (label) label.textContent = (isTarget ? "target " : "candidate ") + conf;
+      });
+    }
+    let detTimer = setInterval(tickDetections, 1800);
+
+    /* Metric jitter */
+    const metricRanges = { fps: [58, 60], latency: [10, 16], gpu: [60, 86], hit: [0.88, 0.97] };
+    function tickMetrics() {
+      const set = (sel, value, suffix) => {
+        const el = $(sel);
+        if (!el) return;
+        if (suffix) el.innerHTML = `${value}<span class="u">${suffix}</span>`;
+        else el.textContent = value;
+      };
+      set("#m-fps", (Math.random() * (metricRanges.fps[1] - metricRanges.fps[0]) + metricRanges.fps[0]).toFixed(1), "hz");
+      set("#m-latency", (Math.random() * (metricRanges.latency[1] - metricRanges.latency[0]) + metricRanges.latency[0]).toFixed(1), "ms");
+      set("#m-gpu", Math.round(Math.random() * (metricRanges.gpu[1] - metricRanges.gpu[0]) + metricRanges.gpu[0]), "%");
+      set("#m-hit", (Math.random() * (metricRanges.hit[1] - metricRanges.hit[0]) + metricRanges.hit[0]).toFixed(2), null);
+    }
+    setInterval(tickMetrics, 1500);
+
+    /* Skeleton / error reveal */
+    function toggleError() { const strip = $("#error-strip"); if (strip) strip.hidden = !strip.hidden; }
+    function toggleSkeleton() {
+      const skel = $("#metric-skeleton");
+      const real = $("#metric-real");
+      if (!skel || !real) return;
+      const showing = !skel.hidden;
+      skel.hidden = showing;
+      real.hidden = !showing;
+    }
+
+    /* Launch overlay */
+    const launchStages = [
+      { pct: 0, status: "准备资源…" },
+      { pct: 18, status: "加载 GStreamer latest-frame…" },
+      { pct: 42, status: "初始化 TensorRT 引擎…" },
+      { pct: 68, status: "启动控制回路…" },
+      { pct: 88, status: "等待 first-frame 回调…" },
+      { pct: 100, status: "主链路已就绪" }
+    ];
+    let launchTimer = null;
+    let launchIdx = 0;
+    const RING_C = 2 * Math.PI * 54;
+    function openLaunch() {
+      const el = $("#launch");
+      el.hidden = false;
+      requestAnimationFrame(() => el.classList.add("is-open"));
+      launchIdx = 0;
+      tickLaunch();
+    }
+    function closeLaunch() {
+      const el = $("#launch");
+      el.classList.remove("is-open");
+      setTimeout(() => { el.hidden = true; }, 240);
+      if (launchTimer) clearInterval(launchTimer);
+    }
+    function tickLaunch() {
+      if (launchTimer) clearInterval(launchTimer);
+      launchTimer = setInterval(() => {
+        launchIdx = Math.min(launchIdx + 1, launchStages.length - 1);
+        const s = launchStages[launchIdx];
+        $("#launch-pct").textContent = s.pct;
+        $("#launch-status").textContent = s.status;
+        const fg = $("#launch .ring-fg");
+        if (fg) fg.style.strokeDashoffset = (RING_C * (1 - s.pct / 100));
+        if (launchIdx === launchStages.length - 1) {
+          clearInterval(launchTimer);
+          setRealtime(realtimeStates[0]);
+        }
+      }, 540);
+    }
+
+    /* Preview modal (landing) */
+    function openPreview(name) {
+      const el = $("#preview-modal");
+      el.hidden = false;
+      requestAnimationFrame(() => el.classList.add("is-open"));
+      $("#preview-name").textContent = name;
+      const sl = $("#preview-stage").querySelector(".stage-label");
+      if (sl) sl.textContent = `${name} · AI 识别预览`;
+    }
+    function closePreview() {
+      const el = $("#preview-modal");
+      el.classList.remove("is-open");
+      setTimeout(() => { el.hidden = true; }, 200);
+    }
+
+    /* Global click delegation */
+    document.addEventListener("click", (e) => {
+      const pill = e.target.closest("#realtime-pill");
+      if (pill) { realtimeIndex = (realtimeIndex + 1) % realtimeStates.length; setRealtime(realtimeStates[realtimeIndex]); return; }
+      const sw = e.target.closest("[data-consumer] .switch");
+      if (sw) { const name = sw.closest("[data-consumer]").dataset.consumer; setConsumer(name, !consumerState[name].on); return; }
+      if (e.target.closest("#action-toggle-error")) { toggleError(); return; }
+      if (e.target.closest("#action-toggle-skeleton")) { toggleSkeleton(); return; }
+      if (e.target.closest("#primary-cta")) { openLaunch(); return; }
+      if (e.target.closest("#launch-cancel") || e.target.closest(".launch-backdrop")) { closeLaunch(); return; }
+      const game = e.target.closest(".game");
+      if (game) { e.preventDefault(); openPreview(game.querySelector(".name").textContent); return; }
+      if (e.target.closest("#preview-close") || e.target.closest("#preview-back") || e.target.closest(".preview-backdrop")) { closePreview(); return; }
+      if (e.target.closest("#landing-cta")) { closePreview(); openLaunch(); return; }
+    });
+
+    /* Keyboard */
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (!$("#launch").hidden) { closeLaunch(); return; }
+      if (!$("#preview-modal").hidden) { closePreview(); return; }
+    });
+
+    /* Pause telemetry when hidden */
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) { clearInterval(detTimer); detTimer = null; }
+      else if (!detTimer) { detTimer = setInterval(tickDetections, 1800); }
+    });
+
+    /* Boot */
+    const state = loadState();
+    bindTweaks(state);
+    applyTweaks(state);
+    startRealtimeCycle();
+    setRealtime(realtimeStates[0]);
+
+    /* Host protocol */
+    window.addEventListener("message", (e) => {
+      if (!e.data || typeof e.data !== "object") return;
+      if (e.data.type === "__activate_edit_mode") $("#tweaks").hidden = false;
+      if (e.data.type === "__deactivate_edit_mode") $("#tweaks").hidden = true;
+    });
+    window.parent?.postMessage({ type: "__edit_mode_available" }, "*");
+  </script>
+</body>
+</html>
