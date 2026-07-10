@@ -8,6 +8,7 @@ from typing import Any
 from novasight.config import RuntimeConfig
 from novasight.control import ControlOutput
 from novasight.executors.contracts import ExecutionResult
+from novasight.executors.kmnet_diagnostics import probe_kmnet_route
 from novasight.executors.kmnet_loader import load_kmnet_driver
 from novasight.executors.kmnet_process import KmNetDriverProcess
 
@@ -36,6 +37,17 @@ class KmNetExecutor:
         self.last_dx = 0
         self.last_dy = 0
         self.last_error = ""
+        self.connection_stage = "idle"
+        self.last_connect_error_stage = ""
+        self.last_connect_error_type = ""
+        self.last_driver_call = ""
+        self.last_driver_call_duration_ms = 0.0
+        self.last_driver_rc: Any | None = None
+        self.last_driver_error = ""
+        self.route_available: bool | None = None
+        self.route_resolved_ip = ""
+        self.route_local_ip = ""
+        self.route_error = ""
         self.last_button_left = False
         self.last_button_right = False
         self.last_button_available = False
@@ -57,8 +69,12 @@ class KmNetExecutor:
         self.driver_platform = result.platform
         self.driver_machine = result.machine
         self.driver_python = result.python_tag
+        self.driver_load_error = result.reason
         if not result.available:
             self.last_error = result.reason
+            self.connection_stage = "driver_unavailable"
+            self.last_connect_error_stage = "driver_load"
+            self.last_connect_error_type = "unavailable"
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> KmNetExecutor:
@@ -79,11 +95,22 @@ class KmNetExecutor:
             "available": self.available(),
             "connected": self.connected,
             "connecting": self.connecting,
+            "connection_stage": self.connection_stage,
+            "last_connect_error_stage": self.last_connect_error_stage,
+            "last_connect_error_type": self.last_connect_error_type,
             "monitoring": self.monitoring,
             "move_count": self.move_count,
             "last_dx": self.last_dx,
             "last_dy": self.last_dy,
             "last_error": self.last_error,
+            "last_driver_call": self.last_driver_call,
+            "last_driver_call_duration_ms": self.last_driver_call_duration_ms,
+            "last_driver_rc": self.last_driver_rc,
+            "last_driver_error": self.last_driver_error,
+            "route_available": self.route_available,
+            "route_resolved_ip": self.route_resolved_ip,
+            "route_local_ip": self.route_local_ip,
+            "route_error": self.route_error,
             "driver_source": self.driver_source,
             "driver_platform": self.driver_platform,
             "driver_machine": self.driver_machine,
@@ -226,6 +253,7 @@ class KmNetExecutor:
             self.connected = False
             self.connecting = False
             self.monitoring = False
+            self.connection_stage = "idle"
             self.last_error = ""
         if self._driver_process is not None:
             self._driver_process.abort()
@@ -338,8 +366,17 @@ class KmNetExecutor:
         with self._connection_lock:
             if self.connected or self.connecting:
                 return None
+            if self._driver is None:
+                self.connection_stage = "driver_unavailable"
+                self.last_connect_error_stage = "driver_load"
+                self.last_connect_error_type = "unavailable"
+                self.last_error = self.driver_load_error or "kmNet driver unavailable"
+                return None
             self._connection_generation += 1
             self.connecting = True
+            self.connection_stage = "network"
+            self.last_connect_error_stage = ""
+            self.last_connect_error_type = ""
             self.last_error = ""
             return self._connection_generation
 
@@ -360,42 +397,113 @@ class KmNetExecutor:
         if self.port <= 0:
             with self._connection_lock:
                 if generation == self._connection_generation:
+                    self.connection_stage = "failed"
+                    self.last_connect_error_stage = "config"
+                    self.last_connect_error_type = "invalid_port"
                     self.last_error = "kmNet port is not configured"
                     self.connected = False
             return
+        route = probe_kmnet_route(self.host, self.port)
+        with self._connection_lock:
+            if generation != self._connection_generation:
+                return
+            self.route_available = route.available
+            self.route_resolved_ip = route.resolved_ip
+            self.route_local_ip = route.local_ip
+            self.route_error = route.error
+            self.connection_stage = "init" if route.available else "failed"
+        if not route.available:
+            self._record_connect_failure(
+                generation,
+                "network",
+                RuntimeError(route.error or "no IPv4 route to kmNet host"),
+                error_type="unreachable",
+            )
+            return
         try:
             self._call_init_driver()
-            monitoring = False
-            if self.monitor_port > 0:
+        except Exception as exc:
+            self._record_connect_failure(generation, "init", exc)
+            return
+        with self._connection_lock:
+            if generation != self._connection_generation:
+                logger.info("kmNet connect result ignored after disconnect")
+                return
+            self.connected = True
+            self.monitoring = False
+            self.connection_stage = "monitor" if self.monitor_port > 0 else "connected"
+            self.last_error = ""
+        if self.monitor_port > 0:
+            try:
                 self._call_driver("monitor", int(self.monitor_port))
-                monitoring = True
+            except Exception as exc:
+                with self._connection_lock:
+                    if generation != self._connection_generation:
+                        return
+                    self.monitoring = False
+                    self.connection_stage = "connected_without_monitor"
+                    self.last_connect_error_stage = "monitor"
+                    self.last_connect_error_type = self._connect_error_type(exc)
+                    self.last_error = f"kmNet monitor failed: {exc}"
+                logger.warning(
+                    "kmNet connected but monitor failed host=%s port=%s monitor_port=%s error=%s",
+                    self.host,
+                    self.port,
+                    self.monitor_port,
+                    exc,
+                )
+                return
             with self._connection_lock:
                 if generation != self._connection_generation:
-                    logger.info("kmNet connect result ignored after disconnect")
                     return
                 self.connected = True
-                self.monitoring = monitoring
+                self.monitoring = True
+                self.connection_stage = "connected"
+                self.last_connect_error_stage = ""
+                self.last_connect_error_type = ""
                 self.last_error = ""
-            logger.info(
-                "kmNet connected host=%s port=%s monitor_port=%s",
-                self.host,
-                self.port,
-                self.monitor_port,
-            )
-        except Exception as exc:
-            with self._connection_lock:
-                if generation != self._connection_generation:
-                    return
-                self.last_error = f"kmNet init failed: {exc}"
-                self.connected = False
-                self.monitoring = False
-            logger.warning(
-                "kmNet connect failed host=%s port=%s monitor_port=%s error=%s",
-                self.host,
-                self.port,
-                self.monitor_port,
-                exc,
-            )
+        logger.info(
+            "kmNet connected host=%s port=%s monitor_port=%s monitoring=%s",
+            self.host,
+            self.port,
+            self.monitor_port,
+            self.monitoring,
+        )
+
+    def _record_connect_failure(
+        self,
+        generation: int,
+        stage: str,
+        exc: Exception,
+        *,
+        error_type: str | None = None,
+    ) -> None:
+        with self._connection_lock:
+            if generation != self._connection_generation:
+                return
+            self.connection_stage = "failed"
+            self.last_connect_error_stage = stage
+            self.last_connect_error_type = error_type or self._connect_error_type(exc)
+            self.last_error = f"kmNet {stage} failed: {exc}"
+            self.connected = False
+            self.monitoring = False
+        logger.warning(
+            "kmNet connect failed stage=%s type=%s host=%s port=%s monitor_port=%s error=%s",
+            stage,
+            self.last_connect_error_type,
+            self.host,
+            self.port,
+            self.monitor_port,
+            exc,
+        )
+
+    @staticmethod
+    def _connect_error_type(exc: Exception) -> str:
+        if isinstance(exc, TimeoutError):
+            return "timeout"
+        if "failed rc=" in str(exc):
+            return "driver_return_code"
+        return "driver_exception"
 
     def _move_auto(self, dx: int, dy: int, move_ms: int, *, encrypted: bool = False) -> tuple[str, Any]:
         name = "enc_move_auto" if encrypted else "move_auto"
@@ -437,11 +545,24 @@ class KmNetExecutor:
             raise RuntimeError("driver unavailable")
         if not self._driver_has(name):
             raise RuntimeError(f"driver function unavailable: {name}")
-        if self._driver_process is not None:
-            timeout_s = 3.0 if name == "init" else 2.0 if name == "monitor" else 1.0
-            rc = self._driver_process.call(name, *args, timeout_s=timeout_s)
-        else:
-            rc = getattr(self._driver, name)(*args)
+        started_ns = time.monotonic_ns()
+        self.last_driver_call = name
+        self.last_driver_rc = None
+        self.last_driver_error = ""
+        try:
+            if self._driver_process is not None:
+                timeout_s = 3.0 if name == "init" else 2.0 if name == "monitor" else 1.0
+                rc = self._driver_process.call(name, *args, timeout_s=timeout_s)
+            else:
+                rc = getattr(self._driver, name)(*args)
+            self.last_driver_rc = rc
+            if rc not in (None, 0):
+                raise RuntimeError(f"{name} failed rc={rc}")
+        except Exception as exc:
+            self.last_driver_error = str(exc)
+            raise
+        finally:
+            self.last_driver_call_duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000.0
         if name in {
             "init",
             "monitor",
@@ -457,8 +578,6 @@ class KmNetExecutor:
             "trace",
         }:
             logger.info("kmNet driver call name=%s args=%s rc=%s", name, args, rc)
-        if rc not in (None, 0):
-            raise RuntimeError(f"{name} failed rc={rc}")
         return rc
 
     def _call_init_driver(self) -> Any:

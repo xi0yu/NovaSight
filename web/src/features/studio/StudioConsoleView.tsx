@@ -2551,6 +2551,22 @@ export function StudioConsoleView({
                   <span>执行器</span>
                   <b>{readString(execution.executor_id, readString(executorStatus.selected, "-"))}</b>
                 </div>
+                <div className="kmnet-status-tile">
+                  <span>连接阶段</span>
+                  <b>{readString(kmnetStatus.connection_stage, "-")}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>最近驱动调用</span>
+                  <b>{`${readString(kmnetStatus.last_driver_call, "-")} · ${formatNumber(kmnetStatus.last_driver_call_duration_ms, 2)} ms`}</b>
+                </div>
+                <div className={kmnetStatus.route_available === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                  <span>网络路由</span>
+                  <b>{kmnetStatus.route_available === true ? "已找到" : kmnetStatus.route_available === false ? "无路由" : "未检查"}</b>
+                </div>
+                <div className="kmnet-status-tile">
+                  <span>源 IP / 目标 IP</span>
+                  <b>{`${readString(kmnetStatus.route_local_ip, "-")} / ${readString(kmnetStatus.route_resolved_ip, "-")}`}</b>
+                </div>
               </div>
               <div className="kmnet-driver-line">
                 <span>{compactDriverSource(kmnetStatus.driver_source)}</span>
@@ -2758,7 +2774,9 @@ export function StudioConsoleView({
                 {kmnetTestMessage ? <div className="kmnet-test-message">{kmnetTestMessage}</div> : null}
               </div>
               {readString(kmnetStatus.last_error, "") ? (
-                <div className="kmnet-error">{readString(kmnetStatus.last_error, "")}</div>
+                <div className="kmnet-error">
+                  {`[${readString(kmnetStatus.last_connect_error_stage, "unknown")}/${readString(kmnetStatus.last_connect_error_type, "unknown")}] ${readString(kmnetStatus.last_error, "")}`}
+                </div>
               ) : null}
             </div>
           </div>

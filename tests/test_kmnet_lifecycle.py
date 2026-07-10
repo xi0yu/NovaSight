@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from novasight.api.app import (
     _auto_connect_kmnet,
     _disconnect_kmnet,
@@ -13,6 +15,20 @@ from novasight.api.app import (
 from novasight.api.routes_executors import disconnect_kmnet
 from novasight.config import RuntimeConfig
 from novasight.executors.kmnet import KmNetExecutor
+from novasight.executors.kmnet_diagnostics import KmNetRouteStatus
+from novasight.executors.kmnet_loader import KmNetLoadResult
+
+
+@pytest.fixture(autouse=True)
+def _available_kmnet_route(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "novasight.executors.kmnet.probe_kmnet_route",
+        lambda host, _port: KmNetRouteStatus(
+            available=True,
+            resolved_ip=str(host),
+            local_ip="192.0.2.2",
+        ),
+    )
 
 
 class FakeKmNet:
@@ -82,6 +98,22 @@ class BlockingDriver:
         self.init_started.set()
         self.release_init.wait(timeout=2.0)
         return 0
+
+
+class MonitorFailureDriver:
+    def init(self, *_: object) -> int:
+        return 0
+
+    def monitor(self, _port: int) -> int:
+        return 7
+
+
+class TimeoutDriverProcess:
+    def call(self, name: str, *_args: object, timeout_s: float) -> object:
+        raise TimeoutError(f"kmNet driver call timed out: {name}")
+
+    def abort(self) -> None:
+        return None
 
 
 def _registry(kmnet: FakeKmNet, scheduler: FakeScheduler | None = None) -> SimpleNamespace:
@@ -156,6 +188,61 @@ def test_manual_disconnect_invalidates_inflight_connect_result() -> None:
         thread.join(timeout=1.0)
 
     assert executor.status()["connected"] is False
+
+
+def test_monitor_failure_does_not_hide_successful_device_connection() -> None:
+    executor = KmNetExecutor(host="192.0.2.1", port=8888, uuid="test", monitor_port=5001)
+    executor._driver = MonitorFailureDriver()
+    executor._driver_process = None
+
+    status = executor.connect()
+
+    assert status["connected"] is True
+    assert status["monitoring"] is False
+    assert status["connection_stage"] == "connected_without_monitor"
+    assert status["last_connect_error_stage"] == "monitor"
+    assert status["last_connect_error_type"] == "driver_return_code"
+    assert status["last_driver_call"] == "monitor"
+    assert status["last_driver_rc"] == 7
+    assert "monitor failed" in str(status["last_error"])
+
+
+def test_init_timeout_reports_exact_connection_failure_stage() -> None:
+    executor = KmNetExecutor(host="192.0.2.1", port=8888, uuid="test")
+    executor._driver = MonitorFailureDriver()
+    executor._driver_process = TimeoutDriverProcess()
+
+    status = executor.connect()
+
+    assert status["connected"] is False
+    assert status["connection_stage"] == "failed"
+    assert status["last_connect_error_stage"] == "init"
+    assert status["last_connect_error_type"] == "timeout"
+    assert status["last_driver_call"] == "init"
+    assert "timed out" in str(status["last_driver_error"])
+
+
+def test_unavailable_driver_reason_survives_connect_attempt(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "novasight.executors.kmnet.load_kmnet_driver",
+        lambda: KmNetLoadResult(
+            module=None,
+            available=False,
+            source="test",
+            reason="Python ABI mismatch",
+            platform="linux",
+            machine="aarch64",
+            python_tag="cpython-311",
+        ),
+    )
+    executor = KmNetExecutor()
+
+    status = executor.connect()
+
+    assert status["connection_stage"] == "driver_unavailable"
+    assert status["last_connect_error_stage"] == "driver_load"
+    assert status["last_connect_error_type"] == "unavailable"
+    assert status["last_error"] == "Python ABI mismatch"
 
 
 def test_backend_startup_respects_disabled_auto_connect() -> None:

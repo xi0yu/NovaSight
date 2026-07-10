@@ -62,9 +62,15 @@ class KmNetDriverProcess:
                 if not connection.poll(max(0.01, float(timeout_s))):
                     raise TimeoutError(f"kmNet driver call timed out: {name}")
                 response_id, succeeded, value, error = connection.recv()
-            except (EOFError, OSError, TimeoutError):
+            except TimeoutError:
                 self.abort()
                 raise
+            except (EOFError, OSError) as exc:
+                exitcode = self._worker_exitcode()
+                self.abort()
+                raise RuntimeError(
+                    f"kmNet driver process stopped during {name}: exitcode={exitcode}"
+                ) from exc
             if response_id != request_id:
                 self.abort()
                 raise RuntimeError(
@@ -122,6 +128,11 @@ class KmNetDriverProcess:
             self._connection = parent_connection
             self._process = process
             return parent_connection
+
+    def _worker_exitcode(self) -> int | None:
+        with self._lifecycle_lock:
+            process = self._process
+            return process.exitcode if process is not None else None
 
 
 __all__ = ["KmNetDriverProcess"]

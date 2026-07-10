@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 import time
 
 import pytest
@@ -16,6 +17,9 @@ class TestDriver:
 
     def move(self, _dx: int, _dy: int) -> int:
         return 0
+
+    def crash(self) -> None:
+        os._exit(17)
 
 
 def _load_test_driver() -> KmNetLoadResult:
@@ -60,5 +64,17 @@ def test_driver_process_terminates_worker_after_call_timeout() -> None:
 
         # A later command starts a clean worker instead of reusing the blocked one.
         assert driver.call("move", 1, 0, timeout_s=0.5) == 0
+    finally:
+        driver.abort()
+
+
+def test_driver_process_reports_native_worker_exit_code() -> None:
+    driver = KmNetDriverProcess(
+        driver_loader=_load_test_driver,
+        context=_spawn_context(),
+    )
+    try:
+        with pytest.raises(RuntimeError, match=r"crash: exitcode=17"):
+            driver.call("crash", timeout_s=0.5)
     finally:
         driver.abort()
