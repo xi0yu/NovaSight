@@ -22,6 +22,7 @@ from novasight.contracts import BBox, ControlIntent, Detection, DetectionBatch, 
 from novasight.roi import center_roi_frame, center_roi_region
 
 from .config_store import RuntimeConfigStore
+from .control_timing import ControlTimingModel
 from .aim import (
     AimPointConfig,
     AimPointGenerator,
@@ -79,6 +80,8 @@ class RuntimeService:
         self._last_box_input_log_s = 0.0
         self._control_lock = threading.Lock()
         self._last_control_tick_ns = 0
+        self.control_timing = ControlTimingModel()
+        self.last_control_timing: dict[str, Any] = {}
         self.control_strategy = self._create_control_strategy(config)
         self.target_selector = RuntimeTargetSelector()
         self.aim_points = AimPointGenerator()
@@ -200,6 +203,8 @@ class RuntimeService:
         new_calibration_signature = self._config_calibration_signature(config)
         calibration_changed = new_calibration_signature != self._runtime_calibration_signature
         self.config = config
+        self.control_timing.reset()
+        self.last_control_timing = {}
         self.control_strategy = self._create_control_strategy(config)
         if calibration_changed:
             self._clear_pending_commands("CALIBRATION_PROFILE_CHANGED")
@@ -280,6 +285,8 @@ class RuntimeService:
         self.target_selector.reset()
         self.aim_points.reset()
         self.latency_compensator = LatencyCompensator()
+        self.control_timing.reset()
+        self.last_control_timing = {}
         self._reset_control_motion_state()
         self._clear_pending_commands(reason)
         self.last_frame_context = None
@@ -640,6 +647,11 @@ class RuntimeService:
         roi_offset_y: int,
         extra: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        frame_age_ms = self._detection_batch_age_ms(detection_batch, now_ns=now_ns)
+        configured_actuation_delay_ms = max(
+            0.0,
+            float(getattr(self.config.control, "latency_estimated_actuation_delay_ms", 0.0)),
+        )
         payload: dict[str, object] = {
             "frame_id": detection_batch.frame_id,
             "generation": int(detection_batch.generation or 0),
@@ -651,7 +663,13 @@ class RuntimeService:
             "inference_ms": float(detection_batch.inference_ms or detection_batch.inference_latency_ms),
             "result_age_ms": float(detection_batch.result_age_ms),
             "is_stale": bool(detection_batch.is_stale),
-            "frame_age_ms": self._detection_batch_age_ms(detection_batch, now_ns=now_ns),
+            "control_now_ts_ns": int(now_ns),
+            "target_id": None,
+            "measurement_dt_ms": None,
+            "frame_age_ms": frame_age_ms,
+            "configured_actuation_delay_ms": configured_actuation_delay_ms,
+            "actuation_delay_source": "configured_estimate",
+            "prediction_horizon_ms": frame_age_ms + configured_actuation_delay_ms,
             "ran": True,
             "available": bool(available),
             "reason": str(reason),
@@ -692,6 +710,7 @@ class RuntimeService:
         }
         if extra:
             payload.update(extra)
+        self._log_control_timing_payload(payload, event="detection_batch")
         return payload
 
     def _detection_batch_freshness_reason(self, detection_batch: DetectionBatch) -> str:
@@ -956,9 +975,15 @@ class RuntimeService:
         if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
             return self.process_frame(context)
         with self._control_lock:
+            timing_control_now_ns = time.monotonic_ns()
             selection = self._select_control_target(context)
             target = selection.target
             if target is None:
+                timing_payload = self._record_control_timing(
+                    context,
+                    target=None,
+                    control_now_ts_ns=timing_control_now_ns,
+                )
                 self._clear_pending_commands("TARGET_UNAVAILABLE")
                 prediction_context_available = self.last_frame_context is not None
                 if not prediction_context_available:
@@ -985,15 +1010,20 @@ class RuntimeService:
                     "candidate_filter": self._candidate_filter_payload(selector_debug),
                     "track_diagnostics": track_diagnostics,
                     "will_emit": False,
-                    "frame_age_ms": self._frame_age_ms(context),
                     "observation_only": True,
                     "prediction_context_available": prediction_context_available,
+                    **timing_payload,
                 }
                 self.last_execution = None
                 return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
             self.last_frame_context = context
             center = (context.width / 2, context.height / 2)
             target_key = self._control_target_key(target, context)
+            timing_payload = self._record_control_timing(
+                context,
+                target=target,
+                control_now_ts_ns=timing_control_now_ns,
+            )
             strategy_metadata = self._strategy_frame_metadata(context)
             selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
             track_diagnostics = self._track_diagnostics_payload(
@@ -1020,7 +1050,8 @@ class RuntimeService:
                 metadata=strategy_metadata,
             )
             observe = getattr(self.control_strategy, "observe", None)
-            observer_debug = observe(target, center, strategy_input) if callable(observe) else {}
+            if callable(observe):
+                observe(target, center, strategy_input)
             self.last_target = {
                 **self._target_payload(target, context),
                 "target_detection_index": self._target_detection_index(context, target),
@@ -1033,13 +1064,12 @@ class RuntimeService:
                 "quality_score": selection.quality_score,
                 "inside_fov": selection.inside_fov,
                 "candidates": selection.candidates,
-                "capture_ts_ns": context.capture_ts_ns,
-                "frame_age_ms": self._frame_age_ms(context),
                 "candidate_filter": self._candidate_filter_payload(selector_debug),
                 "track_diagnostics": track_diagnostics,
                 "aim_point": strategy_metadata.get("aim_point"),
                 "estimated_target_state": strategy_metadata.get("estimated_target_state"),
                 "compensated_target": strategy_metadata.get("compensated_target"),
+                **timing_payload,
             }
             # NOTE: do NOT overwrite self.last_control here. The frontend's
             # aim-px/dy/raw-dy/PID/driver fields are derived from a
@@ -1052,6 +1082,50 @@ class RuntimeService:
             # last_target and the K+1 frame context.
             self.last_execution = None
         return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
+
+    def _record_control_timing(
+        self,
+        context: FrameContext,
+        *,
+        target: Track | Detection | None,
+        control_now_ts_ns: int,
+    ) -> dict[str, Any]:
+        track_id = getattr(target, "track_id", None) if target is not None else None
+        snapshot = self.control_timing.observe(
+            frame_id=context.frame_id,
+            target_id=int(track_id) if track_id is not None else None,
+            capture_ts_ns=int(context.capture_ts_ns or 0),
+            inference_end_ts_ns=context.inference_end_ts_ns,
+            control_now_ts_ns=control_now_ts_ns,
+            configured_actuation_delay_ms=float(
+                getattr(self.config.control, "latency_estimated_actuation_delay_ms", 0.0)
+            ),
+        )
+        payload = snapshot.as_telemetry()
+        self.last_control_timing = payload
+        if isinstance(self.last_inference_status, dict):
+            self.last_inference_status.update(payload)
+        self._log_control_timing_payload(payload, event="target_observation")
+        return payload
+
+    @staticmethod
+    def _log_control_timing_payload(payload: dict[str, Any], *, event: str) -> None:
+        logger.debug(
+            "control_timing event=%s frame=%s target=%s capture_ts_ns=%s "
+            "inference_end_ts_ns=%s "
+            "control_now_ts_ns=%s measurement_dt_ms=%s frame_age_ms=%.3f "
+            "configured_actuation_delay_ms=%.3f prediction_horizon_ms=%.3f",
+            event,
+            payload["frame_id"],
+            payload["target_id"],
+            payload["capture_ts_ns"],
+            payload["inference_end_ts_ns"],
+            payload["control_now_ts_ns"],
+            payload["measurement_dt_ms"],
+            float(payload["frame_age_ms"] or 0.0),
+            float(payload["configured_actuation_delay_ms"] or 0.0),
+            float(payload["prediction_horizon_ms"] or 0.0),
+        )
 
     def process_captured_frame(
         self,
@@ -1304,14 +1378,10 @@ class RuntimeService:
             extra=freshness_extra,
         )
 
-        context = FrameContext(
-            frame_id=detection_batch.frame_id,
+        context = detection_batch_to_frame_context(
+            detection_batch,
             width=roi_frame.width,
             height=roi_frame.height,
-            generation=int(detection_batch.generation or detection_batch.frame_id),
-            detections=detection_batch.detections,
-            classes=detection_batch.classes,
-            capture_ts_ns=detection_batch.capture_ts_ns,
         )
         self._record_accepted_detection_batch(detection_batch)
         control_start_ns = time.monotonic_ns()

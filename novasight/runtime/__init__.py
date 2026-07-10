@@ -1,4 +1,5 @@
 from .config_store import RuntimeConfigStore
+from .control_timing import ControlTimingModel, ControlTimingSnapshot
 from .detection_batch_mailbox import DetectionBatchMailbox
 from .detection_batch import detection_batch_to_frame_context, detection_batch_tracks
 from .failfast import FailFastHandler
@@ -35,6 +36,8 @@ __all__ = [
     "FailFastHandler",
     "FreshnessGate",
     "RuntimeConfigStore",
+    "ControlTimingModel",
+    "ControlTimingSnapshot",
     "DetectionBatchMailbox",
     "RuntimeReconfigurator",
     "ConfigApplyReport",
