@@ -6,7 +6,13 @@ import time
 from typing import Any
 
 from novasight.config import RuntimeConfig
-from novasight.control import CommandScheduler, ControlOutput, ControlOutputPolicy
+from novasight.control import (
+    MAX_PLAN_DURATION_MS,
+    CommandScheduler,
+    ControlOutput,
+    ControlOutputPolicy,
+    plan_step_capacity,
+)
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.contracts import ControlIntent
@@ -106,6 +112,10 @@ class ExecutorRegistry:
             "device_send_start_ts_ns": device_send_start_ts_ns,
             "device_send_end_ts_ns": device_send_end_ts_ns,
             "device_send_clock_domain": "monotonic",
+            "scheduler_send_delay_us": _scheduler_send_delay_us(
+                scheduler_metadata,
+                device_send_start_ts_ns,
+            ),
         }
         if result.metadata is not None:
             if scheduler_metadata is not None or scheduler_execution_metadata is not None:
@@ -187,6 +197,10 @@ class ExecutorRegistry:
                 "device_send_start_ts_ns": device_send_start_ts_ns,
                 "device_send_end_ts_ns": device_send_end_ts_ns,
                 "device_send_clock_domain": "monotonic",
+                "scheduler_send_delay_us": _scheduler_send_delay_us(
+                    scheduler_metadata,
+                    device_send_start_ts_ns,
+                ),
             }
         )
         metadata["scheduler"] = {
@@ -223,29 +237,30 @@ class ExecutorRegistry:
 
 
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
+    capacity = plan_step_capacity(config.control.scheduler_interval_ms)
     return ControlOutputPolicy(
-        max_abs_dx=config.control.max_abs_dx,
-        max_abs_dy=config.control.max_abs_dy,
+        max_abs_dx=int(config.control.scheduler_step_counts_x) * capacity,
+        max_abs_dy=int(config.control.scheduler_step_counts_y) * capacity,
         min_confidence=config.control.min_confidence,
     )
 
 
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler:
-    move_kind = str(getattr(config.control, "move_kind", "raw") or "raw")
-    move_ms = max(0.0, float(getattr(config.control, "move_ms", 0)))
-    movement_interval_ms = move_ms if move_kind in {"auto", "enc_auto", "bezier", "enc_bezier"} else 0.0
-    interval_s = max(0.0, config.control.command_interval_ms, movement_interval_ms) / 1000.0
+    interval_ms = max(1.0, min(10.0, float(config.control.scheduler_interval_ms)))
+    interval_s = interval_ms / 1000.0
+    capacity = plan_step_capacity(config.control.scheduler_interval_ms)
+    expiry_s = (MAX_PLAN_DURATION_MS + interval_ms) / 1000.0
     return CommandScheduler(
         min_interval_s=interval_s,
-        ttl_s=max(0.001, float(config.control.scheduler_command_ttl_ms) / 1000.0),
-        predicted_ttl_s=max(0.001, float(config.control.scheduler_predicted_command_ttl_ms) / 1000.0),
-        cancel_on_new_frame=bool(config.control.scheduler_cancel_on_new_frame),
-        cancel_on_direction_change=bool(config.control.scheduler_cancel_on_direction_change),
-        cancel_on_track_change=bool(config.control.scheduler_cancel_on_track_change),
-        max_step_x=int(config.control.scheduler_max_step_x),
-        max_step_y=int(config.control.scheduler_max_step_y),
-        queue_hard_limit=int(config.control.scheduler_queue_hard_limit),
-        device_error_cooldown_s=max(0.0, float(config.control.scheduler_device_error_cooldown_ms) / 1000.0),
+        ttl_s=expiry_s,
+        predicted_ttl_s=expiry_s,
+        cancel_on_new_frame=True,
+        cancel_on_direction_change=True,
+        cancel_on_track_change=True,
+        max_step_x=int(config.control.scheduler_step_counts_x),
+        max_step_y=int(config.control.scheduler_step_counts_y),
+        queue_hard_limit=capacity,
+        device_error_cooldown_s=0.050,
     )
 
 
@@ -260,3 +275,10 @@ def _scheduler_status_output(reason: str) -> ControlOutput:
         clipped=False,
         reason=reason,
     )
+
+
+def _scheduler_send_delay_us(metadata: dict[str, Any], send_start_ts_ns: int) -> float | None:
+    scheduled_ts_ns = metadata.get("scheduled_ts_ns")
+    if not isinstance(scheduled_ts_ns, (int, float)) or isinstance(scheduled_ts_ns, bool):
+        return None
+    return max(0.0, (int(send_start_ts_ns) - int(scheduled_ts_ns)) / 1000.0)

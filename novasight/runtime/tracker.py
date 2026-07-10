@@ -82,6 +82,15 @@ class TrackRecord:
             cls=self.cls,
             score=self.score,
             box=box,
+            velocity_px_s=(
+                (float(self.estimate.vx), float(self.estimate.vy))
+                if self.estimate is not None and self.estimate.valid
+                else (0.0, 0.0)
+            ),
+            missed_frames=self.misses,
+            last_seen_ns=self.last_ts_ns,
+            is_predicted=self.state == "PREDICTING",
+            is_stale=self.state in {"MISSING", "LOST", "OUT_OF_ROI"},
         )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Iterable
 
 from novasight.contracts import Detection, FrameContext, Track
@@ -21,6 +22,13 @@ from novasight.runtime.tracker import RuntimeTracker, TrackerConfig, TrackerUpda
 
 
 Target = Detection | Track
+
+
+def _context_time_ns(context: FrameContext) -> int:
+    capture_ts_ns = context.capture_ts_ns
+    if isinstance(capture_ts_ns, int) and capture_ts_ns > 0:
+        return capture_ts_ns
+    return time.monotonic_ns()
 
 
 @dataclass(frozen=True)
@@ -48,7 +56,8 @@ class _LockedTarget:
 @dataclass
 class _PendingSwitch:
     key: str
-    frames: int
+    started_ts_ns: int
+    elapsed_ms: float
     advantage: float
     continuity_score: float
     reason: str
@@ -87,11 +96,10 @@ class RuntimeTargetSelector:
         tracker_confirm_frames: int = 2,
         tracker_matching_distance_px: float = 140.0,
         tracker_ambiguity_margin: float = 0.08,
-        tracker_missing_timeout_ms: float = 120.0,
+        lost_target_timeout_ms: float = 120.0,
         tracker_delete_timeout_ms: float = 250.0,
         tracker_match_threshold: float = 0.65,
         tracker_mahalanobis_gate: float = 9.21,
-        kalman_enabled: bool = True,
         kalman_acceleration_noise: float = 1200.0,
         kalman_measurement_noise_x: float = 16.0,
         kalman_measurement_noise_y: float = 16.0,
@@ -107,7 +115,7 @@ class RuntimeTargetSelector:
         kalman_prediction_decay_tau_ms: float = 45.0,
         target_switch_min_preference_advantage: float = 0.08,
         target_switch_min_continuity_score: float = 0.70,
-        target_switch_confirm_frames: int = 3,
+        target_switch_delay_ms: float = 50.0,
     ) -> TargetSelection:
         raw_candidates: list[Target] = list(context.tracks) or list(context.detections)
         if context.width <= 0 or context.height <= 0:
@@ -126,12 +134,12 @@ class RuntimeTargetSelector:
             confirm_frames=max(1, int(tracker_confirm_frames)),
             matching_distance_px=max(1.0, float(tracker_matching_distance_px)),
             ambiguity_margin=max(0.0, float(tracker_ambiguity_margin)),
-            missing_timeout_ms=max(1.0, float(tracker_missing_timeout_ms)),
+            missing_timeout_ms=max(0.0, float(lost_target_timeout_ms)),
             delete_timeout_ms=max(1.0, float(tracker_delete_timeout_ms)),
             match_threshold=max(0.0, min(1.0, float(tracker_match_threshold))),
             mahalanobis_gate=max(1e-6, float(tracker_mahalanobis_gate)),
             kalman=KalmanConfig(
-                enabled=bool(kalman_enabled),
+                enabled=True,
                 acceleration_noise=max(1e-6, float(kalman_acceleration_noise)),
                 measurement_noise_x=max(1e-6, float(kalman_measurement_noise_x)),
                 measurement_noise_y=max(1e-6, float(kalman_measurement_noise_y)),
@@ -181,7 +189,7 @@ class RuntimeTargetSelector:
                     class_priority_quality_margin=class_priority_quality_margin,
                     target_switch_min_preference_advantage=target_switch_min_preference_advantage,
                     target_switch_min_continuity_score=target_switch_min_continuity_score,
-                    target_switch_confirm_frames=target_switch_confirm_frames,
+                    target_switch_delay_ms=target_switch_delay_ms,
                 )
             self._lost_count += 1 if self._locked is not None else 0
             self.last_debug = {
@@ -235,7 +243,7 @@ class RuntimeTargetSelector:
             class_priority_quality_margin=class_priority_quality_margin,
             target_switch_min_preference_advantage=target_switch_min_preference_advantage,
             target_switch_min_continuity_score=target_switch_min_continuity_score,
-            target_switch_confirm_frames=target_switch_confirm_frames,
+            target_switch_delay_ms=target_switch_delay_ms,
         )
 
     def _select_from_tracker_update(
@@ -258,7 +266,7 @@ class RuntimeTargetSelector:
         class_priority_quality_margin: float,
         target_switch_min_preference_advantage: float,
         target_switch_min_continuity_score: float,
-        target_switch_confirm_frames: int,
+        target_switch_delay_ms: float,
     ) -> TargetSelection:
         track_filter_result = self._filter_candidates(
             context,
@@ -374,7 +382,8 @@ class RuntimeTargetSelector:
                 tracker_update=tracker_update,
                 min_preference_advantage=target_switch_min_preference_advantage,
                 min_continuity_score=target_switch_min_continuity_score,
-                confirm_frames=target_switch_confirm_frames,
+                delay_ms=target_switch_delay_ms,
+                now_ns=_context_time_ns(context),
             )
             self.last_debug["switch"] = switch
             if not switch["committed"]:
@@ -563,7 +572,8 @@ class RuntimeTargetSelector:
         tracker_update: TrackerUpdate,
         min_preference_advantage: float,
         min_continuity_score: float,
-        confirm_frames: int,
+        delay_ms: float,
+        now_ns: int,
     ) -> dict:
         candidate_key = self._target_key(candidate)
         from_key = self._locked.key if self._locked is not None else None
@@ -578,7 +588,7 @@ class RuntimeTargetSelector:
         continuity = self._track_continuity_score(tracker_update, candidate)
         required_advantage = max(0.0, float(min_preference_advantage))
         required_continuity = max(0.0, min(1.0, float(min_continuity_score)))
-        required_frames = max(1, int(confirm_frames))
+        required_delay_ms = max(0.0, float(delay_ms))
         eligible = advantage >= required_advantage and continuity >= required_continuity
         if not eligible:
             self._pending_switch = None
@@ -592,8 +602,8 @@ class RuntimeTargetSelector:
                 "committed": False,
                 "from_key": from_key,
                 "to_key": candidate_key,
-                "frames": 0,
-                "required_frames": required_frames,
+                "elapsed_ms": 0.0,
+                "required_delay_ms": required_delay_ms,
                 "advantage": advantage,
                 "required_advantage": required_advantage,
                 "continuity_score": continuity,
@@ -601,34 +611,40 @@ class RuntimeTargetSelector:
                 "reason": reason,
             }
         previous = self._pending_switch
-        frames = previous.frames + 1 if previous is not None and previous.key == candidate_key else 1
+        started_ts_ns = (
+            previous.started_ts_ns
+            if previous is not None and previous.key == candidate_key
+            else int(now_ns)
+        )
+        elapsed_ms = max(0.0, (int(now_ns) - started_ts_ns) / 1e6)
         reason = (
             "SWITCH_PENDING: "
-            f"{frames}/{required_frames} frames, "
+            f"{elapsed_ms:.1f}/{required_delay_ms:.1f}ms, "
             f"advantage={advantage:.3f}, continuity={continuity:.3f}"
         )
         self._pending_switch = _PendingSwitch(
             key=candidate_key,
-            frames=frames,
+            started_ts_ns=started_ts_ns,
+            elapsed_ms=elapsed_ms,
             advantage=advantage,
             continuity_score=continuity,
             reason=reason,
         )
-        committed = frames >= required_frames
+        committed = elapsed_ms >= required_delay_ms
         if committed:
             self._pending_switch = None
             reason = (
                 "SWITCH_COMMITTED: "
                 f"{from_key} -> {candidate_key}; "
-                f"frames={frames}, advantage={advantage:.3f}, continuity={continuity:.3f}"
+                f"elapsed_ms={elapsed_ms:.1f}, advantage={advantage:.3f}, continuity={continuity:.3f}"
             )
         return {
             "state": "committed" if committed else "pending",
             "committed": committed,
             "from_key": from_key,
             "to_key": candidate_key,
-            "frames": frames,
-            "required_frames": required_frames,
+            "elapsed_ms": elapsed_ms,
+            "required_delay_ms": required_delay_ms,
             "advantage": advantage,
             "required_advantage": required_advantage,
             "continuity_score": continuity,
@@ -643,7 +659,7 @@ class RuntimeTargetSelector:
             "state": "pending",
             "committed": False,
             "to_key": self._pending_switch.key,
-            "frames": self._pending_switch.frames,
+            "elapsed_ms": self._pending_switch.elapsed_ms,
             "advantage": self._pending_switch.advantage,
             "continuity_score": self._pending_switch.continuity_score,
             "reason": self._pending_switch.reason,

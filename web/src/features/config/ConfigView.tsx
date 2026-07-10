@@ -77,6 +77,26 @@ export function setConfigValue(
   return next;
 }
 
+export function formatConfigInputValue(
+  value: ConfigValue,
+  field: ConfigFieldSchema,
+  focused: boolean
+): string {
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  if (
+    !focused &&
+    field.type === "float" &&
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    typeof field.precision === "number"
+  ) {
+    return value.toFixed(field.precision);
+  }
+  return String(value ?? "");
+}
+
 export function ConfigView({
   runtime,
   license,
@@ -94,6 +114,7 @@ export function ConfigView({
   const [message, setMessage] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [lastSyncedAt, setLastSyncedAt] = useState<string>("尚未同步");
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
 
   const loadSettings = useCallback(async () => {
     setError(undefined);
@@ -297,9 +318,11 @@ export function ConfigView({
                             type={field.type === "string" || field.type === "string_list" ? "text" : "number"}
                             min={field.min}
                             max={field.max}
-                            step={field.type === "float" ? "0.1" : "1"}
-                            value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
+                            step={field.step ?? (field.type === "float" ? 0.1 : 1)}
+                            value={formatConfigInputValue(value, field, focusedPath === field.path)}
                             disabled={!canWriteConfig}
+                            onFocus={() => setFocusedPath(field.path)}
+                            onBlur={() => setFocusedPath((current) => current === field.path ? null : current)}
                             onChange={(event) =>
                               setConfig(setConfigValue(config, field.path, event.target.value, field))
                             }

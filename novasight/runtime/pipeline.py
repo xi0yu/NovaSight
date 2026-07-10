@@ -94,6 +94,9 @@ class RuntimePipeline:
         for thread in self._threads:
             thread.join(timeout=1.0)
         self.runtime.running = False
+        cancel_control = getattr(self.runtime, "cancel_control", None)
+        if callable(cancel_control):
+            cancel_control("RUNTIME_STOPPED")
         self.stats.stopped_at = time.time()
 
     @property
@@ -389,15 +392,14 @@ class RuntimePipeline:
         )
 
     def _continuous_control_enabled(self) -> bool:
-        config = getattr(self.runtime, "config", None)
-        control = getattr(config, "control", None)
-        return str(getattr(control, "strategy", "")) == "experimental_angle_pid"
+        executors = getattr(self.runtime, "executors", None)
+        return getattr(executors, "scheduler", None) is not None
 
     def _control_interval_s(self) -> float:
         config = getattr(self.runtime, "config", None)
         control = getattr(config, "control", None)
-        hz = max(1.0, float(getattr(control, "experimental_angle_control_hz", 60.0)))
-        return max(0.001, min(0.05, 1.0 / hz))
+        interval_ms = max(1.0, min(10.0, float(getattr(control, "scheduler_interval_ms", 4.0))))
+        return interval_ms / 1000.0
 
     def _record_skipped(self, now_ns: int, skipped: int) -> None:
         for _ in range(skipped):

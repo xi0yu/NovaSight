@@ -178,7 +178,7 @@ class ControlFrameReplay:
             previous_ts = capture_ts_ns
 
             injections = _apply_injections(record, injection)
-            measurement_age = _optional_float(record.get("measurement_age_ms"))
+            measurement_age = _optional_float(record.get("frame_age_ms"))
             stale = False
             if injection.stale_after_ms is not None and measurement_age is not None:
                 stale = measurement_age > float(injection.stale_after_ms)
@@ -478,73 +478,59 @@ def _acceptance_record(
         {
             "frame_id": frame_id,
             "capture_ts_ns": capture_ts_ns,
-            "measurement_age_ms": 8.0,
+            "control_now_ts_ns": capture_ts_ns + 8_000_000,
+            "measurement_dt_ms": 10.0,
+            "frame_age_ms": 8.0,
+            "prediction_horizon_ms": 12.0,
             "inference_latency_ms": 3.0,
-            "candidate_count": 1,
-            "selected_class_id": 0,
-            "selected_confidence": 0.92,
-            "selected_quality_score": 0.85,
-            "track_id": track_id,
-            "track_state": "CONFIRMED",
-            "continuity_score": 0.95,
-            "identity_confidence": 0.96,
-            "missing_ms": 0.0,
-            "x": control_width * 0.5 + error_x_rad * 1000.0,
-            "y": control_height * 0.5 + error_y_rad * 1000.0,
-            "vx": vx,
-            "vy": vy,
-            "cov_trace": 1.0,
-            "position_sigma_px": 1.0,
-            "nis": 0.5,
-            "predicted": False,
-            "prediction_confidence": prediction_confidence,
-            "raw_aim_x": control_width * 0.5 + error_x_rad * 1000.0,
-            "raw_aim_y": control_height * 0.5 + error_y_rad * 1000.0,
-            "smoothed_aim_x": control_width * 0.5 + error_x_rad * 900.0,
-            "smoothed_aim_y": control_height * 0.5 + error_y_rad * 900.0,
-            "anchor_jump_norm": 0.0,
-            "comp_x": control_width * 0.5 + error_x_rad * 950.0,
-            "comp_y": control_height * 0.5 + error_y_rad * 950.0,
-            "delta_x": vx * 0.01,
-            "delta_y": vy * 0.01,
-            "velocity_confidence": prediction_confidence,
-            "comp_applied": abs(vx) > 0 or abs(vy) > 0,
             "control_width_px": control_width,
             "control_height_px": control_height,
-            "fov_x_rad": 1.8325957145940461,
-            "fov_y_rad": 1.8325957145940461,
-            "focal_x_px": 300.0,
-            "focal_y_px": 300.0,
-            "error_x_px": error_x_rad * 1000.0,
-            "error_y_px": error_y_rad * 1000.0,
-            "error_x_rad": error_x_rad,
-            "error_y_rad": error_y_rad,
-            "dt_s": 0.01,
-            "zone": "near" if abs(error_x_rad) < 0.015 else "middle",
-            "kp_x_user": 0.35,
-            "kd_x_user": 0.08,
-            "kp_x_effective": 0.35,
-            "kd_x_effective": 0.08,
-            "derivative_x_raw": 0.0,
-            "derivative_x_ema": 0.0,
-            "u_x_rad": error_x_rad * 0.35,
-            "u_y_rad": error_y_rad * 0.35,
-            "counts_per_360_x": 9980.0,
-            "counts_per_360_y": 9980.0,
-            "raw_counts_x": error_x_rad * 9980.0 / 6.283185307179586,
-            "raw_counts_y": error_y_rad * 9980.0 / 6.283185307179586,
-            "residual_x_before": 0.0,
-            "residual_y_before": 0.0,
-            "residual_x_after": 0.0,
-            "residual_y_after": 0.0,
-            "final_output_x_counts": count_x,
-            "final_output_y_counts": count_y,
+            "candidate_count": 1,
+            "track_id": track_id,
+            "track_state": "CONFIRMED",
+            "target_confidence": 0.92,
+            "kalman_x_px": control_width * 0.5 + error_x_rad * 1000.0,
+            "kalman_y_px": control_height * 0.5 + error_y_rad * 1000.0,
+            "kalman_vx_px_s": vx,
+            "kalman_vy_px_s": vy,
+            "observed_aim_x_px": control_width * 0.5 + error_x_rad * 1000.0,
+            "observed_aim_y_px": control_height * 0.5 + error_y_rad * 1000.0,
+            "predicted_aim_x_px": control_width * 0.5 + error_x_rad * 1000.0 + vx * 0.012,
+            "predicted_aim_y_px": control_height * 0.5 + error_y_rad * 1000.0 + vy * 0.012,
+            "base_prediction_confidence": prediction_confidence,
+            "velocity_confidence": prediction_confidence,
+            "prediction_confidence": prediction_confidence,
+            "prediction_applied": abs(vx) > 0 or abs(vy) > 0,
+            "observed_error_x_px": error_x_rad * 1000.0,
+            "observed_error_y_px": error_y_rad * 1000.0,
+            "observed_error_x_rad": error_x_rad,
+            "observed_error_y_rad": error_y_rad,
+            "predicted_error_x_rad": error_x_rad + vx * 0.000012,
+            "predicted_error_y_rad": error_y_rad + vy * 0.000012,
+            "d_raw_x_rad_s": 0.0,
+            "d_raw_y_rad_s": 0.0,
+            "d_ema_x_rad_s": 0.0,
+            "d_ema_y_rad_s": 0.0,
+            "requested_output_x_rad": error_x_rad * 0.35,
+            "requested_output_y_rad": error_y_rad * 0.35,
+            "limited_output_x_rad": error_x_rad * 0.35,
+            "limited_output_y_rad": error_y_rad * 0.35,
+            "counts_x_float": error_x_rad * 9980.0 / 6.283185307179586,
+            "counts_y_float": error_y_rad * 9980.0 / 6.283185307179586,
+            "requested_counts_x": count_x,
+            "requested_counts_y": count_y,
+            "residual_x_counts": 0.0,
+            "residual_y_counts": 0.0,
+            "budget_clamped_x": False,
+            "budget_clamped_y": False,
+            "planned_x_counts": count_x,
+            "planned_y_counts": count_y,
             "driver_x_counts": count_x if command_status == "sent" else "",
             "driver_y_counts": count_y if command_status == "sent" else "",
+            "device_send_start_ts_ns": capture_ts_ns + 10_000_000,
+            "device_send_end_ts_ns": capture_ts_ns + 10_100_000,
             "command_id": frame_id,
             "expires_ts_ns": capture_ts_ns + 30_000_000,
-            "sent_x": count_x if command_status == "sent" else "",
-            "sent_y": count_y if command_status == "sent" else "",
             "command_status": command_status,
             "cancel_reason": cancel_reason,
             "global_state": "sent" if command_status == "sent" else "control_blocked",
@@ -559,8 +545,8 @@ def _apply_injections(record: dict[str, Any], injection: ReplayInjection) -> lis
     frame_id = _optional_int(record.get("frame_id"))
     injections: list[str] = []
     if injection.fixed_latency_ms:
-        current = _optional_float(record.get("measurement_age_ms")) or 0.0
-        record["measurement_age_ms"] = current + float(injection.fixed_latency_ms)
+        current = _optional_float(record.get("frame_age_ms")) or 0.0
+        record["frame_age_ms"] = current + float(injection.fixed_latency_ms)
         injections.append("fixed_latency")
     if frame_id is not None and frame_id in injection.miss_frame_ids:
         _apply_single_miss(record)
@@ -581,11 +567,9 @@ def _apply_injections(record: dict[str, Any], injection: ReplayInjection) -> lis
 
 def _apply_single_miss(record: dict[str, Any]) -> None:
     record["candidate_count"] = 0
-    record["selected_class_id"] = ""
-    record["selected_confidence"] = ""
-    record["selected_quality_score"] = ""
+    record["target_confidence"] = ""
     record["track_state"] = "PREDICTING"
-    record["predicted"] = True
+    record["prediction_applied"] = True
     record["global_state"] = record.get("global_state") or "predicting"
     record["reason_code"] = "SINGLE_FRAME_MISS_INJECTED"
 
@@ -593,23 +577,19 @@ def _apply_single_miss(record: dict[str, Any]) -> None:
 def _apply_long_lost(record: dict[str, Any]) -> None:
     for field in (
         "candidate_count",
-        "selected_class_id",
-        "selected_confidence",
-        "selected_quality_score",
-        "raw_aim_x",
-        "raw_aim_y",
-        "smoothed_aim_x",
-        "smoothed_aim_y",
-        "comp_x",
-        "comp_y",
-        "sent_x",
-        "sent_y",
+        "target_confidence",
+        "observed_aim_x_px",
+        "observed_aim_y_px",
+        "predicted_aim_x_px",
+        "predicted_aim_y_px",
+        "planned_x_counts",
+        "planned_y_counts",
         "driver_x_counts",
         "driver_y_counts",
     ):
         record[field] = "" if field != "candidate_count" else 0
     record["track_state"] = "LOST"
-    record["predicted"] = False
+    record["prediction_applied"] = False
     record["command_status"] = "canceled"
     record["cancel_reason"] = "TARGET_UNAVAILABLE"
     record["global_state"] = "control_blocked"
@@ -620,8 +600,6 @@ def _apply_device_failure(record: dict[str, Any]) -> None:
     record["command_status"] = "device_error"
     record["cancel_reason"] = "DEVICE_ERROR"
     record["global_state"] = "cooldown"
-    record["sent_x"] = ""
-    record["sent_y"] = ""
     record["driver_x_counts"] = ""
     record["driver_y_counts"] = ""
     record["reason_code"] = "DEVICE_FAILURE_INJECTED"
@@ -633,15 +611,15 @@ def _build_metrics(
     timestamp_error_count: int,
 ) -> ReplayMetrics:
     records = [event.record for event in events]
-    error_x = [abs(value) for value in _numbers(records, "error_x_rad")]
-    error_y = [abs(value) for value in _numbers(records, "error_y_rad")]
-    measurement_age = _numbers(records, "measurement_age_ms")
+    error_x = [abs(value) for value in _numbers(records, "observed_error_x_rad")]
+    error_y = [abs(value) for value in _numbers(records, "observed_error_y_rad")]
+    measurement_age = _numbers(records, "frame_age_ms")
     inference_latency = _numbers(records, "inference_latency_ms")
     final_counts = [
         max(abs(x), abs(y))
         for x, y in zip(
-            _numbers(records, "final_output_x_counts"),
-            _numbers(records, "final_output_y_counts"),
+            _numbers(records, "planned_x_counts"),
+            _numbers(records, "planned_y_counts"),
             strict=False,
         )
     ]
@@ -652,7 +630,7 @@ def _build_metrics(
         frame_count=len(events),
         duration_ms=duration_ms,
         sent_count=sum(1 for record in records if _text(record.get("command_status")) == "sent"),
-        predicted_count=sum(1 for record in records if _truthy(record.get("predicted"))),
+        predicted_count=sum(1 for record in records if _truthy(record.get("prediction_applied"))),
         missing_count=sum(1 for record in records if _is_missing_record(record)),
         switch_count=sum(1 for record in records if _text(record.get("track_state")) == "SWITCH_COMMITTED"),
         device_failure_count=sum(1 for record in records if _text(record.get("command_status")) == "device_error"),
@@ -662,8 +640,8 @@ def _build_metrics(
         p95_abs_error_y_rad=_p95(error_y),
         p95_measurement_age_ms=_p95(measurement_age),
         p95_inference_latency_ms=_p95(inference_latency),
-        overshoot_count=_overshoot_count(_numbers(records, "error_x_rad"))
-        + _overshoot_count(_numbers(records, "error_y_rad")),
+        overshoot_count=_overshoot_count(_numbers(records, "observed_error_x_rad"))
+        + _overshoot_count(_numbers(records, "observed_error_y_rad")),
         max_final_counts=max(final_counts) if final_counts else 0.0,
     )
 

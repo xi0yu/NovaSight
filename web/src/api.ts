@@ -223,6 +223,7 @@ export type ConfigFieldSchema = {
   recommended_min?: number;
   recommended_max?: number;
   step?: number;
+  precision?: number;
   unit?: string;
   description?: string;
   restart_required: boolean;

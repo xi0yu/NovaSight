@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict
 import logging
 import math
@@ -11,7 +12,12 @@ from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.coordinates import CoordinateTransform
 from novasight.control import (
-    ExperimentalAnglePidStrategy,
+    MouseControllerConfig,
+    MouseController,
+    MouseObservation,
+    RawAimPointProjector,
+    plan_step_capacity,
+    target_motion_estimate_from_debug,
 )
 from novasight.executors import ExecutorRegistry
 from novasight.hardware import BoxInputState
@@ -23,13 +29,6 @@ from novasight.roi import center_roi_frame, center_roi_region
 
 from .config_store import RuntimeConfigStore
 from .control_timing import ControlTimingModel
-from .aim import (
-    AimPointConfig,
-    AimPointGenerator,
-    LatencyCompensationConfig,
-    LatencyCompensator,
-    estimated_state_from_debug,
-)
 from .state import RuntimeFrameResult, RuntimeState
 from .candidates import aim_point
 from .detection_batch import detection_batch_to_frame_context
@@ -80,12 +79,12 @@ class RuntimeService:
         self._last_box_input_log_s = 0.0
         self._control_lock = threading.Lock()
         self._last_control_tick_ns = 0
+        self._executed_control_samples: deque[tuple[int, int, int]] = deque()
         self.control_timing = ControlTimingModel()
         self.last_control_timing: dict[str, Any] = {}
-        self.control_strategy = self._create_control_strategy(config)
+        self.mouse_controller = self._create_mouse_controller(config)
         self.target_selector = RuntimeTargetSelector()
-        self.aim_points = AimPointGenerator()
-        self.latency_compensator = LatencyCompensator()
+        self.raw_aim_projector = RawAimPointProjector()
         self._runtime_calibration_signature = self._config_calibration_signature(config)
         self._external_sensitivity_fingerprint = ""
         self._external_sensitivity_source = ""
@@ -202,17 +201,18 @@ class RuntimeService:
     def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
         new_calibration_signature = self._config_calibration_signature(config)
         calibration_changed = new_calibration_signature != self._runtime_calibration_signature
-        self.config = config
-        self.control_timing.reset()
-        self.last_control_timing = {}
-        self.control_strategy = self._create_control_strategy(config)
-        if calibration_changed:
-            self._clear_pending_commands("CALIBRATION_PROFILE_CHANGED")
-        self.executors.update_runtime_config(config)
-        if calibration_changed:
-            self._runtime_calibration_signature = new_calibration_signature
-            self._reset_detection_batch_cursor()
-            self._reset_runtime_control_state("CALIBRATION_PROFILE_CHANGED")
+        reset_reason = "CALIBRATION_PROFILE_CHANGED" if calibration_changed else "CONTROL_CONFIG_UPDATED"
+        with self._control_lock:
+            self.config = config
+            self.control_timing.reset()
+            self.last_control_timing = {}
+            self.mouse_controller = self._create_mouse_controller(config)
+            self._clear_pending_commands(reset_reason)
+            self.executors.update_runtime_config(config)
+            if calibration_changed:
+                self._runtime_calibration_signature = new_calibration_signature
+                self._reset_detection_batch_cursor()
+            self._reset_runtime_control_state(reset_reason)
         configure = getattr(self.inference, "configure", None)
         if callable(configure):
             configure(
@@ -268,8 +268,6 @@ class RuntimeService:
             float(calibration.fov_x_deg),
             float(calibration.counts_per_360_x),
             float(calibration.counts_per_360_y),
-            float(calibration.axis_sign_x),
-            float(calibration.axis_sign_y),
             str(calibration.game_sensitivity_fingerprint).strip(),
             str(calibration.projection_profile).strip(),
             int(capture.width),
@@ -283,8 +281,6 @@ class RuntimeService:
     def _reset_runtime_control_state(self, reason: str) -> None:
         self._last_runtime_reset_reason = reason
         self.target_selector.reset()
-        self.aim_points.reset()
-        self.latency_compensator = LatencyCompensator()
         self.control_timing.reset()
         self.last_control_timing = {}
         self._reset_control_motion_state()
@@ -293,6 +289,7 @@ class RuntimeService:
         self.last_target = None
         self.last_execution = None
         self._last_control_tick_ns = 0
+        self._executed_control_samples.clear()
         self.last_control = {
             "will_emit": False,
             "control_allowed": False,
@@ -309,12 +306,12 @@ class RuntimeService:
         calibration = self.config.calibration
         selected_executor = getattr(self.executors, "selected", None) or self.config.control.output_mode
         logger.info(
-            "production_control_chain event=%s chain=%s strategy=%s executor=%s trigger=%s "
+            "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
-            "counts_per_360_x=%.3f counts_per_360_y=%.3f axis_sign_x=%.0f axis_sign_y=%.0f",
+            "counts_per_360_x=%.3f counts_per_360_y=%.3f invert_y=%s",
             event,
-            "CompensatedTarget(Control px)->AngularErrorMapper->AngularPDController->CommandScheduler->kmNet",
-            self.config.control.strategy,
+            "RawBBox+KalmanPrediction->ObservedD+PredictedP->RadLimits->Counts->CommandScheduler->kmNet",
+            "mouse_control",
             selected_executor,
             self.config.control.trigger_mode,
             calibration.profile_id,
@@ -322,8 +319,7 @@ class RuntimeService:
             float(calibration.fov_x_deg),
             float(calibration.counts_per_360_x),
             float(calibration.counts_per_360_y),
-            float(calibration.axis_sign_x),
-            float(calibration.axis_sign_y),
+            bool(calibration.invert_y),
         )
 
     def _calibration_fingerprint_status(self) -> dict[str, Any]:
@@ -365,6 +361,8 @@ class RuntimeService:
         }
 
     def record_fatal_error(self, thread_name: str, exc: BaseException, path) -> None:
+        with self._control_lock:
+            self._reset_runtime_control_state("RUNTIME_FATAL_ERROR")
         self.fatal_error = {
             "type": "FATAL_ERROR",
             "thread": thread_name,
@@ -373,51 +371,71 @@ class RuntimeService:
         }
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
+        execution_payload: dict[str, Any] | None = None
         with self._control_lock:
             self.last_frame_context = context
             intent = self._control_intent_from_context(context)
             self._last_control_tick_ns = time.monotonic_ns()
-        control_intents = [intent] if intent is not None else []
-        execution_results = [self.executors.execute(intent) for intent in control_intents]
+            control_intents = [intent] if intent is not None else []
+            execution_results = [self.executors.execute(intent) for intent in control_intents]
+            for result in execution_results:
+                self._record_executed_control(result)
+            if execution_results:
+                self.last_execution = self._execution_result_payload(execution_results[-1])
+                self._attach_execution_to_last_control(self.last_execution)
+                execution_payload = dict(self.last_execution)
+            elif isinstance(self.last_control, dict):
+                if isinstance(self.last_execution, dict):
+                    self._attach_execution_to_last_control(self.last_execution)
+                else:
+                    self.last_control.setdefault("execution", None)
+                    self.last_control.setdefault("driver_counts", None)
+                    self.last_control.setdefault("driver_dx", None)
+                    self.last_control.setdefault("driver_dy", None)
+            self._record_control_frame()
         if execution_results:
-            self.last_execution = self._execution_result_payload(execution_results[-1])
-            self._attach_execution_to_last_control(self.last_execution)
+            assert execution_payload is not None
             logger.info(
                 "control execution result frame=%s executor=%s sent=%s dx=%.1f dy=%.1f message=%s meta=%s",
                 context.frame_id,
-                self.last_execution.get("executor_id"),
-                self.last_execution.get("sent"),
-                float(self.last_execution.get("output_dx") or 0.0),
-                float(self.last_execution.get("output_dy") or 0.0),
-                self.last_execution.get("message"),
-                self.last_execution.get("metadata"),
+                execution_payload.get("executor_id"),
+                execution_payload.get("sent"),
+                float(execution_payload.get("output_dx") or 0.0),
+                float(execution_payload.get("output_dy") or 0.0),
+                execution_payload.get("message"),
+                execution_payload.get("metadata"),
             )
-        elif isinstance(self.last_control, dict):
-            if isinstance(self.last_execution, dict):
-                self._attach_execution_to_last_control(self.last_execution)
-            else:
-                self.last_control.setdefault("execution", None)
-                self.last_control.setdefault("driver_counts", None)
-                self.last_control.setdefault("driver_dx", None)
-                self.last_control.setdefault("driver_dy", None)
-        self._record_control_frame()
         return RuntimeFrameResult(
             control_intents=control_intents,
             execution_results=execution_results,
         )
 
     def process_control_tick(self) -> RuntimeFrameResult:
-        if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
+        tick_pending = getattr(self.executors, "tick_pending", None)
+        if not callable(tick_pending):
             return self._empty_runtime_frame_result()
-        context = self.last_frame_context
-        if context is None:
-            return self._empty_runtime_frame_result()
-        control_hz = max(1.0, float(getattr(self.config.control, "experimental_angle_control_hz", 60.0)))
-        now_ns = time.monotonic_ns()
-        min_interval_ns = int(1_000_000_000 / control_hz)
-        if self._last_control_tick_ns and now_ns - self._last_control_tick_ns < min_interval_ns:
-            return self._empty_runtime_frame_result()
-        return self.process_frame(context)
+        with self._control_lock:
+            if not self.running:
+                self._reset_control_motion_state()
+                self._clear_pending_commands("RUNTIME_STOPPED")
+                return self._empty_runtime_frame_result()
+            if str(self.config.control.trigger_mode) == "hardware" and not self._box_input_state().active:
+                self._reset_control_motion_state()
+                self._clear_pending_commands("TRIGGER_INACTIVE")
+                return self._empty_runtime_frame_result()
+            result = tick_pending()
+            self._last_control_tick_ns = time.monotonic_ns()
+            self._record_executed_control(result)
+            if str(result.message) == "no pending control command ready":
+                return self._empty_runtime_frame_result()
+            self.last_execution = self._execution_result_payload(result)
+            self._attach_execution_to_last_control(self.last_execution)
+            self._record_control_frame()
+        return RuntimeFrameResult(
+            control_intents=[],
+            execution_results=[result],
+            observation_updated=False,
+        )
 
     @staticmethod
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
@@ -591,7 +609,7 @@ class RuntimeService:
         )
         self._record_accepted_detection_batch(detection_batch)
         control_start_ns = time.monotonic_ns()
-        result = self.update_control_observation(context)
+        result = self.process_frame(context)
         done_ns = time.monotonic_ns()
         self._set_detection_batch_pipeline_timings(
             detection_batch,
@@ -648,11 +666,9 @@ class RuntimeService:
         extra: dict[str, object] | None = None,
     ) -> dict[str, object]:
         frame_age_ms = self._detection_batch_age_ms(detection_batch, now_ns=now_ns)
-        configured_extra_prediction_delay_ms = max(
+        configured_actuation_delay_s = max(
             0.0,
-            float(
-                getattr(self.config.control, "configured_extra_prediction_delay_ms", 0.0)
-            ),
+            float(getattr(self.config.control, "configured_actuation_delay_s", 0.0)),
         )
         payload: dict[str, object] = {
             "frame_id": detection_batch.frame_id,
@@ -669,9 +685,9 @@ class RuntimeService:
             "target_id": None,
             "measurement_dt_ms": None,
             "frame_age_ms": frame_age_ms,
-            "configured_extra_prediction_delay_ms": configured_extra_prediction_delay_ms,
-            "extra_prediction_delay_source": "configured_estimate",
-            "prediction_horizon_ms": frame_age_ms + configured_extra_prediction_delay_ms,
+            "configured_actuation_delay_s": configured_actuation_delay_s,
+            "actuation_delay_source": "configured_estimate",
+            "prediction_horizon_ms": frame_age_ms + configured_actuation_delay_s * 1000.0,
             "ran": True,
             "available": bool(available),
             "reason": str(reason),
@@ -954,7 +970,6 @@ class RuntimeService:
     ) -> str:
         gate = FreshnessGate.strictest(
             getattr(getattr(self.config, "runtime", None), "freshness_threshold_ms", 0.0),
-            getattr(getattr(self.config, "control", None), "latency_reject_if_age_exceeds_ms", 0.0),
         )
         return gate.stale_reason(
             capture_ts_ns=getattr(detection_batch, "capture_ts_ns", 0),
@@ -973,118 +988,6 @@ class RuntimeService:
             now_ns=now_ns,
         )
 
-    def update_control_observation(self, context: FrameContext) -> RuntimeFrameResult:
-        if str(getattr(self.config.control, "strategy", "pid")) != "experimental_angle_pid":
-            return self.process_frame(context)
-        with self._control_lock:
-            timing_control_now_ns = time.monotonic_ns()
-            selection = self._select_control_target(context)
-            target = selection.target
-            if target is None:
-                timing_payload = self._record_control_timing(
-                    context,
-                    target=None,
-                    control_now_ts_ns=timing_control_now_ns,
-                )
-                self._clear_pending_commands("TARGET_UNAVAILABLE")
-                prediction_context_available = self.last_frame_context is not None
-                if not prediction_context_available:
-                    self.last_frame_context = context
-                    self.last_target = None
-                selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
-                track_diagnostics = self._track_diagnostics_payload(
-                    selector_debug,
-                    selection=selection,
-                )
-                control_now_ns = time.monotonic_ns()
-                self.last_control = {
-                    "frame_id": context.frame_id,
-                    "capture_ts_ns": context.capture_ts_ns,
-                    "control_now_ts_ns": control_now_ns,
-                    "trajectory_generation": int(context.generation or context.frame_id),
-                    "global_state": self._global_state_from_selection_state(selection.state),
-                    "selector_state": selection.state,
-                    "selection_reason": selection.reason,
-                    "candidates": selection.candidates,
-                    "inside_fov": selection.inside_fov,
-                    "lost_count": selection.lost_count,
-                    "selector_debug": selector_debug,
-                    "candidate_filter": self._candidate_filter_payload(selector_debug),
-                    "track_diagnostics": track_diagnostics,
-                    "will_emit": False,
-                    "observation_only": True,
-                    "prediction_context_available": prediction_context_available,
-                    **timing_payload,
-                }
-                self.last_execution = None
-                return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
-            self.last_frame_context = context
-            center = (context.width / 2, context.height / 2)
-            target_key = self._control_target_key(target, context)
-            timing_payload = self._record_control_timing(
-                context,
-                target=target,
-                control_now_ts_ns=timing_control_now_ns,
-            )
-            strategy_metadata = self._strategy_frame_metadata(context)
-            selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
-            track_diagnostics = self._track_diagnostics_payload(
-                selector_debug,
-                target=target,
-                selection=selection,
-            )
-            control_now_ns = time.monotonic_ns()
-            strategy_metadata.update(
-                self._aim_latency_metadata(
-                    context=context,
-                    target=target,
-                    strategy_metadata=strategy_metadata,
-                    selector_debug=selector_debug,
-                    compute_ts_ns=control_now_ns,
-                )
-            )
-            strategy_input = self._with_strategy_target(
-                BoxInputState(left=True, raw={"mode": "observation_update"}),
-                target_key,
-                frame_age_ms=self._frame_age_ms(context),
-                frame_id=context.frame_id,
-                capture_ts_ns=context.capture_ts_ns,
-                metadata=strategy_metadata,
-            )
-            observe = getattr(self.control_strategy, "observe", None)
-            if callable(observe):
-                observe(target, center, strategy_input)
-            self.last_target = {
-                **self._target_payload(target, context),
-                "target_detection_index": self._target_detection_index(context, target),
-                "target_key": target_key,
-                "selector_state": selection.state,
-                "selection_reason": selection.reason,
-                "locked": selection.locked,
-                "priority_rank": selection.priority_rank,
-                "distance_px": selection.distance_px,
-                "quality_score": selection.quality_score,
-                "inside_fov": selection.inside_fov,
-                "candidates": selection.candidates,
-                "candidate_filter": self._candidate_filter_payload(selector_debug),
-                "track_diagnostics": track_diagnostics,
-                "aim_point": strategy_metadata.get("aim_point"),
-                "estimated_target_state": strategy_metadata.get("estimated_target_state"),
-                "compensated_target": strategy_metadata.get("compensated_target"),
-                **timing_payload,
-            }
-            # NOTE: do NOT overwrite self.last_control here. The frontend's
-            # aim-px/dy/raw-dy/PID/driver fields are derived from a
-            # fully-populated last_control produced by the control-loop tick
-            # in _control_intent_from_context. Clobbering it with this
-            # observation-only snapshot sends the UI to NaN/None on every
-            # frame whose observation outruns the next 16ms control tick,
-            # which is "almost always" because inference is sub-millisecond.
-            # The control tick thread owns last_control; we only own
-            # last_target and the K+1 frame context.
-            self.last_execution = None
-        return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
-
     def _record_control_timing(
         self,
         context: FrameContext,
@@ -1099,9 +1002,7 @@ class RuntimeService:
             capture_ts_ns=int(context.capture_ts_ns or 0),
             inference_end_ts_ns=context.inference_end_ts_ns,
             control_now_ts_ns=control_now_ts_ns,
-            configured_extra_prediction_delay_ms=float(
-                getattr(self.config.control, "configured_extra_prediction_delay_ms", 0.0)
-            ),
+            configured_actuation_delay_s=float(self.config.control.configured_actuation_delay_s),
         )
         payload = snapshot.as_telemetry()
         self.last_control_timing = payload
@@ -1116,7 +1017,7 @@ class RuntimeService:
             "control_timing event=%s frame=%s target=%s capture_ts_ns=%s "
             "inference_end_ts_ns=%s "
             "control_now_ts_ns=%s measurement_dt_ms=%s frame_age_ms=%.3f "
-            "configured_extra_prediction_delay_ms=%.3f prediction_horizon_ms=%.3f",
+            "configured_actuation_delay_s=%.6f prediction_horizon_ms=%.3f",
             event,
             payload["frame_id"],
             payload["target_id"],
@@ -1125,7 +1026,7 @@ class RuntimeService:
             payload["control_now_ts_ns"],
             payload["measurement_dt_ms"],
             float(payload["frame_age_ms"] or 0.0),
-            float(payload["configured_extra_prediction_delay_ms"] or 0.0),
+            float(payload["configured_actuation_delay_s"] or 0.0),
             float(payload["prediction_horizon_ms"] or 0.0),
         )
 
@@ -1143,7 +1044,7 @@ class RuntimeService:
                 available=False,
                 reason="推理运行时未初始化",
             )
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
             self._record_pipeline_timings(total_start_ns, control_start_ns=total_start_ns)
             return result
 
@@ -1155,7 +1056,7 @@ class RuntimeService:
                 available=False,
                 reason="推理运行时没有 infer 方法",
             )
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
             self._record_pipeline_timings(total_start_ns, control_start_ns=total_start_ns)
             return result
 
@@ -1180,7 +1081,7 @@ class RuntimeService:
                 reason=str(exc),
             )
             control_start_ns = time.monotonic_ns()
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=locals().get("roi_start_ns"),
@@ -1200,7 +1101,7 @@ class RuntimeService:
                 reason=self.last_inference_reason,
             )
             control_start_ns = time.monotonic_ns()
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -1222,7 +1123,7 @@ class RuntimeService:
                 debug=inference_result.debug,
             )
             control_start_ns = time.monotonic_ns()
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -1284,7 +1185,7 @@ class RuntimeService:
                 debug=inference_result.debug,
             )
             control_start_ns = time.monotonic_ns()
-            result = self.update_control_observation(self._empty_frame_context(frame))
+            result = self.process_frame(self._empty_frame_context(frame))
             self._record_pipeline_timings(
                 total_start_ns,
                 roi_start_ns=roi_start_ns,
@@ -1387,7 +1288,7 @@ class RuntimeService:
         )
         self._record_accepted_detection_batch(detection_batch)
         control_start_ns = time.monotonic_ns()
-        result = self.update_control_observation(context)
+        result = self.process_frame(context)
         self._record_pipeline_timings(
             total_start_ns,
             roi_start_ns=roi_start_ns,
@@ -1583,6 +1484,7 @@ class RuntimeService:
         target = selection.target
         if target is None:
             self._clear_pending_commands("TARGET_UNAVAILABLE")
+            self._reset_control_motion_state()
             self._log_no_control_target(context, selection)
             self.last_target = None
             selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
@@ -1611,7 +1513,6 @@ class RuntimeService:
             self.last_execution = None
             return None
 
-        center = (context.width / 2, context.height / 2)
         trigger_mode = str(getattr(self.config.control, "trigger_mode", "hardware") or "hardware")
         if trigger_mode not in {"hardware", "always"}:
             trigger_mode = "hardware"
@@ -1692,7 +1593,7 @@ class RuntimeService:
                 },
             }
             return None
-        strategy_metadata = self._strategy_frame_metadata(context)
+        control_metadata = self._control_frame_metadata(context)
         selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
         track_diagnostics = self._track_diagnostics_payload(
             selector_debug,
@@ -1700,51 +1601,33 @@ class RuntimeService:
             selection=selection,
         )
         control_now_ns = time.monotonic_ns()
-        strategy_metadata.update(
-            self._aim_latency_metadata(
+        timing_payload = self._record_control_timing(
+            context,
+            target=target,
+            control_now_ts_ns=control_now_ns,
+        )
+        measurement_dt_ms = timing_payload.get("measurement_dt_ms")
+        control_metadata.update(
+            self._mouse_observation_metadata(
                 context=context,
                 target=target,
-                strategy_metadata=strategy_metadata,
+                control_metadata=control_metadata,
                 selector_debug=selector_debug,
-                compute_ts_ns=control_now_ns,
+                control_now_ts_ns=control_now_ns,
+                measurement_dt_s=(
+                    float(measurement_dt_ms) / 1000.0
+                    if isinstance(measurement_dt_ms, (int, float))
+                    else None
+                ),
             )
         )
-        strategy_input = (
-            self._with_strategy_target(
-                box_input,
-                target_key,
-                frame_age_ms=frame_age_ms,
-                frame_id=context.frame_id,
-                capture_ts_ns=context.capture_ts_ns,
-                metadata=strategy_metadata,
-            )
-            if box_input.active
-            else BoxInputState(
-                left=True,
-                raw={
-                    "mode": "control_preview_calculation",
-                    "target_key": target_key,
-                    "frame_age_ms": frame_age_ms,
-                    "frame_id": context.frame_id,
-                    "capture_ts_ns": context.capture_ts_ns,
-                    **strategy_metadata,
-                },
-            )
-        )
-        aim_ratio = self._active_aim_ratio()
-        aim_x, aim_y = aim_point(target, aim_ratio)
-        command = self.control_strategy.calculate(target, center, strategy_input)
+        observation = control_metadata["mouse_observation"]
+        mouse_observation_debug = dict(control_metadata.get("mouse_observation_debug") or {})
+        aim_x = float(mouse_observation_debug.get("predicted_x_px") or 0.0)
+        aim_y = float(mouse_observation_debug.get("predicted_y_px") or 0.0)
+        command = self.mouse_controller.calculate(observation)
         pipeline_debug = dict(command.debug)
-        tracker_debug = pipeline_debug.get("tracker")
-        predicted_source = (
-            isinstance(tracker_debug, dict)
-            and tracker_debug.get("new_observation") is False
-        )
-        strategy_aim_x = pipeline_debug.get("aim_x")
-        strategy_aim_y = pipeline_debug.get("aim_y")
-        if isinstance(strategy_aim_x, (int, float)) and isinstance(strategy_aim_y, (int, float)):
-            aim_x = float(strategy_aim_x)
-            aim_y = float(strategy_aim_y)
+        predicted_source = bool(getattr(target, "is_predicted", False))
         trajectory_generation = int(context.generation or context.frame_id)
         intent = ControlIntent(
             dx=command.dx,
@@ -1778,21 +1661,23 @@ class RuntimeService:
             requires_trigger=requires_trigger,
             trigger_mode=trigger_mode,
         )
-        aim_error_x = float(aim_x - center[0])
-        aim_error_y = float(center[1] - aim_y)
-        raw_error_x = float(pipeline_debug.get("raw_px_x", aim_error_x))
-        raw_error_y = float(pipeline_debug.get("raw_px_y", aim_error_y))
-        raw_error_y_image = -raw_error_y
+        control_center_x = float(control_metadata.get("control_width") or 0.0) * 0.5
+        control_center_y = float(control_metadata.get("control_height") or 0.0) * 0.5
+        aim_error_x = float(aim_x - control_center_x)
+        aim_error_y = float(aim_y - control_center_y)
+        raw_error_x = float(pipeline_debug.get("observed_error_x_px", aim_error_x))
+        raw_error_y = float(pipeline_debug.get("observed_error_y_px", aim_error_y))
         target_detection_index = self._target_detection_index(context, target)
         self.last_target = {
             **self._target_payload(target, context),
             "target_detection_index": target_detection_index,
-            "aim_ratio": aim_ratio,
-            "aim_y_ratio": aim_ratio,
+            "aim_y_ratio": float(self.config.control.aim.y_ratio),
             "aim_x": aim_x,
             "aim_y": aim_y,
-            "aim_offset_x": float(aim_x - center[0]),
-            "aim_offset_y": float(aim_y - center[1]),
+            "observed_aim_x": mouse_observation_debug.get("observed_x_px"),
+            "observed_aim_y": mouse_observation_debug.get("observed_y_px"),
+            "aim_offset_x": float(aim_x - control_center_x),
+            "aim_offset_y": float(aim_y - control_center_y),
             "selector_state": selection.state,
             "selection_reason": selection.reason,
             "locked": selection.locked,
@@ -1808,9 +1693,7 @@ class RuntimeService:
             "capture_ts_ns": context.capture_ts_ns,
             "candidate_filter": self._candidate_filter_payload(selector_debug),
             "track_diagnostics": track_diagnostics,
-            "aim_point": pipeline_debug.get("aim_point") or strategy_metadata.get("aim_point"),
-            "estimated_target_state": pipeline_debug.get("estimated_target_state") or strategy_metadata.get("estimated_target_state"),
-            "compensated_target": pipeline_debug.get("compensated_target") or strategy_metadata.get("compensated_target"),
+            "mouse_observation": mouse_observation_debug,
         }
         self.last_control = {
             "frame_id": context.frame_id,
@@ -1823,9 +1706,7 @@ class RuntimeService:
             "aim_error_y": aim_error_y,
             "raw_error_x": raw_error_x,
             "raw_error_y": raw_error_y,
-            "raw_error_y_image": raw_error_y_image,
-            "aim_ratio": aim_ratio,
-            "aim_y_ratio": aim_ratio,
+            "aim_y_ratio": float(self.config.control.aim.y_ratio),
             "aim_x": aim_x,
             "aim_y": aim_y,
             "dx": command.dx,
@@ -1833,10 +1714,7 @@ class RuntimeService:
             "confidence": command.confidence,
             "reason": command.reason,
             "pipeline": pipeline_debug,
-            "aim_point": pipeline_debug.get("aim_point") or strategy_metadata.get("aim_point"),
-            "estimated_target_state": pipeline_debug.get("estimated_target_state") or strategy_metadata.get("estimated_target_state"),
-            "compensated_target": pipeline_debug.get("compensated_target") or strategy_metadata.get("compensated_target"),
-            "latency_compensation": pipeline_debug.get("latency_compensation") or strategy_metadata.get("latency_compensation"),
+            "mouse_observation": mouse_observation_debug,
             "selector_state": selection.state,
             "selection_reason": selection.reason,
             "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
@@ -1858,8 +1736,8 @@ class RuntimeService:
             "calibration_status": calibration_status,
             "bbox_age_ms": 0.0,
             "is_stale": False,
-                "target_key": target_key,
-            }
+            "target_key": target_key,
+        }
         self._log_control_decision(
             context=context,
             target=target,
@@ -1873,6 +1751,7 @@ class RuntimeService:
         if not can_emit:
             clear_reason = "CONTROL_NOT_ALLOWED" if not control_allowed else "TRIGGER_INACTIVE"
             self._clear_pending_commands(clear_reason)
+            self._reset_control_motion_state()
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
                 "sent": False,
@@ -1896,6 +1775,77 @@ class RuntimeService:
         clear = getattr(scheduler, "clear", None)
         if callable(clear):
             clear(reason)
+
+    def cancel_control(self, reason: str = "RUNTIME_STOPPED") -> None:
+        with self._control_lock:
+            self._reset_runtime_control_state(reason)
+
+    def _record_executed_control(self, result: Any) -> None:
+        if not bool(getattr(result, "sent", False)):
+            return
+        metadata = getattr(result, "metadata", None) or {}
+        intent = getattr(result, "intent", None)
+        dx = metadata.get("driver_dx", getattr(intent, "dx", 0))
+        dy = metadata.get("driver_dy", getattr(intent, "dy", 0))
+        send_ts_ns = metadata.get("device_send_end_ts_ns", time.monotonic_ns())
+        if not all(isinstance(value, (int, float)) for value in (dx, dy, send_ts_ns)):
+            return
+        self._executed_control_samples.append((int(send_ts_ns), int(dx), int(dy)))
+        self._prune_executed_control_samples(int(send_ts_ns))
+
+    def _executed_control_activity(
+        self,
+        *,
+        control_now_ts_ns: int,
+        capture_ts_ns: int,
+        measurement_dt_s: float | None,
+    ) -> dict[str, Any]:
+        self._prune_executed_control_samples(control_now_ts_ns)
+
+        def totals(start_ns: int, end_ns: int) -> tuple[int, int, int]:
+            selected = [
+                (dx, dy)
+                for send_ts_ns, dx, dy in self._executed_control_samples
+                if start_ns < send_ts_ns <= end_ns
+            ]
+            return (
+                sum(dx for dx, _ in selected),
+                sum(dy for _, dy in selected),
+                sum(abs(dx) + abs(dy) for dx, dy in selected),
+            )
+
+        recent: dict[int, tuple[int, int, int]] = {
+            window_ms: totals(
+                control_now_ts_ns - window_ms * 1_000_000,
+                control_now_ts_ns,
+            )
+            for window_ms in (20, 40, 60)
+        }
+        if measurement_dt_s is not None and math.isfinite(measurement_dt_s) and measurement_dt_s > 0.0:
+            previous_capture_ts_ns = capture_ts_ns - int(measurement_dt_s * 1e9)
+            between_observations = totals(previous_capture_ts_ns, capture_ts_ns)
+        else:
+            between_observations = (0, 0, 0)
+        recent_abs_40 = recent[40][2]
+        velocity_confidence = max(0.0, min(1.0, 1.0 - recent_abs_40 / 80.0))
+        return {
+            "executed_counts_since_previous_observation_x": between_observations[0],
+            "executed_counts_since_previous_observation_y": between_observations[1],
+            "executed_counts_last_20ms_x": recent[20][0],
+            "executed_counts_last_20ms_y": recent[20][1],
+            "executed_counts_last_40ms_x": recent[40][0],
+            "executed_counts_last_40ms_y": recent[40][1],
+            "executed_counts_last_60ms_x": recent[60][0],
+            "executed_counts_last_60ms_y": recent[60][1],
+            "recent_executed_counts_abs_40ms": recent_abs_40,
+            "velocity_confidence": velocity_confidence,
+            "velocity_confidence_source": "recent_successful_device_counts",
+        }
+
+    def _prune_executed_control_samples(self, now_ns: int) -> None:
+        cutoff_ns = int(now_ns) - 250_000_000
+        while self._executed_control_samples and self._executed_control_samples[0][0] < cutoff_ns:
+            self._executed_control_samples.popleft()
 
     @staticmethod
     def _global_state_from_selection_state(state: Any) -> str:
@@ -2031,16 +1981,21 @@ class RuntimeService:
         return True
 
     def _select_control_target(self, context: FrameContext) -> TargetSelection:
+        minimum_dimension = max(1.0, float(min(context.width, context.height)))
+        fov_ratio = max(
+            0.0,
+            min(1.0, float(self.config.control.target_fov_radius_px) / minimum_dimension),
+        )
         return self.target_selector.select(
             context,
-            min_confidence=float(getattr(self.config.control, "min_confidence", 0.0)),
-            fov_ratio=float(getattr(self.config.control, "fov_ratio", 0.28)),
+            min_confidence=float(self.config.control.min_confidence),
+            fov_ratio=fov_ratio,
             aim_ratio=self._active_aim_ratio(),
             class_filter=str(getattr(self.config.inference, "detection_class_filter", "all")),
             class_priority=self._class_priority(),
             sticky_bias=float(getattr(self.config.control, "target_sticky_bias", 0.25)),
             lock_enabled=bool(getattr(self.config.control, "target_lock_enabled", True)),
-            lost_grace_frames=int(getattr(self.config.control, "target_lost_grace_frames", 5)),
+            lost_grace_frames=0,
             ratio_max_aspect=float(getattr(self.config.control, "candidate_ratio_max_aspect", 6.0)),
             quality_confidence_weight=float(getattr(self.config.control, "candidate_quality_confidence_weight", 0.7)),
             quality_area_weight=float(getattr(self.config.control, "candidate_quality_area_weight", 0.3)),
@@ -2048,14 +2003,13 @@ class RuntimeService:
             tracker_confirm_frames=int(getattr(self.config.control, "tracker_confirm_frames", 2)),
             target_switch_min_preference_advantage=float(getattr(self.config.control, "target_switch_min_preference_advantage", 0.08)),
             target_switch_min_continuity_score=float(getattr(self.config.control, "target_switch_min_continuity_score", 0.70)),
-            target_switch_confirm_frames=int(getattr(self.config.control, "target_switch_confirm_frames", 3)),
+            target_switch_delay_ms=float(self.config.control.target_switch_delay_ms),
             tracker_matching_distance_px=float(getattr(self.config.control, "tracker_matching_distance_px", 140.0)),
             tracker_ambiguity_margin=float(getattr(self.config.control, "tracker_ambiguity_margin", 0.08)),
-            tracker_missing_timeout_ms=float(getattr(self.config.control, "tracker_missing_timeout_ms", 120.0)),
+            lost_target_timeout_ms=float(self.config.control.lost_target_timeout_ms),
             tracker_delete_timeout_ms=float(getattr(self.config.control, "tracker_delete_timeout_ms", 250.0)),
             tracker_match_threshold=float(getattr(self.config.control, "tracker_match_threshold", 0.65)),
             tracker_mahalanobis_gate=float(getattr(self.config.control, "tracker_mahalanobis_gate", 9.21)),
-            kalman_enabled=bool(getattr(self.config.control, "kalman_enabled", True)),
             kalman_acceleration_noise=float(getattr(self.config.control, "kalman_acceleration_noise", 1200.0)),
             kalman_measurement_noise_x=float(getattr(self.config.control, "kalman_measurement_noise_x", 16.0)),
             kalman_measurement_noise_y=float(getattr(self.config.control, "kalman_measurement_noise_y", 16.0)),
@@ -2072,8 +2026,7 @@ class RuntimeService:
         )
 
     def _active_aim_ratio(self) -> float:
-        value = getattr(self.config.control, "aim_ratio", 40.0)
-        return max(0.0, min(100.0, float(value)))
+        return float(self.config.control.aim.y_ratio) * 100.0
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
         selected = str(getattr(self.config.inference, "detection_class_filter", "all"))
@@ -2125,86 +2078,32 @@ class RuntimeService:
         self._log_box_input_state(state, "kmnet_unavailable")
         return state
 
-    def _create_control_strategy(self, config: RuntimeConfig):
-        if config.control.strategy == "experimental_angle_pid":
-            return ExperimentalAnglePidStrategy(
-                kp_x=config.control.experimental_angle_kp_x,
-                kp_y=config.control.experimental_angle_kp_y,
-                ki=config.control.experimental_angle_ki,
-                kd=config.control.experimental_angle_kd,
-                integral_limit=config.control.experimental_angle_integral_limit,
-                speed=config.control.experimental_angle_speed,
-                smooth_factor=config.control.experimental_angle_smooth_factor,
-                deadzone_px=config.control.experimental_angle_deadzone_px,
-                derivative_filter=config.control.experimental_angle_derivative_filter,
-                near_error_deg=config.control.experimental_angle_near_error_deg,
-                far_error_deg=config.control.experimental_angle_far_error_deg,
-                near_kp_scale=config.control.experimental_angle_near_kp_scale,
-                middle_kp_scale=config.control.experimental_angle_middle_kp_scale,
-                far_kp_scale=config.control.experimental_angle_far_kp_scale,
-                near_kd_scale=config.control.experimental_angle_near_kd_scale,
-                middle_kd_scale=config.control.experimental_angle_middle_kd_scale,
-                far_kd_scale=config.control.experimental_angle_far_kd_scale,
-                prediction_gain_min=config.control.experimental_angle_prediction_gain_min,
-                prediction_d_gain_min=config.control.experimental_angle_prediction_d_gain_min,
-                max_control_angle_deg=config.control.experimental_angle_max_control_angle_deg,
-                calibration_profile_id=config.calibration.profile_id,
-                calibration_profile_version=config.calibration.profile_version,
-                fov_semantics=config.calibration.fov_semantics,
-                fov_x_deg=config.calibration.fov_x_deg,
-                counts_per_360_x=config.calibration.counts_per_360_x,
-                counts_per_360_y=config.calibration.counts_per_360_y,
-                axis_sign_x=config.calibration.axis_sign_x,
-                axis_sign_y=config.calibration.axis_sign_y,
-                game_sensitivity_fingerprint=config.calibration.game_sensitivity_fingerprint,
-                projection_profile=config.calibration.projection_profile,
-                max_step_counts=config.control.experimental_angle_max_step_counts,
-                max_counts_delta_x=config.control.experimental_angle_max_counts_delta_x,
-                max_counts_delta_y=config.control.experimental_angle_max_counts_delta_y,
-                control_hz=config.control.experimental_angle_control_hz,
-                kalman_enabled=config.control.experimental_angle_kalman_enabled,
-                kalman_process_noise=config.control.experimental_angle_kalman_process_noise,
-                kalman_measurement_noise=config.control.experimental_angle_kalman_measurement_noise,
-                hungarian_enabled=config.control.experimental_angle_hungarian_enabled,
-                matching_distance_px=config.control.experimental_angle_matching_distance_px,
-                max_extrapolate_frames=config.control.experimental_angle_max_extrapolate_frames,
-                target_filter_enabled=config.control.experimental_angle_target_filter_enabled,
-                target_filter_min_score=config.control.experimental_angle_target_filter_min_score,
-                target_filter_fov_ratio=config.control.experimental_angle_target_filter_fov_ratio,
-                target_filter_same_class=config.control.experimental_angle_target_filter_same_class,
-                prediction_lead_ms=config.control.experimental_angle_prediction_lead_ms,
-                extrapolate_confidence_decay=config.control.experimental_angle_extrapolate_confidence_decay,
-                magnet_enabled=config.control.experimental_angle_magnet_enabled,
-                magnet_radius_px=config.control.experimental_angle_magnet_radius_px,
-                magnet_strength=config.control.experimental_angle_magnet_strength,
-                magnet_curve=config.control.experimental_angle_magnet_curve,
-                magnet_deadzone_px=config.control.experimental_angle_magnet_deadzone_px,
-                magnet_max_counts=config.control.experimental_angle_magnet_max_counts,
-                capture_width=config.capture.width,
-                capture_height=config.capture.height,
-                move_kind=config.control.move_kind,
-                move_ms=config.control.move_ms,
-                trace_ms=config.control.trace_ms,
-                bezier_curvature=config.control.bezier_curvature,
+    def _create_mouse_controller(self, config: RuntimeConfig) -> MouseController:
+        max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
+        return MouseController(
+            MouseControllerConfig(
+                fov_x_deg=float(config.calibration.fov_x_deg),
+                counts_per_360_x=float(config.calibration.counts_per_360_x),
+                counts_per_360_y=float(config.calibration.counts_per_360_y),
+                invert_y=bool(config.calibration.invert_y),
+                kp_x=float(config.control.kp_x),
+                kp_y=float(config.control.kp_y),
+                kd_x=float(config.control.kd_x),
+                kd_y=float(config.control.kd_y),
+                d_ema_alpha=float(config.control.d_ema_alpha),
+                deadzone_px_x=float(config.control.deadzone_px_x),
+                deadzone_px_y=float(config.control.deadzone_px_y),
+                max_output_rad_x=float(config.control.max_output_rad_x),
+                max_output_rad_y=float(config.control.max_output_rad_y),
+                max_output_rate_rad_s_x=float(config.control.max_output_rate_rad_s_x),
+                max_output_rate_rad_s_y=float(config.control.max_output_rate_rad_s_y),
+                max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
+                max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
             )
-        raise ValueError("control.strategy must be experimental_angle_pid")
+        )
 
     def _reset_control_motion_state(self) -> None:
-        reset_strategy = getattr(self.control_strategy, "reset", None)
-        if callable(reset_strategy):
-            reset_strategy()
-            return
-        reset = getattr(self.control_strategy, "_reset_motion_state", None)
-        if callable(reset):
-            reset()
-            return
-        for name, value in (
-            ("_last_center", None),
-            ("_ema_x", 0.0),
-            ("_ema_y", 0.0),
-        ):
-            if hasattr(self.control_strategy, name):
-                setattr(self.control_strategy, name, value)
+        self.mouse_controller.reset()
 
     @staticmethod
     def _target_detection_index(context: FrameContext, target: Track | Detection) -> int | None:
@@ -2231,143 +2130,142 @@ class RuntimeService:
             return f"det:{detection_index}:class:{int(target.cls)}"
         return f"class:{int(target.cls)}"
 
-    @staticmethod
-    def _with_strategy_target(
-        state: BoxInputState,
-        target_key: str,
-        *,
-        frame_age_ms: float,
-        frame_id: int,
-        capture_ts_ns: int | None,
-        metadata: dict[str, Any] | None = None,
-    ) -> BoxInputState:
-        return BoxInputState(
-            left=state.left,
-            right=state.right,
-            side=state.side,
-            raw={
-                **(state.raw or {}),
-                "target_key": target_key,
-                "frame_age_ms": frame_age_ms,
-                "frame_id": frame_id,
-                "capture_ts_ns": capture_ts_ns,
-                **(metadata or {}),
-            },
-        )
-
-    def _aim_latency_metadata(
+    def _mouse_observation_metadata(
         self,
         *,
         context: FrameContext,
         target: Track | Detection,
-        strategy_metadata: dict[str, Any],
+        control_metadata: dict[str, Any],
         selector_debug: dict[str, Any],
-        compute_ts_ns: int,
+        control_now_ts_ns: int,
+        measurement_dt_s: float | None,
     ) -> dict[str, Any]:
         if not isinstance(target, Track):
-            return {}
-        control = self.config.control
-        aim_cfg = AimPointConfig(
-            horizontal_percent=float(getattr(control, "aim_horizontal_percent", 50.0)),
-            vertical_percent_from_top=self._active_aim_ratio(),
-            offset_x_px=float(getattr(control, "aim_offset_x_px", 0.0)),
-            offset_y_px=float(getattr(control, "aim_offset_y_px", 0.0)),
-            ema_enabled=bool(getattr(control, "aim_ema_enabled", True)),
-            ema_alpha=float(getattr(control, "aim_ema_alpha", 0.65)),
-            max_anchor_jump_ratio=float(getattr(control, "aim_max_anchor_jump_ratio", 0.15)),
+            observation = MouseObservation(
+                frame_id=context.frame_id,
+                target_id=-1,
+                capture_ts_ns=int(context.capture_ts_ns or 0),
+                control_now_ts_ns=control_now_ts_ns,
+                measurement_dt_s=measurement_dt_s,
+                control_width_px=0.0,
+                control_height_px=0.0,
+                observed_x_px=0.0,
+                observed_y_px=0.0,
+                predicted_x_px=0.0,
+                predicted_y_px=0.0,
+                prediction_horizon_s=0.0,
+                target_confidence=0.0,
+                prediction_confidence=0.0,
+                observed_valid=False,
+                valid=False,
+                invalid_reason="STABLE_TRACK_REQUIRED",
+            )
+            return {"mouse_observation": observation, "mouse_observation_debug": asdict(observation)}
+
+        transform = self._coordinate_transform_for_context(context)
+        control_width = float(control_metadata.get("control_width") or 0.0)
+        control_height = float(control_metadata.get("control_height") or 0.0)
+        source_geometry_trusted = control_metadata.get("capture_geometry_trusted") is True
+        y_ratio = float(self.config.control.aim.y_ratio)
+        raw_aim = self.raw_aim_projector.project(
+            track=target,
+            frame_id=context.frame_id,
+            capture_ts_ns=context.capture_ts_ns,
+            y_ratio=y_ratio,
+            coordinate_transform=transform,
+            control_width_px=control_width,
+            control_height_px=control_height,
+            source_geometry_trusted=source_geometry_trusted,
         )
-        latency_cfg = LatencyCompensationConfig(
-            enabled=bool(getattr(control, "latency_compensation_enabled", True)),
-            scale=float(getattr(control, "latency_compensation_scale", 0.70)),
-            max_compensation_ms=float(getattr(control, "latency_max_compensation_ms", 35.0)),
-            reject_if_age_exceeds_ms=float(getattr(control, "latency_reject_if_age_exceeds_ms", 55.0)),
-            max_compensation_px=float(getattr(control, "latency_max_compensation_px", 80.0)),
-            min_velocity_px_s=float(getattr(control, "latency_min_velocity_px_s", 30.0)),
-            max_velocity_px_s=float(getattr(control, "latency_max_velocity_px_s", 2500.0)),
-            min_velocity_measurements=int(getattr(control, "latency_min_velocity_measurements", 3)),
-            min_velocity_confidence=float(getattr(control, "latency_min_velocity_confidence", 0.65)),
-            extra_prediction_delay_ms=float(
-                getattr(control, "configured_extra_prediction_delay_ms", 2.0)
-            ),
-        )
-        estimate = estimated_state_from_debug(
+        estimate = target_motion_estimate_from_debug(
             track=target,
             capture_ts_ns=context.capture_ts_ns,
             tracker_debug=selector_debug,
         )
-        aim = self.aim_points.update(track=target, estimate=estimate, config=aim_cfg)
-        compensated = self.latency_compensator.compensate(
-            aim=aim,
-            estimate=estimate,
-            source_frame_id=context.frame_id,
-            compute_ts_ns=compute_ts_ns,
-            roi_offset_x=float(strategy_metadata.get("roi_offset_x") or 0.0),
-            roi_offset_y=float(strategy_metadata.get("roi_offset_y") or 0.0),
-            roi_width=float(strategy_metadata.get("roi_width") or context.width),
-            roi_height=float(strategy_metadata.get("roi_height") or context.height),
-            control_width=float(strategy_metadata.get("control_width") or 0.0),
-            control_height=float(strategy_metadata.get("control_height") or 0.0),
-            config=latency_cfg,
-            coordinate_transform=self._coordinate_transform_for_context(context),
+        capture_ts_ns = int(context.capture_ts_ns or 0)
+        horizon_s = max(0.0, (control_now_ts_ns - capture_ts_ns) / 1e9)
+        horizon_s += max(0.0, float(self.config.control.configured_actuation_delay_s))
+        base_prediction_confidence = max(
+            0.0,
+            min(1.0, float(estimate.prediction_confidence) * float(estimate.identity_confidence)),
         )
-        aim_payload = {
-            "track_id": aim.track_id,
-            "state_ts_ns": aim.state_ts_ns,
-            "raw_x": aim.raw_x,
-            "raw_y": aim.raw_y,
-            "smoothed_x": aim.smoothed_x,
-            "smoothed_y": aim.smoothed_y,
-            "center_x": aim.center_x,
-            "center_y": aim.center_y,
-            "anchor_jump_norm": aim.anchor_jump_norm,
-            "aim_confidence": aim.aim_confidence,
-            "ema_reset_reason": aim.ema_reset_reason,
-            "horizontal_percent": aim_cfg.horizontal_percent,
-            "vertical_percent_from_top": aim_cfg.vertical_percent_from_top,
-            "offset_x_px": aim_cfg.offset_x_px,
-            "offset_y_px": aim_cfg.offset_y_px,
-            "ema_enabled": aim_cfg.ema_enabled,
-            "ema_alpha": aim_cfg.ema_alpha,
-            "max_anchor_jump_ratio": aim_cfg.max_anchor_jump_ratio,
-        }
-        estimated_payload = {
-            "track_id": estimate.track_id,
-            "state_ts_ns": estimate.state_ts_ns,
-            "capture_ts_ns": estimate.capture_ts_ns,
-            "x": estimate.x,
-            "y": estimate.y,
-            "vx": estimate.vx,
-            "vy": estimate.vy,
-            "valid": estimate.valid,
-            "predicted": estimate.predicted,
-            "prediction_confidence": estimate.prediction_confidence,
-            "position_sigma_px": estimate.position_sigma_px,
-            "cov_trace": estimate.cov_trace,
-            "nis": estimate.nis,
-            "identity_confidence": estimate.identity_confidence,
-            "velocity_measurements": estimate.velocity_measurements,
-        }
+        executed_control = self._executed_control_activity(
+            control_now_ts_ns=control_now_ts_ns,
+            capture_ts_ns=capture_ts_ns,
+            measurement_dt_s=measurement_dt_s,
+        )
+        velocity_confidence = float(executed_control["velocity_confidence"])
+        prediction_confidence = base_prediction_confidence * velocity_confidence
+        prediction_scale = max(0.0, min(1.5, float(self.config.control.prediction_strength)))
+        predicted_center_x = float(target.cx)
+        predicted_center_y = float(target.cy)
+        if bool(self.config.control.prediction_x_enabled):
+            predicted_center_x += float(estimate.vx) * horizon_s * prediction_scale * prediction_confidence
+        if bool(self.config.control.prediction_y_enabled):
+            predicted_center_y += float(estimate.vy) * horizon_s * prediction_scale * prediction_confidence
+        predicted_roi_x = predicted_center_x
+        predicted_roi_y = predicted_center_y + (y_ratio - 0.5) * float(target.h)
+
+        predicted_control_x = 0.0
+        predicted_control_y = 0.0
+        prediction_valid = raw_aim.valid and estimate.valid and transform is not None
+        invalid_reason = raw_aim.invalid_reason
+        if prediction_valid and transform is not None:
+            capture_point = transform.roi_to_capture_point(predicted_roi_x, predicted_roi_y)
+            control_point = transform.capture_to_control_point(capture_point.x, capture_point.y)
+            predicted_control_x = float(control_point.x)
+            predicted_control_y = float(control_point.y)
+            if not (
+                math.isfinite(predicted_control_x)
+                and math.isfinite(predicted_control_y)
+                and 0.0 <= predicted_control_x <= control_width
+                and 0.0 <= predicted_control_y <= control_height
+            ):
+                prediction_valid = False
+                invalid_reason = "PREDICTED_AIM_OUT_OF_CONTROL"
+        elif not invalid_reason:
+            invalid_reason = "KALMAN_ESTIMATE_INVALID"
+
+        observation = MouseObservation(
+            frame_id=context.frame_id,
+            target_id=int(target.track_id),
+            capture_ts_ns=int(context.capture_ts_ns or 0),
+            control_now_ts_ns=control_now_ts_ns,
+            measurement_dt_s=measurement_dt_s,
+            control_width_px=control_width,
+            control_height_px=control_height,
+            observed_x_px=raw_aim.aim_control_x_px,
+            observed_y_px=raw_aim.aim_control_y_px,
+            predicted_x_px=predicted_control_x,
+            predicted_y_px=predicted_control_y,
+            prediction_horizon_s=horizon_s,
+            target_confidence=max(0.0, min(1.0, float(target.score))),
+            prediction_confidence=prediction_confidence,
+            observed_valid=raw_aim.valid and not bool(target.is_predicted),
+            valid=prediction_valid,
+            invalid_reason=invalid_reason,
+        )
         return {
-            "aim_point": aim_payload,
-            "estimated_target_state": estimated_payload,
-            "compensated_target": compensated.debug_payload(),
-            "latency_compensation": {
-                "enabled": latency_cfg.enabled,
-                "scale": latency_cfg.scale,
-                "max_compensation_ms": latency_cfg.max_compensation_ms,
-                "reject_if_age_exceeds_ms": latency_cfg.reject_if_age_exceeds_ms,
-                "max_compensation_px": latency_cfg.max_compensation_px,
-                "min_velocity_px_s": latency_cfg.min_velocity_px_s,
-                "max_velocity_px_s": latency_cfg.max_velocity_px_s,
-                "min_velocity_measurements": latency_cfg.min_velocity_measurements,
-                "min_velocity_confidence": latency_cfg.min_velocity_confidence,
-                "configured_extra_prediction_delay_ms": (
-                    latency_cfg.extra_prediction_delay_ms
-                ),
+            "mouse_observation": observation,
+            "mouse_observation_debug": {
+                **asdict(observation),
+                "prediction_source": "kalman",
+                "prediction_strength": prediction_scale,
+                "base_prediction_confidence": base_prediction_confidence,
+                **executed_control,
+                "kalman_x_px": estimate.x,
+                "kalman_y_px": estimate.y,
+                "kalman_vx_px_s": estimate.vx,
+                "kalman_vy_px_s": estimate.vy,
+                "predicted_center_x_roi_px": predicted_center_x,
+                "predicted_center_y_roi_px": predicted_center_y,
+                "predicted_aim_x_roi_px": predicted_roi_x,
+                "predicted_aim_y_roi_px": predicted_roi_y,
+                "raw_aim": raw_aim.debug_payload(),
             },
         }
 
-    def _strategy_frame_metadata(self, context: FrameContext) -> dict[str, Any]:
+    def _control_frame_metadata(self, context: FrameContext) -> dict[str, Any]:
         inference_debug = self.last_inference_status.get("debug", {})
         preprocess = inference_debug.get("preprocess", {}) if isinstance(inference_debug, dict) else {}
         source_width = self._status_int("source_width", 0)
@@ -2928,6 +2826,7 @@ class RuntimeService:
                 "device_send_start_ts_ns",
                 "device_send_end_ts_ns",
                 "device_send_clock_domain",
+                "scheduler_send_delay_us",
             ):
                 if key in metadata:
                     payload[key] = metadata[key]

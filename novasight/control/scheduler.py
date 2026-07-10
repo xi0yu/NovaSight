@@ -9,6 +9,14 @@ from typing import Any
 from novasight.control.output import ControlOutput
 
 
+MAX_PLAN_DURATION_MS = 24.0
+
+
+def plan_step_capacity(interval_ms: float) -> int:
+    interval = max(1.0, float(interval_ms))
+    return max(1, math.floor(MAX_PLAN_DURATION_MS / interval) + 1)
+
+
 @dataclass(frozen=True, slots=True)
 class ScheduleDecision:
     output: ControlOutput | None
@@ -61,12 +69,16 @@ class CommandScheduler:
         self._pending_created_s = 0.0
         self._pending_command_id = 0
         self._pending_expires_s = 0.0
+        self._pending_next_step_index = 0
+        self._pending_step_count = 0
         self._cancelled_pending = 0
         self._expired_pending = 0
         self._throttled_since_emit = 0
         self._command_seq = 0
         self._cooldown_until_s = 0.0
         self._last_cancel_reason = ""
+        self._last_cancelled_dx = 0
+        self._last_cancelled_dy = 0
         self._last_error = ""
 
     def submit(self, output: ControlOutput, *, now_s: float | None = None) -> ScheduleDecision:
@@ -107,6 +119,8 @@ class CommandScheduler:
             self._pending_created_s = 0.0
             self._pending_command_id = 0
             self._pending_expires_s = 0.0
+            self._pending_next_step_index = 0
+            self._pending_step_count = 0
             self._last_emit_s = now
             throttled = self._throttled_since_emit
             self._throttled_since_emit = 0
@@ -118,21 +132,29 @@ class CommandScheduler:
             self._pending_command_id = command_id if pending_steps else 0
             self._pending_created_s = now if pending_steps else 0.0
             self._pending_expires_s = expires_s if pending_steps else 0.0
+            self._pending_next_step_index = 1 if pending_steps else 0
+            self._pending_step_count = 1 + len(pending_steps) if pending_steps else 0
             return ScheduleDecision(
                 output=step,
                 metadata={
                     "stage": "scheduler",
                     "action": "emit_step",
                     "command_id": command_id,
+                    "plan_id": command_id,
                     "source_frame_id": output.source_frame_id,
                     "source_track_id": output.source_track_id,
                     "trajectory_generation": output.trajectory_generation,
                     "created_ts_ns": int(now * 1_000_000_000),
+                    "scheduled_ts_ns": int(now * 1_000_000_000),
                     "expires_ts_ns": int(expires_s * 1_000_000_000),
                     "command_status": "ready",
                     "cancel_reason": cancel_reason or ("LATEST_SUPERSEDES_PENDING" if cancelled else ""),
+                    "cancelled_remaining_dx": self._last_cancelled_dx if cancel_reason else 0,
+                    "cancelled_remaining_dy": self._last_cancelled_dy if cancel_reason else 0,
                     "expired_reason": expired_reason,
                     "sent_allowed": True,
+                    "step_index": 0,
+                    "step_count": 1 + len(pending_steps),
                     "elapsed_ms": elapsed * 1000.0,
                     "min_interval_ms": self.min_interval_s * 1000.0,
                     "ttl_ms": self._ttl_for(output) * 1000.0,
@@ -144,6 +166,8 @@ class CommandScheduler:
             )
 
         replaced = bool(self._pending_steps)
+        replaced_remaining_dx = int(sum(step.dx for step in self._pending_steps))
+        replaced_remaining_dy = int(sum(step.dy for step in self._pending_steps))
         command_id = self._next_command_id()
         first_step, tail_steps, split_metadata = self._split_output(output)
         steps = [first_step, *tail_steps]
@@ -152,6 +176,8 @@ class CommandScheduler:
         self._pending_created_s = now
         self._pending_command_id = command_id
         self._pending_expires_s = now + self._ttl_for(output)
+        self._pending_next_step_index = 0
+        self._pending_step_count = len(steps)
         self._throttled_since_emit += 1
         if replaced:
             self._cancelled_pending += 1
@@ -161,13 +187,22 @@ class CommandScheduler:
                 "stage": "scheduler",
                 "action": "hold_latest",
                 "command_id": command_id,
+                "plan_id": command_id,
                 "source_frame_id": output.source_frame_id,
                 "source_track_id": output.source_track_id,
                 "trajectory_generation": output.trajectory_generation,
                 "created_ts_ns": int(now * 1_000_000_000),
                 "expires_ts_ns": int(self._pending_expires_s * 1_000_000_000),
                 "command_status": "pending",
+                "step_index": None,
+                "step_count": len(steps),
                 "cancel_reason": cancel_reason or ("REPLACED_PENDING" if replaced else ""),
+                "cancelled_remaining_dx": (
+                    self._last_cancelled_dx if cancel_reason else replaced_remaining_dx
+                ),
+                "cancelled_remaining_dy": (
+                    self._last_cancelled_dy if cancel_reason else replaced_remaining_dy
+                ),
                 "expired_reason": expired_reason,
                 "sent_allowed": False,
                 "reason": "minimum interval not elapsed",
@@ -184,6 +219,8 @@ class CommandScheduler:
         )
 
     def clear(self, reason: str = "") -> None:
+        self._last_cancelled_dx = int(sum(step.dx for step in self._pending_steps))
+        self._last_cancelled_dy = int(sum(step.dy for step in self._pending_steps))
         if reason:
             self._last_cancel_reason = reason
         if self._pending_steps:
@@ -193,6 +230,8 @@ class CommandScheduler:
         self._pending_created_s = 0.0
         self._pending_command_id = 0
         self._pending_expires_s = 0.0
+        self._pending_next_step_index = 0
+        self._pending_step_count = 0
         self._throttled_since_emit = 0
 
     def tick(self, *, now_s: float | None = None) -> ScheduleDecision:
@@ -260,6 +299,9 @@ class CommandScheduler:
             )
 
         step = self._pending_steps.popleft()
+        step_index = self._pending_next_step_index
+        step_count = self._pending_step_count
+        self._pending_next_step_index += 1
         pending_dx = float(sum(pending.dx for pending in self._pending_steps))
         pending_dy = float(sum(pending.dy for pending in self._pending_steps))
         pending_steps = len(self._pending_steps)
@@ -271,17 +313,23 @@ class CommandScheduler:
             self._pending_created_s = 0.0
             self._pending_command_id = 0
             self._pending_expires_s = 0.0
+            self._pending_next_step_index = 0
+            self._pending_step_count = 0
         return ScheduleDecision(
             output=step,
             metadata={
                 "stage": "scheduler",
                 "action": "emit_pending_step",
                 "command_id": command_id,
+                "plan_id": command_id,
                 "source_frame_id": parent.source_frame_id if parent is not None else step.source_frame_id,
                 "source_track_id": parent.source_track_id if parent is not None else step.source_track_id,
                 "trajectory_generation": parent.trajectory_generation if parent is not None else step.trajectory_generation,
                 "command_status": "ready",
+                "scheduled_ts_ns": int(now * 1_000_000_000),
                 "sent_allowed": True,
+                "step_index": step_index,
+                "step_count": step_count,
                 "elapsed_ms": elapsed * 1000.0,
                 "min_interval_ms": self.min_interval_s * 1000.0,
                 "emitted_step_dx": int(step.dx),
@@ -330,9 +378,12 @@ class CommandScheduler:
             "predicted_ttl_ms": self.predicted_ttl_s * 1000.0,
             "has_pending": bool(self._pending_steps),
             "pending_command_id": self._pending_command_id,
+            "pending_plan_id": self._pending_command_id,
             "pending_dx": float(sum(step.dx for step in self._pending_steps)),
             "pending_dy": float(sum(step.dy for step in self._pending_steps)),
             "pending_steps": len(self._pending_steps),
+            "pending_next_step_index": self._pending_next_step_index,
+            "pending_step_count": self._pending_step_count,
             "pending_created_ts_ns": int(self._pending_created_s * 1_000_000_000),
             "pending_age_ms": (
                 max(0.0, (now - self._pending_created_s) * 1000.0)
@@ -352,6 +403,8 @@ class CommandScheduler:
             "cooldown_active": self._cooldown_until_s > now,
             "cooldown_until_ts_ns": int(self._cooldown_until_s * 1_000_000_000),
             "last_cancel_reason": self._last_cancel_reason,
+            "last_cancelled_remaining_dx": self._last_cancelled_dx,
+            "last_cancelled_remaining_dy": self._last_cancelled_dy,
             "last_error": self._last_error,
         }
 

@@ -1,9 +1,8 @@
-"""Tests for hardware heartbeat, the active angle strategy, and command dispatch.
+"""Tests for hardware heartbeat, the mouse controller route, and command dispatch.
 
 Each test focuses on one observable contract:
 - Heartbeat suspends after a stale window.
-- ExperimentalAnglePidStrategy consumes the compensated target contract
-  and leaves trigger gating to RuntimeService.
+- RuntimeService owns the only production mouse-control route.
 - ExecutorRegistry must route production output through CommandScheduler
   before any device call.
 """
@@ -12,25 +11,16 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from novasight.contracts import ControlIntent, Detection
+from novasight.contracts import ControlIntent
 from novasight.control import (
-    AngularErrorMapper,
-    AngularPDController,
     CommandScheduler,
     ControlOutput,
-    ExperimentalAnglePidStrategy,
 )
 from novasight.executors import ExecutorRegistry
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.executors.kmnet_loader import KmNetLoadResult
-from novasight.hardware import BoxInputState, HardwareHeartbeat
+from novasight.hardware import HardwareHeartbeat
 from novasight.runtime import CONTROL_FRAME_FIELDS, run_replay_acceptance
-
-
-def _target(
-    x: float = 100, y: float = 100, w: float = 0, h: float = 0, score: float = 0.9
-) -> Detection:
-    return Detection(cls=0, score=score, x=x, y=y, w=w, h=h)
 
 
 def _intent(dx: float, dy: float, reason: str = "test") -> ControlIntent:
@@ -65,52 +55,6 @@ def _output(
     )
 
 
-def _compensated_target_raw(
-    *,
-    roi_width: int = 320,
-    roi_height: int = 320,
-    capture_width: int = 1920,
-    capture_height: int = 1080,
-    roi_offset_x: int = 800,
-    roi_offset_y: int = 380,
-    roi_x: float = 170.0,
-    roi_y: float = 170.0,
-) -> dict:
-    return {
-        "roi_width": roi_width,
-        "roi_height": roi_height,
-        "capture_width": capture_width,
-        "capture_height": capture_height,
-        "roi_offset_x": roi_offset_x,
-        "roi_offset_y": roi_offset_y,
-        "frame_id": 7,
-        "target_key": "track:1",
-        "compensated_target": {
-            "track_id": 1,
-            "source_frame_id": 7,
-            "capture_ts_ns": 1_000_000,
-            "state_ts_ns": 1_000_000,
-            "roi_x": roi_x,
-            "roi_y": roi_y,
-            "control_x": roi_offset_x + roi_x,
-            "control_y": roi_offset_y + roi_y,
-            "raw_x": roi_x,
-            "raw_y": roi_y,
-            "smoothed_x": roi_x,
-            "smoothed_y": roi_y,
-            "delta_x": 0.0,
-            "delta_y": 0.0,
-            "applied": False,
-            "reason": "TEST",
-            "measurement_age_ms": 0.0,
-            "compensation_ms": 0.0,
-            "prediction_confidence": 1.0,
-            "predicted_source": False,
-            "control_allowed": True,
-        },
-    }
-
-
 def test_hardware_heartbeat_suspends_after_timeout() -> None:
     heartbeat = HardwareHeartbeat(timeout_s=0.05)
 
@@ -121,21 +65,16 @@ def test_hardware_heartbeat_suspends_after_timeout() -> None:
     assert heartbeat.should_suspend(now_s=1.10) is True
 
 
-def test_legacy_pixel_strategy_modules_are_not_present() -> None:
-    strategy_module = importlib.import_module("novasight.control.strategy")
-
-    for symbol in (
-        "PIDStrategy",
-        "StraightStrategy",
-        "PredictiveStrategy",
-        "ProportionalStrategy",
-        "ControlCommandCoalescer",
-    ):
-        assert not hasattr(strategy_module, symbol)
-
+def test_removed_control_routes_are_not_importable() -> None:
     for module_name in (
+        "novasight.control.angular",
+        "novasight.control.controller",
+        "novasight.control.hid_output",
+        "novasight.control.latency_compensator",
+        "novasight.control.strategy",
         "novasight.control.dynamic_pid",
         "novasight.control.isolated_mouse",
+        "novasight.runtime.aim",
     ):
         try:
             importlib.import_module(module_name)
@@ -152,56 +91,6 @@ def test_current_hardware_public_api_exposes_only_kmnet_runtime_adapter() -> Non
     assert "create_hardware_box" in hardware_module.__all__
     assert "MAKCUAdapter" not in hardware_module.__all__
     assert not hasattr(hardware_module, "MAKCUAdapter")
-
-
-def test_experimental_angle_strategy_uses_compensated_target_contract() -> None:
-    strategy = ExperimentalAnglePidStrategy(
-        kp_x=1.0,
-        kp_y=1.0,
-        kalman_enabled=False,
-        max_step_counts=80,
-    )
-
-    command = strategy.calculate(
-        _target(160, 160, 20, 20),
-        (160, 160),
-        BoxInputState(raw=_compensated_target_raw()),
-    )
-
-    assert command.dx > 0
-    assert command.dy > 0
-    assert command.confidence == 0.9
-    assert command.debug["unit_pipeline"] == "compensated_control_px_to_angle_rad_to_counts"
-    assert command.debug["capture_size_source"] == "frame_metadata"
-    assert command.debug["comp_x"] == 970
-    assert command.debug["comp_y"] == 550
-
-
-def test_experimental_angle_strategy_composes_angular_control_contract() -> None:
-    strategy = ExperimentalAnglePidStrategy(kalman_enabled=False)
-
-    assert isinstance(strategy.error_mapper, AngularErrorMapper)
-    assert isinstance(strategy.angular_controller, AngularPDController)
-
-
-def test_experimental_angle_strategy_does_not_gate_hardware_trigger() -> None:
-    strategy = ExperimentalAnglePidStrategy(
-        kp_x=1.0,
-        kp_y=1.0,
-        kalman_enabled=False,
-        max_step_counts=80,
-    )
-
-    command = strategy.calculate(
-        _target(160, 160, 20, 20),
-        (160, 160),
-        BoxInputState(left=False, right=False, raw=_compensated_target_raw()),
-    )
-
-    assert command.dx > 0
-    assert command.dy > 0
-    assert command.debug["control_allowed"] is True
-    assert "trigger" not in command.reason.lower()
 
 
 def test_executor_registry_requires_scheduler_before_device_send() -> None:
@@ -295,17 +184,20 @@ def test_runtime_service_production_control_contract_is_static() -> None:
     root = Path(__file__).resolve().parents[1]
     service_source = (root / "novasight" / "runtime" / "service.py").read_text(encoding="utf-8")
     executor_source = (root / "novasight" / "executors" / "runtime.py").read_text(encoding="utf-8")
-    strategy_source = (root / "novasight" / "control" / "strategy.py").read_text(encoding="utf-8")
+    mouse_source = (root / "novasight" / "control" / "mouse.py").read_text(encoding="utf-8")
+    observation_source = (root / "novasight" / "control" / "observation.py").read_text(encoding="utf-8")
 
-    assert "CompensatedTarget(Control px)->AngularErrorMapper->AngularPDController->CommandScheduler->kmNet" in service_source
-    assert "ExperimentalAnglePidStrategy(" in service_source
+    assert "RawBBox+KalmanPrediction->ObservedD+PredictedP->RadLimits->Counts->CommandScheduler->kmNet" in service_source
+    assert "MouseController(" in service_source
+    assert "MouseObservation(" in service_source
     assert "self.executors.execute(intent)" in service_source
     assert "ControlOutput(" not in service_source
     assert "diagnostic_move" not in service_source
 
-    assert "COMPENSATED_TARGET_REQUIRED" in strategy_source
-    assert "AngularErrorMapper" in strategy_source
-    assert "AngularPDController" in strategy_source
+    assert "predicted_error_x_rad" in mouse_source
+    assert "observed_error_x_rad" in mouse_source
+    assert "d_raw_x" in mouse_source
+    assert "RawAimPointProjector" in observation_source
 
     submit_index = executor_source.index("decision = self.scheduler.submit(bounded)")
     send_index = executor_source.index("self.executors[self.selected].execute(bounded)")
@@ -335,22 +227,19 @@ def test_runtime_service_does_not_bypass_selector_or_cache_bbox_for_control() ->
         assert forbidden not in service_source
 
 
-def test_angle_strategy_does_not_recreate_target_selection_or_bbox_aim_cache() -> None:
+def test_mouse_controller_does_not_recreate_target_selection_or_bbox_cache() -> None:
     root = Path(__file__).resolve().parents[1]
-    strategy_source = (root / "novasight" / "control" / "strategy.py").read_text(encoding="utf-8")
+    mouse_source = (root / "novasight" / "control" / "mouse.py").read_text(encoding="utf-8")
 
-    assert "COMPENSATED_TARGET_REQUIRED" in strategy_source
     for forbidden in (
-        "def aim_point(",
-        "_stable_aim_point",
-        "_KalmanCenterTrack",
-        "_KalmanAxis",
+        "TargetSelector",
+        "KalmanEstimator",
         "_last_target_box",
         "_cached_target",
         "bbox_cache",
         "last_detection",
     ):
-        assert forbidden not in strategy_source
+        assert forbidden not in mouse_source
 
 
 def test_replay_acceptance_and_recorder_schema_do_not_reintroduce_legacy_control_paths() -> None:
@@ -360,10 +249,10 @@ def test_replay_acceptance_and_recorder_schema_do_not_reintroduce_legacy_control
     required_fields = {
         "candidate_count",
         "track_id",
-        "x",
-        "raw_aim_x",
-        "error_x_rad",
-        "final_output_x_counts",
+        "control_width_px",
+        "observed_aim_x_px",
+        "observed_error_x_rad",
+        "planned_x_counts",
     }
     assert required_fields.issubset(CONTROL_FRAME_FIELDS)
     for forbidden in (
@@ -521,7 +410,7 @@ def test_kmnet_executor_sends_calibrated_counts_without_device_y_flip(monkeypatc
             python_tag="test",
         ),
     )
-    executor = KmNetExecutor(flip_dy=True)
+    executor = KmNetExecutor()
     executor.connected = True
 
     result = executor.execute(

@@ -59,125 +59,35 @@ calibration:
   fov_x_deg: 105
   counts_per_360_x: 9980
   counts_per_360_y: 9980
-  axis_sign_x: 1
-  axis_sign_y: 1
+  invert_y: false
   game_sensitivity_fingerprint: unverified-default
   projection_profile: fixed_horizontal_fov
 control:
-  max_abs_dx: 200
-  max_abs_dy: 200
-  min_confidence: 0
-  fov_ratio: 0.28
-  target_lock_enabled: true
-  target_sticky_bias: 0.25
-  target_lost_grace_frames: 5
-  candidate_ratio_max_aspect: 6
-  candidate_quality_confidence_weight: 0.7
-  candidate_quality_area_weight: 0.3
-  class_priority_quality_margin: 0.08
-  tracker_confirm_frames: 2
-  target_switch_min_preference_advantage: 0.08
-  target_switch_min_continuity_score: 0.7
-  target_switch_confirm_frames: 3
-  tracker_matching_distance_px: 140
-  tracker_ambiguity_margin: 0.08
-  tracker_missing_timeout_ms: 120
-  tracker_delete_timeout_ms: 250
-  tracker_match_threshold: 0.65
-  tracker_mahalanobis_gate: 9.21
-  kalman_enabled: true
-  kalman_acceleration_noise: 1200
-  kalman_measurement_noise_x: 16
-  kalman_measurement_noise_y: 16
-  kalman_max_predict_missing_ms: 80
-  kalman_max_predict_steps: 5
-  kalman_max_predict_dt_ms: 35
-  kalman_max_position_sigma_px: 45
-  kalman_max_covariance_trace: 5000
-  kalman_nis_threshold: 9.21
-  kalman_nis_hard_reject: 16
-  kalman_min_identity_confidence: 0.7
-  kalman_min_prediction_confidence: 0.35
-  kalman_prediction_decay_tau_ms: 45
-  strategy: experimental_angle_pid
-  aim_horizontal_percent: 50
-  # Y-axis aim point inside target box: 0=head/top, 50=center, 100=feet/bottom.
-  aim_ratio: 40
-  aim_offset_x_px: 0
-  aim_offset_y_px: 0
-  aim_ema_enabled: true
-  aim_ema_alpha: 0.65
-  aim_max_anchor_jump_ratio: 0.15
-  latency_compensation_enabled: true
-  latency_compensation_scale: 0.7
-  latency_max_compensation_ms: 35
-  latency_reject_if_age_exceeds_ms: 55
-  latency_max_compensation_px: 80
-  latency_min_velocity_px_s: 30
-  latency_max_velocity_px_s: 2500
-  latency_min_velocity_measurements: 3
-  latency_min_velocity_confidence: 0.65
-  # Additional prediction lead only; this is not a measured end-to-end actuation delay.
-  configured_extra_prediction_delay_ms: 2
-  # hardware: kmNet hardware button gates output.
-  # always: bypasses the button trigger gate, while keeping safety gates active.
+  aim:
+    y_ratio: 0.22
+  configured_actuation_delay_s: 0.004
+  prediction_strength: 1.0
+  prediction_x_enabled: true
+  prediction_y_enabled: true
+  kp_x: 0.35
+  kp_y: 0.24
+  kd_x: 0.0
+  kd_y: 0.0
+  d_ema_alpha: 0.25
+  deadzone_px_x: 0.0
+  deadzone_px_y: 0.0
+  max_output_rad_x: 0.0524
+  max_output_rad_y: 0.0524
+  max_output_rate_rad_s_x: 2.0
+  max_output_rate_rad_s_y: 2.0
+  scheduler_step_counts_x: 20
+  scheduler_step_counts_y: 20
+  scheduler_interval_ms: 4.0
+  target_fov_radius_px: 180
+  min_confidence: 0.25
+  target_switch_delay_ms: 50
+  lost_target_timeout_ms: 120
   trigger_mode: hardware
-  command_interval_ms: 1
-  scheduler_command_ttl_ms: 35
-  scheduler_predicted_command_ttl_ms: 18
-  scheduler_cancel_on_new_frame: true
-  scheduler_cancel_on_direction_change: true
-  scheduler_cancel_on_track_change: true
-  scheduler_max_step_x: 20
-  scheduler_max_step_y: 20
-  scheduler_queue_hard_limit: 64
-  scheduler_device_error_cooldown_ms: 50
-  move_kind: bezier
-  move_ms: 12
-  experimental_angle_kp_x: 0.35
-  experimental_angle_kp_y: 0.24
-  experimental_angle_ki: 0
-  experimental_angle_kd: 0
-  experimental_angle_integral_limit: 0
-  experimental_angle_config_level: basic
-  experimental_angle_speed: 1
-  experimental_angle_smooth_factor: 0
-  experimental_angle_deadzone_px: 0
-  experimental_angle_derivative_filter: 1
-  experimental_angle_near_error_deg: 0.35
-  experimental_angle_far_error_deg: 2.5
-  experimental_angle_near_kp_scale: 0.35
-  experimental_angle_middle_kp_scale: 0.7
-  experimental_angle_far_kp_scale: 1
-  experimental_angle_near_kd_scale: 1
-  experimental_angle_middle_kd_scale: 0.8
-  experimental_angle_far_kd_scale: 0.5
-  experimental_angle_prediction_gain_min: 0.35
-  experimental_angle_prediction_d_gain_min: 0.25
-  experimental_angle_max_control_angle_deg: 3
-  experimental_angle_max_step_counts: 80
-  experimental_angle_max_counts_delta_x: 35
-  experimental_angle_max_counts_delta_y: 35
-  experimental_angle_control_hz: 60
-  experimental_angle_kalman_enabled: true
-  experimental_angle_kalman_process_noise: 2
-  experimental_angle_kalman_measurement_noise: 16
-  experimental_angle_hungarian_enabled: true
-  experimental_angle_matching_distance_px: 140
-  experimental_angle_max_extrapolate_frames: 3
-  experimental_angle_target_filter_enabled: true
-  experimental_angle_target_filter_min_score: 0
-  experimental_angle_target_filter_fov_ratio: 1
-  experimental_angle_target_filter_same_class: false
-  experimental_angle_prediction_lead_ms: 0
-  experimental_angle_extrapolate_confidence_decay: 1
-  experimental_angle_magnet_enabled: false
-  experimental_angle_magnet_radius_px: 120
-  experimental_angle_magnet_strength: 0.25
-  experimental_angle_magnet_curve: 1
-  experimental_angle_magnet_deadzone_px: 0
-  experimental_angle_magnet_max_counts: 20
-  # Current runtime output is kmNet-only.
   output_mode: kmnet
 executor:
   default: kmnet

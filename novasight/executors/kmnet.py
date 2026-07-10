@@ -22,13 +22,11 @@ class KmNetExecutor:
         port: int = 0,
         uuid: str = "",
         monitor_port: int = 0,
-        flip_dy: bool = False,
     ) -> None:
         self.host = host
         self.port = port
         self.uuid = uuid
         self.monitor_port = monitor_port
-        self.flip_dy = False
         self.connected = False
         self.monitoring = False
         self.move_count = 0

@@ -42,6 +42,7 @@ CONTROL_TRACE_FIELD_UNITS: dict[str, str] = {
     "scheduler.expires_ts": "ns",
     "device.send_start_ts": "ns",
     "device.send_end_ts": "ns",
+    "device.scheduler_send_delay": "us",
     "correlation.capture_ts": "ns",
 }
 
@@ -97,23 +98,12 @@ def build_control_trace_record(
     execution_payload = _dict(execution)
     execution_metadata = _dict(execution_payload.get("metadata"))
     pipeline = _dict(control_payload.get("pipeline"))
-    angular = _dict(pipeline.get("angular_controller"))
-    aim = _first_dict(
-        control_payload.get("aim_point"),
-        target_payload.get("aim_point"),
-        pipeline.get("aim_point"),
-    )
-    compensated = _first_dict(
-        control_payload.get("compensated_target"),
-        target_payload.get("compensated_target"),
-        pipeline.get("compensated_target"),
-    )
-    estimate = _first_dict(
-        control_payload.get("estimated_target_state"),
-        target_payload.get("estimated_target_state"),
-        pipeline.get("estimated_target_state"),
+    mouse = _first_dict(
+        control_payload.get("mouse_observation"),
+        target_payload.get("mouse_observation"),
     )
     track = _dict(control_payload.get("track_diagnostics"))
+    estimate = _selected_track_estimate(track)
     scheduler = _scheduler_metadata(execution_payload, scheduler_status)
     generation = _first_int(
         inference_payload.get("generation"),
@@ -131,12 +121,17 @@ def build_control_trace_record(
     )
     command_id = _first_int(scheduler.get("command_id"), _dict(execution_payload.get("metadata")).get("command_id"))
     correlation_id = _correlation_id(generation=generation, frame_id=frame_id, capture_ts_ns=capture_ts)
-    prediction_delta_px = _axis_pair(compensated.get("delta_x"), compensated.get("delta_y"))
-    focal = _axis_pair(pipeline.get("focal_x"), pipeline.get("focal_y"))
-    prediction_delta_rad = _prediction_delta_rad(prediction_delta_px, focal)
+    prediction_delta_px = _axis_pair(
+        _subtract(mouse.get("predicted_x_px"), mouse.get("observed_x_px")),
+        _subtract(mouse.get("predicted_y_px"), mouse.get("observed_y_px")),
+    )
+    prediction_delta_rad = _axis_pair(
+        _subtract(pipeline.get("predicted_error_x_rad"), pipeline.get("observed_error_x_rad")),
+        _subtract(pipeline.get("predicted_error_y_rad"), pipeline.get("observed_error_y_rad")),
+    )
     effective_kp = _axis_pair(
-        _effective_gain(pipeline.get("p_x"), pipeline.get("error_x_rad")),
-        _effective_gain(pipeline.get("p_y"), pipeline.get("error_y_rad")),
+        _effective_gain(pipeline.get("p_x_rad"), pipeline.get("predicted_error_x_rad")),
+        _effective_gain(pipeline.get("p_y_rad"), pipeline.get("predicted_error_y_rad")),
     )
     prediction_velocity_term = _axis_pair(
         _multiply(prediction_delta_rad["x"], effective_kp["x"]),
@@ -196,21 +191,22 @@ def build_control_trace_record(
                 MONOTONIC_CLOCK_DOMAIN,
             ),
             "prediction_horizon_ms": _first_number(
-                compensated.get("compensation_ms"),
-                _dict(control_payload.get("latency_compensation")).get("compensation_ms"),
+                _multiply(mouse.get("prediction_horizon_s"), 1000.0),
+                inference_payload.get("prediction_horizon_ms"),
             ),
-            "prediction_confidence": _first_number(compensated.get("prediction_confidence"), estimate.get("prediction_confidence")),
+            "prediction_confidence": _first_number(mouse.get("prediction_confidence"), estimate.get("prediction_confidence")),
             "prediction_delta_px": prediction_delta_px,
             "prediction_delta_rad": prediction_delta_rad,
             "prediction_velocity_term_rad": prediction_velocity_term,
-            "error_px": _axis_pair(pipeline.get("error_x_px"), pipeline.get("error_y_px")),
-            "error_rad": _axis_pair(pipeline.get("error_x_rad"), pipeline.get("error_y_rad")),
-            "error_rate_rad_s": _axis_pair(angular.get("derivative_x_rad_s"), angular.get("derivative_y_rad_s")),
-            "error_rate_raw_rad_s": _axis_pair(angular.get("derivative_x_raw_rad_s"), angular.get("derivative_y_raw_rad_s")),
-            "p_rad": _axis_pair(pipeline.get("p_x"), pipeline.get("p_y")),
-            "d_rad": _axis_pair(pipeline.get("d_x"), pipeline.get("d_y")),
-            "u_rad": _axis_pair(pipeline.get("out_x_rad"), pipeline.get("out_y_rad")),
-            "zone": _text(angular.get("zone")),
+            "error_px": _axis_pair(pipeline.get("observed_error_x_px"), pipeline.get("observed_error_y_px")),
+            "error_rad": _axis_pair(pipeline.get("observed_error_x_rad"), pipeline.get("observed_error_y_rad")),
+            "predicted_error_rad": _axis_pair(pipeline.get("predicted_error_x_rad"), pipeline.get("predicted_error_y_rad")),
+            "error_rate_rad_s": _axis_pair(pipeline.get("d_ema_x_rad_s"), pipeline.get("d_ema_y_rad_s")),
+            "error_rate_raw_rad_s": _axis_pair(pipeline.get("d_raw_x_rad_s"), pipeline.get("d_raw_y_rad_s")),
+            "p_rad": _axis_pair(pipeline.get("p_x_rad"), pipeline.get("p_y_rad")),
+            "d_rad": _axis_pair(pipeline.get("d_x_rad"), pipeline.get("d_y_rad")),
+            "u_rad": _axis_pair(pipeline.get("limited_output_x_rad"), pipeline.get("limited_output_y_rad")),
+            "velocity_confidence": _optional_number(mouse.get("velocity_confidence")),
             "control_allowed": _optional_bool(control_payload.get("control_allowed")),
             "will_emit": _optional_bool(control_payload.get("will_emit")),
             "reason": _text(control_payload.get("reason") or control_payload.get("selection_reason")),
@@ -222,7 +218,7 @@ def build_control_trace_record(
             "estimated_applied_counts": _unknown_axis_pair(UNKNOWN_REASON_DEVICE_FEEDBACK),
             "unobserved_counts": _unknown_axis_pair(UNKNOWN_REASON_DEVICE_FEEDBACK),
             "residual_counts": _axis_pair(pipeline.get("residual_x_counts"), pipeline.get("residual_y_counts")),
-            "raw_counts": _axis_pair(pipeline.get("raw_dx_counts"), pipeline.get("raw_dy_counts")),
+            "raw_counts": _axis_pair(pipeline.get("counts_x_float"), pipeline.get("counts_y_float")),
             "final_counts": _axis_pair(pipeline.get("final_dx"), pipeline.get("final_dy")),
         },
         "scheduler": {
@@ -232,7 +228,10 @@ def build_control_trace_record(
                 control_payload.get("trajectory_generation"),
             ),
             "command_id": command_id,
+            "plan_id": _first_int(scheduler.get("plan_id"), command_id),
             "command_status": _text(scheduler.get("command_status")),
+            "step_index": _first_int(scheduler.get("step_index")),
+            "step_count": _first_int(scheduler.get("step_count")),
             "pending_age_ms": _optional_number(scheduler.get("pending_age_ms")),
             "pending_steps": _first_int(scheduler.get("pending_steps")),
             "cancel_reason": _text(scheduler.get("cancel_reason") or scheduler.get("last_cancel_reason")),
@@ -250,6 +249,10 @@ def build_control_trace_record(
                 device_clock_domain,
             ),
             "sent": _optional_bool(execution_payload.get("sent")),
+            "scheduler_send_delay_us": _first_number(
+                execution_payload.get("scheduler_send_delay_us"),
+                execution_metadata.get("scheduler_send_delay_us"),
+            ),
             "message": _text(execution_payload.get("message")),
             "driver_counts": _axis_pair(control_payload.get("driver_dx"), control_payload.get("driver_dy")),
         },
@@ -268,6 +271,7 @@ def _scheduler_metadata(
         result.update(nested_execution)
     for key in (
         "command_id",
+        "plan_id",
         "trajectory_generation",
         "created_ts_ns",
         "expires_ts_ns",
@@ -276,6 +280,11 @@ def _scheduler_metadata(
         "pending_dx",
         "pending_dy",
         "pending_steps",
+        "step_index",
+        "step_count",
+        "scheduled_ts_ns",
+        "cancelled_remaining_dx",
+        "cancelled_remaining_dy",
     ):
         if key in metadata and key not in result:
             result[key] = metadata[key]
@@ -338,6 +347,26 @@ def _effective_gain(p_component: Any, error_rad: Any) -> float | None:
     if abs(float(error_rad)) <= 1e-12:
         return None
     return float(p_component) / float(error_rad)
+
+
+def _subtract(left: Any, right: Any) -> float | None:
+    if not isinstance(left, (int, float)) or isinstance(left, bool):
+        return None
+    if not isinstance(right, (int, float)) or isinstance(right, bool):
+        return None
+    return float(left) - float(right)
+
+
+def _selected_track_estimate(track: Mapping[str, Any]) -> dict[str, Any]:
+    selected_id = _first_int(track.get("selected_track_id"))
+    tracks = track.get("tracks")
+    if selected_id is None or not isinstance(tracks, list):
+        return {}
+    for item in tracks:
+        payload = _dict(item)
+        if _first_int(payload.get("track_id")) == selected_id:
+            return _dict(payload.get("estimate"))
+    return {}
 
 
 def _multiply(left: Any, right: Any) -> float | None:

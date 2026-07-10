@@ -16,7 +16,7 @@ class ControlTimingSnapshot:
     control_now_ts_ns: int
     measurement_dt_s: float | None
     frame_age_s: float
-    configured_extra_prediction_delay_s: float
+    configured_actuation_delay_s: float
     prediction_horizon_s: float
 
     def as_telemetry(self) -> dict[str, int | float | str | None]:
@@ -32,10 +32,8 @@ class ControlTimingSnapshot:
                 else None
             ),
             "frame_age_ms": self.frame_age_s * MS_PER_SECOND,
-            "configured_extra_prediction_delay_ms": (
-                self.configured_extra_prediction_delay_s * MS_PER_SECOND
-            ),
-            "extra_prediction_delay_source": "configured_estimate",
+            "configured_actuation_delay_s": self.configured_actuation_delay_s,
+            "actuation_delay_source": "configured_estimate",
             "prediction_horizon_ms": self.prediction_horizon_s * MS_PER_SECOND,
         }
 
@@ -55,7 +53,7 @@ class ControlTimingModel:
         capture_ts_ns: int,
         inference_end_ts_ns: int | None,
         control_now_ts_ns: int,
-        configured_extra_prediction_delay_ms: float,
+        configured_actuation_delay_s: float,
     ) -> ControlTimingSnapshot:
         capture_ns = int(capture_ts_ns)
         control_now_ns = int(control_now_ts_ns)
@@ -75,9 +73,7 @@ class ControlTimingModel:
         )
 
         frame_age_s = max(0.0, (control_now_ns - capture_ns) / NS_PER_SECOND)
-        extra_prediction_delay_s = (
-            max(0.0, float(configured_extra_prediction_delay_ms)) / MS_PER_SECOND
-        )
+        actuation_delay_s = max(0.0, float(configured_actuation_delay_s))
         return ControlTimingSnapshot(
             frame_id=int(frame_id),
             target_id=normalized_target_id,
@@ -88,8 +84,8 @@ class ControlTimingModel:
             control_now_ts_ns=control_now_ns,
             measurement_dt_s=measurement_dt_s,
             frame_age_s=frame_age_s,
-            configured_extra_prediction_delay_s=extra_prediction_delay_s,
-            prediction_horizon_s=frame_age_s + extra_prediction_delay_s,
+            configured_actuation_delay_s=actuation_delay_s,
+            prediction_horizon_s=frame_age_s + actuation_delay_s,
         )
 
     def reset(self) -> None:

@@ -1500,7 +1500,7 @@ def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
 
 def test_runtime_service_rejects_stale_detection_batch_before_control() -> None:
     cfg = RuntimeConfig()
-    cfg.control.latency_reject_if_age_exceeds_ms = 10.0
+    cfg.runtime.freshness_threshold_ms = 10.0
     service = RuntimeService(
         cfg,
         models=SimpleNamespace(),
