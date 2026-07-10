@@ -4924,8 +4924,9 @@ tbody tr:hover {
 
 .console-preview-frame {
   position: relative;
-  width: min(var(--roi-size, 640px), 100%);
-  height: min(var(--roi-size, 640px), 100%);
+  width: min(var(--roi-size, 640px), 100%, 330px);
+  height: auto;
+  aspect-ratio: var(--preview-aspect, 1 / 1);
   max-height: 100%;
   overflow: hidden;
   border-radius: 14px;
@@ -4935,7 +4936,7 @@ tbody tr:hover {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .console-preview::after {

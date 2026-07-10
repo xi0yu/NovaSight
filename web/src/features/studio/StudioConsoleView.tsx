@@ -681,10 +681,10 @@ export function StudioConsoleView({
   const calibratedDEmaAlpha = readNumber(calibratedAngularConfig.d_ema_alpha, 0.3);
   const calibratedMaxAngleX = readNumber(calibratedAngularConfig.max_angle_step_x_deg, 2);
   const calibratedMaxAngleY = readNumber(calibratedAngularConfig.max_angle_step_y_deg, 1.5);
-  const universalResponseScaleX = readNumber(universalSaturatedConfig.response_scale_x_px, 160);
-  const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 120);
-  const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 30);
-  const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 24);
+  const universalResponseScaleX = readNumber(universalSaturatedConfig.response_scale_x_px, 80);
+  const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 60);
+  const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 50);
+  const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 40);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 0);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 0);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -2290,7 +2290,7 @@ export function StudioConsoleView({
                 >
                   {sortedSwitchableArtifacts.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {item.kind} · {item.path}{item.status === "pending" ? " · 待验证" : ""}
+                      {item.kind} · {item.path} · {formatModelSizeMb(item.size_bytes)}{item.status === "pending" ? " · 待验证" : ""}
                     </option>
                   ))}
                   {sortedSwitchableArtifacts.length === 0 ? <option value="">暂无可验证的 ONNX / engine 产物</option> : null}
@@ -3478,6 +3478,14 @@ function percent(value: number, total: number): string {
   return `${clampNumber(total > 0 ? (value / total) * 100 : 0, 0, 100)}%`;
 }
 
+function formatModelSizeMb(value: unknown): string {
+  const sizeBytes = finiteNumber(value);
+  if (sizeBytes === null || sizeBytes < 0) {
+    return "大小不可用";
+  }
+  return `${(sizeBytes / 1_000_000).toFixed(2)} MB`;
+}
+
 function PreviewFrame({
   enabled,
   runtime,
@@ -3490,6 +3498,7 @@ function PreviewFrame({
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
+  const control = asRecord(vision.control);
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
@@ -3498,11 +3507,17 @@ function PreviewFrame({
   const overlay = useStablePreviewOverlay(liveDetections, liveTarget);
   const detections = overlay.detections;
   const target = overlay.target;
+  const mouseObservation = asRecord(target.mouse_observation ?? control.mouse_observation);
+  const rawAim = asRecord(mouseObservation.raw_aim);
   const targetDetectionIndex = readNullableNumber(target.target_detection_index);
   const targetCx = readNullableNumber(target.cx);
   const targetCy = readNullableNumber(target.cy);
-  const targetAimX = readNullableNumber(target.aim_x) ?? targetCx;
-  const targetAimY = readNullableNumber(target.aim_y) ?? targetCy;
+  const targetAimX = readNullableNumber(mouseObservation.predicted_aim_x_roi_px)
+    ?? readNullableNumber(rawAim.aim_roi_x_px)
+    ?? targetCx;
+  const targetAimY = readNullableNumber(mouseObservation.predicted_aim_y_roi_px)
+    ?? readNullableNumber(rawAim.aim_roi_y_px)
+    ?? targetCy;
   const showImage = enabled && runtime?.capture?.available;
   const showOverlay = enabled && detections.length > 0;
   const selectedDetection = detections.find((item) => (
@@ -3511,10 +3526,28 @@ function PreviewFrame({
       : targetCx !== null && targetCy !== null && Math.abs(item.cx - targetCx) <= 2 && Math.abs(item.cy - targetCy) <= 2
   ));
   const selectedIndex = selectedDetection?.index ?? null;
-  const centerX = previewWidth / 2;
-  const centerY = previewHeight / 2;
+  const sourceWidth = readNumber(inferenceTrace.source_width, 0);
+  const sourceHeight = readNumber(inferenceTrace.source_height, 0);
+  const roiOffsetX = readNumber(inferenceTrace.roi_offset_x, 0);
+  const roiOffsetY = readNumber(inferenceTrace.roi_offset_y, 0);
+  const centerX = clampNumber(
+    sourceWidth > 0 ? sourceWidth / 2 - roiOffsetX : previewWidth / 2,
+    0,
+    previewWidth
+  );
+  const centerY = clampNumber(
+    sourceHeight > 0 ? sourceHeight / 2 - roiOffsetY : previewHeight / 2,
+    0,
+    previewHeight
+  );
   return (
-    <div className={showOverlay ? "console-preview has-overlay" : "console-preview"} style={{ "--roi-size": `${displaySize}px` } as CSSProperties}>
+    <div
+      className={showOverlay ? "console-preview has-overlay" : "console-preview"}
+      style={{
+        "--roi-size": `${displaySize}px`,
+        "--preview-aspect": `${previewWidth} / ${previewHeight}`
+      } as CSSProperties}
+    >
       <div className="console-preview-frame">
         {showImage ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
         {showOverlay ? (
@@ -3536,7 +3569,13 @@ function PreviewFrame({
                 );
               })}
             </svg>
-            <span className="console-roi-center" />
+            <span
+              className="console-roi-center"
+              style={{
+                left: percent(centerX, previewWidth),
+                top: percent(centerY, previewHeight)
+              }}
+            />
             {detections.map((item) => {
               const selected = item.index === selectedIndex;
               return (

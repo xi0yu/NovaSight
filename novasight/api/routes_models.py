@@ -1105,11 +1105,27 @@ def create_version(
 @router.get("/versions/{version_id}/artifacts")
 def list_artifacts(request: Request, version_id: int) -> list[dict[str, Any]]:
     registry = _registry(request)
+    version = registry.get_version(version_id)
+    if version is None:
+        raise _as_http_error(RegistryNotFoundError(f"unknown version id: {version_id}"))
+    project = registry.get_project(version.project_id)
+    if project is None:
+        raise _as_http_error(RegistryNotFoundError(f"unknown project id: {version.project_id}"))
+    asset_dir = Path(registry.data_dir) / project.name / version.version
+    return [
+        {
+            **asdict(artifact),
+            "size_bytes": _file_size_bytes(asset_dir / artifact.path),
+        }
+        for artifact in registry.list_artifacts(version_id)
+    ]
+
+
+def _file_size_bytes(path: Path) -> int | None:
     try:
-        _require_version(registry, version_id)
-    except RegistryError as exc:
-        raise _as_http_error(exc) from exc
-    return [asdict(artifact) for artifact in registry.list_artifacts(version_id)]
+        return int(path.stat().st_size)
+    except OSError:
+        return None
 
 
 @router.post("/versions/{version_id}/artifacts")

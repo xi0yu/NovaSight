@@ -280,8 +280,8 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.calibrated_angular.kp_x == 1.0
     assert cfg.control.calibrated_angular.kd_x == 0.0
     assert cfg.control.calibrated_angular.d_ema_alpha == 0.30
-    assert cfg.control.universal_saturated.response_scale_x_px == 160.0
-    assert cfg.control.universal_saturated.max_step_x_counts == 30.0
+    assert cfg.control.universal_saturated.response_scale_x_px == 80.0
+    assert cfg.control.universal_saturated.max_step_x_counts == 50.0
     assert cfg.control.shared.deadzone_x_px == 0.0
     assert cfg.control.shared.max_count_slew_x == 10.0
     assert cfg.control.shared.invert_y is False
@@ -442,6 +442,41 @@ def test_runtime_config_migrates_legacy_axis_signs() -> None:
     assert cfg.control.shared.invert_y is True
     assert not hasattr(cfg.calibration, "axis_sign_x")
     assert not hasattr(cfg.calibration, "axis_sign_y")
+
+
+def test_runtime_config_migrates_weak_universal_default_profile() -> None:
+    cfg = parse_runtime_config(
+        {
+            "control": {
+                "universal_saturated": {
+                    "response_scale_x_px": 160.0,
+                    "response_scale_y_px": 120.0,
+                    "max_step_x_counts": 30.0,
+                    "max_step_y_counts": 24.0,
+                }
+            }
+        }
+    )
+
+    assert cfg.control.universal_saturated.response_scale_x_px == 80.0
+    assert cfg.control.universal_saturated.response_scale_y_px == 60.0
+    assert cfg.control.universal_saturated.max_step_x_counts == 50.0
+    assert cfg.control.universal_saturated.max_step_y_counts == 40.0
+
+    custom = parse_runtime_config(
+        {
+            "control": {
+                "universal_saturated": {
+                    "response_scale_x_px": 100.0,
+                    "response_scale_y_px": 90.0,
+                    "max_step_x_counts": 35.0,
+                    "max_step_y_counts": 28.0,
+                }
+            }
+        }
+    )
+    assert custom.control.universal_saturated.response_scale_x_px == 100.0
+    assert custom.control.universal_saturated.max_step_x_counts == 35.0
 
 
 def test_runtime_config_drops_legacy_noop_hardware_flip_dy() -> None:

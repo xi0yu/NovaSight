@@ -689,6 +689,7 @@ export function ModelsView({
                 <div>
                   <strong>{formatArtifactKind(artifact.kind)}</strong>
                   <span>{artifactRuntimeHint(artifact)}</span>
+                  <span>{formatModelSizeMb(artifact.size_bytes)}</span>
                   <span className="mono">{artifact.path}</span>
                   <span className="mono">{artifact.checksum}</span>
                 </div>
@@ -845,6 +846,13 @@ function InferenceBindingCard({
       {status.reason ? <p>{status.reason}</p> : null}
     </div>
   );
+}
+
+function formatModelSizeMb(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return "大小不可用";
+  }
+  return `${(value / 1_000_000).toFixed(2)} MB`;
 }
 
 function formatArtifactKind(kind: string): string {

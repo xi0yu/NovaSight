@@ -365,8 +365,14 @@ export function DashboardView({
   const targetScore = readNumberRecord(target, "score");
   const targetCx = readNumberRecord(target, "cx");
   const targetCy = readNumberRecord(target, "cy");
-  const aimX = readNumberRecord(target, "aim_x");
-  const aimY = readNumberRecord(target, "aim_y");
+  const targetMouseObservation = asRecord(target.mouse_observation);
+  const targetRawAim = asRecord(targetMouseObservation.raw_aim);
+  const aimX = readNumberRecord(targetMouseObservation, "predicted_aim_x_roi_px")
+    ?? readNumberRecord(targetRawAim, "aim_roi_x_px")
+    ?? targetCx;
+  const aimY = readNumberRecord(targetMouseObservation, "predicted_aim_y_roi_px")
+    ?? readNumberRecord(targetRawAim, "aim_roi_y_px")
+    ?? targetCy;
   const controlDx = readNumberRecord(control, "dx");
   const controlDy = readNumberRecord(control, "dy");
   const willEmit = control.will_emit === true;

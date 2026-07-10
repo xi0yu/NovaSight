@@ -85,6 +85,8 @@ class RuntimeTargetSelector:
         min_confidence: float,
         fov_ratio: float,
         aim_ratio: float = 0.5,
+        control_center_x_px: float | None = None,
+        control_center_y_px: float | None = None,
         class_filter: str = "all",
         class_priority: Iterable[int] = (),
         sticky_bias: float = 0.25,
@@ -195,6 +197,8 @@ class RuntimeTargetSelector:
             min_confidence=min_confidence,
             fov_ratio=fov_ratio,
             aim_ratio=aim_ratio,
+            control_center_x_px=control_center_x_px,
+            control_center_y_px=control_center_y_px,
             class_filter=class_filter,
             ratio_max_aspect=ratio_max_aspect,
             quality_confidence_weight=quality_confidence_weight,
@@ -218,6 +222,8 @@ class RuntimeTargetSelector:
         min_confidence: float,
         fov_ratio: float,
         aim_ratio: float,
+        control_center_x_px: float | None,
+        control_center_y_px: float | None,
         class_filter: str,
         ratio_max_aspect: float,
         quality_confidence_weight: float,
@@ -237,6 +243,8 @@ class RuntimeTargetSelector:
             min_confidence=min_confidence,
             fov_ratio=fov_ratio,
             aim_ratio=aim_ratio,
+            control_center_x_px=control_center_x_px,
+            control_center_y_px=control_center_y_px,
             class_filter=class_filter,
             ratio_max_aspect=ratio_max_aspect,
             quality_confidence_weight=quality_confidence_weight,
@@ -262,8 +270,16 @@ class RuntimeTargetSelector:
                 state=tracker_update.state.lower(),
             )
 
-        center_x = context.width / 2
-        center_y = context.height / 2
+        center_x = (
+            float(control_center_x_px)
+            if control_center_x_px is not None
+            else context.width / 2
+        )
+        center_y = (
+            float(control_center_y_px)
+            if control_center_y_px is not None
+            else context.height / 2
+        )
         aim_ratio = max(0.0, min(1.0, float(aim_ratio)))
         priority = {int(cls): rank for rank, cls in enumerate(class_priority)}
         locked = self._locked_match(candidates) if lock_enabled else None
@@ -296,6 +312,7 @@ class RuntimeTargetSelector:
             "tracked_filter": track_filter_result.debug_payload(),
             "fov_ratio": float(fov_ratio),
             "aim_ratio": float(aim_ratio),
+            "control_center_roi_px": {"x": center_x, "y": center_y},
             "min_confidence": float(min_confidence),
             "class_filter": str(class_filter),
             "ratio_max_aspect": float(ratio_max_aspect),
@@ -434,6 +451,8 @@ class RuntimeTargetSelector:
         min_confidence: float,
         fov_ratio: float,
         aim_ratio: float,
+        control_center_x_px: float | None,
+        control_center_y_px: float | None,
         class_filter: str,
         ratio_max_aspect: float,
         quality_confidence_weight: float,
@@ -446,6 +465,8 @@ class RuntimeTargetSelector:
             selection_fov=SelectionFovConfig(
                 enabled=True,
                 shape="circle",
+                center_x_px=control_center_x_px,
+                center_y_px=control_center_y_px,
                 radius_x_percent=radius_percent,
                 radius_y_percent=radius_percent,
             ),

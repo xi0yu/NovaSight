@@ -979,9 +979,9 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         capture_ts_ns=capture_ts_ns,
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
-        # The projected aim is only 5 px right of center. Universal mode must
-        # still produce a first action instead of waiting for residual buildup.
-        detections=[Detection(cls=0, score=0.95, x1=245, y1=250, x2=405, y2=568)],
+        # The ROI is shifted 40 px left. Full-screen center maps to ROI x=360,
+        # so this aim at x=365 is a real +5 px control error.
+        detections=[Detection(cls=0, score=0.95, x1=285, y1=250, x2=445, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
@@ -992,7 +992,7 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         height=640,
         source_width=1920,
         source_height=1080,
-        roi_offset_x=640,
+        roi_offset_x=600,
         roi_offset_y=220,
     )
     send_result = service.process_control_tick()
@@ -1002,7 +1002,14 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
     assert service.last_control["pipeline"]["control_allowed"] is True
     assert service.last_control["trigger_active"] is True
     assert service.last_control["will_emit"] is True
-    assert service.last_control["dx"] != 0 or service.last_control["dy"] != 0
+    assert service.last_control["selector_debug"]["control_center_roi_px"] == {
+        "x": 360.0,
+        "y": 320.0,
+    }
+    assert service.last_control["mouse_observation"]["predicted_aim_x_roi_px"] == pytest.approx(365.0)
+    assert service.last_control["pipeline"]["predicted_error_x_px"] == pytest.approx(5.0)
+    assert service.last_control["dx"] == 2
+    assert service.last_control["dy"] == 0
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
     assert len(kmnet.outputs) == 1

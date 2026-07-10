@@ -64,12 +64,36 @@ def test_studio_preview_holds_one_transient_miss_and_keeps_box_nodes_stable() ->
     assert 'key={`box-${item.index}-${item.x}-${item.y}`}' not in source
 
 
+def test_studio_preview_uses_roi_coordinates_for_control_center_and_aim_line() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert "predicted_aim_x_roi_px" in source
+    assert "predicted_aim_y_roi_px" in source
+    assert "sourceWidth / 2 - roiOffsetX" in source
+    assert "sourceHeight / 2 - roiOffsetY" in source
+    assert 'left: percent(centerX, previewWidth)' in source
+    assert 'top: percent(centerY, previewHeight)' in source
+    styles = (STUDIO_CONSOLE.parents[2] / "styles.css").read_text(encoding="utf-8")
+    assert "aspect-ratio: var(--preview-aspect, 1 / 1);" in styles
+    assert "object-fit: contain;" in styles
+
+
+def test_model_file_lists_show_size_in_megabytes() -> None:
+    studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    models = (STUDIO_CONSOLE.parents[1] / "models" / "ModelsView.tsx").read_text(encoding="utf-8")
+
+    assert "formatModelSizeMb(item.size_bytes)" in studio
+    assert "formatModelSizeMb(artifact.size_bytes)" in models
+
+
 def test_dashboard_mainline_preview_uses_capture_stream_image() -> None:
     source = DASHBOARD_VIEW.read_text(encoding="utf-8")
 
     assert "previewEnabled && !runtimeMainlineSelected" not in source
     assert 'capture?.available && previewEnabled ? (' in source
     assert "Tensor Overlay" not in source
+    assert 'readNumberRecord(targetMouseObservation, "predicted_aim_x_roi_px")' in source
+    assert 'readNumberRecord(targetMouseObservation, "predicted_aim_y_roi_px")' in source
 
 
 def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:

@@ -30,6 +30,7 @@ export type ModelArtifact = {
   path: string;
   checksum: string;
   status: "pending" | "running" | "ready" | "failed" | (string & {});
+  size_bytes?: number | null;
 };
 
 export type Deployment = {

@@ -2065,11 +2065,14 @@ class RuntimeService:
             0.0,
             min(1.0, float(self.config.control.target_fov_radius_px) / minimum_dimension),
         )
+        control_center_x_px, control_center_y_px = self._control_center_in_roi(context)
         return self.target_selector.select(
             context,
             min_confidence=float(self.config.control.min_confidence),
             fov_ratio=fov_ratio,
             aim_ratio=self._active_aim_ratio(),
+            control_center_x_px=control_center_x_px,
+            control_center_y_px=control_center_y_px,
             class_filter=str(getattr(self.config.inference, "detection_class_filter", "all")),
             class_priority=self._class_priority(),
             sticky_bias=float(getattr(self.config.control, "target_sticky_bias", 0.25)),
@@ -2108,6 +2111,17 @@ class RuntimeService:
             kalman_min_prediction_confidence=float(getattr(self.config.control, "kalman_min_prediction_confidence", 0.35)),
             kalman_prediction_decay_tau_ms=float(getattr(self.config.control, "kalman_prediction_decay_tau_ms", 45.0)),
         )
+
+    def _control_center_in_roi(self, context: FrameContext) -> tuple[float, float]:
+        if self.last_inference_status.get("source_geometry_trusted") is True:
+            source_width = self._status_int("source_width", 0)
+            source_height = self._status_int("source_height", 0)
+            if source_width > 0 and source_height > 0:
+                return (
+                    source_width * 0.5 - self._status_int("roi_offset_x", 0),
+                    source_height * 0.5 - self._status_int("roi_offset_y", 0),
+                )
+        return context.width * 0.5, context.height * 0.5
 
     def _active_aim_ratio(self) -> float:
         return float(self.config.control.aim.y_ratio)

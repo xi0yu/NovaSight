@@ -93,6 +93,8 @@ class SelectionFovConfig:
     shape: str = "circle"
     center_horizontal_percent: float = 50.0
     center_vertical_percent_from_top: float = 50.0
+    center_x_px: float | None = None
+    center_y_px: float | None = None
     radius_x_percent: float = 28.0
     radius_y_percent: float = 28.0
 
@@ -273,9 +275,15 @@ def selection_fov_center(
     context: FrameContext,
     config: SelectionFovConfig,
 ) -> tuple[float, float]:
+    center_x = config.center_x_px
+    center_y = config.center_y_px
     return (
-        float(context.width) * _clamp_percent(config.center_horizontal_percent),
-        float(context.height) * _clamp_percent(config.center_vertical_percent_from_top),
+        float(center_x)
+        if center_x is not None and isfinite(float(center_x))
+        else float(context.width) * _clamp_percent(config.center_horizontal_percent),
+        float(center_y)
+        if center_y is not None and isfinite(float(center_y))
+        else float(context.height) * _clamp_percent(config.center_vertical_percent_from_top),
     )
 
 

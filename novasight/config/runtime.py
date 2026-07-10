@@ -142,10 +142,10 @@ class CalibratedAngularConfig:
 
 @dataclass
 class UniversalSaturatedConfig:
-    response_scale_x_px: float = 160.0
-    response_scale_y_px: float = 120.0
-    max_step_x_counts: float = 30.0
-    max_step_y_counts: float = 24.0
+    response_scale_x_px: float = 80.0
+    response_scale_y_px: float = 60.0
+    max_step_x_counts: float = 50.0
+    max_step_y_counts: float = 40.0
 
 
 @dataclass
@@ -539,6 +539,27 @@ def _migrate_dual_control_modes(
         universal = {}
     if not isinstance(universal, dict):
         return
+    universal = dict(universal)
+    old_universal_defaults = {
+        "response_scale_x_px": 160.0,
+        "response_scale_y_px": 120.0,
+        "max_step_x_counts": 30.0,
+        "max_step_y_counts": 24.0,
+    }
+    if all(
+        isinstance(universal.get(key), (int, float))
+        and not isinstance(universal.get(key), bool)
+        and float(universal[key]) == expected
+        for key, expected in old_universal_defaults.items()
+    ):
+        universal.update(
+            {
+                "response_scale_x_px": 80.0,
+                "response_scale_y_px": 60.0,
+                "max_step_x_counts": 50.0,
+                "max_step_y_counts": 40.0,
+            }
+        )
     shared = control.get("shared")
     if shared is None:
         shared = {}
@@ -588,7 +609,7 @@ def _migrate_dual_control_modes(
     if legacy_mode_detected:
         control.setdefault("mode", "calibrated_angular")
     control["calibrated_angular"] = calibrated
-    control["universal_saturated"] = dict(universal)
+    control["universal_saturated"] = universal
     control["shared"] = shared
 
 

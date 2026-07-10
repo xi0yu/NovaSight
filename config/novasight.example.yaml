@@ -72,10 +72,10 @@ control:
     max_angle_step_x_deg: 2.0
     max_angle_step_y_deg: 1.5
   universal_saturated:
-    response_scale_x_px: 160.0
-    response_scale_y_px: 120.0
-    max_step_x_counts: 30.0
-    max_step_y_counts: 24.0
+    response_scale_x_px: 80.0
+    response_scale_y_px: 60.0
+    max_step_x_counts: 50.0
+    max_step_y_counts: 40.0
   shared:
     max_count_slew_x: 10.0
     max_count_slew_y: 8.0

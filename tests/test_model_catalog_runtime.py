@@ -79,6 +79,32 @@ def test_artifact_inspection_reuses_hash_until_file_changes(tmp_path, monkeypatc
     assert hashes == [model_path, model_path]
 
 
+def test_artifact_listing_includes_real_file_size(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["target"],
+        "1x3x320x320",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
+    artifact_path.write_bytes(b"x" * 1_500_000)
+    registry.create_artifact(
+        version.id,
+        "engine",
+        "demo.engine",
+        "sha256:test",
+        "ready",
+    )
+
+    artifacts = routes_models.list_artifacts(_request_with_registry(registry), version.id)
+
+    assert artifacts[0]["size_bytes"] == 1_500_000
+
+
 def test_model_replacement_keeps_deployed_artifact_file_immutable(tmp_path) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     source_root = tmp_path / "models"

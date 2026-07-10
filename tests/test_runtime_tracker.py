@@ -317,6 +317,32 @@ def test_initial_target_is_committed_without_switch_delay() -> None:
     assert selection.reason == "initial target committed"
 
 
+def test_target_selector_uses_explicit_control_center_inside_shifted_roi() -> None:
+    selector = RuntimeTargetSelector()
+    context = _context(
+        1,
+        1_000_000_000,
+        [
+            Detection(0, 0.9, x=300, y=240, w=40, h=100),
+            Detection(0, 0.9, x=340, y=240, w=40, h=100),
+        ],
+    )
+
+    selection = selector.select(
+        context,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        control_center_x_px=360.0,
+        control_center_y_px=320.0,
+        target_switch_delay_ms=0,
+    )
+
+    assert selection.target is not None
+    assert selection.target.cx == pytest.approx(360.0)
+    assert selector.last_debug["control_center_roi_px"] == {"x": 360.0, "y": 320.0}
+
+
 def test_switch_debounce_keeps_valid_locked_target_until_challenger_commits() -> None:
     selector = RuntimeTargetSelector()
     first = _context(
