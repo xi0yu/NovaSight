@@ -90,22 +90,34 @@ def create_app(
     systemd_notifier = SystemdNotifier(interval_s=watchdog_interval_from_env())
     instance_lock = InstanceLock()
 
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.config = config
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.config_path = Path(config_path)
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.models = models
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.executors = executors
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.hardware = hardware
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.license = LicenseStore(data_path / "license.json")
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.capture = capture
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.inference = inference
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.runtime = runtime
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.systemd_notifier = systemd_notifier
+    print("[trace]", __name__, "app.state before line=", type(app.state));
     app.state.instance_lock = instance_lock
 
     @app.on_event("startup")
     def start_process_lifecycle() -> None:
         instance_lock.acquire()
         systemd_notifier.start()
+        _auto_restore_capture(capture, config)
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
@@ -140,6 +152,47 @@ def create_app(
     app.include_router(system_router)
     app.include_router(websocket_router)
     return app
+
+
+def _auto_restore_capture(capture: CaptureService, config: RuntimeConfig) -> None:
+    # Reopen the last selected capture device so the user does not have
+    # to re-issue /api/capture/select on every backend boot. The runtime
+    # config persists the last successful profile to YAML; if the user
+    # then deliberately stops capture, source.default becomes "null" so
+    # auto-restore is skipped.
+    source_default = str(getattr(getattr(config, "source", None), "default", "") or "").strip()
+    if source_default != "capture":
+        return
+    capture_cfg = getattr(config, "capture", None)
+    device = str(getattr(capture_cfg, "device", "") or "").strip()
+    if not device:
+        return
+    try:
+        state = capture.configure(
+            device=device,
+            preference=str(getattr(capture_cfg, "preference", "manual") or "manual"),
+            pixel_format=getattr(capture_cfg, "pixel_format", None),
+            width=getattr(capture_cfg, "width", None),
+            height=getattr(capture_cfg, "height", None),
+            fps=getattr(capture_cfg, "fps", None),
+        )
+    except Exception as exc:
+        logger.warning("capture auto-restore failed device=%s error=%s", device, exc)
+        return
+    if getattr(state, "available", False) is True:
+        logger.info(
+            "capture auto-restore applied device=%s profile=%s",
+            device,
+            f"{state.profile.pixel_format} {state.profile.width}x{state.profile.height}@{state.profile.fps}"
+            if getattr(state, "profile", None) is not None
+            else "<unknown>",
+        )
+    else:
+        logger.info(
+            "capture auto-restore unavailable device=%s reason=%s",
+            device,
+            getattr(state, "last_error", "unknown"),
+        )
 
 
 def _install_studio_cors(app: FastAPI, config: RuntimeConfig) -> None:

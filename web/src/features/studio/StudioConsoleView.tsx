@@ -267,16 +267,20 @@ function buildBusinessTraceGuidance(
   const summaryMessage = readString(summaryStage?.message, message);
   const staleBatch =
     /DetectionBatch frame age exceeds control latency guard/i.test(message) ||
-    /DetectionBatch frame age exceeds control latency guard/i.test(summaryMessage);
+    /DetectionBatch frame age exceeds control latency guard/i.test(summaryMessage) ||
+    /DetectionBatch generation is no longer latest generation/i.test(message) ||
+    /DetectionBatch generation is no longer latest generation/i.test(summaryMessage) ||
+    /DetectionBatch frame_id is no longer latest frame_id/i.test(message) ||
+    /DetectionBatch frame_id is no longer latest frame_id/i.test(summaryMessage);
 
   if (staleBatch) {
     const ageMatch = (message || summaryMessage).match(/([0-9.]+)ms\s*>\s*([0-9.]+)ms/);
     const detail = ageMatch
       ? `采集与 ROI 已有反馈，但 DetectionBatch age=${ageMatch[1]}ms，超过控制保护阈值 ${ageMatch[2]}ms。`
-      : "采集与 ROI 已有反馈，但 DetectionBatch 已超过控制保护阈值。";
+      : "采集与 ROI 已有反馈，但推理结束时已有更新的 latest 帧，当前 DetectionBatch 被判定为旧结果。";
     return {
       tone: "failed",
-      title: "推理批次已过期，控制链路已保护拦截",
+      title: "推理批次不是最新，控制链路已保护拦截",
       detail,
       action: "优先检查 latest 帧准入、TensorRT 推理耗时和 runtime 消费是否滞后；目标、控制、执行阻塞是后续影响。"
     };
@@ -819,10 +823,18 @@ export function StudioConsoleView({
   const lastFrameAgeMs = readNumber(statistics?.last_frame_age_ms, 0);
   const controlLatencyGuardMs = 55;
   const inferenceThroughputHealthy = readNumber(statistics?.inference_fps, 0) > 0 || detectionBatchFps > 0;
+  const inferenceFreshnessGenerationLag = readNumber(inferenceTrace.generation_lag, 0);
+  const inferenceStaleRejected =
+    inferenceTrace.stale_rejected === true ||
+    inferenceTrace.latest_rejected === true ||
+    inferenceFreshnessGenerationLag > 0;
   const inferenceFreshnessBlocked =
-    inferenceThroughputHealthy &&
-    controlObservationFps <= 0 &&
-    lastFrameAgeMs > controlLatencyGuardMs;
+    inferenceStaleRejected ||
+    (
+      inferenceThroughputHealthy &&
+      controlObservationFps <= 0 &&
+      lastFrameAgeMs > controlLatencyGuardMs
+    );
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.status === "ready" &&
@@ -864,6 +876,20 @@ export function StudioConsoleView({
   const inferenceRan = inferenceTrace.ran === true;
   const inferenceAvailable = inferenceTrace.available === true;
   const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
+  const inferenceBatchGeneration = readNumber(
+    inferenceTrace.generation ?? inferenceTrace.detection_batch_generation,
+    Number.NaN
+  );
+  const inferenceLatestGeneration = readNumber(inferenceTrace.latest_generation, Number.NaN);
+  const inferenceGenerationLag = readNumber(inferenceTrace.generation_lag, Number.NaN);
+  const inferenceFrameIdLag = readNumber(inferenceTrace.frame_id_lag, Number.NaN);
+  const inferenceResultAgeMs = readNumber(
+    inferenceTrace.result_age_ms ?? inferenceTrace.detection_batch_result_age_ms,
+    Number.NaN
+  );
+  const latestFrameBroker = asRecord(pipeline.latest_frame_broker);
+  const latestBrokerPublishedGeneration = readNumber(latestFrameBroker.published_generation, Number.NaN);
+  const latestBrokerAcquiredGeneration = readNumber(latestFrameBroker.acquired_generation, Number.NaN);
   const inferenceDebug = asRecord(inferenceTrace.debug);
   const decodeDebug = asRecord(inferenceDebug.decode);
   const inferenceTimings = asRecord(inferenceDebug.timings);
@@ -2197,6 +2223,13 @@ export function StudioConsoleView({
                 <span>主链状态</span><b>{mainlineStatusLabel}</b>
                 <span>主链原因</span><b>{runtimeInferenceReason || "-"}</b>
                 <span className="wide">主链详情</span><b className="wide">{runtimeInferenceDetail || "-"}</b>
+                <span>Batch generation</span><b>{formatNumber(inferenceBatchGeneration, 0)}</b>
+                <span>Latest generation</span><b>{formatNumber(inferenceLatestGeneration, 0)}</b>
+                <span>落后 generation</span><b>{formatNumber(inferenceGenerationLag, 0)}</b>
+                <span>落后 frame_id</span><b>{formatNumber(inferenceFrameIdLag, 0)}</b>
+                <span>Batch age</span><b>{formatNumber(inferenceResultAgeMs, 1)} ms</b>
+                <span>Broker published</span><b>{formatNumber(latestBrokerPublishedGeneration, 0)}</b>
+                <span>Broker acquired</span><b>{formatNumber(latestBrokerAcquiredGeneration, 0)}</b>
                 <span>raw 检测</span><b>{String(rawDetections)}</b>
                 <span>前端检测</span><b>{String(mappedDetections)}</b>
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
@@ -2708,11 +2741,11 @@ export function StudioConsoleView({
                 <div className="stats-diagnosis failed">
                   <strong>吞吐正常，但批次新鲜度不合格</strong>
                   <span>
-                    latest 推理有输出，但控制观察为 0；
-                    最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms，
-                    已超过 {controlLatencyGuardMs.toFixed(0)}ms 控制保护阈值。
+                    latest 推理有输出，但批次未进入控制；
+                    落后 {formatNumber(inferenceGenerationLag, 0)} 帧，
+                    最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms。
                   </span>
-                  <em>实时控制不会补完旧帧；过期批次会被丢弃，只允许新鲜 DetectionBatch 进入控制。</em>
+                  <em>实时控制不会补完旧帧；过期或非 latest 的 DetectionBatch 会被丢弃。</em>
                 </div>
               ) : null}
               rows={[
@@ -2721,8 +2754,11 @@ export function StudioConsoleView({
               ["Batch 消费 FPS", formatNumber(statistics?.detection_batch_fps, 1)],
               ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
               ["跳过帧", formatNumber(statistics?.skipped_counter, 0)],
+              ["旧 batch 丢弃", formatNumber(statistics?.stale_drop_count, 0)],
+              ["推理落后帧", formatNumber(inferenceGenerationLag, 0)],
               ["时间戳", shortTimestampSource(readString(statistics?.timestamp_source, "-"))],
               ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
+              ["Batch age", formatNumber(inferenceResultAgeMs, 1)],
               ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
               ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
               ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],

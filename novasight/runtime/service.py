@@ -1220,19 +1220,29 @@ class RuntimeService:
         acquired_generation = (
             int(acquired_generation)
             if acquired_generation is not None
-            else int(getattr(frame, "frame_id", 0) or 0)
+            else int(getattr(frame, "generation", 0) or frame.frame_id)
         )
-        # Only the generation that was current at acquire time can vouch for
-        # the batch. Re-querying the broker here would always read a newer
-        # generation because inference latency is non-zero and the broker
-        # has published 1+ frames in the meantime — every batch would be
-        # rejected as stale.
+        acquired_frame_id = int(getattr(frame, "frame_id", 0) or acquired_generation)
+        latest_generation, latest_frame_id = self._latest_published_identity()
+        if latest_generation is None:
+            latest_generation = acquired_generation
+        if latest_frame_id is None:
+            latest_frame_id = acquired_frame_id
+        detection_generation = int(detection_batch.generation or detection_batch.frame_id)
+        freshness_extra = {
+            "acquired_generation": acquired_generation,
+            "acquired_frame_id": acquired_frame_id,
+            "latest_generation": latest_generation,
+            "latest_frame_id": latest_frame_id,
+            "generation_lag": max(0, int(latest_generation) - detection_generation),
+            "frame_id_lag": max(0, int(latest_frame_id) - int(detection_batch.frame_id)),
+        }
         freshness_reason = self._detection_batch_freshness_reason(detection_batch)
         if not freshness_reason:
             freshness_reason = self._detection_batch_latest_generation_reason(
                 detection_batch,
-                latest_generation=acquired_generation,
-                latest_frame_id=acquired_generation,
+                latest_generation=latest_generation,
+                latest_frame_id=latest_frame_id,
             )
         if not freshness_reason:
             freshness_reason = self._detection_batch_stale_reason(
@@ -1256,9 +1266,8 @@ class RuntimeService:
                 debug=inference_result.debug,
                 extra={
                     "stale_rejected": True,
-                    "latest_generation": acquired_generation,
-                    "latest_frame_id": acquired_generation,
                     "stale_drop_count": self.stale_drop_count,
+                    **freshness_extra,
                 },
             )
             control_start_ns = time.monotonic_ns()
@@ -1283,6 +1292,7 @@ class RuntimeService:
             classes=detection_batch.classes,
             detection_batch=detection_batch,
             debug=inference_result.debug,
+            extra=freshness_extra,
         )
 
         context = FrameContext(

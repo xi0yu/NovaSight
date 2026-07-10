@@ -818,7 +818,7 @@ def test_runtime_service_drops_detection_when_newer_generation_arrives_during_in
         image=None,
     )
 
-    result = service.process_captured_frame(frame, acquired_generation=2)
+    result = service.process_captured_frame(frame, acquired_generation=1)
     state = service.state()
 
     assert result.observation_updated is False
@@ -831,6 +831,72 @@ def test_runtime_service_drops_detection_when_newer_generation_arrives_during_in
     assert "control_observe_fps" in state.statistics
     assert "inference_ms" in state.statistics
     assert "postprocess_ms" in state.statistics
+
+
+def test_runtime_service_rechecks_latest_generation_after_inference_completes() -> None:
+    cfg = RuntimeConfig()
+    cfg.capture.memory = "system"
+    cfg.control.latency_reject_if_age_exceeds_ms = 55.0
+
+    class Broker:
+        def __init__(self) -> None:
+            self.published_generation = 1
+            self.published_frame_id = 1
+
+        def status(self) -> dict[str, int]:
+            return {
+                "published_generation": self.published_generation,
+                "published_frame_id": self.published_frame_id,
+            }
+
+    broker = Broker()
+
+    def infer(_frame):
+        broker.published_generation = 2
+        broker.published_frame_id = 2
+        return InferenceResult(
+            available=True,
+            detections=[],
+            classes=["target"],
+            debug={"timings": {}, "preprocess": {"model_width": 2, "model_height": 2}},
+        )
+
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("stale inference output must not execute"),
+        ),
+        capture=SimpleNamespace(latest_frame_broker=broker, state=CaptureRuntimeState()),
+        inference=SimpleNamespace(
+            status=lambda: {"available": True, "loaded": True, "selected": "tensorrt"},
+            infer=infer,
+        ),
+    )
+    frame = CapturedFrame(
+        frame_id=1,
+        generation=1,
+        width=2,
+        height=2,
+        pixel_format="BGR",
+        ts_ns=time.monotonic_ns(),
+        capture_wait_ms=1.0,
+        image=None,
+    )
+
+    result = service.process_captured_frame(frame, acquired_generation=1)
+
+    assert result.observation_updated is False
+    assert service.last_frame_context is None
+    assert service.last_inference_status["available"] is False
+    assert service.last_inference_status["stale_rejected"] is True
+    assert service.last_inference_status["acquired_generation"] == 1
+    assert service.last_inference_status["latest_generation"] == 2
+    assert service.last_inference_status["generation_lag"] == 1
+    assert "latest generation" in service.last_inference_status["reason"]
 
 
 def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_inference() -> None:
@@ -879,7 +945,7 @@ def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_infe
     assert service.last_frame_context is None
     assert service.last_inference_status["available"] is False
     assert service.last_inference_status["stale_rejected"] is True
-    assert service.last_inference_status["latest_generation"] == 2
+    assert service.last_inference_status["latest_generation"] == 1
     assert service.last_inference_status["latest_frame_id"] == 2
     assert ("latest frame_id" in service.last_inference_status["reason"]
             or "latest generation" in service.last_inference_status["reason"])
