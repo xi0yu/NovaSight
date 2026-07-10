@@ -327,7 +327,7 @@ def test_runtime_config_defaults_include_experimental_angle_settings() -> None:
     assert cfg.control.latency_max_velocity_px_s == 2500.0
     assert cfg.control.latency_min_velocity_measurements == 3
     assert cfg.control.latency_min_velocity_confidence == 0.65
-    assert cfg.control.latency_estimated_actuation_delay_ms == 2.0
+    assert cfg.control.configured_extra_prediction_delay_ms == 2.0
 
 
 def test_runtime_config_defaults_include_inference_settings() -> None:
@@ -444,6 +444,7 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.calibration.fov_x_deg == 105
     assert cfg.calibration.counts_per_360_x == 9980
     assert cfg.calibration.axis_sign_x == 1
+    assert cfg.control.configured_extra_prediction_delay_ms == pytest.approx(2.0)
 
 
 def test_runtime_config_migrates_legacy_control_calibration_fields() -> None:
@@ -463,6 +464,15 @@ def test_runtime_config_migrates_legacy_control_calibration_fields() -> None:
     assert cfg.calibration.counts_per_360_y == 9900
     assert cfg.calibration.axis_sign_x == -1
     assert cfg.calibration.axis_sign_y == 1
+
+
+def test_runtime_config_migrates_legacy_actuation_delay_to_extra_prediction_delay() -> None:
+    cfg = parse_runtime_config(
+        {"control": {"latency_estimated_actuation_delay_ms": 7.5}}
+    )
+
+    assert cfg.control.configured_extra_prediction_delay_ms == pytest.approx(7.5)
+    assert not hasattr(cfg.control, "latency_estimated_actuation_delay_ms")
 
 
 def test_runtime_config_validates_recording_format() -> None:
@@ -511,6 +521,7 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"latency_min_velocity_measurements": 0}}, "control.latency_min_velocity_measurements"),
         ({"control": {"latency_min_velocity_confidence": 1.5}}, "control.latency_min_velocity_confidence"),
         ({"control": {"latency_min_velocity_px_s": 100, "latency_max_velocity_px_s": 50}}, "control.latency_max_velocity_px_s"),
+        ({"control": {"configured_extra_prediction_delay_ms": -1}}, "control.configured_extra_prediction_delay_ms"),
     ],
 )
 def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_path: str) -> None:
@@ -780,6 +791,8 @@ def test_runtime_config_schema_exposes_only_experimental_angle_control_fields() 
         field for field in control_section["fields"] if field["path"] == "control.strategy"
     )
     assert strategy_field["options"] == ["experimental_angle_pid"]
+    assert "control.configured_extra_prediction_delay_ms" in paths
+    assert "control.latency_estimated_actuation_delay_ms" not in paths
 
 
 def test_runtime_config_schema_exposes_calibration_profile() -> None:

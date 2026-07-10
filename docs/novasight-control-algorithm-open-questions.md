@@ -12,7 +12,7 @@
 - 缺少什么：Jetson 实测 trace，包含 `capture_ts_ns`、`inference_end_ts_ns`、`control_now_ns`、Scheduler emit、device send、画面反馈。
 - 为什么当前不能验证：当前代码能记录 frame age 和部分 pipeline timing，但无法证明 HID/KMBOX 到游戏画面反馈的真实延迟。
 - 最小验证步骤：录制 60 秒运行 trace，人工或脚本标注命令发送与画面响应。
-- 指标：`prediction_horizon_ms`、`device_send_to_visual_feedback_ms`、`result_age_ms`、`overshoot_px`。
+- 指标：`configured_extra_prediction_delay_ms`、`prediction_horizon_ms`、`device_send_to_visual_feedback_ms`、`result_age_ms`、`overshoot_px`。
 
 ### E-02 Kp、Kd 与 prediction_gain 的耦合参数
 
@@ -86,6 +86,14 @@
 - 最小验证步骤：构造双目标交叉、遮挡、分数波动场景。
 - 指标：false_switch_count、switch_latency_frames、identity_uncertain_duration。
 
+### E-11 近期自身控制对屏幕速度可信度的影响
+
+- 类别：实验项
+- 缺少什么：静止目标、不同方向和不同强度实际设备输出下的屏幕位移 trace。
+- 为什么当前不能验证：屏幕视线速度包含目标相对运动、camera-induced motion 和检测噪声，且发送到画面反馈存在未知延迟。
+- 最小验证步骤：记录成功发送 counts 的 20/40/60 ms 窗口，运行静止目标无输出、静止目标单向输出、同向跟随和左右摆动四类轨迹。
+- 指标：`raw_observed_vx_px_s`、`filtered_observed_vx_px_s`、`executed_counts_last_20ms`、`executed_counts_last_40ms`、`executed_counts_last_60ms`、`velocity_confidence`、`center_crossing_count`。
+
 ## 2. 阻塞项
 
 ### B-01 已发送但未生效 counts 无法精确估计
@@ -108,6 +116,13 @@
 - 缺少什么：正常负载、过载、目标丢失、目标切换、UI 压力下的统一 trace。
 - 影响：不能关闭 stale ratio、result age、control_observation_fps 和 pending 债务问题。
 - 最小解除条件：至少采集每类 60 秒 trace，字段见主审计文档第 17 节。
+
+### B-04 已执行 counts 与采集画面的时序对应未知
+
+- 类别：阻塞项
+- 缺少什么：Scheduler send、设备成功返回、游戏消费输入、画面产生和采集卡输出之间的统一时序标定。
+- 影响：不能断言某个采集区间内发送的 counts 已经完整反映在当前帧中，因而不能把 self-motion subtraction 当正式真值。
+- 最小解除条件：建立 send-to-visual trace，对不同负载下的延迟分布和抖动进行测量。
 
 ## 3. 待定实现项
 
@@ -144,9 +159,9 @@
 ### P-05 D 项使用误差差分还是 Kalman 速度投影
 
 - 类别：暂定结论
-- 当前判断：Kalman 速度更接近目标运动，误差差分更像闭环阻尼，两者不能混用不标注。
+- 当前判断：Kalman 速度是屏幕视线速度估计，误差差分更像闭环阻尼；两者都包含自身控制影响，不能混用或称为纯目标速度。
 - 风险：误差差分包含鼠标自身造成的画面运动。
-- 下一步：同时记录 `target_v_rad_s` 与 `error_rate_rad_s`，做 A/B。
+- 下一步：同时记录 `observed_screen_velocity_rad_s`、`error_rate_rad_s` 与近期成功发送 counts，做 A/B。
 
 ### P-06 方向反转时 EMA/D 如何衰减
 
@@ -162,6 +177,13 @@
 - 风险：最小输出过大会左右震荡；没有最小输出会卡在静态误差。
 - 下一步：完成 E-07 后再定。
 
+### P-08 自运动补偿何时可进入正式预测
+
+- 类别：暂定结论
+- 当前判断：阶段 3.5 只做 Shadow Mode；在 B-04 解除前不得使用 `estimated_relative_velocity` 驱动正式预测。
+- 风险：错误的 counts-to-frame 对齐比不补偿更危险，会制造方向错误和预测尖峰。
+- 下一步：对比 `observed_delta_px`、`estimated_self_delta_px`、`estimated_relative_delta_px` 与真实静止目标轨迹，再决定是否进入主线。
+
 ## 4. 本轮已关闭的问题
 
 - EMA 不是控制器，不能替代 PD/PID。
@@ -175,5 +197,6 @@
 
 1. 运行 trace schema 任务：把主审计文档第 17 节指标写入统一日志/录制格式。
 2. pending/applied counts 建模任务：只处理 Scheduler、executor、Runtime 的状态闭环。
-3. 控制参数 A/B 任务：固定硬件和模型后比较 P、prediction+P、prediction+small-D。
-4. 标定任务：建立 counts_per_360、axis sign、min effective counts 的实测流程。
+3. 自运动遥测任务：记录成功发送 counts 时间窗和 Shadow Mode self-induced displacement。
+4. 控制参数 A/B 任务：固定硬件和模型后比较 P、prediction+P、prediction+small-D。
+5. 标定任务：建立 counts_per_360、axis sign、min effective counts 的实测流程。

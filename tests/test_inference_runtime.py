@@ -7037,7 +7037,7 @@ def test_latency_compensator_uses_state_timestamp_and_vector_clamp() -> None:
             max_velocity_px_s=3000,
             min_velocity_measurements=2,
             min_velocity_confidence=0,
-            estimated_actuation_delay_ms=0,
+            extra_prediction_delay_ms=0,
         ),
     )
 
@@ -7160,7 +7160,7 @@ def test_latency_compensator_stops_when_compensated_point_leaves_roi() -> None:
             max_velocity_px_s=4000,
             min_velocity_measurements=2,
             min_velocity_confidence=0,
-            estimated_actuation_delay_ms=0,
+            extra_prediction_delay_ms=0,
         ),
     )
 

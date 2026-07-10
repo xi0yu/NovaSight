@@ -80,7 +80,7 @@ next observation cancels remaining old plan and replaces it
 
 - The currently active strategy is `ExperimentalAnglePidStrategy`; `RuntimeService._create_control_strategy()` only accepts `experimental_angle_pid` and constructs that strategy in `novasight/runtime/service.py:2056-2118`.
 - `ExperimentalAnglePidStrategy.calculate()` requires a `compensated_target` payload. Without it, it resets the angular controller and emits zero in `novasight/control/strategy.py:183-260`.
-- `LatencyCompensator` calculates `measurement_age_ms = compute_ts_ns - capture_ts_ns`, applies velocity-based compensation using `compute_ts_ns + estimated_actuation_delay_ms - estimate.state_ts_ns`, and clamps by `max_compensation_ms` and `max_compensation_px` in `novasight/runtime/aim.py:195-383`.
+- `LatencyCompensator` calculates `measurement_age_ms = compute_ts_ns - capture_ts_ns`, applies velocity-based compensation using `compute_ts_ns + extra_prediction_delay_ms - estimate.state_ts_ns`, and clamps by `max_compensation_ms` and `max_compensation_px` in `novasight/runtime/aim.py:195-383`.
 - `AimPointGenerator` applies EMA to aim anchor points by track id in `novasight/runtime/aim.py:119-192`.
 - `AngularErrorMapper` converts compensated control-space point to pixel error and radians using horizontal FOV, derived vertical FOV, and focal lengths in `novasight/control/angular.py:144-220`.
 - `AngularPDController` is P+D, not full PID. It has no integral state; `ExperimentalAnglePidStrategy` accepts `ki/integral_limit` but deletes/ignores related legacy parameters when constructing `AngularPDConfig` in `novasight/control/strategy.py:44-181`.
@@ -180,7 +180,8 @@ next observation cancels remaining old plan and replaces it
 - `control.latency_max_velocity_px_s`
 - `control.latency_min_velocity_measurements`
 - `control.latency_min_velocity_confidence`
-- `control.latency_estimated_actuation_delay_ms`
+- `control.configured_extra_prediction_delay_ms`
+  - Legacy input key `control.latency_estimated_actuation_delay_ms` is migrated during config loading.
 
 ### Active control and scheduler
 
@@ -222,7 +223,7 @@ next observation cancels remaining old plan and replaces it
 
 - Tracker/Kalman velocity dt uses target observation timestamps via `context.capture_ts_ns`.
 - Angular D term dt uses control strategy `dt = 1 / control_hz`, not visual measurement dt.
-- Latency compensation has `measurement_age_ms` and `compensation_ms`, but does not expose the requested `prediction_horizon_s = frame_age_s + actuation_delay_s` name.
+- Latency compensation has `measurement_age_ms` and `compensation_ms`, but does not expose the corrected `prediction_horizon_s = frame_age_s + configured_extra_prediction_delay_s` name.
 
 ### Missing as first-class fields for the new plan
 
@@ -274,7 +275,7 @@ Important behavior:
 
 - `RuntimePipeline._control_loop()` / `RuntimeService.process_control_tick()` repeated recomputation from `last_frame_context` conflicts with mandatory mode A.
 - `ExperimentalAnglePidStrategy` should not stay the new algorithm boundary; it mixes prediction payload consumption, error projection, PD, count mapping, residuals, and output shaping.
-- `LatencyCompensator` currently does prediction-like compensation from Kalman velocity and aim EMA. The new plan needs explicit `MotionEstimator`, `VelocityFilter`, and `PredictionModel`; first version should avoid reusing aim EMA as velocity smoothing.
+- `LatencyCompensator` currently does prediction-like compensation from Kalman velocity and aim EMA. The corrected plan needs explicit `ScreenMotionEstimator`, `ObservedVelocityEmaFilter`, `ExecutedControlTelemetry`, `VelocityConfidenceModel`, and `ConservativePredictionModel`; first version should avoid reusing aim EMA as velocity smoothing.
 - `AimPointGenerator` applies position EMA. The plan allows only speed EMA, D EMA, and optional weak output smoothing unless tracker/Kalman is already handling position. We need decide whether aim EMA remains enabled in `predictive_pid_v2`.
 - `AngularPDController` uses `dt = 1/control_hz` for D, not `measurement_dt_s`; this must change for PIDv2.
 - `ControlConfig.strategy` validation and UI schema need algorithm switch support: `legacy | predictive_pid_v2`, with a defined mapping from current `experimental_angle_pid`.
@@ -320,6 +321,11 @@ Important behavior:
 
 9. `move_kind=bezier` / `move_ms` can delegate motion shaping to kmNet driver APIs.
    - This may conflict with scheduler-owned small-step plans unless explicitly disabled or modeled.
+
+10. Screen-space velocity is not target-world velocity.
+   - Consecutive aim-point displacement contains relative target motion, camera-induced motion from NovaSight's own executed counts, and detection/tracker noise.
+   - Treating this value as pure target motion can cause excessive lead, early braking, center crossing, and alternating correction.
+   - The new path must use `observed_screen_velocity` terminology and suppress prediction confidence after significant successful device output.
 
 ## Stage 0 End Questions
 
@@ -388,3 +394,20 @@ Option A. It matches the plan requirement for runtime switch and rollback, avoid
 Range I will not modify before confirmation:
 
 - I will not change control behavior, strategy validation, scheduler behavior, or executor send behavior until stage 1 is confirmed.
+
+## Post-Stage-1 Prediction Correction
+
+The prediction state definition was corrected after stage 1. The canonical remaining plan is:
+
+```text
+docs/control/predictive_pid_v2_implementation_plan.md
+```
+
+Key corrections:
+
+- New velocity fields represent screen line-of-sight velocity, not pure target motion.
+- Stage 2 is now screen motion estimation in shadow mode.
+- Stage 2.5 records successful executed counts in capture and recent time windows.
+- Stage 3 applies time-based recent-control confidence suppression to conservative prediction.
+- Stage 3.5 estimates self-induced displacement in shadow mode only.
+- `configured_extra_prediction_delay_ms` replaces misleading actuation-delay terminology.

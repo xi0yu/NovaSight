@@ -7,6 +7,12 @@ import pytest
 
 from novasight.config import RuntimeConfig
 from novasight.contracts import Detection, DetectionBatch
+from novasight.runtime.aim import (
+    AimPointState,
+    EstimatedTargetState,
+    LatencyCompensationConfig,
+    LatencyCompensator,
+)
 from novasight.runtime.control_timing import ControlTimingModel
 from novasight.runtime.service import RuntimeService
 from novasight.runtime.telemetry import get_telemetry_summary
@@ -21,7 +27,7 @@ def test_control_timing_uses_capture_delta_and_separates_frame_age() -> None:
         capture_ts_ns=1_000_000_000,
         inference_end_ts_ns=1_004_000_000,
         control_now_ts_ns=1_012_000_000,
-        configured_actuation_delay_ms=4.0,
+        configured_extra_prediction_delay_ms=4.0,
     )
     second = timing.observe(
         frame_id=11,
@@ -29,7 +35,7 @@ def test_control_timing_uses_capture_delta_and_separates_frame_age() -> None:
         capture_ts_ns=1_020_000_000,
         inference_end_ts_ns=1_025_000_000,
         control_now_ts_ns=1_033_000_000,
-        configured_actuation_delay_ms=4.0,
+        configured_extra_prediction_delay_ms=4.0,
     )
 
     assert first.measurement_dt_s is None
@@ -44,8 +50,8 @@ def test_control_timing_uses_capture_delta_and_separates_frame_age() -> None:
         "control_now_ts_ns": 1_033_000_000,
         "measurement_dt_ms": pytest.approx(20.0),
         "frame_age_ms": pytest.approx(13.0),
-        "configured_actuation_delay_ms": pytest.approx(4.0),
-        "actuation_delay_source": "configured_estimate",
+        "configured_extra_prediction_delay_ms": pytest.approx(4.0),
+        "extra_prediction_delay_source": "configured_estimate",
         "prediction_horizon_ms": pytest.approx(17.0),
     }
 
@@ -58,7 +64,7 @@ def test_control_timing_target_switch_starts_a_new_measurement_sequence() -> Non
         capture_ts_ns=1_000_000_000,
         inference_end_ts_ns=1_004_000_000,
         control_now_ts_ns=1_012_000_000,
-        configured_actuation_delay_ms=4.0,
+        configured_extra_prediction_delay_ms=4.0,
     )
 
     switched = timing.observe(
@@ -67,7 +73,7 @@ def test_control_timing_target_switch_starts_a_new_measurement_sequence() -> Non
         capture_ts_ns=1_020_000_000,
         inference_end_ts_ns=1_025_000_000,
         control_now_ts_ns=1_033_000_000,
-        configured_actuation_delay_ms=4.0,
+        configured_extra_prediction_delay_ms=4.0,
     )
 
     assert switched.target_id == 8
@@ -79,7 +85,7 @@ def test_detection_batch_observation_publishes_complete_control_timing(caplog) -
     config = RuntimeConfig()
     config.control.fov_ratio = 1.0
     config.control.tracker_confirm_frames = 1
-    config.control.latency_estimated_actuation_delay_ms = 4.0
+    config.control.configured_extra_prediction_delay_ms = 4.0
     config.runtime.freshness_threshold_ms = 1_000.0
     config.control.latency_reject_if_age_exceeds_ms = 1_000.0
     service = RuntimeService(
@@ -120,8 +126,8 @@ def test_detection_batch_observation_publishes_complete_control_timing(caplog) -
     assert timing["control_now_ts_ns"] >= timing["capture_ts_ns"]
     assert timing["measurement_dt_ms"] == pytest.approx(10.0)
     assert timing["frame_age_ms"] >= 0.0
-    assert timing["configured_actuation_delay_ms"] == pytest.approx(4.0)
-    assert timing["actuation_delay_source"] == "configured_estimate"
+    assert timing["configured_extra_prediction_delay_ms"] == pytest.approx(4.0)
+    assert timing["extra_prediction_delay_source"] == "configured_estimate"
     assert timing["prediction_horizon_ms"] == pytest.approx(timing["frame_age_ms"] + 4.0)
     assert service.last_inference_status["measurement_dt_ms"] == pytest.approx(10.0)
     assert service.last_inference_status["prediction_horizon_ms"] == pytest.approx(
@@ -140,8 +146,8 @@ def test_telemetry_summary_exposes_control_timing_snapshot() -> None:
         "control_now_ts_ns": 1_033_000_000,
         "measurement_dt_ms": 20.0,
         "frame_age_ms": 13.0,
-        "configured_actuation_delay_ms": 4.0,
-        "actuation_delay_source": "configured_estimate",
+        "configured_extra_prediction_delay_ms": 4.0,
+        "extra_prediction_delay_source": "configured_estimate",
         "prediction_horizon_ms": 17.0,
     }
     runtime = SimpleNamespace(
@@ -166,8 +172,8 @@ def test_telemetry_summary_keeps_rejected_batch_time_chain_visible() -> None:
         "control_now_ts_ns": 1_100_000_000,
         "measurement_dt_ms": None,
         "frame_age_ms": 80.0,
-        "configured_actuation_delay_ms": 4.0,
-        "actuation_delay_source": "configured_estimate",
+        "configured_extra_prediction_delay_ms": 4.0,
+        "extra_prediction_delay_source": "configured_estimate",
         "prediction_horizon_ms": 84.0,
     }
     runtime = SimpleNamespace(
@@ -182,3 +188,55 @@ def test_telemetry_summary_keeps_rejected_batch_time_chain_visible() -> None:
     summary = get_telemetry_summary(SimpleNamespace(runtime=runtime))
 
     assert summary["control_timing"] == rejected_batch_timing
+
+
+def test_latency_compensator_uses_extra_prediction_delay_as_additional_lead() -> None:
+    aim = AimPointState(
+        track_id=7,
+        state_ts_ns=10_000_000,
+        raw_x=100.0,
+        raw_y=100.0,
+        smoothed_x=100.0,
+        smoothed_y=100.0,
+        center_x=100.0,
+        center_y=100.0,
+        anchor_jump_norm=0.0,
+        aim_confidence=1.0,
+    )
+    estimate = EstimatedTargetState(
+        track_id=7,
+        state_ts_ns=10_000_000,
+        capture_ts_ns=8_000_000,
+        x=100.0,
+        y=100.0,
+        vx=1_000.0,
+        vy=0.0,
+        valid=True,
+        prediction_confidence=1.0,
+        velocity_measurements=3,
+    )
+
+    result = LatencyCompensator().compensate(
+        aim=aim,
+        estimate=estimate,
+        source_frame_id=11,
+        compute_ts_ns=20_000_000,
+        roi_offset_x=0.0,
+        roi_offset_y=0.0,
+        roi_width=640.0,
+        roi_height=640.0,
+        config=LatencyCompensationConfig(
+            scale=1.0,
+            max_compensation_ms=100.0,
+            reject_if_age_exceeds_ms=100.0,
+            max_compensation_px=100.0,
+            min_velocity_px_s=0.0,
+            max_velocity_px_s=2_000.0,
+            min_velocity_measurements=2,
+            min_velocity_confidence=0.0,
+            extra_prediction_delay_ms=5.0,
+        ),
+    )
+
+    assert result.compensation_ms == pytest.approx(15.0)
+    assert result.delta_x == pytest.approx(15.0)

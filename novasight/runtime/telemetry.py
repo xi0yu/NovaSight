@@ -13,8 +13,8 @@ _CONTROL_TIMING_FIELDS = (
     "control_now_ts_ns",
     "measurement_dt_ms",
     "frame_age_ms",
-    "configured_actuation_delay_ms",
-    "actuation_delay_source",
+    "configured_extra_prediction_delay_ms",
+    "extra_prediction_delay_source",
     "prediction_horizon_ms",
 )
 

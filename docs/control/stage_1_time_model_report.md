@@ -19,6 +19,13 @@ Scope: stage 1 only. This stage adds a shared observation timing model and telem
   - Falls back to the latest rejected DetectionBatch timing when no valid target snapshot exists.
 - `novasight/runtime/__init__.py`
   - Exports the new timing model and snapshot types.
+- `novasight/config/runtime.py` and `novasight/config/schema.py`
+  - Use the canonical `configured_extra_prediction_delay_ms` name.
+  - Migrate the legacy actuation-delay input key during config loading.
+- `novasight/runtime/aim.py`
+  - Uses `extra_prediction_delay_ms` internally so the active legacy path does not silently ignore the renamed configuration.
+- `config/novasight.example.yaml`
+  - Documents that the value is additional prediction lead, not measured end-to-end delay.
 - `tests/test_control_timing.py`
   - Adds focused timing semantics and RuntimeService integration tests.
 
@@ -34,7 +41,7 @@ inference_end_ts_ns
 control_now_ts_ns
 measurement_dt_s
 frame_age_s
-configured_actuation_delay_s
+configured_extra_prediction_delay_s
 prediction_horizon_s
 ```
 
@@ -52,7 +59,7 @@ frame_age_s
 = max(0, control_now_ts_ns - capture_ts_ns)
 
 prediction_horizon_s
-= frame_age_s + configured_actuation_delay_s
+= frame_age_s + configured_extra_prediction_delay_s
 ```
 
 The model does not substitute control-loop or Scheduler tick time for `measurement_dt_s`.
@@ -71,8 +78,8 @@ inference_end_ts_ns
 control_now_ts_ns
 measurement_dt_ms
 frame_age_ms
-configured_actuation_delay_ms
-actuation_delay_source=configured_estimate
+configured_extra_prediction_delay_ms
+extra_prediction_delay_source=configured_estimate
 prediction_horizon_ms
 ```
 
@@ -88,15 +95,15 @@ The `novasight.runtime.service` debug log emits `control_timing event=detection_
 
 ## Configuration
 
-No new configuration key was added.
-
-Stage 1 reuses the existing calibration estimate:
+The canonical configuration key is:
 
 ```text
-control.latency_estimated_actuation_delay_ms
+control.configured_extra_prediction_delay_ms
 ```
 
-Telemetry labels it as `configured_estimate`. The existing default remains unchanged and is not treated as an optimal measured value.
+Telemetry labels it as `configured_estimate`. The existing default remains unchanged and is not treated as an optimal measured value. The legacy input key `control.latency_estimated_actuation_delay_ms` is accepted only by the config migration layer.
+
+This terminology correction followed the self-motion review. The remaining authoritative stage plan is `docs/control/predictive_pid_v2_implementation_plan.md`.
 
 The `legacy | predictive_pid_v2` runtime algorithm switch remains deferred. Enabling an unfinished strategy in stage 1 would misrepresent runtime behavior.
 
@@ -104,7 +111,7 @@ The `legacy | predictive_pid_v2` runtime algorithm switch remains deferred. Enab
 
 - Capture delta is used for `measurement_dt_s`.
 - Frame age is calculated independently from measurement delta.
-- Prediction horizon equals frame age plus configured actuation delay.
+- Prediction horizon equals frame age plus configured extra prediction delay.
 - Target switch starts a new measurement sequence.
 - RuntimeService publishes complete timing for consecutive same-target DetectionBatch observations.
 - Telemetry exposes accepted observation timing.
@@ -120,7 +127,10 @@ All checks passed
 passed
 
 ./.venv/bin/python -m pytest tests/test_control_timing.py tests/test_runtime_pipeline.py::test_runtime_service_rejects_detection_batch_generation_and_capture_rollback tests/test_runtime_pipeline.py::test_runtime_service_rejects_stale_detection_batch_before_control -q
-7 passed
+8 passed
+
+./.venv/bin/python -m pytest tests/test_control_timing.py tests/test_config_runtime.py -q
+94 passed
 
 ./.venv/bin/python -m pytest tests/test_runtime_pipeline.py -q
 37 passed, 6 skipped
@@ -129,15 +139,15 @@ passed
 6 passed
 
 ./.venv/bin/python -m pytest -q --ignore=tests/test_frontend_studio_contract.py
-248 passed, 8 skipped
+251 passed, 8 skipped
 ```
 
-The unfiltered full suite reported `250 passed, 8 skipped, 1 failed`. The failure is in `tests/test_frontend_studio_contract.py` because the current unrelated `web/src/features/studio/StudioConsoleView.tsx` worktree content no longer contains the test's expected `ROI 裁剪` heading. Stage 1 does not modify frontend files.
+The unfiltered full suite reported `253 passed, 8 skipped, 1 failed`. The failure is in `tests/test_frontend_studio_contract.py` because the current unrelated `web/src/features/studio/StudioConsoleView.tsx` worktree content no longer contains the test's expected `ROI 裁剪` heading. Stage 1 does not modify frontend files.
 
 ## Remaining Risks
 
 1. `capture_ts_ns` remains userspace monotonic receive time, not physical sensor exposure time.
-2. `configured_actuation_delay_ms` is still a static estimate and has not been measured on hardware.
+2. `configured_extra_prediction_delay_ms` is a static prediction lead, not a measured physical end-to-end delay.
 3. `measurement_dt_ms` is available only after the selector provides two consecutive observations with the same valid track id.
 4. The active `experimental_angle_pid` D term still uses control-loop dt. Stage 1 records the correct measurement dt but deliberately does not change PID behavior.
 5. The active runtime still repeatedly recalculates control from `last_frame_context`; mode A scheduling is not implemented in this stage.

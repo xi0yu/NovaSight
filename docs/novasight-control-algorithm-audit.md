@@ -37,7 +37,8 @@ Fresh DetectionBatch
   -> TargetSelector
   -> Tracker / Kalman
   -> AimPoint EMA
-  -> LatencyCompensation
+  -> observed screen velocity + confidence
+  -> bounded conservative prediction
   -> AngularErrorMapper
   -> P / small-D controller
   -> counts calibration + residual
@@ -65,7 +66,9 @@ flowchart LR
     Sel --> Tr[Tracker<br/>ID/状态/关联/NIS]
     Tr --> K[Kalman<br/>x y vx vy + covariance]
     K --> Aim[AimPoint EMA<br/>只平滑瞄准锚点]
-    Aim --> Pred[LatencyCompensation<br/>预测到预计生效时刻]
+    Aim --> Vel[ScreenMotionEstimator<br/>屏幕视线速度]
+    Vel --> Exec[ExecutedControlTelemetry<br/>实际发送 counts 时间窗]
+    Exec --> Pred[ConservativePrediction<br/>可信度抑制/短时限幅]
     Pred --> Map[AngularErrorMapper<br/>px -> rad]
     Map --> PD[Angular P/PD<br/>D EMA/zone gain]
     PD --> Counts[counts mapping<br/>limit/residual/slew]
@@ -79,10 +82,11 @@ flowchart LR
 |---|---|---|
 | EMA | 抑制局部噪声；当前适合用于 AimPoint 锚点和 D 项差分后平滑 | 替代 PD/PID；重度平滑 P 项；跨 target 继承状态 |
 | Kalman | 估计目标位置、速度、协方差和预测可信度 | 替代控制器；直接输出鼠标 counts |
-| 预测 | 把状态外推到预计控制生效时刻 | 当成滤波器；在 stale 输入上无限外推 |
+| 屏幕速度估计 | 估计目标瞄点相对屏幕的运动 | 声称得到目标世界速度；忽略自身控制造成的画面运动 |
+| 预测 | 按屏幕速度、近期实际输出可信度和短时 horizon 外推参考点 | 当成滤波器；在 stale 输入上无限外推；直接发送预测位置 |
 | P/PD | 将角度误差转为控制角度 | 重新做目标状态估计；无约束叠加速度补偿 |
 | Scheduler | 分步、限速、替换旧轨迹、处理 TTL 和设备错误 | 保留历史控制债务；决定目标选择 |
-| counts calibration | 把角度控制量映射为设备 counts | 修正检测抖动或目标速度 |
+| counts calibration | 把角度控制量映射为设备 counts | 修正检测抖动或屏幕视线速度 |
 
 ## 4. EMA 与 PD/PID
 
@@ -161,7 +165,7 @@ stateDiagram-v2
 - 微调不应限制为只执行一次。动态目标需要连续控制，静态目标也需要因检测抖动、输出量化和设备反馈延迟持续修正。
 - 首次定位与微调不应同一帧叠加输出；否则同一误差会被计算两次。
 - 距中心很近的新目标可以跳过 Acquire 的大步定位，直接进入 TrackMicro。
-- 新目标第二帧不应立即开启满权重预测；至少等速度观测数达到门限，再按 `lambda_pred` 逐步增加。
+- 新目标第二帧不应立即开启满权重预测；至少等速度观测数达到门限，再逐步提高 `velocity_confidence`，并保持保守 `prediction_scale`。
 - 目标 ID 切换时必须清空旧 target 的 AimPoint EMA、D 项、residual 和 Scheduler pending。
 - 远距离新目标的首次定位宜移动理论量的一部分，而不是完整误差；比例需要真实 A/B 决定。
 
@@ -190,69 +194,92 @@ state_ts_ns -----------------------------------------------------> predict_to_ns
 predict_to_ns = control_now_ns
               + estimated_scheduler_wait_ns
               + estimated_device_send_ns
-              + estimated_actuation_delay_ns
+              + configured_extra_prediction_delay_ns
               + optional_game_feedback_delay_ns
 
 horizon_s = clamp((predict_to_ns - state_ts_ns) / 1e9, 0, horizon_max_s)
 ```
 
-当前代码证据：LatencyCompensator 至少使用 `compute_ts_ns + estimated_actuation_delay_ms`，并用 `max_compensation_ms` 限制补偿时长。
+当前代码证据：LatencyCompensator 使用 `compute_ts_ns + configured_extra_prediction_delay_ms`，并用 `max_compensation_ms` 限制补偿时长。该配置只是额外预测 lead，不表示已测得完整物理执行延迟。
+
+观测速度定义：
+
+```text
+v_observed_screen
+= (p_current - p_previous) / measurement_dt
+
+v_observed_screen
+= v_relative_target
++ v_camera_induced
++ v_detection_noise
+```
+
+三个分量的符号由屏幕坐标、鼠标方向、axis sign 和游戏相机约定共同决定。`v_observed_screen` 是屏幕视线速度，不是目标在游戏世界中的真实速度。
 
 位置预测：
 
 ```text
-p_pred = p + v * horizon
-p_used = p + lambda_pred * v * horizon
+p_pred
+= p
++ v_observed_screen
+   * horizon
+   * velocity_confidence
+   * prediction_scale
 ```
 
 - `p`：当前估计位置，单位 px。
-- `v`：目标速度，单位 px/s。
+- `v_observed_screen`：屏幕视线速度，单位 px/s，包含目标相对运动、自身视角运动和噪声。
 - `horizon`：预测时长，单位 s。
-- `lambda_pred`：预测权重，0 到 1。
-- 输出 `p_pred` / `p_used`：px。
+- `velocity_confidence`：近期实际设备输出对速度可信度的抑制，0 到 1。
+- `prediction_scale`：保守预测强度，0 到 1，第一版应小于 1。
+- 输出 `p_pred`：预测参考点，单位 px。
 
 暂定结论：
 
 - 第一帧目标不应预测；至少需要 2 帧才能有有限差分速度，当前默认要求 `min_velocity_measurements=3` 更保守。
 - 加速度模型不应默认启用。视觉检测抖动、目标遮挡和鼠标自身运动会让二阶加速度极不稳定。
-- 目标突然反向时，应快速降低 `lambda_pred` 或清空速度 EMA，而不是继续使用旧方向速度。
+- 目标突然反向时，应快速降低 `velocity_confidence` 或清空速度 EMA，而不是继续使用旧方向速度。
+- 最近 20/40/60 ms 内存在显著成功发送 counts 时，应按时间窗口降低 `velocity_confidence`，不得用固定 1 到 2 帧表达。
+- 完整自运动扣除必须等到 counts 与画面反馈完成时序对齐；此前只能 Shadow Mode。
 
 ## 7. 预测与 D 项的重复补偿
 
 核心公式：
 
 ```text
-u = Kp * e_pred + Kd * v
-e_pred = e + v * h
+u = Kp * e_pred + Kd * error_rate
+e_pred = e + observed_screen_rate * h * velocity_confidence * prediction_scale
 
 展开：
-u = Kp * e + Kp * v * h + Kd * v
-u = Kp * e + (Kp * h + Kd) * v
+u = Kp * e
+  + Kp * observed_screen_rate * h * velocity_confidence * prediction_scale
+  + Kd * error_rate
 ```
 
 其中：
 
 - `e`：角度误差，单位 rad。
-- `v`：角速度或误差变化率，单位 rad/s。
+- `observed_screen_rate`：屏幕视线角速度，单位 rad/s，不是纯目标角速度。
+- `error_rate`：闭环角度误差变化率，单位 rad/s，用于阻尼。
 - `h`：预测 horizon，单位 s。
 - `Kp`：无量纲或控制比例。
 - `Kd`：单位 s。
 - `u`：控制角度，单位 rad。
 
-确定结论：预测已经包含速度前馈项 `Kp * v * h`。如果 D 项也直接乘同一个速度，就形成速度补偿耦合。
+确定结论：预测已经包含基于屏幕视线速度的前馈项。如果 D 项又直接使用同一速度，就形成重复补偿。PIDv2 的 D 输入应保持为闭环误差变化率，并明确它也会受到自身控制反馈影响。
 
 重复补偿示意：
 
 ```text
-target velocity v
+observed screen velocity
       │
-      ├── prediction path: e_pred = e + v*h
+      ├── prediction path: e_pred = e + v_screen*h*confidence*scale
       │                       │
-      │                       └── P path: Kp*e + Kp*v*h
+      │                       └── P path: Kp*e_pred
       │
-      └── D path: Kd*v
+      └── D path: Kd*error_rate
 
-final velocity-related output = Kp*v*h + Kd*v
+Both paths can react to the same screen motion unless gains and confidence are bounded.
 ```
 
 数值例子：
@@ -261,10 +288,13 @@ final velocity-related output = Kp*v*h + Kd*v
 Kp = 0.35
 h = 0.035 s
 Kd = 0.020 s
-v = 1.0 rad/s
+observed_screen_rate = 1.0 rad/s
+error_rate = 1.0 rad/s
+velocity_confidence = 1.0
+prediction_scale = 1.0
 
-预测速度项：Kp * h * v = 0.01225 rad
-D 速度项：Kd * v = 0.02000 rad
+预测速度项：Kp * h * observed_screen_rate = 0.01225 rad
+D 阻尼项：Kd * error_rate = 0.02000 rad
 总速度补偿：0.03225 rad
 ```
 
@@ -277,13 +307,13 @@ D 速度项：Kd * v = 0.02000 rad
 
 暂定结论：
 
-- 当 Kalman 速度可信且 prediction horizon 明确时，可以使用“预测位置 + P 控制”为主。
-- 保留小 D 项的合理目的应是闭环阻尼，而不是重复补偿目标速度。
-- Tracker 目标速度与误差差分速度不是同一个量。误差差分包含目标运动、鼠标控制造成的画面移动和检测噪声。
+- 当 Kalman 屏幕速度可信、近期自身控制较小且 prediction horizon 明确时，可以使用“保守预测位置 + P 控制”为主。
+- 保留小 D 项的合理目的应是闭环阻尼，而不是重复补偿屏幕视线速度。
+- Tracker/Kalman 的屏幕速度与误差差分速度不是同一个量，但两者都包含目标运动、鼠标控制造成的画面移动和检测噪声。
 
 ## 8. Kalman、EMA、预测与 D 项
 
-确定结论：Kalman 不替代 EMA，也不替代控制器。Kalman 输出状态估计和置信度；EMA 只用于局部信号平滑；PD 负责控制输出。
+确定结论：Kalman 不替代 EMA，也不替代控制器。Kalman 输出屏幕坐标状态估计和置信度；EMA 只用于局部信号平滑；PD 负责控制输出。
 
 当前 Kalman 模型：
 
@@ -295,10 +325,11 @@ y_next = y + vy * dt
 
 暂定边界：
 
-- 优先使用 Kalman 速度做位置预测。
+- Kalman `vx/vy` 仍是屏幕坐标速度，不得命名为纯目标世界速度。
+- 正式预测应同时使用 Kalman/EMA 屏幕速度、近期成功发送 counts 的 `velocity_confidence` 和强限幅。
 - 不建议再对 Kalman 输出位置做重 EMA；这会破坏状态估计的时序含义。
 - 如果 Kalman 速度仍抖，可对速度或预测权重轻度平滑，但必须按 track 独立并在切换时重置。
-- 不要对两个不同 horizon 的预测位置再做简单差分来当 D 项；horizon 变化会把调度延迟变化误当作目标速度变化。
+- 不要对两个不同 horizon 的预测位置再做简单差分来当 D 项；horizon 变化会把调度延迟变化误当作屏幕运动变化。
 
 像素到角度：
 
@@ -343,6 +374,17 @@ omega ~= v_px / f
 | sent counts | 已调用设备发送的 counts | 可记录，用于估计未反馈动作 |
 | estimated applied counts | 估计已经在游戏/画面中生效的 counts | 不再从当前误差扣除 |
 | unobserved counts | 已发送但尚未反映到最新检测帧的 counts | 暂定应从预测误差中扣除或进入 actuation model |
+
+第一版自运动遥测必须从 executor 成功发送事件建立有界时间窗，至少聚合：
+
+```text
+executed_counts_since_previous_observation
+executed_counts_last_20ms
+executed_counts_last_40ms
+executed_counts_last_60ms
+```
+
+这些字段只能累计实际成功发送的 `executed_dx/executed_dy`，并保留 `scheduler_send_ts_ns`、`device_send_start_ts_ns`、`device_send_end_ts_ns`。时间窗按成功发送结束时间归档。desired、planned、queued、cancelled 和 remaining counts 不得伪装成 executed counts。
 
 pending counts 转角度：
 
@@ -393,22 +435,24 @@ t1  controller calculates another +10
 7. 如新目标/切换/丢失/校准变化，清空旧 EMA、D 记忆、residual 和 Scheduler pending。
 8. 生成 AimPoint 原始锚点。（ROI px）
 9. 对 AimPoint 做按 track 的 EMA，处理 anchor jump。
-10. 重新读取 `control_now_ns = monotonic_ns()`。
-11. 估计 command 生效时间：`control_now + scheduler_wait + device_send + actuation_delay`。
-12. 计算 prediction horizon，并做最大值、速度、置信度、测量年龄门限。
-13. 使用 Kalman 状态预测目标未来位置。（px）
-14. 计算预测像素误差。（px）
-15. 转换为角度误差。（rad）
-16. 扣除 estimated unobserved/applied control effect。（rad，当前为开放项）
-17. 计算误差角速度或使用 Kalman 速度投影角速度。（rad/s）
-18. 对 D 项速度做 EMA；不要重度平滑 P 输入。
-19. 判断 Acquire/TrackMicro/PredictShort 状态，应用不同 Kp/Kd/prediction gain。
-20. 计算 `u = Kp*error + Kd*error_rate`。（rad）
-21. 角度限幅、deadzone、最小输出、小数 residual、counts 映射、slew limit。
-22. 生成 `trajectory_generation = DetectionBatch.generation`。
-23. Scheduler 以新 generation 替换旧 pending，必要时拆步并设置 TTL。
-24. 设备执行后记录 sent/error/cooldown。
-25. 下一帧到达时重新评估旧命令，取消未执行旧轨迹。
+10. 用相邻 capture timestamp 计算屏幕视线速度；明确它包含相对目标运动、自身视角运动和噪声。（px/s）
+11. 汇总上个采集区间与最近 20/40/60 ms 内实际成功发送 counts。（counts）
+12. 由近期执行量计算 `velocity_confidence`；第一版只降权，不做正式自运动扣除。
+13. 重新读取 `control_now_ns = monotonic_ns()`。
+14. 计算 `frame_age + configured_extra_prediction_delay`，并做最大值、速度、置信度、测量年龄门限。
+15. 使用屏幕速度、`velocity_confidence` 和保守 `prediction_scale` 预测参考位置。（px）
+16. 计算预测像素误差。（px）
+17. 转换为角度误差。（rad）
+18. Shadow Mode 估计 self-induced/relative displacement；未完成时序标定前不进入正式控制。
+19. 计算闭环误差角速度。（rad/s）
+20. 对 D 项误差变化率做 EMA；不要重度平滑 P 输入。
+21. 判断 Acquire/TrackMicro/PredictShort 状态，应用不同 Kp/Kd/prediction gain。
+22. 计算 `u = Kp*error + Kd*error_rate`。（rad）
+23. 角度限幅、deadzone、最小输出、小数 residual、counts 映射、slew limit。
+24. 生成 `trajectory_generation = DetectionBatch.generation`。
+25. Scheduler 以新 generation 替换旧 pending，必要时拆步并设置 TTL。
+26. 设备执行成功后记录 send timestamp 与实际 dx/dy；失败、取消和 queued 不计入 executed counts。
+27. 下一帧到达时重新评估旧命令，取消未执行旧轨迹。
 
 绝对不能调换：
 
@@ -422,14 +466,16 @@ t1  controller calculates another +10
 
 ```text
 raw detection bbox
-  -> Kalman estimate p, v
+  -> Kalman estimate p, observed_screen_v
   -> aim point raw
   -> aim point EMA
-  -> p_used = p + lambda * v * horizon
+  -> recent successful executed counts windows
+  -> velocity_confidence
+  -> p_used = p + observed_screen_v * horizon * confidence * prediction_scale
   -> error_px = p_used - center
   -> error_rad = atan(error_px / focal_px)
-  -> theta_effective = error_rad - theta_unobserved_control
-  -> u = Kp * theta_effective + Kd * theta_rate
+  -> self-motion estimate (shadow only until timing alignment)
+  -> u = Kp * error_rad + Kd * error_rate
   -> counts = u * counts_per_360 / 2π
   -> residual/limit/scheduler
 ```
@@ -457,7 +503,8 @@ Scheduler    -> cancel [a2, a3, a4], hold/send [b1, b2]
 | 首次定位与 PD | 暂定可统一 | 首帧同时大步定位 + PD | 同一误差双算 | acquire_state、first_frame_dx |
 | 首次定位与 Scheduler | 暂定冲突风险 | 一次定位拆成长队且新帧不截断 | 历史动作继续执行 | pending_steps、cancel_reason |
 | 预测与 pending 补偿 | 暂定必要 | 已发送未反馈 counts 不建模 | 重复输出同一误差 | sent_counts、unobserved_counts、frame_age |
-| Kalman 速度与误差差分速度 | 确定不同 | 把误差差分当目标速度 | 鼠标自身运动被当目标速度 | target_v、error_rate、device_sent |
+| Kalman 屏幕速度与误差差分速度 | 确定不同 | 任一速度被当成目标世界速度 | 鼠标自身运动被当目标运动 | observed_screen_v、error_rate、executed_counts |
+| 屏幕速度与自身控制 | 确定强耦合 | 近期成功发送 counts 未降低速度可信度 | 提前刹车、跨中心、反向摆动 | executed_counts_20/40/60ms、velocity_confidence、center_crossing |
 | 死区与 I 项 | 确定冲突风险 | 死区内 I 累积或限幅 windup | 突然跳出死区 | integral_state、deadzone_state |
 | 低推理 FPS 与高频 Scheduler | 暂定可行 | Scheduler 不替换旧轨迹 | 控制债务 | observation_fps、scheduler_fps、pending_age |
 | 新帧重算与旧命令继续执行 | 确定冲突 | 新 generation 不取消旧 pending | 延迟尾巴 | trajectory_generation、cancelled_pending |
@@ -472,7 +519,7 @@ Scheduler    -> cancel [a2, a3, a4], hold/send [b1, b2]
 
 - 远离中心时可用较强 P 和较强预测，但要限幅并可截断。
 - 接近中心时应降低 Kp 和预测权重，避免穿越中心。
-- D 项在接近中心可以作为阻尼保留小量，但不应继续做目标速度前馈。
+- D 项在接近中心可以作为阻尼保留小量，但不应继续做屏幕速度前馈。
 - 误差方向反转时应快速衰减 D EMA 或直接重置相关速度状态。
 - 动态死区可参考 bbox 高度、检测抖动和最小有效 counts，但必须用真实数据校准。
 
@@ -505,14 +552,18 @@ Scheduler    -> cancel [a2, a3, a4], hold/send [b1, b2]
 - `frame_id`、`generation`、`source_sequence`
 - `capture_ts_ns`、`publish_ts_ns`、`clock_domain`
 - `frame_age_ms`、`input_age_ms`、`inference_ms`、`result_age_ms`
-- `control_now_ns`、`state_ts_ns`、`prediction_horizon_ms`
+- `control_now_ns`、`state_ts_ns`、`configured_extra_prediction_delay_ms`、`prediction_horizon_ms`
 - `prediction_confidence`、`position_sigma_px`、`cov_trace`、`nis`
 - `target_id`、`target_state`、`switch_committed`、`identity_confidence`
 - `aim_raw_px`、`aim_ema_px`、`ema_reset_reason`
+- `raw_observed_vx_px_s`、`raw_observed_vy_px_s`
+- `filtered_observed_vx_px_s`、`filtered_observed_vy_px_s`、`velocity_confidence`
 - `error_px`、`error_rad`、`error_rate_rad_s`
 - `p_rad`、`d_rad`、`prediction_velocity_term_rad`
 - `counts_raw`、`counts_residual`、`counts_limited`、`slew_limited`
 - `planned_counts`、`queued_counts`、`sent_counts`、`estimated_applied_counts`、`unobserved_counts`
+- `executed_counts_since_previous_observation`、`executed_counts_last_20ms`、`executed_counts_last_40ms`、`executed_counts_last_60ms`
+- `observed_delta_px`、`estimated_self_delta_px`、`estimated_relative_delta_px`（Shadow Mode）
 - `scheduler_pending_steps`、`pending_age_ms`、`trajectory_generation`、`cancel_reason`
 - `device_send_ts_ns`、`device_sent`、`device_error`
 - `control_observation_fps`、`control_emit_fps`、`stale_drop_ratio`
@@ -532,6 +583,8 @@ Scheduler    -> cancel [a2, a3, a4], hold/send [b1, b2]
 暂定结论：
 
 - 主控制结构应为 Kalman 估计 + 有界预测 + 分区 P + 小 D 阻尼。
+- Kalman/有限差分速度在完成自运动补偿前都必须称为屏幕视线速度。
+- 第一版预测必须按近期实际成功发送 counts 降低 `velocity_confidence`。
 - AimPoint EMA 保留，P 项重 EMA 避免。
 - Prediction horizon 应包含控制计算、Scheduler、设备和游戏反馈延迟，但当前只能部分建模。
 - pending counts 应拆成 queued/sent/applied/unobserved 后再进入控制器。

@@ -1,5 +1,7 @@
 # NovaSight Algorithm System Remediation Implementation Plan
 
+> Historical scope note (2026-07-10): this plan covers the existing angular-control remediation phase. It is not the authority for the new predictive velocity model. Continue staged `predictive_pid_v2` work from `docs/control/predictive_pid_v2_implementation_plan.md`, which defines screen line-of-sight velocity, executed-control confidence suppression, and self-motion Shadow Mode.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make NovaSight's production control path conform to the remediation baseline: `error_px -> error_rad -> angular PD -> calibrated counts -> scheduler`.

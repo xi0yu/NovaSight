@@ -648,9 +648,11 @@ class RuntimeService:
         extra: dict[str, object] | None = None,
     ) -> dict[str, object]:
         frame_age_ms = self._detection_batch_age_ms(detection_batch, now_ns=now_ns)
-        configured_actuation_delay_ms = max(
+        configured_extra_prediction_delay_ms = max(
             0.0,
-            float(getattr(self.config.control, "latency_estimated_actuation_delay_ms", 0.0)),
+            float(
+                getattr(self.config.control, "configured_extra_prediction_delay_ms", 0.0)
+            ),
         )
         payload: dict[str, object] = {
             "frame_id": detection_batch.frame_id,
@@ -667,9 +669,9 @@ class RuntimeService:
             "target_id": None,
             "measurement_dt_ms": None,
             "frame_age_ms": frame_age_ms,
-            "configured_actuation_delay_ms": configured_actuation_delay_ms,
-            "actuation_delay_source": "configured_estimate",
-            "prediction_horizon_ms": frame_age_ms + configured_actuation_delay_ms,
+            "configured_extra_prediction_delay_ms": configured_extra_prediction_delay_ms,
+            "extra_prediction_delay_source": "configured_estimate",
+            "prediction_horizon_ms": frame_age_ms + configured_extra_prediction_delay_ms,
             "ran": True,
             "available": bool(available),
             "reason": str(reason),
@@ -1097,8 +1099,8 @@ class RuntimeService:
             capture_ts_ns=int(context.capture_ts_ns or 0),
             inference_end_ts_ns=context.inference_end_ts_ns,
             control_now_ts_ns=control_now_ts_ns,
-            configured_actuation_delay_ms=float(
-                getattr(self.config.control, "latency_estimated_actuation_delay_ms", 0.0)
+            configured_extra_prediction_delay_ms=float(
+                getattr(self.config.control, "configured_extra_prediction_delay_ms", 0.0)
             ),
         )
         payload = snapshot.as_telemetry()
@@ -1114,7 +1116,7 @@ class RuntimeService:
             "control_timing event=%s frame=%s target=%s capture_ts_ns=%s "
             "inference_end_ts_ns=%s "
             "control_now_ts_ns=%s measurement_dt_ms=%s frame_age_ms=%.3f "
-            "configured_actuation_delay_ms=%.3f prediction_horizon_ms=%.3f",
+            "configured_extra_prediction_delay_ms=%.3f prediction_horizon_ms=%.3f",
             event,
             payload["frame_id"],
             payload["target_id"],
@@ -1123,7 +1125,7 @@ class RuntimeService:
             payload["control_now_ts_ns"],
             payload["measurement_dt_ms"],
             float(payload["frame_age_ms"] or 0.0),
-            float(payload["configured_actuation_delay_ms"] or 0.0),
+            float(payload["configured_extra_prediction_delay_ms"] or 0.0),
             float(payload["prediction_horizon_ms"] or 0.0),
         )
 
@@ -2284,7 +2286,9 @@ class RuntimeService:
             max_velocity_px_s=float(getattr(control, "latency_max_velocity_px_s", 2500.0)),
             min_velocity_measurements=int(getattr(control, "latency_min_velocity_measurements", 3)),
             min_velocity_confidence=float(getattr(control, "latency_min_velocity_confidence", 0.65)),
-            estimated_actuation_delay_ms=float(getattr(control, "latency_estimated_actuation_delay_ms", 2.0)),
+            extra_prediction_delay_ms=float(
+                getattr(control, "configured_extra_prediction_delay_ms", 2.0)
+            ),
         )
         estimate = estimated_state_from_debug(
             track=target,
@@ -2357,7 +2361,9 @@ class RuntimeService:
                 "max_velocity_px_s": latency_cfg.max_velocity_px_s,
                 "min_velocity_measurements": latency_cfg.min_velocity_measurements,
                 "min_velocity_confidence": latency_cfg.min_velocity_confidence,
-                "estimated_actuation_delay_ms": latency_cfg.estimated_actuation_delay_ms,
+                "configured_extra_prediction_delay_ms": (
+                    latency_cfg.extra_prediction_delay_ms
+                ),
             },
         }
 

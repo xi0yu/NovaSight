@@ -305,7 +305,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.latency_max_velocity_px_s", "label": "补偿最高速度 px/s", "type": "float", "min": 1, "restart_required": False},
                     {"path": "control.latency_min_velocity_measurements", "label": "补偿最少速度样本", "type": "int", "min": 1, "restart_required": False},
                     {"path": "control.latency_min_velocity_confidence", "label": "补偿最低速度可信度", "type": "float", "min": 0, "max": 1, "restart_required": False},
-                    {"path": "control.latency_estimated_actuation_delay_ms", "label": "估计设备生效延迟 ms", "type": "float", "min": 0, "restart_required": False},
+                    {"path": "control.configured_extra_prediction_delay_ms", "label": "额外预测延迟 ms", "type": "float", "min": 0, "restart_required": False},
                     {"path": "control.strategy", "label": "鼠标算法", "type": "select", "options": ["experimental_angle_pid"], "restart_required": False},
                     {"path": "control.trigger_mode", "label": "触发方式", "type": "select", "options": ["hardware", "always"], "restart_required": False},
                     {"path": "control.command_interval_ms", "label": "命令步进间隔 ms", "type": "float", "min": 0, "restart_required": False},

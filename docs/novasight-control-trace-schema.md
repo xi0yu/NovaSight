@@ -59,7 +59,7 @@ GStreamer PTS 或 wall clock 不得直接与这些字段相减。
 |---|---|
 | detection input/result/inference age | ms |
 | tracker position | px |
-| tracker velocity | px/s |
+| tracker screen-space velocity | px/s |
 | control error_px | px |
 | control error_rad | rad |
 | control error_rate_rad_s | rad/s |
@@ -67,6 +67,8 @@ GStreamer PTS 或 wall clock 不得直接与这些字段相减。
 | counts planned/queued/sent/estimated_applied/unobserved | counts |
 | scheduler pending_age | ms |
 | timestamp fields | ns |
+
+`tracker.velocity_px_s` in schema v1 is a legacy field name. Its meaning is observed/estimated screen-space line-of-sight velocity, not target-world velocity. The `predictive_pid_v2` path will use explicit `raw_observed_*` and `filtered_observed_*` names in its next trace version.
 
 ## Correlation ID
 

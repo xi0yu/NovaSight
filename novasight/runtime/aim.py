@@ -29,7 +29,7 @@ class LatencyCompensationConfig:
     max_velocity_px_s: float = 2500.0
     min_velocity_measurements: int = 3
     min_velocity_confidence: float = 0.65
-    estimated_actuation_delay_ms: float = 2.0
+    extra_prediction_delay_ms: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -306,9 +306,11 @@ class LatencyCompensator:
                 and velocity_confidence >= float(config.min_velocity_confidence)
             )
             if allowed:
-                actuation_ts_ns = int(compute_ts_ns) + int(max(0.0, float(config.estimated_actuation_delay_ms)) * 1e6)
+                prediction_ts_ns = int(compute_ts_ns) + int(
+                    max(0.0, float(config.extra_prediction_delay_ms)) * 1e6
+                )
                 used_ns = min(
-                    max(0, actuation_ts_ns - int(estimate.state_ts_ns)),
+                    max(0, prediction_ts_ns - int(estimate.state_ts_ns)),
                     int(max(0.0, float(config.max_compensation_ms)) * 1e6),
                 )
                 compensation_ms = used_ns / 1e6

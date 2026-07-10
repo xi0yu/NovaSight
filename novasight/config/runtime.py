@@ -180,7 +180,7 @@ class ControlConfig:
     latency_max_velocity_px_s: float = 2500.0
     latency_min_velocity_measurements: int = 3
     latency_min_velocity_confidence: float = 0.65
-    latency_estimated_actuation_delay_ms: float = 2.0
+    configured_extra_prediction_delay_ms: float = 2.0
     trigger_mode: str = "hardware"
     output_mode: str = "kmnet"
     strategy: str = "experimental_angle_pid"
@@ -384,6 +384,12 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     control = normalized.get("control")
     if isinstance(control, dict):
         control = dict(control)
+        legacy_delay = control.pop("latency_estimated_actuation_delay_ms", None)
+        if (
+            legacy_delay is not None
+            and "configured_extra_prediction_delay_ms" not in control
+        ):
+            control["configured_extra_prediction_delay_ms"] = legacy_delay
         calibration = normalized.get("calibration")
         if calibration is None:
             calibration = {}
@@ -539,8 +545,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(f"runtime config key 'control.{key}' must be > 0")
     if cfg.control.latency_min_velocity_px_s < 0:
         raise ValueError("runtime config key 'control.latency_min_velocity_px_s' must be >= 0")
-    if cfg.control.latency_estimated_actuation_delay_ms < 0:
-        raise ValueError("runtime config key 'control.latency_estimated_actuation_delay_ms' must be >= 0")
+    if cfg.control.configured_extra_prediction_delay_ms < 0:
+        raise ValueError(
+            "runtime config key 'control.configured_extra_prediction_delay_ms' must be >= 0"
+        )
     if cfg.control.latency_min_velocity_measurements < 1:
         raise ValueError("runtime config key 'control.latency_min_velocity_measurements' must be >= 1")
     if cfg.control.latency_min_velocity_confidence < 0 or cfg.control.latency_min_velocity_confidence > 1:
