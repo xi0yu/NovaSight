@@ -325,6 +325,12 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         }:
             capture["backend"] = "gst_cpu_latest"
         normalized["capture"] = capture
+    hardware = normalized.get("hardware")
+    if isinstance(hardware, dict):
+        hardware = dict(hardware)
+        # The preceding kmNet executor accepted this key but forced it to False.
+        hardware.pop("flip_dy", None)
+        normalized["hardware"] = hardware
     control = normalized.get("control")
     calibration = normalized.get("calibration")
     if isinstance(control, dict):

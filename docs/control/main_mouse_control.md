@@ -154,6 +154,9 @@ this route. `calibration.axis_sign_y` maps to `calibration.invert_y`.
 route has no X-axis inversion setting. Silently discarding it would reverse the
 closed-loop control direction. Removed experimental fields that have no valid
 single-route equivalent are discarded during this one-way in-memory migration.
+Legacy `hardware.flip_dy` is also discarded: the preceding kmNet executor
+accepted that setting but forced it to `False`, so mapping it to `invert_y`
+would change actual device behavior during upgrade.
 
 ## Reset Rules
 

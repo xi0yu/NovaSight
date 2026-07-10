@@ -430,6 +430,13 @@ def test_runtime_config_migrates_legacy_axis_signs() -> None:
     assert not hasattr(cfg.calibration, "axis_sign_y")
 
 
+def test_runtime_config_drops_legacy_noop_hardware_flip_dy() -> None:
+    cfg = parse_runtime_config({"hardware": {"flip_dy": True}})
+
+    assert cfg.calibration.invert_y is False
+    assert not hasattr(cfg.hardware, "flip_dy")
+
+
 def test_runtime_config_rejects_unrepresentable_legacy_x_inversion() -> None:
     with pytest.raises(ValueError, match="axis_sign_x=-1.*cannot be migrated"):
         parse_runtime_config(
