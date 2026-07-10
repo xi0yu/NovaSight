@@ -225,7 +225,10 @@ class RuntimePipeline:
                 self._prune_window(self._skipped_window_ts_ns, process_start_ns)
                 self.stats.skipped_frames = len(self._skipped_window_ts_ns)
                 continue
-            result = self.runtime.process_captured_frame(frame)
+            result = self.runtime.process_captured_frame(
+                frame,
+                acquired_generation=int(getattr(frame, "frame_id", 0) or 0),
+            )
             self.stats.processed_frames += 1
             done_ns = time.monotonic_ns()
             self._processed_window_ts_ns.append(done_ns)
@@ -290,7 +293,10 @@ class RuntimePipeline:
                     self._prune_window(self._skipped_window_ts_ns, process_start_ns)
                     self.stats.skipped_frames = len(self._skipped_window_ts_ns)
                     continue
-                result = self.runtime.process_captured_frame(frame)
+                result = self.runtime.process_captured_frame(
+                    frame,
+                    acquired_generation=int(getattr(handle, "generation", -1)),
+                )
                 self.stats.processed_frames += 1
                 done_ns = time.monotonic_ns()
                 self._processed_window_ts_ns.append(done_ns)

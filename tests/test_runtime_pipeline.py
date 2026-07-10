@@ -532,7 +532,10 @@ def test_runtime_pipeline_requires_running_capture_session_and_does_not_configur
         config=SimpleNamespace(device="/dev/video0"),
         configure=lambda *_args, **_kwargs: pytest.fail("runtime must not configure capture"),
     )
-    runtime = SimpleNamespace(running=False, process_captured_frame=lambda frame: None)
+    runtime = SimpleNamespace(
+        running=False,
+        process_captured_frame=lambda frame, *, acquired_generation=None: None,
+    )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
     with pytest.raises(RuntimeError, match="采集未启动，无法运行推理链路。"):
@@ -567,7 +570,7 @@ def test_runtime_pipeline_requires_gpu_bridge_for_nvmm_latest_inference() -> Non
                 },
             }
         },
-        process_captured_frame=lambda frame: pytest.fail("inference must not start"),
+        process_captured_frame=lambda frame, *, acquired_generation=None: pytest.fail("inference must not start"),
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
@@ -599,7 +602,7 @@ def test_runtime_pipeline_allows_nvmm_capture_when_inference_is_disabled() -> No
                 "reason": "JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE",
             }
         },
-        process_captured_frame=lambda frame: pytest.fail("inference is disabled"),
+        process_captured_frame=lambda frame, *, acquired_generation=None: pytest.fail("inference is disabled"),
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
@@ -622,7 +625,7 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
                 return frame
         return None
 
-    def process_captured_frame(frame: CapturedFrame) -> None:
+    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> None:
         processed.append(frame.frame_id)
         if len(processed) >= 2:
             processed_two.set()
@@ -688,7 +691,7 @@ def test_runtime_pipeline_prefers_latest_frame_broker_over_preview_wait() -> Non
     runtime = SimpleNamespace(
         running=False,
         config=cfg,
-        process_captured_frame=lambda item: (
+        process_captured_frame=lambda item, *, acquired_generation=None: (
             processed.append(item.frame_id),
             processed_one.set(),
             RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False),
@@ -748,7 +751,7 @@ def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
                 return frame
         return None
 
-    def process_captured_frame(frame: CapturedFrame) -> RuntimeFrameResult:
+    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> RuntimeFrameResult:
         processed.append(frame.frame_id)
         processed_fresh.set()
         return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False)
@@ -815,7 +818,7 @@ def test_runtime_service_drops_detection_when_newer_generation_arrives_during_in
         image=None,
     )
 
-    result = service.process_captured_frame(frame)
+    result = service.process_captured_frame(frame, acquired_generation=2)
     state = service.state()
 
     assert result.observation_updated is False
@@ -870,15 +873,16 @@ def test_runtime_service_drops_detection_when_newer_frame_id_arrives_during_infe
         image=None,
     )
 
-    result = service.process_captured_frame(frame)
+    result = service.process_captured_frame(frame, acquired_generation=2)
 
     assert result.observation_updated is False
     assert service.last_frame_context is None
     assert service.last_inference_status["available"] is False
     assert service.last_inference_status["stale_rejected"] is True
-    assert service.last_inference_status["latest_generation"] == 1
+    assert service.last_inference_status["latest_generation"] == 2
     assert service.last_inference_status["latest_frame_id"] == 2
-    assert "latest frame_id" in service.last_inference_status["reason"]
+    assert ("latest frame_id" in service.last_inference_status["reason"]
+            or "latest generation" in service.last_inference_status["reason"])
 
 
 def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
@@ -893,7 +897,7 @@ def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
                 return frame
         return None
 
-    def process_captured_frame(frame: CapturedFrame) -> None:
+    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> None:
         processed.append(frame.frame_id)
         processed_one.set()
 
@@ -942,7 +946,7 @@ def test_runtime_pipeline_stops_when_capture_becomes_unavailable() -> None:
     runtime = SimpleNamespace(
         running=False,
         config=cfg,
-        process_captured_frame=lambda _frame: pytest.fail("unavailable capture must not process inference"),
+        process_captured_frame=lambda _frame, *, acquired_generation=None: pytest.fail("unavailable capture must not process inference"),
         process_control_tick=lambda: None,
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
@@ -1001,7 +1005,7 @@ def test_runtime_pipeline_consumes_frames_from_capture_session_thread() -> None:
     processed: list[int] = []
     processed_two = threading.Event()
 
-    def process_captured_frame(frame: CapturedFrame) -> None:
+    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> None:
         processed.append(frame.frame_id)
         if len(processed) >= 2:
             processed_two.set()

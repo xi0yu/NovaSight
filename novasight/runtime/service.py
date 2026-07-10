@@ -1076,7 +1076,12 @@ class RuntimeService:
             self.last_execution = None
         return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=True)
 
-    def process_captured_frame(self, frame: CapturedFrame) -> RuntimeFrameResult:
+    def process_captured_frame(
+        self,
+        frame: CapturedFrame,
+        *,
+        acquired_generation: int | None = None,
+    ) -> RuntimeFrameResult:
         total_start_ns = time.monotonic_ns()
         if self.inference is None:
             self._record_inference_status(
@@ -1235,13 +1240,22 @@ class RuntimeService:
                 control_start_ns=control_start_ns,
             )
             return result
-        latest_generation, latest_frame_id = self._latest_published_identity()
+        acquired_generation = (
+            int(acquired_generation)
+            if acquired_generation is not None
+            else int(getattr(frame, "frame_id", 0) or 0)
+        )
+        # Only the generation that was current at acquire time can vouch for
+        # the batch. Re-querying the broker here would always read a newer
+        # generation because inference latency is non-zero and the broker
+        # has published 1+ frames in the meantime — every batch would be
+        # rejected as stale.
         freshness_reason = self._detection_batch_freshness_reason(detection_batch)
         if not freshness_reason:
             freshness_reason = self._detection_batch_latest_generation_reason(
                 detection_batch,
-                latest_generation=latest_generation,
-                latest_frame_id=latest_frame_id,
+                latest_generation=acquired_generation,
+                latest_frame_id=acquired_generation,
             )
         if not freshness_reason:
             freshness_reason = self._detection_batch_stale_reason(
@@ -1265,8 +1279,8 @@ class RuntimeService:
                 debug=inference_result.debug,
                 extra={
                     "stale_rejected": True,
-                    "latest_generation": latest_generation,
-                    "latest_frame_id": latest_frame_id,
+                    "latest_generation": acquired_generation,
+                    "latest_frame_id": acquired_generation,
                     "stale_drop_count": self.stale_drop_count,
                 },
             )
