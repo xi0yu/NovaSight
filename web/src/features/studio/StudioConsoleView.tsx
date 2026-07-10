@@ -829,7 +829,7 @@ export function StudioConsoleView({
     : !controlHasTarget
       ? targetPipelineMessage || readString(control.selection_reason, "无目标")
       : control.will_emit !== true
-        ? readString(control.trigger_reason, readString(control.reason, "控制门控未通过"))
+        ? readString(control.no_send_reason, readString(control.trigger_reason, readString(control.reason, "控制门控未通过")))
         : kmnetStatus.connected !== true
           ? "设备未连接"
           : readString(execution.message, readString(control.reason, "控制输出为零"));

@@ -236,8 +236,41 @@ def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
         for frame_id in (1, 2, 3)
     ]
 
-    assert outputs == [0, 0, 1]
+    assert outputs == [0, 1, 0]
     assert controller.state.residual_x_counts == pytest.approx(0.2, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("observed_x", "expected_dx", "expected_residual"),
+    [
+        (105.0, 1, -0.4033631306),
+        (95.0, -1, 0.4033631306),
+    ],
+)
+def test_universal_saturated_quantizes_first_action_without_losing_residual(
+    observed_x: float,
+    expected_dx: int,
+    expected_residual: float,
+) -> None:
+    controller = MouseController(
+        _config(
+            mode=UNIVERSAL_SATURATED,
+            universal={
+                "response_scale_x_px": 160.0,
+                "response_scale_y_px": 120.0,
+                "max_step_x_counts": 30.0,
+                "max_step_y_counts": 24.0,
+            },
+        )
+    )
+
+    command = controller.calculate(
+        _observation(frame_id=1, observed_x=observed_x, observed_y=100.0)
+    )
+
+    assert abs(command.debug["theoretical_counts_x_float"]) == pytest.approx(0.5966368694)
+    assert command.dx == expected_dx
+    assert controller.state.residual_x_counts == pytest.approx(expected_residual)
 
 
 def test_mouse_controller_inverts_y_only_in_count_mapping() -> None:

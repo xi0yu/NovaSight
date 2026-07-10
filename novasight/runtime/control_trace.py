@@ -217,7 +217,11 @@ def build_control_trace_record(
             "velocity_confidence": _optional_number(mouse.get("velocity_confidence")),
             "control_allowed": _optional_bool(control_payload.get("control_allowed")),
             "will_emit": _optional_bool(control_payload.get("will_emit")),
-            "reason": _text(control_payload.get("reason") or control_payload.get("selection_reason")),
+            "reason": _text(
+                control_payload.get("no_send_reason")
+                or control_payload.get("reason")
+                or control_payload.get("selection_reason")
+            ),
         },
         "counts": {
             "planned_counts": _axis_pair(control_payload.get("dx"), control_payload.get("dy")),

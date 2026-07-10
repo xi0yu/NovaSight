@@ -1682,6 +1682,13 @@ class RuntimeService:
         if calibration_status["control_allowed"] is not True:
             control_allowed = False
         can_emit = (box_input.active or not requires_trigger) and control_allowed
+        has_movement = int(command.dx) != 0 or int(command.dy) != 0
+        will_emit = can_emit and has_movement
+        no_send_reason = ""
+        if not can_emit:
+            no_send_reason = "CONTROL_NOT_ALLOWED" if not control_allowed else "TRIGGER_INACTIVE"
+        elif not has_movement:
+            no_send_reason = "CONTROL_OUTPUT_ZERO"
         trigger_raw = getattr(box_input, "raw", {}) or {}
         trigger_requirement = self._trigger_requirement_label(
             requires_trigger=requires_trigger,
@@ -1757,7 +1764,8 @@ class RuntimeService:
             "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
             "trigger_raw": trigger_raw,
             "output_mode": output_mode,
-            "will_emit": can_emit,
+            "will_emit": will_emit,
+            "no_send_reason": no_send_reason,
             "control_allowed": control_allowed,
             "calibration_status": calibration_status,
             "bbox_age_ms": 0.0,
@@ -1768,7 +1776,7 @@ class RuntimeService:
             context=context,
             target=target,
             command=command,
-            can_emit=can_emit,
+            can_emit=will_emit,
             trigger_raw=trigger_raw,
             output_mode=output_mode,
             hardware_kind=hardware_kind,
@@ -1794,7 +1802,27 @@ class RuntimeService:
                     "reason": command.reason,
                 },
             }
-        return intent if can_emit else None
+            return None
+        if not has_movement:
+            self._clear_pending_commands("CONTROL_OUTPUT_ZERO")
+            self.last_execution = {
+                "executor_id": str(getattr(self.executors, "selected", "")),
+                "sent": False,
+                "accepted": True,
+                "clipped": False,
+                "output_dx": 0.0,
+                "output_dy": 0.0,
+                "message": "控制量量化为零，未发送设备",
+                "intent": {
+                    "dx": 0.0,
+                    "dy": 0.0,
+                    "accepted": True,
+                    "clipped": False,
+                    "reason": "CONTROL_OUTPUT_ZERO",
+                },
+            }
+            return None
+        return intent
 
     def _clear_pending_commands(self, reason: str) -> None:
         clear = getattr(self.executors, "clear_scheduler", None)
@@ -2939,7 +2967,11 @@ class RuntimeService:
                 "id": "control",
                 "label": "控制量",
                 "status": "blocked",
-                "message": str(control.get("trigger_reason") or "等待触发，控制量未发送"),
+                "message": str(
+                    control.get("no_send_reason")
+                    or control.get("trigger_reason")
+                    or "等待触发，控制量未发送"
+                ),
                 "detail": detail,
             }
         if round(dx) == 0 and round(dy) == 0:

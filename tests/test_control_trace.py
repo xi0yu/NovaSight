@@ -118,6 +118,21 @@ def _trace_payload() -> dict:
     )
 
 
+def test_control_trace_prefers_explicit_no_send_reason() -> None:
+    trace = build_control_trace_record(
+        control={
+            "will_emit": False,
+            "no_send_reason": "CONTROL_OUTPUT_ZERO",
+            "reason": "mouse_control",
+        },
+        target={},
+        inference={},
+        execution={},
+    )
+
+    assert trace["control"]["reason"] == "CONTROL_OUTPUT_ZERO"
+
+
 def test_control_trace_schema_serializes_units_and_correlation() -> None:
     trace = _trace_payload()
 

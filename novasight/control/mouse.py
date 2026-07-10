@@ -382,8 +382,8 @@ class MouseController:
 
         total_x = feasible_counts.x + self.state.residual_x_counts
         total_y = feasible_counts.y + self.state.residual_y_counts
-        counts_x = math.trunc(total_x)
-        counts_y = math.trunc(total_y)
+        counts_x = _round_half_away_from_zero(total_x)
+        counts_y = _round_half_away_from_zero(total_y)
         self.state.residual_x_counts = total_x - counts_x
         self.state.residual_y_counts = total_y - counts_y
         self.state.target_id = observation.target_id
@@ -422,6 +422,7 @@ class MouseController:
             "budget_clamped_y": feasible_counts.y != slew_limited.y,
             "residual_x_counts": self.state.residual_x_counts,
             "residual_y_counts": self.state.residual_y_counts,
+            "count_quantization": "nearest_with_residual",
             "final_dx": counts_x,
             "final_dy": counts_y,
         }
@@ -448,6 +449,12 @@ class MouseController:
                 "invalid_reason": reason,
             },
         )
+
+
+def _round_half_away_from_zero(value: float) -> int:
+    if value >= 0.0:
+        return math.floor(value + 0.5)
+    return math.ceil(value - 0.5)
 
 
 def _projection_geometry(width: float, height: float, fov_x_deg: float) -> tuple[float, float] | None:

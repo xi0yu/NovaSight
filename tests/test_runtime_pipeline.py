@@ -979,7 +979,9 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         capture_ts_ns=capture_ts_ns,
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
-        detections=[Detection(cls=0, score=0.95, x1=360, y1=220, x2=520, y2=500)],
+        # The projected aim is only 5 px right of center. Universal mode must
+        # still produce a first action instead of waiting for residual buildup.
+        detections=[Detection(cls=0, score=0.95, x1=245, y1=250, x2=405, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
