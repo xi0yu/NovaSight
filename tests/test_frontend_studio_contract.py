@@ -76,6 +76,11 @@ def test_studio_preview_uses_roi_coordinates_for_control_center_and_aim_line() -
     styles = (STUDIO_CONSOLE.parents[2] / "styles.css").read_text(encoding="utf-8")
     assert "aspect-ratio: var(--preview-aspect, 1 / 1);" in styles
     assert "object-fit: contain;" in styles
+    target_lines_start = styles.rindex(".console-target-lines {")
+    target_lines_end = styles.index("}", target_lines_start)
+    target_lines_rule = styles[target_lines_start:target_lines_end]
+    assert "width: 100%;" in target_lines_rule
+    assert "height: 100%;" in target_lines_rule
 
 
 def test_model_file_lists_show_size_in_megabytes() -> None:

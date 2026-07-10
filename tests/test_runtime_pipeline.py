@@ -1,4 +1,5 @@
 """Tests for core runtime primitives and pipeline behavior."""
+import copy
 import threading
 import time
 from types import SimpleNamespace
@@ -53,6 +54,40 @@ def _handle(generation: int) -> FrameHandle:
         format="NV12",
         resource=object(),
     )
+
+
+class _TriggeredKmNet:
+    executor_id = "kmnet"
+
+    def __init__(self) -> None:
+        self.outputs = []
+
+    def available(self) -> bool:
+        return True
+
+    def read_buttons(self) -> dict[str, object]:
+        return {
+            "available": True,
+            "left": True,
+            "right": False,
+            "reason": "",
+            "raw": {"source": "integration-test"},
+            "sample_ts_ns": time.monotonic_ns(),
+            "poll_ts_ns": time.monotonic_ns(),
+        }
+
+    def status(self, **_kwargs) -> dict[str, object]:
+        return {"available": True, "connected": True, "button_left": True}
+
+    def execute(self, output) -> ExecutionResult:
+        self.outputs.append(output)
+        return ExecutionResult(
+            executor_id="kmnet",
+            sent=True,
+            intent=output,
+            message="sent",
+            metadata={"driver_dx": int(output.dx), "driver_dy": int(output.dy)},
+        )
 
 
 def test_latest_frame_exchange_name_is_capacity_one_latest_mailbox() -> None:
@@ -927,43 +962,10 @@ def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, mon
 
 
 def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_scheduler_and_kmnet() -> None:
-    class TriggeredKmNet:
-        executor_id = "kmnet"
-
-        def __init__(self) -> None:
-            self.outputs = []
-
-        def available(self) -> bool:
-            return True
-
-        def read_buttons(self) -> dict[str, object]:
-            return {
-                "available": True,
-                "left": True,
-                "right": False,
-                "reason": "",
-                "raw": {"source": "integration-test"},
-                "sample_ts_ns": time.monotonic_ns(),
-                "poll_ts_ns": time.monotonic_ns(),
-            }
-
-        def status(self, **_kwargs) -> dict[str, object]:
-            return {"available": True, "connected": True, "button_left": True}
-
-        def execute(self, output) -> ExecutionResult:
-            self.outputs.append(output)
-            return ExecutionResult(
-                executor_id="kmnet",
-                sent=True,
-                intent=output,
-                message="sent",
-                metadata={"driver_dx": int(output.dx), "driver_dy": int(output.dy)},
-            )
-
     config = RuntimeConfig()
     config.control.trigger_mode = "hardware"
     config.control.mode = "universal_saturated"
-    kmnet = TriggeredKmNet()
+    kmnet = _TriggeredKmNet()
     executors = ExecutorRegistry.from_config(config)
     executors.executors["kmnet"] = kmnet
     service = RuntimeService(
@@ -1014,6 +1016,57 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
     assert send_result.execution_results[0].sent is True
     assert len(kmnet.outputs) == 1
     assert kmnet.outputs[0].dx != 0 or kmnet.outputs[0].dy != 0
+
+
+def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
+    config = RuntimeConfig()
+    config.control.trigger_mode = "hardware"
+    config.control.mode = "calibrated_angular"
+    kmnet = _TriggeredKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+
+    updated = copy.deepcopy(config)
+    updated.control.mode = "universal_saturated"
+    service.update_config(updated)
+
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.95, x1=285, y1=250, x2=445, y2=568)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    observation_result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+    send_result = service.process_control_tick()
+
+    assert service.mouse_controller.mode == "universal_saturated"
+    assert service.last_control is not None
+    assert service.last_control["pipeline"]["control_mode"] == "universal_saturated"
+    assert service.last_control["dx"] == 2
+    assert len(observation_result.control_intents) == 1
+    assert len(send_result.execution_results) == 1
+    assert send_result.execution_results[0].sent is True
+    assert kmnet.outputs[-1].dx == 2
 
 
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:
