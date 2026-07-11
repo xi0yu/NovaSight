@@ -995,8 +995,8 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
         # The ROI is shifted 40 px left. Full-screen center maps to ROI x=360,
-        # so this aim at x=365 is a real +5 px control error.
-        detections=[Detection(cls=0, score=0.95, x1=285, y1=250, x2=445, y2=568)],
+        # so this aim at x=410 is a real +50 px control error.
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
@@ -1021,9 +1021,9 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         "x": 360.0,
         "y": 320.0,
     }
-    assert service.last_control["mouse_observation"]["predicted_aim_x_roi_px"] == pytest.approx(365.0)
-    assert service.last_control["pipeline"]["predicted_error_x_px"] == pytest.approx(5.0)
-    assert service.last_control["dx"] == 16
+    assert service.last_control["mouse_observation"]["predicted_aim_x_roi_px"] == pytest.approx(410.0)
+    assert service.last_control["pipeline"]["predicted_error_x_px"] == pytest.approx(50.0)
+    assert service.last_control["dx"] == 18
     assert service.last_control["dy"] == 0
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
@@ -1050,7 +1050,7 @@ def test_default_target_driven_mode_sends_one_detection_without_kmnet_button_sam
         capture_ts_ns=capture_ts_ns,
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
-        detections=[Detection(cls=0, score=0.95, x1=285, y1=250, x2=445, y2=568)],
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
@@ -1100,7 +1100,7 @@ def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
         capture_ts_ns=capture_ts_ns,
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
-        detections=[Detection(cls=0, score=0.95, x1=285, y1=250, x2=445, y2=568)],
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
@@ -1119,11 +1119,11 @@ def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
     assert service.mouse_controller.mode == "universal_saturated"
     assert service.last_control is not None
     assert service.last_control["pipeline"]["control_mode"] == "universal_saturated"
-    assert service.last_control["dx"] == 16
+    assert service.last_control["dx"] == 18
     assert len(observation_result.control_intents) == 1
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
-    assert kmnet.outputs[-1].dx == 16
+    assert kmnet.outputs[-1].dx == 18
 
 
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:

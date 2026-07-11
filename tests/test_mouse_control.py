@@ -242,7 +242,7 @@ def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
     assert controller.state.residual_x_counts == pytest.approx(0.2, abs=1e-9)
 
 
-def test_minimum_effective_counts_moves_immediately_without_increasing_average_output() -> None:
+def test_subminimum_device_counts_are_suppressed_without_closed_loop_oscillation() -> None:
     desired_counts = 2.0
     response_scale = 80.0
     max_counts = 50.0
@@ -258,16 +258,19 @@ def test_minimum_effective_counts_moves_immediately_without_increasing_average_o
         )
     )
 
-    outputs = [
-        controller.calculate(
-            _observation(frame_id=frame_id, observed_x=100.0 + error_px)
+    error = error_px
+    outputs = []
+    errors = []
+    for frame_id in range(1, 9):
+        errors.append(error)
+        output = controller.calculate(
+            _observation(frame_id=frame_id, observed_x=100.0 + error)
         ).dx
-        for frame_id in range(1, 9)
-    ]
+        outputs.append(output)
+        error -= output
 
-    assert outputs[0] == 16
-    assert all(value == 0 or abs(value) >= 16 for value in outputs)
-    assert sum(outputs) == 16
+    assert outputs == [0] * 8
+    assert errors == pytest.approx([error_px] * 8)
     assert controller.state.residual_x_counts == pytest.approx(0.0, abs=1e-9)
 
 
