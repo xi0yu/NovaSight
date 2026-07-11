@@ -29,8 +29,11 @@ from novasight.model_registry import (
     write_manifest,
 )
 from novasight.inference import parse_tensor_input_shape
-from novasight.inference.input import normalize_tensor_dtype
-from novasight.model_registry.manifest import read_manifest, validate_manifest_engine_artifact
+from novasight.deepstream.model_manifest import (
+    ensure_engine_manifest,
+    infer_yolo_output_contract,
+    probe_engine_contract,
+)
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
@@ -708,7 +711,11 @@ def _load_published_artifact(
         Path(registry.data_dir) / project.name / version.version / artifact.path
     )
     if _deepstream_selected(request):
-        _validate_deepstream_artifact(artifact_path)
+        _ensure_registered_deepstream_manifest(
+            request,
+            artifact_id=artifact.id,
+            artifact_path=artifact_path,
+        )
         request.app.state.inference.unload(
             "TensorRT engine ownership delegated to DeepStream nvinfer"
         )
@@ -777,12 +784,17 @@ def _probe_runnable_artifact(
 def _prepare_runnable_artifact(
     request: Request,
     *,
+    artifact_id: int,
     artifact_path: Path,
     classes: list[str],
     input_shape: str,
 ) -> tuple[Any, dict[str, Any]]:
     if _deepstream_selected(request):
-        manifest = _validate_deepstream_artifact(artifact_path)
+        manifest = _ensure_registered_deepstream_manifest(
+            request,
+            artifact_id=artifact_id,
+            artifact_path=artifact_path,
+        )
         return None, {
             "selected": "deepstream_nvinfer",
             "available": True,
@@ -958,83 +970,57 @@ def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> b
             "DeepStream input_scale_factor must be positive "
             f"(got {payload.input_scale_factor})"
         )
-    channel_dimensions = {4 + class_count, 5 + class_count}
-    matching_channels = [
-        value for value in output_shape[1:] if int(value) in channel_dimensions
-    ]
-    if len(matching_channels) != 1:
-        raise ValueError(
-            "DeepStream YOLO output must have exactly one dimension equal to "
-            "4 + class_count or 5 + class_count "
-            f"(shape={output_shape}, class_count={class_count})"
-        )
-    return int(matching_channels[0]) == 5 + class_count
+    return infer_yolo_output_contract(output_shape, class_count)
 
 
-def _probe_deepstream_engine_contract(
+def _ensure_registered_deepstream_manifest(
     request: Request,
     *,
+    artifact_id: int,
     artifact_path: Path,
-    classes: list[str],
-    registered_input_shape: str,
-) -> dict[str, Any]:
-    inference = getattr(request.app.state, "inference", None)
-    probe = getattr(inference, "probe", None)
-    if not callable(probe):
+):
+    registry = _registry(request)
+    artifact = registry.get_artifact(artifact_id)
+    if artifact is None:
+        raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
+    if artifact.kind != "engine" or artifact_path.suffix.lower() != ".engine":
         raise RegistryValidationError(
-            "TensorRT engine probe is unavailable; refusing to guess DeepStream tensor bindings"
+            "deepstream_nvinfer requires a TensorRT .engine artifact"
         )
-    status = dict(probe(artifact_path, classes, registered_input_shape))
-    if status.get("loaded") is not True:
-        raise RegistryValidationError(
-            f"TensorRT engine probe failed: {status.get('reason') or 'loaded=false'}"
-        )
-    input_shape = _parse_runtime_shape(status.get("input_shape"), "input_shape")
-    output_shape = _parse_runtime_shape(status.get("output_shape"), "output_shape")
-    input_name = str(status.get("input_name") or "").strip()
-    output_name = str(status.get("output_name") or "").strip()
-    input_dtype = normalize_tensor_dtype(status.get("input_dtype"))
-    output_dtype = normalize_tensor_dtype(status.get("output_dtype"))
-    if not input_name or not output_name:
-        raise RegistryValidationError(
-            "TensorRT engine probe did not expose input/output tensor names"
-        )
-    return {
-        "input_name": input_name,
-        "input_shape": input_shape,
-        "input_dtype": input_dtype,
-        "output_name": output_name,
-        "output_shape": output_shape,
-        "output_dtype": output_dtype,
-    }
-
-
-def _parse_runtime_shape(value: object, label: str) -> list[int]:
-    parts = [item for item in re.split(r"[xX,\s]+", str(value or "").strip()) if item]
+    version = registry.get_version(artifact.version_id)
+    if version is None:
+        raise RegistryNotFoundError(f"unknown version id: {artifact.version_id}")
+    project = registry.get_project(version.project_id)
+    if project is None:
+        raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
+    inference_config = getattr(getattr(request.app.state, "config", None), "inference", None)
     try:
-        shape = [int(item) for item in parts]
-    except ValueError as exc:
-        raise RegistryValidationError(
-            f"TensorRT engine probe returned invalid {label}: {value}"
-        ) from exc
-    if not shape or any(item <= 0 for item in shape):
-        raise RegistryValidationError(
-            f"TensorRT engine probe returned unresolved {label}: {value}"
+        manifest, generated = ensure_engine_manifest(
+            request.app.state.inference,
+            engine_path=artifact_path,
+            model_id=project.name,
+            display_name=project.name,
+            classes=list(version.classes),
+            registered_input_shape=version.input_shape,
+            confidence_threshold=float(
+                getattr(inference_config, "confidence_threshold", 0.25)
+            ),
+            nms_iou_threshold=float(getattr(inference_config, "nms_threshold", 0.45)),
         )
-    return shape
-
-
-def _validate_deepstream_artifact(artifact_path: Path):
-    if artifact_path.suffix.lower() != ".engine":
-        raise RegistryValidationError("deepstream_nvinfer requires a TensorRT .engine artifact")
-    manifest_path = artifact_path.with_name("model.manifest.json")
-    if not manifest_path.is_file():
-        raise RegistryValidationError(f"model manifest missing: {manifest_path}")
-    try:
-        manifest = read_manifest(manifest_path)
-        validate_manifest_engine_artifact(manifest, artifact_path)
-    except ValueError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         raise RegistryValidationError(str(exc)) from exc
+    if generated or artifact.status != "ready" or artifact.checksum != manifest.artifact.sha256:
+        registry.update_artifact_status(
+            artifact.id,
+            "ready",
+            checksum=manifest.artifact.sha256,
+        )
+    if generated:
+        logger.info(
+            "generated DeepStream model manifest during model validation path=%s fingerprint=%s",
+            artifact_path,
+            manifest.model_fingerprint,
+        )
     return manifest
 
 
@@ -1146,23 +1132,23 @@ def prepare_deepstream_artifact(
                 "DeepStream class_count must match the model version classes "
                 f"(class_count={payload.class_count}, classes={len(class_names)})"
             )
-        engine_contract = _probe_deepstream_engine_contract(
-            request,
+        engine_contract = probe_engine_contract(
+            request.app.state.inference,
             artifact_path=artifact_path,
             classes=class_names,
             registered_input_shape=version.input_shape,
         )
         requested_input_shape = [int(item) for item in payload.input_shape]
         requested_output_shape = [int(item) for item in payload.output_shape]
-        if requested_input_shape != engine_contract["input_shape"]:
+        if requested_input_shape != engine_contract.input_shape:
             raise RegistryValidationError(
                 "confirmed DeepStream input shape does not match TensorRT engine "
-                f"(confirmed={requested_input_shape}, engine={engine_contract['input_shape']})"
+                f"(confirmed={requested_input_shape}, engine={engine_contract.input_shape})"
             )
-        if requested_output_shape != engine_contract["output_shape"]:
+        if requested_output_shape != engine_contract.output_shape:
             raise RegistryValidationError(
                 "confirmed DeepStream output shape does not match TensorRT engine "
-                f"(confirmed={requested_output_shape}, engine={engine_contract['output_shape']})"
+                f"(confirmed={requested_output_shape}, engine={engine_contract.output_shape})"
             )
         output_has_objectness = _validate_deepstream_prepare_payload(payload)
         manifest = build_engine_manifest(
@@ -1170,15 +1156,15 @@ def prepare_deepstream_artifact(
             display_name=payload.display_name,
             engine_path=artifact_path,
             input_spec=TensorSpec(
-                name=engine_contract["input_name"],
-                shape=engine_contract["input_shape"],
-                dtype=engine_contract["input_dtype"],
+                name=engine_contract.input_name,
+                shape=engine_contract.input_shape,
+                dtype=engine_contract.input_dtype,
                 layout="NCHW",
             ),
             output_spec=TensorSpec(
-                name=engine_contract["output_name"],
-                shape=engine_contract["output_shape"],
-                dtype=engine_contract["output_dtype"],
+                name=engine_contract.output_name,
+                shape=engine_contract.output_shape,
+                dtype=engine_contract.output_dtype,
                 layout="NCHW",
             ),
             class_count=int(payload.class_count),
@@ -1537,6 +1523,7 @@ def publish(
         )
         candidate, candidate_status = _prepare_runnable_artifact(
             request,
+            artifact_id=payload.artifact_id,
             artifact_path=artifact_path,
             classes=classes,
             input_shape=input_shape,

@@ -7,12 +7,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from novasight.model_registry.manifest import read_manifest, validate_manifest_engine_artifact
 from novasight.roi import center_roi_region
 
 from .backend import DeepStreamObjectBackend
 from .nvinfer_config import write_nvinfer_config
 from .pipeline_builder import DeepStreamPipelineConfig
+from .model_manifest import ensure_engine_manifest
 
 
 logger = logging.getLogger("novasight.deepstream.runtime")
@@ -165,11 +165,27 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
     if version is None or project is None:
         raise RuntimeError("active DeepStream model registry references are incomplete")
     engine_path = Path(models.data_dir) / project.name / version.version / artifact.path
-    manifest_path = engine_path.with_name("model.manifest.json")
-    if not manifest_path.is_file():
-        raise RuntimeError(f"DeepStream model manifest is missing: {manifest_path}")
-    manifest = read_manifest(manifest_path)
-    validate_manifest_engine_artifact(manifest, engine_path)
+    manifest, generated_manifest = ensure_engine_manifest(
+        runtime.inference,
+        engine_path=engine_path,
+        model_id=project.name,
+        display_name=project.name,
+        classes=list(version.classes),
+        registered_input_shape=version.input_shape,
+        confidence_threshold=config.inference.confidence_threshold,
+        nms_iou_threshold=config.inference.nms_threshold,
+    )
+    if generated_manifest:
+        models.update_artifact_status(
+            artifact.id,
+            "ready",
+            checksum=manifest.artifact.sha256,
+        )
+        logger.info(
+            "generated DeepStream model manifest from TensorRT engine path=%s fingerprint=%s",
+            engine_path,
+            manifest.model_fingerprint,
+        )
     if len(manifest.input.shape) != 4 or str(manifest.input.layout).upper() != "NCHW":
         raise RuntimeError("DeepStream model input must be NCHW [N,C,H,W]")
     model_height = int(manifest.input.shape[2])

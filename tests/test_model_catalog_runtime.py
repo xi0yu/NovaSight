@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from novasight.api import routes_models
 from novasight.api.routes_models import DeepStreamPrepareRequest, PublishRequest
+from novasight.config import RuntimeConfig
 from novasight.model_registry import ModelRegistry
 from novasight.model_registry import read_manifest
 from novasight.model_registry import scanner
@@ -368,6 +369,72 @@ def test_publish_validates_pending_engine_before_marking_it_ready(tmp_path, monk
     assert registry.get_artifact(artifact.id).status == "ready"
 
 
+def test_publish_deepstream_engine_generates_missing_manifest(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["body", "head"],
+        "1x3x256x256",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        artifact_path.name,
+        "sha256:pending",
+        "pending",
+    )
+    config = RuntimeConfig()
+    config.inference.backend = "deepstream_nvinfer"
+
+    class Inference:
+        def probe(self, *_args):
+            return {
+                "loaded": True,
+                "input_name": "images",
+                "input_shape": "1x3x256x256",
+                "input_dtype": "float32",
+                "output_name": "output0",
+                "output_shape": "1x6x1344",
+                "output_dtype": "float32",
+            }
+
+        def unload(self, _reason):
+            return None
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                models=registry,
+                inference=Inference(),
+                config=config,
+                runtime=SimpleNamespace(pipeline=None, running=False),
+            )
+        )
+    )
+
+    response = routes_models.publish(
+        request,
+        project.id,
+        PublishRequest(artifact_id=artifact.id),
+    )
+
+    manifest = read_manifest(artifact_path.with_name("model.manifest.json"))
+    updated_artifact = registry.get_artifact(artifact.id)
+    assert response["deployment"]["artifact_id"] == artifact.id
+    assert updated_artifact.status == "ready"
+    assert updated_artifact.checksum == manifest.artifact.sha256
+    assert manifest.input.name == "images"
+    assert manifest.output.name == "output0"
+    assert manifest.output.class_names == ["body", "head"]
+
+
 def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatch) -> None:
     events: list[str] = []
     deployment = Deployment(
@@ -419,7 +486,11 @@ def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatc
     monkeypatch.setattr(routes_models, "_prepare_runnable_artifact", prepare)
     monkeypatch.setattr(routes_models, "_pause_runtime_pipeline_for_model_switch", pause)
     monkeypatch.setattr(routes_models, "_resume_runtime_pipeline_after_model_switch", resume)
-    monkeypatch.setattr(routes_models, "_sync_artifact_version_input_shape", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        routes_models,
+        "_sync_artifact_version_input_shape",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         routes_models,
         "_inference_status",

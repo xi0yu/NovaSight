@@ -4,6 +4,7 @@ from .backend import (
     check_deepstream_dependencies,
 )
 from .nvinfer_config import generate_nvinfer_config, write_nvinfer_config
+from .model_manifest import ensure_engine_manifest, probe_engine_contract
 from .pipeline_builder import DeepStreamPipelineConfig, build_deepstream_pipeline
 
 __all__ = [
@@ -13,5 +14,7 @@ __all__ = [
     "check_deepstream_dependencies",
     "build_deepstream_pipeline",
     "generate_nvinfer_config",
+    "ensure_engine_manifest",
+    "probe_engine_contract",
     "write_nvinfer_config",
 ]

@@ -5,13 +5,16 @@ from types import SimpleNamespace
 import pytest
 
 from novasight.contracts import DetectionBatch
+from novasight.config import RuntimeConfig
 from novasight.deepstream.backend import DeepStreamDependencyStatus, DeepStreamObjectBackend
+from novasight.deepstream.model_manifest import ensure_engine_manifest
 from novasight.deepstream.nvinfer_config import generate_nvinfer_config
 from novasight.deepstream.pipeline_builder import (
     DeepStreamPipelineConfig,
     build_deepstream_pipeline,
 )
 from novasight.model_registry.manifest import TensorSpec, build_engine_manifest
+from novasight.model_registry import ModelRegistry, read_manifest
 from novasight.deepstream.runtime_pipeline import (
     DeepStreamRuntimePipeline,
     create_deepstream_runtime_pipeline,
@@ -272,3 +275,124 @@ def test_deepstream_runtime_rejects_unsupported_ui_modes(
 
     with pytest.raises(RuntimeError, match=message):
         create_deepstream_runtime_pipeline(runtime=runtime)
+
+
+def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_path: Path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "models")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["body", "head"],
+        "1x3x256x256",
+    )
+    engine_path = registry.data_dir / project.name / version.version / "demo.engine"
+    engine_path.parent.mkdir(parents=True, exist_ok=True)
+    engine_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        engine_path.name,
+        "legacy-checksum",
+        "ready",
+    )
+    registry.publish(project.id, artifact.id)
+    config = RuntimeConfig()
+    config.source.default = "capture"
+    config.inference.backend = "deepstream_nvinfer"
+    config.capture.backend = "deepstream_nvinfer"
+    config.capture.memory = "nvmm"
+    config.capture.pixel_format = "MJPG"
+    config.capture.width = 1920
+    config.capture.height = 1080
+    config.capture.fps = 120
+    config.roi.size = 480
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "images",
+            "input_shape": "1x3x256x256",
+            "input_dtype": "float32",
+            "output_name": "output0",
+            "output_shape": "1x6x1344",
+            "output_dtype": "float32",
+        }
+    )
+    runtime = SimpleNamespace(config=config, models=registry, inference=inference)
+
+    pipeline = create_deepstream_runtime_pipeline(runtime=runtime)
+
+    manifest_path = engine_path.with_name("model.manifest.json")
+    manifest = read_manifest(manifest_path)
+    assert pipeline.backend.manifest.model_fingerprint == manifest.model_fingerprint
+    assert manifest.input.shape == [1, 3, 256, 256]
+    assert manifest.output.shape == [1, 6, 1344]
+    assert manifest.output.class_names == ["body", "head"]
+    assert registry.get_artifact(artifact.id).status == "ready"
+    assert registry.get_artifact(artifact.id).checksum == manifest.artifact.sha256
+
+
+def test_missing_manifest_is_not_generated_for_builtin_nms_output(tmp_path: Path) -> None:
+    engine_path = tmp_path / "demo.engine"
+    engine_path.write_bytes(b"engine")
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "images",
+            "input_shape": "1x3x256x256",
+            "input_dtype": "float32",
+            "output_name": "detections",
+            "output_shape": "1x300x6",
+            "output_dtype": "float32",
+        }
+    )
+
+    with pytest.raises(ValueError, match="built-in Decode/NMS"):
+        ensure_engine_manifest(
+            inference,
+            engine_path=engine_path,
+            model_id="demo",
+            display_name="demo",
+            classes=["body", "head"],
+            registered_input_shape="1x3x256x256",
+            confidence_threshold=0.25,
+            nms_iou_threshold=0.45,
+        )
+
+    assert not engine_path.with_name("model.manifest.json").exists()
+
+
+def test_missing_manifest_is_not_generated_for_multi_output_engine(tmp_path: Path) -> None:
+    engine_path = tmp_path / "demo.engine"
+    engine_path.write_bytes(b"engine")
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "images",
+            "input_shape": "1x3x256x256",
+            "input_dtype": "float32",
+            "output_name": "boxes",
+            "output_shape": "1x6x1344",
+            "output_dtype": "float32",
+            "outputs": {
+                "boxes": {"shape": [1, 6, 1344], "dtype": "float32"},
+                "masks": {"shape": [1, 32, 64, 64], "dtype": "float32"},
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="exactly one TensorRT output"):
+        ensure_engine_manifest(
+            inference,
+            engine_path=engine_path,
+            model_id="demo",
+            display_name="demo",
+            classes=["body", "head"],
+            registered_input_shape="1x3x256x256",
+            confidence_threshold=0.25,
+            nms_iou_threshold=0.45,
+        )
+
+    assert not engine_path.with_name("model.manifest.json").exists()
