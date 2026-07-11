@@ -2768,7 +2768,7 @@ export function StudioConsoleView({
             </div>
             <div className="console-grid2">
               <div className="console-card">
-                <SectionTitle title="控制模式与共享链路" />
+                <SectionTitle title="控制算法 · 通用参数" />
                 <label>控制模式</label>
                 <select value={controlMode} onChange={(event) => void updateConfigField("control", "mode", event.target.value)}>
                   <option value="universal_saturated">通用适配</option>
@@ -2796,7 +2796,7 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title={controlMode === "calibrated_angular" ? "精确标定参数" : "通用适配参数"} />
+                <SectionTitle title={controlMode === "calibrated_angular" ? "控制算法 · 精确标定" : "控制算法 · 通用适配"} />
                 {controlMode === "calibrated_angular" ? (
                   <>
                     <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
@@ -2818,24 +2818,29 @@ export function StudioConsoleView({
                     <NumberControl label="最大垂直移动 counts" value={universalMaxStepY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_y_counts", value)} />
                   </>
                 )}
+              </div>
+
+              <div className="console-card">
+                <SectionTitle title="目标选择与切换 · 通用参数" />
+                <NumberControl label="最低控制置信度" value={controlMinConfidence} min={0.1} max={0.99} step={0.01} onCommit={(value) => updateConfigField("control", "min_confidence", value)} />
+                <NumberControl label="目标选择半径 px" value={targetFovRadiusPx} min={1} max={4000} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
+                <NumberControl label="候选框最大宽高比" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
+                <NumberControl label="质量权重：置信度" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
+                <NumberControl label="质量权重：面积" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
+                <NumberControl label="类别优先容忍" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
+                <NumberControl label="切换优势阈值" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
+                <NumberControl label="切换连续性阈值" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
+              </div>
+
+              <div className="console-card">
+                <SectionTitle title="Tracker / Kalman · 通用参数" />
+                <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
+                <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
+                <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
+                <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
+                <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
                 <details className="model-debug-details">
-                  <summary>候选过滤、Hungarian Tracker 与目标切换</summary>
-                  <NumberControl label="最低控制置信度" value={controlMinConfidence} min={0.1} max={0.99} step={0.01} onCommit={(value) => updateConfigField("control", "min_confidence", value)} />
-                  <NumberControl label="目标选择半径 px" value={targetFovRadiusPx} min={1} max={4000} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
-                  <NumberControl label="候选框最大宽高比" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
-                  <NumberControl label="质量权重：置信度" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
-                  <NumberControl label="质量权重：面积" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
-                  <NumberControl label="类别优先容忍" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
-                  <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
-                  <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
-                  <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
-                  <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
-                  <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
-                  <NumberControl label="切换优势阈值" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
-                  <NumberControl label="切换连续性阈值" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
-                </details>
-                <details className="model-debug-details">
-                  <summary>Tracker Kalman 参数</summary>
+                  <summary>Kalman 高级参数</summary>
                   <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
                   <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
                   <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
