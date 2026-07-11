@@ -2540,7 +2540,7 @@ export function StudioConsoleView({
               </details>
             </div>
             <div className="console-card">
-              <SectionTitle title="推理预览" />
+              <SectionTitle title="ROI 输入预览" />
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
                 imageAvailable={previewImageAvailable}
@@ -2549,6 +2549,7 @@ export function StudioConsoleView({
                 roiSize={roiSize}
               />
               <div className="console-kv">
+                <span>画面阶段</span><b>{deepstreamNvinferSelected ? "nvinfer 前 NVMM ROI" : "推理输入 ROI"}</b>
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
                 <span>模型输入</span><b>{modelInputWidth && modelInputHeight ? `${modelInputWidth}x${modelInputHeight}` : "-"}</b>
                 <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
