@@ -161,8 +161,19 @@ def test_prepare_deepstream_engine_writes_confirmed_manifest(tmp_path) -> None:
         "pending",
     )
 
+    request = _request_with_registry(registry)
+    request.app.state.inference.probe = lambda *_args: {
+        "loaded": True,
+        "input_name": "images",
+        "input_shape": "1x3x256x256",
+        "input_dtype": "float32",
+        "output_name": "output0",
+        "output_shape": "1x6x1344",
+        "output_dtype": "float32",
+    }
+
     result = routes_models.prepare_deepstream_artifact(
-        _request_with_registry(registry),
+        request,
         artifact.id,
         DeepStreamPrepareRequest(
             model_id=project.name,
@@ -181,6 +192,61 @@ def test_prepare_deepstream_engine_writes_confirmed_manifest(tmp_path) -> None:
     assert manifest.output.shape == [1, 6, 1344]
     assert manifest.output.class_names == ["body", "head"]
     assert manifest.output.has_objectness is False
+
+
+def test_prepare_deepstream_engine_rejects_confirmed_shape_that_differs_from_engine(
+    tmp_path,
+) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["body", "head"],
+        "1x3x256x256",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        artifact_path.name,
+        "pending",
+        "pending",
+    )
+    request = _request_with_registry(registry)
+    request.app.state.inference.probe = lambda *_args: {
+        "loaded": True,
+        "input_name": "images",
+        "input_shape": "1x3x256x256",
+        "input_dtype": "float32",
+        "output_name": "output0",
+        "output_shape": "1x6x1344",
+        "output_dtype": "float32",
+    }
+
+    try:
+        routes_models.prepare_deepstream_artifact(
+            request,
+            artifact.id,
+            DeepStreamPrepareRequest(
+                model_id=project.name,
+                display_name=project.name,
+                input_shape=[1, 3, 320, 320],
+                output_shape=[1, 6, 2100],
+                class_count=2,
+            ),
+        )
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+        assert "does not match TensorRT engine" in str(getattr(exc, "detail", exc))
+    else:
+        raise AssertionError("mismatched confirmed contract must be rejected")
+
+    assert not artifact_path.with_name("model.manifest.json").exists()
 
 
 def test_model_replacement_keeps_deployed_artifact_file_immutable(tmp_path) -> None:

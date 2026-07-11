@@ -971,6 +971,59 @@ def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> b
     return int(matching_channels[0]) == 5 + class_count
 
 
+def _probe_deepstream_engine_contract(
+    request: Request,
+    *,
+    artifact_path: Path,
+    classes: list[str],
+    registered_input_shape: str,
+) -> dict[str, Any]:
+    inference = getattr(request.app.state, "inference", None)
+    probe = getattr(inference, "probe", None)
+    if not callable(probe):
+        raise RegistryValidationError(
+            "TensorRT engine probe is unavailable; refusing to guess DeepStream tensor bindings"
+        )
+    status = dict(probe(artifact_path, classes, registered_input_shape))
+    if status.get("loaded") is not True:
+        raise RegistryValidationError(
+            f"TensorRT engine probe failed: {status.get('reason') or 'loaded=false'}"
+        )
+    input_shape = _parse_runtime_shape(status.get("input_shape"), "input_shape")
+    output_shape = _parse_runtime_shape(status.get("output_shape"), "output_shape")
+    input_name = str(status.get("input_name") or "").strip()
+    output_name = str(status.get("output_name") or "").strip()
+    input_dtype = normalize_tensor_dtype(status.get("input_dtype"))
+    output_dtype = normalize_tensor_dtype(status.get("output_dtype"))
+    if not input_name or not output_name:
+        raise RegistryValidationError(
+            "TensorRT engine probe did not expose input/output tensor names"
+        )
+    return {
+        "input_name": input_name,
+        "input_shape": input_shape,
+        "input_dtype": input_dtype,
+        "output_name": output_name,
+        "output_shape": output_shape,
+        "output_dtype": output_dtype,
+    }
+
+
+def _parse_runtime_shape(value: object, label: str) -> list[int]:
+    parts = [item for item in re.split(r"[xX,\s]+", str(value or "").strip()) if item]
+    try:
+        shape = [int(item) for item in parts]
+    except ValueError as exc:
+        raise RegistryValidationError(
+            f"TensorRT engine probe returned invalid {label}: {value}"
+        ) from exc
+    if not shape or any(item <= 0 for item in shape):
+        raise RegistryValidationError(
+            f"TensorRT engine probe returned unresolved {label}: {value}"
+        )
+    return shape
+
+
 def _validate_deepstream_artifact(artifact_path: Path):
     if artifact_path.suffix.lower() != ".engine":
         raise RegistryValidationError("deepstream_nvinfer requires a TensorRT .engine artifact")
@@ -1087,27 +1140,45 @@ def prepare_deepstream_artifact(
             )
         if not artifact_path.is_file():
             raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
-        output_has_objectness = _validate_deepstream_prepare_payload(payload)
         class_names = list(version.classes)
         if int(payload.class_count) != len(class_names):
             raise RegistryValidationError(
                 "DeepStream class_count must match the model version classes "
                 f"(class_count={payload.class_count}, classes={len(class_names)})"
             )
+        engine_contract = _probe_deepstream_engine_contract(
+            request,
+            artifact_path=artifact_path,
+            classes=class_names,
+            registered_input_shape=version.input_shape,
+        )
+        requested_input_shape = [int(item) for item in payload.input_shape]
+        requested_output_shape = [int(item) for item in payload.output_shape]
+        if requested_input_shape != engine_contract["input_shape"]:
+            raise RegistryValidationError(
+                "confirmed DeepStream input shape does not match TensorRT engine "
+                f"(confirmed={requested_input_shape}, engine={engine_contract['input_shape']})"
+            )
+        if requested_output_shape != engine_contract["output_shape"]:
+            raise RegistryValidationError(
+                "confirmed DeepStream output shape does not match TensorRT engine "
+                f"(confirmed={requested_output_shape}, engine={engine_contract['output_shape']})"
+            )
+        output_has_objectness = _validate_deepstream_prepare_payload(payload)
         manifest = build_engine_manifest(
             model_id=payload.model_id,
             display_name=payload.display_name,
             engine_path=artifact_path,
             input_spec=TensorSpec(
-                name=payload.input_name,
-                shape=[int(item) for item in payload.input_shape],
-                dtype=normalize_tensor_dtype(payload.input_dtype),
+                name=engine_contract["input_name"],
+                shape=engine_contract["input_shape"],
+                dtype=engine_contract["input_dtype"],
                 layout="NCHW",
             ),
             output_spec=TensorSpec(
-                name=payload.output_name,
-                shape=[int(item) for item in payload.output_shape],
-                dtype=normalize_tensor_dtype(payload.output_dtype),
+                name=engine_contract["output_name"],
+                shape=engine_contract["output_shape"],
+                dtype=engine_contract["output_dtype"],
                 layout="NCHW",
             ),
             class_count=int(payload.class_count),

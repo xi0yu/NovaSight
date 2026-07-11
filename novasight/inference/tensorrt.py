@@ -130,6 +130,7 @@ class TensorRtInferenceEngine:
             "require_gpu": True,
             "allow_cpu_fallback": False,
             "reason": self._reason,
+            "input_name": self._input_name,
             "input_shape": str(self._input_shape) if self._input_shape is not None else "",
             "input_dtype": self._input_dtype,
             "output_shape": "x".join(str(item) for item in self._output_shape),
