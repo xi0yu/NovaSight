@@ -108,6 +108,15 @@ class DeepStreamRuntimePipeline:
             self.stats.consumed_detection_batches += 1
             self.stats.last_generation = after_generation
             self.stats.last_frame_id = int(batch.frame_id)
+            if self.stats.consumed_detection_batches == 1:
+                logger.info(
+                    "DeepStream runtime consumed first DetectionBatch frame=%s generation=%s "
+                    "detections=%s age_ms=%.2f",
+                    batch.frame_id,
+                    batch.generation,
+                    len(batch.detections),
+                    float(batch.result_age_ms or 0.0),
+                )
             try:
                 result = self.runtime.process_detection_batch(
                     batch,

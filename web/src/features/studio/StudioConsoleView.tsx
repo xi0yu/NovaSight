@@ -883,11 +883,31 @@ export function StudioConsoleView({
         : kmnetStatus.connected !== true
           ? "设备未连接"
           : readString(execution.message, readString(control.reason, "控制输出为零"));
-  const inferenceRan = inferenceTrace.ran === true;
-  const inferenceAvailable = inferenceTrace.available === true;
-  const inferenceReason = readString(inferenceTrace.reason, readString(vision.inference_reason, "-"));
+  const deepstreamInputFrames = readNumber(runtimeInference.input_frames, 0);
+  const deepstreamOutputBuffers = readNumber(runtimeInference.output_buffers, 0);
+  const deepstreamBatchMetaBuffers = readNumber(runtimeInference.batch_meta_buffers, 0);
+  const deepstreamFrameMetaFrames = readNumber(runtimeInference.frame_meta_frames, 0);
+  const deepstreamPublishedBatches = readNumber(runtimeInference.published_batches, 0);
+  const deepstreamParserStatus = asRecord(runtimeInference.parser);
+  const deepstreamBoundaryObserved =
+    deepstreamInputFrames > 0 ||
+    deepstreamOutputBuffers > 0 ||
+    deepstreamBatchMetaBuffers > 0 ||
+    deepstreamFrameMetaFrames > 0 ||
+    deepstreamPublishedBatches > 0;
+  const inferenceRan =
+    inferenceTrace.ran === true || (deepstreamNvinferSelected && deepstreamBoundaryObserved);
+  const inferenceAvailable =
+    inferenceTrace.available === true ||
+    (deepstreamNvinferSelected && runtimeInference.loaded === true && runtimeInference.terminal_error !== true);
+  const inferenceReason = inferenceTrace.ran === true
+    ? readString(inferenceTrace.reason, readString(vision.inference_reason, "-"))
+    : readString(
+        runtimeInference.inference_reason,
+        readString(inferenceTrace.reason, readString(vision.inference_reason, "-"))
+      );
   const inferenceBatchGeneration = readNumber(
-    inferenceTrace.generation ?? inferenceTrace.detection_batch_generation,
+    inferenceTrace.generation ?? inferenceTrace.detection_batch_generation ?? pipeline.last_generation,
     Number.NaN
   );
   const inferenceAcquiredGeneration = readNumber(inferenceTrace.acquired_generation, Number.NaN);
@@ -966,7 +986,9 @@ export function StudioConsoleView({
   const trtTimings = asRecord(decodeDebug.timings);
   const preprocessDebug = asRecord(inferenceDebug.preprocess);
   const detectionBatchMetadata = asRecord(inferenceTrace.detection_batch_metadata);
-  const nativeParserTelemetry = asRecord(detectionBatchMetadata.parser);
+  const nativeParserTelemetry = Object.keys(asRecord(detectionBatchMetadata.parser)).length > 0
+    ? asRecord(detectionBatchMetadata.parser)
+    : deepstreamParserStatus;
   const roiInputWidth = readNumber(inferenceTrace.input_width, readNumber(preprocessDebug.roi_width, roiSize));
   const roiInputHeight = readNumber(inferenceTrace.input_height, readNumber(preprocessDebug.roi_height, roiSize));
   const modelInputWidth = readNumber(inferenceTrace.model_input_width, readNumber(preprocessDebug.model_width, 0));
@@ -978,7 +1000,7 @@ export function StudioConsoleView({
   const inputPixelRatio = readNumber(inferenceTrace.input_pixel_ratio, readNumber(preprocessDebug.pixel_ratio, 0));
   const inputDensityWarning =
     inferenceTrace.input_density_warning === true || preprocessDebug.density_warning === true;
-  const inferenceFrameId = readNullableNumber(inferenceTrace.frame_id);
+  const inferenceFrameId = readNullableNumber(inferenceTrace.frame_id ?? runtimeInference.last_frame_id);
   const inferenceCaptureTsNs = readNullableNumber(inferenceTrace.capture_ts_ns);
   const inferenceStartTsNs = readNullableNumber(inferenceTrace.inference_start_ts_ns);
   const inferenceEndTsNs = readNullableNumber(inferenceTrace.inference_end_ts_ns);
@@ -991,7 +1013,10 @@ export function StudioConsoleView({
       ? (inferenceEndTsNs - inferenceCaptureTsNs) / 1e6
       : readNullableNumber(inferenceResultAgeMs);
   const inferenceInputDtype = readString(runtimeInference.input_dtype, "");
-  const inferenceInputLayout = readString(inferenceDebug.input_layout, "");
+  const inferenceInputLayout = readString(
+    inferenceDebug.input_layout,
+    readString(runtimeInference.input_layout, "")
+  );
   const inferencePreprocessMs = readNullableNumber(
     inferenceTrace.preprocess_ms ?? inferenceTimings.native_preprocess_total_ms ?? inferenceTimings.numpy_tensor_ms
   );
@@ -1018,8 +1043,12 @@ export function StudioConsoleView({
   const inferenceOutputShape = formatShape(
     decodeDebug.output_shape ?? inferenceDebug.output_shape ?? runtimeInference.output_shape ?? runtimeModelOutput.shape
   );
-  const inferenceParser = readString(runtimePostprocess.parser, readString(decodeDebug.selected_layout, ""));
-  const inferenceBatchPublished = (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0;
+  const inferenceParser = readString(
+    runtimePostprocess.parser,
+    readString(decodeDebug.selected_layout, deepstreamNvinferSelected ? "NvDsInferParseNovaSight" : "")
+  );
+  const inferenceBatchPublished =
+    (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0 || deepstreamPublishedBatches > 0;
   const inferenceBatchStale =
     inferenceTrace.is_stale === true || inferenceTrace.stale_rejected === true || inferenceTrace.latest_rejected === true;
   const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
@@ -2531,6 +2560,13 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>推理状态</span><b>{inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"}</b>
                 <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
+                <span>nvinfer 输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
+                <span>nvinfer 输出 Buffer</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
+                <span>BatchMeta Buffer</span><b>{formatOptionalInteger(deepstreamBatchMetaBuffers)}</b>
+                <span>FrameMeta 帧</span><b>{formatOptionalInteger(deepstreamFrameMetaFrames)}</b>
+                <span>Parser 调用</span><b>{formatOptionalInteger(deepstreamParserStatus.decode_calls)}</b>
+                <span>Parser 失败</span><b>{formatOptionalInteger(deepstreamParserStatus.parse_failures)}</b>
+                <span>Parser 错误码</span><b>{formatOptionalInteger(deepstreamParserStatus.last_error_code)}</b>
                 <span>当前推理 frame_id</span><b>{formatOptionalInteger(inferenceFrameId)}</b>
                 <span>Acquire generation</span><b>{formatOptionalInteger(inferenceAcquiredGeneration)}</b>
                 <span>Batch generation</span><b>{formatOptionalInteger(inferenceBatchGeneration)}</b>
@@ -2578,7 +2614,7 @@ export function StudioConsoleView({
                 <span>NMS 后检测数</span><b>{formatOptionalInteger(inferenceNmsDetectionCount)}</b>
                 <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
                 <span>后处理耗时</span><b>{formatOptionalNumber(inferencePostprocessMs, 3, "ms")}</b>
-                <span>DetectionBatch 状态</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchStale ? "已过期" : inferenceAvailable ? "可消费" : "不可用"}</b>
+                <span>DetectionBatch 状态</span><b>{!inferenceRan ? NO_SAMPLE : !inferenceBatchPublished ? "未发布" : inferenceBatchStale ? "已过期" : "可消费"}</b>
                 <span>DetectionBatch published</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
                 <span>DetectionBatch age</span><b>{formatOptionalNumber(inferenceResultAgeMs, 2, "ms")}</b>
               </div>

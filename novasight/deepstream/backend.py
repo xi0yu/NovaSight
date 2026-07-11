@@ -121,6 +121,9 @@ class DeepStreamObjectBackend:
         self._last_capture_ts_ns = 0
         self._last_capture_interval_ms = 0.0
         self._input_frames = 0
+        self._output_buffers = 0
+        self._batch_meta_buffers = 0
+        self._frame_meta_frames = 0
         self._published_batches = 0
         self._stale_dropped_batches = 0
         self._non_monotonic_dropped_batches = 0
@@ -133,6 +136,7 @@ class DeepStreamObjectBackend:
         self._inference_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._build_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._started_at_ns = 0
+        self._last_progress_log_ns = 0
 
     def dependency_status(self, *, refresh: bool = False) -> DeepStreamDependencyStatus:
         with self._lock:
@@ -173,6 +177,13 @@ class DeepStreamObjectBackend:
             result = pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("failed to set DeepStream pipeline to PLAYING")
+            logger.info(
+                "DeepStream pipeline start accepted state_change=%s model=%s output=%s classes=%s",
+                result,
+                self.manifest.model_id,
+                self.manifest.output.shape,
+                self.manifest.output.class_count,
+            )
         except Exception as exc:
             if pipeline is not None:
                 _set_pipeline_null_best_effort(Gst, pipeline)
@@ -226,6 +237,9 @@ class DeepStreamObjectBackend:
                 "clock_domain": "monotonic",
                 "input_frames": self._input_frames,
                 "input_fps": _sample_rate(self._input_frame_samples, now_ns),
+                "output_buffers": self._output_buffers,
+                "batch_meta_buffers": self._batch_meta_buffers,
+                "frame_meta_frames": self._frame_meta_frames,
                 "published_batches": self._published_batches,
                 "published_fps": _sample_rate(self._publish_samples, now_ns),
                 "stale_dropped_batches": self._stale_dropped_batches,
@@ -269,12 +283,24 @@ class DeepStreamObjectBackend:
                     "width": self.pipeline_config.model_width,
                     "height": self.pipeline_config.model_height,
                 },
+                "input_name": self.manifest.input.name,
+                "input_shape": "x".join(str(value) for value in self.manifest.input.shape),
+                "input_dtype": self.manifest.input.dtype,
+                "input_layout": self.manifest.input.layout,
+                "output_name": self.manifest.output.name,
+                "output_shape": "x".join(str(value) for value in self.manifest.output.shape),
+                "output_dtype": self.manifest.output.dtype,
                 "model_output": {
                     "name": self.manifest.output.name,
                     "shape": list(self.manifest.output.shape),
                     "class_count": int(self.manifest.output.class_count),
                     "class_names": list(self.manifest.output.class_names),
                     "has_objectness": bool(self.manifest.output.has_objectness),
+                },
+                "postprocess": {
+                    "parser": self.manifest.postprocess.parser,
+                    "confidence_threshold": self.manifest.postprocess.confidence_threshold,
+                    "nms_threshold": self.manifest.postprocess.nms_iou_threshold,
                 },
                 "model_fingerprint": self.manifest.model_fingerprint,
                 "batch_age_ms_stats": _sample_stats(self._publish_samples),
@@ -289,6 +315,9 @@ class DeepStreamObjectBackend:
                 "detection_batch_mailbox": self.detection_batch_mailbox.status(),
                 "uptime_ms": uptime_ms,
             }
+            phase, phase_reason = self._inference_phase_locked(payload["parser"])
+            payload["inference_phase"] = phase
+            payload["inference_reason"] = phase_reason
         return payload
 
     def _ensure_parser_library(self) -> None:
@@ -340,6 +369,9 @@ class DeepStreamObjectBackend:
         self._last_capture_ts_ns = 0
         self._last_capture_interval_ms = 0.0
         self._input_frames = 0
+        self._output_buffers = 0
+        self._batch_meta_buffers = 0
+        self._frame_meta_frames = 0
         self._published_batches = 0
         self._stale_dropped_batches = 0
         self._non_monotonic_dropped_batches = 0
@@ -351,6 +383,7 @@ class DeepStreamObjectBackend:
         self._input_age_samples.clear()
         self._inference_samples.clear()
         self._build_samples.clear()
+        self._last_progress_log_ns = 0
 
     def _attach_probes(self, Gst: Any, pipeline: Any) -> None:
         nvinfer = pipeline.get_by_name("primary-infer")
@@ -362,6 +395,7 @@ class DeepStreamObjectBackend:
             raise RuntimeError("DeepStream primary-infer pads are unavailable")
         sink_pad.add_probe(Gst.PadProbeType.BUFFER, self._inference_start_probe)
         src_pad.add_probe(Gst.PadProbeType.BUFFER, self._object_meta_probe)
+        logger.info("DeepStream nvinfer sink/src probes attached")
 
     def _inference_start_probe(self, _pad: Any, info: Any) -> Any:
         Gst = importlib.import_module("gi.repository.Gst")
@@ -400,15 +434,21 @@ class DeepStreamObjectBackend:
             buffer = info.get_buffer()
             if buffer is None:
                 return Gst.PadProbeReturn.OK
+            with self._lock:
+                self._output_buffers += 1
             pyds = importlib.import_module("pyds")
             batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
             if batch_meta is None:
                 raise RuntimeError("nvinfer output buffer has no NvDsBatchMeta")
+            with self._lock:
+                self._batch_meta_buffers += 1
             frame_list = batch_meta.frame_meta_list
             while frame_list is not None:
                 frame_meta = pyds.NvDsFrameMeta.cast(frame_list.data)
+                with self._lock:
+                    self._frame_meta_frames += 1
                 self._publish_frame_meta(pyds, frame_meta, buffer)
-                frame_list = frame_list.next
+                frame_list = _next_meta_node(frame_list)
         except Exception as exc:
             self._record_terminal_error(f"DeepStream object-meta probe failed: {exc}")
         return Gst.PadProbeReturn.OK
@@ -540,7 +580,7 @@ class DeepStreamObjectBackend:
                         box=BBox.from_xyxy(left, top, right, bottom),
                     )
                 )
-            object_list = object_list.next
+            object_list = _next_meta_node(object_list)
         return detections
 
     def _capture_ts_from_pts(self, pts_ns: int, *, observed_ns: int) -> int:
@@ -613,6 +653,7 @@ class DeepStreamObjectBackend:
             while not self._bus_stop.is_set():
                 message = bus.timed_pop_filtered(100_000_000, mask)
                 if message is None:
+                    self._log_progress_if_due()
                     continue
                 if message.type == Gst.MessageType.ERROR:
                     error, debug = message.parse_error()
@@ -629,6 +670,53 @@ class DeepStreamObjectBackend:
             self._terminal_error = True
             self._running = False
         self._bus_stop.set()
+        logger.error("DeepStream terminal error: %s", reason)
+
+    def _log_progress_if_due(self) -> None:
+        now_ns = time.monotonic_ns()
+        with self._lock:
+            if now_ns - self._last_progress_log_ns < 2_000_000_000:
+                return
+            self._last_progress_log_ns = now_ns
+            progress = {
+                "input": self._input_frames,
+                "output": self._output_buffers,
+                "batch_meta": self._batch_meta_buffers,
+                "frame_meta": self._frame_meta_frames,
+                "published": self._published_batches,
+                "stale": self._stale_dropped_batches,
+                "timestamp_rejected": self._timestamp_rejected_batches,
+                "non_monotonic": self._non_monotonic_dropped_batches,
+                "timestamp_source": self._timestamp_source,
+                "last_error": self._last_error,
+            }
+        progress["parser"] = self._parser_telemetry.snapshot()
+        logger.info("DeepStream inference progress %s", progress)
+
+    def _inference_phase_locked(self, parser: object) -> tuple[str, str]:
+        parser_status = parser if isinstance(parser, dict) else {}
+        parser_calls = int(parser_status.get("decode_calls") or 0)
+        parse_failures = int(parser_status.get("parse_failures") or 0)
+        if self._terminal_error:
+            return "failed", self._last_error or "DeepStream pipeline terminated"
+        if not self._running:
+            return "stopped", self._last_error or "DeepStream pipeline is not running"
+        if self._input_frames <= 0:
+            return "waiting_input", "waiting for the first nvinfer input buffer"
+        if self._published_batches > 0:
+            return "publishing", "DetectionBatch is being published"
+        if self._output_buffers <= 0:
+            return "waiting_output", "nvinfer has input buffers but no src output buffer"
+        if self._batch_meta_buffers <= 0:
+            return "missing_batch_meta", "nvinfer output has no readable NvDsBatchMeta"
+        if parser_calls <= 0:
+            return "parser_not_called", "NvDsInferParseNovaSight has not been called"
+        if parse_failures > 0 and self._published_batches <= 0:
+            code = parser_status.get("last_error_code")
+            return "parser_failed", f"native parser failed code={code}"
+        if self._frame_meta_frames <= 0:
+            return "missing_frame_meta", "NvDsBatchMeta contains no frame metadata"
+        return "publish_blocked", self._last_error or "DetectionBatch publish is blocked"
 
     def _prune_samples_locked(self, now_ns: int) -> None:
         threshold = int(now_ns) - 60_000_000_000
@@ -687,6 +775,13 @@ def _buffer_pts_ns(buffer: Any) -> int:
         return int(getattr(buffer, "pts"))
     except (AttributeError, TypeError, ValueError):
         return GST_CLOCK_TIME_NONE
+
+
+def _next_meta_node(node: Any) -> Any | None:
+    try:
+        return node.next
+    except StopIteration:
+        return None
 
 
 def _sample_stats(samples: deque[tuple[int, float]]) -> dict[str, float | int]:

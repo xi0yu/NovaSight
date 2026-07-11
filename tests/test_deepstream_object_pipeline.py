@@ -132,6 +132,35 @@ def test_object_meta_is_scaled_from_model_surface_to_roi(tmp_path: Path) -> None
     assert detections[0].box.y2 == pytest.approx(144.0)
 
 
+def test_object_meta_iteration_accepts_pyds_stop_iteration_tail(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    object_meta = SimpleNamespace(
+        class_id=0,
+        confidence=0.8,
+        rect_params=SimpleNamespace(left=1.0, top=2.0, width=3.0, height=4.0),
+    )
+
+    class TailNode:
+        data = object_meta
+
+        @property
+        def next(self):
+            raise StopIteration
+
+    frame_meta = SimpleNamespace(obj_meta_list=TailNode())
+    pyds = SimpleNamespace(NvDsObjectMeta=SimpleNamespace(cast=lambda value: value))
+
+    detections = backend._object_meta_detections(pyds, frame_meta)
+
+    assert len(detections) == 1
+
+
 def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_path: Path) -> None:
     _engine, manifest = _manifest(tmp_path)
     backend = DeepStreamObjectBackend(
@@ -157,6 +186,8 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
 
     assert status["loaded"] is True
     assert status["configured"] is True
+    assert status["inference_phase"] == "publishing"
+    assert status["inference_reason"] == "DetectionBatch is being published"
     assert status["input_fps"] == 2.0
     assert status["published_fps"] == 1.0
     assert status["latest_frame_age_ms"] == pytest.approx(4.0, abs=2.0)
