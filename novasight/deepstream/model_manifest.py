@@ -88,9 +88,19 @@ def resolve_yolo_class_contract(
     registered_classes: list[str],
     *,
     class_count_hint: int | None = None,
+    objectness_hint: bool | None = None,
 ) -> tuple[list[str], bool]:
     classes = [str(item).strip() for item in registered_classes if str(item).strip()]
     automatic_classes = _automatic_class_names(classes)
+    if objectness_hint is not None and automatic_classes:
+        _shape, channels, _candidates = _raw_yolo_dimensions(output_shape)
+        count = channels - (5 if objectness_hint else 4)
+        if count <= 0:
+            raise ValueError(
+                "cannot infer class count from the named YOLO output contract "
+                f"(shape={output_shape}, has_objectness={objectness_hint})"
+            )
+        return [f"class_{index}" for index in range(count)], objectness_hint
     if class_count_hint is not None and automatic_classes:
         count = int(class_count_hint)
         has_objectness = infer_yolo_output_contract(output_shape, count)
@@ -121,6 +131,15 @@ def infer_class_count_hint_from_name(value: str) -> int | None:
     if chinese is None:
         return None
     return _parse_chinese_integer(chinese.group(1))
+
+
+def infer_yolo_objectness_hint_from_name(value: str) -> bool | None:
+    text = Path(str(value)).stem.lower()
+    if re.search(r"(?:yolo)?v(?:8|9|10|11|12)(?:[nslmx]|\d|[_-]|$)", text):
+        return False
+    if re.search(r"(?:yolo)?v5(?:[nslmx]|\d|[_-]|$)", text):
+        return True
+    return None
 
 
 def _parse_chinese_integer(value: str) -> int | None:
@@ -157,15 +176,18 @@ def _automatic_class_names(classes: list[str]) -> bool:
 def _manifest_needs_class_hint_reconciliation(
     manifest: ModelManifest,
     class_count_hint: int | None,
+    objectness_hint: bool | None,
 ) -> bool:
-    if class_count_hint is None or not _automatic_class_names(list(manifest.output.class_names)):
+    if not _automatic_class_names(list(manifest.output.class_names)):
         return False
-    expected_objectness = infer_yolo_output_contract(
+    expected_classes, expected_objectness = resolve_yolo_class_contract(
         list(manifest.output.shape),
-        int(class_count_hint),
+        list(manifest.output.class_names),
+        class_count_hint=class_count_hint,
+        objectness_hint=objectness_hint,
     )
     return (
-        int(manifest.output.class_count) != int(class_count_hint)
+        int(manifest.output.class_count) != len(expected_classes)
         or bool(manifest.output.has_objectness) != expected_objectness
     )
 
@@ -208,11 +230,16 @@ def ensure_engine_manifest(
     path = Path(engine_path)
     manifest_path = path.with_name("model.manifest.json")
     class_count_hint = infer_class_count_hint_from_name(path.name)
+    objectness_hint = infer_yolo_objectness_hint_from_name(path.name)
     with _MANIFEST_LOCK:
         if manifest_path.is_file():
             manifest = read_manifest(manifest_path)
             validate_manifest_engine_artifact(manifest, path)
-            if not _manifest_needs_class_hint_reconciliation(manifest, class_count_hint):
+            if not _manifest_needs_class_hint_reconciliation(
+                manifest,
+                class_count_hint,
+                objectness_hint,
+            ):
                 return manifest, False
             logger.warning(
                 "regenerating automatic DeepStream manifest from engine filename class hint "
@@ -244,6 +271,7 @@ def ensure_engine_manifest(
             contract.output_shape,
             classes,
             class_count_hint=class_count_hint,
+            objectness_hint=objectness_hint,
         )
         manifest = build_engine_manifest(
             model_id=model_id,
@@ -299,6 +327,7 @@ __all__ = [
     "ensure_engine_manifest",
     "infer_yolo_output_contract",
     "infer_class_count_hint_from_name",
+    "infer_yolo_objectness_hint_from_name",
     "parse_runtime_shape",
     "probe_engine_contract",
     "resolve_yolo_class_contract",

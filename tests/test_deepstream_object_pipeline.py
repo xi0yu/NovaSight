@@ -560,10 +560,10 @@ def test_deepstream_runtime_replaces_placeholder_classes_from_raw_yolo_output(
     assert registry.get_version(version.id).classes == manifest.output.class_names
 
 
-def test_existing_automatic_manifest_uses_explicit_class_count_from_engine_name(
+def test_existing_v8_manifest_ignores_ambiguous_class_count_in_filename(
     tmp_path: Path,
 ) -> None:
-    engine_path = tmp_path / "0305大碗模型三类.engine"
+    engine_path = tmp_path / "0305大碗模型三类_v8s256.engine"
     engine_path.write_bytes(b"engine")
     stale_manifest = build_engine_manifest(
         model_id="demo",
@@ -600,16 +600,16 @@ def test_existing_automatic_manifest_uses_explicit_class_count_from_engine_name(
         nms_iou_threshold=0.45,
     )
 
-    assert regenerated is True
-    assert manifest.output.class_count == 3
-    assert manifest.output.class_names == ["class_0", "class_1", "class_2"]
-    assert manifest.output.has_objectness is True
+    assert regenerated is False
+    assert manifest.output.class_count == 4
+    assert manifest.output.class_names == ["class_0", "class_1", "class_2", "class_3"]
+    assert manifest.output.has_objectness is False
     config_text = generate_nvinfer_config(
         manifest,
         engine_path=engine_path,
         parser_library_path=tmp_path / "libnovasight_parser.so",
     )
-    assert "num-detected-classes=3" in config_text
+    assert "num-detected-classes=4" in config_text
 
 
 def test_single_target_objectness_contract_is_not_reclassified() -> None:
