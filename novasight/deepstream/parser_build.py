@@ -42,6 +42,9 @@ def ensure_deepstream_parser_library(
         deepstream_root = _resolve_deepstream_root()
         if deepstream_root is not None:
             configure_command.append(f"-DNOVASIGHT_DEEPSTREAM_ROOT={deepstream_root}")
+        cuda_root = _resolve_cuda_root()
+        if cuda_root is not None:
+            configure_command.append(f"-DNOVASIGHT_CUDA_ROOT={cuda_root}")
         logger.warning(
             "DeepStream parser library missing; starting automatic build target=%s",
             target,
@@ -97,6 +100,27 @@ def _resolve_deepstream_root() -> Path | None:
     for candidate in candidates:
         resolved = candidate.expanduser().resolve(strict=False)
         if (resolved / "sources" / "includes" / "nvdsinfer_custom_impl.h").is_file():
+            return resolved
+    return None
+
+
+def _resolve_cuda_root() -> Path | None:
+    candidates: list[Path] = []
+    for variable in ("NOVASIGHT_CUDA_ROOT", "CUDA_HOME", "CUDA_PATH"):
+        configured = os.environ.get(variable, "").strip()
+        if configured:
+            candidates.append(Path(configured))
+    candidates.append(Path("/usr/local/cuda"))
+    usr_local = Path("/usr/local")
+    if usr_local.is_dir():
+        candidates.extend(sorted(usr_local.glob("cuda-*"), reverse=True))
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve(strict=False)
+        headers = (
+            resolved / "include" / "cuda_runtime_api.h",
+            resolved / "targets" / "aarch64-linux" / "include" / "cuda_runtime_api.h",
+        )
+        if any(header.is_file() for header in headers):
             return resolved
     return None
 

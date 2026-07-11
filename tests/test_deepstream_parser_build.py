@@ -9,9 +9,13 @@ def test_missing_deepstream_parser_is_built_once(tmp_path, monkeypatch) -> None:
     source_dir.mkdir(parents=True)
     (source_dir / "CMakeLists.txt").write_text("project(test)", encoding="utf-8")
     library_path = tmp_path / "build" / "deepstream-parser" / "libnovasight_parser.so"
+    cuda_root = tmp_path / "cuda"
+    (cuda_root / "include").mkdir(parents=True)
+    (cuda_root / "include" / "cuda_runtime_api.h").write_text("", encoding="utf-8")
     commands: list[list[str]] = []
 
     monkeypatch.setattr(parser_build.shutil, "which", lambda _name: "/usr/bin/cmake")
+    monkeypatch.setenv("NOVASIGHT_CUDA_ROOT", str(cuda_root))
 
     def fake_run(command, **_kwargs):
         commands.append([str(item) for item in command])
@@ -35,6 +39,7 @@ def test_missing_deepstream_parser_is_built_once(tmp_path, monkeypatch) -> None:
     assert second == first
     assert len(commands) == 2
     assert commands[0][:2] == ["/usr/bin/cmake", "-S"]
+    assert f"-DNOVASIGHT_CUDA_ROOT={cuda_root.resolve()}" in commands[0]
     assert commands[1][:2] == ["/usr/bin/cmake", "--build"]
 
 

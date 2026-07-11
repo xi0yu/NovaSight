@@ -12,7 +12,8 @@ Build on the Jetson with its installed DeepStream headers:
 
 ```bash
 cmake -S native/deepstream-parser -B build/deepstream-parser \
-  -DNOVASIGHT_DEEPSTREAM_ROOT=/opt/nvidia/deepstream/deepstream-7.1
+  -DNOVASIGHT_DEEPSTREAM_ROOT=/opt/nvidia/deepstream/deepstream \
+  -DNOVASIGHT_CUDA_ROOT=/usr/local/cuda
 cmake --build build/deepstream-parser --parallel
 ```
 
