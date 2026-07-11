@@ -15,6 +15,10 @@ import {
   getRuntimeState,
   statusWebSocketUrl,
 } from "./api";
+import { ToastHost } from "./components/ToastHost";
+import { isQuietErrorsEnabled, setQuietErrorsEnabled } from "./lib/api-error";
+import { reportError, reportInfo, reportSuccess } from "./lib/toast";
+import { reportWebSocketFailure } from "./lib/errorGuards";
 import { LicenseGate, LicenseView } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { StudioConsoleView } from "./features/studio/StudioConsoleView";
@@ -24,7 +28,6 @@ import { formatTime, getErrorMessage } from "./features/shared/format";
 type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 type GuardedViewId = Exclude<StudioViewId, "license">;
-
 type LoadState = {
   loading: boolean;
   errors: Partial<Record<ErrorKey, string>>;
@@ -132,6 +135,7 @@ function StudioApp() {
     setLicenseLoading(true);
     setLicenseError(undefined);
     try {
+      const cached = localStorage.getItem(LICENSE_CACHE_KEY) === "1";
       const status = await getLicenseStatus();
       if (requestSeq !== licenseRequestSeqRef.current) {
         return status;
@@ -139,6 +143,9 @@ function StudioApp() {
       setLicense(status);
       if (status.valid) {
         localStorage.setItem(LICENSE_CACHE_KEY, "1");
+        if (cached) {
+          reportInfo("授权已从本地缓存命中", "本次刷新沿用上一次的授权结论。", "license");
+        }
       } else {
         localStorage.removeItem(LICENSE_CACHE_KEY);
       }
@@ -149,6 +156,11 @@ function StudioApp() {
       }
       setLicenseError(getErrorMessage(err));
       localStorage.removeItem(LICENSE_CACHE_KEY);
+      reportError(err, {
+        source: "license",
+        title: "授权校验失败",
+        fallback: "无法连接 NovaSight 后端"
+      });
       return null;
     } finally {
       if (requestSeq === licenseRequestSeqRef.current) {
@@ -192,6 +204,22 @@ function StudioApp() {
         getModelProjects()
       ]);
       const responseReceivedAt = Date.now();
+      const sourceMap: Array<[PromiseSettledResult<unknown>, string]> = [
+        [health, "health"],
+        [runtime, "runtime"],
+        [config, "config"],
+        [projects, "projects"]
+      ];
+      const seenReason = new Set<unknown>();
+      for (const [result, source] of sourceMap) {
+        if (result.status === "rejected" && !seenReason.has(result.reason)) {
+          seenReason.add(result.reason);
+          reportError(result.reason, {
+            source,
+            title: source === "runtime" ? "运行态失败" : "请求失败"
+          });
+        }
+      }
       setState((current) => {
         if (requestSeq !== loadRequestSeqRef.current) {
           return current;
@@ -264,14 +292,18 @@ function StudioApp() {
 
     let active = true;
     const socket = new WebSocket(statusWebSocketUrl());
-    socket.onerror = () => {
+    socket.onerror = (event) => {
       if (active) {
         setRealtimeStatus("disconnected");
+        reportWebSocketFailure(event, "status");
       }
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (active) {
         setRealtimeStatus("disconnected");
+        if (event.code !== 1000 && event.code !== 1001) {
+          reportWebSocketFailure(event.reason || `code=${event.code}`, "status");
+        }
       }
     };
     socket.onmessage = (event) => {
@@ -378,7 +410,31 @@ function StudioApp() {
           onRefresh={load}
         />
       )}
+      <QuietErrorsControl />
+      <ToastHost />
       <div className="visually-hidden">{consoleStatus}</div>
     </>
   );
 }
+
+function QuietErrorsControl() {
+  const [quiet, setQuiet] = useState<boolean>(isQuietErrorsEnabled);
+  useEffect(() => {
+    setQuietErrorsEnabled(quiet);
+  }, [quiet]);
+  return (
+    <label className="quiet-errors-toggle" title="开启后只把后端错误写进 console，UI 不弹 toast">
+      <input
+        type="checkbox"
+        checked={quiet}
+        onChange={(event) => setQuiet(event.currentTarget.checked)}
+        aria-label="静默后端错误提示"
+      />
+      <span aria-hidden="true">🔕</span>
+      <span className="quiet-errors-toggle-label">
+        {quiet ? "静默已开启（仅 console）" : "静默关闭"}
+      </span>
+    </label>
+  );
+}
+

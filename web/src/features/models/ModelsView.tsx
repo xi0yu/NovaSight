@@ -14,6 +14,7 @@ import {
   type ModelProject
 } from "../../api";
 import { Badge, EmptyState, InlineError, Panel, StatusIndicator } from "../../components/ui";
+import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { Field } from "../shared/Field";
 
@@ -190,6 +191,7 @@ export function ModelsView({
         }
         setVersions([]);
         setVersionsError(getErrorMessage(requestError));
+        reportError(requestError, { source: "model-versions", title: "模型版本读取失败" });
       })
       .finally(() => {
         if (cancelled) {
@@ -245,6 +247,7 @@ export function ModelsView({
         }
         setArtifacts([]);
         setArtifactsError(getErrorMessage(requestError));
+        reportError(requestError, { source: "model-artifacts", title: "模型产物读取失败" });
       })
       .finally(() => {
         if (cancelled) {
@@ -266,6 +269,7 @@ export function ModelsView({
         }
         setJobs([]);
         setJobsError(getErrorMessage(requestError));
+        reportError(requestError, { source: "model-jobs", title: "模型任务读取失败" });
       })
       .finally(() => {
         if (cancelled) {
@@ -327,8 +331,8 @@ export function ModelsView({
         artifactId: artifact.id,
         error: getErrorMessage(requestError)
       });
+      reportError(requestError, { source: "model-publish", title: "模型发布失败" });
     } finally {
-      setPublishingArtifactId(null);
     }
   }
 
@@ -366,8 +370,8 @@ export function ModelsView({
         projectId: requestProjectId,
         error: getErrorMessage(requestError)
       });
+      reportError(requestError, { source: "model-rollback", title: "模型回滚失败" });
     } finally {
-      setRollingBack(false);
     }
   }
 
@@ -388,6 +392,7 @@ export function ModelsView({
       );
     } catch (requestError) {
       setModelActionError(getErrorMessage(requestError));
+      reportError(requestError, { source: "model-prepare-example", title: "测试模型准备失败" });
     } finally {
       setPreparingExample(false);
     }
@@ -406,6 +411,7 @@ export function ModelsView({
       );
     } catch (requestError) {
       setModelActionError(getErrorMessage(requestError));
+      reportError(requestError, { source: "model-scan", title: "模型目录扫描失败" });
     } finally {
       setScanningModels(false);
     }

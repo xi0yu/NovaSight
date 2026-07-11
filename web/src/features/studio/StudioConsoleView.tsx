@@ -31,6 +31,7 @@ import {
   updateRuntimeConfig,
   updateRuntimeConfigField
 } from "../../api";
+import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle, type NovaIconName } from "../../components/visual";
@@ -1103,6 +1104,9 @@ export function StudioConsoleView({
           setModelVersions([]);
           setSelectedModelVersionId("");
           setLocalError(`模型版本读取失败：${getErrorMessage(err)}`);
+
+          reportError(err, { source: 'studio', title: '操作失败' });
+          reportError(err, { source: "model-versions", title: "模型版本读取失败" });
         }
       });
     return () => {
@@ -1155,6 +1159,9 @@ export function StudioConsoleView({
         if (!cancelled) {
           setModelArtifacts([]);
           setLocalError(`模型产物读取失败：${getErrorMessage(err)}`);
+
+          reportError(err, { source: 'studio', title: '操作失败' });
+          reportError(err, { source: "model-artifacts", title: "模型产物读取失败" });
         }
       });
     return () => {
@@ -1169,16 +1176,18 @@ export function StudioConsoleView({
       const result = await getCaptureCapabilities(device);
       setCaps(result);
       if (!result.available) {
-        setLocalError(result.reason || "设备不可用");
+        const reason = result.reason || "设备不可用";
+        setLocalError(reason);
+        reportError(new Error(reason), { source: "capture-caps", title: "采集设备不可用" });
       }
       const grouped = groupCapabilities(result.capabilities);
-      const configured = grouped.find((choice) => choiceMatchesConfig(choice, {
+      const configured = grouped.find((choice: CapabilityChoice) => choiceMatchesConfig(choice, {
         pixel_format: configuredCapturePixelFormat,
         width: configuredCaptureWidth,
         height: configuredCaptureHeight,
         fps: configuredCaptureFps
       }));
-      const running = grouped.find((choice) => runningPixelFormat && (
+      const running = grouped.find((choice: CapabilityChoice) => runningPixelFormat && (
         choice.pixel_format.toUpperCase() === runningPixelFormat.toUpperCase() &&
         choice.width === runningWidth &&
         choice.height === runningHeight &&
@@ -1244,6 +1253,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
     } finally {
       setBusy(null);
@@ -1280,6 +1291,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`启动推理失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
     } finally {
       setBusy(null);
@@ -1511,6 +1524,8 @@ export function StudioConsoleView({
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
       setLocalError(`启动主链失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: "mainline-launch", title: "启动主链失败" });
       try {
         await stopRuntimePipeline();
       } catch {
@@ -1557,6 +1572,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`取消启动失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: "mainline-cancel", title: "取消启动失败" });
     }
   }, [closeLaunchDialog, launchStatus, onRefresh]);
 
@@ -1599,6 +1616,8 @@ export function StudioConsoleView({
         }
       } catch (err) {
         setLocalError(`配置同步失败：${getErrorMessage(err)}`);
+
+        reportError(err, { source: 'studio', title: '操作失败' });
         if (writeSeq === configWriteSeqRef.current) {
           configDraftRef.current = null;
           setConfigDraft(null);
@@ -1667,6 +1686,8 @@ export function StudioConsoleView({
         }
       } catch (err) {
         setLocalError(`采集数据通路切换失败：${getErrorMessage(err)}`);
+
+        reportError(err, { source: 'studio', title: '操作失败' });
         if (writeSeq === configWriteSeqRef.current) {
           configDraftRef.current = null;
           setConfigDraft(null);
@@ -1700,6 +1721,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
     } finally {
       setBusy(null);
     }
@@ -1717,6 +1740,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet ${kmnetConnected || kmnetConnecting ? "断开" : "连接"}失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
     } finally {
       setBusy(null);
@@ -1762,6 +1787,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet 诊断移动失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
     } finally {
       setBusy(null);
@@ -1787,6 +1814,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet 画圆测试失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
     } finally {
       setBusy(null);
@@ -1822,6 +1851,8 @@ export function StudioConsoleView({
       await onRefresh();
     } catch (err) {
       setLocalError(`导入失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
     } finally {
       setBusy(null);
     }
@@ -1909,6 +1940,8 @@ export function StudioConsoleView({
       setModelCatalogRefreshKey((current) => current + 1);
     } catch (err) {
       setLocalError(`模型切换失败，当前运行模型已保留：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
     } finally {
       setBusy(null);
@@ -1930,6 +1963,8 @@ export function StudioConsoleView({
     } catch (err) {
       preferLatestModelVersionRef.current = false;
       setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
     } finally {
       setBusy(null);
     }
@@ -1950,6 +1985,8 @@ export function StudioConsoleView({
     } catch (err) {
       preferLatestModelVersionRef.current = false;
       setLocalError(`模型目录扫描失败：${getErrorMessage(err)}`);
+
+      reportError(err, { source: 'studio', title: '操作失败' });
     } finally {
       setBusy(null);
     }

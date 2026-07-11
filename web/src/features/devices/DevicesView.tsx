@@ -16,6 +16,7 @@ import {
 } from "../../api";
 import { Badge, EmptyState, InlineError } from "../../components/ui";
 import pipelineVisualUrl from "../../assets/novasight-pipeline-visual.png";
+import { reportError } from "../../lib/toast";
 import { formatProfile, getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
@@ -370,13 +371,16 @@ export function DevicesView({
       }
       setCapabilities(result);
       if (!result.available) {
-        setCaptureError(result.reason || "设备不可用");
+        const reason = result.reason || "设备不可用";
+        setCaptureError(reason);
+        reportError(new Error(reason), { source: "capture-caps", title: "采集设备不可用" });
       }
     } catch (err) {
       if (capabilityRequestId.current !== requestId) {
         return;
       }
       setCaptureError(getErrorMessage(err));
+      reportError(err, { source: "capture-caps", title: "采集能力读取失败" });
     } finally {
       if (capabilityRequestId.current === requestId) {
         setLoadingCaps(false);
@@ -394,12 +398,11 @@ export function DevicesView({
       setCaptureError(undefined);
       try {
         await selectCaptureProfile(payload);
-        await onRuntimeRefresh();
       } catch (err) {
         setCaptureError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
+        reportError(err, { source: "capture-select", title: "采集配置切换失败" });
         await onRuntimeRefresh();
       } finally {
-        setApplying(null);
       }
     },
     [onRuntimeRefresh]
@@ -415,12 +418,11 @@ export function DevicesView({
       } else {
         await stopCapture();
       }
-      await onRuntimeRefresh();
     } catch (err) {
       setCaptureError(getErrorMessage(err));
+      reportError(err, { source: "capture-stop", title: "停止采集失败" });
       await onRuntimeRefresh();
     } finally {
-      setStoppingCapture(false);
     }
   }, [onRuntimeRefresh, runtime]);
 
@@ -432,12 +434,11 @@ export function DevicesView({
     setCaptureError(undefined);
     try {
       await selectImageSource(imagePath.trim(), imageFps);
-      await onRuntimeRefresh();
     } catch (err) {
       setCaptureError(`图片输入源切换失败：${getErrorMessage(err)}`);
+      reportError(err, { source: "capture-image", title: "图片输入源切换失败" });
       await onRuntimeRefresh();
     } finally {
-      setApplying(null);
     }
   }, [imageFps, imagePath, onRuntimeRefresh]);
 
@@ -459,9 +460,9 @@ export function DevicesView({
         await onRuntimeRefresh();
       } catch (err) {
         setCaptureError(`配置同步失败：${getErrorMessage(err)}`);
+        reportError(err, { source: "runtime-config", title: "配置同步失败" });
         await onRuntimeRefresh();
       } finally {
-        setConfigBusy(null);
       }
     },
     [configBusy, onRuntimeRefresh]

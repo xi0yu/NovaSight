@@ -11,7 +11,8 @@ import {
   updateRuntimeConfig
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
-import { statusTone } from "../shared/format";
+import { reportError } from "../../lib/toast";
+import { getErrorMessage, statusTone } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 type DashboardViewProps = {
@@ -354,9 +355,21 @@ export function DashboardView({
   const roiSize = readNestedNumber(configSource, "roi", "size", 640);
   const configVersion =
     typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
-  const modelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const e2eText = stats.e2e_latency > 0 ? `${formatNumber(stats.e2e_latency, 1)}ms` : "--";
   const [consumerBusy, setConsumerBusy] = useState<string | null>(null);
+  const [consumerError, setConsumerError] = useState<string | null>(null);
+  const modelName = (() => {
+    const candidates = [
+      runtime?.active_model?.project?.name,
+      runtime?.active_model?.version?.id
+    ];
+    for (const value of candidates) {
+      if (typeof value === "string" && value) {
+        return value;
+      }
+    }
+    return "未选择";
+  })();
   const previewEnabled = readNestedBoolean(configSource, "consumers", "preview", true);
   const previewImageAvailable = !deepstreamNvinferSelected && capture?.available === true && previewEnabled;
   const inferenceEnabled = readNestedBoolean(configSource, "consumers", "inference", true);
@@ -410,12 +423,12 @@ export function DashboardView({
   const overlayWidth = inputWidth ?? roiSize;
   const overlayHeight = inputHeight ?? roiSize;
   const aimPointStyle = pointStyle(aimX, aimY, overlayWidth, overlayHeight);
-
   async function updateConsumer(key: "preview" | "inference" | "recording", enabled: boolean) {
     if (consumerBusy) {
       return;
     }
     setConsumerBusy(key);
+    setConsumerError(null);
     try {
       const nextConfig = await getRuntimeConfig();
       (nextConfig as Record<string, unknown>).consumers = {
@@ -424,6 +437,9 @@ export function DashboardView({
       };
       await updateRuntimeConfig(nextConfig);
       await onRefresh();
+    } catch (err) {
+      setConsumerError(getErrorMessage(err));
+      reportError(err, { source: `consumer-${key}`, title: "消费者开关更新失败" });
     } finally {
       setConsumerBusy(null);
     }
@@ -709,11 +725,12 @@ export function DashboardView({
               ? `控制量 dx=${formatNumber(controlDx, 1)} · dy=${formatNumber(controlDy, 1)} · ${willEmit ? "允许输出" : "等待硬件触发"}`
               : "暂无控制量。"}
           </div>
+          {consumerError ? <div className="home-notice bad">{consumerError}</div> : null}
           {errors.health || errors.runtime ? (
             <div className="home-notice bad">{errors.health ?? errors.runtime}</div>
           ) : null}
-        </section>
 
+        </section>
         <section className="home-card">
           <div className="home-card-head">
             <div>
