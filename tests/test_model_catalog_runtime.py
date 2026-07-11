@@ -2,8 +2,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from novasight.api import routes_models
-from novasight.api.routes_models import PublishRequest
+from novasight.api.routes_models import DeepStreamPrepareRequest, PublishRequest
 from novasight.model_registry import ModelRegistry
+from novasight.model_registry import read_manifest
 from novasight.model_registry import scanner
 from novasight.model_registry.schema import Deployment
 
@@ -103,6 +104,83 @@ def test_artifact_listing_includes_real_file_size(tmp_path) -> None:
     artifacts = routes_models.list_artifacts(_request_with_registry(registry), version.id)
 
     assert artifacts[0]["size_bytes"] == 1_500_000
+
+
+def test_managed_engine_without_manifest_is_downgraded_to_pending(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["body", "head"],
+        "1x3x256x256",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"engine")
+    inspection = scanner.inspect_model_artifact(artifact_path, force=True)
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        artifact_path.name,
+        inspection.sha256,
+        "ready",
+    )
+
+    assert routes_models._sync_model_file(
+        registry,
+        Path(registry.data_dir),
+        artifact_path,
+        force=True,
+    )
+
+    assert registry.get_artifact(artifact.id).status == "pending"
+
+
+def test_prepare_deepstream_engine_writes_confirmed_manifest(tmp_path) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["body", "head"],
+        "1x3x256x256",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        artifact_path.name,
+        "pending",
+        "pending",
+    )
+
+    result = routes_models.prepare_deepstream_artifact(
+        _request_with_registry(registry),
+        artifact.id,
+        DeepStreamPrepareRequest(
+            model_id=project.name,
+            display_name=project.name,
+            input_shape=[1, 3, 256, 256],
+            output_shape=[1, 6, 1344],
+            class_count=2,
+        ),
+    )
+
+    manifest = read_manifest(artifact_path.with_name("model.manifest.json"))
+    assert result["status"] == "ready"
+    assert result["nvinfer_config_owner"] == "runtime"
+    assert registry.get_artifact(artifact.id).status == "ready"
+    assert manifest.input.shape == [1, 3, 256, 256]
+    assert manifest.output.shape == [1, 6, 1344]
+    assert manifest.output.class_names == ["body", "head"]
+    assert manifest.output.has_objectness is False
 
 
 def test_model_replacement_keeps_deployed_artifact_file_immutable(tmp_path) -> None:

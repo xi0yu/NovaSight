@@ -97,6 +97,34 @@ export type ModelPublishResponse = {
   report?: ModelSwitchReport;
 };
 
+export type DeepStreamPreparePayload = {
+  model_id: string;
+  display_name: string;
+  runtime_precision?: string;
+  input_name: string;
+  input_shape: number[];
+  input_dtype?: string;
+  input_color_format?: string;
+  input_scale_factor?: number;
+  maintain_aspect_ratio?: boolean;
+  symmetric_padding?: boolean;
+  output_name: string;
+  output_shape: number[];
+  output_dtype?: string;
+  class_count: number;
+  confidence_threshold?: number;
+  nms_iou_threshold?: number;
+};
+
+export type DeepStreamPrepareResponse = {
+  status: string;
+  reason: string;
+  artifact: ModelArtifact;
+  manifest_path: string;
+  model_fingerprint: string;
+  nvinfer_config_owner: "runtime" | (string & {});
+};
+
 export type CaptureState = {
   available: boolean;
   device: string;
@@ -574,6 +602,19 @@ export function publishModel(projectId: number, artifactId: number): Promise<Mod
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ artifact_id: artifactId })
+  });
+}
+
+export function prepareDeepStreamArtifact(
+  artifactId: number,
+  payload: DeepStreamPreparePayload
+): Promise<DeepStreamPrepareResponse> {
+  return requestJson<DeepStreamPrepareResponse>(`/api/models/artifacts/${artifactId}/deepstream/prepare`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
   });
 }
 

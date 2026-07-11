@@ -22,10 +22,14 @@ from novasight.model_registry import (
     RegistryError,
     RegistryNotFoundError,
     RegistryValidationError,
+    TensorSpec,
+    build_engine_manifest,
     inspect_model_artifact,
     scan_model_artifacts,
+    write_manifest,
 )
 from novasight.inference import parse_tensor_input_shape
+from novasight.inference.input import normalize_tensor_dtype
 from novasight.model_registry.manifest import read_manifest, validate_manifest_engine_artifact
 
 router = APIRouter(prefix="/api/models")
@@ -108,6 +112,27 @@ class PublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: StrictInt
+
+
+class DeepStreamPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: StrictStr
+    display_name: StrictStr
+    runtime_precision: StrictStr = "fp16"
+    input_name: StrictStr = "images"
+    input_shape: list[StrictInt]
+    input_dtype: StrictStr = "float32"
+    input_color_format: StrictStr = "RGB"
+    input_scale_factor: float = 1.0 / 255.0
+    maintain_aspect_ratio: bool = False
+    symmetric_padding: bool = False
+    output_name: StrictStr = "output0"
+    output_shape: list[StrictInt]
+    output_dtype: StrictStr = "float32"
+    class_count: StrictInt
+    confidence_threshold: float = 0.25
+    nms_iou_threshold: float = 0.45
 
 
 def _download_file(url: str, path: Path) -> None:
@@ -490,6 +515,16 @@ def _sync_model_file(
                 Path(registry.data_dir).resolve(strict=False)
             )
         ):
+            artifact_status = (
+                _registry_status_from_scan(inspection.status)
+                if kind == "engine"
+                else "ready"
+            )
+            if managed_artifact.status != artifact_status:
+                registry.update_artifact_status(
+                    managed_artifact.id,
+                    artifact_status,
+                )
             return True
         version, existing_artifact = _select_artifact_version(
             registry,
@@ -526,13 +561,7 @@ def _sync_model_file(
                 checksum=checksum,
                 status=artifact_status,
             )
-        elif (
-            existing_artifact.status != artifact_status
-            and not (
-                existing_artifact.status == "ready"
-                and artifact_status == "pending"
-            )
-        ):
+        elif existing_artifact.status != artifact_status:
             registry.update_artifact_status(
                 existing_artifact.id,
                 artifact_status,
@@ -897,6 +926,51 @@ def _deepstream_selected(request: Request) -> bool:
     return str(getattr(inference, "backend", "")).lower() == "deepstream_nvinfer"
 
 
+def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> bool:
+    input_shape = [int(item) for item in payload.input_shape]
+    output_shape = [int(item) for item in payload.output_shape]
+    class_count = int(payload.class_count)
+    precision = payload.runtime_precision.strip().lower()
+    if precision not in {"fp32", "fp16", "int8"}:
+        raise ValueError(
+            "DeepStream runtime_precision must be fp32, fp16, or int8 "
+            f"(got {payload.runtime_precision})"
+        )
+    if len(input_shape) != 4 or input_shape[0] != 1 or input_shape[1] != 3:
+        raise ValueError(
+            f"DeepStream input_shape must be [1, 3, H, W], got {input_shape}"
+        )
+    if len(output_shape) != 3 or output_shape[0] != 1:
+        raise ValueError(
+            "DeepStream YOLO output_shape must be [1, channels, candidates] "
+            f"or [1, candidates, channels], got {output_shape}"
+        )
+    if class_count <= 0:
+        raise ValueError(f"DeepStream class_count must be positive, got {class_count}")
+    color_format = payload.input_color_format.strip().upper()
+    if color_format not in {"RGB", "BGR", "GRAY", "GREY"}:
+        raise ValueError(
+            "DeepStream input_color_format must be RGB, BGR, or GRAY "
+            f"(got {payload.input_color_format})"
+        )
+    if float(payload.input_scale_factor) <= 0.0:
+        raise ValueError(
+            "DeepStream input_scale_factor must be positive "
+            f"(got {payload.input_scale_factor})"
+        )
+    channel_dimensions = {4 + class_count, 5 + class_count}
+    matching_channels = [
+        value for value in output_shape[1:] if int(value) in channel_dimensions
+    ]
+    if len(matching_channels) != 1:
+        raise ValueError(
+            "DeepStream YOLO output must have exactly one dimension equal to "
+            "4 + class_count or 5 + class_count "
+            f"(shape={output_shape}, class_count={class_count})"
+        )
+    return int(matching_channels[0]) == 5 + class_count
+
+
 def _validate_deepstream_artifact(artifact_path: Path):
     if artifact_path.suffix.lower() != ".engine":
         raise RegistryValidationError("deepstream_nvinfer requires a TensorRT .engine artifact")
@@ -992,6 +1066,85 @@ def scan_models(request: Request, force: bool = False) -> dict[str, Any]:
             for artifact in artifacts
         ],
         "artifact_status_counts": _artifact_scan_counts(artifacts),
+    }
+
+
+@router.post("/artifacts/{artifact_id}/deepstream/prepare")
+def prepare_deepstream_artifact(
+    request: Request,
+    artifact_id: int,
+    payload: DeepStreamPrepareRequest,
+) -> dict[str, Any]:
+    registry = _registry(request)
+    try:
+        artifact, version, _project, artifact_path = _artifact_asset_context(
+            registry,
+            artifact_id,
+        )
+        if artifact.kind != "engine":
+            raise RegistryValidationError(
+                "DeepStream prepare requires a TensorRT .engine artifact"
+            )
+        if not artifact_path.is_file():
+            raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
+        output_has_objectness = _validate_deepstream_prepare_payload(payload)
+        class_names = list(version.classes)
+        if int(payload.class_count) != len(class_names):
+            raise RegistryValidationError(
+                "DeepStream class_count must match the model version classes "
+                f"(class_count={payload.class_count}, classes={len(class_names)})"
+            )
+        manifest = build_engine_manifest(
+            model_id=payload.model_id,
+            display_name=payload.display_name,
+            engine_path=artifact_path,
+            input_spec=TensorSpec(
+                name=payload.input_name,
+                shape=[int(item) for item in payload.input_shape],
+                dtype=normalize_tensor_dtype(payload.input_dtype),
+                layout="NCHW",
+            ),
+            output_spec=TensorSpec(
+                name=payload.output_name,
+                shape=[int(item) for item in payload.output_shape],
+                dtype=normalize_tensor_dtype(payload.output_dtype),
+                layout="NCHW",
+            ),
+            class_count=int(payload.class_count),
+            class_names=class_names,
+            confidence_threshold=float(payload.confidence_threshold),
+            nms_iou_threshold=float(payload.nms_iou_threshold),
+            runtime_precision=payload.runtime_precision,
+            input_color_format=payload.input_color_format,
+            input_scale_factor=float(payload.input_scale_factor),
+            maintain_aspect_ratio=bool(payload.maintain_aspect_ratio),
+            symmetric_padding=bool(payload.symmetric_padding),
+            output_has_objectness=output_has_objectness,
+            validated=True,
+        )
+        manifest_path = artifact_path.with_name("model.manifest.json")
+        write_manifest(manifest, manifest_path)
+        result = inspect_model_artifact(artifact_path, force=True)
+        if result.status != "ready":
+            raise RegistryValidationError(
+                f"generated DeepStream manifest did not validate: {result.reason}"
+            )
+        updated_artifact = registry.update_artifact_status(
+            artifact.id,
+            "ready",
+            checksum=result.sha256,
+        )
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": result.status,
+        "reason": result.reason,
+        "artifact": asdict(updated_artifact),
+        "manifest_path": _relative_registry_path(registry, manifest_path),
+        "model_fingerprint": result.model_fingerprint,
+        "nvinfer_config_owner": "runtime",
     }
 
 

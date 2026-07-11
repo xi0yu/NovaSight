@@ -103,10 +103,28 @@ class RuntimeReconfigurator:
             )
 
         config_path = getattr(self.app.state, "config_path", None)
+        if was_running:
+            try:
+                self._ensure_runtime_pipeline_for_live_capture(required=True)
+            except ValueError as exc:
+                if previous_config is not None:
+                    self._rollback(previous_config, previous_kmnet_status)
+                    if config_path is not None:
+                        save_runtime_config(previous_config, config_path)
+                    self._ensure_runtime_pipeline_for_live_capture(required=False)
+                sections.append(
+                    ConfigSectionApplyResult(
+                        section="runtime_pipeline",
+                        impact="pipeline_rebuild",
+                        status="rolled_back",
+                        message=str(exc),
+                    )
+                )
+                raise ValueError(
+                    f"runtime config rejected; previous config restored: {exc}"
+                ) from exc
         if config_path is not None:
             save_runtime_config(config, config_path)
-        if was_running:
-            self._ensure_runtime_pipeline_for_live_capture(required=True)
         running = bool(getattr(getattr(self.app.state, "runtime", None), "running", False))
         return ConfigApplyReport(
             config=asdict(config),
@@ -460,13 +478,13 @@ class RuntimeReconfigurator:
             or (session is not None and getattr(session, "running", False) is not True)
         ):
             return
-        if runtime.pipeline is None:
-            runtime.pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
-        if getattr(runtime.pipeline, "running", False):
-            return
         try:
+            if runtime.pipeline is None:
+                runtime.pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
+            if getattr(runtime.pipeline, "running", False):
+                return
             runtime.pipeline.start()
-        except RuntimeError as exc:
+        except Exception as exc:
             self._reset_runtime_pipeline("runtime pipeline restart failed")
             if required:
                 raise ValueError(str(exc)) from exc

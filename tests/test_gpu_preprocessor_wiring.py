@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -241,6 +242,53 @@ def test_runtime_reconfigurator_restarts_running_pipeline_after_roi_change_with_
     assert app.state.runtime.config_store.status()["roi"]["size"] == 320
     assert app.state.runtime.running is True
     assert report.restart_required is True
+
+
+def test_runtime_reconfigurator_rolls_back_when_pipeline_construction_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.source.default = "capture"
+    cfg.inference.enabled = True
+    cfg.inference.backend = "deepstream_nvinfer"
+    cfg.capture.backend = "deepstream_nvinfer"
+    cfg.capture.memory = "nvmm"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+
+    class ExistingPipeline:
+        running = True
+
+        def stop(self) -> None:
+            self.running = False
+
+    app.state.runtime.pipeline = ExistingPipeline()
+    app.state.runtime.running = True
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.roi.size = 320
+
+    def fail_create(*_args, **_kwargs):
+        raise RuntimeError(
+            "DeepStream model manifest is missing: data/models/demo/default/model.manifest.json"
+        )
+
+    monkeypatch.setattr(
+        "novasight.runtime.reconfigurator.create_runtime_pipeline",
+        fail_create,
+    )
+
+    with pytest.raises(ValueError, match="DeepStream model manifest is missing"):
+        RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert app.state.config.roi.size == cfg.roi.size
+    assert app.state.runtime.config.roi.size == cfg.roi.size
+    assert app.state.runtime.config_store.snapshot().roi.size == cfg.roi.size
+    assert app.state.runtime.pipeline is None
+    assert app.state.runtime.running is False
 
 
 def test_runtime_service_update_config_rewires_gpu_preprocessor() -> None:

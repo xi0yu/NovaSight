@@ -20,6 +20,7 @@ import {
   getCaptureCapabilities,
   getModelArtifacts,
   getModelVersions,
+  prepareDeepStreamArtifact,
   publishModel,
   scanModelDirectory,
   selectCaptureProfile,
@@ -364,6 +365,33 @@ function choiceMatchesConfig(choice: CapabilityChoice, config: Record<string, un
 function nearestRoiSize(value: number): number {
   return ROI_SIZE_CHOICES.reduce((best, current) =>
     Math.abs(current - value) < Math.abs(best - value) ? current : best
+  );
+}
+
+function parseNchwShape(value: string): [number, number, number, number] | null {
+  const dimensions = value
+    .trim()
+    .split(/[xX,\s]+/)
+    .filter(Boolean)
+    .map((item) => Number(item));
+  if (
+    dimensions.length !== 4 ||
+    dimensions.some((item) => !Number.isInteger(item) || item <= 0) ||
+    dimensions[0] !== 1 ||
+    dimensions[1] !== 3
+  ) {
+    return null;
+  }
+  return dimensions as [number, number, number, number];
+}
+
+function yoloCandidateCount(width: number, height: number): number {
+  if (width <= 0 || height <= 0 || width % 32 !== 0 || height % 32 !== 0) {
+    return 0;
+  }
+  return [8, 16, 32].reduce(
+    (total, stride) => total + (width / stride) * (height / stride),
+    0
   );
 }
 
@@ -778,6 +806,10 @@ export function StudioConsoleView({
     sortedSwitchableArtifacts.find((item) => item.id === selectedModelArtifactId) ??
     sortedSwitchableArtifacts[0] ??
     null;
+  const selectedSwitchVersion =
+    typeof selectedModelVersionId === "number"
+      ? modelVersions.find((item) => item.id === selectedModelVersionId) ?? null
+      : null;
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const blockedSwitchArtifacts = modelArtifacts.filter(
     (item) =>
@@ -1808,8 +1840,68 @@ export function StudioConsoleView({
     setLocalError(null);
     setModelSwitchMessage("");
     try {
+      let preparedDeepStream = false;
+      if (deepstreamNvinferSelected && selectedSwitchArtifact.status === "pending") {
+        if (selectedSwitchVersion === null) {
+          throw new Error("模型版本信息尚未加载，请刷新模型列表后重试。");
+        }
+        const inputShape = parseNchwShape(selectedSwitchVersion.input_shape);
+        if (inputShape === null) {
+          throw new Error(
+            `无法从输入尺寸 ${selectedSwitchVersion.input_shape || "未标注"} 确认 NCHW 模型输入。`
+          );
+        }
+        const classCount = selectedSwitchVersion.classes.length;
+        if (classCount <= 0) {
+          throw new Error("模型类别为空，无法确认 YOLO 输出通道数。");
+        }
+        const candidates = yoloCandidateCount(inputShape[3], inputShape[2]);
+        if (candidates <= 0) {
+          throw new Error(
+            `输入尺寸 ${inputShape[3]}x${inputShape[2]} 无法推导 stride 8/16/32 的 YOLO 候选数。`
+          );
+        }
+        const outputShape = [1, 4 + classCount, candidates];
+        const confirmed = window.confirm(
+          [
+            `将为 ${selectedSwitchArtifact.path} 写入 DeepStream 模型契约：`,
+            `输入：${inputShape.join("x")} / images / RGB / FP32`,
+            `输出：${outputShape.join("x")} / output0 / YOLOv8 raw`,
+            `类别：${classCount}（${selectedSwitchVersion.classes.join(", ")}）`,
+            "只有这些信息与模型真实结构一致时才能继续。"
+          ].join("\n")
+        );
+        if (!confirmed) {
+          return;
+        }
+        const selectedProject = projects.find((item) => item.id === selectedModelProjectId);
+        await prepareDeepStreamArtifact(selectedSwitchArtifact.id, {
+          model_id: selectedProject?.name ?? `model_${selectedModelProjectId}`,
+          display_name: selectedProject?.name ?? `model_${selectedModelProjectId}`,
+          runtime_precision: "fp16",
+          input_name: "images",
+          input_shape: inputShape,
+          input_dtype: "float32",
+          input_color_format: "RGB",
+          input_scale_factor: 1 / 255,
+          maintain_aspect_ratio: false,
+          symmetric_padding: false,
+          output_name: "output0",
+          output_shape: outputShape,
+          output_dtype: "float32",
+          class_count: classCount,
+          confidence_threshold: confidence,
+          nms_iou_threshold: nms
+        });
+        preparedDeepStream = true;
+      }
       const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
-      setModelSwitchMessage(response.report?.message ?? "模型已切换，推理运行态已刷新。");
+      setModelSwitchMessage(
+        response.report?.message ??
+          (preparedDeepStream
+            ? "DeepStream 模型契约已生成，模型已安全切换。"
+            : "模型已切换，推理运行态已刷新。")
+      );
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
     } catch (err) {
@@ -2245,12 +2337,18 @@ export function StudioConsoleView({
               >
                 {busy === "model.switch"
                   ? "安全切换中..."
-                  : selectedSwitchArtifact?.status === "pending"
-                    ? "验证并切换模型"
+                  : selectedSwitchArtifact?.status === "pending" && deepstreamNvinferSelected
+                    ? "准备并切换 DeepStream 模型"
+                    : selectedSwitchArtifact?.status === "pending"
+                      ? "验证并切换模型"
                     : "安全切换模型"}
               </button>
               {selectedSwitchArtifact?.status === "pending" ? (
-                <p className="console-field-hint">未验证，可在切换时安全加载验证；验证失败不会替换当前运行模型。</p>
+                <p className="console-field-hint">
+                  {deepstreamNvinferSelected
+                    ? "切换前会显示并确认 YOLO 输入/输出契约，生成 model.manifest.json；确认失败不会替换当前模型。"
+                    : "未验证，可在切换时安全加载验证；验证失败不会替换当前运行模型。"}
+                </p>
               ) : null}
               {selectedSwitchArtifact === null && blockedSwitchArtifacts.length > 0 ? (
                 <div className="model-switch-note bad">
