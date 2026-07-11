@@ -6,8 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from novasight.api import create_app
+from novasight.api import create_app, routes_runtime
 from novasight.capture.source import (
     CapturedFrame,
     FrameResource,
@@ -53,6 +55,34 @@ class _FakeEngine:
 
     def set_gpu_preprocessor(self, value) -> None:
         self.gpu_preprocessor = value
+
+
+def test_runtime_start_returns_business_failure_instead_of_http_500(monkeypatch) -> None:
+    runtime = SimpleNamespace(
+        pipeline=None,
+        running=False,
+        fatal_error=None,
+    )
+    app = FastAPI()
+    app.include_router(routes_runtime.router)
+    app.state.runtime = runtime
+    app.state.capture = SimpleNamespace()
+
+    def fail_create(*_args, **_kwargs):
+        raise ValueError("model contract mismatch")
+
+    monkeypatch.setattr(routes_runtime, "create_runtime_pipeline", fail_create)
+
+    response = TestClient(app).post("/api/runtime/start")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["running"] is False
+    assert payload["failed"] is True
+    assert payload["accepted"] is False
+    assert payload["last_error"] == "model contract mismatch"
+    assert runtime.pipeline is None
+    assert runtime.fatal_error["message"] == "model contract mismatch"
 
 
 def test_nvmm_latest_config_creates_jetson_gpu_preprocessor() -> None:

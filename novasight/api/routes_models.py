@@ -800,6 +800,7 @@ def _prepare_runnable_artifact(
             "available": True,
             "loaded": True,
             "input_shape": "x".join(str(value) for value in manifest.input.shape),
+            "classes": list(manifest.output.class_names),
             "model_fingerprint": manifest.model_fingerprint,
             "reason": "validated for pipeline-owned nvinfer loading",
         }
@@ -1009,6 +1010,14 @@ def _ensure_registered_deepstream_manifest(
         )
     except (OSError, RuntimeError, ValueError) as exc:
         raise RegistryValidationError(str(exc)) from exc
+    resolved_classes = list(manifest.output.class_names)
+    if list(version.classes) != resolved_classes:
+        registry.update_version_classes(version.id, resolved_classes)
+        logger.warning(
+            "synchronized model classes from DeepStream manifest path=%s classes=%s",
+            artifact_path,
+            resolved_classes,
+        )
     if generated or artifact.status != "ready" or artifact.checksum != manifest.artifact.sha256:
         registry.update_artifact_status(
             artifact.id,
@@ -1528,6 +1537,9 @@ def publish(
             classes=classes,
             input_shape=input_shape,
         )
+        candidate_classes = candidate_status.get("classes")
+        if isinstance(candidate_classes, list) and candidate_classes:
+            classes = [str(item) for item in candidate_classes]
         input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
         get_artifact = getattr(registry, "get_artifact", None)
         artifact = get_artifact(payload.artifact_id) if callable(get_artifact) else None

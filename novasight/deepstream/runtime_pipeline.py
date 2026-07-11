@@ -175,6 +175,14 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
         confidence_threshold=config.inference.confidence_threshold,
         nms_iou_threshold=config.inference.nms_threshold,
     )
+    resolved_classes = list(manifest.output.class_names)
+    if list(version.classes) != resolved_classes:
+        models.update_version_classes(version.id, resolved_classes)
+        logger.warning(
+            "synchronized model classes from DeepStream manifest path=%s classes=%s",
+            engine_path,
+            resolved_classes,
+        )
     if generated_manifest:
         models.update_artifact_status(
             artifact.id,

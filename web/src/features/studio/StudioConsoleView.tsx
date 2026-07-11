@@ -1273,7 +1273,10 @@ export function StudioConsoleView({
     setBusy("runtime.start");
     setLocalError(null);
     try {
-      await startRuntimePipeline();
+      const status = asRecord(await startRuntimePipeline());
+      if (readBoolean(status.failed) || !readBoolean(status.running)) {
+        throw new Error(readString(status.last_error, "后端未确认推理管线运行。"));
+      }
       await onRefresh();
     } catch (err) {
       setLocalError(`启动推理失败：${getErrorMessage(err)}`);

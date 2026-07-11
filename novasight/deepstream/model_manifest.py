@@ -68,40 +68,61 @@ def probe_engine_contract(
 
 
 def infer_yolo_output_contract(output_shape: list[int], class_count: int) -> bool:
-    shape = [int(item) for item in output_shape]
     classes = int(class_count)
+    if classes <= 0:
+        raise ValueError(f"DeepStream class_count must be positive, got {classes}")
+    shape, channels, _candidates = _raw_yolo_dimensions(output_shape)
+    if channels not in {4 + classes, 5 + classes}:
+        raise ValueError(
+            "DeepStream YOLO output must have a channel dimension equal to "
+            "4 + class_count or 5 + class_count "
+            f"(shape={shape}, class_count={classes})"
+        )
+    return channels == 5 + classes
+
+
+def resolve_yolo_class_contract(
+    output_shape: list[int],
+    registered_classes: list[str],
+) -> tuple[list[str], bool]:
+    classes = [str(item).strip() for item in registered_classes if str(item).strip()]
+    if classes != ["target"]:
+        return classes, infer_yolo_output_contract(output_shape, len(classes))
+    try:
+        return classes, infer_yolo_output_contract(output_shape, len(classes))
+    except ValueError:
+        pass
+    _shape, channels, _candidates = _raw_yolo_dimensions(output_shape)
+    inferred_class_count = channels - 4
+    if inferred_class_count <= 0:
+        raise ValueError(
+            "cannot infer Raw YOLO class count from placeholder model metadata "
+            f"(shape={output_shape})"
+        )
+    return [f"class_{index}" for index in range(inferred_class_count)], False
+
+
+def _raw_yolo_dimensions(output_shape: list[int]) -> tuple[list[int], int, int]:
+    shape = [int(item) for item in output_shape]
     if len(shape) != 3 or shape[0] != 1:
         raise ValueError(
             "DeepStream YOLO output must be [1, channels, candidates] "
             f"or [1, candidates, channels], got {shape}"
         )
-    if classes <= 0:
-        raise ValueError(f"DeepStream class_count must be positive, got {classes}")
-    channel_dimensions = {4 + classes, 5 + classes}
-    matches = [
-        (index, value)
-        for index, value in enumerate(shape[1:], start=1)
-        if value in channel_dimensions
-    ]
-    if len(matches) != 1:
-        raise ValueError(
-            "DeepStream YOLO output must have exactly one dimension equal to "
-            "4 + class_count or 5 + class_count "
-            f"(shape={shape}, class_count={classes})"
-        )
-    channel_index, channels = matches[0]
-    candidate_count = shape[2 if channel_index == 1 else 1]
-    if candidate_count <= channels:
-        raise ValueError(
-            "DeepStream YOLO output candidate dimension must exceed channel dimension "
-            f"(shape={shape})"
-        )
-    if shape[-1] == 6 and shape[-2] <= 512:
+    first, second = shape[1], shape[2]
+    if 6 in {first, second} and (second if first == 6 else first) <= 512:
         raise ValueError(
             "TensorRT output looks like built-in Decode/NMS [1,N,6]; "
             "the raw YOLO parser contract cannot be generated automatically"
         )
-    return channels == 5 + classes
+    channels = min(first, second)
+    candidates = max(first, second)
+    if channels <= 4 or candidates <= channels:
+        raise ValueError(
+            "DeepStream YOLO output candidate dimension must exceed a channel "
+            f"dimension greater than four (shape={shape})"
+        )
+    return shape, channels, candidates
 
 
 def ensure_engine_manifest(
@@ -142,9 +163,9 @@ def ensure_engine_manifest(
                 "DeepStream model input must be static NCHW [1,3,H,W], "
                 f"got {contract.input_shape}"
             )
-        output_has_objectness = infer_yolo_output_contract(
+        resolved_classes, output_has_objectness = resolve_yolo_class_contract(
             contract.output_shape,
-            len(classes),
+            classes,
         )
         manifest = build_engine_manifest(
             model_id=model_id,
@@ -162,8 +183,8 @@ def ensure_engine_manifest(
                 dtype=contract.output_dtype,
                 layout="NCHW",
             ),
-            class_count=len(classes),
-            class_names=classes,
+            class_count=len(resolved_classes),
+            class_names=resolved_classes,
             confidence_threshold=float(confidence_threshold),
             nms_iou_threshold=float(nms_iou_threshold),
             runtime_precision=runtime_precision,
@@ -201,4 +222,5 @@ __all__ = [
     "infer_yolo_output_contract",
     "parse_runtime_shape",
     "probe_engine_contract",
+    "resolve_yolo_class_contract",
 ]

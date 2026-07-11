@@ -321,6 +321,29 @@ class ModelRegistry:
                 raise RegistryNotFoundError(f"unknown version id: {version_id}")
             return self._version_from_row(updated)
 
+    def update_version_classes(
+        self,
+        version_id: int,
+        classes: list[str],
+    ) -> ModelVersion:
+        normalized = _validate_string_list(classes, "classes")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+            if row is None:
+                raise RegistryNotFoundError(f"unknown version id: {version_id}")
+            conn.execute(
+                "UPDATE model_versions SET classes_json = ? WHERE id = ?",
+                (json.dumps(normalized), version_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM model_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+            if updated is None:
+                raise RegistryNotFoundError(f"unknown version id: {version_id}")
+            return self._version_from_row(updated)
+
     def create_artifact(
         self,
         version_id: int,

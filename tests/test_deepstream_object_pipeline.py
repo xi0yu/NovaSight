@@ -7,7 +7,10 @@ import pytest
 from novasight.contracts import DetectionBatch
 from novasight.config import RuntimeConfig
 from novasight.deepstream.backend import DeepStreamDependencyStatus, DeepStreamObjectBackend
-from novasight.deepstream.model_manifest import ensure_engine_manifest
+from novasight.deepstream.model_manifest import (
+    ensure_engine_manifest,
+    resolve_yolo_class_contract,
+)
 from novasight.deepstream.nvinfer_config import generate_nvinfer_config
 from novasight.deepstream.pipeline_builder import (
     DeepStreamPipelineConfig,
@@ -332,6 +335,72 @@ def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_pat
     assert manifest.output.class_names == ["body", "head"]
     assert registry.get_artifact(artifact.id).status == "ready"
     assert registry.get_artifact(artifact.id).checksum == manifest.artifact.sha256
+
+
+def test_deepstream_runtime_replaces_placeholder_classes_from_raw_yolo_output(
+    tmp_path: Path,
+) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "models")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "demo.engine",
+        ["target"],
+        "1x3x256x256",
+    )
+    engine_path = registry.data_dir / project.name / version.version / "demo.engine"
+    engine_path.parent.mkdir(parents=True, exist_ok=True)
+    engine_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        engine_path.name,
+        "legacy-checksum",
+        "ready",
+    )
+    registry.publish(project.id, artifact.id)
+    config = RuntimeConfig()
+    config.source.default = "capture"
+    config.inference.backend = "deepstream_nvinfer"
+    config.capture.backend = "deepstream_nvinfer"
+    config.capture.memory = "nvmm"
+    config.capture.pixel_format = "MJPG"
+    config.capture.width = 1920
+    config.capture.height = 1080
+    config.capture.fps = 120
+    config.roi.size = 480
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "images",
+            "input_shape": "1x3x256x256",
+            "input_dtype": "float32",
+            "output_name": "output0",
+            "output_shape": "1x8x1344",
+            "output_dtype": "float32",
+        }
+    )
+    runtime = SimpleNamespace(config=config, models=registry, inference=inference)
+
+    pipeline = create_deepstream_runtime_pipeline(runtime=runtime)
+
+    manifest = pipeline.backend.manifest
+    assert manifest.output.class_count == 4
+    assert manifest.output.class_names == ["class_0", "class_1", "class_2", "class_3"]
+    assert manifest.output.has_objectness is False
+    assert registry.get_version(version.id).classes == manifest.output.class_names
+
+
+def test_single_target_objectness_contract_is_not_reclassified() -> None:
+    classes, has_objectness = resolve_yolo_class_contract(
+        [1, 6, 1344],
+        ["target"],
+    )
+
+    assert classes == ["target"]
+    assert has_objectness is True
 
 
 def test_missing_manifest_is_not_generated_for_builtin_nms_output(tmp_path: Path) -> None:

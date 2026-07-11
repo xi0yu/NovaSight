@@ -112,14 +112,31 @@ def start_runtime(request: Request) -> dict[str, Any]:
                 runtime=runtime,
             )
         runtime.pipeline.start()
-    except HTTPException:
+    except Exception as exc:
+        logger.exception("runtime pipeline start failed")
         _clear_failed_runtime_pipeline(runtime)
-        raise
-    except RuntimeError as exc:
-        _clear_failed_runtime_pipeline(runtime)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        failure = {
+            "type": "RUNTIME_START_FAILED",
+            "thread": "api.runtime.start",
+            "message": str(exc),
+            "crash_log": "",
+        }
+        runtime.fatal_error = failure
+        return {
+            "running": False,
+            "accepted": False,
+            "failed": True,
+            "recoverable": True,
+            "last_error": str(exc),
+            "fatal_error": failure,
+        }
+    runtime.fatal_error = None
     logger.info("runtime pipeline started")
-    return runtime.pipeline.status()
+    return {
+        **runtime.pipeline.status(),
+        "accepted": True,
+        "failed": False,
+    }
 
 
 def _stop_existing_runtime_pipeline(runtime: Any) -> None:
