@@ -181,6 +181,17 @@ def test_backend_startup_auto_connects_kmnet_by_default() -> None:
     assert kmnet.connected is True
 
 
+def test_target_driven_control_does_not_start_unused_kmnet_button_monitor() -> None:
+    config = RuntimeConfig()
+
+    target_driven = KmNetExecutor.from_config(config)
+    config.control.trigger_mode = "hardware"
+    hardware_triggered = KmNetExecutor.from_config(config)
+
+    assert target_driven.monitor_port == 0
+    assert hardware_triggered.monitor_port == config.hardware.monitor_port
+
+
 def test_backend_startup_does_not_wait_for_blocking_kmnet_connect() -> None:
     kmnet = BlockingKmNet()
 

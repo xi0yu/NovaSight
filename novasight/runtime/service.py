@@ -1542,11 +1542,18 @@ class RuntimeService:
             self.last_execution = None
             return None
 
-        trigger_mode = str(getattr(self.config.control, "trigger_mode", "hardware") or "hardware")
+        trigger_mode = str(getattr(self.config.control, "trigger_mode", "always") or "always")
         if trigger_mode not in {"hardware", "always"}:
             trigger_mode = "hardware"
         box_input = (
-            BoxInputState(left=True, raw={"source": "always", "active": True, "reason": "trigger mode always"})
+            BoxInputState(
+                left=True,
+                raw={
+                    "source": "target_detection",
+                    "active": True,
+                    "reason": "target-driven control",
+                },
+            )
             if trigger_mode == "always"
             else self._box_input_state()
         )
@@ -1964,7 +1971,7 @@ class RuntimeService:
     @staticmethod
     def _trigger_requirement_label(*, requires_trigger: bool, trigger_mode: str) -> str:
         if not requires_trigger:
-            return "无需触发"
+            return "检测到目标后自动控制"
         if trigger_mode == "hardware":
             return "需要 kmNet 硬件按键回传"
         return "需要触发"
@@ -2206,6 +2213,8 @@ class RuntimeService:
                     invert_y=bool(shared.invert_y),
                     max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
                     max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
+                    min_effective_counts_x=int(config.hardware.min_effective_move_counts_x),
+                    min_effective_counts_y=int(config.hardware.min_effective_move_counts_y),
                 ),
             )
         )

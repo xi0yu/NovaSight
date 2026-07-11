@@ -90,6 +90,19 @@ class _TriggeredKmNet:
         )
 
 
+class _UnavailableButtonKmNet(_TriggeredKmNet):
+    def read_buttons(self) -> dict[str, object]:
+        return {
+            "available": False,
+            "left": False,
+            "right": False,
+            "reason": "isdown_left failed rc=-1",
+            "raw": {},
+            "sample_ts_ns": 0,
+            "poll_ts_ns": time.monotonic_ns(),
+        }
+
+
 def test_latest_frame_exchange_name_is_capacity_one_latest_mailbox() -> None:
     exchange = LatestFrameExchange()
 
@@ -1010,12 +1023,56 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
     }
     assert service.last_control["mouse_observation"]["predicted_aim_x_roi_px"] == pytest.approx(365.0)
     assert service.last_control["pipeline"]["predicted_error_x_px"] == pytest.approx(5.0)
-    assert service.last_control["dx"] == 2
+    assert service.last_control["dx"] == 16
     assert service.last_control["dy"] == 0
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
     assert len(kmnet.outputs) == 1
     assert kmnet.outputs[0].dx != 0 or kmnet.outputs[0].dy != 0
+
+
+def test_default_target_driven_mode_sends_one_detection_without_kmnet_button_sample() -> None:
+    config = RuntimeConfig()
+    config.control.mode = "universal_saturated"
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.95, x1=285, y1=250, x2=445, y2=568)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    observation_result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+    send_result = service.process_control_tick()
+
+    assert config.control.trigger_mode == "always"
+    assert len(observation_result.control_intents) == 1
+    assert service.last_control is not None
+    assert service.last_control["will_emit"] is True
+    assert len(send_result.execution_results) == 1
+    assert send_result.execution_results[0].sent is True
+    assert len(kmnet.outputs) == 1
 
 
 def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
@@ -1062,11 +1119,11 @@ def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
     assert service.mouse_controller.mode == "universal_saturated"
     assert service.last_control is not None
     assert service.last_control["pipeline"]["control_mode"] == "universal_saturated"
-    assert service.last_control["dx"] == 2
+    assert service.last_control["dx"] == 16
     assert len(observation_result.control_intents) == 1
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
-    assert kmnet.outputs[-1].dx == 2
+    assert kmnet.outputs[-1].dx == 16
 
 
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:

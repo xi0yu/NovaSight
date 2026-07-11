@@ -449,6 +449,40 @@ def test_command_scheduler_splits_large_command_into_steps() -> None:
     assert status["pending_steps"] == 2
 
 
+def test_command_scheduler_splits_axes_independently_without_subminimum_cross_axis_steps() -> None:
+    scheduler = CommandScheduler(
+        min_interval_s=0.0,
+        ttl_s=0.05,
+        max_step_x=32,
+        max_step_y=32,
+    )
+
+    first = scheduler.submit(_output(64, 16, frame_id=1), now_s=1.0)
+    second = scheduler.tick(now_s=1.01)
+
+    assert first.output is not None
+    assert (first.output.dx, first.output.dy) == (32, 16)
+    assert second.output is not None
+    assert (second.output.dx, second.output.dy) == (32, 0)
+
+
+def test_runtime_scheduler_raises_legacy_step_limit_to_twice_device_minimum() -> None:
+    config = RuntimeConfig()
+    config.control.scheduler_step_counts_x = 20
+    config.control.scheduler_step_counts_y = 20
+    config.hardware.min_effective_move_counts_x = 16
+    config.hardware.min_effective_move_counts_y = 16
+    registry = ExecutorRegistry.from_config(config)
+    assert registry.scheduler is not None
+
+    ready = registry.scheduler.submit(_output(30, 0, frame_id=1), now_s=1.0)
+
+    assert registry.scheduler.status(now_s=1.0)["max_step_x"] == 32
+    assert ready.output is not None
+    assert ready.output.dx == 30
+    assert ready.metadata["split_steps_total"] == 1
+
+
 def test_command_scheduler_holds_full_split_queue_when_throttled() -> None:
     scheduler = CommandScheduler(
         min_interval_s=0.1,

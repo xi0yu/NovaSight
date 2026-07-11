@@ -257,6 +257,8 @@ class RuntimeReconfigurator:
             current_executors.update_runtime_config(config)
             next_executors = current_executors
         else:
+            if current_executors is not None:
+                self._disconnect_executor_registry(current_executors)
             next_executors = ExecutorRegistry.from_config(config)
         self.app.state.config = config
         self.app.state.capture.config = config.capture
@@ -271,6 +273,19 @@ class RuntimeReconfigurator:
         )
         self.app.state.runtime.executors = self.app.state.executors
         self.app.state.runtime.update_config(config)
+
+    @staticmethod
+    def _disconnect_executor_registry(executors: ExecutorRegistry) -> None:
+        kmnet = executors.executors.get("kmnet")
+        disconnect = getattr(kmnet, "disconnect", None)
+        if not callable(disconnect):
+            return
+        try:
+            disconnect()
+        except Exception as exc:
+            raise RuntimeError(
+                f"cannot replace kmNet executor before releasing its monitor: {exc}"
+            ) from exc
 
     def _rollback(
         self,
@@ -306,6 +321,7 @@ class RuntimeReconfigurator:
             or previous_config.hardware.port != config.hardware.port
             or previous_config.hardware.uuid != config.hardware.uuid
             or previous_config.hardware.monitor_port != config.hardware.monitor_port
+            or previous_config.control.trigger_mode != config.control.trigger_mode
         )
 
     @staticmethod

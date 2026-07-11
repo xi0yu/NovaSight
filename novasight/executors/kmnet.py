@@ -87,7 +87,11 @@ class KmNetExecutor:
             host=config.hardware.host,
             port=config.hardware.port,
             uuid=config.hardware.uuid,
-            monitor_port=config.hardware.monitor_port,
+            monitor_port=(
+                config.hardware.monitor_port
+                if config.control.trigger_mode == "hardware"
+                else 0
+            ),
             button_poll_interval_s=float(config.control.scheduler_interval_ms) / 1000.0,
         )
 

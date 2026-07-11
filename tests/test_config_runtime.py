@@ -285,8 +285,10 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.shared.deadzone_x_px == 0.0
     assert cfg.control.shared.max_count_slew_x == 10.0
     assert cfg.control.shared.invert_y is False
-    assert cfg.control.scheduler_step_counts_x == 20
-    assert cfg.control.scheduler_step_counts_y == 20
+    assert cfg.control.scheduler_step_counts_x == 32
+    assert cfg.control.scheduler_step_counts_y == 32
+    assert cfg.hardware.min_effective_move_counts_x == 16
+    assert cfg.hardware.min_effective_move_counts_y == 16
     assert cfg.control.scheduler_interval_ms == 4.0
     assert cfg.control.target_fov_radius_px == 180.0
     assert cfg.control.min_confidence == 0.25
@@ -581,7 +583,7 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"shared": {"max_count_slew_y": 0.0}}}, "control.shared.max_count_slew_y"),
         ({"control": {"scheduler_interval_ms": 0.1}}, "control.scheduler_interval_ms"),
         ({"control": {"scheduler_step_counts_x": 0}}, "control.scheduler_step_counts_x"),
-        ({"control": {"scheduler_step_counts_y": 21}}, "control.scheduler_step_counts_y"),
+        ({"control": {"scheduler_step_counts_y": 65}}, "control.scheduler_step_counts_y"),
         ({"control": {"target_fov_radius_px": 0}}, "control.target_fov_radius_px"),
         ({"control": {"min_confidence": 0.09}}, "control.min_confidence"),
         ({"control": {"target_switch_delay_ms": 501}}, "control.target_switch_delay_ms"),

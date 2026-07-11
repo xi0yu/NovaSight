@@ -56,6 +56,8 @@ def _config(
         "invert_y": False,
         "max_budget_counts_x": 1000,
         "max_budget_counts_y": 1000,
+        "min_effective_counts_x": 1,
+        "min_effective_counts_y": 1,
     }
     calibrated_values.update(calibrated or {})
     universal_values.update(universal or {})
@@ -238,6 +240,35 @@ def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
 
     assert outputs == [0, 1, 0]
     assert controller.state.residual_x_counts == pytest.approx(0.2, abs=1e-9)
+
+
+def test_minimum_effective_counts_moves_immediately_without_increasing_average_output() -> None:
+    desired_counts = 2.0
+    response_scale = 80.0
+    max_counts = 50.0
+    error_px = response_scale * math.tan(desired_counts * math.pi / (2.0 * max_counts))
+    controller = MouseController(
+        _config(
+            mode=UNIVERSAL_SATURATED,
+            universal={
+                "response_scale_x_px": response_scale,
+                "max_step_x_counts": max_counts,
+            },
+            shared={"min_effective_counts_x": 16},
+        )
+    )
+
+    outputs = [
+        controller.calculate(
+            _observation(frame_id=frame_id, observed_x=100.0 + error_px)
+        ).dx
+        for frame_id in range(1, 9)
+    ]
+
+    assert outputs[0] == 16
+    assert all(value == 0 or abs(value) >= 16 for value in outputs)
+    assert sum(outputs) == 16
+    assert controller.state.residual_x_counts == pytest.approx(0.0, abs=1e-9)
 
 
 @pytest.mark.parametrize(

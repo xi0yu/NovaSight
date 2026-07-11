@@ -86,13 +86,13 @@ control:
   prediction_strength: 1.0
   prediction_x_enabled: true
   prediction_y_enabled: true
-  scheduler_step_counts_x: 20
-  scheduler_step_counts_y: 20
+  scheduler_step_counts_x: 32
+  scheduler_step_counts_y: 32
   scheduler_interval_ms: 4.0
   target_fov_radius_px: 180
   min_confidence: 0.25
   target_switch_delay_ms: 50
-  trigger_mode: hardware
+  trigger_mode: always
 logging:
   level: INFO
   dir: logs
@@ -102,3 +102,5 @@ hardware:
   port: 8888
   uuid: "12345678"
   monitor_port: 5001
+  min_effective_move_counts_x: 16
+  min_effective_move_counts_y: 16

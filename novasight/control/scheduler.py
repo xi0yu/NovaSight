@@ -591,24 +591,32 @@ def _split_steps(
     dy = int(output.dy)
     if dx == 0 and dy == 0:
         return [output]
-    step_count = max(
-        1,
-        math.ceil(abs(dx) / max(1, int(max_step_x))),
-        math.ceil(abs(dy) / max(1, int(max_step_y))),
-    )
-    step_count = min(step_count, max(1, int(queue_hard_limit)))
+    hard_limit = max(1, int(queue_hard_limit))
+    x_steps = _split_axis(dx, max_step=max_step_x, hard_limit=hard_limit)
+    y_steps = _split_axis(dy, max_step=max_step_y, hard_limit=hard_limit)
+    step_count = max(1, len(x_steps), len(y_steps))
     steps: list[ControlOutput] = []
-    previous_x = 0
-    previous_y = 0
-    for index in range(1, step_count + 1):
-        target_x = int(round(dx * index / step_count))
-        target_y = int(round(dy * index / step_count))
-        step_x = target_x - previous_x
-        step_y = target_y - previous_y
-        previous_x = target_x
-        previous_y = target_y
+    for index in range(step_count):
+        step_x = x_steps[index] if index < len(x_steps) else 0
+        step_y = y_steps[index] if index < len(y_steps) else 0
         steps.append(replace(output, dx=step_x, dy=step_y))
     return steps or [output]
+
+
+def _split_axis(value: int, *, max_step: int, hard_limit: int) -> list[int]:
+    if value == 0:
+        return []
+    step_count = min(
+        max(1, math.ceil(abs(value) / max(1, int(max_step)))),
+        max(1, int(hard_limit)),
+    )
+    steps: list[int] = []
+    previous = 0
+    for index in range(1, step_count + 1):
+        target = int(round(value * index / step_count))
+        steps.append(target - previous)
+        previous = target
+    return steps
 
 
 Scheduler = CommandScheduler

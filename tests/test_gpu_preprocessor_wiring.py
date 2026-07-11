@@ -17,6 +17,7 @@ from novasight.capture.source import (
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
 from novasight.contracts import BBox
+from novasight.executors import ExecutorRegistry
 from novasight.inference.contracts import InferenceDetection
 from novasight.inference.geometry import map_model_detections_to_roi_frame
 from novasight.inference.input import PreparedTensorInput, TensorInputShape, prepare_tensor_input
@@ -118,6 +119,43 @@ def test_runtime_reconfigurator_rewires_gpu_preprocessor_for_nvmm_latest(
     RuntimeReconfigurator(app).apply(next_cfg)
 
     assert isinstance(app.state.inference._gpu_preprocessor, JetsonGpuResourcePreprocessor)
+
+
+def test_runtime_reconfigurator_disconnects_old_kmnet_before_hardware_replacement(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=cfg,
+    )
+    old_kmnet = app.state.executors.executors["kmnet"]
+    old_kmnet.connected = True
+    events: list[str] = []
+
+    def disconnect_old() -> dict[str, object]:
+        events.append("old_disconnected")
+        old_kmnet.connected = False
+        return {"connected": False}
+
+    old_kmnet.disconnect = disconnect_old
+    original_from_config = ExecutorRegistry.from_config
+
+    def build_replacement(config: RuntimeConfig) -> ExecutorRegistry:
+        assert events == ["old_disconnected"]
+        events.append("replacement_created")
+        return original_from_config(config)
+
+    monkeypatch.setattr(ExecutorRegistry, "from_config", build_replacement)
+    next_cfg = RuntimeConfig()
+    next_cfg.hardware.monitor_port = cfg.hardware.monitor_port + 1
+
+    RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert events == ["old_disconnected", "replacement_created"]
+    assert app.state.executors.executors["kmnet"] is not old_kmnet
 
 
 def test_runtime_reconfigurator_restarts_running_pipeline_after_roi_change_with_stale_runtime_flag(

@@ -123,7 +123,7 @@ def create_app(
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
-        _disconnect_kmnet(executors)
+        _disconnect_kmnet(app.state.executors)
         systemd_notifier.stop()
         instance_lock.release()
 

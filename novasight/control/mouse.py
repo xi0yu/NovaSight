@@ -97,6 +97,8 @@ class SharedOutputConfig:
     invert_y: bool
     max_budget_counts_x: int
     max_budget_counts_y: int
+    min_effective_counts_x: int
+    min_effective_counts_y: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,12 +382,18 @@ class MouseController:
             _clamp_axis(slew_limited.y, shared.max_budget_counts_y),
         )
 
-        total_x = feasible_counts.x + self.state.residual_x_counts
-        total_y = feasible_counts.y + self.state.residual_y_counts
-        counts_x = _round_half_away_from_zero(total_x)
-        counts_y = _round_half_away_from_zero(total_y)
-        self.state.residual_x_counts = total_x - counts_x
-        self.state.residual_y_counts = total_y - counts_y
+        counts_x, residual_x = _quantize_effective_counts(
+            feasible_counts.x,
+            self.state.residual_x_counts,
+            shared.min_effective_counts_x,
+        )
+        counts_y, residual_y = _quantize_effective_counts(
+            feasible_counts.y,
+            self.state.residual_y_counts,
+            shared.min_effective_counts_y,
+        )
+        self.state.residual_x_counts = residual_x
+        self.state.residual_y_counts = residual_y
         self.state.target_id = observation.target_id
         self.state.frame_id = observation.frame_id
         self.state.previous_counts = feasible_counts
@@ -422,7 +430,9 @@ class MouseController:
             "budget_clamped_y": feasible_counts.y != slew_limited.y,
             "residual_x_counts": self.state.residual_x_counts,
             "residual_y_counts": self.state.residual_y_counts,
-            "count_quantization": "nearest_with_residual",
+            "min_effective_counts_x": shared.min_effective_counts_x,
+            "min_effective_counts_y": shared.min_effective_counts_y,
+            "count_quantization": "minimum_effective_with_error_diffusion",
             "final_dx": counts_x,
             "final_dy": counts_y,
         }
@@ -455,6 +465,34 @@ def _round_half_away_from_zero(value: float) -> int:
     if value >= 0.0:
         return math.floor(value + 0.5)
     return math.ceil(value - 0.5)
+
+
+def _quantize_effective_counts(
+    requested: float,
+    residual: float,
+    minimum_effective_counts: int,
+) -> tuple[int, float]:
+    if not math.isfinite(requested) or not math.isfinite(residual):
+        return 0, 0.0
+    if requested == 0.0:
+        return 0, 0.0
+    minimum = max(1, int(minimum_effective_counts))
+    total = requested + residual
+    if minimum == 1:
+        quantized = _round_half_away_from_zero(total)
+        return quantized, total - quantized
+    if abs(requested) < 0.5:
+        return 0, 0.0
+    requested_sign = 1 if requested > 0.0 else -1
+    total_sign = 1 if total > 0.0 else -1 if total < 0.0 else 0
+    if abs(total) < 0.5:
+        return 0, 0.0
+    if total_sign != 0 and total_sign != requested_sign:
+        return 0, total
+    quantized = _round_half_away_from_zero(total)
+    if abs(quantized) < minimum:
+        quantized = requested_sign * minimum
+    return quantized, total - quantized
 
 
 def _projection_geometry(width: float, height: float, fov_x_deg: float) -> tuple[float, float] | None:
