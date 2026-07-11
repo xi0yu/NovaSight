@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import threading
+
+
+logger = logging.getLogger("novasight.deepstream.parser_build")
+_BUILD_LOCK = threading.Lock()
+
+
+def ensure_deepstream_parser_library(
+    library_path: Path | str,
+    *,
+    source_dir: Path | None = None,
+) -> Path:
+    target = Path(library_path).expanduser().resolve(strict=False)
+    if target.is_file():
+        return target
+    with _BUILD_LOCK:
+        if target.is_file():
+            return target
+        cmake = shutil.which("cmake")
+        if not cmake:
+            raise RuntimeError(
+                "DeepStream parser auto-build requires cmake; install cmake and build-essential"
+            )
+        source = _resolve_parser_source(source_dir)
+        build_dir = target.parent
+        build_dir.mkdir(parents=True, exist_ok=True)
+        configure_command = [
+            cmake,
+            "-S",
+            str(source),
+            "-B",
+            str(build_dir),
+        ]
+        deepstream_root = _resolve_deepstream_root()
+        if deepstream_root is not None:
+            configure_command.append(f"-DNOVASIGHT_DEEPSTREAM_ROOT={deepstream_root}")
+        logger.warning(
+            "DeepStream parser library missing; starting automatic build target=%s",
+            target,
+        )
+        _run_build_command(configure_command, "configure")
+        _run_build_command(
+            [cmake, "--build", str(build_dir), "--parallel", "2"],
+            "compile",
+        )
+        built_library = build_dir / "libnovasight_parser.so"
+        if not built_library.is_file():
+            raise RuntimeError(
+                "DeepStream parser auto-build completed without producing "
+                f"{built_library}"
+            )
+        if built_library != target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(built_library, target)
+        logger.info("DeepStream parser automatic build completed path=%s", target)
+        return target
+
+
+def _resolve_parser_source(source_dir: Path | None) -> Path:
+    candidates: list[Path] = []
+    if source_dir is not None:
+        candidates.append(Path(source_dir))
+    source_root = os.environ.get("NOVASIGHT_SOURCE_ROOT", "").strip()
+    if source_root:
+        candidates.append(Path(source_root) / "native" / "deepstream-parser")
+    candidates.extend(
+        [
+            Path(__file__).resolve().parents[2] / "native" / "deepstream-parser",
+            Path.cwd() / "native" / "deepstream-parser",
+        ]
+    )
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve(strict=False)
+        if (resolved / "CMakeLists.txt").is_file():
+            return resolved
+    checked = ", ".join(str(item.expanduser().resolve(strict=False)) for item in candidates)
+    raise RuntimeError(f"DeepStream parser source directory is unavailable; checked: {checked}")
+
+
+def _resolve_deepstream_root() -> Path | None:
+    candidates: list[Path] = []
+    configured = os.environ.get("NOVASIGHT_DEEPSTREAM_ROOT", "").strip()
+    if configured:
+        candidates.append(Path(configured))
+    install_root = Path("/opt/nvidia/deepstream")
+    candidates.append(install_root / "deepstream")
+    if install_root.is_dir():
+        candidates.extend(sorted(install_root.glob("deepstream-*"), reverse=True))
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve(strict=False)
+        if (resolved / "sources" / "includes" / "nvdsinfer_custom_impl.h").is_file():
+            return resolved
+    return None
+
+
+def _run_build_command(command: list[str], stage: str) -> None:
+    command_text = shlex.join(command)
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"DeepStream parser auto-build {stage} failed command={command_text}: {exc}"
+        ) from exc
+    if result.returncode == 0:
+        return
+    output = "\n".join(
+        item.strip() for item in (result.stdout, result.stderr) if item and item.strip()
+    )
+    if len(output) > 6000:
+        output = output[-6000:]
+    raise RuntimeError(
+        f"DeepStream parser auto-build {stage} failed rc={result.returncode} "
+        f"command={command_text}: "
+        f"{output or 'no compiler output'}"
+    )
+
+
+__all__ = ["ensure_deepstream_parser_library"]

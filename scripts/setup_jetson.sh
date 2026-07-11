@@ -4,17 +4,17 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/setup_jetson.sh [--pyds-wheel /path/to/pyds-*.whl] [--build]
+  scripts/setup_jetson.sh [--pyds-wheel /path/to/pyds-*.whl] [--skip-build]
 
 Creates a Jetson-friendly NovaSight virtual environment with system GStreamer
 bindings visible through --system-site-packages. If a NVIDIA DeepStream pyds
-wheel is provided, the script installs and verifies it. Pass --build to also
-build `libnovasight_parser.so` for the DeepStream nvinfer object-meta path.
+wheel is provided, the script installs and verifies it. The required DeepStream
+parser is built by default; pass --skip-build only for dependency-only setup.
 EOF
 }
 
 PYDS_WHEEL=""
-RUN_BUILD=0
+RUN_BUILD=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pyds-wheel)
@@ -23,6 +23,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --build)
       RUN_BUILD=1
+      shift
+      ;;
+    --skip-build)
+      RUN_BUILD=0
       shift
       ;;
     -h|--help)

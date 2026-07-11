@@ -180,6 +180,39 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
     assert "preview" not in status
 
 
+def test_deepstream_backend_auto_builds_missing_parser_before_dependency_check(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    parser_path = tmp_path / "build" / "libnovasight_parser.so"
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=parser_path,
+        max_publish_age_ms=55.0,
+    )
+    calls: list[Path] = []
+
+    def build_parser(path: Path) -> Path:
+        resolved = Path(path)
+        calls.append(resolved)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_bytes(b"parser")
+        return resolved
+
+    monkeypatch.setattr(
+        "novasight.deepstream.backend.ensure_deepstream_parser_library",
+        build_parser,
+    )
+
+    backend._ensure_parser_library()
+
+    assert calls == [parser_path.resolve()]
+    assert backend._parser_auto_build["attempted"] is True
+    assert backend._parser_auto_build["success"] is True
+
+
 def test_detection_batch_mailbox_replaces_old_generation() -> None:
     mailbox = DetectionBatchMailbox()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib
+import logging
 import threading
 import time
 from collections import OrderedDict, deque
@@ -14,9 +15,11 @@ from novasight.model_registry.manifest import ModelManifest
 from novasight.detection_batch_mailbox import DetectionBatchMailbox
 
 from .pipeline_builder import DeepStreamPipelineConfig, build_deepstream_pipeline
+from .parser_build import ensure_deepstream_parser_library
 
 
 GST_CLOCK_TIME_NONE = (1 << 64) - 1
+logger = logging.getLogger("novasight.deepstream.backend")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +100,13 @@ class DeepStreamObjectBackend:
         self._bus_thread: threading.Thread | None = None
         self._dependency_status: DeepStreamDependencyStatus | None = None
         self._parser_telemetry = _ParserTelemetry(self.parser_library_path)
+        self._parser_auto_build: dict[str, object] = {
+            "attempted": False,
+            "success": self.parser_library_path.is_file(),
+            "detail": (
+                "existing library" if self.parser_library_path.is_file() else "not attempted"
+            ),
+        }
         self._inference_start_by_pts: OrderedDict[int, int] = OrderedDict()
         self._gst_to_monotonic_offset_ns: int | None = None
         self._gst_base_time_ns: int | None = None
@@ -136,6 +146,7 @@ class DeepStreamObjectBackend:
 
     def start(self) -> None:
         self.stop()
+        self._ensure_parser_library()
         self._parser_telemetry.reset()
         dependency = self.dependency_status(refresh=True)
         if not dependency.available:
@@ -216,6 +227,8 @@ class DeepStreamObjectBackend:
                 "object_meta_frames": self._object_meta_frames,
                 "python_nms": False,
                 "postprocess_owner": "native_parser_then_deepstream_cluster_mode_2",
+                "parser_library": str(self.parser_library_path),
+                "parser_auto_build": dict(self._parser_auto_build),
                 "last_frame_id": self._last_frame_id,
                 "last_capture_ts_ns": self._last_capture_ts_ns,
                 "latest_frame_age_ms": (
@@ -261,6 +274,41 @@ class DeepStreamObjectBackend:
                 "uptime_ms": uptime_ms,
             }
         return payload
+
+    def _ensure_parser_library(self) -> None:
+        if self.parser_library_path.is_file():
+            return
+        self._parser_auto_build = {
+            "attempted": True,
+            "success": False,
+            "detail": "building",
+        }
+        try:
+            ensure_deepstream_parser_library(self.parser_library_path)
+        except Exception as exc:
+            detail = str(exc)
+            logger.exception("DeepStream parser automatic build failed")
+            self._parser_auto_build = {
+                "attempted": True,
+                "success": False,
+                "detail": detail,
+            }
+            with self._lock:
+                self._dependency_status = DeepStreamDependencyStatus(
+                    False,
+                    "deepstream-parser-auto-build-failed",
+                    detail,
+                )
+                self._last_error = detail
+            raise RuntimeError(f"DeepStream parser automatic build failed: {detail}") from exc
+        self._parser_telemetry = _ParserTelemetry(self.parser_library_path)
+        self._parser_auto_build = {
+            "attempted": True,
+            "success": True,
+            "detail": str(self.parser_library_path),
+        }
+        with self._lock:
+            self._dependency_status = None
 
     def _reset_state_locked(self) -> None:
         self.detection_batch_mailbox.clear()

@@ -159,9 +159,12 @@ explicit model-not-loaded startup reason instead of entering a false running sta
 Build and run the 60-second hardware gate before enabling control:
 
 ```bash
-scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl --build
+scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl
 scripts/verify_deepstream_60s.py --seconds 60
 ```
+
+Jetson setup builds `libnovasight_parser.so` by default. If the build artifact is
+later removed, the DeepStream backend rebuilds it automatically on the next start.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.

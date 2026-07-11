@@ -170,7 +170,7 @@ C++ metadata postprocess: present
 ## Build And Verify On Jetson
 
 ```bash
-scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl --build
+scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl
 
 scripts/verify_deepstream_60s.py \
   --config config/novasight.yaml \
@@ -178,6 +178,9 @@ scripts/verify_deepstream_60s.py \
   --seconds 60 \
   --report-json /tmp/novasight-deepstream-60s.json
 ```
+
+The setup step builds the native parser by default. Runtime startup also performs
+a one-time automatic CMake build when the configured parser library is missing.
 
 The 60-second gate checks:
 
