@@ -2576,6 +2576,10 @@ export function StudioConsoleView({
                 <span>Parser 调用</span><b>{formatOptionalInteger(deepstreamParserStatus.decode_calls)}</b>
                 <span>Parser 失败</span><b>{formatOptionalInteger(deepstreamParserStatus.parse_failures)}</b>
                 <span>Parser 错误码</span><b>{formatOptionalInteger(deepstreamParserStatus.last_error_code)}</b>
+                <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
+                <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
+                <span>顺序回退匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_ordered_fallback_matches)}</b>
+                <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
                 <span>当前推理 frame_id</span><b>{formatOptionalInteger(inferenceFrameId)}</b>
                 <span>Acquire generation</span><b>{formatOptionalInteger(inferenceAcquiredGeneration)}</b>
                 <span>Batch generation</span><b>{formatOptionalInteger(inferenceBatchGeneration)}</b>

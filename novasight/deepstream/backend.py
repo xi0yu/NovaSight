@@ -33,6 +33,14 @@ class DeepStreamDependencyStatus:
     detail: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class _InferenceInputTiming:
+    pts_ns: int
+    capture_ts_ns: int
+    inference_start_ts_ns: int
+    timestamp_source: str
+
+
 class _ParserTelemetry:
     def __init__(self, library_path: Path) -> None:
         self._library: Any | None = None
@@ -114,7 +122,9 @@ class DeepStreamObjectBackend:
                 "existing library" if self.parser_library_path.is_file() else "not attempted"
             ),
         }
-        self._inference_start_by_pts: OrderedDict[int, int] = OrderedDict()
+        self._inference_start_by_pts: OrderedDict[
+            int, _InferenceInputTiming | int
+        ] = OrderedDict()
         self._gst_to_monotonic_offset_ns: int | None = None
         self._gst_base_time_ns: int | None = None
         self._fallback_pts_offset_ns: int | None = None
@@ -131,6 +141,10 @@ class DeepStreamObjectBackend:
         self._stale_dropped_batches = 0
         self._non_monotonic_dropped_batches = 0
         self._timestamp_rejected_batches = 0
+        self._timestamp_buffer_pts_matches = 0
+        self._timestamp_frame_meta_pts_matches = 0
+        self._timestamp_ordered_fallback_matches = 0
+        self._timestamp_correlation_misses = 0
         self._object_meta_frames = 0
         self._preview_frames = 0
         self._preview_sequence = 0
@@ -259,6 +273,10 @@ class DeepStreamObjectBackend:
                 "max_publish_age_ms": self.max_publish_age_ms,
                 "non_monotonic_dropped_batches": self._non_monotonic_dropped_batches,
                 "timestamp_rejected_batches": self._timestamp_rejected_batches,
+                "timestamp_buffer_pts_matches": self._timestamp_buffer_pts_matches,
+                "timestamp_frame_meta_pts_matches": self._timestamp_frame_meta_pts_matches,
+                "timestamp_ordered_fallback_matches": self._timestamp_ordered_fallback_matches,
+                "timestamp_correlation_misses": self._timestamp_correlation_misses,
                 "object_meta_frames": self._object_meta_frames,
                 "preview_enabled": bool(self.pipeline_config.preview_enabled),
                 "preview_requested": self._preview_requested,
@@ -424,6 +442,10 @@ class DeepStreamObjectBackend:
         self._stale_dropped_batches = 0
         self._non_monotonic_dropped_batches = 0
         self._timestamp_rejected_batches = 0
+        self._timestamp_buffer_pts_matches = 0
+        self._timestamp_frame_meta_pts_matches = 0
+        self._timestamp_ordered_fallback_matches = 0
+        self._timestamp_correlation_misses = 0
         self._object_meta_frames = 0
         self._preview_frames = 0
         self._preview_sequence = 0
@@ -480,7 +502,12 @@ class DeepStreamObjectBackend:
                         f"age {age_ms:.1f}ms > {self.max_publish_age_ms:.1f}ms"
                     )
                     return Gst.PadProbeReturn.DROP
-                self._inference_start_by_pts[pts_ns] = now_ns
+                self._inference_start_by_pts[pts_ns] = _InferenceInputTiming(
+                    pts_ns=pts_ns,
+                    capture_ts_ns=capture_ts_ns,
+                    inference_start_ts_ns=now_ns,
+                    timestamp_source=self._timestamp_source,
+                )
                 self._inference_start_by_pts.move_to_end(pts_ns)
                 self._input_frames += 1
                 self._input_frame_samples.append((now_ns, 0.0))
@@ -573,17 +600,28 @@ class DeepStreamObjectBackend:
 
     def _publish_frame_meta(self, pyds: Any, frame_meta: Any, buffer: Any) -> None:
         inference_end_ts_ns = time.monotonic_ns()
-        raw_pts_value = getattr(frame_meta, "buf_pts", None)
-        raw_pts_ns = int(
-            _buffer_pts_ns(buffer) if raw_pts_value is None else raw_pts_value
+        buffer_pts_ns = _buffer_pts_ns(buffer)
+        frame_meta_pts_value = getattr(frame_meta, "buf_pts", None)
+        frame_meta_pts_ns = int(
+            GST_CLOCK_TIME_NONE if frame_meta_pts_value is None else frame_meta_pts_value
         )
-        capture_ts_ns = self._capture_ts_from_pts(raw_pts_ns, observed_ns=inference_end_ts_ns)
-        with self._lock:
-            timestamp_source = self._timestamp_source
-            inference_start_ts_ns = self._inference_start_by_pts.pop(
-                raw_pts_ns,
-                capture_ts_ns,
-            )
+        timing, timestamp_correlation = self._take_input_timing(
+            buffer_pts_ns=buffer_pts_ns,
+            frame_meta_pts_ns=frame_meta_pts_ns,
+            observed_ns=inference_end_ts_ns,
+        )
+        if timing is None:
+            with self._lock:
+                self._timestamp_rejected_batches += 1
+                self._last_error = (
+                    "DeepStream output could not be correlated with an nvinfer input: "
+                    f"buffer_pts={buffer_pts_ns} frame_meta_pts={frame_meta_pts_ns}"
+                )
+            return
+        raw_pts_ns = timing.pts_ns
+        capture_ts_ns = timing.capture_ts_ns
+        inference_start_ts_ns = timing.inference_start_ts_ns
+        timestamp_source = timing.timestamp_source
         build_start_ns = time.monotonic_ns()
         detections = self._object_meta_detections(pyds, frame_meta)
         publish_ts_ns = time.monotonic_ns()
@@ -642,6 +680,9 @@ class DeepStreamObjectBackend:
                 "source": self.backend_id,
                 "timestamp_source": timestamp_source,
                 "raw_pts_ns": raw_pts_ns,
+                "output_buffer_pts_ns": buffer_pts_ns,
+                "frame_meta_pts_ns": frame_meta_pts_ns,
+                "timestamp_correlation": timestamp_correlation,
                 "postprocess_owner": "nvinfer_custom_parser_and_cluster_mode_2",
                 "python_nms": False,
                 "parser": parser,
@@ -672,6 +713,63 @@ class DeepStreamObjectBackend:
             self._inference_samples.append((publish_ts_ns, inference_ms))
             self._build_samples.append((publish_ts_ns, build_ms))
             self._last_error = ""
+
+    def _take_input_timing(
+        self,
+        *,
+        buffer_pts_ns: int,
+        frame_meta_pts_ns: int,
+        observed_ns: int,
+    ) -> tuple[_InferenceInputTiming | None, str]:
+        with self._lock:
+            candidates = (
+                ("buffer_pts", int(buffer_pts_ns)),
+                ("frame_meta_pts", int(frame_meta_pts_ns)),
+            )
+            for correlation, pts_ns in candidates:
+                stored = self._inference_start_by_pts.pop(pts_ns, None)
+                if stored is None:
+                    continue
+                timing = self._coerce_input_timing_locked(
+                    stored,
+                    pts_ns=pts_ns,
+                    observed_ns=observed_ns,
+                )
+                if correlation == "buffer_pts":
+                    self._timestamp_buffer_pts_matches += 1
+                else:
+                    self._timestamp_frame_meta_pts_matches += 1
+                return timing, correlation
+            if self._inference_start_by_pts:
+                pts_ns, stored = self._inference_start_by_pts.popitem(last=False)
+                self._timestamp_ordered_fallback_matches += 1
+                return (
+                    self._coerce_input_timing_locked(
+                        stored,
+                        pts_ns=pts_ns,
+                        observed_ns=observed_ns,
+                    ),
+                    "ordered_batch1_fallback",
+                )
+            self._timestamp_correlation_misses += 1
+            return None, "missing"
+
+    def _coerce_input_timing_locked(
+        self,
+        stored: _InferenceInputTiming | int,
+        *,
+        pts_ns: int,
+        observed_ns: int,
+    ) -> _InferenceInputTiming:
+        if isinstance(stored, _InferenceInputTiming):
+            return stored
+        capture_ts_ns = self._capture_ts_from_pts(pts_ns, observed_ns=observed_ns)
+        return _InferenceInputTiming(
+            pts_ns=pts_ns,
+            capture_ts_ns=capture_ts_ns,
+            inference_start_ts_ns=int(stored),
+            timestamp_source=self._timestamp_source,
+        )
 
     def _object_meta_detections(self, pyds: Any, frame_meta: Any) -> list[Detection]:
         scale_x = self.pipeline_config.roi_width / self.pipeline_config.model_width
@@ -810,6 +908,10 @@ class DeepStreamObjectBackend:
                 "preview_fps": _sample_rate(self._preview_samples, now_ns),
                 "stale": self._stale_dropped_batches,
                 "timestamp_rejected": self._timestamp_rejected_batches,
+                "timestamp_buffer_pts": self._timestamp_buffer_pts_matches,
+                "timestamp_frame_meta_pts": self._timestamp_frame_meta_pts_matches,
+                "timestamp_ordered_fallback": self._timestamp_ordered_fallback_matches,
+                "timestamp_correlation_miss": self._timestamp_correlation_misses,
                 "non_monotonic": self._non_monotonic_dropped_batches,
                 "timestamp_source": self._timestamp_source,
                 "last_error": self._last_error,

@@ -306,6 +306,47 @@ def test_deepstream_publishes_batch_with_monotonic_pts_offset_fallback(tmp_path:
     assert batch.metadata["timestamp_source"] == "first_probe_offset_pts"
 
 
+def test_deepstream_uses_sink_timing_when_frame_meta_pts_does_not_match(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    input_pts_ns = 900_000_000
+    stale_frame_meta_pts_ns = 100_000_000
+    now_ns = time.monotonic_ns()
+    backend._running = True
+    backend._inference_start_by_pts[input_pts_ns] = now_ns - 2_000_000
+    backend._timestamp_source = "first_probe_offset_pts"
+    backend._capture_ts_from_pts = lambda pts_ns, **_kwargs: (
+        now_ns - 4_000_000
+        if pts_ns == input_pts_ns
+        else now_ns - 723_000_000
+    )
+    frame_meta = SimpleNamespace(
+        buf_pts=stale_frame_meta_pts_ns,
+        frame_num=1,
+        obj_meta_list=None,
+    )
+
+    backend._publish_frame_meta(
+        SimpleNamespace(),
+        frame_meta,
+        SimpleNamespace(pts=input_pts_ns),
+    )
+
+    assert backend._published_batches == 1
+    batch = backend.detection_batch_mailbox.acquire_latest(
+        after_generation=-1,
+        timeout_s=0.0,
+    )
+    assert batch is not None
+    assert batch.result_age_ms < 55.0
+    assert batch.metadata["timestamp_correlation"] == "buffer_pts"
+
+
 def test_detection_batch_mailbox_replaces_old_generation() -> None:
     mailbox = DetectionBatchMailbox()
 
