@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from novasight.model_registry.manifest import (
 
 
 _MANIFEST_LOCK = threading.RLock()
+logger = logging.getLogger("novasight.deepstream.model_manifest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +86,16 @@ def infer_yolo_output_contract(output_shape: list[int], class_count: int) -> boo
 def resolve_yolo_class_contract(
     output_shape: list[int],
     registered_classes: list[str],
+    *,
+    class_count_hint: int | None = None,
 ) -> tuple[list[str], bool]:
     classes = [str(item).strip() for item in registered_classes if str(item).strip()]
-    if classes != ["target"]:
+    automatic_classes = _automatic_class_names(classes)
+    if class_count_hint is not None and automatic_classes:
+        count = int(class_count_hint)
+        has_objectness = infer_yolo_output_contract(output_shape, count)
+        return [f"class_{index}" for index in range(count)], has_objectness
+    if not automatic_classes:
         return classes, infer_yolo_output_contract(output_shape, len(classes))
     try:
         return classes, infer_yolo_output_contract(output_shape, len(classes))
@@ -100,6 +109,65 @@ def resolve_yolo_class_contract(
             f"(shape={output_shape})"
         )
     return [f"class_{index}" for index in range(inferred_class_count)], False
+
+
+def infer_class_count_hint_from_name(value: str) -> int | None:
+    text = Path(str(value)).stem
+    numeric = re.search(r"(?<!\d)(\d{1,3})\s*(?:类|classes?|class|cls)", text, re.IGNORECASE)
+    if numeric is not None:
+        count = int(numeric.group(1))
+        return count if count > 0 else None
+    chinese = re.search(r"([零〇一二两三四五六七八九十]+)\s*类", text)
+    if chinese is None:
+        return None
+    return _parse_chinese_integer(chinese.group(1))
+
+
+def _parse_chinese_integer(value: str) -> int | None:
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if "十" not in value:
+        count = digits.get(value)
+        return count if count and count > 0 else None
+    left, right = value.split("十", 1)
+    tens = digits.get(left, 1) if left else 1
+    ones = digits.get(right, 0) if right else 0
+    count = tens * 10 + ones
+    return count if count > 0 else None
+
+
+def _automatic_class_names(classes: list[str]) -> bool:
+    if classes == ["target"]:
+        return True
+    return bool(classes) and all(name == f"class_{index}" for index, name in enumerate(classes))
+
+
+def _manifest_needs_class_hint_reconciliation(
+    manifest: ModelManifest,
+    class_count_hint: int | None,
+) -> bool:
+    if class_count_hint is None or not _automatic_class_names(list(manifest.output.class_names)):
+        return False
+    expected_objectness = infer_yolo_output_contract(
+        list(manifest.output.shape),
+        int(class_count_hint),
+    )
+    return (
+        int(manifest.output.class_count) != int(class_count_hint)
+        or bool(manifest.output.has_objectness) != expected_objectness
+    )
 
 
 def _raw_yolo_dimensions(output_shape: list[int]) -> tuple[list[int], int, int]:
@@ -139,11 +207,20 @@ def ensure_engine_manifest(
 ) -> tuple[ModelManifest, bool]:
     path = Path(engine_path)
     manifest_path = path.with_name("model.manifest.json")
+    class_count_hint = infer_class_count_hint_from_name(path.name)
     with _MANIFEST_LOCK:
         if manifest_path.is_file():
             manifest = read_manifest(manifest_path)
             validate_manifest_engine_artifact(manifest, path)
-            return manifest, False
+            if not _manifest_needs_class_hint_reconciliation(manifest, class_count_hint):
+                return manifest, False
+            logger.warning(
+                "regenerating automatic DeepStream manifest from engine filename class hint "
+                "path=%s previous_classes=%s hinted_classes=%s",
+                path,
+                manifest.output.class_count,
+                class_count_hint,
+            )
         if not classes:
             raise ValueError(
                 "cannot generate DeepStream manifest because the model registry has no classes"
@@ -166,6 +243,7 @@ def ensure_engine_manifest(
         resolved_classes, output_has_objectness = resolve_yolo_class_contract(
             contract.output_shape,
             classes,
+            class_count_hint=class_count_hint,
         )
         manifest = build_engine_manifest(
             model_id=model_id,
@@ -220,6 +298,7 @@ __all__ = [
     "EngineTensorContract",
     "ensure_engine_manifest",
     "infer_yolo_output_contract",
+    "infer_class_count_hint_from_name",
     "parse_runtime_shape",
     "probe_engine_contract",
     "resolve_yolo_class_contract",

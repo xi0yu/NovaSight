@@ -16,7 +16,7 @@ from novasight.deepstream.pipeline_builder import (
     DeepStreamPipelineConfig,
     build_deepstream_pipeline,
 )
-from novasight.model_registry.manifest import TensorSpec, build_engine_manifest
+from novasight.model_registry.manifest import TensorSpec, build_engine_manifest, write_manifest
 from novasight.model_registry import ModelRegistry, read_manifest
 from novasight.deepstream.runtime_pipeline import (
     DeepStreamRuntimePipeline,
@@ -155,6 +155,8 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
 
     status = backend.status()
 
+    assert status["loaded"] is True
+    assert status["configured"] is True
     assert status["input_fps"] == 2.0
     assert status["published_fps"] == 1.0
     assert status["latest_frame_age_ms"] == pytest.approx(4.0, abs=2.0)
@@ -424,6 +426,58 @@ def test_deepstream_runtime_replaces_placeholder_classes_from_raw_yolo_output(
     assert manifest.output.class_names == ["class_0", "class_1", "class_2", "class_3"]
     assert manifest.output.has_objectness is False
     assert registry.get_version(version.id).classes == manifest.output.class_names
+
+
+def test_existing_automatic_manifest_uses_explicit_class_count_from_engine_name(
+    tmp_path: Path,
+) -> None:
+    engine_path = tmp_path / "0305大碗模型三类.engine"
+    engine_path.write_bytes(b"engine")
+    stale_manifest = build_engine_manifest(
+        model_id="demo",
+        display_name="demo",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 256, 256], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 8, 1344], "float32", "NCHW"),
+        class_count=4,
+        class_names=["class_0", "class_1", "class_2", "class_3"],
+        output_has_objectness=False,
+        validated=True,
+    )
+    write_manifest(stale_manifest, engine_path.with_name("model.manifest.json"))
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "images",
+            "input_shape": "1x3x256x256",
+            "input_dtype": "float32",
+            "output_name": "output0",
+            "output_shape": "1x8x1344",
+            "output_dtype": "float32",
+        }
+    )
+
+    manifest, regenerated = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="demo",
+        display_name="demo",
+        classes=list(stale_manifest.output.class_names),
+        registered_input_shape="1x3x256x256",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+    )
+
+    assert regenerated is True
+    assert manifest.output.class_count == 3
+    assert manifest.output.class_names == ["class_0", "class_1", "class_2"]
+    assert manifest.output.has_objectness is True
+    config_text = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+    )
+    assert "num-detected-classes=3" in config_text
 
 
 def test_single_target_objectness_contract_is_not_reclassified() -> None:

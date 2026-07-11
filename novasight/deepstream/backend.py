@@ -209,6 +209,8 @@ class DeepStreamObjectBackend:
             payload: dict[str, object] = {
                 "selected": self.backend_id,
                 "available": dependency.available,
+                "loaded": running,
+                "configured": True,
                 "reason": dependency.reason,
                 "detail": dependency.detail,
                 "running": running,
@@ -261,6 +263,14 @@ class DeepStreamObjectBackend:
                     "width": self.pipeline_config.model_width,
                     "height": self.pipeline_config.model_height,
                 },
+                "model_output": {
+                    "name": self.manifest.output.name,
+                    "shape": list(self.manifest.output.shape),
+                    "class_count": int(self.manifest.output.class_count),
+                    "class_names": list(self.manifest.output.class_names),
+                    "has_objectness": bool(self.manifest.output.has_objectness),
+                },
+                "model_fingerprint": self.manifest.model_fingerprint,
                 "batch_age_ms_stats": _sample_stats(self._publish_samples),
                 "inference_input_age_ms_stats": _sample_stats(self._input_age_samples),
                 "nvinfer_total_ms_stats": _sample_stats(self._inference_samples),
