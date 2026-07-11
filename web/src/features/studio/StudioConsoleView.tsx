@@ -830,6 +830,10 @@ export function StudioConsoleView({
     ? targetPipeline.rejection_reasons.map((item) => String(item)).join(", ")
     : "";
   const selectorDebug = asRecord(control.selector_debug);
+  const controlCandidateFilter = asRecord(control.candidate_filter);
+  const selectionCenter = asRecord(controlCandidateFilter.selection_center_px);
+  const rejectedControlCandidates = recordArray(controlCandidateFilter.rejected);
+  const firstRejectedControlCandidate = rejectedControlCandidates[0] ?? {};
   const trackerRuntimeDebug = asRecord(selectorDebug.tracker);
   const trackDiagnostics = asRecord(control.track_diagnostics ?? target.track_diagnostics);
   const diagnosticTracks = recordArray(trackDiagnostics.tracks);
@@ -2657,6 +2661,10 @@ export function StudioConsoleView({
                 <span>解码 / 阈值 / NMS</span><b>{`${formatOptionalInteger(targetPipelineCounts.decode_raw_candidates)} / ${formatOptionalInteger(targetPipelineCounts.threshold_candidates)} / ${formatOptionalInteger(targetPipelineCounts.nms_detections)}`}</b>
                 <span>基础候选 / ACTIVE / FOV 内</span><b>{`${formatOptionalInteger(targetPipelineCounts.basic_candidates)} / ${formatOptionalInteger(targetPipelineCounts.tracker_active)} / ${formatOptionalInteger(targetPipelineCounts.inside_fov)}`}</b>
                 <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
+                <span>选择 FOV 中心</span><b>{formatPoint(selectionCenter.x, selectionCenter.y, 1, "px")}</b>
+                <span>选择 FOV 半径</span><b>{formatOptionalNumber(controlCandidateFilter.selection_radius_px, 1, "px")}</b>
+                <span>被拒绝瞄点</span><b>{formatPoint(firstRejectedControlCandidate.aim_x, firstRejectedControlCandidate.aim_y, 1, "px")}</b>
+                <span>瞄点距中心</span><b>{formatOptionalNumber(firstRejectedControlCandidate.distance_px, 1, "px")}</b>
                 <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                 <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>

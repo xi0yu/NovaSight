@@ -2609,6 +2609,12 @@ class RuntimeService:
             "rejected": cls._debug_dict_list(rejected),
             "selected": dict(selected) if isinstance(selected, dict) else None,
             "reason": str(selector_debug.get("reason") or ""),
+            "selection_center_px": (
+                dict(selector_debug["control_center_roi_px"])
+                if isinstance(selector_debug.get("control_center_roi_px"), dict)
+                else None
+            ),
+            "selection_radius_px": selector_debug.get("fov_radius_px"),
             "basic": {
                 "raw_candidates": cls._debug_int(selector_debug, "raw_candidates"),
                 "filtered_candidates": cls._debug_int(selector_debug, "filtered_candidates"),

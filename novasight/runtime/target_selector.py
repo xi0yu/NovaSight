@@ -252,24 +252,6 @@ class RuntimeTargetSelector:
         )
         scored_candidates = track_filter_result.candidates
         candidates = [item.detection for item in scored_candidates]
-        if not scored_candidates:
-            self._lost_count += 1 if self._locked is not None else 0
-            self.last_debug = {
-                **filter_debug,
-                "tracked_filter": track_filter_result.debug_payload(),
-                "min_confidence": float(min_confidence),
-                "class_filter": str(class_filter),
-                "reason": "no confirmed track after candidate filter",
-                "tracker": tracker_update.debug,
-            }
-            return self._lost_or_clear(
-                lost_grace_frames,
-                "no confirmed track after candidate filter",
-                0,
-                0,
-                state=tracker_update.state.lower(),
-            )
-
         center_x = (
             float(control_center_x_px)
             if control_center_x_px is not None
@@ -280,6 +262,30 @@ class RuntimeTargetSelector:
             if control_center_y_px is not None
             else context.height / 2
         )
+        fov_radius_px = min(float(context.width), float(context.height)) * max(
+            0.0,
+            min(1.0, float(fov_ratio)),
+        )
+        if not scored_candidates:
+            self._lost_count += 1 if self._locked is not None else 0
+            self.last_debug = {
+                **filter_debug,
+                "tracked_filter": track_filter_result.debug_payload(),
+                "min_confidence": float(min_confidence),
+                "class_filter": str(class_filter),
+                "fov_ratio": float(fov_ratio),
+                "fov_radius_px": fov_radius_px,
+                "control_center_roi_px": {"x": center_x, "y": center_y},
+                "reason": "no confirmed track after candidate filter",
+                "tracker": tracker_update.debug,
+            }
+            return self._lost_or_clear(
+                lost_grace_frames,
+                "no confirmed track after candidate filter",
+                0,
+                0,
+                state="no_target",
+            )
         aim_ratio = max(0.0, min(1.0, float(aim_ratio)))
         priority = {int(cls): rank for rank, cls in enumerate(class_priority)}
         locked = self._locked_match(candidates) if lock_enabled else None
@@ -311,6 +317,7 @@ class RuntimeTargetSelector:
             **filter_debug,
             "tracked_filter": track_filter_result.debug_payload(),
             "fov_ratio": float(fov_ratio),
+            "fov_radius_px": fov_radius_px,
             "aim_ratio": float(aim_ratio),
             "control_center_roi_px": {"x": center_x, "y": center_y},
             "min_confidence": float(min_confidence),

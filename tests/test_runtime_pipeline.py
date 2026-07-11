@@ -1,5 +1,6 @@
 """Tests for core runtime primitives and pipeline behavior."""
 import copy
+import math
 import threading
 import time
 from types import SimpleNamespace
@@ -955,12 +956,21 @@ def test_target_pipeline_diagnostics_explain_selection_fov_rejection() -> None:
     )
 
     diagnostics = service.state().vision["target_pipeline"]
+    control = service.state().vision["control"]
+    candidate_filter = control["candidate_filter"]
+    rejected = candidate_filter["rejected"][0]
     assert diagnostics["code"] == "OUTSIDE_TARGET_FOV"
     assert diagnostics["stage"] == "target_filter"
     assert diagnostics["counts"]["mapped_detections"] == 1
     assert diagnostics["counts"]["tracker_active"] == 1
     assert diagnostics["counts"]["inside_fov"] == 0
     assert diagnostics["rejection_reasons"] == ["selection_fov"]
+    assert control["global_state"] == "TARGET_UNAVAILABLE"
+    assert candidate_filter["selection_center_px"] == {"x": 320.0, "y": 320.0}
+    assert candidate_filter["selection_radius_px"] == pytest.approx(50.0)
+    assert rejected["aim_x"] == pytest.approx(20.0)
+    assert rejected["aim_y"] == pytest.approx(302.0)
+    assert rejected["distance_px"] == pytest.approx(math.hypot(300.0, 18.0))
 
 
 def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, monkeypatch) -> None:

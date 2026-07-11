@@ -145,6 +145,9 @@ class RejectedCandidate:
     reason: str
     selection_fov_pass: bool
     ratio_valid: bool
+    aim_x: float | None = None
+    aim_y: float | None = None
+    distance_px: float | None = None
 
 
 @dataclass(frozen=True)
@@ -221,7 +224,18 @@ class CandidateFilter:
                 continue
             selection_pass = selection_fov_pass(item, context, self.config.selection_fov, aim_ratio=aim_ratio)
             if not selection_pass:
-                rejected.append(RejectedCandidate(item, "selection_fov", False, True))
+                aim_x, aim_y = aim_point(item, aim_ratio)
+                rejected.append(
+                    RejectedCandidate(
+                        item,
+                        "selection_fov",
+                        False,
+                        True,
+                        aim_x=aim_x,
+                        aim_y=aim_y,
+                        distance_px=((aim_x - center_x) ** 2 + (aim_y - center_y) ** 2) ** 0.5,
+                    )
+                )
                 continue
             if not _bbox_valid(item, context):
                 rejected.append(RejectedCandidate(item, "invalid_bbox", True, False))
@@ -349,6 +363,9 @@ def rejected_debug(candidate: RejectedCandidate) -> dict:
         "y": float(item.y),
         "w": float(item.w),
         "h": float(item.h),
+        "aim_x": candidate.aim_x,
+        "aim_y": candidate.aim_y,
+        "distance_px": candidate.distance_px,
         "reason": candidate.reason,
         "selection_fov_pass": bool(candidate.selection_fov_pass),
         "ratio_valid": bool(candidate.ratio_valid),
