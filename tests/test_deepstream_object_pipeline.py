@@ -215,6 +215,39 @@ def test_deepstream_backend_auto_builds_missing_parser_before_dependency_check(
     assert backend._parser_auto_build["success"] is True
 
 
+def test_deepstream_publishes_batch_with_monotonic_pts_offset_fallback(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    pts_ns = 1_000_000
+    now_ns = time.monotonic_ns()
+    backend._running = True
+    backend._inference_start_by_pts[pts_ns] = now_ns - 2_000_000
+    backend._capture_ts_from_pts = lambda *_args, **_kwargs: now_ns - 4_000_000
+    backend._timestamp_source = "first_probe_offset_pts"
+    frame_meta = SimpleNamespace(
+        buf_pts=pts_ns,
+        frame_num=1,
+        obj_meta_list=None,
+    )
+
+    backend._publish_frame_meta(SimpleNamespace(), frame_meta, SimpleNamespace(pts=pts_ns))
+
+    assert backend._published_batches == 1
+    assert backend._non_monotonic_dropped_batches == 0
+    batch = backend.detection_batch_mailbox.acquire_latest(
+        after_generation=-1,
+        timeout_s=0.0,
+    )
+    assert batch is not None
+    assert batch.detections == []
+    assert batch.metadata["timestamp_source"] == "first_probe_offset_pts"
+
+
 def test_detection_batch_mailbox_replaces_old_generation() -> None:
     mailbox = DetectionBatchMailbox()
 

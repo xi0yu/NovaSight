@@ -41,6 +41,20 @@ from .target_selector import RuntimeTargetSelector, TargetSelection
 logger = logging.getLogger("novasight.runtime.service")
 
 
+def _status_statistic(
+    status: dict[str, Any],
+    section: str,
+    key: str,
+) -> float:
+    values = status.get(section, {})
+    if not isinstance(values, dict):
+        return 0.0
+    try:
+        return float(values.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class RuntimeService:
     def __init__(
         self,
@@ -137,6 +151,14 @@ class RuntimeService:
         if isinstance(deepstream_status, dict) and deepstream_status:
             mailbox_status = deepstream_status.get("detection_batch_mailbox", {})
             mailbox_status = mailbox_status if isinstance(mailbox_status, dict) else {}
+            stale_dropped = int(deepstream_status.get("stale_dropped_batches") or 0)
+            timestamp_rejected = int(
+                deepstream_status.get("timestamp_rejected_batches") or 0
+            )
+            non_monotonic_dropped = int(
+                deepstream_status.get("non_monotonic_dropped_batches") or 0
+            )
+            mailbox_overwritten = int(mailbox_status.get("overwritten_batches") or 0)
             statistics["capture_counter"] = int(deepstream_status.get("input_frames") or 0)
             statistics["capture_fps"] = float(deepstream_status.get("input_fps") or 0.0)
             statistics["inference_counter"] = int(
@@ -149,24 +171,73 @@ class RuntimeService:
             statistics["control_observation_counter"] = int(
                 getattr(pipeline_stats, "control_observations", 0)
             )
-            statistics["skipped_counter"] = int(
-                deepstream_status.get("stale_dropped_batches") or 0
-            ) + int(deepstream_status.get("non_monotonic_dropped_batches") or 0) + int(
-                mailbox_status.get("overwritten_batches") or 0
+            statistics["stale_dropped_batches"] = stale_dropped
+            statistics["timestamp_rejected_batches"] = timestamp_rejected
+            statistics["non_monotonic_dropped_batches"] = non_monotonic_dropped
+            statistics["mailbox_overwritten_batches"] = mailbox_overwritten
+            statistics["skipped_counter"] = (
+                stale_dropped
+                + timestamp_rejected
+                + non_monotonic_dropped
+                + mailbox_overwritten
             )
+            statistics["timestamp_source"] = str(
+                deepstream_status.get("timestamp_source") or ""
+            )
+            statistics["last_frame_age_ms"] = float(
+                deepstream_status.get("latest_frame_age_ms") or 0.0
+            )
+            statistics["batch_age_ms"] = float(
+                deepstream_status.get("last_batch_age_ms") or 0.0
+            )
+            nvinfer_ms = _status_statistic(
+                deepstream_status,
+                "nvinfer_total_ms_stats",
+                "p50",
+            )
+            batch_age_p50 = _status_statistic(
+                deepstream_status,
+                "batch_age_ms_stats",
+                "p50",
+            )
+            build_ms = _status_statistic(
+                deepstream_status,
+                "detection_batch_build_ms_stats",
+                "p50",
+            )
+            parser_status = deepstream_status.get("parser", {})
+            parser_status = parser_status if isinstance(parser_status, dict) else {}
+            parser_decode_ms = float(parser_status.get("decode_ms") or 0.0)
+            statistics["inference_latency"] = nvinfer_ms
+            statistics["inference_ms"] = nvinfer_ms
+            statistics["e2e_latency"] = batch_age_p50
+            statistics["stage_engine_ms"] = nvinfer_ms
+            statistics["stage_decode_ms"] = parser_decode_ms
+            statistics["stage_postprocess_ms"] = build_ms
         statistics["stale_drop_count"] = int(self.stale_drop_count)
         latest_frame_age_ms = self._latest_frame_age_ms()
         if latest_frame_age_ms is not None:
             statistics["latest_frame_age_ms"] = latest_frame_age_ms
         if inference_observation:
-            statistics["batch_age_ms"] = float(inference_observation.get("frame_age_ms") or 0.0)
-            statistics["preprocess_ms"] = float(inference_observation.get("preprocess_ms") or 0.0)
-            statistics["h2d_ms"] = float(inference_observation.get("h2d_ms") or 0.0)
-            statistics["host_frame_copy_ms"] = float(
-                inference_observation.get("frame_copy_cost_ms")
-                or inference_observation.get("frame_userspace_process_ms")
-                or 0.0
-            )
+            if "frame_age_ms" in inference_observation:
+                statistics["batch_age_ms"] = float(
+                    inference_observation.get("frame_age_ms") or 0.0
+                )
+            if "preprocess_ms" in inference_observation:
+                statistics["preprocess_ms"] = float(
+                    inference_observation.get("preprocess_ms") or 0.0
+                )
+            if "h2d_ms" in inference_observation:
+                statistics["h2d_ms"] = float(inference_observation.get("h2d_ms") or 0.0)
+            if (
+                "frame_copy_cost_ms" in inference_observation
+                or "frame_userspace_process_ms" in inference_observation
+            ):
+                statistics["host_frame_copy_ms"] = float(
+                    inference_observation.get("frame_copy_cost_ms")
+                    or inference_observation.get("frame_userspace_process_ms")
+                    or 0.0
+                )
         for key, value in pipeline_timings.items():
             statistics[f"stage_{key}"] = value
         statistics["postprocess_ms"] = float(pipeline_timings.get("postprocess_ms", 0.0))

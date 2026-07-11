@@ -19,6 +19,10 @@ from .parser_build import ensure_deepstream_parser_library
 
 
 GST_CLOCK_TIME_NONE = (1 << 64) - 1
+TRUSTED_TIMESTAMP_SOURCES = {
+    "gst_clock_base_time_pts",
+    "first_probe_offset_pts",
+}
 logger = logging.getLogger("novasight.deepstream.backend")
 
 
@@ -120,6 +124,7 @@ class DeepStreamObjectBackend:
         self._published_batches = 0
         self._stale_dropped_batches = 0
         self._non_monotonic_dropped_batches = 0
+        self._timestamp_rejected_batches = 0
         self._object_meta_frames = 0
         self._last_batch_age_ms = 0.0
         self._input_frame_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
@@ -226,6 +231,7 @@ class DeepStreamObjectBackend:
                 "stale_dropped_batches": self._stale_dropped_batches,
                 "max_publish_age_ms": self.max_publish_age_ms,
                 "non_monotonic_dropped_batches": self._non_monotonic_dropped_batches,
+                "timestamp_rejected_batches": self._timestamp_rejected_batches,
                 "object_meta_frames": self._object_meta_frames,
                 "python_nms": False,
                 "postprocess_owner": "native_parser_then_deepstream_cluster_mode_2",
@@ -337,6 +343,7 @@ class DeepStreamObjectBackend:
         self._published_batches = 0
         self._stale_dropped_batches = 0
         self._non_monotonic_dropped_batches = 0
+        self._timestamp_rejected_batches = 0
         self._object_meta_frames = 0
         self._last_batch_age_ms = 0.0
         self._input_frame_samples.clear()
@@ -414,6 +421,7 @@ class DeepStreamObjectBackend:
         )
         capture_ts_ns = self._capture_ts_from_pts(raw_pts_ns, observed_ns=inference_end_ts_ns)
         with self._lock:
+            timestamp_source = self._timestamp_source
             inference_start_ts_ns = self._inference_start_by_pts.pop(
                 raw_pts_ns,
                 capture_ts_ns,
@@ -431,11 +439,11 @@ class DeepStreamObjectBackend:
         with self._lock:
             if self._terminal_error or not self._running:
                 return
-            if self._timestamp_source != "gst_clock_base_time_pts":
-                self._non_monotonic_dropped_batches += 1
+            if timestamp_source not in TRUSTED_TIMESTAMP_SOURCES:
+                self._timestamp_rejected_batches += 1
                 self._last_error = (
-                    "DeepStream timestamp is not mapped through pipeline clock/base-time: "
-                    f"{self._timestamp_source}"
+                    "DeepStream timestamp does not have a stable monotonic mapping: "
+                    f"{timestamp_source}"
                 )
                 return
             if frame_id <= self._last_frame_id or capture_ts_ns <= self._last_capture_ts_ns:
@@ -474,7 +482,7 @@ class DeepStreamObjectBackend:
             ),
             metadata={
                 "source": self.backend_id,
-                "timestamp_source": self._timestamp_source,
+                "timestamp_source": timestamp_source,
                 "raw_pts_ns": raw_pts_ns,
                 "postprocess_owner": "nvinfer_custom_parser_and_cluster_mode_2",
                 "python_nms": False,

@@ -744,6 +744,58 @@ def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
     assert "input frame age exceeds deadline" in (pipeline.stats.last_error or "")
 
 
+def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "deepstream_nvinfer"
+    cfg.capture.backend = "deepstream_nvinfer"
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+        ),
+        capture=SimpleNamespace(state=CaptureRuntimeState()),
+        inference=SimpleNamespace(status=lambda: {"available": True}),
+    )
+    service.pipeline = SimpleNamespace(
+        stats=SimpleNamespace(processed_frames=8, control_observations=7),
+        status=lambda: {
+            "deepstream": {
+                "available": True,
+                "running": True,
+                "input_frames": 10,
+                "input_fps": 120.0,
+                "published_fps": 110.0,
+                "stale_dropped_batches": 1,
+                "timestamp_rejected_batches": 2,
+                "non_monotonic_dropped_batches": 3,
+                "timestamp_source": "first_probe_offset_pts",
+                "latest_frame_age_ms": 6.0,
+                "last_batch_age_ms": 8.0,
+                "nvinfer_total_ms_stats": {"p50": 5.5},
+                "batch_age_ms_stats": {"p50": 9.0},
+                "detection_batch_build_ms_stats": {"p50": 0.4},
+                "parser": {"decode_ms": 0.3},
+                "detection_batch_mailbox": {"overwritten_batches": 4},
+            }
+        },
+    )
+
+    statistics = service.state().statistics
+
+    assert statistics["capture_counter"] == 10
+    assert statistics["inference_counter"] == 8
+    assert statistics["skipped_counter"] == 10
+    assert statistics["timestamp_rejected_batches"] == 2
+    assert statistics["timestamp_source"] == "first_probe_offset_pts"
+    assert statistics["batch_age_ms"] == 8.0
+    assert statistics["stage_engine_ms"] == 5.5
+    assert statistics["stage_decode_ms"] == 0.3
+    assert statistics["stage_postprocess_ms"] == 0.4
+    assert statistics["e2e_latency"] == 9.0
+
+
 def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acquire() -> None:
     cfg = RuntimeConfig()
     cfg.capture.memory = "system"

@@ -157,6 +157,10 @@ export type Statistics = {
   inference_counter: number;
   dropped_counter: number;
   skipped_counter: number;
+  stale_dropped_batches?: number;
+  timestamp_rejected_batches?: number;
+  non_monotonic_dropped_batches?: number;
+  mailbox_overwritten_batches?: number;
   published_frames?: number;
   overwritten_frames?: number;
   acquired_frames?: number;
@@ -184,6 +188,7 @@ export type Statistics = {
   last_pts_to_probe_ms?: number;
   last_frame_age_ms?: number;
   latest_frame_age_ms?: number;
+  batch_age_ms?: number;
   appsink_caps?: string;
   actual_pipeline_string?: string;
   last_inference_latency_ms?: number;
