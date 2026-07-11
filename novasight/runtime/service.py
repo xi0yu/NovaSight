@@ -322,12 +322,17 @@ class RuntimeService:
         shared = self.config.control.shared
         mode = self.config.control.mode
         selected_executor = getattr(self.executors, "selected", None) or "kmnet"
+        delivery_stage = (
+            "CommandScheduler"
+            if bool(self.config.control.scheduler_enabled)
+            else "DirectObservationSend"
+        )
         logger.info(
             "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
             "counts_per_360_x=%.3f counts_per_360_y=%.3f invert_y=%s",
             event,
-            "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController->SharedCountLimits->CommandScheduler->kmNet",
+            f"RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController->SharedCountLimits->{delivery_stage}->kmNet",
             mode,
             selected_executor,
             self.config.control.trigger_mode,

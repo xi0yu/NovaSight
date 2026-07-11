@@ -700,6 +700,7 @@ export function StudioConsoleView({
   const kmnetMinEffectiveX = readNumber(hardwareConfig.min_effective_move_counts_x, 16);
   const kmnetMinEffectiveY = readNumber(hardwareConfig.min_effective_move_counts_y, 16);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
+  const schedulerEnabled = readBoolean(controlConfig.scheduler_enabled, true);
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 32);
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 32);
   const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
@@ -2514,7 +2515,7 @@ export function StudioConsoleView({
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="瞄点 Y" value={aimYRatio.toFixed(2)} small="bbox ratio" />
               <Metric title="预测强度" value={predictionStrength.toFixed(2)} small="Kalman" />
-              <Metric title="Scheduler" value={`${schedulerIntervalMs.toFixed(1)} ms`} small={`${schedulerStepCountsX}/${schedulerStepCountsY} counts`} />
+            <Metric title="发送方式" value={schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
             <div className="console-grid2">
               <div className="console-card">
@@ -2539,6 +2540,7 @@ export function StudioConsoleView({
                 <NumberControl label="X counts 变化限制" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
                 <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
                 <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
+                <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
                 <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
                 <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
                 <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
@@ -2684,6 +2686,7 @@ export function StudioConsoleView({
                 <option value="enc_bezier">enc_move_beizer：加密贝塞尔曲线</option>
               </select>
               <label>命令调度</label>
+              <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接调用一次 kmNet" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
               <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
               <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
               <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />

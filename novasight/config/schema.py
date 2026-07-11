@@ -261,6 +261,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.shared.max_count_slew_x", "label": "共享：X counts 变化限制", "type": "float", "min": 0.1, "step": 0.1, "precision": 1, "restart_required": False},
                     {"path": "control.shared.max_count_slew_y", "label": "共享：Y counts 变化限制", "type": "float", "min": 0.1, "step": 0.1, "precision": 1, "restart_required": False},
                     {"path": "control.shared.invert_y", "label": "共享：反转 Y 轴", "type": "bool", "restart_required": False},
+                    {"path": "control.scheduler_enabled", "label": "启用 Scheduler 分步发送", "type": "bool", "restart_required": False},
                     {"path": "control.scheduler_step_counts_x", "label": "Scheduler X 单步 counts", "type": "int", "min": 16, "max": 64, "step": 1, "restart_required": False},
                     {"path": "control.scheduler_step_counts_y", "label": "Scheduler Y 单步 counts", "type": "int", "min": 16, "max": 64, "step": 1, "restart_required": False},
                     {"path": "control.scheduler_interval_ms", "label": "Scheduler 间隔 ms", "type": "float", "min": 1, "max": 10, "step": 0.1, "precision": 1, "restart_required": False},

@@ -26,6 +26,7 @@ class ExecutorRegistry:
         default: str = "kmnet",
         policy: ControlOutputPolicy | None = None,
         scheduler: CommandScheduler | None = None,
+        direct_output: bool = False,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
         if default not in self.executors:
@@ -33,6 +34,7 @@ class ExecutorRegistry:
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
         self.scheduler = scheduler
+        self.direct_output = bool(direct_output)
         self._scheduler_lock = threading.Lock()
 
     @classmethod
@@ -42,6 +44,7 @@ class ExecutorRegistry:
         default: str = "kmnet",
         policy: ControlOutputPolicy | None = None,
         scheduler: CommandScheduler | None = None,
+        direct_output: bool = False,
     ) -> ExecutorRegistry:
         kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
         return cls(
@@ -51,6 +54,7 @@ class ExecutorRegistry:
             default=default,
             policy=policy,
             scheduler=scheduler,
+            direct_output=direct_output,
         )
 
     @classmethod
@@ -60,6 +64,7 @@ class ExecutorRegistry:
             default="kmnet",
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
+            direct_output=not bool(config.control.scheduler_enabled),
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
@@ -76,10 +81,13 @@ class ExecutorRegistry:
             )
         with self._scheduler_lock:
             self.scheduler = scheduler_from_config(config)
+            self.direct_output = not bool(config.control.scheduler_enabled)
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
         bounded = self.policy.apply(intent)
         if self.scheduler is None:
+            if self.direct_output:
+                return self._execute_direct(bounded)
             return ExecutionResult(
                 executor_id=self.selected,
                 sent=False,
@@ -172,6 +180,36 @@ class ExecutorRegistry:
             },
         )
 
+    def _execute_direct(self, bounded: ControlOutput) -> ExecutionResult:
+        if bounded.action == "move" and int(bounded.dx) == 0 and int(bounded.dy) == 0:
+            return ExecutionResult(
+                executor_id=self.selected,
+                sent=False,
+                intent=bounded,
+                message="zero control command ignored",
+                metadata={
+                    "stage": "direct_output",
+                    "selected_executor": self.selected,
+                    "scheduler_enabled": False,
+                    "action": "zero_output",
+                },
+            )
+        device_send_start_ts_ns = time.monotonic_ns()
+        result = self.executors[self.selected].execute(bounded)
+        device_send_end_ts_ns = time.monotonic_ns()
+        metadata = dict(result.metadata or {})
+        metadata.update(
+            {
+                "stage": "direct_output",
+                "selected_executor": self.selected,
+                "scheduler_enabled": False,
+                "device_send_start_ts_ns": device_send_start_ts_ns,
+                "device_send_end_ts_ns": device_send_end_ts_ns,
+                "device_send_clock_domain": "monotonic",
+            }
+        )
+        return replace(result, metadata=metadata)
+
     def tick_pending(self, *, now_s: float | None = None) -> ExecutionResult:
         if self.scheduler is None:
             return ExecutionResult(
@@ -238,6 +276,7 @@ class ExecutorRegistry:
 
         return {
             "selected": self.selected,
+            "direct_output": self.direct_output,
             "scheduler": self._scheduler_status(),
             "executors": {
                 executor_id: executor_status(executor)
@@ -259,7 +298,9 @@ class ExecutorRegistry:
 
     def _scheduler_status(self) -> dict[str, Any]:
         with self._scheduler_lock:
-            return self.scheduler.status() if self.scheduler is not None else {"enabled": False}
+            if self.scheduler is not None:
+                return self.scheduler.status()
+            return {"enabled": False, "direct_output": self.direct_output}
 
 
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
@@ -271,7 +312,9 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
     )
 
 
-def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler:
+def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
+    if not bool(config.control.scheduler_enabled):
+        return None
     interval_ms = max(1.0, min(10.0, float(config.control.scheduler_interval_ms)))
     interval_s = interval_ms / 1000.0
     capacity = plan_step_capacity(config.control.scheduler_interval_ms)

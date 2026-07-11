@@ -287,6 +287,7 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.shared.invert_y is False
     assert cfg.control.scheduler_step_counts_x == 32
     assert cfg.control.scheduler_step_counts_y == 32
+    assert cfg.control.scheduler_enabled is True
     assert cfg.hardware.min_effective_move_counts_x == 16
     assert cfg.hardware.min_effective_move_counts_y == 16
     assert cfg.control.scheduler_interval_ms == 4.0
@@ -606,6 +607,7 @@ def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_
 def test_runtime_config_has_one_kmnet_runtime_path() -> None:
     assert parse_runtime_config({"control": {"trigger_mode": "hardware"}}).control.trigger_mode == "hardware"
     assert parse_runtime_config({"control": {"trigger_mode": "always"}}).control.trigger_mode == "always"
+    assert parse_runtime_config({"control": {"scheduler_enabled": False}}).control.scheduler_enabled is False
 
     with pytest.raises(ValueError, match="control.trigger_mode.*hardware or always"):
         parse_runtime_config({"control": {"trigger_mode": "telemetry"}})

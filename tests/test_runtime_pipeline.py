@@ -1075,6 +1075,48 @@ def test_default_target_driven_mode_sends_one_detection_without_kmnet_button_sam
     assert len(kmnet.outputs) == 1
 
 
+def test_scheduler_disabled_sends_detection_budget_in_observation_call() -> None:
+    config = RuntimeConfig()
+    config.control.mode = "universal_saturated"
+    config.control.scheduler_enabled = False
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+
+    assert len(result.execution_results) == 1
+    assert result.execution_results[0].sent is True
+    assert result.execution_results[0].metadata["stage"] == "direct_output"
+    assert [(output.dx, output.dy) for output in kmnet.outputs] == [(18, 0)]
+    assert executors.scheduler is None
+
+
 def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
     config = RuntimeConfig()
     config.control.trigger_mode = "hardware"

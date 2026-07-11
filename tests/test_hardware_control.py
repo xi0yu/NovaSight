@@ -115,6 +115,35 @@ def test_executor_registry_requires_scheduler_before_device_send() -> None:
     assert fake.calls == 0
 
 
+def test_scheduler_disabled_sends_each_observation_directly_without_splitting() -> None:
+    class FakeExecutor:
+        executor_id = "kmnet"
+
+        def __init__(self) -> None:
+            self.outputs: list[ControlOutput] = []
+
+        def available(self) -> bool:
+            return True
+
+        def execute(self, output: ControlOutput) -> ExecutionResult:
+            self.outputs.append(output)
+            return ExecutionResult(self.executor_id, True, output, "sent")
+
+    config = RuntimeConfig()
+    config.control.scheduler_enabled = False
+    fake = FakeExecutor()
+    registry = ExecutorRegistry.from_config(config)
+    registry.executors["kmnet"] = fake
+
+    result = registry.execute(_intent(60, 16))
+
+    assert result.sent is True
+    assert result.metadata["stage"] == "direct_output"
+    assert result.metadata["scheduler_enabled"] is False
+    assert [(output.dx, output.dy) for output in fake.outputs] == [(60, 16)]
+    assert registry.status()["scheduler"] == {"enabled": False, "direct_output": True}
+
+
 def test_new_observation_only_replaces_plan_and_scheduler_tick_owns_send() -> None:
     class FakeExecutor:
         executor_id = "kmnet"
@@ -252,7 +281,8 @@ def test_runtime_service_production_control_contract_is_static() -> None:
     mouse_source = (root / "novasight" / "control" / "mouse.py").read_text(encoding="utf-8")
     observation_source = (root / "novasight" / "control" / "observation.py").read_text(encoding="utf-8")
 
-    assert "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController->SharedCountLimits->CommandScheduler->kmNet" in service_source
+    assert '"CommandScheduler"' in service_source
+    assert '"DirectObservationSend"' in service_source
     assert "MouseController(" in service_source
     assert "MouseObservation(" in service_source
     assert "self.executors.execute(intent)" in service_source

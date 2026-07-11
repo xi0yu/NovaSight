@@ -196,6 +196,7 @@ class ControlConfig:
     prediction_strength: float = 1.0
     prediction_x_enabled: bool = True
     prediction_y_enabled: bool = True
+    scheduler_enabled: bool = True
     scheduler_step_counts_x: int = 32
     scheduler_step_counts_y: int = 32
     scheduler_interval_ms: float = 4.0
