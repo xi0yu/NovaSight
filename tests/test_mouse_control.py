@@ -242,7 +242,7 @@ def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
     assert controller.state.residual_x_counts == pytest.approx(0.2, abs=1e-9)
 
 
-def test_subminimum_device_counts_are_suppressed_without_closed_loop_oscillation() -> None:
+def test_subminimum_device_counts_accumulate_until_device_can_move() -> None:
     desired_counts = 2.0
     response_scale = 80.0
     max_counts = 50.0
@@ -269,7 +269,7 @@ def test_subminimum_device_counts_are_suppressed_without_closed_loop_oscillation
         outputs.append(output)
         error -= output
 
-    assert outputs == [0] * 8
+    assert outputs == [0] * 7 + [16]
     assert errors == pytest.approx([error_px] * 8)
     assert controller.state.residual_x_counts == pytest.approx(0.0, abs=1e-9)
 

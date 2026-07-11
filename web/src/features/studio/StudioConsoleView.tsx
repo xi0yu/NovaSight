@@ -2717,6 +2717,8 @@ export function StudioConsoleView({
                 <span>死区后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
                 <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
                 <span>可行预算 counts</span><b>{formatPoint(controlPipeline.feasible_counts_x_float, controlPipeline.feasible_counts_y_float, 2)}</b>
+                <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
+                <span>设备最小有效量</span><b>{formatPoint(controlPipeline.min_effective_counts_x, controlPipeline.min_effective_counts_y, 0, "counts")}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>

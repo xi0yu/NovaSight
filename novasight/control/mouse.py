@@ -432,7 +432,7 @@ class MouseController:
             "residual_y_counts": self.state.residual_y_counts,
             "min_effective_counts_x": shared.min_effective_counts_x,
             "min_effective_counts_y": shared.min_effective_counts_y,
-            "count_quantization": "minimum_effective_suppression",
+            "count_quantization": "minimum_effective_accumulator",
             "final_dx": counts_x,
             "final_dy": counts_y,
         }
@@ -482,7 +482,11 @@ def _quantize_effective_counts(
     if minimum == 1:
         return quantized, total - quantized
     if abs(quantized) < minimum:
-        return 0, 0.0
+        return 0, total
+    requested_quantized = _round_half_away_from_zero(requested)
+    if abs(requested_quantized) < minimum:
+        emitted = minimum if total > 0.0 else -minimum
+        return emitted, total - emitted
     return quantized, total - quantized
 
 
