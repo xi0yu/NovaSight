@@ -8,7 +8,7 @@ from novasight.config import RuntimeConfig, save_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.executors import ExecutorRegistry
 from novasight.inference.jetson import create_gpu_resource_preprocessor
-from novasight.runtime.pipeline import RuntimePipeline
+from novasight.runtime.pipeline_factory import create_runtime_pipeline
 
 
 logger = logging.getLogger("novasight.runtime.reconfigurator")
@@ -134,7 +134,13 @@ class RuntimeReconfigurator:
         was_running = bool(getattr(runtime, "running", False)) or bool(
             getattr(pipeline, "running", False)
         )
-        state = self.app.state.capture.configure(
+        backend = str(self.app.state.config.inference.backend).lower()
+        configure_capture = (
+            self.app.state.capture.configure_profile_only
+            if backend == "deepstream_nvinfer"
+            else self.app.state.capture.configure
+        )
+        state = configure_capture(
             device,
             preference=preference,
             pixel_format=pixel_format,
@@ -251,6 +257,9 @@ class RuntimeReconfigurator:
 
     def _install_config(self, config: RuntimeConfig) -> None:
         previous_config = getattr(self.app.state, "config", None)
+        previous_backend = str(
+            getattr(getattr(previous_config, "inference", None), "backend", "")
+        ).lower()
         hardware_changed = self._hardware_changed(previous_config, config)
         current_executors = getattr(self.app.state, "executors", None)
         if current_executors is not None and not hardware_changed:
@@ -261,6 +270,12 @@ class RuntimeReconfigurator:
                 self._disconnect_executor_registry(current_executors)
             next_executors = ExecutorRegistry.from_config(config)
         self.app.state.config = config
+        if str(config.inference.backend).lower() == "deepstream_nvinfer":
+            capture_session = getattr(self.app.state.capture, "session", None)
+            if capture_session is not None and getattr(capture_session, "running", False):
+                self.app.state.capture.stop(
+                    "capture ownership transferred to deepstream_nvinfer"
+                )
         self.app.state.capture.config = config.capture
         self.app.state.capture.roi_size = config.roi.size
         self.app.state.capture.roi_offset_x = config.roi.offset_x
@@ -271,8 +286,34 @@ class RuntimeReconfigurator:
             nms_threshold=config.inference.nms_threshold,
             gpu_preprocessor=create_gpu_resource_preprocessor(config),
         )
+        next_backend = str(config.inference.backend).lower()
+        if next_backend == "deepstream_nvinfer":
+            self.app.state.inference.unload(
+                "TensorRT engine ownership delegated to DeepStream nvinfer"
+            )
+        elif previous_backend == "deepstream_nvinfer":
+            self._load_active_model_into_inference()
         self.app.state.runtime.executors = self.app.state.executors
         self.app.state.runtime.update_config(config)
+
+    def _load_active_model_into_inference(self) -> None:
+        models = getattr(self.app.state, "models", None)
+        inference = getattr(self.app.state, "inference", None)
+        if models is None or inference is None:
+            return
+        deployment = models.get_active_deployment()
+        if deployment is None:
+            return
+        artifact = models.get_artifact(deployment.artifact_id)
+        version = models.get_version(artifact.version_id) if artifact is not None else None
+        project = models.get_project(version.project_id) if version is not None else None
+        if artifact is None or version is None or project is None or artifact.kind != "engine":
+            inference.disable("active deployment is not a runnable TensorRT engine")
+            return
+        from pathlib import Path
+
+        artifact_path = Path(models.data_dir) / project.name / version.version / artifact.path
+        inference.load(artifact_path, list(version.classes), version.input_shape)
 
     @staticmethod
     def _disconnect_executor_registry(executors: ExecutorRegistry) -> None:
@@ -353,6 +394,8 @@ class RuntimeReconfigurator:
         if getattr(profile, "preference", "") == "image":
             return
         config = self.app.state.config
+        if str(config.inference.backend).lower() == "deepstream_nvinfer":
+            return
         logger.info(
             "capture roi changed; rebuilding live capture pipeline device=%s roi_size=%s offset=(%s,%s)",
             profile.device,
@@ -405,20 +448,20 @@ class RuntimeReconfigurator:
         if runtime is None or capture is None or config is None:
             return
         backend = str(getattr(getattr(config, "inference", None), "backend", "")).lower()
-        if backend not in {"tensorrt", "nvmm_latest"}:
+        if backend not in {"tensorrt", "nvmm_latest", "deepstream_nvinfer"}:
             return
         if not bool(getattr(getattr(config, "inference", None), "enabled", True)):
             return
         state = getattr(capture, "state", None)
         session = getattr(capture, "session", None)
-        if (
+        if backend != "deepstream_nvinfer" and (
             getattr(capture, "source", None) is None
             or getattr(state, "available", False) is not True
             or (session is not None and getattr(session, "running", False) is not True)
         ):
             return
         if runtime.pipeline is None:
-            runtime.pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+            runtime.pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
         if getattr(runtime.pipeline, "running", False):
             return
         try:
@@ -466,6 +509,11 @@ class RuntimeReconfigurator:
             or previous_inference.device != next_inference.device
             or previous_inference.require_gpu != next_inference.require_gpu
             or previous_inference.allow_cpu_fallback != next_inference.allow_cpu_fallback
+            or previous_inference.deepstream_io_mode != next_inference.deepstream_io_mode
+            or previous_inference.deepstream_batched_push_timeout_us
+            != next_inference.deepstream_batched_push_timeout_us
+            or previous_inference.deepstream_parser_library
+            != next_inference.deepstream_parser_library
             or previous_capture.backend != next_capture.backend
             or previous_capture.device != next_capture.device
             or previous_capture.memory != next_capture.memory

@@ -5,6 +5,7 @@ from .failfast import FailFastHandler
 from .freshness import FreshnessGate
 from .logging import configure_logging
 from .latest_frame import FrameHandle, LatestFrameBroker, LatestFrameExchange
+from .detection_batch_mailbox import DetectionBatchMailbox
 from .pipeline import RuntimePipeline
 from .recorder import (
     CONTROL_FRAME_FIELDS,
@@ -47,6 +48,7 @@ __all__ = [
     "FrameHandle",
     "LatestFrameBroker",
     "LatestFrameExchange",
+    "DetectionBatchMailbox",
     "StatusHub",
     "CONTROL_FRAME_FIELDS",
     "CONTROL_TRACE_FIELD_UNITS",

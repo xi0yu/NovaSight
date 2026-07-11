@@ -16,7 +16,8 @@ def device_capabilities(request: Request) -> dict[str, Any]:
     a Jetson execution endpoint and which remote-management features to enable.
     """
     config = request.app.state.runtime.config_store.snapshot()
-    inference_status = request.app.state.inference.status()
+    runtime_state = request.app.state.runtime.state()
+    inference_status = dict(runtime_state.inference)
     capture = request.app.state.capture
     capture_state = capture.state
     capture_session = getattr(capture, "session", None)
@@ -57,9 +58,10 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "logs_and_performance": True,
             "remote_runtime_control": True,
             "onnx_training_or_export": False,
-            "full_deepstream_pipeline_generation": False,
+            "full_deepstream_pipeline_generation": inference_backend == "deepstream_nvinfer",
             "gst_cpu_latest_capture": capture_backend == "gst_cpu_latest",
             "deepstream_capture_data_plane": capture_memory == "nvmm",
+            "deepstream_object_meta_control": inference_backend == "deepstream_nvinfer",
             "custom_tensorrt_scheduler": inference_backend in {"tensorrt", "nvmm_latest"},
             "nvmm_capture_configured": capture_memory == "nvmm",
             "gpu_resource_preprocess_available": bool(
@@ -80,7 +82,11 @@ def device_capabilities(request: Request) -> dict[str, Any]:
         },
         "runtime": {
             "capture_available": bool(getattr(capture_state, "available", False)),
-            "capture_running": bool(getattr(capture_session, "running", False)),
+            "capture_running": (
+                bool(runtime_state.running)
+                if inference_backend == "deepstream_nvinfer"
+                else bool(getattr(capture_session, "running", False))
+            ),
             "inference_loaded": bool(inference_status.get("loaded", False)),
             "inference_engine": str(inference_status.get("selected", "")),
         },
@@ -88,6 +94,8 @@ def device_capabilities(request: Request) -> dict[str, Any]:
             "backend": (
                 "gst_cpu_latest_custom_tensorrt"
                 if capture_backend == "gst_cpu_latest"
+                else "deepstream_nvmm_nvinfer_object_meta"
+                if inference_backend == "deepstream_nvinfer"
                 else "deepstream_capture_custom_tensorrt"
             ),
             "capture_memory": config.capture.memory,

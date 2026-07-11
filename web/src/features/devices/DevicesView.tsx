@@ -45,7 +45,7 @@ type CaptureInputSource = "capture" | "image";
 type ReadinessTone = "ready" | "warn" | "blocked";
 
 const ROI_SIZE_CHOICES = [640, 480, 320, 256];
-const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
+const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"]);
 
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -58,6 +58,9 @@ function getNestedRecord(value: unknown, key: string): Record<string, unknown> |
 }
 
 function formatBackendLabel(value: string): string {
+  if (value === "deepstream_nvinfer") {
+    return "DeepStream NVMM + nvinfer";
+  }
   if (value === "nvmm_latest") {
     return "DeepStream采集 + 自定义推理";
   }
@@ -506,6 +509,7 @@ export function DevicesView({
   const inferredBackend = activeArtifact === "engine" ? "tensorrt" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
+  const deepstreamNvinferSelected = inferenceSelected === "deepstream_nvinfer";
   const runtimeMainlineSelected = RUNTIME_MAINLINE_BACKENDS.has(inferenceSelected);
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
@@ -523,7 +527,7 @@ export function DevicesView({
         ? "主链已消费"
         : mainlineInputReady
           ? "等待 runtime 消费"
-          : "等待 TensorRT 输出"
+          : "等待 DetectionBatch"
       : captureProfileConfigured
         ? "主链待启动"
         : "未启动";
@@ -596,7 +600,7 @@ export function DevicesView({
         <div className="capture-setup-topbar">
           <div>
             <h2>基础设置</h2>
-            <p>采集决定输入，推理消费 RoiFrame，算法参数决定控制输出。</p>
+            <p>{deepstreamNvinferSelected ? "采集与 nvinfer 在 NVMM 中运行，控制只消费 DetectionBatch。" : "采集决定输入，推理消费 RoiFrame，算法参数决定控制输出。"}</p>
           </div>
           <div className="panel-actions">
             <button
@@ -651,7 +655,7 @@ export function DevicesView({
               value: inferenceEnabled ? activeModelName : "已关闭",
               detail: runtimeMainlineSelected
                 ? mainlineInputLabel
-                : `自定义 TensorRT · ${formatThreshold(confidenceThreshold)} 置信度`,
+                : `TensorRT · ${formatThreshold(confidenceThreshold)} 置信度`,
               ready: runtimeMainlineSelected
                 ? inferenceEnabled && mainlineInputReady && activeModelName !== "未发布模型"
                 : inferenceEnabled && activeModelName !== "未发布模型"
@@ -691,10 +695,11 @@ export function DevicesView({
                         : formatProfile(capture)
                       : "等待启动",
                   ],
-                  ["image", "图片输入", readString(sourceConfig, "image_path", "未配置图片")],
+                  ["image", "图片输入", deepstreamNvinferSelected ? "DeepStream nvinfer 不支持" : readString(sourceConfig, "image_path", "未配置图片")],
                 ].map(([id, label, desc]) => (
                   <button
                     className={selectedSource === id ? "source-option active" : "source-option"}
+                    disabled={deepstreamNvinferSelected && id === "image"}
                     key={id}
                     type="button"
                     onClick={() => setSelectedSource(id as CaptureInputSource)}
@@ -723,7 +728,7 @@ export function DevicesView({
                   <dd>{runtimeMainlineSelected ? inferenceSelected : capture?.backend ?? "未打开"}</dd>
                 </div>
                 <div>
-                  <dt>RoiFrame</dt>
+                  <dt>{deepstreamNvinferSelected ? "ROI 坐标空间" : "RoiFrame"}</dt>
                   <dd>{roiSize}x{roiSize}</dd>
                 </div>
               </dl>
@@ -788,8 +793,8 @@ export function DevicesView({
 
                   <div className="control-block">
                     <div className="control-block-head">
-                      <strong>RoiFrame 输出大小</strong>
-                      <span>影响采集输出、推理输入和浏览器预览裁剪尺寸。</span>
+                      <strong>{deepstreamNvinferSelected ? "ROI 控制坐标大小" : "RoiFrame 输出大小"}</strong>
+                      <span>{deepstreamNvinferSelected ? "定义检测框映射、目标选择和控制坐标空间；nvinfer 输入尺寸由模型决定。" : "影响采集输出、推理输入和浏览器预览裁剪尺寸。"}</span>
                     </div>
                     <div className="home-chips">
                       {ROI_SIZE_CHOICES.map((size) => (
@@ -1015,7 +1020,7 @@ export function DevicesView({
             <div className="settings-console-main">
               <div className="settings-status-strip compact-strip">
                 <div>
-                  <span>RoiFrame</span>
+                  <span>{deepstreamNvinferSelected ? "ROI 坐标" : "RoiFrame"}</span>
                   <strong>{roiSize}x{roiSize}</strong>
                 </div>
                 <div>

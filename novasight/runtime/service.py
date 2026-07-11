@@ -104,6 +104,7 @@ class RuntimeService:
         capture_payload = asdict(capture_state.state) if capture_state is not None else {}
         statistics = dict(capture_payload.get("statistics", {}))
         pipeline = getattr(self, "pipeline", None)
+        pipeline_payload = pipeline.status() if pipeline is not None else {}
         pipeline_stats = getattr(pipeline, "stats", None)
         if pipeline_stats is not None:
             statistics["inference_counter"] = getattr(pipeline_stats, "window_processed_frames", 0)
@@ -128,6 +129,31 @@ class RuntimeService:
         else:
             statistics.setdefault("control_observe_fps", 0.0)
             statistics.setdefault("inference_ms", 0.0)
+        deepstream_status = (
+            pipeline_payload.get("deepstream", {})
+            if isinstance(pipeline_payload, dict)
+            else {}
+        )
+        if isinstance(deepstream_status, dict) and deepstream_status:
+            mailbox_status = deepstream_status.get("detection_batch_mailbox", {})
+            mailbox_status = mailbox_status if isinstance(mailbox_status, dict) else {}
+            statistics["capture_counter"] = int(deepstream_status.get("input_frames") or 0)
+            statistics["capture_fps"] = float(deepstream_status.get("input_fps") or 0.0)
+            statistics["inference_counter"] = int(
+                getattr(pipeline_stats, "processed_frames", 0)
+            )
+            statistics["inference_fps"] = float(
+                deepstream_status.get("published_fps") or 0.0
+            )
+            statistics["detection_batch_fps"] = statistics["inference_fps"]
+            statistics["control_observation_counter"] = int(
+                getattr(pipeline_stats, "control_observations", 0)
+            )
+            statistics["skipped_counter"] = int(
+                deepstream_status.get("stale_dropped_batches") or 0
+            ) + int(deepstream_status.get("non_monotonic_dropped_batches") or 0) + int(
+                mailbox_status.get("overwritten_batches") or 0
+            )
         statistics["stale_drop_count"] = int(self.stale_drop_count)
         latest_frame_age_ms = self._latest_frame_age_ms()
         if latest_frame_age_ms is not None:
@@ -155,7 +181,7 @@ class RuntimeService:
             statistics=statistics,
             inference=self._runtime_inference_status(inference_state, active_model),
             config=self.config_store.status(),
-            pipeline=self.pipeline.status() if self.pipeline is not None else {},
+            pipeline=pipeline_payload,
             vision=vision,
             fatal_error=self.fatal_error,
         )
@@ -172,6 +198,17 @@ class RuntimeService:
             else {"available": False}
         )
         payload = dict(status) if isinstance(status, dict) else {"available": False}
+        if backend == "deepstream_nvinfer" and self.pipeline is not None:
+            pipeline_status = self.pipeline.status()
+            deepstream_status = (
+                pipeline_status.get("deepstream", {})
+                if isinstance(pipeline_status, dict)
+                else {}
+            )
+            if isinstance(deepstream_status, dict) and deepstream_status:
+                payload = {**payload, **deepstream_status}
+                payload["loaded"] = bool(deepstream_status.get("running"))
+                payload["available"] = bool(deepstream_status.get("available"))
         engine_selected = str(payload.get("selected") or "")
         payload["selected"] = backend
         payload["backend"] = backend
@@ -193,6 +230,8 @@ class RuntimeService:
             (
                 "GStreamer CPU latest bridge + TensorRT GPU inference"
                 if payload["capture_backend"] == "gst_cpu_latest"
+                else "DeepStream NVMM + nvinfer + C++ object-meta parser"
+                if backend == "deepstream_nvinfer"
                 else "NVMM latest bridge + NovaSight TensorRT GPU inference"
             ),
         )
@@ -663,16 +702,27 @@ class RuntimeService:
         done_ns: int,
     ) -> None:
         handoff_start_ns = int(control_start_ns if control_start_ns is not None else done_ns)
+        metadata = dict(getattr(detection_batch, "metadata", {}) or {})
+        parser = metadata.get("parser")
+        parser_payload = parser if isinstance(parser, dict) else {}
+        decode_ms = float(parser_payload.get("decode_ms") or 0.0)
+        nvinfer_total_ms = float(
+            metadata.get("nvinfer_total_ms") or detection_batch.inference_latency_ms
+        )
         self.last_pipeline_timings = {
             "roi_ms": 0.0,
-            "engine_ms": detection_batch.inference_latency_ms,
-            "engine_execute_ms": detection_batch.inference_latency_ms,
-            "decode_ms": 0.0,
+            "engine_ms": nvinfer_total_ms,
+            "engine_execute_ms": nvinfer_total_ms,
+            "decode_ms": decode_ms,
+            "nms_ms": None,
+            "detection_batch_build_ms": float(
+                metadata.get("detection_batch_build_ms") or 0.0
+            ),
             "handoff_ms": max(
                 0.0,
                 (handoff_start_ns - int(detection_batch.inference_end_ts_ns)) / 1e6,
             ),
-            "postprocess_ms": 0.0,
+            "postprocess_ms": decode_ms,
             "control_ms": (
                 max(0.0, (int(done_ns) - int(control_start_ns)) / 1e6)
                 if control_start_ns is not None
@@ -739,13 +789,31 @@ class RuntimeService:
                 if detection_batch.model_input_size is not None
                 else []
             ),
+            "detection_batch_roi_size": (
+                list(detection_batch.roi_size)
+                if detection_batch.roi_size is not None
+                else [int(width), int(height)]
+            ),
             "detection_batch_metadata": dict(getattr(detection_batch, "metadata", {}) or {}),
-            "latency_source": "custom_tensorrt_done",
+            "latency_source": (
+                "capture_to_object_meta_done"
+                if str((getattr(detection_batch, "metadata", {}) or {}).get("source", ""))
+                == "deepstream_nvinfer"
+                else "custom_tensorrt_done"
+            ),
             "classes": list(detection_batch.classes),
             "input_width": int(width),
             "input_height": int(height),
-            "model_input_width": int(width),
-            "model_input_height": int(height),
+            "model_input_width": int(
+                detection_batch.model_input_size[0]
+                if detection_batch.model_input_size is not None
+                else width
+            ),
+            "model_input_height": int(
+                detection_batch.model_input_size[1]
+                if detection_batch.model_input_size is not None
+                else height
+            ),
             "source": "detection_batch",
             "source_width": int(source_width),
             "source_height": int(source_height),

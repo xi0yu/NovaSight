@@ -4939,6 +4939,34 @@ tbody tr:hover {
   object-fit: contain;
 }
 
+.console-preview-unavailable {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.home-video-unavailable {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .console-preview::after {
   content: "实时画面 / ROI";
   position: absolute;
@@ -4950,7 +4978,8 @@ tbody tr:hover {
   pointer-events: none;
 }
 
-.console-preview:has(img)::after {
+.console-preview:has(img)::after,
+.console-preview:has(.console-preview-unavailable)::after {
   content: "";
 }
 

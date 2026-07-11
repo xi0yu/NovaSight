@@ -13,6 +13,8 @@ export type RuntimeMainlineStatus = {
   lastPtsToProbeMs: number;
   tensorMetaFrames: number;
   postprocessFrames: number;
+  consumedBatches: number;
+  controlObservations: number;
   inferenceCounter: number;
   hasInferenceSignal: boolean;
   hasRuntimeConsumption: boolean;
@@ -43,50 +45,66 @@ function maxNumber(...values: unknown[]): number {
 
 export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeMainlineStatus {
   const pipeline = asRecord(runtime?.pipeline);
+  const deepstream = asRecord(pipeline.deepstream);
   const inference = asRecord(runtime?.inference);
   const capture = asRecord(runtime?.capture);
   const statistics = asRecord(runtime?.statistics);
   const captureStatistics = asRecord(capture.statistics);
   const fatal = asRecord(runtime?.fatal_error);
-  const pipelineLastError = readString(pipeline.last_error);
-  const terminalError = readBoolean(inference.terminal_error);
+  const terminalError = readBoolean(inference.terminal_error) || readBoolean(deepstream.terminal_error);
+  const pipelineLastError =
+    readString(pipeline.last_error) || (terminalError ? readString(deepstream.last_error) : "");
+  const fatalMessage = readString(fatal.message);
   const failureMessage =
     pipelineLastError ||
-    readString(inference.detail) ||
-    readString(inference.reason) ||
-    readString(fatal.message);
-  const publishedBatches = 0;
-  const staleDroppedBatches = 0;
+    fatalMessage ||
+    (terminalError ? readString(inference.detail) || readString(inference.reason) : "");
+  const publishedBatches = maxNumber(
+    deepstream.published_batches,
+    asRecord(deepstream.detection_batch_mailbox).published_batches
+  );
+  const staleDroppedBatches = readNumber(deepstream.stale_dropped_batches);
   const windowStaleDroppedBatches = 0;
-  const maxPublishAgeMs = 0;
+  const maxPublishAgeMs = readNumber(deepstream.max_publish_age_ms);
   const lastPtsToProbeMs = 0;
   const tensorMetaFrames = 0;
-  const postprocessFrames = 0;
+  const postprocessFrames = readNumber(deepstream.object_meta_frames);
+  const consumedBatches = maxNumber(
+    pipeline.consumed_detection_batches,
+    pipeline.processed_frames,
+    statistics.inference_counter
+  );
+  const controlObservations = maxNumber(
+    pipeline.control_observations,
+    statistics.control_observation_counter,
+    captureStatistics.control_observation_counter
+  );
   const inferenceCounter = maxNumber(
     statistics.inference_counter,
     captureStatistics.inference_counter,
-    pipeline.processed_frames
+    pipeline.processed_frames,
+    pipeline.consumed_detection_batches,
+    deepstream.object_meta_frames
   );
   const hasInferenceSignal =
     inferenceCounter > 0 ||
+    publishedBatches > 0 ||
     maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
   const hasRuntimeConsumption =
-    inferenceCounter > 0 ||
-    maxNumber(statistics.control_observation_counter, captureStatistics.control_observation_counter) > 0 ||
-    maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
+    consumedBatches > 0 || controlObservations > 0;
   const resolvedFailureMessage = failureMessage;
   const progressSummary = [
-    `latest=${maxNumber(pipeline.consumed_frames, statistics.capture_counter, captureStatistics.capture_counter)}`,
-    `inferred=${inferenceCounter}`,
-    `consumed=${inferenceCounter}`
+    `input=${maxNumber(deepstream.input_frames, statistics.capture_counter, captureStatistics.capture_counter)}`,
+    `published=${publishedBatches}`,
+    `consumed=${consumedBatches}`,
+    `control=${controlObservations}`
   ].join(" · ");
-  const running = runtime?.running === true || pipeline.running === true;
+  const running = runtime?.running === true || pipeline.running === true || deepstream.running === true;
   const failed =
-    runtime?.fatal_error !== null && runtime?.fatal_error !== undefined
+    fatalMessage !== ""
       ? true
       : terminalError ||
-        pipelineLastError !== "" ||
-        failureMessage !== "";
+        pipelineLastError !== "";
 
   return {
     running,
@@ -101,6 +119,8 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     lastPtsToProbeMs,
     tensorMetaFrames,
     postprocessFrames,
+    consumedBatches,
+    controlObservations,
     inferenceCounter,
     hasInferenceSignal,
     hasRuntimeConsumption,

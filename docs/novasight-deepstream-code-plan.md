@@ -1,5 +1,10 @@
 # NovaSight DeepStream/NVMM Code Plan
 
+> Superseded for active implementation by
+> `docs/novasight-deepstream-object-mainline.md`. In particular, the active
+> backend reads `NvDsObjectMeta`; it does not copy tensor metadata to NumPy or
+> run Python NMS.
+
 ## Goal
 
 Move NovaSight from the current CPU appsink fallback path toward a production-capable Jetson path:

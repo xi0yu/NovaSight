@@ -19,9 +19,9 @@ from novasight.model_registry import ModelRegistry
 from novasight.runtime import (
     ControlFrameCsvRecorder,
     ControlFrameParquetRecorder,
-    RuntimePipeline,
     RuntimeService,
 )
+from novasight.runtime.pipeline_factory import create_runtime_pipeline
 from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 
 from .routes_capture import router as capture_router
@@ -81,7 +81,7 @@ def create_app(
         confidence_threshold=config.inference.confidence_threshold,
         nms_threshold=config.inference.nms_threshold,
     )
-    _load_active_model(models, inference)
+    _load_active_model(models, inference, config)
     runtime = RuntimeService(
         config=config,
         models=models,
@@ -224,6 +224,16 @@ def _start_auto_restore_capture(
     device = str(getattr(capture_cfg, "device", "") or "").strip()
     if source_default != "capture" or not device:
         return None
+    if str(config.inference.backend).lower() == "deepstream_nvinfer":
+        thread = threading.Thread(
+            target=_auto_start_deepstream_runtime,
+            args=(capture, runtime),
+            name="novasight-deepstream-auto-start",
+            daemon=True,
+        )
+        thread.start()
+        logger.info("DeepStream runtime auto-start scheduled device=%s", device)
+        return thread
     thread = threading.Thread(
         target=_auto_restore_capture,
         args=(capture, config, runtime),
@@ -290,7 +300,7 @@ def _start_runtime_after_capture_restore(
         return
     pipeline = runtime.pipeline
     if pipeline is None:
-        pipeline = RuntimePipeline(capture=capture, runtime=runtime)
+        pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
         runtime.pipeline = pipeline
     if pipeline.running:
         return
@@ -300,6 +310,34 @@ def _start_runtime_after_capture_restore(
         logger.warning("runtime auto-start after capture restore failed: %s", exc)
         return
     logger.info("runtime auto-started after capture restore")
+
+
+def _auto_start_deepstream_runtime(
+    capture: CaptureService,
+    runtime: RuntimeService | None,
+) -> None:
+    if runtime is None:
+        return
+    try:
+        config = runtime.config.capture
+        capture_state = capture.configure_profile_only(
+            config.device,
+            preference=config.preference,
+            pixel_format=config.pixel_format or None,
+            width=config.width or None,
+            height=config.height or None,
+            fps=config.fps or None,
+        )
+        if capture_state.available is not True:
+            raise RuntimeError(capture_state.last_error or "DeepStream capture profile unavailable")
+        runtime.pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
+        runtime.pipeline.start()
+    except Exception as exc:
+        runtime.pipeline = None
+        runtime.running = False
+        logger.warning("DeepStream runtime auto-start failed: %s", exc)
+        return
+    logger.info("DeepStream runtime auto-started")
 
 
 def _install_studio_cors(app: FastAPI, config: RuntimeConfig) -> None:
@@ -341,7 +379,14 @@ def _recording_path(data_path: Path, *, format: str, configured: str) -> Path:
     return data_path / "recordings" / f"control_frames.{suffix}"
 
 
-def _load_active_model(models: ModelRegistry, inference: InferenceRuntime) -> None:
+def _load_active_model(
+    models: ModelRegistry,
+    inference: InferenceRuntime,
+    config: RuntimeConfig,
+) -> None:
+    if str(config.inference.backend).lower() == "deepstream_nvinfer":
+        inference.unload("TensorRT engine ownership delegated to DeepStream nvinfer")
+        return
     deployment = models.get_active_deployment()
     if deployment is None:
         return

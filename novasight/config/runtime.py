@@ -87,6 +87,9 @@ class InferenceConfig:
             "15-类别15",
         ]
     })
+    deepstream_io_mode: int = 2
+    deepstream_batched_push_timeout_us: int = 0
+    deepstream_parser_library: str = "build/deepstream-parser/libnovasight_parser.so"
 
 
 @dataclass
@@ -305,8 +308,10 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     inference = normalized.get("inference")
     if isinstance(inference, dict):
         inference = dict(inference)
-        if str(inference.get("backend", "")).lower() in {
-            "deepstream",
+        legacy_backend = str(inference.get("backend", "")).lower()
+        if legacy_backend == "deepstream":
+            inference["backend"] = "deepstream_nvinfer"
+        elif legacy_backend in {
             "onnxruntime",
             "legacy_latest",
             "deepstream_uncontrolled",
@@ -315,8 +320,6 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "deepstream_manifest_path",
             "deepstream_config_path",
-            "deepstream_io_mode",
-            "deepstream_batched_push_timeout_us",
             "deepstream_tracker_config_path",
         ):
             inference.pop(key, None)
@@ -327,12 +330,20 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         memory = str(capture.get("memory", "")).lower()
         if memory == "cpu":
             capture["memory"] = "system"
-        if str(capture.get("backend", "")).lower() in {
-            "deepstream",
+        legacy_capture_backend = str(capture.get("backend", "")).lower()
+        if legacy_capture_backend == "deepstream":
+            capture["backend"] = "deepstream_nvinfer"
+            capture["memory"] = "nvmm"
+        elif legacy_capture_backend in {
             "legacy_latest",
             "deepstream_uncontrolled",
         }:
             capture["backend"] = "gst_cpu_latest"
+        normalized["capture"] = capture
+    if isinstance(inference, dict) and inference.get("backend") == "deepstream_nvinfer":
+        capture = dict(normalized.get("capture") or {})
+        capture["backend"] = "deepstream_nvinfer"
+        capture["memory"] = "nvmm"
         normalized["capture"] = capture
     hardware = normalized.get("hardware")
     if isinstance(hardware, dict):
@@ -698,14 +709,19 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
     if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
         raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
-    if cfg.capture.backend not in {"gst_cpu_latest", "nvmm_latest"}:
-        raise ValueError("runtime config key 'capture.backend' must be gst_cpu_latest or nvmm_latest")
+    if cfg.capture.backend not in {"gst_cpu_latest", "nvmm_latest", "deepstream_nvinfer"}:
+        raise ValueError(
+            "runtime config key 'capture.backend' must be gst_cpu_latest, "
+            "nvmm_latest, or deepstream_nvinfer"
+        )
     if cfg.capture.memory not in {"system", "nvmm"}:
         raise ValueError("runtime config key 'capture.memory' must be system or nvmm")
     if cfg.capture.backend == "gst_cpu_latest" and cfg.capture.memory != "system":
         raise ValueError("runtime config key 'capture.memory' must be system for gst_cpu_latest")
-    if cfg.capture.backend == "nvmm_latest" and cfg.capture.memory != "nvmm":
-        raise ValueError("runtime config key 'capture.memory' must be nvmm for nvmm_latest")
+    if cfg.capture.backend in {"nvmm_latest", "deepstream_nvinfer"} and cfg.capture.memory != "nvmm":
+        raise ValueError(
+            "runtime config key 'capture.memory' must be nvmm for GPU capture backends"
+        )
     if not cfg.capture.latest_only:
         raise ValueError("runtime config key 'capture.latest_only' must be true")
     if cfg.capture.appsink_max_buffers != 1:
@@ -735,9 +751,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'preprocess.input_format' must be auto")
     if cfg.preprocess.output_dtype not in {"fp16", "fp32", "float16", "float32"}:
         raise ValueError("runtime config key 'preprocess.output_dtype' must be fp16 or fp32")
-    if cfg.inference.backend not in {"tensorrt", "nvmm_latest"}:
+    if cfg.inference.backend not in {"tensorrt", "nvmm_latest", "deepstream_nvinfer"}:
         raise ValueError(
-            "runtime config key 'inference.backend' must be tensorrt or nvmm_latest"
+            "runtime config key 'inference.backend' must be tensorrt, nvmm_latest, "
+            "or deepstream_nvinfer"
         )
     if cfg.inference.device != "cuda":
         raise ValueError("runtime config key 'inference.device' must be cuda")
@@ -751,6 +768,23 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'inference.confidence_threshold' must be >= 0 and <= 1")
     if cfg.inference.nms_threshold < 0 or cfg.inference.nms_threshold > 1:
         raise ValueError("runtime config key 'inference.nms_threshold' must be >= 0 and <= 1")
+    if cfg.inference.deepstream_io_mode < 0:
+        raise ValueError("runtime config key 'inference.deepstream_io_mode' must be >= 0")
+    if cfg.inference.deepstream_batched_push_timeout_us < 0:
+        raise ValueError(
+            "runtime config key 'inference.deepstream_batched_push_timeout_us' must be >= 0"
+        )
+    if not cfg.inference.deepstream_parser_library.strip():
+        raise ValueError(
+            "runtime config key 'inference.deepstream_parser_library' must be non-empty"
+        )
+    if cfg.inference.backend == "deepstream_nvinfer" and (
+        cfg.capture.backend != "deepstream_nvinfer" or cfg.capture.memory != "nvmm"
+    ):
+        raise ValueError(
+            "deepstream_nvinfer inference requires capture.backend=deepstream_nvinfer "
+            "and capture.memory=nvmm"
+        )
     if cfg.inference.input_source != "source.default":
         raise ValueError("runtime config key 'inference.input_source' must be source.default")
     if cfg.inference.detection_class_filter != "all":

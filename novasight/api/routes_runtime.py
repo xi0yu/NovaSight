@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from novasight.config import parse_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.runtime.reconfigurator import RuntimeReconfigurator
-from novasight.runtime.pipeline import RuntimePipeline
+from novasight.runtime.pipeline_factory import create_runtime_pipeline
 from novasight.runtime.status import StatusHub
 
 
@@ -107,7 +107,7 @@ def start_runtime(request: Request) -> dict[str, Any]:
     runtime = request.app.state.runtime
     try:
         if runtime.pipeline is None:
-            runtime.pipeline = RuntimePipeline(
+            runtime.pipeline = create_runtime_pipeline(
                 capture=request.app.state.capture,
                 runtime=runtime,
             )

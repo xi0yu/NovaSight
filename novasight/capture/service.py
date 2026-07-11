@@ -185,6 +185,65 @@ class CaptureService:
                 fps=fps,
             )
 
+    def configure_profile_only(
+        self,
+        device: str | None = None,
+        *,
+        preference: str | None = None,
+        pixel_format: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: int | None = None,
+    ) -> CaptureRuntimeState:
+        """Select a profile without opening /dev/video for a pipeline-owned source."""
+        with self._source_lock:
+            selected_device = self.config.device if device is None else device
+            caps = self.capabilities(selected_device)
+            if not caps.available:
+                failure = CaptureRuntimeState(
+                    available=False,
+                    device=selected_device,
+                    last_error=caps.reason,
+                )
+                self.last_config_error = failure
+                return failure
+            selected_preference = preference if preference is not None else self.config.preference
+            try:
+                profile = select_capture_profile(
+                    selected_device,
+                    caps.capabilities,
+                    selected_preference,  # type: ignore[arg-type]
+                    pixel_format=pixel_format or self.config.pixel_format or None,
+                    width=width or self.config.width or None,
+                    height=height or self.config.height or None,
+                    fps=fps or self.config.fps or None,
+                )
+            except Exception as exc:
+                failure = CaptureRuntimeState(
+                    available=False,
+                    device=selected_device,
+                    last_error=str(exc),
+                )
+                self.last_config_error = failure
+                return failure
+            self.session.stop("capture ownership transferred to deepstream_nvinfer")
+            self.config.device = profile.device
+            self.config.preference = "manual"
+            self.config.pixel_format = profile.pixel_format
+            self.config.width = profile.width
+            self.config.height = profile.height
+            self.config.fps = profile.fps
+            self.state = CaptureRuntimeState(
+                available=True,
+                device=profile.device,
+                profile=profile,
+                backend="deepstream_nvinfer:configured",
+                preview_available=False,
+                preview_reason="pure NVMM DeepStream path does not map frames to CPU preview",
+            )
+            self.last_config_error = None
+            return self.state
+
     def _configure_unlocked(
         self,
         device: str | None = None,

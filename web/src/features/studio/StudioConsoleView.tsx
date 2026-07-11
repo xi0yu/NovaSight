@@ -75,12 +75,10 @@ const navItems: { id: ConsolePage; index: string; label: string; icon: NovaIconN
   { id: "latency", index: "07", label: "采集延迟", icon: "latency" }
 ];
 
-const RUNTIME_MAINLINE_BACKENDS = new Set(["nvmm_latest", "tensorrt"]);
+const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"]);
 
-// The production mainline uses GStreamer latest-frame capture, ROI, TensorRT
-// inference, and NovaSight's control loop. It does not use the old automatic
-// DeepStream inference mailbox as the scheduler, so the launch dialog waits on
-// runtime latest-frame consumption instead of DeepStream inference counters.
+// Every production backend must prove both DetectionBatch publication and
+// runtime consumption before the launch dialog declares the control path ready.
 const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
     label: "阶段 1 / 5",
@@ -95,12 +93,12 @@ const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
     label: "阶段 3 / 5",
     title: "启动主链运行管线",
-    caption: "请求后端启动采集、ROI、TensorRT 推理与控制主链。"
+    caption: "请求后端启动采集、ROI、推理、DetectionBatch 与控制主链。"
   },
   {
     label: "阶段 4 / 5",
     title: "激活跟踪与控制",
-    caption: "runtime 已开始消费 latest 帧，跟踪、预测与角度控制模块随即激活。"
+    caption: "runtime 开始消费 DetectionBatch 后，跟踪、预测与控制模块随即激活。"
   },
   {
     label: "阶段 5 / 5",
@@ -125,12 +123,12 @@ function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
 }
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
-type CaptureBackendMode = "gst_cpu_latest" | "nvmm_latest";
+type CaptureBackendMode = "gst_cpu_latest" | "nvmm_latest" | "deepstream_nvinfer";
 const CAPTURE_BACKEND_CHOICES: {
   value: CaptureBackendMode;
   label: string;
   memory: "system" | "nvmm";
-  inferenceBackend: "tensorrt" | "nvmm_latest";
+  inferenceBackend: "tensorrt" | "nvmm_latest" | "deepstream_nvinfer";
   preprocessBackend: "cpu" | "cuda";
 }[] = [
   {
@@ -145,6 +143,13 @@ const CAPTURE_BACKEND_CHOICES: {
     label: "NVMM latest",
     memory: "nvmm",
     inferenceBackend: "nvmm_latest",
+    preprocessBackend: "cuda"
+  },
+  {
+    value: "deepstream_nvinfer",
+    label: "DeepStream nvinfer",
+    memory: "nvmm",
+    inferenceBackend: "deepstream_nvinfer",
     preprocessBackend: "cuda"
   }
 ];
@@ -504,10 +509,16 @@ export function StudioConsoleView({
   const inferenceTrace = asRecord(vision.inference);
   const runtimeInference = asRecord(runtime?.inference);
   const pipeline = asRecord(runtime?.pipeline);
+  const deepstreamStatus = asRecord(pipeline.deepstream);
+  const deepstreamMailbox = asRecord(deepstreamStatus.detection_batch_mailbox);
+  const deepstreamNvmmOutput = asRecord(deepstreamStatus.nvmm_output);
+  const configuredCaptureBackend = readString(captureConfig.backend, "gst_cpu_latest");
   const captureBackendMode: CaptureBackendMode =
-    readString(captureConfig.backend, "gst_cpu_latest") === "nvmm_latest"
-      ? "nvmm_latest"
-      : "gst_cpu_latest";
+    configuredCaptureBackend === "deepstream_nvinfer"
+      ? "deepstream_nvinfer"
+      : configuredCaptureBackend === "nvmm_latest"
+        ? "nvmm_latest"
+        : "gst_cpu_latest";
   const captureBackendChoice =
     CAPTURE_BACKEND_CHOICES.find((choice) => choice.value === captureBackendMode) ??
     CAPTURE_BACKEND_CHOICES[0];
@@ -515,6 +526,7 @@ export function StudioConsoleView({
   const configuredPreprocessBackend = readString(preprocessConfig.backend, captureBackendChoice.preprocessBackend);
   const configuredInferenceBackend = readString(inferenceConfig.backend, captureBackendChoice.inferenceBackend);
   const selectedRuntimeBackend = readString(runtimeInference.selected, configuredInferenceBackend);
+  const deepstreamNvinferSelected = selectedRuntimeBackend === "deepstream_nvinfer";
   const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
   const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
@@ -556,7 +568,7 @@ export function StudioConsoleView({
           ? "runtime 已消费"
           : runtimeMainlineStatus.hasInferenceSignal
             ? "DetectionBatch 已产出"
-            : "等待自定义 TensorRT 输出"
+            : "等待 DetectionBatch"
       : mainlineLaunchPending
         ? "等待后端反馈"
         : runtimeInferenceConfigured
@@ -856,40 +868,72 @@ export function StudioConsoleView({
     Number.NaN
   );
   const latestFrameBroker = asRecord(pipeline.latest_frame_broker);
-  const latestCaptureFrameId = readNullableNumber(latestFrameBroker.published_frame_id);
-  const latestCaptureGeneration = readNullableNumber(latestFrameBroker.published_generation);
-  const latestCaptureTsNs = readNullableNumber(latestFrameBroker.published_capture_ts_ns);
-  const latestCaptureAgeMs = readNullableNumber(
-    latestFrameBroker.published_frame_age_ms ?? captureStatistics.latest_frame_age_ms
+  const latestCaptureFrameId = readNullableNumber(
+    latestFrameBroker.published_frame_id ?? deepstreamStatus.last_frame_id
   );
-  const latestCaptureOutputWidth = readNullableNumber(latestFrameBroker.published_width);
-  const latestCaptureOutputHeight = readNullableNumber(latestFrameBroker.published_height);
-  const latestCaptureOutputFormat = readString(latestFrameBroker.published_format, "");
-  const latestCaptureOutputMemory = readString(latestFrameBroker.published_resource_memory, "");
-  const latestCaptureTimestampSource = readString(latestFrameBroker.published_capture_ts_source, "");
+  const latestCaptureGeneration = readNullableNumber(
+    latestFrameBroker.published_generation ?? deepstreamMailbox.latest_generation
+  );
+  const latestCaptureTsNs = readNullableNumber(
+    latestFrameBroker.published_capture_ts_ns ?? deepstreamStatus.last_capture_ts_ns
+  );
+  const latestCaptureAgeMs = readNullableNumber(
+    latestFrameBroker.published_frame_age_ms ?? deepstreamStatus.latest_frame_age_ms ?? captureStatistics.latest_frame_age_ms
+  );
+  const latestCaptureOutputWidth = readNullableNumber(
+    latestFrameBroker.published_width ?? deepstreamNvmmOutput.width
+  );
+  const latestCaptureOutputHeight = readNullableNumber(
+    latestFrameBroker.published_height ?? deepstreamNvmmOutput.height
+  );
+  const latestCaptureOutputFormat = readString(
+    latestFrameBroker.published_format ?? deepstreamNvmmOutput.pixel_format,
+    ""
+  );
+  const latestCaptureOutputMemory = readString(
+    latestFrameBroker.published_resource_memory ?? deepstreamNvmmOutput.memory,
+    ""
+  );
+  const latestCaptureTimestampSource = readString(
+    latestFrameBroker.published_capture_ts_source ?? deepstreamStatus.timestamp_source,
+    ""
+  );
   const capturePublishedFrames = readNullableNumber(
-    latestFrameBroker.published_frames ?? captureStatistics.published_frames
+    latestFrameBroker.published_frames ?? deepstreamStatus.input_frames ?? captureStatistics.published_frames
   );
   const captureOverwrittenFrames = readNullableNumber(
-    latestFrameBroker.overwritten_frames ?? captureStatistics.overwritten_frames
+    latestFrameBroker.overwritten_frames ?? deepstreamMailbox.overwritten_batches ?? captureStatistics.overwritten_frames
   );
   const captureDroppedFrames = readNullableNumber(
-    captureStatistics.dropped_counter ?? capture?.frames_dropped
+    deepstreamStatus.stale_dropped_batches ?? captureStatistics.dropped_counter ?? capture?.frames_dropped
   );
-  const captureFramePeriodMs = readNullableNumber(capture?.frame_period_ms);
-  const captureArrivalFps = readNullableNumber(capture?.fps_capture ?? captureStatistics.capture_fps);
-  const captureBackendLabel = readString(capture?.backend, captureBackendMode);
-  const captureReason = readString(
-    capture?.last_error,
-    capture?.available === true
-      ? readString(capture?.profile?.selection_reason, "采集帧持续到达")
-      : "尚无采集样本"
+  const captureFramePeriodMs = readNullableNumber(
+    deepstreamStatus.last_capture_interval_ms ?? capture?.frame_period_ms
   );
+  const captureArrivalFps = readNullableNumber(
+    deepstreamStatus.input_fps ?? capture?.fps_capture ?? captureStatistics.capture_fps
+  );
+  const captureBackendLabel = deepstreamNvinferSelected
+    ? "deepstream_nvinfer"
+    : readString(capture?.backend, captureBackendMode);
+  const captureReason = deepstreamNvinferSelected
+    ? readString(
+        deepstreamStatus.last_error,
+        runtimeMainlineRunning ? "NVMM 管线持续向 nvinfer 输入帧" : "等待 DeepStream 主链启动"
+      )
+    : readString(
+        capture?.last_error,
+        capture?.available === true
+          ? readString(capture?.profile?.selection_reason, "采集帧持续到达")
+          : "尚无采集样本"
+      );
   const inferenceDebug = asRecord(inferenceTrace.debug);
   const decodeDebug = asRecord(inferenceDebug.decode);
   const inferenceTimings = asRecord(inferenceDebug.timings);
   const trtTimings = asRecord(decodeDebug.timings);
   const preprocessDebug = asRecord(inferenceDebug.preprocess);
+  const detectionBatchMetadata = asRecord(inferenceTrace.detection_batch_metadata);
+  const nativeParserTelemetry = asRecord(detectionBatchMetadata.parser);
   const roiInputWidth = readNumber(inferenceTrace.input_width, readNumber(preprocessDebug.roi_width, roiSize));
   const roiInputHeight = readNumber(inferenceTrace.input_height, readNumber(preprocessDebug.roi_height, roiSize));
   const modelInputWidth = readNumber(inferenceTrace.model_input_width, readNumber(preprocessDebug.model_width, 0));
@@ -927,10 +971,14 @@ export function StudioConsoleView({
     inferenceTrace.detection_batch_inference_latency_ms ?? inferenceTimings.execute_total_ms ?? statistics?.stage_engine_ms
   );
   const inferencePostprocessMs = readNullableNumber(
-    trtTimings.decode_ms ?? statistics?.stage_postprocess_ms
+    trtTimings.decode_ms ?? nativeParserTelemetry.decode_ms ?? statistics?.stage_postprocess_ms
   );
-  const inferenceRawCandidateCount = readNullableNumber(decodeDebug.raw_candidates);
-  const inferenceThresholdCandidateCount = readNullableNumber(decodeDebug.threshold_candidates);
+  const inferenceRawCandidateCount = readNullableNumber(
+    decodeDebug.raw_candidates ?? nativeParserTelemetry.input_candidates
+  );
+  const inferenceThresholdCandidateCount = readNullableNumber(
+    decodeDebug.threshold_candidates ?? nativeParserTelemetry.decoded_candidates
+  );
   const inferenceNmsDetectionCount = readNullableNumber(decodeDebug.nms_detections ?? inferenceTrace.mapped_detections);
   const inferenceHighestConfidence = readNullableNumber(decodeDebug.max_score);
   const inferenceOutputName = readString(runtimeInference.output_name, readString(runtimeModelOutput.name, ""));
@@ -1399,14 +1447,11 @@ export function StudioConsoleView({
         setMainlineLaunchAccepted(true);
         setMainlineLaunchMessage("主链启动请求已提交，正在等待后端状态确认。");
       });
-      // DeepStream 采集 + 自定义 TensorRT 主链不走旧自动推理邮箱。
-      // 这里以 runtime 消费 latest 帧作为自定义推理链已接入
-      // 控制主链的启动证据。
       await runStage(3, async () => {
         await waitForRuntimeEvidence(
           "激活跟踪与控制",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "runtime 尚未消费 latest 帧，跟踪与控制没有输入。"
+          "runtime 尚未消费 DetectionBatch，跟踪与控制没有输入。"
         );
       });
       await runStage(4, async () => {
@@ -1975,10 +2020,10 @@ export function StudioConsoleView({
 
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="采集状态" value={capture?.available === true ? "运行中" : "未运行"} small={captureBackendLabel || NO_SAMPLE} />
-            <Metric title="采集 FPS" value={formatOptionalNumber(captureArrivalFps, 1)} small="appsink arrival" />
+            <Metric title="采集状态" value={captureMainRunning ? "运行中" : "未运行"} small={captureBackendLabel || NO_SAMPLE} />
+            <Metric title="采集 FPS" value={formatOptionalNumber(captureArrivalFps, 1)} small={deepstreamNvinferSelected ? "nvinfer input" : "appsink arrival"} />
             <Metric title="最新帧龄" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="ms" />
-            <Metric title="LatestFrame 覆盖" value={formatOptionalInteger(captureOverwrittenFrames)} small="frames" />
+            <Metric title={deepstreamNvinferSelected ? "Batch 覆盖" : "LatestFrame 覆盖"} value={formatOptionalInteger(captureOverwrittenFrames)} small={deepstreamNvinferSelected ? "batches" : "frames"} />
           </div>
 
           <div className="console-grid1">
@@ -2072,7 +2117,7 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="采集基础状态" />
               <div className="console-kv">
-                <span>采集状态</span><b>{capture?.available === true ? "运行中" : "未运行"}</b>
+                <span>采集状态</span><b>{captureMainRunning ? "运行中" : "未运行"}</b>
                 <span>采集原因</span><b>{captureReason || NO_SAMPLE}</b>
                 <span>采集设备</span><b>{capture?.device || configuredCaptureDevice || NO_SAMPLE}</b>
                 <span>采集后端</span><b>{captureBackendLabel || NO_SAMPLE}</b>
@@ -2089,7 +2134,7 @@ export function StudioConsoleView({
                 <span>采集输出尺寸</span><b>{latestCaptureOutputWidth !== null && latestCaptureOutputHeight !== null && latestCaptureOutputWidth > 0 && latestCaptureOutputHeight > 0 ? `${latestCaptureOutputWidth}x${latestCaptureOutputHeight}` : NO_SAMPLE}</b>
                 <span>输出像素格式</span><b>{latestCaptureOutputFormat || NO_SAMPLE}</b>
                 <span>内存类型</span><b>{latestCaptureOutputMemory || NO_SAMPLE}</b>
-                <span>appsink caps</span><b>{readString(captureStatistics.appsink_caps, "") || NO_SAMPLE}</b>
+                <span>{deepstreamNvinferSelected ? "输出契约" : "appsink caps"}</span><b>{deepstreamNvinferSelected ? "NVMM NV12" : readString(captureStatistics.appsink_caps, "") || NO_SAMPLE}</b>
               </div>
             </div>
             <div className="console-card">
@@ -2101,16 +2146,16 @@ export function StudioConsoleView({
                 <span>时间戳来源</span><b>{latestCaptureTimestampSource || NO_SAMPLE}</b>
                 <span>最新帧龄</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
                 <span>帧到达间隔</span><b>{formatOptionalNumber(captureFramePeriodMs, 2, "ms")}</b>
-                <span>LatestFrame 覆盖次数</span><b>{formatOptionalInteger(captureOverwrittenFrames)}</b>
-                <span>采集丢帧数</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
-                <span>已发布 / 已取得</span><b>{`${formatOptionalInteger(capturePublishedFrames)} / ${formatOptionalInteger(latestFrameBroker.acquired_frames)}`}</b>
+                <span>{deepstreamNvinferSelected ? "DetectionBatch 覆盖次数" : "LatestFrame 覆盖次数"}</span><b>{formatOptionalInteger(captureOverwrittenFrames)}</b>
+                <span>{deepstreamNvinferSelected ? "stale 拒绝数" : "采集丢帧数"}</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
+                <span>已发布 / 已取得</span><b>{`${formatOptionalInteger(capturePublishedFrames)} / ${formatOptionalInteger(deepstreamNvinferSelected ? deepstreamMailbox.acquired_batches : latestFrameBroker.acquired_frames)}`}</b>
               </div>
             </div>
             <div className="console-card">
               <SectionTitle title="采集性能" />
               <div className="console-kv">
                 <span>采集 FPS</span><b>{formatOptionalNumber(captureStatistics.capture_fps, 1, "FPS")}</b>
-                <span>appsink 到达 FPS</span><b>{formatOptionalNumber(captureArrivalFps, 1, "FPS")}</b>
+                <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(captureArrivalFps, 1, "FPS")}</b>
                 <span>采集抖动</span><b>{NOT_INSTRUMENTED}</b>
                 <span>采集到应用层延迟</span><b>{latestCaptureTimestampSource === "userspace_monotonic_receive" ? UNAVAILABLE : NOT_INSTRUMENTED}</b>
                 <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
@@ -2322,6 +2367,8 @@ export function StudioConsoleView({
               <SectionTitle title="推理预览" />
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
+                imageAvailable={!deepstreamNvinferSelected && runtime?.capture?.available === true}
+                unavailableReason={deepstreamNvinferSelected ? "纯 NVMM 主线未接入浏览器图像预览" : "预览帧尚不可用"}
                 runtime={runtime}
                 roiSize={roiSize}
               />
@@ -3497,10 +3544,14 @@ function formatModelSizeMb(value: unknown): string {
 
 function PreviewFrame({
   enabled,
+  imageAvailable,
+  unavailableReason,
   runtime,
   roiSize
 }: {
   enabled: boolean;
+  imageAvailable: boolean;
+  unavailableReason: string;
   runtime: RuntimeState | null;
   roiSize: number;
 }) {
@@ -3527,7 +3578,7 @@ function PreviewFrame({
   const targetAimY = readNullableNumber(mouseObservation.predicted_aim_y_roi_px)
     ?? readNullableNumber(rawAim.aim_roi_y_px)
     ?? targetCy;
-  const showImage = enabled && runtime?.capture?.available;
+  const showImage = enabled && imageAvailable;
   const showOverlay = enabled && detections.length > 0;
   const selectedDetection = detections.find((item) => (
     targetDetectionIndex !== null
@@ -3559,6 +3610,7 @@ function PreviewFrame({
     >
       <div className="console-preview-frame">
         {showImage ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
+        {enabled && !showImage ? <div className="console-preview-unavailable">{unavailableReason}</div> : null}
         {showOverlay ? (
           <div className="console-detection-layer" aria-hidden="true">
             <svg className="console-target-lines" viewBox={`0 0 ${previewWidth} ${previewHeight}`} preserveAspectRatio="none">

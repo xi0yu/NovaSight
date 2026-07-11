@@ -25,12 +25,15 @@ roi:
   offset_y: 0
 inference:
   enabled: true
-  backend: nvmm_latest
+  backend: deepstream_nvinfer
   device: cuda
   require_gpu: true
   allow_cpu_fallback: false
   confidence_threshold: 0.25
   nms_threshold: 0.45
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
+  deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so
   input_source: source.default
   inference_input_deadline_ms: 55
 preprocess:
@@ -42,7 +45,7 @@ preprocess:
   h2d_async: true
 capture:
   device: /dev/video0
-  backend: nvmm_latest
+  backend: deepstream_nvinfer
   preference: auto_high_fps
   memory: nvmm
   latest_only: true

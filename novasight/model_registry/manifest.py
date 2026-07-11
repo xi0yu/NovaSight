@@ -97,6 +97,10 @@ def build_engine_manifest(
     input_scale_factor: float = 1.0 / 255.0,
     maintain_aspect_ratio: bool = False,
     symmetric_padding: bool = False,
+    output_format: str = "yolo_cxcywh_class_scores",
+    output_has_objectness: bool = False,
+    output_coordinate_mode: str = "pixel",
+    postprocess_parser: str = "yolo",
     validated: bool = False,
 ) -> ModelManifest:
     engine_path = Path(engine_path)
@@ -128,8 +132,15 @@ def build_engine_manifest(
             layout=_require_non_empty(output_spec.layout, "output.layout"),
             class_count=max(0, int(class_count)),
             class_names=_normalize_class_names(class_names, max(0, int(class_count))),
+            format=_require_non_empty(output_format, "output.format"),
+            has_objectness=bool(output_has_objectness),
+            coordinate_mode=_require_non_empty(
+                output_coordinate_mode,
+                "output.coordinate_mode",
+            ),
         ),
         postprocess=PostprocessSpec(
+            parser=_require_non_empty(postprocess_parser, "postprocess.parser"),
             confidence_threshold=float(confidence_threshold),
             nms_iou_threshold=float(nms_iou_threshold),
         ),

@@ -25,6 +25,14 @@ DASHBOARD_VIEW = (
     / "dashboard"
     / "DashboardView.tsx"
 )
+RUNTIME_STATUS = (
+    Path(__file__).resolve().parents[1]
+    / "web"
+    / "src"
+    / "features"
+    / "shared"
+    / "runtimeStatus.ts"
+)
 
 
 def _roi_card_source() -> str:
@@ -45,13 +53,25 @@ def test_studio_mainline_mode_includes_tensorrt_runtime_backend() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
     assert 'selectedRuntimeBackend === "nvmm_latest"' not in source
-    assert 'new Set(["nvmm_latest", "tensorrt"])' in source
+    assert 'new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"])' in source
 
 
-def test_studio_mainline_preview_uses_capture_stream_image() -> None:
+def test_runtime_status_does_not_treat_informational_reason_as_failure() -> None:
+    source = RUNTIME_STATUS.read_text(encoding="utf-8")
+
+    failure_start = source.index("const failureMessage =")
+    failure_end = source.index("const publishedBatches", failure_start)
+    failure_logic = source[failure_start:failure_end]
+    assert '(terminalError ? readString(inference.detail) || readString(inference.reason) : "")' in failure_logic
+    assert "readString(inference.reason) ||" not in failure_logic
+    assert "consumedBatches > 0 || controlObservations > 0" in source
+
+
+def test_studio_deepstream_preview_does_not_claim_a_cpu_image_source() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert 'imageEnabled={!runtimeMainlineSelected}' not in source
+    assert 'imageAvailable={!deepstreamNvinferSelected' in source
+    assert '纯 NVMM 主线未接入浏览器图像预览' in source
     assert '{showImage ? <img alt="实时画面 / ROI"' in source
 
 
@@ -91,11 +111,12 @@ def test_model_file_lists_show_size_in_megabytes() -> None:
     assert "formatModelSizeMb(artifact.size_bytes)" in models
 
 
-def test_dashboard_mainline_preview_uses_capture_stream_image() -> None:
+def test_dashboard_deepstream_preview_is_explicitly_unavailable() -> None:
     source = DASHBOARD_VIEW.read_text(encoding="utf-8")
 
-    assert "previewEnabled && !runtimeMainlineSelected" not in source
-    assert 'capture?.available && previewEnabled ? (' in source
+    assert "const previewImageAvailable = !deepstreamNvinferSelected" in source
+    assert "{previewImageAvailable ? (" in source
+    assert "纯 NVMM 主线未接入浏览器图像预览" in source
     assert "Tensor Overlay" not in source
     assert 'readNumberRecord(targetMouseObservation, "predicted_aim_x_roi_px")' in source
     assert 'readNumberRecord(targetMouseObservation, "predicted_aim_y_roi_px")' in source
@@ -137,7 +158,9 @@ def test_devices_mainline_mode_includes_tensorrt_runtime_backend() -> None:
 
     assert 'selected === "nvmm_latest"' not in source
     assert 'inferenceSelected === "nvmm_latest"' not in source
-    assert 'new Set(["nvmm_latest", "tensorrt"])' in source
+    assert 'new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"])' in source
+    assert 'disabled={deepstreamNvinferSelected && id === "image"}' in source
+    assert 'DeepStream nvinfer 不支持' in source
 
 
 def test_kmnet_panel_has_dedicated_control_test_page() -> None:

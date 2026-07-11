@@ -107,6 +107,7 @@ function ConsumerRow({
   detail,
   enabled,
   busy,
+  disabled,
   onToggle
 }: {
   icon: string;
@@ -114,6 +115,7 @@ function ConsumerRow({
   detail: string;
   enabled: boolean;
   busy?: boolean;
+  disabled?: boolean;
   onToggle: (enabled: boolean) => void;
 }) {
   return (
@@ -127,7 +129,7 @@ function ConsumerRow({
         className={enabled ? "consumer-switch on" : "consumer-switch"}
         type="button"
         aria-pressed={enabled}
-        disabled={busy}
+        disabled={busy || disabled}
         onClick={() => onToggle(!enabled)}
       >
         <span />
@@ -323,7 +325,9 @@ export function DashboardView({
   const targetFps = displayCaptureProfile?.fps ?? 120;
   const runtimeInference = asRecord(runtime?.inference);
   const selectedRuntimeBackend = readStringRecord(runtimeInference, "selected");
-  const runtimeMainlineSelected = selectedRuntimeBackend === "nvmm_latest";
+  const runtimeMainlineSelected =
+    selectedRuntimeBackend === "nvmm_latest" || selectedRuntimeBackend === "deepstream_nvinfer";
+  const deepstreamNvinferSelected = selectedRuntimeBackend === "deepstream_nvinfer";
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning =
     runtimeMainlineStatus.running && !runtimeMainlineStatus.failed;
@@ -354,6 +358,7 @@ export function DashboardView({
   const e2eText = stats.e2e_latency > 0 ? `${formatNumber(stats.e2e_latency, 1)}ms` : "--";
   const [consumerBusy, setConsumerBusy] = useState<string | null>(null);
   const previewEnabled = readNestedBoolean(configSource, "consumers", "preview", true);
+  const previewImageAvailable = !deepstreamNvinferSelected && capture?.available === true && previewEnabled;
   const inferenceEnabled = readNestedBoolean(configSource, "consumers", "inference", true);
   const recordingEnabled = readNestedBoolean(configSource, "consumers", "recording", false);
   const vision = asRecord(runtime?.vision);
@@ -469,7 +474,7 @@ export function DashboardView({
 
             <div className="home-field">
               <div className="home-field-label">
-                <span>RoiFrame 输出</span>
+                <span>{deepstreamNvinferSelected ? "DetectionBatch 输出" : "RoiFrame 输出"}</span>
                 <span>GPU 路线</span>
               </div>
               <div className="home-chips">
@@ -480,7 +485,9 @@ export function DashboardView({
                 ))}
               </div>
               <div className="home-tiny">
-                目标对象不是 CPU Mat，而是可被多路消费的 RoiFrame / GpuFrameView。
+                {deepstreamNvinferSelected
+                  ? "nvinfer 通过 C++ parser 生成 NvDsObjectMeta，控制层只接收 DetectionBatch。"
+                  : "目标对象不是 CPU Mat，而是可被多路消费的 RoiFrame / GpuFrameView。"}
               </div>
             </div>
           </div>
@@ -490,19 +497,20 @@ export function DashboardView({
           <div className="home-card-head">
             <div>
               <div className="home-card-title">输出对象</div>
-              <div className="home-card-desc">当前管线产出 RoiFrame，不直接绑定某个消费端。</div>
+              <div className="home-card-desc">{deepstreamNvinferSelected ? "当前管线向控制层发布最新 DetectionBatch。" : "当前管线产出 RoiFrame，不直接绑定某个消费端。"}</div>
             </div>
           </div>
           <div className="home-section">
             <div className="home-field">
               <div className="home-field-label">
-                <span>RoiFrame</span>
+                <span>{deepstreamNvinferSelected ? "DetectionBatch" : "RoiFrame"}</span>
                 <span>#{stats.capture_counter || "--"}</span>
               </div>
               <div className="home-tiny">
                 width={roiSize} · height={roiSize}<br />
-                capture_ts_ns · frame_id · gpu_ptr · pitch<br />
-                可被推理、推流、录制同时消费。
+                {deepstreamNvinferSelected
+                  ? <>capture_ts_ns · frame_id · generation<br />最终检测框通过单槽邮箱交给控制层。</>
+                  : <>capture_ts_ns · frame_id · gpu_ptr · pitch<br />可被推理、推流、录制同时消费。</>}
               </div>
             </div>
           </div>
@@ -525,8 +533,8 @@ export function DashboardView({
           <div className="home-arrow">→</div>
           <div className="home-mini-node">
             <div className="k">统一输出</div>
-            <div className="v">RoiFrame {roiSize}x{roiSize}</div>
-            <div className="s">供多路消费者使用</div>
+            <div className="v">{deepstreamNvinferSelected ? "NvDsObjectMeta / DetectionBatch" : `RoiFrame ${roiSize}x${roiSize}`}</div>
+            <div className="s">{deepstreamNvinferSelected ? "单槽最新批次进入控制" : "供多路消费者使用"}</div>
           </div>
         </div>
 
@@ -550,8 +558,11 @@ export function DashboardView({
             className="home-video"
             style={{ "--roi-display-size": `${roiSize}px` } as CSSProperties}
           >
-            {capture?.available && previewEnabled ? (
+            {previewImageAvailable ? (
               <img alt="实时采集画面" src={streamUrl(configVersion, configVersion)} />
+            ) : null}
+            {deepstreamNvinferSelected ? (
+              <div className="home-video-unavailable">纯 NVMM 主线未接入浏览器图像预览</div>
             ) : null}
             <div className="home-video-grid" />
             <div className="home-video-scan" />
@@ -580,13 +591,13 @@ export function DashboardView({
               {aimPointStyle ? <div className="home-aim-point" style={aimPointStyle} /> : null}
             </div>
             <div className="home-hud home-hud-left">
-              <span>预览 {previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
+              <span>预览 {deepstreamNvinferSelected ? "未接入" : previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
               <span>{captureMode(capture, configuredCaptureProfile)}</span>
               <span>ROI {roiSize}</span>
               <span>GPU 路线</span>
             </div>
             <div className="home-hud home-hud-right">
-              <span>预览不影响推理链路</span>
+              <span>{deepstreamNvinferSelected ? "状态来自 DetectionBatch 遥测" : "预览不影响推理链路"}</span>
             </div>
           </div>
         </section>
@@ -662,7 +673,9 @@ export function DashboardView({
             />
           </div>
           <div className="home-notice">
-            预览流建议限制为 15-30fps；推理链路继续消费 RoiFrame 或最新帧，不让 UI 预览拖慢核心链路。
+            {deepstreamNvinferSelected
+              ? "当前纯 GPU 主线不生成 CPU 预览帧；推理和控制状态直接来自 DeepStream 与 DetectionBatch 遥测。"
+              : "预览流建议限制为 15-30fps；推理链路继续消费 RoiFrame 或最新帧，不让 UI 预览拖慢核心链路。"}
           </div>
           <div className={inferenceAvailable ? "home-notice good" : "home-notice"}>
             <strong>推理结果</strong><br />
@@ -705,32 +718,35 @@ export function DashboardView({
           <div className="home-card-head">
             <div>
               <div className="home-card-title">消费者</div>
-              <div className="home-card-desc">RoiFrame 可以被多个模块订阅。</div>
+              <div className="home-card-desc">{deepstreamNvinferSelected ? "仅展示当前 DeepStream 主线实际提供的消费者。" : "RoiFrame 可以被多个模块订阅。"}</div>
             </div>
           </div>
           <div className="consumer-list">
             <ConsumerRow
               icon="TRT"
               title="TensorRT 推理"
-              detail={inferenceEnabled ? modelName : "已从运行配置关闭"}
-              enabled={inferenceEnabled}
+              detail={deepstreamNvinferSelected ? `${modelName} · nvinfer 主线必需` : inferenceEnabled ? modelName : "已从运行配置关闭"}
+              enabled={deepstreamNvinferSelected || inferenceEnabled}
               busy={consumerBusy === "inference"}
+              disabled={deepstreamNvinferSelected}
               onToggle={(enabled) => void updateConsumer("inference", enabled)}
             />
             <ConsumerRow
               icon="WEB"
               title="浏览器预览"
-              detail={`${capture?.preview_target_fps ?? 30}fps 降采样推流`}
-              enabled={previewEnabled}
+              detail={deepstreamNvinferSelected ? "纯 NVMM 路径尚未提供预览分支" : `${capture?.preview_target_fps ?? 30}fps 降采样推流`}
+              enabled={!deepstreamNvinferSelected && previewEnabled}
               busy={consumerBusy === "preview"}
+              disabled={deepstreamNvinferSelected}
               onToggle={(enabled) => void updateConsumer("preview", enabled)}
             />
             <ConsumerRow
               icon="REC"
               title="录制回放"
-              detail={recordingEnabled ? "保存帧生命周期与结果" : "当前未写入回放文件"}
-              enabled={recordingEnabled}
+              detail={deepstreamNvinferSelected ? "纯 NVMM 路径尚未提供录制分支" : recordingEnabled ? "保存帧生命周期与结果" : "当前未写入回放文件"}
+              enabled={!deepstreamNvinferSelected && recordingEnabled}
               busy={consumerBusy === "recording"}
+              disabled={deepstreamNvinferSelected}
               onToggle={(enabled) => void updateConsumer("recording", enabled)}
             />
           </div>

@@ -9,9 +9,7 @@ Usage:
 Creates a Jetson-friendly NovaSight virtual environment with system GStreamer
 bindings visible through --system-site-packages. If a NVIDIA DeepStream pyds
 wheel is provided, the script installs and verifies it. Pass --build to also
-run `python -m novasight doctor jetson-preflight` and
-`scripts/build_jetson_preprocess.sh --preflight` so the production NVMM
-preprocess .so is produced end-to-end.
+build `libnovasight_parser.so` for the DeepStream nvinfer object-meta path.
 EOF
 }
 
@@ -113,8 +111,14 @@ PY
 echo "==> Verifying DeepStream GStreamer elements"
 gst-inspect-1.0 nvvidconv >/dev/null
 gst-inspect-1.0 nvv4l2decoder >/dev/null
+gst-inspect-1.0 nvstreammux >/dev/null
 gst-inspect-1.0 nvinfer >/dev/null
 echo "DeepStream GStreamer elements ok"
+
+if [[ "${RUN_BUILD}" -eq 1 ]]; then
+  echo "==> Building DeepStream C++ parser"
+  scripts/build_deepstream_parser.sh build/deepstream-parser
+fi
 
 echo "==> Verifying optional pyds binding"
 if python3 - <<'PY'
@@ -124,10 +128,10 @@ PY
 then
   python3 - <<'PY'
 from novasight.deepstream.backend import check_deepstream_dependencies
-print(check_deepstream_dependencies())
+print(check_deepstream_dependencies("build/deepstream-parser/libnovasight_parser.so"))
 PY
 else
-  echo "pyds is not installed. DeepStream tensor-meta backend will remain unavailable."
+  echo "pyds is not installed. DeepStream object-meta backend will remain unavailable."
   echo "Install the matching NVIDIA wheel, for example:"
   echo "  scripts/setup_jetson.sh --pyds-wheel /path/to/pyds-1.2.0-cp310-cp310-linux_aarch64.whl"
 fi
@@ -137,8 +141,3 @@ echo "Start the backend with:"
 echo "  source .venv/bin/activate"
 echo "  cp config/novasight.example.yaml config/novasight.yaml"
 echo "  python3 -m novasight --host 0.0.0.0 --port 5174"
-
-if [[ "${RUN_BUILD}" -eq 1 ]]; then
-  echo "==> Building production NVMM preprocess library"
-  scripts/build_jetson_preprocess.sh --preflight --build-dir build/jetson-native
-fi

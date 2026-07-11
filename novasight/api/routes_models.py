@@ -26,6 +26,7 @@ from novasight.model_registry import (
     scan_model_artifacts,
 )
 from novasight.inference import parse_tensor_input_shape
+from novasight.model_registry.manifest import read_manifest, validate_manifest_engine_artifact
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
@@ -664,7 +665,7 @@ def _load_published_artifact(
     if artifact is None:
         return
     if artifact.kind not in {"onnx", "engine"}:
-        request.app.state.inference.disable(
+        request.app.state.inference.unload(
             f"published artifact is not runnable inference artifact: {artifact.kind}"
         )
         return
@@ -677,6 +678,16 @@ def _load_published_artifact(
     artifact_path = (
         Path(registry.data_dir) / project.name / version.version / artifact.path
     )
+    if _deepstream_selected(request):
+        _validate_deepstream_artifact(artifact_path)
+        request.app.state.inference.unload(
+            "TensorRT engine ownership delegated to DeepStream nvinfer"
+        )
+        _clear_runtime_pipeline_after_model_switch(
+            request,
+            "DeepStream active model changed",
+        )
+        return
     request.app.state.inference.load(
         artifact_path,
         list(version.classes),
@@ -741,6 +752,16 @@ def _prepare_runnable_artifact(
     classes: list[str],
     input_shape: str,
 ) -> tuple[Any, dict[str, Any]]:
+    if _deepstream_selected(request):
+        manifest = _validate_deepstream_artifact(artifact_path)
+        return None, {
+            "selected": "deepstream_nvinfer",
+            "available": True,
+            "loaded": True,
+            "input_shape": "x".join(str(value) for value in manifest.input.shape),
+            "model_fingerprint": manifest.model_fingerprint,
+            "reason": "validated for pipeline-owned nvinfer loading",
+        }
     inference = request.app.state.inference
     prepare = getattr(inference, "prepare", None)
     if not callable(prepare):
@@ -814,7 +835,17 @@ def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume:
     runtime = getattr(request.app.state, "runtime", None)
     pipeline = getattr(runtime, "pipeline", None)
     if pipeline is None:
-        return
+        from novasight.runtime.pipeline_factory import create_runtime_pipeline
+
+        try:
+            pipeline = create_runtime_pipeline(
+                capture=request.app.state.capture,
+                runtime=runtime,
+            )
+            runtime.pipeline = pipeline
+        except Exception as exc:
+            logger.warning("runtime pipeline rebuild after model switch failed: %s", exc)
+            return
     try:
         pipeline.start()
         logger.info("runtime pipeline resumed after model switch")
@@ -837,11 +868,47 @@ def _clear_runtime_pipeline_after_model_switch(request: Request, reason: str) ->
 
 
 def _inference_status(request: Request) -> dict[str, Any]:
+    runtime = getattr(request.app.state, "runtime", None)
+    if _deepstream_selected(request) and getattr(runtime, "pipeline", None) is not None:
+        status = runtime.pipeline.status()
+        deepstream = status.get("deepstream", {}) if isinstance(status, dict) else {}
+        if isinstance(deepstream, dict) and deepstream:
+            return dict(deepstream)
+    if _deepstream_selected(request):
+        registry = getattr(request.app.state, "models", None)
+        deployment = registry.get_active_deployment() if registry is not None else None
+        return {
+            "selected": "deepstream_nvinfer",
+            "available": deployment is not None,
+            "loaded": False,
+            "configured": deployment is not None,
+            "reason": "validated deployment will be loaded by nvinfer at runtime start",
+        }
     inference = getattr(request.app.state, "inference", None)
     status = getattr(inference, "status", None)
     if not callable(status):
         return {"available": False, "loaded": False, "reason": "inference runtime unavailable"}
     return dict(status())
+
+
+def _deepstream_selected(request: Request) -> bool:
+    config = getattr(request.app.state, "config", None)
+    inference = getattr(config, "inference", None)
+    return str(getattr(inference, "backend", "")).lower() == "deepstream_nvinfer"
+
+
+def _validate_deepstream_artifact(artifact_path: Path):
+    if artifact_path.suffix.lower() != ".engine":
+        raise RegistryValidationError("deepstream_nvinfer requires a TensorRT .engine artifact")
+    manifest_path = artifact_path.with_name("model.manifest.json")
+    if not manifest_path.is_file():
+        raise RegistryValidationError(f"model manifest missing: {manifest_path}")
+    try:
+        manifest = read_manifest(manifest_path)
+        validate_manifest_engine_artifact(manifest, artifact_path)
+    except ValueError as exc:
+        raise RegistryValidationError(str(exc)) from exc
+    return manifest
 
 
 def _model_switch_report(
@@ -855,14 +922,18 @@ def _model_switch_report(
 ) -> dict[str, Any]:
     loaded = inference_status.get("loaded") is True
     selected = str(inference_status.get("selected") or inference_status.get("engine") or "auto")
+    configured_for_deepstream = (
+        selected == "deepstream_nvinfer" and inference_status.get("configured") is True
+    )
+    applied = loaded or configured_for_deepstream
     message = (
         f"模型已切换：{artifact_path.name} · {selected} · {input_shape}"
-        if loaded
+        if applied
         else f"模型登记完成，但推理运行态未加载：{artifact_path.name}"
     )
     return {
         "action": action,
-        "applied": loaded,
+        "applied": applied,
         "rolled_back": False,
         "message": message,
         "artifact_id": deployment.artifact_id,
@@ -881,10 +952,12 @@ def _model_switch_report(
             {
                 "section": "推理运行态",
                 "impact": "采集 -> 推理 -> 控制",
-                "status": "applied" if loaded else "failed",
+                "status": "applied" if applied else "failed",
                 "message": (
                     "候选模型已加载并替换当前模型"
                     if loaded
+                    else "模型契约已确认；nvinfer 将在运行时启动时加载"
+                    if configured_for_deepstream
                     else str(inference_status.get("reason") or "未加载")
                 ),
             },
@@ -1263,12 +1336,21 @@ def publish(
             artifact_id=payload.artifact_id,
             input_shape=input_shape,
         )
-        request.app.state.inference.commit(
-            candidate,
-            artifact_path=artifact_path,
-            classes=classes,
-            input_shape=input_shape,
-        )
+        if candidate is None:
+            request.app.state.inference.unload(
+                "TensorRT engine ownership delegated to DeepStream nvinfer"
+            )
+            _clear_runtime_pipeline_after_model_switch(
+                request,
+                "DeepStream active model changed",
+            )
+        else:
+            request.app.state.inference.commit(
+                candidate,
+                artifact_path=artifact_path,
+                classes=classes,
+                input_shape=input_shape,
+            )
     except RegistryError as exc:
         _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
@@ -1358,12 +1440,21 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             artifact_id=current.previous_artifact_id,
             input_shape=input_shape,
         )
-        request.app.state.inference.commit(
-            candidate,
-            artifact_path=artifact_path,
-            classes=classes,
-            input_shape=input_shape,
-        )
+        if candidate is None:
+            request.app.state.inference.unload(
+                "TensorRT engine ownership delegated to DeepStream nvinfer"
+            )
+            _clear_runtime_pipeline_after_model_switch(
+                request,
+                "DeepStream rollback changed active model",
+            )
+        else:
+            request.app.state.inference.commit(
+                candidate,
+                artifact_path=artifact_path,
+                classes=classes,
+                input_shape=input_shape,
+            )
     except RegistryError as exc:
         _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)

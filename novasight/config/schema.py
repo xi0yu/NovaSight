@@ -74,7 +74,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "capture.backend",
                         "label": "采集后端",
                         "type": "select",
-                        "options": ["gst_cpu_latest", "nvmm_latest"],
+                        "options": ["gst_cpu_latest", "nvmm_latest", "deepstream_nvinfer"],
                         "restart_required": True,
                     },
                     {
@@ -198,7 +198,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "inference.backend",
                         "label": "推理后端",
                         "type": "select",
-                        "options": ["tensorrt", "nvmm_latest"],
+                        "options": ["tensorrt", "nvmm_latest", "deepstream_nvinfer"],
                         "restart_required": True,
                     },
                     {
@@ -220,6 +220,9 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {"path": "inference.confidence_threshold", "label": "置信度阈值", "type": "float", "min": 0, "max": 1, "restart_required": False},
                     {"path": "inference.nms_threshold", "label": "NMS 阈值", "type": "float", "min": 0, "max": 1, "restart_required": False},
+                    {"path": "inference.deepstream_io_mode", "label": "DeepStream V4L2 IO 模式", "type": "int", "min": 0, "max": 5, "restart_required": True},
+                    {"path": "inference.deepstream_batched_push_timeout_us", "label": "DeepStream 批次等待 us", "type": "int", "min": 0, "restart_required": True},
+                    {"path": "inference.deepstream_parser_library", "label": "DeepStream C++ Parser", "type": "string", "restart_required": True},
                     {"path": "inference.detection_class_profile", "label": "检测类别配置", "type": "string", "restart_required": False},
                     {"path": "inference.detection_class_filter", "label": "检测类别过滤", "type": "string", "restart_required": False},
                     {"path": "inference.detection_class_priority", "label": "类别优先级", "type": "string", "restart_required": False},

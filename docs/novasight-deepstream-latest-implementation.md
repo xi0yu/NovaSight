@@ -1,5 +1,10 @@
 # NovaSight Capture + TensorRT Latest Baseline
 
+> The `nvstreammux -> nvinfer -> C++ parser -> NvDsObjectMeta` implementation
+> now lives in `docs/novasight-deepstream-object-mainline.md`. The older
+> application-scheduled TensorRT design below remains architectural history and
+> must not be mistaken for the currently selectable DeepStream backend.
+
 This document is the implementation baseline for the production latest-only
 capture/inference/control path.
 

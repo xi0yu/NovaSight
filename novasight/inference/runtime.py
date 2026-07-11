@@ -102,6 +102,21 @@ class InferenceRuntime:
         self._load_error = reason
         logger.warning("inference disabled: %s", reason)
 
+    def unload(self, reason: str) -> None:
+        replacement = UnavailableInferenceEngine(reason)
+        with self._engine_lock:
+            previous = self.engine
+            self.engine = replacement
+            self._load_error = reason
+            self._last_switch_error = ""
+            close = getattr(previous, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        logger.info("inference engine unloaded: %s", reason)
+
     def record_switch_error(self, reason: str) -> None:
         self._last_switch_error = reason
         logger.warning("inference model switch failed: %s", reason)

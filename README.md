@@ -103,44 +103,41 @@ use signed `NS1.<payload>.<signature>` tokens with created time, activation time
 duration, tier, and feature permissions; plaintext keys are never returned by the
 API.
 
-## Jetson `nvmm_latest` Mainline
+## Jetson `deepstream_nvinfer` Mainline
 
-The production control path keeps decoded frames in NVMM through native GPU
-preprocess and TensorRT inference:
+The current GPU-image production candidate keeps decoded frames in NVMM and
+lets DeepStream own TensorRT scheduling:
 
 ```text
 GC553G2/V4L2 -> nvv4l2decoder -> nvvidconv ROI/resize
--> appsink opaque NVMM resource -> LatestFrameBroker capacity=1
--> native CUDA preprocess -> TensorRT -> DetectionBatch
+-> nvstreammux batch=1 -> nvinfer FP16
+-> C++ YOLO parser -> DeepStream NMS -> NvDsObjectMeta
+-> DetectionBatchMailbox capacity=1 -> DetectionBatch
 -> Tracker/Selector/Kalman/Controller/Scheduler
 -> kmNet
 ```
 
-This is not CPU inference. The runtime accepts only TensorRT `.engine`
-artifacts for execution; if TensorRT/CUDA is unavailable, model load and
-inference fail explicitly instead of falling back to ONNXRuntime CPU.
+No image reaches appsink, NumPy, OpenCV, or Python postprocessing. The C++
+parser and DeepStream NMS still perform small metadata work on CPU; this path
+guarantees zero CPU image round trip, not zero CPU instructions.
 
 Required config values:
 
 ```yaml
 capture:
-  backend: nvmm_latest
+  backend: deepstream_nvinfer
   memory: nvmm
   latest_only: true
   appsink_max_buffers: 1
   queue_leaky: downstream
-preprocess:
-  backend: cuda
-  input_format: auto
-  output_dtype: fp16
-  normalize: true
-  use_pinned_memory: true
-  h2d_async: true
 inference:
-  backend: nvmm_latest
+  backend: deepstream_nvinfer
   device: cuda
   require_gpu: true
   allow_cpu_fallback: false
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
+  deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so
 runtime:
   freshness_threshold_ms: 55
   drop_stale_batches: true
@@ -154,14 +151,22 @@ cp config/novasight.example.yaml config/novasight.yaml
 python3 -m novasight --host 0.0.0.0 --port 5174
 ```
 
-The example config restores `/dev/video0`, loads the active TensorRT deployment,
-and starts `RuntimePipeline` automatically. kmNet auto-connect runs independently.
+The example config starts the active TensorRT deployment through nvinfer. kmNet
+auto-connect runs independently.
 If no active model exists, the API remains available and the runtime reports an
 explicit model-not-loaded startup reason instead of entering a false running state.
 
-The current zero-copy path proves frame timing and GPU resource validity but does
-not yet compute GPU luma/variance. A disconnected capture-card black frame cannot
-be distinguished from a valid dark scene until that native content probe is added.
+Build and run the 60-second hardware gate before enabling control:
+
+```bash
+scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl --build
+scripts/verify_deepstream_60s.py --seconds 60
+```
+
+Detailed contracts and current measurement gaps are in
+`docs/novasight-deepstream-object-mainline.md`.
+
+### Legacy CPU-bridge diagnostics
 
 Run a 60-second capture smoke on Jetson:
 

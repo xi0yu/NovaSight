@@ -49,6 +49,10 @@ def import_onnx_model(
 
     classes = list(class_names or inferred.class_names)
     class_count = len(classes) if classes else inferred.class_count
+    if inferred.postprocess_parser != "yolo" and not classes:
+        raise ValueError(
+            "model output appears to contain Decode/NMS; explicit class names are required"
+        )
     if class_count <= 0:
         class_count = max(1, infer_yolo_class_count(inferred.output.shape))
     if not classes:
@@ -65,6 +69,9 @@ def import_onnx_model(
         confidence_threshold=float(confidence_threshold),
         nms_iou_threshold=float(nms_iou_threshold),
         runtime_precision=runtime_precision,
+        output_format=inferred.output_format,
+        output_has_objectness=inferred.output_has_objectness,
+        postprocess_parser=inferred.postprocess_parser,
         validated=False,
     )
     manifest_path = resolved_target_dir / "model.manifest.json"
@@ -78,6 +85,9 @@ class OnnxModelInspection:
     output: TensorSpec
     class_count: int
     class_names: list[str]
+    output_format: str = "yolo_cxcywh_class_scores"
+    output_has_objectness: bool = False
+    postprocess_parser: str = "yolo"
 
 
 def inspect_onnx_model(path: Path) -> OnnxModelInspection:
@@ -94,10 +104,17 @@ def inspect_onnx_model(path: Path) -> OnnxModelInspection:
     if not outputs:
         raise ValueError(f"ONNX model has no graph outputs: {path}")
     input_meta = inputs[0]
+    if len(outputs) != 1:
+        names = ", ".join(str(item.name) for item in outputs)
+        raise ValueError(
+            "multi-output ONNX models require an explicit output contract; "
+            f"refusing to guess Decode/NMS bindings: {names}"
+        )
     output_meta = outputs[0]
     input_shape = _normalize_shape(input_meta.shape, fallback=[1, 3, 640, 640])
     output_shape = _normalize_shape(output_meta.shape, fallback=[1, 84, 8400])
-    class_count = infer_yolo_class_count(output_shape)
+    built_in_nms = _looks_like_single_tensor_nms(output_shape)
+    class_count = 0 if built_in_nms else infer_yolo_class_count(output_shape)
     return OnnxModelInspection(
         input=TensorSpec(
             name=str(input_meta.name),
@@ -113,7 +130,18 @@ def inspect_onnx_model(path: Path) -> OnnxModelInspection:
         ),
         class_count=class_count,
         class_names=[],
+        output_format=("xyxy_score_class" if built_in_nms else "yolo_cxcywh_class_scores"),
+        output_has_objectness=False,
+        postprocess_parser=("efficientnms" if built_in_nms else "yolo"),
     )
+
+
+def _looks_like_single_tensor_nms(shape: list[int]) -> bool:
+    if len(shape) == 3 and shape[0] == 1:
+        return shape[-1] == 6 and 1 <= shape[-2] <= 512
+    if len(shape) == 2:
+        return shape[-1] == 6 and 1 <= shape[-2] <= 512
+    return False
 
 
 def infer_yolo_class_count(shape: list[int]) -> int:
