@@ -282,7 +282,7 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.calibrated_angular.d_ema_alpha == 0.30
     assert cfg.control.universal_saturated.response_scale_x_px == 80.0
     assert cfg.control.universal_saturated.max_step_x_counts == 50.0
-    assert cfg.control.shared.deadzone_x_px == 0.0
+    assert cfg.control.shared.deadzone_x_px == 4.0
     assert cfg.control.shared.max_count_slew_x == 10.0
     assert cfg.control.shared.invert_y is False
     assert cfg.control.scheduler_step_counts_x == 32

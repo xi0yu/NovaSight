@@ -728,8 +728,8 @@ export function StudioConsoleView({
   const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 60);
   const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 50);
   const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 40);
-  const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 0);
-  const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 0);
+  const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
+  const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
   const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
   const sharedInvertY = readBoolean(sharedControlConfig.invert_y, false);
@@ -2704,6 +2704,7 @@ export function StudioConsoleView({
               <SectionTitle title="控制器输出" />
               <div className="console-kv">
                 <span>控制模式</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? "精确标定" : "通用适配"}</b>
+                <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
                 <span>Kp X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKpX, calibratedKpY, 2) : NO_SAMPLE}</b>
                 <span>Kd X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKdX, calibratedKdY, 2) : NO_SAMPLE}</b>
                 <span>D 原始值</span><b>{formatPoint(controlPipeline.d_raw_x_rad_s, controlPipeline.d_raw_y_rad_s, 5, "rad/s")}</b>
@@ -2714,7 +2715,10 @@ export function StudioConsoleView({
                 <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
                 <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
                 <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
-                <span>死区后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
+                <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
+                <span>进入阈值</span><b>{formatPoint(controlPipeline.arrival_enter_x_px, controlPipeline.arrival_enter_y_px, 1, "px")}</b>
+                <span>退出阈值</span><b>{formatPoint(controlPipeline.arrival_exit_x_px, controlPipeline.arrival_exit_y_px, 1, "px")}</b>
+                <span>到位限制后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
                 <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
                 <span>可行预算 counts</span><b>{formatPoint(controlPipeline.feasible_counts_x_float, controlPipeline.feasible_counts_y_float, 2)}</b>
                 <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
@@ -2772,8 +2776,8 @@ export function StudioConsoleView({
                 <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
                 <ModuleSwitch label="预测 X" detail="使用 Tracker Kalman 未来 X 位置" enabled={predictionXEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_x_enabled", enabled)} />
                 <ModuleSwitch label="预测 Y" detail="使用 Tracker Kalman 未来 Y 位置" enabled={predictionYEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_y_enabled", enabled)} />
-                <NumberControl label="X 像素死区" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
-                <NumberControl label="Y 像素死区" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
+                <NumberControl label="X 到位阈值" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
+                <NumberControl label="Y 到位阈值" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
                 <NumberControl label="X counts 变化限制" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
                 <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
                 <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />

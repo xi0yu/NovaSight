@@ -8,6 +8,7 @@ from typing import Any, Protocol
 CALIBRATED_ANGULAR = "calibrated_angular"
 UNIVERSAL_SATURATED = "universal_saturated"
 CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED})
+ARRIVAL_CONFIRM_FRAMES = 2
 
 
 @dataclass(frozen=True)
@@ -291,6 +292,10 @@ class MouseControllerState:
     residual_y_counts: float = 0.0
     previous_counts: Vec2 = field(default_factory=lambda: Vec2(0.0, 0.0))
     output_history_valid: bool = False
+    settled_x: bool = False
+    settled_y: bool = False
+    arrival_candidate_x_frames: int = 0
+    arrival_candidate_y_frames: int = 0
 
     def reset(self) -> None:
         self.target_id = None
@@ -299,6 +304,10 @@ class MouseControllerState:
         self.residual_y_counts = 0.0
         self.previous_counts = Vec2(0.0, 0.0)
         self.output_history_valid = False
+        self.settled_x = False
+        self.settled_y = False
+        self.arrival_candidate_x_frames = 0
+        self.arrival_candidate_y_frames = 0
 
 
 class MouseController:
@@ -363,9 +372,35 @@ class MouseController:
             return self._zero(str(exc))
 
         shared = self.config.shared
+        (
+            self.state.settled_x,
+            self.state.arrival_candidate_x_frames,
+            arrival_exit_x_px,
+        ) = _update_arrival_axis(
+            settled=self.state.settled_x,
+            candidate_frames=self.state.arrival_candidate_x_frames,
+            observed_error_px=observed_error.x,
+            enter_px=shared.deadzone_x_px,
+        )
+        (
+            self.state.settled_y,
+            self.state.arrival_candidate_y_frames,
+            arrival_exit_y_px,
+        ) = _update_arrival_axis(
+            settled=self.state.settled_y,
+            candidate_frames=self.state.arrival_candidate_y_frames,
+            observed_error_px=observed_error.y,
+            enter_px=shared.deadzone_y_px,
+        )
+        hold_x = self.state.settled_x or (
+            shared.deadzone_x_px > 0.0 and abs(observed_error.x) <= shared.deadzone_x_px
+        )
+        hold_y = self.state.settled_y or (
+            shared.deadzone_y_px > 0.0 and abs(observed_error.y) <= shared.deadzone_y_px
+        )
         deadzone_limited = Vec2(
-            0.0 if abs(observed_error.x) <= shared.deadzone_x_px else computation.counts.x,
-            0.0 if abs(observed_error.y) <= shared.deadzone_y_px else computation.counts.y,
+            0.0 if hold_x else computation.counts.x,
+            0.0 if hold_y else computation.counts.y,
         )
         directed_counts = Vec2(
             deadzone_limited.x,
@@ -433,14 +468,50 @@ class MouseController:
             "min_effective_counts_x": shared.min_effective_counts_x,
             "min_effective_counts_y": shared.min_effective_counts_y,
             "count_quantization": "minimum_effective_accumulator",
+            "arrival_state": (
+                "SETTLED"
+                if self.state.settled_x and self.state.settled_y
+                else "ENTERING"
+                if hold_x and hold_y
+                else "TRACKING"
+            ),
+            "arrival_settled_x": self.state.settled_x,
+            "arrival_settled_y": self.state.settled_y,
+            "arrival_candidate_x_frames": self.state.arrival_candidate_x_frames,
+            "arrival_candidate_y_frames": self.state.arrival_candidate_y_frames,
+            "arrival_confirm_frames": ARRIVAL_CONFIRM_FRAMES,
+            "arrival_enter_x_px": shared.deadzone_x_px,
+            "arrival_enter_y_px": shared.deadzone_y_px,
+            "arrival_exit_x_px": arrival_exit_x_px,
+            "arrival_exit_y_px": arrival_exit_y_px,
             "final_dx": counts_x,
             "final_dy": counts_y,
         }
+        settled = self.state.settled_x and self.state.settled_y
+        accumulating = (
+            counts_x == 0
+            and counts_y == 0
+            and (abs(self.state.residual_x_counts) > 0.0 or abs(self.state.residual_y_counts) > 0.0)
+        )
+        reason = (
+            "AIM_SETTLED"
+            if settled
+            else "ACCUMULATING_MIN_EFFECTIVE_COUNTS"
+            if accumulating
+            else "mouse_control"
+        )
+        debug["movement_strategy"] = (
+            "hold_position"
+            if settled
+            else "accumulate_device_budget"
+            if accumulating
+            else "predictive_tracking"
+        )
         return MoveCommand(
             dx=counts_x,
             dy=counts_y,
             confidence=observation.target_confidence,
-            reason="mouse_control",
+            reason=reason,
             debug=debug,
         )
 
@@ -488,6 +559,28 @@ def _quantize_effective_counts(
         emitted = minimum if total > 0.0 else -minimum
         return emitted, total - emitted
     return quantized, total - quantized
+
+
+def _update_arrival_axis(
+    *,
+    settled: bool,
+    candidate_frames: int,
+    observed_error_px: float,
+    enter_px: float,
+) -> tuple[bool, int, float]:
+    enter = max(0.0, float(enter_px))
+    exit_threshold = max(enter + 1.0, enter * 1.5) if enter > 0.0 else 0.0
+    if enter <= 0.0 or not math.isfinite(observed_error_px):
+        return False, 0, exit_threshold
+    absolute_error = abs(float(observed_error_px))
+    if settled:
+        if absolute_error <= exit_threshold:
+            return True, ARRIVAL_CONFIRM_FRAMES, exit_threshold
+        return False, 0, exit_threshold
+    if absolute_error <= enter:
+        next_frames = min(ARRIVAL_CONFIRM_FRAMES, max(0, int(candidate_frames)) + 1)
+        return next_frames >= ARRIVAL_CONFIRM_FRAMES, next_frames, exit_threshold
+    return False, 0, exit_threshold
 
 
 def _projection_geometry(width: float, height: float, fov_x_deg: float) -> tuple[float, float] | None:

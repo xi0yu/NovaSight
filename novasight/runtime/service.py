@@ -1847,7 +1847,11 @@ class RuntimeService:
         if not can_emit:
             no_send_reason = "CONTROL_NOT_ALLOWED" if not control_allowed else "TRIGGER_INACTIVE"
         elif not has_movement:
-            no_send_reason = "CONTROL_OUTPUT_ZERO"
+            no_send_reason = (
+                command.reason
+                if command.reason in {"AIM_SETTLED", "ACCUMULATING_MIN_EFFECTIVE_COUNTS"}
+                else "CONTROL_OUTPUT_ZERO"
+            )
         trigger_raw = getattr(box_input, "raw", {}) or {}
         trigger_requirement = self._trigger_requirement_label(
             requires_trigger=requires_trigger,
@@ -1963,7 +1967,12 @@ class RuntimeService:
             }
             return None
         if not has_movement:
-            self._clear_pending_commands("CONTROL_OUTPUT_ZERO")
+            zero_reason = (
+                command.reason
+                if command.reason in {"AIM_SETTLED", "ACCUMULATING_MIN_EFFECTIVE_COUNTS"}
+                else "CONTROL_OUTPUT_ZERO"
+            )
+            self._clear_pending_commands(zero_reason)
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
                 "sent": False,
@@ -1971,13 +1980,19 @@ class RuntimeService:
                 "clipped": False,
                 "output_dx": 0.0,
                 "output_dy": 0.0,
-                "message": "控制量量化为零，未发送设备",
+                "message": (
+                    "瞄点已到位，保持设备静止"
+                    if zero_reason == "AIM_SETTLED"
+                    else "控制预算累计中，等待达到设备最小有效 counts"
+                    if zero_reason == "ACCUMULATING_MIN_EFFECTIVE_COUNTS"
+                    else "控制量量化为零，未发送设备"
+                ),
                 "intent": {
                     "dx": 0.0,
                     "dy": 0.0,
                     "accepted": True,
                     "clipped": False,
-                    "reason": "CONTROL_OUTPUT_ZERO",
+                    "reason": zero_reason,
                 },
             }
             return None
@@ -2145,7 +2160,8 @@ class RuntimeService:
         signature = (
             f"target={target_key}|emit={can_emit}|out={output_mode}|hardware={hardware_kind}|"
             f"trigger={trigger_mode}|source={trigger_source}|"
-            f"active={bool(trigger_raw.get('left') or trigger_raw.get('right') or trigger_raw.get('active'))}"
+            f"active={bool(trigger_raw.get('left') or trigger_raw.get('right') or trigger_raw.get('active'))}|"
+            f"reason={str(getattr(command, 'reason', ''))}"
         )
         if signature == self._last_control_log_signature:
             return

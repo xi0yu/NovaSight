@@ -155,8 +155,9 @@ class UniversalSaturatedConfig:
 class SharedControlConfig:
     max_count_slew_x: float = 10.0
     max_count_slew_y: float = 8.0
-    deadzone_x_px: float = 0.0
-    deadzone_y_px: float = 0.0
+    deadzone_x_px: float = 4.0
+    deadzone_y_px: float = 4.0
+    arrival_hysteresis_enabled: bool = True
     invert_y: bool = False
 
 
@@ -580,6 +581,13 @@ def _migrate_dual_control_modes(
     if not isinstance(shared, dict):
         return
     shared = dict(shared)
+    if "arrival_hysteresis_enabled" not in shared:
+        legacy_x = shared.get("deadzone_x_px")
+        legacy_y = shared.get("deadzone_y_px")
+        if legacy_x == 0.0 and legacy_y == 0.0:
+            shared["deadzone_x_px"] = 4.0
+            shared["deadzone_y_px"] = 4.0
+        shared["arrival_hysteresis_enabled"] = True
 
     legacy_calibrated_fields = {
         "kp_x": "kp_x",
