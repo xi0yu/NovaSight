@@ -246,6 +246,8 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
         pixel_format=config.capture.pixel_format,
         io_mode=config.inference.deepstream_io_mode,
         batched_push_timeout_us=config.inference.deepstream_batched_push_timeout_us,
+        preview_enabled=bool(getattr(config.consumers, "preview", True)),
+        preview_fps=int(getattr(config.limits, "stream_fps", 30)),
     )
     backend = DeepStreamObjectBackend(
         pipeline_config=pipeline_config,

@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -90,12 +90,15 @@ class DeepStreamObjectBackend:
         max_publish_age_ms: float,
     ) -> None:
         self.pipeline_config = pipeline_config
+        self._preview_requested = bool(pipeline_config.preview_enabled)
+        self._preview_disabled_reason = ""
         self.manifest = manifest
         self.parser_library_path = Path(parser_library_path).expanduser().resolve(strict=False)
         self.max_publish_age_ms = max(0.0, float(max_publish_age_ms))
         self.pipeline_description = build_deepstream_pipeline(pipeline_config)
         self.detection_batch_mailbox = DetectionBatchMailbox()
         self._lock = threading.RLock()
+        self._preview_condition = threading.Condition(self._lock)
         self._pipeline: Any | None = None
         self._running = False
         self._terminal_error = False
@@ -129,9 +132,16 @@ class DeepStreamObjectBackend:
         self._non_monotonic_dropped_batches = 0
         self._timestamp_rejected_batches = 0
         self._object_meta_frames = 0
+        self._preview_frames = 0
+        self._preview_sequence = 0
+        self._latest_preview_jpeg: bytes | None = None
+        self._last_preview_ts_ns = 0
+        self._preview_error = ""
         self._last_batch_age_ms = 0.0
         self._input_frame_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
+        self._output_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._publish_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
+        self._preview_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._input_age_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._inference_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._build_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
@@ -165,6 +175,7 @@ class DeepStreamObjectBackend:
             )
         Gst = importlib.import_module("gi.repository.Gst")
         Gst.init(None)
+        self._degrade_preview_if_unavailable(Gst)
         pipeline = None
         try:
             pipeline = Gst.parse_launch(self.pipeline_description)
@@ -202,6 +213,7 @@ class DeepStreamObjectBackend:
             self._running = False
             self._inference_start_by_pts.clear()
             self.detection_batch_mailbox.clear()
+            self._preview_condition.notify_all()
         if pipeline is None:
             return
         try:
@@ -238,6 +250,7 @@ class DeepStreamObjectBackend:
                 "input_frames": self._input_frames,
                 "input_fps": _sample_rate(self._input_frame_samples, now_ns),
                 "output_buffers": self._output_buffers,
+                "output_fps": _sample_rate(self._output_samples, now_ns),
                 "batch_meta_buffers": self._batch_meta_buffers,
                 "frame_meta_frames": self._frame_meta_frames,
                 "published_batches": self._published_batches,
@@ -247,6 +260,19 @@ class DeepStreamObjectBackend:
                 "non_monotonic_dropped_batches": self._non_monotonic_dropped_batches,
                 "timestamp_rejected_batches": self._timestamp_rejected_batches,
                 "object_meta_frames": self._object_meta_frames,
+                "preview_enabled": bool(self.pipeline_config.preview_enabled),
+                "preview_requested": self._preview_requested,
+                "preview_available": self._latest_preview_jpeg is not None,
+                "preview_frames": self._preview_frames,
+                "preview_fps": _sample_rate(self._preview_samples, now_ns),
+                "preview_sequence": self._preview_sequence,
+                "preview_last_age_ms": (
+                    max(0.0, (now_ns - self._last_preview_ts_ns) / 1e6)
+                    if self._last_preview_ts_ns > 0
+                    else 0.0
+                ),
+                "preview_reason": self._preview_reason_locked(),
+                "preview_transport": "nvmm_nvjpegenc_to_mjpeg_bytes",
                 "python_nms": False,
                 "postprocess_owner": "native_parser_then_deepstream_cluster_mode_2",
                 "parser_library": str(self.parser_library_path),
@@ -355,6 +381,28 @@ class DeepStreamObjectBackend:
         with self._lock:
             self._dependency_status = None
 
+    def _degrade_preview_if_unavailable(self, Gst: Any) -> None:
+        if not self._preview_requested:
+            return
+        find = getattr(getattr(Gst, "ElementFactory", None), "find", None)
+        missing = [
+            name
+            for name in ("nvjpegenc", "videorate", "appsink")
+            if callable(find) and find(name) is None
+        ]
+        if not missing:
+            if not self.pipeline_config.preview_enabled:
+                self.pipeline_config = replace(self.pipeline_config, preview_enabled=True)
+                self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
+            self._preview_disabled_reason = ""
+            return
+        self._preview_disabled_reason = (
+            "hardware preview disabled; missing GStreamer element(s): " + ", ".join(missing)
+        )
+        self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+        self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
+        logger.warning(self._preview_disabled_reason)
+
     def _reset_state_locked(self) -> None:
         self.detection_batch_mailbox.clear()
         self._terminal_error = False
@@ -377,9 +425,16 @@ class DeepStreamObjectBackend:
         self._non_monotonic_dropped_batches = 0
         self._timestamp_rejected_batches = 0
         self._object_meta_frames = 0
+        self._preview_frames = 0
+        self._preview_sequence = 0
+        self._latest_preview_jpeg = None
+        self._last_preview_ts_ns = 0
+        self._preview_error = ""
         self._last_batch_age_ms = 0.0
         self._input_frame_samples.clear()
+        self._output_samples.clear()
         self._publish_samples.clear()
+        self._preview_samples.clear()
         self._input_age_samples.clear()
         self._inference_samples.clear()
         self._build_samples.clear()
@@ -395,6 +450,14 @@ class DeepStreamObjectBackend:
             raise RuntimeError("DeepStream primary-infer pads are unavailable")
         sink_pad.add_probe(Gst.PadProbeType.BUFFER, self._inference_start_probe)
         src_pad.add_probe(Gst.PadProbeType.BUFFER, self._object_meta_probe)
+        if self.pipeline_config.preview_enabled:
+            preview_sink = pipeline.get_by_name("preview_sink")
+            if preview_sink is None:
+                raise RuntimeError("DeepStream pipeline missing preview_sink")
+            preview_pad = preview_sink.get_static_pad("sink")
+            if preview_pad is None:
+                raise RuntimeError("DeepStream preview sink pad is unavailable")
+            preview_pad.add_probe(Gst.PadProbeType.BUFFER, self._preview_jpeg_probe)
         logger.info("DeepStream nvinfer sink/src probes attached")
 
     def _inference_start_probe(self, _pad: Any, info: Any) -> Any:
@@ -434,8 +497,10 @@ class DeepStreamObjectBackend:
             buffer = info.get_buffer()
             if buffer is None:
                 return Gst.PadProbeReturn.OK
+            now_ns = time.monotonic_ns()
             with self._lock:
                 self._output_buffers += 1
+                self._output_samples.append((now_ns, 0.0))
             pyds = importlib.import_module("pyds")
             batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
             if batch_meta is None:
@@ -452,6 +517,59 @@ class DeepStreamObjectBackend:
         except Exception as exc:
             self._record_terminal_error(f"DeepStream object-meta probe failed: {exc}")
         return Gst.PadProbeReturn.OK
+
+    def _preview_jpeg_probe(self, _pad: Any, info: Any) -> Any:
+        Gst = importlib.import_module("gi.repository.Gst")
+        buffer = info.get_buffer()
+        if buffer is None:
+            return Gst.PadProbeReturn.OK
+        mapped = False
+        map_info = None
+        try:
+            mapped, map_info = buffer.map(Gst.MapFlags.READ)
+            if not mapped or map_info is None:
+                raise RuntimeError("hardware JPEG buffer could not be mapped")
+            payload = bytes(map_info.data)
+            if len(payload) < 4 or not payload.startswith(b"\xff\xd8"):
+                raise RuntimeError("hardware preview buffer is not a JPEG image")
+            now_ns = time.monotonic_ns()
+            with self._preview_condition:
+                self._preview_frames += 1
+                self._preview_sequence += 1
+                self._latest_preview_jpeg = payload
+                self._last_preview_ts_ns = now_ns
+                self._preview_error = ""
+                self._preview_samples.append((now_ns, 0.0))
+                self._preview_condition.notify_all()
+        except Exception as exc:
+            with self._lock:
+                self._preview_error = str(exc)
+            logger.warning("DeepStream hardware preview frame rejected: %s", exc)
+        finally:
+            if mapped and map_info is not None:
+                buffer.unmap(map_info)
+        return Gst.PadProbeReturn.OK
+
+    def wait_preview_jpeg(
+        self,
+        *,
+        after_sequence: int | None = None,
+        timeout_s: float = 0.0,
+    ) -> tuple[int, bytes] | None:
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        with self._preview_condition:
+            while True:
+                if (
+                    self._latest_preview_jpeg is not None
+                    and (after_sequence is None or self._preview_sequence > int(after_sequence))
+                ):
+                    return self._preview_sequence, self._latest_preview_jpeg
+                if not self._running or self._terminal_error:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._preview_condition.wait(timeout=remaining)
 
     def _publish_frame_meta(self, pyds: Any, frame_meta: Any, buffer: Any) -> None:
         inference_end_ts_ns = time.monotonic_ns()
@@ -665,10 +783,11 @@ class DeepStreamObjectBackend:
             self._record_terminal_error(f"DeepStream bus monitor failed: {exc}")
 
     def _record_terminal_error(self, reason: str) -> None:
-        with self._lock:
+        with self._preview_condition:
             self._last_error = reason
             self._terminal_error = True
             self._running = False
+            self._preview_condition.notify_all()
         self._bus_stop.set()
         logger.error("DeepStream terminal error: %s", reason)
 
@@ -680,10 +799,15 @@ class DeepStreamObjectBackend:
             self._last_progress_log_ns = now_ns
             progress = {
                 "input": self._input_frames,
+                "input_fps": _sample_rate(self._input_frame_samples, now_ns),
                 "output": self._output_buffers,
+                "output_fps": _sample_rate(self._output_samples, now_ns),
                 "batch_meta": self._batch_meta_buffers,
                 "frame_meta": self._frame_meta_frames,
                 "published": self._published_batches,
+                "published_fps": _sample_rate(self._publish_samples, now_ns),
+                "preview": self._preview_frames,
+                "preview_fps": _sample_rate(self._preview_samples, now_ns),
                 "stale": self._stale_dropped_batches,
                 "timestamp_rejected": self._timestamp_rejected_batches,
                 "non_monotonic": self._non_monotonic_dropped_batches,
@@ -692,6 +816,15 @@ class DeepStreamObjectBackend:
             }
         progress["parser"] = self._parser_telemetry.snapshot()
         logger.info("DeepStream inference progress %s", progress)
+
+    def _preview_reason_locked(self) -> str:
+        if not self.pipeline_config.preview_enabled:
+            return self._preview_disabled_reason or "preview consumer is disabled"
+        if self._preview_error:
+            return self._preview_error
+        if self._latest_preview_jpeg is None:
+            return "waiting for the first hardware JPEG preview frame"
+        return ""
 
     def _inference_phase_locked(self, parser: object) -> tuple[str, str]:
         parser_status = parser if isinstance(parser, dict) else {}
@@ -722,7 +855,9 @@ class DeepStreamObjectBackend:
         threshold = int(now_ns) - 60_000_000_000
         for samples in (
             self._input_frame_samples,
+            self._output_samples,
             self._publish_samples,
+            self._preview_samples,
             self._input_age_samples,
             self._inference_samples,
             self._build_samples,

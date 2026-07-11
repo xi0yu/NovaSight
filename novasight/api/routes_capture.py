@@ -88,6 +88,36 @@ def stream(request: Request):
             status_code=503,
             content={"message": "预览消费者已关闭，主链路保持运行。"},
         )
+    deepstream_backend = _active_deepstream_preview_backend(request)
+    if deepstream_backend is not None:
+        if not deepstream_backend.running:
+            return JSONResponse(
+                status_code=503,
+                content={"message": "DeepStream 主链未运行，无法打开预览。"},
+            )
+        preview_status = deepstream_backend.status()
+        if preview_status.get("preview_enabled") is not True:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "message": str(
+                        preview_status.get("preview_reason")
+                        or "DeepStream 硬件预览未启用。"
+                    )
+                },
+            )
+        preview_fps = _normalize_preview_fps(
+            getattr(config, "limits", None)
+            and config.limits.stream_fps
+        )
+        return StreamingResponse(
+            _deepstream_mjpeg_frames(
+                deepstream_backend,
+                preview_fps=preview_fps,
+                config_getter=lambda: getattr(request.app.state, "config", None),
+            ),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
     session = getattr(capture, "session", None)
     if (
         capture.source is None
@@ -243,6 +273,61 @@ def _clear_runtime_pipeline(runtime, reason: str) -> None:
     runtime.pipeline = None
     runtime.running = False
     logger.info("runtime pipeline cleared after %s", reason)
+
+
+def _active_deepstream_preview_backend(request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    pipeline = getattr(runtime, "pipeline", None)
+    backend = getattr(pipeline, "backend", None)
+    if getattr(backend, "backend_id", "") != "deepstream_nvinfer":
+        return None
+    if not callable(getattr(backend, "wait_preview_jpeg", None)):
+        return None
+    return backend
+
+
+def _deepstream_mjpeg_frames(
+    backend,
+    *,
+    preview_fps: int = 30,
+    config_getter=None,
+    max_frames: int | None = None,
+    max_attempts: int | None = None,
+) -> Iterator[bytes]:
+    attempts = 0
+    emitted = 0
+    last_sequence: int | None = None
+    preview_fps = _normalize_preview_fps(preview_fps)
+    timeout_s = 1.0 / preview_fps
+    while True:
+        if config_getter is not None:
+            config = config_getter()
+            consumers = getattr(config, "consumers", None)
+            if consumers is not None and getattr(consumers, "preview", True) is not True:
+                break
+        if max_frames is not None and emitted >= max_frames:
+            break
+        if max_attempts is not None and attempts >= max_attempts:
+            break
+        if not backend.running:
+            break
+        attempts += 1
+        result = backend.wait_preview_jpeg(
+            after_sequence=last_sequence,
+            timeout_s=timeout_s,
+        )
+        if result is None:
+            continue
+        sequence, payload = result
+        last_sequence = int(sequence)
+        emitted += 1
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+            + payload
+            + b"\r\n"
+        )
 
 
 def _mjpeg_frames(

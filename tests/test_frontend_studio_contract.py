@@ -67,11 +67,12 @@ def test_runtime_status_does_not_treat_informational_reason_as_failure() -> None
     assert "consumedBatches > 0 || controlObservations > 0" in source
 
 
-def test_studio_deepstream_preview_does_not_claim_a_cpu_image_source() -> None:
+def test_studio_deepstream_preview_uses_backend_hardware_jpeg_status() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert 'imageAvailable={!deepstreamNvinferSelected' in source
-    assert '纯 NVMM 主线未接入浏览器图像预览' in source
+    assert "const deepstreamPreviewStreamReady =" in source
+    assert "runtimeInference.preview_enabled === true" in source
+    assert "const previewImageAvailable = deepstreamNvinferSelected" in source
     assert '{showImage ? <img alt="实时画面 / ROI"' in source
 
 
@@ -111,12 +112,13 @@ def test_model_file_lists_show_size_in_megabytes() -> None:
     assert "formatModelSizeMb(artifact.size_bytes)" in models
 
 
-def test_dashboard_deepstream_preview_is_explicitly_unavailable() -> None:
+def test_dashboard_deepstream_preview_uses_hardware_jpeg_branch() -> None:
     source = DASHBOARD_VIEW.read_text(encoding="utf-8")
 
-    assert "const previewImageAvailable = !deepstreamNvinferSelected" in source
+    assert "const deepstreamPreviewStreamReady =" in source
+    assert "runtimeInference.preview_enabled === true" in source
     assert "{previewImageAvailable ? (" in source
-    assert "纯 NVMM 主线未接入浏览器图像预览" in source
+    assert "NVMM ROI · 硬件 JPEG" in source
     assert "Tensor Overlay" not in source
     assert 'readNumberRecord(targetMouseObservation, "predicted_aim_x_roi_px")' in source
     assert 'readNumberRecord(targetMouseObservation, "predicted_aim_y_roi_px")' in source

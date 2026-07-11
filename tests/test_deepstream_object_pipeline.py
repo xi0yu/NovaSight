@@ -57,17 +57,19 @@ def _pipeline_config(tmp_path: Path) -> DeepStreamPipelineConfig:
     )
 
 
-def test_deepstream_pipeline_is_nvmm_latest_only_without_cpu_image_sink(tmp_path: Path) -> None:
+def test_deepstream_pipeline_is_nvmm_latest_only_with_hardware_jpeg_preview(tmp_path: Path) -> None:
     pipeline = build_deepstream_pipeline(_pipeline_config(tmp_path))
 
-    assert pipeline.count("max-size-buffers=1") == 3
-    assert pipeline.count("leaky=downstream") == 3
+    assert pipeline.count("max-size-buffers=1") >= 4
+    assert pipeline.count("leaky=downstream") >= 4
     assert "nvv4l2decoder mjpeg=1" in pipeline
     assert "nvvidconv left=720 right=1200 top=300 bottom=780" in pipeline
     assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in pipeline
     assert "nvstreammux name=mux batch-size=1 live-source=1" in pipeline
     assert "nvinfer name=primary-infer" in pipeline
-    assert "appsink" not in pipeline
+    assert "tee name=novasight_roi_split" in pipeline
+    assert "nvjpegenc name=preview-encoder" in pipeline
+    assert "appsink name=preview_sink" in pipeline
     assert "videoconvert" not in pipeline
     assert "video/x-raw,format=BGR" not in pipeline
 
@@ -174,12 +176,14 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
     backend._running = True
     backend._started_at_ns = now_ns - 2_000_000_000
     backend._input_frames = 3
+    backend._output_buffers = 2
     backend._published_batches = 2
     backend._object_meta_frames = 2
     backend._last_frame_id = 17
     backend._last_capture_ts_ns = now_ns - 4_000_000
     backend._last_capture_interval_ms = 8.33
     backend._input_frame_samples.extend([(now_ns - 20_000_000, 0.0), (now_ns, 0.0)])
+    backend._output_samples.extend([(now_ns - 20_000_000, 0.0), (now_ns, 0.0)])
     backend._publish_samples.append((now_ns, 4.0))
 
     status = backend.status()
@@ -189,6 +193,7 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
     assert status["inference_phase"] == "publishing"
     assert status["inference_reason"] == "DetectionBatch is being published"
     assert status["input_fps"] == 2.0
+    assert status["output_fps"] == 2.0
     assert status["published_fps"] == 1.0
     assert status["latest_frame_age_ms"] == pytest.approx(4.0, abs=2.0)
     assert status["capture_profile"] == {
@@ -211,6 +216,28 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
         "memory": "NVMM",
     }
     assert "preview" not in status
+
+
+def test_missing_hardware_preview_encoder_does_not_disable_inference(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    Gst = SimpleNamespace(
+        ElementFactory=SimpleNamespace(
+            find=lambda name: None if name == "nvjpegenc" else object()
+        )
+    )
+
+    backend._degrade_preview_if_unavailable(Gst)
+
+    assert backend.pipeline_config.preview_enabled is False
+    assert "nvjpegenc" not in backend.pipeline_description
+    assert "nvinfer name=primary-infer" in backend.pipeline_description
+    assert "missing GStreamer element(s): nvjpegenc" in backend._preview_disabled_reason
 
 
 def test_deepstream_backend_auto_builds_missing_parser_before_dependency_check(

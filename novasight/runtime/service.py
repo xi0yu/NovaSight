@@ -162,12 +162,20 @@ class RuntimeService:
             statistics["capture_counter"] = int(deepstream_status.get("input_frames") or 0)
             statistics["capture_fps"] = float(deepstream_status.get("input_fps") or 0.0)
             statistics["inference_counter"] = int(
+                deepstream_status.get("output_buffers") or 0
+            )
+            statistics["detection_batch_counter"] = int(
+                deepstream_status.get("published_batches") or 0
+            )
+            statistics["detection_batch_consumed_counter"] = int(
                 getattr(pipeline_stats, "processed_frames", 0)
             )
             statistics["inference_fps"] = float(
+                deepstream_status.get("output_fps") or 0.0
+            )
+            statistics["detection_batch_fps"] = float(
                 deepstream_status.get("published_fps") or 0.0
             )
-            statistics["detection_batch_fps"] = statistics["inference_fps"]
             statistics["control_observation_counter"] = int(
                 getattr(pipeline_stats, "control_observations", 0)
             )

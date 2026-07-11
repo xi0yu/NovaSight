@@ -889,14 +889,11 @@ export function StudioConsoleView({
   const deepstreamFrameMetaFrames = readNumber(runtimeInference.frame_meta_frames, 0);
   const deepstreamPublishedBatches = readNumber(runtimeInference.published_batches, 0);
   const deepstreamParserStatus = asRecord(runtimeInference.parser);
-  const deepstreamBoundaryObserved =
-    deepstreamInputFrames > 0 ||
+  const deepstreamInferenceCompleted =
     deepstreamOutputBuffers > 0 ||
-    deepstreamBatchMetaBuffers > 0 ||
-    deepstreamFrameMetaFrames > 0 ||
     deepstreamPublishedBatches > 0;
   const inferenceRan =
-    inferenceTrace.ran === true || (deepstreamNvinferSelected && deepstreamBoundaryObserved);
+    inferenceTrace.ran === true || (deepstreamNvinferSelected && deepstreamInferenceCompleted);
   const inferenceAvailable =
     inferenceTrace.available === true ||
     (deepstreamNvinferSelected && runtimeInference.loaded === true && runtimeInference.terminal_error !== true);
@@ -906,6 +903,18 @@ export function StudioConsoleView({
         runtimeInference.inference_reason,
         readString(inferenceTrace.reason, readString(vision.inference_reason, "-"))
       );
+  const deepstreamPreviewStreamReady =
+    deepstreamNvinferSelected &&
+    previewEnabled &&
+    runtimeInference.preview_enabled === true &&
+    runtimeInference.loaded === true &&
+    runtimeInference.terminal_error !== true;
+  const previewImageAvailable = deepstreamNvinferSelected
+    ? deepstreamPreviewStreamReady
+    : runtime?.capture?.available === true;
+  const previewUnavailableReason = deepstreamNvinferSelected
+    ? readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
+    : "预览帧尚不可用";
   const inferenceBatchGeneration = readNumber(
     inferenceTrace.generation ?? inferenceTrace.detection_batch_generation ?? pipeline.last_generation,
     Number.NaN
@@ -2534,8 +2543,8 @@ export function StudioConsoleView({
               <SectionTitle title="推理预览" />
               <PreviewFrame
                 enabled={activePage === "infer" && previewEnabled}
-                imageAvailable={!deepstreamNvinferSelected && runtime?.capture?.available === true}
-                unavailableReason={deepstreamNvinferSelected ? "纯 NVMM 主线未接入浏览器图像预览" : "预览帧尚不可用"}
+                imageAvailable={previewImageAvailable}
+                unavailableReason={previewUnavailableReason}
                 runtime={runtime}
                 roiSize={roiSize}
               />
@@ -3108,7 +3117,9 @@ export function StudioConsoleView({
               rows={[
               ["完成帧", String(statistics?.inference_counter ?? 0)],
               ["推理 FPS", formatNumber(statistics?.inference_fps, 1)],
-              ["Batch 消费 FPS", formatNumber(statistics?.detection_batch_fps, 1)],
+              ["Batch 已发布", formatNumber(statistics?.detection_batch_counter, 0)],
+              ["Batch 已消费", formatNumber(statistics?.detection_batch_consumed_counter, 0)],
+              ["Batch 发布 FPS", formatNumber(statistics?.detection_batch_fps, 1)],
               ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
               ["跳过帧", formatNumber(statistics?.skipped_counter, 0)],
               ["推理前过期", formatNumber(statistics?.stale_dropped_batches, 0)],

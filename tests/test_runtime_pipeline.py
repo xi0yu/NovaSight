@@ -766,6 +766,9 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
                 "running": True,
                 "input_frames": 10,
                 "input_fps": 120.0,
+                "output_buffers": 9,
+                "output_fps": 116.0,
+                "published_batches": 8,
                 "published_fps": 110.0,
                 "stale_dropped_batches": 1,
                 "timestamp_rejected_batches": 2,
@@ -785,7 +788,11 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
     statistics = service.state().statistics
 
     assert statistics["capture_counter"] == 10
-    assert statistics["inference_counter"] == 8
+    assert statistics["inference_counter"] == 9
+    assert statistics["detection_batch_counter"] == 8
+    assert statistics["detection_batch_consumed_counter"] == 8
+    assert statistics["inference_fps"] == 116.0
+    assert statistics["detection_batch_fps"] == 110.0
     assert statistics["skipped_counter"] == 10
     assert statistics["timestamp_rejected_batches"] == 2
     assert statistics["timestamp_source"] == "first_probe_offset_pts"

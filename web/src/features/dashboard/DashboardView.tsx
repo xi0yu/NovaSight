@@ -371,7 +371,15 @@ export function DashboardView({
     return "未选择";
   })();
   const previewEnabled = readNestedBoolean(configSource, "consumers", "preview", true);
-  const previewImageAvailable = !deepstreamNvinferSelected && capture?.available === true && previewEnabled;
+  const deepstreamPreviewStreamReady =
+    deepstreamNvinferSelected &&
+    previewEnabled &&
+    runtimeInference.preview_enabled === true &&
+    runtimeInference.loaded === true &&
+    runtimeInference.terminal_error !== true;
+  const previewImageAvailable = previewEnabled && (
+    deepstreamNvinferSelected ? deepstreamPreviewStreamReady : capture?.available === true
+  );
   const inferenceEnabled = readNestedBoolean(configSource, "consumers", "inference", true);
   const recordingEnabled = readNestedBoolean(configSource, "consumers", "recording", false);
   const vision = asRecord(runtime?.vision);
@@ -396,8 +404,13 @@ export function DashboardView({
   const willEmit = control.will_emit === true;
   const inferenceReason =
     typeof vision.inference_reason === "string" ? vision.inference_reason : "";
-  const inferenceRan = inferenceTrace.ran === true;
-  const inferenceAvailable = inferenceTrace.available === true;
+  const inferenceRan = inferenceTrace.ran === true || (
+    deepstreamNvinferSelected && readNumberRecord(runtimeInference, "output_buffers") !== null &&
+    (readNumberRecord(runtimeInference, "output_buffers") ?? 0) > 0
+  );
+  const inferenceAvailable = inferenceTrace.available === true || (
+    deepstreamNvinferSelected && runtimeInference.loaded === true && runtimeInference.terminal_error !== true
+  );
   const inferenceFrameId = readNumberRecord(inferenceTrace, "frame_id");
   const rawDetections = readNumberRecord(inferenceTrace, "raw_detections");
   const mappedDetections = readNumberRecord(inferenceTrace, "mapped_detections");
@@ -577,8 +590,10 @@ export function DashboardView({
             {previewImageAvailable ? (
               <img alt="实时采集画面" src={streamUrl(configVersion, configVersion)} />
             ) : null}
-            {deepstreamNvinferSelected ? (
-              <div className="home-video-unavailable">纯 NVMM 主线未接入浏览器图像预览</div>
+            {deepstreamNvinferSelected && !previewImageAvailable ? (
+              <div className="home-video-unavailable">
+                {readStringRecord(runtimeInference, "preview_reason") || "等待 DeepStream 硬件预览帧"}
+              </div>
             ) : null}
             <div className="home-video-grid" />
             <div className="home-video-scan" />
@@ -607,7 +622,7 @@ export function DashboardView({
               {aimPointStyle ? <div className="home-aim-point" style={aimPointStyle} /> : null}
             </div>
             <div className="home-hud home-hud-left">
-              <span>预览 {deepstreamNvinferSelected ? "未接入" : previewEnabled ? `${capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
+              <span>预览 {previewEnabled ? `${readNumberRecord(runtimeInference, "preview_fps") ?? capture?.preview_target_fps ?? 30}fps` : "已关闭"}</span>
               <span>{captureMode(capture, configuredCaptureProfile)}</span>
               <span>ROI {roiSize}</span>
               <span>GPU 路线</span>
@@ -690,7 +705,7 @@ export function DashboardView({
           </div>
           <div className="home-notice">
             {deepstreamNvinferSelected
-              ? "当前纯 GPU 主线不生成 CPU 预览帧；推理和控制状态直接来自 DeepStream 与 DetectionBatch 遥测。"
+              ? "预览由 NVMM ROI 经硬件 JPEG 编码旁路输出；推理和控制仍直接消费 DeepStream 与 DetectionBatch。"
               : "预览流建议限制为 15-30fps；推理链路继续消费 RoiFrame 或最新帧，不让 UI 预览拖慢核心链路。"}
           </div>
           <div className={inferenceAvailable ? "home-notice good" : "home-notice"}>
@@ -751,10 +766,9 @@ export function DashboardView({
             <ConsumerRow
               icon="WEB"
               title="浏览器预览"
-              detail={deepstreamNvinferSelected ? "纯 NVMM 路径尚未提供预览分支" : `${capture?.preview_target_fps ?? 30}fps 降采样推流`}
-              enabled={!deepstreamNvinferSelected && previewEnabled}
+              detail={deepstreamNvinferSelected ? "NVMM ROI · 硬件 JPEG" : `${capture?.preview_target_fps ?? 30}fps 降采样推流`}
+              enabled={previewEnabled}
               busy={consumerBusy === "preview"}
-              disabled={deepstreamNvinferSelected}
               onToggle={(enabled) => void updateConsumer("preview", enabled)}
             />
             <ConsumerRow

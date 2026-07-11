@@ -26,6 +26,8 @@ class DeepStreamPipelineConfig:
     pixel_format: str = "MJPG"
     io_mode: int = 2
     batched_push_timeout_us: int = 0
+    preview_enabled: bool = True
+    preview_fps: int = 30
 
     @property
     def roi_right(self) -> int:
@@ -41,8 +43,7 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
     nvinfer_config = _gst_property_value(
         Path(config.nvinfer_config_path).expanduser().resolve(strict=False)
     )
-    return " ".join(
-        [
+    elements = [
             (
                 f"v4l2src name=capture-source device={_gst_property_value(config.device)} "
                 f"io-mode={int(config.io_mode)} do-timestamp=true"
@@ -71,6 +72,19 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             "!",
             (
                 "video/x-raw(memory:NVMM),format=NV12,"
+                f"width={int(config.roi_width)},height={int(config.roi_height)},"
+                "pixel-aspect-ratio=1/1"
+            ),
+            "!",
+            "tee name=novasight_roi_split",
+            "novasight_roi_split.",
+            "!",
+            LATEST_ONLY_QUEUE,
+            "!",
+            "nvvidconv",
+            "!",
+            (
+                "video/x-raw(memory:NVMM),format=NV12,"
                 f"width={int(config.model_width)},height={int(config.model_height)},"
                 "pixel-aspect-ratio=1/1"
             ),
@@ -78,6 +92,29 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             LATEST_ONLY_QUEUE,
             "!",
             "mux.sink_0",
+        ]
+    if config.preview_enabled:
+        elements.extend(
+            [
+                "novasight_roi_split.",
+                "!",
+                LATEST_ONLY_QUEUE,
+                "!",
+                f"videorate drop-only=true max-rate={int(config.preview_fps)}",
+                "!",
+                (
+                    "video/x-raw(memory:NVMM),format=NV12,"
+                    f"width={int(config.roi_width)},height={int(config.roi_height)},"
+                    f"framerate={int(config.preview_fps)}/1"
+                ),
+                "!",
+                "nvjpegenc name=preview-encoder",
+                "!",
+                "appsink name=preview_sink emit-signals=false max-buffers=1 drop=true sync=false",
+            ]
+        )
+    elements.extend(
+        [
             "nvstreammux name=mux",
             "batch-size=1",
             "live-source=1",
@@ -91,6 +128,7 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             "fakesink name=deepstream-sink sync=false async=false qos=false",
         ]
     )
+    return " ".join(elements)
 
 
 def _validate_config(config: DeepStreamPipelineConfig) -> None:
@@ -113,6 +151,8 @@ def _validate_config(config: DeepStreamPipelineConfig) -> None:
         raise ValueError("io_mode must be >= 0")
     if int(config.batched_push_timeout_us) < 0:
         raise ValueError("batched_push_timeout_us must be >= 0")
+    if int(config.preview_fps) <= 0:
+        raise ValueError("preview_fps must be positive")
     if int(config.roi_left) < 0 or int(config.roi_top) < 0:
         raise ValueError("ROI left/top must be >= 0")
     if config.roi_right > int(config.capture_width) or config.roi_bottom > int(

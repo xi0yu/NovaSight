@@ -155,6 +155,8 @@ export type CaptureState = {
 export type Statistics = {
   capture_counter: number;
   inference_counter: number;
+  detection_batch_counter?: number;
+  detection_batch_consumed_counter?: number;
   dropped_counter: number;
   skipped_counter: number;
   stale_dropped_batches?: number;

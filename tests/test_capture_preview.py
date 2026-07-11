@@ -1,6 +1,6 @@
 import numpy as np
 
-from novasight.api.routes_capture import _mjpeg_frames
+from novasight.api.routes_capture import _deepstream_mjpeg_frames, _mjpeg_frames
 from novasight.capture.preview import render_preview_frame
 from novasight.capture.source import CapturedFrame, FrameResource, GstResourceFrameSource
 from novasight.capture.state import CaptureRuntimeState
@@ -30,6 +30,18 @@ class _PreviewCapture:
 
     def record_preview_output(self, frame: CapturedFrame, *, target_fps: int) -> None:
         del frame, target_fps
+
+
+class _DeepStreamPreviewBackend:
+    running = True
+
+    def __init__(self):
+        self.calls = 0
+
+    def wait_preview_jpeg(self, *, after_sequence=None, timeout_s=0.0):
+        del after_sequence, timeout_s
+        self.calls += 1
+        return (7, b"\xff\xd8preview\xff\xd9")
 
 
 def test_preview_renders_cpu_snapshot_attached_to_nvmm_frame() -> None:
@@ -112,3 +124,20 @@ def test_nvmm_preview_snapshot_reaches_mjpeg_stream() -> None:
     assert chunks[0].startswith(b"--frame\r\nContent-Type: image/jpeg\r\n")
     assert capture.state.preview_available is True
     assert capture.state.preview_reason == ""
+
+
+def test_deepstream_hardware_jpeg_reaches_mjpeg_stream_without_reencoding() -> None:
+    backend = _DeepStreamPreviewBackend()
+
+    chunks = list(
+        _deepstream_mjpeg_frames(
+            backend,
+            preview_fps=30,
+            max_frames=1,
+            max_attempts=1,
+        )
+    )
+
+    assert len(chunks) == 1
+    assert b"Content-Length: 11" in chunks[0]
+    assert b"\xff\xd8preview\xff\xd9" in chunks[0]
