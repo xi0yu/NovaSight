@@ -398,3 +398,45 @@ def test_shared_count_slew_limits_adjacent_observation_change() -> None:
     assert command.debug["directed_counts_x_float"] > 3.0
     assert command.debug["slew_limited_counts_x_float"] == pytest.approx(3.0)
     assert command.dx == 3
+
+
+def test_arrival_hold_cannot_be_undone_by_slew_decay() -> None:
+    controller = MouseController(
+        _config(
+            mode=UNIVERSAL_SATURATED,
+            universal={"response_scale_y_px": 20.0, "max_step_y_counts": 100.0},
+            shared={"deadzone_y_px": 4.0, "max_count_slew_y": 8.0},
+        )
+    )
+    first = controller.calculate(_observation(frame_id=1, observed_y=200.0))
+    assert first.dy > 8
+
+    arrived = controller.calculate(_observation(frame_id=2, observed_y=100.0))
+
+    assert arrived.debug["deadzone_limited_counts_y_float"] == pytest.approx(0.0)
+    assert arrived.debug["slew_limited_counts_y_float"] == pytest.approx(0.0)
+    assert arrived.dy == 0
+
+
+def test_settled_axis_ignores_one_frame_outside_exit_threshold() -> None:
+    controller = MouseController(
+        _config(
+            mode=UNIVERSAL_SATURATED,
+            shared={"deadzone_y_px": 4.0},
+        )
+    )
+    controller.calculate(_observation(frame_id=1, observed_y=100.0))
+    settled = controller.calculate(_observation(frame_id=2, observed_y=100.0))
+    assert settled.debug["arrival_settled_y"] is True
+
+    noisy = controller.calculate(_observation(frame_id=3, observed_y=107.0))
+
+    assert noisy.debug["arrival_settled_y"] is True
+    assert noisy.debug["arrival_departure_candidate_y_frames"] == 1
+    assert noisy.dy == 0
+
+    confirmed_departure = controller.calculate(_observation(frame_id=4, observed_y=107.0))
+
+    assert confirmed_departure.debug["arrival_settled_y"] is False
+    assert confirmed_departure.debug["arrival_departure_candidate_y_frames"] == 0
+    assert confirmed_departure.dy > 0

@@ -9,6 +9,7 @@ CALIBRATED_ANGULAR = "calibrated_angular"
 UNIVERSAL_SATURATED = "universal_saturated"
 CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED})
 ARRIVAL_CONFIRM_FRAMES = 2
+DEPARTURE_CONFIRM_FRAMES = 2
 
 
 @dataclass(frozen=True)
@@ -296,6 +297,8 @@ class MouseControllerState:
     settled_y: bool = False
     arrival_candidate_x_frames: int = 0
     arrival_candidate_y_frames: int = 0
+    departure_candidate_x_frames: int = 0
+    departure_candidate_y_frames: int = 0
 
     def reset(self) -> None:
         self.target_id = None
@@ -308,6 +311,8 @@ class MouseControllerState:
         self.settled_y = False
         self.arrival_candidate_x_frames = 0
         self.arrival_candidate_y_frames = 0
+        self.departure_candidate_x_frames = 0
+        self.departure_candidate_y_frames = 0
 
 
 class MouseController:
@@ -375,20 +380,24 @@ class MouseController:
         (
             self.state.settled_x,
             self.state.arrival_candidate_x_frames,
+            self.state.departure_candidate_x_frames,
             arrival_exit_x_px,
         ) = _update_arrival_axis(
             settled=self.state.settled_x,
             candidate_frames=self.state.arrival_candidate_x_frames,
+            departure_candidate_frames=self.state.departure_candidate_x_frames,
             observed_error_px=observed_error.x,
             enter_px=shared.deadzone_x_px,
         )
         (
             self.state.settled_y,
             self.state.arrival_candidate_y_frames,
+            self.state.departure_candidate_y_frames,
             arrival_exit_y_px,
         ) = _update_arrival_axis(
             settled=self.state.settled_y,
             candidate_frames=self.state.arrival_candidate_y_frames,
+            departure_candidate_frames=self.state.departure_candidate_y_frames,
             observed_error_px=observed_error.y,
             enter_px=shared.deadzone_y_px,
         )
@@ -409,8 +418,12 @@ class MouseController:
         slew_limited = directed_counts
         if self.state.output_history_valid:
             slew_limited = Vec2(
-                _slew_limit(directed_counts.x, self.state.previous_counts.x, shared.max_count_slew_x),
-                _slew_limit(directed_counts.y, self.state.previous_counts.y, shared.max_count_slew_y),
+                0.0
+                if hold_x
+                else _slew_limit(directed_counts.x, self.state.previous_counts.x, shared.max_count_slew_x),
+                0.0
+                if hold_y
+                else _slew_limit(directed_counts.y, self.state.previous_counts.y, shared.max_count_slew_y),
             )
         feasible_counts = Vec2(
             _clamp_axis(slew_limited.x, shared.max_budget_counts_x),
@@ -479,7 +492,10 @@ class MouseController:
             "arrival_settled_y": self.state.settled_y,
             "arrival_candidate_x_frames": self.state.arrival_candidate_x_frames,
             "arrival_candidate_y_frames": self.state.arrival_candidate_y_frames,
+            "arrival_departure_candidate_x_frames": self.state.departure_candidate_x_frames,
+            "arrival_departure_candidate_y_frames": self.state.departure_candidate_y_frames,
             "arrival_confirm_frames": ARRIVAL_CONFIRM_FRAMES,
+            "departure_confirm_frames": DEPARTURE_CONFIRM_FRAMES,
             "arrival_enter_x_px": shared.deadzone_x_px,
             "arrival_enter_y_px": shared.deadzone_y_px,
             "arrival_exit_x_px": arrival_exit_x_px,
@@ -565,22 +581,29 @@ def _update_arrival_axis(
     *,
     settled: bool,
     candidate_frames: int,
+    departure_candidate_frames: int,
     observed_error_px: float,
     enter_px: float,
-) -> tuple[bool, int, float]:
+) -> tuple[bool, int, int, float]:
     enter = max(0.0, float(enter_px))
     exit_threshold = max(enter + 1.0, enter * 1.5) if enter > 0.0 else 0.0
     if enter <= 0.0 or not math.isfinite(observed_error_px):
-        return False, 0, exit_threshold
+        return False, 0, 0, exit_threshold
     absolute_error = abs(float(observed_error_px))
     if settled:
         if absolute_error <= exit_threshold:
-            return True, ARRIVAL_CONFIRM_FRAMES, exit_threshold
-        return False, 0, exit_threshold
+            return True, ARRIVAL_CONFIRM_FRAMES, 0, exit_threshold
+        next_departure_frames = min(
+            DEPARTURE_CONFIRM_FRAMES,
+            max(0, int(departure_candidate_frames)) + 1,
+        )
+        if next_departure_frames < DEPARTURE_CONFIRM_FRAMES:
+            return True, ARRIVAL_CONFIRM_FRAMES, next_departure_frames, exit_threshold
+        return False, 0, 0, exit_threshold
     if absolute_error <= enter:
         next_frames = min(ARRIVAL_CONFIRM_FRAMES, max(0, int(candidate_frames)) + 1)
-        return next_frames >= ARRIVAL_CONFIRM_FRAMES, next_frames, exit_threshold
-    return False, 0, exit_threshold
+        return next_frames >= ARRIVAL_CONFIRM_FRAMES, next_frames, 0, exit_threshold
+    return False, 0, 0, exit_threshold
 
 
 def _projection_geometry(width: float, height: float, fov_x_deg: float) -> tuple[float, float] | None:
