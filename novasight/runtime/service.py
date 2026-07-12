@@ -1862,7 +1862,12 @@ class RuntimeService:
         elif not has_movement:
             no_send_reason = (
                 command.reason
-                if command.reason in {"AIM_SETTLED", "ACCUMULATING_MIN_EFFECTIVE_COUNTS"}
+                if command.reason
+                in {
+                    "AIM_SETTLED",
+                    "ACTUATION_FEEDBACK_PENDING",
+                    "ACCUMULATING_FRACTIONAL_COUNTS",
+                }
                 else "CONTROL_OUTPUT_ZERO"
             )
         trigger_raw = getattr(box_input, "raw", {}) or {}
@@ -1982,7 +1987,12 @@ class RuntimeService:
         if not has_movement:
             zero_reason = (
                 command.reason
-                if command.reason in {"AIM_SETTLED", "ACCUMULATING_MIN_EFFECTIVE_COUNTS"}
+                if command.reason
+                in {
+                    "AIM_SETTLED",
+                    "ACTUATION_FEEDBACK_PENDING",
+                    "ACCUMULATING_FRACTIONAL_COUNTS",
+                }
                 else "CONTROL_OUTPUT_ZERO"
             )
             self._clear_pending_commands(zero_reason)
@@ -1996,8 +2006,10 @@ class RuntimeService:
                 "message": (
                     "瞄点已到位，保持设备静止"
                     if zero_reason == "AIM_SETTLED"
-                    else "控制预算累计中，等待达到设备最小有效 counts"
-                    if zero_reason == "ACCUMULATING_MIN_EFFECTIVE_COUNTS"
+                    else "等待上一条设备输出进入采集画面"
+                    if zero_reason == "ACTUATION_FEEDBACK_PENDING"
+                    else "累计不足 1 count 的小数余量"
+                    if zero_reason == "ACCUMULATING_FRACTIONAL_COUNTS"
                     else "控制量量化为零，未发送设备"
                 ),
                 "intent": {
@@ -2076,8 +2088,37 @@ class RuntimeService:
         recent_abs_40 = recent[40][2]
         recent_abs_x_60 = recent[60][3]
         recent_abs_y_60 = recent[60][4]
-        confidence_zero_x = max(1, int(self.config.hardware.min_effective_move_counts_x))
-        confidence_zero_y = max(1, int(self.config.hardware.min_effective_move_counts_y))
+        latest_send_x_ts_ns = max(
+            (
+                send_ts_ns
+                for send_ts_ns, dx, _ in self._executed_control_samples
+                if dx != 0
+            ),
+            default=0,
+        )
+        latest_send_y_ts_ns = max(
+            (
+                send_ts_ns
+                for send_ts_ns, _, dy in self._executed_control_samples
+                if dy != 0
+            ),
+            default=0,
+        )
+        feedback_delay_ns = int(
+            max(0.0, float(self.config.control.configured_actuation_delay_s)) * 1e9
+        )
+        feedback_visible_after_x_ts_ns = latest_send_x_ts_ns + feedback_delay_ns
+        feedback_visible_after_y_ts_ns = latest_send_y_ts_ns + feedback_delay_ns
+        actuation_pending_x = bool(
+            latest_send_x_ts_ns > 0
+            and capture_ts_ns <= feedback_visible_after_x_ts_ns
+        )
+        actuation_pending_y = bool(
+            latest_send_y_ts_ns > 0
+            and capture_ts_ns <= feedback_visible_after_y_ts_ns
+        )
+        confidence_zero_x = 1
+        confidence_zero_y = 1
         velocity_confidence_x = max(
             0.0,
             min(1.0, 1.0 - recent_abs_x_60 / confidence_zero_x),
@@ -2103,6 +2144,13 @@ class RuntimeService:
             "velocity_confidence_zero_counts_x": confidence_zero_x,
             "velocity_confidence_zero_counts_y": confidence_zero_y,
             "velocity_confidence_source": "axis_recent_successful_device_counts_60ms",
+            "latest_successful_send_x_ts_ns": latest_send_x_ts_ns,
+            "latest_successful_send_y_ts_ns": latest_send_y_ts_ns,
+            "feedback_visible_after_x_ts_ns": feedback_visible_after_x_ts_ns,
+            "feedback_visible_after_y_ts_ns": feedback_visible_after_y_ts_ns,
+            "actuation_feedback_delay_ms": feedback_delay_ns / 1e6,
+            "actuation_pending_x": actuation_pending_x,
+            "actuation_pending_y": actuation_pending_y,
         }
 
     def _prune_executed_control_samples(self, now_ns: int) -> None:
@@ -2423,8 +2471,6 @@ class RuntimeService:
                     invert_y=bool(shared.invert_y),
                     max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
                     max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
-                    min_effective_counts_x=int(config.hardware.min_effective_move_counts_x),
-                    min_effective_counts_y=int(config.hardware.min_effective_move_counts_y),
                 ),
             )
         )
@@ -2606,6 +2652,8 @@ class RuntimeService:
             target_confidence=max(0.0, min(1.0, float(target.score))),
             prediction_confidence=prediction_confidence,
             observed_valid=raw_aim.valid and not bool(target.is_predicted),
+            actuation_pending_x=bool(executed_control["actuation_pending_x"]),
+            actuation_pending_y=bool(executed_control["actuation_pending_y"]),
             valid=prediction_valid,
             invalid_reason=invalid_reason,
         )

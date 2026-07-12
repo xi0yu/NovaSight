@@ -214,8 +214,8 @@ class ControlConfig:
     prediction_x_enabled: bool = True
     prediction_y_enabled: bool = True
     scheduler_enabled: bool = True
-    scheduler_step_counts_x: int = 32
-    scheduler_step_counts_y: int = 32
+    scheduler_step_counts_x: int = 8
+    scheduler_step_counts_y: int = 8
     scheduler_interval_ms: float = 4.0
     trigger_mode: str = "always"
 
@@ -233,8 +233,6 @@ class HardwareConfig:
     port: int = 8888
     uuid: str = "12345678"
     monitor_port: int = 5001
-    min_effective_move_counts_x: int = 16
-    min_effective_move_counts_y: int = 16
 
 
 @dataclass
@@ -364,7 +362,13 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         hardware = dict(hardware)
         # The preceding kmNet executor accepted this key but forced it to False.
         hardware.pop("flip_dy", None)
-        for key in ("kind", "serial_port", "heartbeat_timeout_ms"):
+        for key in (
+            "kind",
+            "serial_port",
+            "heartbeat_timeout_ms",
+            "min_effective_move_counts_x",
+            "min_effective_move_counts_y",
+        ):
             hardware.pop(key, None)
         normalized["hardware"] = hardware
     normalized.pop("executor", None)
@@ -594,6 +598,10 @@ def _migrate_dual_control_modes(
     if not isinstance(shared, dict):
         return
     shared = dict(shared)
+    for key in ("scheduler_step_counts_x", "scheduler_step_counts_y"):
+        value = control.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            control[key] = 8 if value == 32 else min(20, max(1, value))
     if "arrival_hysteresis_enabled" not in shared:
         legacy_x = shared.get("deadzone_x_px")
         legacy_y = shared.get("deadzone_y_px")
@@ -926,12 +934,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             )
     for key in ("scheduler_step_counts_x", "scheduler_step_counts_y"):
         value = int(getattr(cfg.control, key))
-        if value < 1 or value > 64:
-            raise ValueError(f"runtime config key 'control.{key}' must be >= 1 and <= 64")
-    for key in ("min_effective_move_counts_x", "min_effective_move_counts_y"):
-        value = int(getattr(cfg.hardware, key))
-        if value < 1 or value > 64:
-            raise ValueError(f"runtime config key 'hardware.{key}' must be >= 1 and <= 64")
+        if value < 1 or value > 20:
+            raise ValueError(f"runtime config key 'control.{key}' must be >= 1 and <= 20")
     if cfg.control.trigger_mode not in {"hardware", "always"}:
         raise ValueError("runtime config key 'control.trigger_mode' must be hardware or always")
     if cfg.control.candidate_ratio_max_aspect < 1:

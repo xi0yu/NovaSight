@@ -160,9 +160,7 @@ const KMNET_RECOMMENDED = {
   host: "192.168.2.188",
   port: 8888,
   uuid: "12345678",
-  monitor_port: 5001,
-  min_effective_move_counts_x: 16,
-  min_effective_move_counts_y: 16
+  monitor_port: 5001
 };
 
 const ARTIFACT_KIND_RANK: Record<string, number> = {
@@ -721,12 +719,10 @@ export function StudioConsoleView({
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
-  const kmnetMinEffectiveX = readNumber(hardwareConfig.min_effective_move_counts_x, 16);
-  const kmnetMinEffectiveY = readNumber(hardwareConfig.min_effective_move_counts_y, 16);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
   const schedulerEnabled = readBoolean(controlConfig.scheduler_enabled, true);
-  const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 32);
-  const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 32);
+  const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
+  const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
   const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
 
   useEffect(() => {
@@ -2688,7 +2684,6 @@ export function StudioConsoleView({
                 <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
                 <span>可行预算 counts</span><b>{formatPoint(controlPipeline.feasible_counts_x_float, controlPipeline.feasible_counts_y_float, 2)}</b>
                 <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
-                <span>设备最小有效量</span><b>{formatPoint(controlPipeline.min_effective_counts_x, controlPipeline.min_effective_counts_y, 0, "counts")}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>
@@ -2749,8 +2744,8 @@ export function StudioConsoleView({
                 <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
                 <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
                 <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
-                <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
-                <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
+                <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
+                <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
                 <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
               </div>
 
@@ -2889,8 +2884,6 @@ export function StudioConsoleView({
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
               <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
-              <NumberControl label="X 最小有效 counts" value={kmnetMinEffectiveX} min={1} max={64} step={1} onCommit={(value) => updateConfigField("hardware", "min_effective_move_counts_x", Math.round(value))} />
-              <NumberControl label="Y 最小有效 counts" value={kmnetMinEffectiveY} min={1} max={64} step={1} onCommit={(value) => updateConfigField("hardware", "min_effective_move_counts_y", Math.round(value))} />
               <ModuleSwitch
                 label="服务启动自动连接"
                 detail="后端启动完成后按当前地址连接 kmNet"
@@ -2912,8 +2905,8 @@ export function StudioConsoleView({
               <label>命令调度</label>
               <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接调用一次 kmNet" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
               <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
-              <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
-              <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={16} max={64} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
+              <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
+              <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
               <div className="console-action-row">
                 <button
                   className={kmnetConnected || kmnetConnecting ? "console-button danger" : "console-button primary"}

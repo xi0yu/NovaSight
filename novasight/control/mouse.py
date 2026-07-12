@@ -43,6 +43,8 @@ class MouseObservation:
     target_confidence: float
     prediction_confidence: float
     observed_valid: bool = True
+    actuation_pending_x: bool = False
+    actuation_pending_y: bool = False
     valid: bool = True
     invalid_reason: str = ""
 
@@ -112,8 +114,6 @@ class SharedOutputConfig:
     invert_y: bool
     max_budget_counts_x: int
     max_budget_counts_y: int
-    min_effective_counts_x: int
-    min_effective_counts_y: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,10 +485,10 @@ class MouseController:
         )
         hold_x = self.state.settled_x or (
             shared.deadzone_x_px > 0.0 and abs(observed_error.x) <= shared.deadzone_x_px
-        )
+        ) or observation.actuation_pending_x
         hold_y = self.state.settled_y or (
             shared.deadzone_y_px > 0.0 and abs(observed_error.y) <= shared.deadzone_y_px
-        )
+        ) or observation.actuation_pending_y
         deadzone_limited = Vec2(
             0.0 if hold_x else computation.counts.x,
             0.0 if hold_y else computation.counts.y,
@@ -520,16 +520,8 @@ class MouseController:
             feasible_counts.y,
             self.state.residual_y_counts,
         )
-        counts_x, residual_x = _quantize_effective_counts(
-            feasible_counts.x,
-            residual_input_x,
-            shared.min_effective_counts_x,
-        )
-        counts_y, residual_y = _quantize_effective_counts(
-            feasible_counts.y,
-            residual_input_y,
-            shared.min_effective_counts_y,
-        )
+        counts_x, residual_x = _quantize_counts(feasible_counts.x, residual_input_x)
+        counts_y, residual_y = _quantize_counts(feasible_counts.y, residual_input_y)
         self.state.residual_x_counts = residual_x
         self.state.residual_y_counts = residual_y
         self.state.target_id = observation.target_id
@@ -573,9 +565,7 @@ class MouseController:
             "budget_clamped_y": feasible_counts.y != slew_limited.y,
             "residual_x_counts": self.state.residual_x_counts,
             "residual_y_counts": self.state.residual_y_counts,
-            "min_effective_counts_x": shared.min_effective_counts_x,
-            "min_effective_counts_y": shared.min_effective_counts_y,
-            "count_quantization": "minimum_effective_accumulator",
+            "count_quantization": "nearest_integer_with_fractional_residual",
             "arrival_state": (
                 "SETTLED"
                 if self.state.settled_x and self.state.settled_y
@@ -597,6 +587,8 @@ class MouseController:
             "arrival_exit_y_px": arrival_exit_y_px,
             "arrival_crossed_center_x": crossed_center_x,
             "arrival_crossed_center_y": crossed_center_y,
+            "actuation_pending_x": observation.actuation_pending_x,
+            "actuation_pending_y": observation.actuation_pending_y,
             "residual_direction_reset_x": residual_direction_reset_x,
             "residual_direction_reset_y": residual_direction_reset_y,
             "final_dx": counts_x,
@@ -608,17 +600,26 @@ class MouseController:
             and counts_y == 0
             and (abs(self.state.residual_x_counts) > 0.0 or abs(self.state.residual_y_counts) > 0.0)
         )
+        feedback_pending = (
+            counts_x == 0
+            and counts_y == 0
+            and (observation.actuation_pending_x or observation.actuation_pending_y)
+        )
         reason = (
             "AIM_SETTLED"
             if settled
-            else "ACCUMULATING_MIN_EFFECTIVE_COUNTS"
+            else "ACTUATION_FEEDBACK_PENDING"
+            if feedback_pending
+            else "ACCUMULATING_FRACTIONAL_COUNTS"
             if accumulating
             else "mouse_control"
         )
         debug["movement_strategy"] = (
             "hold_position"
             if settled
-            else "accumulate_device_budget"
+            else "wait_for_actuation_feedback"
+            if feedback_pending
+            else "accumulate_fractional_counts"
             if accumulating
             else "predictive_tracking"
         )
@@ -653,26 +654,13 @@ def _round_half_away_from_zero(value: float) -> int:
     return math.ceil(value - 0.5)
 
 
-def _quantize_effective_counts(
-    requested: float,
-    residual: float,
-    minimum_effective_counts: int,
-) -> tuple[int, float]:
+def _quantize_counts(requested: float, residual: float) -> tuple[int, float]:
     if not math.isfinite(requested) or not math.isfinite(residual):
         return 0, 0.0
     if requested == 0.0:
         return 0, 0.0
-    minimum = max(1, int(minimum_effective_counts))
     total = requested + residual
     quantized = _round_half_away_from_zero(total)
-    if minimum == 1:
-        return quantized, total - quantized
-    if abs(quantized) < minimum:
-        return 0, total
-    requested_quantized = _round_half_away_from_zero(requested)
-    if abs(requested_quantized) < minimum:
-        emitted = minimum if total > 0.0 else -minimum
-        return emitted, total - emitted
     return quantized, total - quantized
 
 

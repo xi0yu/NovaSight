@@ -319,8 +319,6 @@ def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
     interval_s = interval_ms / 1000.0
     capacity = plan_step_capacity(config.control.scheduler_interval_ms)
     expiry_s = (MAX_PLAN_DURATION_MS + interval_ms) / 1000.0
-    min_effective_x = max(1, int(config.hardware.min_effective_move_counts_x))
-    min_effective_y = max(1, int(config.hardware.min_effective_move_counts_y))
     return CommandScheduler(
         min_interval_s=interval_s,
         ttl_s=expiry_s,
@@ -328,8 +326,8 @@ def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
         cancel_on_new_frame=True,
         cancel_on_direction_change=True,
         cancel_on_track_change=True,
-        max_step_x=max(int(config.control.scheduler_step_counts_x), min_effective_x * 2),
-        max_step_y=max(int(config.control.scheduler_step_counts_y), min_effective_y * 2),
+        max_step_x=int(config.control.scheduler_step_counts_x),
+        max_step_y=int(config.control.scheduler_step_counts_y),
         queue_hard_limit=capacity,
         device_error_cooldown_s=0.050,
     )

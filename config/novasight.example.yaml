@@ -91,8 +91,8 @@ control:
   prediction_x_enabled: true
   prediction_y_enabled: true
   scheduler_enabled: true
-  scheduler_step_counts_x: 32
-  scheduler_step_counts_y: 32
+  scheduler_step_counts_x: 8
+  scheduler_step_counts_y: 8
   scheduler_interval_ms: 4.0
   target_fov_radius_px: 180
   min_confidence: 0.25
@@ -107,5 +107,3 @@ hardware:
   port: 8888
   uuid: "12345678"
   monitor_port: 5001
-  min_effective_move_counts_x: 16
-  min_effective_move_counts_y: 16
