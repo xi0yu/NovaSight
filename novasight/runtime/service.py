@@ -56,6 +56,18 @@ def _status_statistic(
         return 0.0
 
 
+def _near_target_prediction_gain(error_px: float, deadzone_px: float) -> float:
+    if not math.isfinite(error_px):
+        return 0.0
+    deadzone = max(0.0, float(deadzone_px))
+    exit_threshold = max(deadzone + 1.0, deadzone * 1.5) if deadzone > 0.0 else 0.0
+    transition_width = max(4.0, deadzone * 2.0)
+    return max(
+        0.0,
+        min(1.0, (abs(float(error_px)) - exit_threshold) / transition_width),
+    )
+
+
 class RuntimeService:
     def __init__(
         self,
@@ -2035,7 +2047,7 @@ class RuntimeService:
     ) -> dict[str, Any]:
         self._prune_executed_control_samples(control_now_ts_ns)
 
-        def totals(start_ns: int, end_ns: int) -> tuple[int, int, int]:
+        def totals(start_ns: int, end_ns: int) -> tuple[int, int, int, int, int]:
             selected = [
                 (dx, dy)
                 for send_ts_ns, dx, dy in self._executed_control_samples
@@ -2045,9 +2057,11 @@ class RuntimeService:
                 sum(dx for dx, _ in selected),
                 sum(dy for _, dy in selected),
                 sum(abs(dx) + abs(dy) for dx, dy in selected),
+                sum(abs(dx) for dx, _ in selected),
+                sum(abs(dy) for _, dy in selected),
             )
 
-        recent: dict[int, tuple[int, int, int]] = {
+        recent: dict[int, tuple[int, int, int, int, int]] = {
             window_ms: totals(
                 control_now_ts_ns - window_ms * 1_000_000,
                 control_now_ts_ns,
@@ -2058,9 +2072,21 @@ class RuntimeService:
             previous_capture_ts_ns = capture_ts_ns - int(measurement_dt_s * 1e9)
             between_observations = totals(previous_capture_ts_ns, capture_ts_ns)
         else:
-            between_observations = (0, 0, 0)
+            between_observations = (0, 0, 0, 0, 0)
         recent_abs_40 = recent[40][2]
-        velocity_confidence = max(0.0, min(1.0, 1.0 - recent_abs_40 / 80.0))
+        recent_abs_x_60 = recent[60][3]
+        recent_abs_y_60 = recent[60][4]
+        confidence_zero_x = max(1, int(self.config.hardware.min_effective_move_counts_x))
+        confidence_zero_y = max(1, int(self.config.hardware.min_effective_move_counts_y))
+        velocity_confidence_x = max(
+            0.0,
+            min(1.0, 1.0 - recent_abs_x_60 / confidence_zero_x),
+        )
+        velocity_confidence_y = max(
+            0.0,
+            min(1.0, 1.0 - recent_abs_y_60 / confidence_zero_y),
+        )
+        velocity_confidence = min(velocity_confidence_x, velocity_confidence_y)
         return {
             "executed_counts_since_previous_observation_x": between_observations[0],
             "executed_counts_since_previous_observation_y": between_observations[1],
@@ -2072,7 +2098,11 @@ class RuntimeService:
             "executed_counts_last_60ms_y": recent[60][1],
             "recent_executed_counts_abs_40ms": recent_abs_40,
             "velocity_confidence": velocity_confidence,
-            "velocity_confidence_source": "recent_successful_device_counts",
+            "velocity_confidence_x": velocity_confidence_x,
+            "velocity_confidence_y": velocity_confidence_y,
+            "velocity_confidence_zero_counts_x": confidence_zero_x,
+            "velocity_confidence_zero_counts_y": confidence_zero_y,
+            "velocity_confidence_source": "axis_recent_successful_device_counts_60ms",
         }
 
     def _prune_executed_control_samples(self, now_ns: int) -> None:
@@ -2452,31 +2482,97 @@ class RuntimeService:
             capture_ts_ns=context.capture_ts_ns,
             tracker_debug=selector_debug,
         )
+        estimate_usable = bool(estimate.valid) and all(
+            math.isfinite(float(value))
+            for value in (estimate.x, estimate.y, estimate.vx, estimate.vy)
+        )
         capture_ts_ns = int(context.capture_ts_ns or 0)
         horizon_s = max(0.0, (control_now_ts_ns - capture_ts_ns) / 1e9)
         horizon_s += max(0.0, float(self.config.control.configured_actuation_delay_s))
         base_prediction_confidence = max(
             0.0,
-            min(1.0, float(estimate.prediction_confidence) * float(estimate.identity_confidence)),
+            min(
+                1.0,
+                float(estimate.prediction_confidence) * float(estimate.identity_confidence),
+            ),
         )
+        if not estimate_usable:
+            base_prediction_confidence = 0.0
         executed_control = self._executed_control_activity(
             control_now_ts_ns=control_now_ts_ns,
             capture_ts_ns=capture_ts_ns,
             measurement_dt_s=measurement_dt_s,
         )
-        velocity_confidence = float(executed_control["velocity_confidence"])
-        prediction_confidence = base_prediction_confidence * velocity_confidence
+        velocity_confidence_x = float(executed_control["velocity_confidence_x"])
+        velocity_confidence_y = float(executed_control["velocity_confidence_y"])
+        observed_error_control_x = raw_aim.aim_control_x_px - control_width * 0.5
+        observed_error_control_y = raw_aim.aim_control_y_px - control_height * 0.5
+        near_target_prediction_gain_x = _near_target_prediction_gain(
+            observed_error_control_x,
+            float(self.config.control.shared.deadzone_x_px),
+        )
+        near_target_prediction_gain_y = _near_target_prediction_gain(
+            observed_error_control_y,
+            float(self.config.control.shared.deadzone_y_px),
+        )
+        kalman_position_confidence_x = (
+            base_prediction_confidence
+            * velocity_confidence_x
+        )
+        kalman_position_confidence_y = (
+            base_prediction_confidence
+            * velocity_confidence_y
+        )
+        prediction_confidence_x = (
+            kalman_position_confidence_x
+            * near_target_prediction_gain_x
+        )
+        prediction_confidence_y = (
+            kalman_position_confidence_y
+            * near_target_prediction_gain_y
+        )
         prediction_scale = max(0.0, min(1.5, float(self.config.control.prediction_strength)))
-        predicted_roi_x = float(estimate.x)
-        predicted_roi_y = float(estimate.y)
-        if bool(self.config.control.prediction_x_enabled):
-            predicted_roi_x += float(estimate.vx) * horizon_s * prediction_scale * prediction_confidence
-        if bool(self.config.control.prediction_y_enabled):
-            predicted_roi_y += float(estimate.vy) * horizon_s * prediction_scale * prediction_confidence
+        prediction_x_enabled = bool(self.config.control.prediction_x_enabled)
+        prediction_y_enabled = bool(self.config.control.prediction_y_enabled)
+        observed_roi_x = float(raw_aim.aim_roi_x_px)
+        observed_roi_y = float(raw_aim.aim_roi_y_px)
+        prediction_origin_x = observed_roi_x
+        prediction_origin_y = observed_roi_y
+        predicted_roi_x = observed_roi_x
+        predicted_roi_y = observed_roi_y
+        if prediction_x_enabled and estimate_usable:
+            prediction_origin_x += (
+                (float(estimate.x) - observed_roi_x) * kalman_position_confidence_x
+            )
+            predicted_roi_x = prediction_origin_x + (
+                float(estimate.vx)
+                * horizon_s
+                * prediction_scale
+                * prediction_confidence_x
+            )
+        if prediction_y_enabled and estimate_usable:
+            prediction_origin_y += (
+                (float(estimate.y) - observed_roi_y) * kalman_position_confidence_y
+            )
+            predicted_roi_y = prediction_origin_y + (
+                float(estimate.vy)
+                * horizon_s
+                * prediction_scale
+                * prediction_confidence_y
+            )
+        enabled_confidences = [
+            confidence
+            for enabled, confidence in (
+                (prediction_x_enabled, prediction_confidence_x),
+                (prediction_y_enabled, prediction_confidence_y),
+            )
+            if enabled
+        ]
+        prediction_confidence = min(enabled_confidences) if enabled_confidences else 0.0
 
         predicted_control_x = 0.0
         predicted_control_y = 0.0
-        prediction_valid = raw_aim.valid and estimate.valid and transform is not None
+        prediction_valid = raw_aim.valid and transform is not None
         invalid_reason = raw_aim.invalid_reason
         if prediction_valid and transform is not None:
             capture_point = transform.roi_to_capture_point(predicted_roi_x, predicted_roi_y)
@@ -2492,7 +2588,7 @@ class RuntimeService:
                 prediction_valid = False
                 invalid_reason = "PREDICTED_AIM_OUT_OF_CONTROL"
         elif not invalid_reason:
-            invalid_reason = "KALMAN_ESTIMATE_INVALID"
+            invalid_reason = "CONTROL_TRANSFORM_UNAVAILABLE"
 
         observation = MouseObservation(
             frame_id=context.frame_id,
@@ -2520,13 +2616,34 @@ class RuntimeService:
                 "prediction_source": "kalman",
                 "prediction_strength": prediction_scale,
                 "base_prediction_confidence": base_prediction_confidence,
+                "kalman_estimate_usable": estimate_usable,
+                "kalman_position_confidence_x": kalman_position_confidence_x,
+                "kalman_position_confidence_y": kalman_position_confidence_y,
+                "prediction_confidence_x": prediction_confidence_x,
+                "prediction_confidence_y": prediction_confidence_y,
+                "near_target_prediction_gain_x": near_target_prediction_gain_x,
+                "near_target_prediction_gain_y": near_target_prediction_gain_y,
                 **executed_control,
                 "kalman_x_px": estimate.x,
                 "kalman_y_px": estimate.y,
                 "kalman_vx_px_s": estimate.vx,
                 "kalman_vy_px_s": estimate.vy,
-                "prediction_origin_x_roi_px": estimate.x,
-                "prediction_origin_y_roi_px": estimate.y,
+                "prediction_origin_x_roi_px": prediction_origin_x,
+                "prediction_origin_y_roi_px": prediction_origin_y,
+                "prediction_origin_source_x": (
+                    "observed_kalman_blend"
+                    if prediction_x_enabled and estimate_usable
+                    else "observed_fallback"
+                    if prediction_x_enabled
+                    else "observed"
+                ),
+                "prediction_origin_source_y": (
+                    "observed_kalman_blend"
+                    if prediction_y_enabled and estimate_usable
+                    else "observed_fallback"
+                    if prediction_y_enabled
+                    else "observed"
+                ),
                 "predicted_aim_x_roi_px": predicted_roi_x,
                 "predicted_aim_y_roi_px": predicted_roi_y,
                 "raw_aim": raw_aim.debug_payload(),

@@ -367,6 +367,8 @@ class MouseControllerState:
     arrival_candidate_y_frames: int = 0
     departure_candidate_x_frames: int = 0
     departure_candidate_y_frames: int = 0
+    previous_observed_error: Vec2 = field(default_factory=lambda: Vec2(0.0, 0.0))
+    observed_error_history_valid: bool = False
 
     def reset(self) -> None:
         self.target_id = None
@@ -381,6 +383,8 @@ class MouseControllerState:
         self.arrival_candidate_y_frames = 0
         self.departure_candidate_x_frames = 0
         self.departure_candidate_y_frames = 0
+        self.previous_observed_error = Vec2(0.0, 0.0)
+        self.observed_error_history_valid = False
 
 
 class MouseController:
@@ -426,6 +430,14 @@ class MouseController:
             observation.predicted_x_px - center_x,
             observation.predicted_y_px - center_y,
         )
+        crossed_center_x = (
+            self.state.observed_error_history_valid
+            and _crossed_center(self.state.previous_observed_error.x, observed_error.x)
+        )
+        crossed_center_y = (
+            self.state.observed_error_history_valid
+            and _crossed_center(self.state.previous_observed_error.y, observed_error.y)
+        )
         try:
             computation = self.controller.compute_counts(
                 ControllerInput(
@@ -456,6 +468,7 @@ class MouseController:
             departure_candidate_frames=self.state.departure_candidate_x_frames,
             observed_error_px=observed_error.x,
             enter_px=shared.deadzone_x_px,
+            crossed_center=crossed_center_x,
         )
         (
             self.state.settled_y,
@@ -468,6 +481,7 @@ class MouseController:
             departure_candidate_frames=self.state.departure_candidate_y_frames,
             observed_error_px=observed_error.y,
             enter_px=shared.deadzone_y_px,
+            crossed_center=crossed_center_y,
         )
         hold_x = self.state.settled_x or (
             shared.deadzone_x_px > 0.0 and abs(observed_error.x) <= shared.deadzone_x_px
@@ -498,14 +512,22 @@ class MouseController:
             _clamp_axis(slew_limited.y, shared.max_budget_counts_y),
         )
 
-        counts_x, residual_x = _quantize_effective_counts(
+        residual_input_x, residual_direction_reset_x = _residual_for_direction(
             feasible_counts.x,
             self.state.residual_x_counts,
+        )
+        residual_input_y, residual_direction_reset_y = _residual_for_direction(
+            feasible_counts.y,
+            self.state.residual_y_counts,
+        )
+        counts_x, residual_x = _quantize_effective_counts(
+            feasible_counts.x,
+            residual_input_x,
             shared.min_effective_counts_x,
         )
         counts_y, residual_y = _quantize_effective_counts(
             feasible_counts.y,
-            self.state.residual_y_counts,
+            residual_input_y,
             shared.min_effective_counts_y,
         )
         self.state.residual_x_counts = residual_x
@@ -514,6 +536,11 @@ class MouseController:
         self.state.frame_id = observation.frame_id
         self.state.previous_counts = feasible_counts
         self.state.output_history_valid = True
+        if observation.observed_valid:
+            self.state.previous_observed_error = observed_error
+            self.state.observed_error_history_valid = True
+        else:
+            self.state.observed_error_history_valid = False
 
         debug = {
             "algorithm": self.mode,
@@ -568,6 +595,10 @@ class MouseController:
             "arrival_enter_y_px": shared.deadzone_y_px,
             "arrival_exit_x_px": arrival_exit_x_px,
             "arrival_exit_y_px": arrival_exit_y_px,
+            "arrival_crossed_center_x": crossed_center_x,
+            "arrival_crossed_center_y": crossed_center_y,
+            "residual_direction_reset_x": residual_direction_reset_x,
+            "residual_direction_reset_y": residual_direction_reset_y,
             "final_dx": counts_x,
             "final_dy": counts_y,
         }
@@ -645,6 +676,24 @@ def _quantize_effective_counts(
     return quantized, total - quantized
 
 
+def _residual_for_direction(requested: float, residual: float) -> tuple[float, bool]:
+    if not math.isfinite(requested) or not math.isfinite(residual):
+        return 0.0, residual != 0.0
+    if requested == 0.0 or residual == 0.0 or requested * residual > 0.0:
+        return residual, False
+    return 0.0, True
+
+
+def _crossed_center(previous_error_px: float, current_error_px: float) -> bool:
+    if not math.isfinite(previous_error_px) or not math.isfinite(current_error_px):
+        return False
+    if previous_error_px == 0.0 or current_error_px == 0.0:
+        return True
+    return (previous_error_px < 0.0 < current_error_px) or (
+        previous_error_px > 0.0 > current_error_px
+    )
+
+
 def _update_arrival_axis(
     *,
     settled: bool,
@@ -652,6 +701,7 @@ def _update_arrival_axis(
     departure_candidate_frames: int,
     observed_error_px: float,
     enter_px: float,
+    crossed_center: bool,
 ) -> tuple[bool, int, int, float]:
     enter = max(0.0, float(enter_px))
     exit_threshold = max(enter + 1.0, enter * 1.5) if enter > 0.0 else 0.0
@@ -668,6 +718,8 @@ def _update_arrival_axis(
         if next_departure_frames < DEPARTURE_CONFIRM_FRAMES:
             return True, ARRIVAL_CONFIRM_FRAMES, next_departure_frames, exit_threshold
         return False, 0, 0, exit_threshold
+    if crossed_center:
+        return True, ARRIVAL_CONFIRM_FRAMES, 0, exit_threshold
     if absolute_error <= enter:
         next_frames = min(ARRIVAL_CONFIRM_FRAMES, max(0, int(candidate_frames)) + 1)
         return next_frames >= ARRIVAL_CONFIRM_FRAMES, next_frames, 0, exit_threshold
