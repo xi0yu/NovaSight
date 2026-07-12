@@ -308,7 +308,7 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
     return ControlOutputPolicy(
         max_abs_dx=int(config.control.scheduler_step_counts_x) * capacity,
         max_abs_dy=int(config.control.scheduler_step_counts_y) * capacity,
-        min_confidence=config.control.min_confidence,
+        min_confidence=0.0,
     )
 
 

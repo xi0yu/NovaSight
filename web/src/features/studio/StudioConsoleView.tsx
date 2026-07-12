@@ -670,7 +670,6 @@ export function StudioConsoleView({
   const predictionStrength = readNumber(controlConfig.prediction_strength, 1.0);
   const predictionXEnabled = readBoolean(controlConfig.prediction_x_enabled, true);
   const predictionYEnabled = readBoolean(controlConfig.prediction_y_enabled, true);
-  const controlMinConfidence = readNumber(controlConfig.min_confidence, 0);
   const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
@@ -682,6 +681,7 @@ export function StudioConsoleView({
   const trackerMaxMissedFrames = readNumber(controlConfig.tracker_max_missed_frames, 2);
   const targetSwitchPreferenceAdvantage = readNumber(controlConfig.target_switch_min_preference_advantage, 0.08);
   const targetSwitchContinuityScore = readNumber(controlConfig.target_switch_min_continuity_score, 0.7);
+  const targetSwitchDelayMs = readNumber(controlConfig.target_switch_delay_ms, 50);
   const kalmanAccelerationNoise = readNumber(controlConfig.kalman_acceleration_noise, 1200);
   const kalmanMeasurementNoiseX = readNumber(controlConfig.kalman_measurement_noise_x, 16);
   const kalmanMeasurementNoiseY = readNumber(controlConfig.kalman_measurement_noise_y, 16);
@@ -2743,7 +2743,17 @@ export function StudioConsoleView({
                   <option value="hardware">kmNet 硬件按键触发</option>
                   <option value="always">检测到目标后自动控制</option>
                 </select>
-                <NumberControl label="按下后启动延迟 ms" value={triggerActivationDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)} />
+                {triggerMode === "hardware" ? (
+                  <NumberControl
+                    label="按下后启动延迟 ms"
+                    detail="kmNet 硬件触发键持续按下达到此时间后，才允许控制输出。自动控制模式不使用该参数。"
+                    value={triggerActivationDelayMs}
+                    min={0}
+                    max={1000}
+                    step={1}
+                    onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)}
+                  />
+                ) : null}
                 <NumberControl label="瞄点垂直比例" value={aimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)} />
                 <NumberControl label="估计执行延迟 s" value={configuredActuationDelay} min={0} max={0.1} step={0.001} onCommit={(value) => updateConfigField("control", "configured_actuation_delay_s", value)} />
                 <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
@@ -2754,15 +2764,6 @@ export function StudioConsoleView({
                 <NumberControl label="X counts 变化限制" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
                 <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
                 <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
-                <ModuleSwitch label="Y 轴压枪" detail="左键持续按下时叠加时间域 Y counts 前馈" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
-                {recoilEnabled ? (
-                  <>
-                    <NumberControl label="压枪启动延迟 ms" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
-                    <NumberControl label="Y 压枪速率 counts/s" value={recoilYRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_rate_counts_s", value)} />
-                    <NumberControl label="压枪渐入 ms" value={recoilRampUpMs} min={0} max={2000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_ramp_up_ms", value)} />
-                    <NumberControl label="单观测最大压枪" value={recoilMaxCounts} min={0.1} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_max_counts_per_observation", value)} />
-                  </>
-                ) : null}
                 <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
                 <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
                 <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
@@ -2806,15 +2807,28 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
+                <SectionTitle title="Y 轴压枪 · 通用参数" />
+                <ModuleSwitch label="启用 Y 轴压枪" detail="左键持续按下且控制链存在有效目标时，在当前控制输出上叠加时间域 Y counts 前馈。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+                {recoilEnabled ? (
+                  <>
+                    <NumberControl label="压枪启动延迟 ms" detail="左键持续按下达到此时间后才开始压枪；与硬件触发启动延迟相互独立。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
+                    <NumberControl label="Y 压枪速率 counts/s" detail="持续按压时每秒追加的 Y 轴设备 counts；最终方向仍受反转 Y 轴设置影响。" value={recoilYRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_rate_counts_s", value)} />
+                    <NumberControl label="压枪渐入 ms" detail="从 0 平滑增长到完整压枪速率所需时间，避免按下瞬间产生突跳。" value={recoilRampUpMs} min={0} max={2000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_ramp_up_ms", value)} />
+                    <NumberControl label="单观测最大压枪 counts" detail="每个新观测最多允许叠加的压枪量，防止异常观测间隔产生大步输出。" value={recoilMaxCounts} min={0.1} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_max_counts_per_observation", value)} />
+                  </>
+                ) : null}
+              </div>
+
+              <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
-                <NumberControl label="最低控制置信度" value={controlMinConfidence} min={0.1} max={0.99} step={0.01} onCommit={(value) => updateConfigField("control", "min_confidence", value)} />
-                <NumberControl label="目标选择半径 px" value={targetFovRadiusPx} min={1} max={4000} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
-                <NumberControl label="候选框最大宽高比" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
-                <NumberControl label="质量权重：置信度" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
-                <NumberControl label="质量权重：面积" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
-                <NumberControl label="类别优先容忍" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
-                <NumberControl label="切换优势阈值" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
-                <NumberControl label="切换连续性阈值" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
+                <NumberControl label="目标选择半径 px" detail="以控制中心为圆心的硬门控半径。目标瞄点超出半径时不参与选择；它不控制鼠标移动速度。" value={targetFovRadiusPx} min={1} max={4000} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
+                <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
+                <NumberControl label="质量权重：置信度" detail="候选质量分数中检测置信度的相对权重；会与面积权重归一化后使用。" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
+                <NumberControl label="质量权重：面积" detail="候选质量分数中 bbox 面积占控制画面的相对权重；会与置信度权重归一化后使用。" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
+                <NumberControl label="类别优先质量容忍" detail="质量低于最佳候选不超过此差值时，仍允许按类别优先级和距离参与竞争。0 表示仅保留最高质量层。" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
+                <NumberControl label="切换最小优势" detail="新候选相对当前锁定目标的质量与类别综合优势至少达到此值，才允许进入切换确认。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
+                <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认；值越高越不易误切换。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
+                <NumberControl label="目标切换确认延迟 ms" detail="新候选持续同时满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "target_switch_delay_ms", value)} />
               </div>
 
               <div className="console-card">
@@ -3276,6 +3290,7 @@ export function StudioConsoleView({
 
 function NumberControl({
   label,
+  detail,
   value,
   min,
   max,
@@ -3283,6 +3298,7 @@ function NumberControl({
   onCommit
 }: {
   label: string;
+  detail?: string;
   value: number;
   min: number;
   max: number;
@@ -3291,7 +3307,7 @@ function NumberControl({
 }) {
   return (
     <>
-      <label>{label}</label>
+      <label title={detail}>{label}</label>
       <CommitNumberControl
         value={value}
         min={min}

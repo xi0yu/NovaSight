@@ -182,7 +182,6 @@ class SharedControlConfig:
 @dataclass
 class ControlConfig:
     mode: str = "universal_saturated"
-    min_confidence: float = 0.25
     target_fov_radius_px: float = 180.0
     target_switch_delay_ms: float = 50.0
     target_lock_enabled: bool = True
@@ -547,13 +546,7 @@ def _migrate_legacy_mouse_control(
             runtime.setdefault("freshness_threshold_ms", legacy_stale_ms)
             normalized["runtime"] = runtime
 
-    min_confidence = control.get("min_confidence")
-    if (
-        legacy_schema
-        and isinstance(min_confidence, (int, float))
-        and not isinstance(min_confidence, bool)
-    ):
-        control["min_confidence"] = max(0.10, float(min_confidence))
+    control.pop("min_confidence", None)
 
     for key in tuple(control):
         if key.startswith("experimental_angle_"):
@@ -852,7 +845,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "configured_actuation_delay_s": (0.0, 0.1),
         "prediction_strength": (0.0, 1.5),
         "scheduler_interval_ms": (1.0, 10.0),
-        "min_confidence": (0.10, 0.99),
         "target_switch_delay_ms": (0.0, 500.0),
     }
     for key, (minimum, maximum) in bounded_controls.items():

@@ -2366,7 +2366,7 @@ class RuntimeService:
         control_center_x_px, control_center_y_px = self._control_center_in_roi(context)
         return self.target_selector.select(
             context,
-            min_confidence=float(self.config.control.min_confidence),
+            min_confidence=float(self.config.inference.confidence_threshold),
             fov_ratio=fov_ratio,
             aim_ratio=self._active_aim_ratio(),
             control_center_x_px=control_center_x_px,

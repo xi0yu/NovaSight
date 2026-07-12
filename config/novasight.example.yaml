@@ -101,7 +101,6 @@ control:
   scheduler_step_counts_y: 8
   scheduler_interval_ms: 4.0
   target_fov_radius_px: 180
-  min_confidence: 0.25
   target_switch_delay_ms: 50
   trigger_mode: always
 logging:

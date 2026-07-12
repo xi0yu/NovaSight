@@ -283,7 +283,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {"path": "control.scheduler_step_counts_y", "label": "Scheduler Y 单步 counts", "type": "int", "min": 1, "max": 20, "step": 1, "restart_required": False},
                     {"path": "control.scheduler_interval_ms", "label": "Scheduler 间隔 ms", "type": "float", "min": 1, "max": 10, "step": 0.1, "precision": 1, "restart_required": False},
                     {"path": "control.target_fov_radius_px", "label": "目标选择半径 px", "type": "float", "min": 1, "step": 1, "precision": 0, "restart_required": False},
-                    {"path": "control.min_confidence", "label": "最低置信度", "type": "float", "min": 0.1, "max": 0.99, "step": 0.01, "precision": 2, "restart_required": False},
                     {"path": "control.target_switch_delay_ms", "label": "目标切换延迟 ms", "type": "float", "min": 0, "max": 500, "step": 1, "precision": 0, "restart_required": False},
                     {"path": "control.trigger_mode", "label": "触发方式", "type": "select", "options": ["hardware", "always"], "restart_required": False},
                 ],
