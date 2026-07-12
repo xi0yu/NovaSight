@@ -195,6 +195,71 @@ def test_prepare_deepstream_engine_writes_confirmed_manifest(tmp_path) -> None:
     assert manifest.output.has_objectness is False
 
 
+def test_deepstream_recommendation_uses_engine_contract_instead_of_ui_shape_guess(
+    tmp_path,
+) -> None:
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
+    project = registry.create_project("custom", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "custom_v8_fp16.engine",
+        ["target"],
+        "1x3x640x640",
+    )
+    artifact_path = registry.data_dir / project.name / version.version / "custom_v8_fp16.engine"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"engine")
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        artifact_path.name,
+        "pending",
+        "pending",
+    )
+    request = _request_with_registry(registry)
+    request.app.state.inference.probe = lambda *_args: {
+        "loaded": True,
+        "input_name": "input_tensor",
+        "input_shape": "1x3x320x512",
+        "input_dtype": "float16",
+        "output_name": "predictions",
+        "output_shape": "1x8400x7",
+        "output_dtype": "float16",
+    }
+
+    result = routes_models.recommend_deepstream_artifact(request, artifact.id)
+
+    recommendation = result["recommendation"]
+    assert recommendation["input_name"] == "input_tensor"
+    assert recommendation["input_shape"] == [1, 3, 320, 512]
+    assert recommendation["input_dtype"] == "float16"
+    assert recommendation["output_name"] == "predictions"
+    assert recommendation["output_shape"] == [1, 8400, 7]
+    assert recommendation["output_dtype"] == "float16"
+    assert recommendation["class_count"] == 3
+    assert result["class_names"] == ["class_0", "class_1", "class_2"]
+    assert result["output_has_objectness"] is False
+    assert result["sources"]["input_contract"] == "tensorrt_engine_probe"
+    assert result["warnings"]
+    assert not artifact_path.with_name("model.manifest.json").exists()
+
+    prepared = routes_models.prepare_deepstream_artifact(
+        request,
+        artifact.id,
+        DeepStreamPrepareRequest(**recommendation),
+    )
+
+    assert prepared["status"] == "ready"
+    assert registry.get_version(version.id).classes == ["class_0", "class_1", "class_2"]
+    assert read_manifest(artifact_path.with_name("model.manifest.json")).output.shape == [
+        1,
+        8400,
+        7,
+    ]
+
+
 def test_prepare_deepstream_engine_rejects_confirmed_shape_that_differs_from_engine(
     tmp_path,
 ) -> None:

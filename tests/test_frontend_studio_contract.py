@@ -149,9 +149,12 @@ def test_studio_can_validate_and_switch_pending_engine() -> None:
 
     assert 'item.status === "ready" || (item.kind === "engine" && item.status === "pending")' in source
     assert 'selectedSwitchArtifact?.status === "pending"' in source
+    assert "getDeepStreamRecommendation" in source
     assert "prepareDeepStreamArtifact" in source
     assert '"准备并切换 DeepStream 模型"' in source
-    assert "只有这些信息与模型真实结构一致时才能继续" in source
+    assert "tensorrt_engine_probe" not in source
+    assert "已读取 ${selectedSwitchArtifact.path} 的 TensorRT 契约" in source
+    assert "yoloCandidateCount" not in source
     assert '"验证并切换模型"' in source
     assert "未验证，可在切换时安全加载验证" in source
     assert "preferLatestModelVersionRef.current" in source

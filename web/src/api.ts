@@ -125,6 +125,16 @@ export type DeepStreamPrepareResponse = {
   nvinfer_config_owner: "runtime" | (string & {});
 };
 
+export type DeepStreamRecommendationResponse = {
+  artifact_id: number;
+  artifact_path: string;
+  recommendation: DeepStreamPreparePayload;
+  class_names: string[];
+  output_has_objectness: boolean;
+  sources: Record<string, string>;
+  warnings: string[];
+};
+
 export type CaptureState = {
   available: boolean;
   device: string;
@@ -623,6 +633,14 @@ export function prepareDeepStreamArtifact(
     },
     body: JSON.stringify(payload)
   });
+}
+
+export function getDeepStreamRecommendation(
+  artifactId: number
+): Promise<DeepStreamRecommendationResponse> {
+  return requestJson<DeepStreamRecommendationResponse>(
+    `/api/models/artifacts/${artifactId}/deepstream/recommendation`
+  );
 }
 
 export function rollbackModel(projectId: number): Promise<ModelPublishResponse> {

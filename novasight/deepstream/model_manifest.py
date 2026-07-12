@@ -32,6 +32,13 @@ class EngineTensorContract:
     output_dtype: str
 
 
+@dataclass(frozen=True, slots=True)
+class EngineManifestRecommendation:
+    contract: EngineTensorContract
+    class_names: list[str]
+    output_has_objectness: bool
+
+
 def probe_engine_contract(
     inference: Any,
     *,
@@ -66,6 +73,42 @@ def probe_engine_contract(
         output_name=output_name,
         output_shape=parse_runtime_shape(status.get("output_shape"), "output_shape"),
         output_dtype=normalize_tensor_dtype(status.get("output_dtype")),
+    )
+
+
+def recommend_engine_manifest(
+    inference: Any,
+    *,
+    artifact_path: Path,
+    registered_classes: list[str],
+    registered_input_shape: str,
+) -> EngineManifestRecommendation:
+    path = Path(artifact_path)
+    contract = probe_engine_contract(
+        inference,
+        artifact_path=path,
+        classes=registered_classes,
+        registered_input_shape=registered_input_shape,
+    )
+    if (
+        len(contract.input_shape) != 4
+        or contract.input_shape[0] != 1
+        or contract.input_shape[1] != 3
+    ):
+        raise ValueError(
+            "DeepStream model input must be static NCHW [1,3,H,W], "
+            f"got {contract.input_shape}"
+        )
+    resolved_classes, output_has_objectness = resolve_yolo_class_contract(
+        contract.output_shape,
+        registered_classes,
+        class_count_hint=infer_class_count_hint_from_name(path.name),
+        objectness_hint=infer_yolo_objectness_hint_from_name(path.name),
+    )
+    return EngineManifestRecommendation(
+        contract=contract,
+        class_names=resolved_classes,
+        output_has_objectness=output_has_objectness,
     )
 
 
@@ -252,27 +295,15 @@ def ensure_engine_manifest(
             raise ValueError(
                 "cannot generate DeepStream manifest because the model registry has no classes"
             )
-        contract = probe_engine_contract(
+        recommendation = recommend_engine_manifest(
             inference,
             artifact_path=path,
-            classes=classes,
+            registered_classes=classes,
             registered_input_shape=registered_input_shape,
         )
-        if (
-            len(contract.input_shape) != 4
-            or contract.input_shape[0] != 1
-            or contract.input_shape[1] != 3
-        ):
-            raise ValueError(
-                "DeepStream model input must be static NCHW [1,3,H,W], "
-                f"got {contract.input_shape}"
-            )
-        resolved_classes, output_has_objectness = resolve_yolo_class_contract(
-            contract.output_shape,
-            classes,
-            class_count_hint=class_count_hint,
-            objectness_hint=objectness_hint,
-        )
+        contract = recommendation.contract
+        resolved_classes = recommendation.class_names
+        output_has_objectness = recommendation.output_has_objectness
         manifest = build_engine_manifest(
             model_id=model_id,
             display_name=display_name,
@@ -323,6 +354,7 @@ def parse_runtime_shape(value: object, label: str) -> list[int]:
 
 
 __all__ = [
+    "EngineManifestRecommendation",
     "EngineTensorContract",
     "ensure_engine_manifest",
     "infer_yolo_output_contract",
@@ -330,5 +362,6 @@ __all__ = [
     "infer_yolo_objectness_hint_from_name",
     "parse_runtime_shape",
     "probe_engine_contract",
+    "recommend_engine_manifest",
     "resolve_yolo_class_contract",
 ]

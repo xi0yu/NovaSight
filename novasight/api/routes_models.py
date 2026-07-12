@@ -32,7 +32,7 @@ from novasight.inference import parse_tensor_input_shape
 from novasight.deepstream.model_manifest import (
     ensure_engine_manifest,
     infer_yolo_output_contract,
-    probe_engine_contract,
+    recommend_engine_manifest,
 )
 
 router = APIRouter(prefix="/api/models")
@@ -400,6 +400,66 @@ def _model_sidecar(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _deepstream_model_defaults(
+    artifact_path: Path,
+    source_path: str,
+) -> tuple[dict[str, Any], dict[str, str], list[str]]:
+    sidecar_paths = [artifact_path.with_suffix(".json")]
+    source_text = str(source_path or "").strip()
+    if source_text:
+        source = Path(source_text)
+        sidecar_paths.append(source.with_suffix(".json"))
+    sidecar: dict[str, Any] = {}
+    sidecar_path: Path | None = None
+    for candidate in sidecar_paths:
+        loaded = _model_sidecar(candidate)
+        if loaded:
+            sidecar = loaded
+            sidecar_path = candidate
+            break
+
+    filename = artifact_path.name.lower()
+    inferred_precision = (
+        "int8"
+        if "int8" in filename
+        else "fp32"
+        if "fp32" in filename
+        else "fp16"
+    )
+    defaults = {
+        "runtime_precision": str(
+            sidecar.get("runtime_precision")
+            or sidecar.get("precision")
+            or inferred_precision
+        ),
+        "input_color_format": str(sidecar.get("input_color_format") or "RGB").upper(),
+        "input_scale_factor": float(sidecar.get("input_scale_factor", 1.0 / 255.0)),
+        "maintain_aspect_ratio": bool(sidecar.get("maintain_aspect_ratio", False)),
+        "symmetric_padding": bool(sidecar.get("symmetric_padding", False)),
+    }
+    source_label = (
+        f"model_sidecar:{sidecar_path}"
+        if sidecar_path is not None
+        else "novasight_yolo_default"
+    )
+    sources = {
+        "runtime_precision": source_label if sidecar_path is not None else "engine_filename_or_fp16_default",
+        "input_color_format": source_label,
+        "input_scale_factor": source_label,
+        "maintain_aspect_ratio": source_label,
+        "symmetric_padding": source_label,
+    }
+    warnings: list[str] = []
+    if sidecar_path is None:
+        warnings.append(
+            "TensorRT engine 不保存 RGB/BGR、归一化和 letterbox 语义；当前使用 NovaSight YOLO 默认值。"
+        )
+        warnings.append(
+            "如模型预处理不同，请在同名 .json sidecar 中提供 input_color_format、input_scale_factor、maintain_aspect_ratio 和 symmetric_padding。"
+        )
+    return defaults, sources, warnings
 
 
 def _classes_from_sidecar(sidecar: dict[str, Any]) -> list[str]:
@@ -1117,6 +1177,68 @@ def scan_models(request: Request, force: bool = False) -> dict[str, Any]:
     }
 
 
+@router.get("/artifacts/{artifact_id}/deepstream/recommendation")
+def recommend_deepstream_artifact(request: Request, artifact_id: int) -> dict[str, Any]:
+    registry = _registry(request)
+    try:
+        artifact, version, project, artifact_path = _artifact_asset_context(
+            registry,
+            artifact_id,
+        )
+        if artifact.kind != "engine":
+            raise RegistryValidationError(
+                "DeepStream recommendation requires a TensorRT .engine artifact"
+            )
+        if not artifact_path.is_file():
+            raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
+        resolved = recommend_engine_manifest(
+            request.app.state.inference,
+            artifact_path=artifact_path,
+            registered_classes=list(version.classes),
+            registered_input_shape=version.input_shape,
+        )
+        defaults, default_sources, warnings = _deepstream_model_defaults(
+            artifact_path,
+            version.source_path,
+        )
+        inference_config = getattr(getattr(request.app.state, "config", None), "inference", None)
+        contract = resolved.contract
+        recommendation = {
+            "model_id": project.name,
+            "display_name": project.name,
+            **defaults,
+            "input_name": contract.input_name,
+            "input_shape": list(contract.input_shape),
+            "input_dtype": contract.input_dtype,
+            "output_name": contract.output_name,
+            "output_shape": list(contract.output_shape),
+            "output_dtype": contract.output_dtype,
+            "class_count": len(resolved.class_names),
+            "confidence_threshold": float(
+                getattr(inference_config, "confidence_threshold", 0.25)
+            ),
+            "nms_iou_threshold": float(getattr(inference_config, "nms_threshold", 0.45)),
+        }
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "artifact_id": artifact.id,
+        "artifact_path": artifact.path,
+        "recommendation": recommendation,
+        "class_names": list(resolved.class_names),
+        "output_has_objectness": resolved.output_has_objectness,
+        "sources": {
+            "input_contract": "tensorrt_engine_probe",
+            "output_contract": "tensorrt_engine_probe",
+            "class_contract": "engine_output_with_registry_and_filename_hints",
+            **default_sources,
+        },
+        "warnings": warnings,
+    }
+
+
 @router.post("/artifacts/{artifact_id}/deepstream/prepare")
 def prepare_deepstream_artifact(
     request: Request,
@@ -1135,18 +1257,19 @@ def prepare_deepstream_artifact(
             )
         if not artifact_path.is_file():
             raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
-        class_names = list(version.classes)
-        if int(payload.class_count) != len(class_names):
-            raise RegistryValidationError(
-                "DeepStream class_count must match the model version classes "
-                f"(class_count={payload.class_count}, classes={len(class_names)})"
-            )
-        engine_contract = probe_engine_contract(
+        resolved = recommend_engine_manifest(
             request.app.state.inference,
             artifact_path=artifact_path,
-            classes=class_names,
+            registered_classes=list(version.classes),
             registered_input_shape=version.input_shape,
         )
+        class_names = list(resolved.class_names)
+        if int(payload.class_count) != len(class_names):
+            raise RegistryValidationError(
+                "confirmed DeepStream class_count does not match the TensorRT output contract "
+                f"(confirmed={payload.class_count}, engine={len(class_names)})"
+            )
+        engine_contract = resolved.contract
         requested_input_shape = [int(item) for item in payload.input_shape]
         requested_output_shape = [int(item) for item in payload.output_shape]
         if requested_input_shape != engine_contract.input_shape:
@@ -1200,6 +1323,8 @@ def prepare_deepstream_artifact(
             "ready",
             checksum=result.sha256,
         )
+        if list(version.classes) != class_names:
+            registry.update_version_classes(version.id, class_names)
     except RegistryError as exc:
         raise _as_http_error(exc) from exc
     except (OSError, RuntimeError, ValueError) as exc:
