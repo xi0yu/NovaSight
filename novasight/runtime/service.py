@@ -2148,11 +2148,20 @@ class RuntimeService:
             ),
             default=0,
         )
-        feedback_delay_ns = int(
+        configured_feedback_delay_ns = int(
             max(0.0, float(self.config.control.configured_actuation_delay_s)) * 1e9
         )
-        feedback_visible_after_x_ts_ns = latest_send_x_ts_ns + feedback_delay_ns
-        feedback_visible_after_y_ts_ns = latest_send_y_ts_ns + feedback_delay_ns
+        observation_guard_s = (
+            min(0.050, float(measurement_dt_s))
+            if measurement_dt_s is not None
+            and math.isfinite(measurement_dt_s)
+            and measurement_dt_s > 0.0
+            else 0.0
+        )
+        observation_guard_ns = int(observation_guard_s * 1e9)
+        feedback_wait_ns = configured_feedback_delay_ns + observation_guard_ns
+        feedback_visible_after_x_ts_ns = latest_send_x_ts_ns + feedback_wait_ns
+        feedback_visible_after_y_ts_ns = latest_send_y_ts_ns + feedback_wait_ns
         actuation_pending_x = bool(
             latest_send_x_ts_ns > 0
             and capture_ts_ns <= feedback_visible_after_x_ts_ns
@@ -2192,7 +2201,9 @@ class RuntimeService:
             "latest_successful_send_y_ts_ns": latest_send_y_ts_ns,
             "feedback_visible_after_x_ts_ns": feedback_visible_after_x_ts_ns,
             "feedback_visible_after_y_ts_ns": feedback_visible_after_y_ts_ns,
-            "actuation_feedback_delay_ms": feedback_delay_ns / 1e6,
+            "configured_actuation_feedback_delay_ms": configured_feedback_delay_ns / 1e6,
+            "actuation_observation_guard_ms": observation_guard_ns / 1e6,
+            "actuation_feedback_delay_ms": feedback_wait_ns / 1e6,
             "actuation_pending_x": actuation_pending_x,
             "actuation_pending_y": actuation_pending_y,
         }

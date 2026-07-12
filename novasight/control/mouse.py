@@ -515,14 +515,23 @@ class MouseController:
             max_counts=shared.recoil_max_counts_per_observation,
         )
         mixed_counts = Vec2(directed_counts.x, directed_counts.y + recoil_y_counts)
-        slew_limited = mixed_counts
-        if self.state.output_history_valid:
-            slew_limited = Vec2(
-                0.0
-                if hold_x
-                else _slew_limit(mixed_counts.x, self.state.previous_counts.x, shared.max_count_slew_x),
-                _slew_limit(mixed_counts.y, self.state.previous_counts.y, shared.max_count_slew_y),
-            )
+        previous_counts = (
+            self.state.previous_counts
+            if self.state.output_history_valid
+            else Vec2(0.0, 0.0)
+        )
+        slew_limited = Vec2(
+            _slew_limit(
+                mixed_counts.x,
+                previous_counts.x,
+                shared.max_count_slew_x,
+            ),
+            _slew_limit(
+                mixed_counts.y,
+                previous_counts.y,
+                shared.max_count_slew_y,
+            ),
+        )
         feasible_counts = Vec2(
             _clamp_axis(slew_limited.x, shared.max_budget_counts_x),
             _clamp_axis(slew_limited.y, shared.max_budget_counts_y),
@@ -582,6 +591,7 @@ class MouseController:
             "mixed_counts_y_float": mixed_counts.y,
             "slew_limited_counts_x_float": slew_limited.x,
             "slew_limited_counts_y_float": slew_limited.y,
+            "slew_policy": "limit_growth_allow_braking_zero_cross",
             "feasible_counts_x_float": feasible_counts.x,
             "feasible_counts_y_float": feasible_counts.y,
             "budget_clamped_x": feasible_counts.x != slew_limited.x,
@@ -800,8 +810,19 @@ def _saturated_axis(error_px: float, response_scale_px: float, max_counts: float
 
 
 def _slew_limit(requested: float, previous: float, max_slew: float) -> float:
+    if not math.isfinite(requested) or not math.isfinite(previous):
+        return 0.0
     limit = max(0.0, float(max_slew))
-    return previous + _clamp(requested - previous, -limit, limit)
+    if requested == 0.0:
+        return 0.0
+    if previous == 0.0:
+        return _clamp(requested, -limit, limit)
+    if requested * previous < 0.0:
+        return 0.0
+    if abs(requested) <= abs(previous):
+        return requested
+    growth = min(abs(requested) - abs(previous), limit)
+    return math.copysign(abs(previous) + growth, requested)
 
 
 def _clamp_axis(value: float | int, limit: float | int) -> float:

@@ -2687,6 +2687,8 @@ export function StudioConsoleView({
                 <span>压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? "等待左键或延迟" : "关闭"}</b>
                 <span>压枪 Y 前馈</span><b>{formatOptionalNumber(controlPipeline.recoil_y_counts_float, 2, "counts")}</b>
                 <span>压枪渐入</span><b>{formatOptionalNumber(controlPipeline.recoil_ramp, 2)}</b>
+                <span>执行反馈等待 X / Y</span><b>{`${controlPipeline.actuation_pending_x === true ? "等待" : "就绪"} / ${controlPipeline.actuation_pending_y === true ? "等待" : "就绪"}`}</b>
+                <span>反馈保护窗口</span><b>{formatOptionalNumber(mouseObservation.actuation_feedback_delay_ms, 2, "ms")}</b>
                 <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
                 <span>进入阈值</span><b>{formatPoint(controlPipeline.arrival_enter_x_px, controlPipeline.arrival_enter_y_px, 1, "px")}</b>
                 <span>退出阈值</span><b>{formatPoint(controlPipeline.arrival_exit_x_px, controlPipeline.arrival_exit_y_px, 1, "px")}</b>
@@ -2761,8 +2763,8 @@ export function StudioConsoleView({
                 <ModuleSwitch label="预测 Y" detail="使用 Tracker Kalman 未来 Y 位置" enabled={predictionYEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_y_enabled", enabled)} />
                 <NumberControl label="X 到位阈值" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
                 <NumberControl label="Y 到位阈值" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
-                <NumberControl label="X counts 变化限制" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
-                <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
+                <NumberControl label="X counts 增长限制" detail="限制相邻观测中 X 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
+                <NumberControl label="Y counts 增长限制" detail="限制相邻观测中 Y 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
                 <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
                 <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
                 <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
