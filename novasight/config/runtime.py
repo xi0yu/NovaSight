@@ -171,6 +171,12 @@ class SharedControlConfig:
     deadzone_y_px: float = 4.0
     arrival_hysteresis_enabled: bool = True
     invert_y: bool = False
+    trigger_activation_delay_ms: float = 0.0
+    recoil_enabled: bool = False
+    recoil_start_delay_ms: float = 0.0
+    recoil_y_rate_counts_s: float = 0.0
+    recoil_ramp_up_ms: float = 120.0
+    recoil_max_counts_per_observation: float = 8.0
 
 
 @dataclass
@@ -931,6 +937,19 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(
                 f"runtime config key 'control.shared.{key}' must be finite and > 0"
+            )
+    shared_bounds = {
+        "trigger_activation_delay_ms": (0.0, 1000.0),
+        "recoil_start_delay_ms": (0.0, 1000.0),
+        "recoil_y_rate_counts_s": (0.0, 5000.0),
+        "recoil_ramp_up_ms": (0.0, 2000.0),
+        "recoil_max_counts_per_observation": (0.1, 20.0),
+    }
+    for key, (minimum, maximum) in shared_bounds.items():
+        value = float(getattr(shared, key))
+        if not math.isfinite(value) or value < minimum or value > maximum:
+            raise ValueError(
+                f"runtime config key 'control.shared.{key}' must be >= {minimum} and <= {maximum}"
             )
     for key in ("scheduler_step_counts_x", "scheduler_step_counts_y"):
         value = int(getattr(cfg.control, key))

@@ -714,6 +714,12 @@ export function StudioConsoleView({
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
   const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
   const sharedInvertY = readBoolean(sharedControlConfig.invert_y, false);
+  const triggerActivationDelayMs = readNumber(sharedControlConfig.trigger_activation_delay_ms, 0);
+  const recoilEnabled = readBoolean(sharedControlConfig.recoil_enabled, false);
+  const recoilStartDelayMs = readNumber(sharedControlConfig.recoil_start_delay_ms, 0);
+  const recoilYRate = readNumber(sharedControlConfig.recoil_y_rate_counts_s, 0);
+  const recoilRampUpMs = readNumber(sharedControlConfig.recoil_ramp_up_ms, 120);
+  const recoilMaxCounts = readNumber(sharedControlConfig.recoil_max_counts_per_observation, 8);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -2677,6 +2683,10 @@ export function StudioConsoleView({
                 <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
                 <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
                 <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
+                <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, 1, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, 1, "ms")}`}</b>
+                <span>压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? "等待左键或延迟" : "关闭"}</b>
+                <span>压枪 Y 前馈</span><b>{formatOptionalNumber(controlPipeline.recoil_y_counts_float, 2, "counts")}</b>
+                <span>压枪渐入</span><b>{formatOptionalNumber(controlPipeline.recoil_ramp, 2)}</b>
                 <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
                 <span>进入阈值</span><b>{formatPoint(controlPipeline.arrival_enter_x_px, controlPipeline.arrival_enter_y_px, 1, "px")}</b>
                 <span>退出阈值</span><b>{formatPoint(controlPipeline.arrival_exit_x_px, controlPipeline.arrival_exit_y_px, 1, "px")}</b>
@@ -2733,6 +2743,7 @@ export function StudioConsoleView({
                   <option value="hardware">kmNet 硬件按键触发</option>
                   <option value="always">检测到目标后自动控制</option>
                 </select>
+                <NumberControl label="按下后启动延迟 ms" value={triggerActivationDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)} />
                 <NumberControl label="瞄点垂直比例" value={aimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)} />
                 <NumberControl label="估计执行延迟 s" value={configuredActuationDelay} min={0} max={0.1} step={0.001} onCommit={(value) => updateConfigField("control", "configured_actuation_delay_s", value)} />
                 <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
@@ -2743,6 +2754,15 @@ export function StudioConsoleView({
                 <NumberControl label="X counts 变化限制" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
                 <NumberControl label="Y counts 变化限制" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
                 <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
+                <ModuleSwitch label="Y 轴压枪" detail="左键持续按下时叠加时间域 Y counts 前馈" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+                {recoilEnabled ? (
+                  <>
+                    <NumberControl label="压枪启动延迟 ms" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
+                    <NumberControl label="Y 压枪速率 counts/s" value={recoilYRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_rate_counts_s", value)} />
+                    <NumberControl label="压枪渐入 ms" value={recoilRampUpMs} min={0} max={2000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_ramp_up_ms", value)} />
+                    <NumberControl label="单观测最大压枪" value={recoilMaxCounts} min={0.1} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_max_counts_per_observation", value)} />
+                  </>
+                ) : null}
                 <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
                 <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
                 <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />

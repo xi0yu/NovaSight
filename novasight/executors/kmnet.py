@@ -56,6 +56,8 @@ class KmNetExecutor:
         self.last_button_raw: dict[str, Any] = {}
         self.last_button_sample_ts_ns = 0
         self.last_button_poll_ts_ns = 0
+        self.left_pressed_since_ts_ns = 0
+        self.right_pressed_since_ts_ns = 0
         self.button_poll_interval_s = max(0.001, min(0.050, float(button_poll_interval_s)))
         self._button_state_lock = threading.Lock()
         self._button_poll_stop = threading.Event()
@@ -89,7 +91,10 @@ class KmNetExecutor:
             uuid=config.hardware.uuid,
             monitor_port=(
                 config.hardware.monitor_port
-                if config.control.trigger_mode == "hardware"
+                if (
+                    config.control.trigger_mode == "hardware"
+                    or bool(config.control.shared.recoil_enabled)
+                )
                 else 0
             ),
             button_poll_interval_s=float(config.control.scheduler_interval_ms) / 1000.0,
@@ -149,6 +154,8 @@ class KmNetExecutor:
             "button_sample_ts_ns": sample_ts_ns,
             "button_sample_age_ms": sample_age_ms,
             "button_poll_ts_ns": buttons["poll_ts_ns"],
+            "left_pressed_since_ts_ns": buttons["left_pressed_since_ts_ns"],
+            "right_pressed_since_ts_ns": buttons["right_pressed_since_ts_ns"],
             "button_polling": (
                 self._button_poll_thread is not None
                 and self._button_poll_thread.is_alive()
@@ -166,6 +173,8 @@ class KmNetExecutor:
                 "raw": dict(self.last_button_raw),
                 "sample_ts_ns": int(self.last_button_sample_ts_ns),
                 "poll_ts_ns": int(self.last_button_poll_ts_ns),
+                "left_pressed_since_ts_ns": int(self.left_pressed_since_ts_ns),
+                "right_pressed_since_ts_ns": int(self.right_pressed_since_ts_ns),
             }
 
     def _record_buttons(
@@ -190,6 +199,14 @@ class KmNetExecutor:
             self.last_button_right = bool(right)
             self.last_button_reason = str(reason or "")
             self.last_button_raw = dict(raw or {})
+            if available and left and not previous_left:
+                self.left_pressed_since_ts_ns = now_ns
+            elif not available or not left:
+                self.left_pressed_since_ts_ns = 0
+            if available and right and not previous_right:
+                self.right_pressed_since_ts_ns = now_ns
+            elif not available or not right:
+                self.right_pressed_since_ts_ns = 0
             if available:
                 self.last_button_sample_ts_ns = now_ns
             trigger_active = bool(available and (left or right))
@@ -209,6 +226,8 @@ class KmNetExecutor:
                 "raw": dict(self.last_button_raw),
                 "sample_ts_ns": int(self.last_button_sample_ts_ns),
                 "poll_ts_ns": int(self.last_button_poll_ts_ns),
+                "left_pressed_since_ts_ns": int(self.left_pressed_since_ts_ns),
+                "right_pressed_since_ts_ns": int(self.right_pressed_since_ts_ns),
             }
         if should_log:
             logger.info(

@@ -1710,6 +1710,12 @@ class RuntimeService:
         trigger_mode = str(getattr(self.config.control, "trigger_mode", "always") or "always")
         if trigger_mode not in {"hardware", "always"}:
             trigger_mode = "hardware"
+        shared_control = self.config.control.shared
+        hardware_input = (
+            self._box_input_state()
+            if trigger_mode == "hardware" or bool(shared_control.recoil_enabled)
+            else BoxInputState(raw={"source": "monitor_not_required"})
+        )
         box_input = (
             BoxInputState(
                 left=True,
@@ -1720,7 +1726,7 @@ class RuntimeService:
                 },
             )
             if trigger_mode == "always"
-            else self._box_input_state()
+            else hardware_input
         )
         target_key = self._control_target_key(target)
         calibration_status = self._calibration_fingerprint_status()
@@ -1802,6 +1808,23 @@ class RuntimeService:
             selection=selection,
         )
         control_now_ns = time.monotonic_ns()
+        trigger_hold_ms = self._box_input_hold_ms(box_input, control_now_ns)
+        left_trigger_hold_ms = self._box_input_hold_ms(
+            hardware_input,
+            control_now_ns,
+            left_only=True,
+        )
+        activation_delay_ms = max(
+            0.0,
+            float(shared_control.trigger_activation_delay_ms),
+        )
+        trigger_activation_ready = bool(
+            trigger_mode == "always"
+            or (
+                box_input.active
+                and trigger_hold_ms >= activation_delay_ms
+            )
+        )
         timing_payload = self._record_control_timing(
             context,
             target=target,
@@ -1820,6 +1843,8 @@ class RuntimeService:
                     if isinstance(measurement_dt_ms, (int, float))
                     else None
                 ),
+                left_trigger_active=bool(hardware_input.left),
+                left_trigger_hold_ms=left_trigger_hold_ms,
             )
         )
         observation = control_metadata["mouse_observation"]
@@ -1853,12 +1878,22 @@ class RuntimeService:
         calibration_status = self._calibration_fingerprint_status()
         if calibration_status["control_allowed"] is not True:
             control_allowed = False
-        can_emit = (box_input.active or not requires_trigger) and control_allowed
+        can_emit = (
+            (box_input.active or not requires_trigger)
+            and trigger_activation_ready
+            and control_allowed
+        )
         has_movement = int(command.dx) != 0 or int(command.dy) != 0
         will_emit = can_emit and has_movement
         no_send_reason = ""
         if not can_emit:
-            no_send_reason = "CONTROL_NOT_ALLOWED" if not control_allowed else "TRIGGER_INACTIVE"
+            no_send_reason = (
+                "CONTROL_NOT_ALLOWED"
+                if not control_allowed
+                else "TRIGGER_INACTIVE"
+                if not box_input.active and requires_trigger
+                else "TRIGGER_ACTIVATION_DELAY"
+            )
         elif not has_movement:
             no_send_reason = (
                 command.reason
@@ -1941,6 +1976,11 @@ class RuntimeService:
             "trigger_active": box_input.active,
             "trigger_required": requires_trigger,
             "trigger_mode": trigger_mode,
+            "trigger_hold_ms": trigger_hold_ms,
+            "trigger_activation_delay_ms": activation_delay_ms,
+            "trigger_activation_ready": trigger_activation_ready,
+            "left_trigger_active": bool(hardware_input.left),
+            "left_trigger_hold_ms": left_trigger_hold_ms,
             "trigger_requirement": trigger_requirement,
             "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
             "trigger_raw": trigger_raw,
@@ -1964,7 +2004,7 @@ class RuntimeService:
             trigger_mode=trigger_mode,
         )
         if not can_emit:
-            clear_reason = "CONTROL_NOT_ALLOWED" if not control_allowed else "TRIGGER_INACTIVE"
+            clear_reason = no_send_reason or "CONTROL_NOT_ALLOWED"
             self._clear_pending_commands(clear_reason)
             self._reset_control_motion_state()
             self.last_execution = {
@@ -1974,7 +2014,11 @@ class RuntimeService:
                 "clipped": False,
                 "output_dx": 0.0,
                 "output_dy": 0.0,
-                "message": f"{trigger_requirement}，控制量未发送",
+                "message": (
+                    f"触发持续 {trigger_hold_ms:.1f}ms，等待达到 {activation_delay_ms:.1f}ms"
+                    if clear_reason == "TRIGGER_ACTIVATION_DELAY"
+                    else f"{trigger_requirement}，控制量未发送"
+                ),
                 "intent": {
                     "dx": float(command.dx),
                     "dy": float(command.dy),
@@ -2426,6 +2470,24 @@ class RuntimeService:
         self._log_box_input_state(state, "kmnet_unavailable")
         return state
 
+    @staticmethod
+    def _box_input_hold_ms(
+        state: BoxInputState,
+        now_ns: int,
+        *,
+        left_only: bool = False,
+    ) -> float:
+        raw = state.raw if isinstance(state.raw, dict) else {}
+        starts: list[int] = []
+        if state.left:
+            starts.append(int(raw.get("left_pressed_since_ts_ns") or 0))
+        if not left_only and state.right:
+            starts.append(int(raw.get("right_pressed_since_ts_ns") or 0))
+        starts = [value for value in starts if value > 0]
+        if not starts:
+            return 0.0
+        return max(0.0, (int(now_ns) - min(starts)) / 1e6)
+
     def _create_mouse_controller(self, config: RuntimeConfig) -> MouseController:
         max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
         calibrated = config.control.calibrated_angular
@@ -2471,6 +2533,13 @@ class RuntimeService:
                     invert_y=bool(shared.invert_y),
                     max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
                     max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
+                    recoil_enabled=bool(shared.recoil_enabled),
+                    recoil_start_delay_ms=float(shared.recoil_start_delay_ms),
+                    recoil_y_rate_counts_s=float(shared.recoil_y_rate_counts_s),
+                    recoil_ramp_up_ms=float(shared.recoil_ramp_up_ms),
+                    recoil_max_counts_per_observation=float(
+                        shared.recoil_max_counts_per_observation
+                    ),
                 ),
             )
         )
@@ -2507,6 +2576,8 @@ class RuntimeService:
         selector_debug: dict[str, Any],
         control_now_ts_ns: int,
         measurement_dt_s: float | None,
+        left_trigger_active: bool,
+        left_trigger_hold_ms: float,
     ) -> dict[str, Any]:
         transform = self._coordinate_transform_for_context(context)
         control_width = float(control_metadata.get("control_width") or 0.0)
@@ -2654,6 +2725,8 @@ class RuntimeService:
             observed_valid=raw_aim.valid and not bool(target.is_predicted),
             actuation_pending_x=bool(executed_control["actuation_pending_x"]),
             actuation_pending_y=bool(executed_control["actuation_pending_y"]),
+            left_trigger_active=bool(left_trigger_active),
+            left_trigger_hold_ms=max(0.0, float(left_trigger_hold_ms)),
             valid=prediction_valid,
             invalid_reason=invalid_reason,
         )

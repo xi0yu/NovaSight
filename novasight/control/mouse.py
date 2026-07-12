@@ -45,6 +45,8 @@ class MouseObservation:
     observed_valid: bool = True
     actuation_pending_x: bool = False
     actuation_pending_y: bool = False
+    left_trigger_active: bool = False
+    left_trigger_hold_ms: float = 0.0
     valid: bool = True
     invalid_reason: str = ""
 
@@ -114,6 +116,11 @@ class SharedOutputConfig:
     invert_y: bool
     max_budget_counts_x: int
     max_budget_counts_y: int
+    recoil_enabled: bool = False
+    recoil_start_delay_ms: float = 0.0
+    recoil_y_rate_counts_s: float = 0.0
+    recoil_ramp_up_ms: float = 120.0
+    recoil_max_counts_per_observation: float = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,15 +504,24 @@ class MouseController:
             deadzone_limited.x,
             -deadzone_limited.y if shared.invert_y else deadzone_limited.y,
         )
-        slew_limited = directed_counts
+        recoil_y_counts, recoil_ramp = _recoil_y_counts(
+            enabled=shared.recoil_enabled,
+            left_trigger_active=observation.left_trigger_active,
+            left_trigger_hold_ms=observation.left_trigger_hold_ms,
+            start_delay_ms=shared.recoil_start_delay_ms,
+            ramp_up_ms=shared.recoil_ramp_up_ms,
+            rate_counts_s=shared.recoil_y_rate_counts_s,
+            dt_s=observation.measurement_dt_s,
+            max_counts=shared.recoil_max_counts_per_observation,
+        )
+        mixed_counts = Vec2(directed_counts.x, directed_counts.y + recoil_y_counts)
+        slew_limited = mixed_counts
         if self.state.output_history_valid:
             slew_limited = Vec2(
                 0.0
                 if hold_x
-                else _slew_limit(directed_counts.x, self.state.previous_counts.x, shared.max_count_slew_x),
-                0.0
-                if hold_y
-                else _slew_limit(directed_counts.y, self.state.previous_counts.y, shared.max_count_slew_y),
+                else _slew_limit(mixed_counts.x, self.state.previous_counts.x, shared.max_count_slew_x),
+                _slew_limit(mixed_counts.y, self.state.previous_counts.y, shared.max_count_slew_y),
             )
         feasible_counts = Vec2(
             _clamp_axis(slew_limited.x, shared.max_budget_counts_x),
@@ -557,6 +573,13 @@ class MouseController:
             "deadzone_limited_counts_y_float": deadzone_limited.y,
             "directed_counts_x_float": directed_counts.x,
             "directed_counts_y_float": directed_counts.y,
+            "recoil_enabled": shared.recoil_enabled,
+            "recoil_active": observation.left_trigger_active and recoil_y_counts > 0.0,
+            "recoil_left_hold_ms": observation.left_trigger_hold_ms,
+            "recoil_ramp": recoil_ramp,
+            "recoil_y_counts_float": recoil_y_counts,
+            "mixed_counts_x_float": mixed_counts.x,
+            "mixed_counts_y_float": mixed_counts.y,
             "slew_limited_counts_x_float": slew_limited.x,
             "slew_limited_counts_y_float": slew_limited.y,
             "feasible_counts_x_float": feasible_counts.x,
@@ -734,6 +757,42 @@ def _valid_control_space(width: float, height: float) -> bool:
 
 def _valid_measurement_dt(dt_s: float | None) -> bool:
     return dt_s is not None and math.isfinite(dt_s) and 0.0 < dt_s <= 0.2
+
+
+def _recoil_y_counts(
+    *,
+    enabled: bool,
+    left_trigger_active: bool,
+    left_trigger_hold_ms: float,
+    start_delay_ms: float,
+    ramp_up_ms: float,
+    rate_counts_s: float,
+    dt_s: float | None,
+    max_counts: float,
+) -> tuple[float, float]:
+    if (
+        not enabled
+        or not left_trigger_active
+        or not _valid_measurement_dt(dt_s)
+        or not all(
+            math.isfinite(float(value))
+            for value in (
+                left_trigger_hold_ms,
+                start_delay_ms,
+                ramp_up_ms,
+                rate_counts_s,
+                max_counts,
+            )
+        )
+    ):
+        return 0.0, 0.0
+    active_ms = max(0.0, float(left_trigger_hold_ms) - max(0.0, float(start_delay_ms)))
+    if active_ms <= 0.0 or rate_counts_s <= 0.0:
+        return 0.0, 0.0
+    ramp_ms = max(0.0, float(ramp_up_ms))
+    ramp = 1.0 if ramp_ms <= 0.0 else min(1.0, active_ms / ramp_ms)
+    requested = max(0.0, float(rate_counts_s)) * float(dt_s) * ramp
+    return min(max(0.0, float(max_counts)), requested), ramp
 
 
 def _saturated_axis(error_px: float, response_scale_px: float, max_counts: float) -> float:
