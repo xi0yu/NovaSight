@@ -82,7 +82,7 @@ def test_basic_candidate_filter_only_applies_class_confidence_and_bbox_validity(
     }
 
 
-def test_new_track_is_active_immediately_and_velocity_starts_invalid() -> None:
+def test_single_high_confidence_track_is_confirmed_immediately() -> None:
     tracker = _tracker()
     context = _context(
         1,
@@ -103,7 +103,44 @@ def test_new_track_is_active_immediately_and_velocity_starts_invalid() -> None:
     assert result.active_tracks[0].track_id == 1
     assert result.active_tracks[0].observed_aim_px == pytest.approx((120.0, 222.0))
     assert result.active_tracks[0].velocity_valid is False
-    assert result.debug["tracks"][0]["status"] == "ACTIVE"
+    assert result.debug["tracks"][0]["status"] == "CONFIRMED"
+
+
+def test_multiple_new_tracks_require_second_hit_before_control_output() -> None:
+    tracker = _tracker()
+    first = _context(
+        1,
+        1_000_000_000,
+        [
+            Detection(0, 0.9, x=100, y=200, w=40, h=100),
+            Detection(0, 0.9, x=300, y=200, w=40, h=100),
+        ],
+    )
+    second = _context(
+        2,
+        1_050_000_000,
+        [
+            Detection(0, 0.9, x=104, y=200, w=40, h=100),
+            Detection(0, 0.9, x=304, y=200, w=40, h=100),
+        ],
+    )
+
+    tentative = tracker.update(
+        _observations(first).observations,
+        first.capture_ts_ns or 0,
+        frame_id=first.frame_id,
+    )
+    confirmed = tracker.update(
+        _observations(second).observations,
+        second.capture_ts_ns or 0,
+        frame_id=second.frame_id,
+    )
+
+    assert tentative.active_tracks == []
+    assert tentative.state == "ACQUIRING"
+    assert [item["status"] for item in tentative.debug["tracks"]] == ["TENTATIVE", "TENTATIVE"]
+    assert [track.track_id for track in confirmed.active_tracks] == [1, 2]
+    assert [item["status"] for item in confirmed.debug["tracks"]] == ["CONFIRMED", "CONFIRMED"]
 
 
 def test_capture_timestamp_delta_updates_same_track_velocity() -> None:
@@ -136,10 +173,10 @@ def test_lost_track_is_not_output_and_restores_same_track_id() -> None:
         1_000_000_000,
         [Detection(0, 0.9, x=100, y=200, w=40, h=100)],
     )
-    missing = _context(2, 1_100_000_000, [])
+    missing = _context(2, 1_050_000_000, [])
     restored = _context(
         3,
-        1_200_000_000,
+        1_100_000_000,
         [Detection(0, 0.9, x=108, y=200, w=40, h=100)],
     )
 
@@ -156,7 +193,7 @@ def test_lost_track_is_not_output_and_restores_same_track_id() -> None:
     assert lost.debug["tracks"][0]["status"] == "LOST"
     assert recovered.restored_track_ids == [1]
     assert recovered.active_tracks[0].track_id == 1
-    assert recovered.debug["tracks"][0]["status"] == "ACTIVE"
+    assert recovered.debug["tracks"][0]["status"] == "CONFIRMED"
 
 
 def test_track_is_removed_after_max_missed_frames() -> None:
@@ -199,6 +236,52 @@ def test_normalized_distance_gate_prevents_cross_screen_reassociation() -> None:
     assert result.lost_track_count == 1
 
 
+def test_size_gate_prevents_implausible_bbox_reassociation() -> None:
+    tracker = _tracker()
+    first = _context(
+        1,
+        1_000_000_000,
+        [Detection(0, 0.9, x=100, y=200, w=40, h=100)],
+    )
+    size_jump = _context(
+        2,
+        1_050_000_000,
+        [Detection(0, 0.9, x=40, y=134, w=160, h=400)],
+    )
+
+    tracker.update(_observations(first).observations, first.capture_ts_ns or 0, frame_id=1)
+    result = tracker.update(
+        _observations(size_jump).observations,
+        size_jump.capture_ts_ns or 0,
+        frame_id=2,
+    )
+
+    assert result.created_track_ids == [2]
+    assert [track.track_id for track in result.active_tracks] == [2]
+    assert result.lost_track_count == 1
+
+
+def test_mahalanobis_gate_rejects_statistically_impossible_match() -> None:
+    tracker = _tracker(max_match_distance=100.0)
+    first = _context(
+        1,
+        1_000_000_000,
+        [Detection(0, 0.9, x=100, y=200, w=40, h=100)],
+    )
+    jump = _context(
+        2,
+        1_050_000_000,
+        [Detection(0, 0.9, x=300, y=200, w=40, h=100)],
+    )
+
+    tracker.update(_observations(first).observations, first.capture_ts_ns or 0, frame_id=1)
+    result = tracker.update(_observations(jump).observations, jump.capture_ts_ns or 0, frame_id=2)
+
+    assert result.created_track_ids == [2]
+    assert [track.track_id for track in result.active_tracks] == [2]
+    assert result.lost_track_count == 1
+
+
 def test_hungarian_assignment_finds_global_optimum_where_greedy_fails() -> None:
     matrix = [
         [1.0, 2.0],
@@ -209,6 +292,46 @@ def test_hungarian_assignment_finds_global_optimum_where_greedy_fails() -> None:
 
     assert assignment == [(0, 1), (1, 0)]
     assert sum(matrix[row][column] for row, column in assignment) == pytest.approx(3.1)
+
+
+def test_tracker_caps_association_work_and_reports_timing_and_quality() -> None:
+    tracker = _tracker()
+    detections = [
+        Detection(0, 0.99 - index * 0.01, x=index * 20, y=200, w=16, h=80)
+        for index in range(20)
+    ]
+    context = _context(1, 1_000_000_000, detections)
+
+    tentative = tracker.update(
+        _observations(context).observations,
+        context.capture_ts_ns or 0,
+        frame_id=context.frame_id,
+    )
+    confirmed_context = _context(2, 1_050_000_000, detections)
+    result = tracker.update(
+        _observations(confirmed_context).observations,
+        confirmed_context.capture_ts_ns or 0,
+        frame_id=confirmed_context.frame_id,
+    )
+
+    assert tentative.active_tracks == []
+    assert tentative.debug["tentative_tracks"] == 16
+    assert len(result.active_tracks) == 16
+    assert result.debug["input_candidates"] == 20
+    assert result.debug["association_candidates"] == 16
+    assert result.debug["association_candidates_dropped"] == 4
+    assert result.debug["max_active_tracks"] == 16
+    assert result.debug["max_detections_for_association"] == 16
+    assert result.debug["tracks"][0]["track_quality"] == pytest.approx(0.99)
+    assert result.active_tracks[0].quality_score == pytest.approx(0.99)
+    for key in (
+        "tracker_predict_us",
+        "association_matrix_us",
+        "hungarian_us",
+        "tracker_update_us",
+        "tracker_total_us",
+    ):
+        assert result.debug["timing"][key] >= 0.0
 
 
 def test_tracker_keeps_configured_kalman_confidence_gate_for_control_estimate() -> None:
@@ -254,10 +377,10 @@ def test_target_selector_never_controls_lost_track() -> None:
         1_000_000_000,
         [Detection(0, 0.9, x=300, y=240, w=40, h=100)],
     )
-    missing = _context(2, 1_100_000_000, [])
+    missing = _context(2, 1_050_000_000, [])
     restored = _context(
         3,
-        1_200_000_000,
+        1_100_000_000,
         [Detection(0, 0.9, x=304, y=240, w=40, h=100)],
     )
 
@@ -337,6 +460,16 @@ def test_target_selector_uses_explicit_control_center_inside_shifted_roi() -> No
         control_center_y_px=320.0,
         target_switch_delay_ms=0,
     )
+    confirmed_context = _context(2, 1_050_000_000, list(context.detections))
+    selection = selector.select(
+        confirmed_context,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        control_center_x_px=360.0,
+        control_center_y_px=320.0,
+        target_switch_delay_ms=0,
+    )
 
     assert selection.target is not None
     assert selection.target.cx == pytest.approx(360.0)
@@ -358,9 +491,17 @@ def test_switch_debounce_keeps_valid_locked_target_until_challenger_commits() ->
             Detection(1, 0.95, x=300, y=240, w=40, h=100),
         ],
     )
-    committed_challenger = _context(
+    confirmed_challenger = _context(
         3,
         1_140_000_000,
+        [
+            Detection(0, 0.90, x=280, y=240, w=40, h=100),
+            Detection(1, 0.95, x=300, y=240, w=40, h=100),
+        ],
+    )
+    committed_challenger = _context(
+        4,
+        1_260_000_000,
         [
             Detection(0, 0.90, x=280, y=240, w=40, h=100),
             Detection(1, 0.95, x=300, y=240, w=40, h=100),
@@ -385,6 +526,16 @@ def test_switch_debounce_keeps_valid_locked_target_until_challenger_commits() ->
         target_switch_min_continuity_score=0.0,
         target_switch_delay_ms=100,
     )
+    confirmed = selector.select(
+        confirmed_challenger,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        class_priority=[1, 0],
+        target_switch_min_preference_advantage=0.0,
+        target_switch_min_continuity_score=0.0,
+        target_switch_delay_ms=100,
+    )
     committed = selector.select(
         committed_challenger,
         min_confidence=0.25,
@@ -399,8 +550,10 @@ def test_switch_debounce_keeps_valid_locked_target_until_challenger_commits() ->
     assert initial.target is not None
     assert pending.target is not None
     assert pending.target.track_id == initial.target.track_id
-    assert pending.state == "switch_hold"
+    assert pending.state == "locked"
     assert pending.locked is True
+    assert confirmed.state == "switch_hold"
+    assert confirmed.locked is True
     assert committed.target is not None
     assert committed.target.track_id != initial.target.track_id
     assert committed.state == "switch_committed"

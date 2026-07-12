@@ -18,6 +18,7 @@ from novasight.control import (
     MouseObservation,
     RawAimPointProjector,
     SharedOutputConfig,
+    TtboxPidAtanControllerConfig,
     UniversalSaturatedControllerConfig,
     plan_step_capacity,
     target_motion_estimate_from_debug,
@@ -1173,10 +1174,10 @@ class RuntimeService:
         self,
         context: FrameContext,
         *,
-        target: Track | Detection | None,
+        target: Track | None,
         control_now_ts_ns: int,
     ) -> dict[str, Any]:
-        track_id = getattr(target, "track_id", None) if target is not None else None
+        track_id = target.track_id if target is not None else None
         snapshot = self.control_timing.observe(
             frame_id=context.frame_id,
             target_id=int(track_id) if track_id is not None else None,
@@ -1709,7 +1710,7 @@ class RuntimeService:
             if trigger_mode == "always"
             else self._box_input_state()
         )
-        target_key = self._control_target_key(target, context)
+        target_key = self._control_target_key(target)
         calibration_status = self._calibration_fingerprint_status()
         if calibration_status["control_allowed"] is not True:
             self._clear_pending_commands(str(calibration_status["reason_code"]))
@@ -2147,7 +2148,7 @@ class RuntimeService:
         self,
         *,
         context: FrameContext,
-        target: Track | Detection,
+        target: Track,
         command: Any,
         can_emit: bool,
         trigger_raw: dict[str, Any],
@@ -2156,7 +2157,7 @@ class RuntimeService:
         trigger_mode: str,
     ) -> None:
         trigger_source = str(trigger_raw.get("source") or trigger_raw.get("mode") or trigger_raw.get("reason") or "")
-        target_key = self._control_target_key(target, context)
+        target_key = self._control_target_key(target)
         signature = (
             f"target={target_key}|emit={can_emit}|out={output_mode}|hardware={hardware_kind}|"
             f"trigger={trigger_mode}|source={trigger_source}|"
@@ -2351,6 +2352,7 @@ class RuntimeService:
         max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
         calibrated = config.control.calibrated_angular
         universal = config.control.universal_saturated
+        ttbox = config.control.ttbox_pid_atan
         shared = config.control.shared
         return MouseController(
             MouseControllerConfig(
@@ -2373,6 +2375,16 @@ class RuntimeService:
                     max_step_x_counts=float(universal.max_step_x_counts),
                     max_step_y_counts=float(universal.max_step_y_counts),
                 ),
+                ttbox_pid_atan=TtboxPidAtanControllerConfig(
+                    response_scale_x_px=float(ttbox.response_scale_x_px),
+                    response_scale_y_px=float(ttbox.response_scale_y_px),
+                    per_frame_gain_x=float(ttbox.per_frame_gain_x),
+                    per_frame_gain_y=float(ttbox.per_frame_gain_y),
+                    normalize_to_dt=bool(ttbox.normalize_to_dt),
+                    nominal_dt_s=float(ttbox.nominal_dt_s),
+                    max_step_x_counts=float(ttbox.max_step_x_counts),
+                    max_step_y_counts=float(ttbox.max_step_y_counts),
+                ),
                 shared=SharedOutputConfig(
                     deadzone_x_px=float(shared.deadzone_x_px),
                     deadzone_y_px=float(shared.deadzone_y_px),
@@ -2391,7 +2403,7 @@ class RuntimeService:
         self.mouse_controller.reset()
 
     @staticmethod
-    def _target_detection_index(context: FrameContext, target: Track | Detection) -> int | None:
+    def _target_detection_index(context: FrameContext, target: Track) -> int | None:
         for index, detection in enumerate(context.detections):
             if detection is target:
                 return index
@@ -2406,47 +2418,20 @@ class RuntimeService:
                 return index
         return None
 
-    def _control_target_key(self, target: Track | Detection, context: FrameContext) -> str:
-        track_id = getattr(target, "track_id", None)
-        if track_id is not None:
-            return f"track:{int(track_id)}"
-        detection_index = self._target_detection_index(context, target)
-        if detection_index is not None:
-            return f"det:{detection_index}:class:{int(target.cls)}"
-        return f"class:{int(target.cls)}"
+    @staticmethod
+    def _control_target_key(target: Track) -> str:
+        return f"track:{int(target.track_id)}"
 
     def _mouse_observation_metadata(
         self,
         *,
         context: FrameContext,
-        target: Track | Detection,
+        target: Track,
         control_metadata: dict[str, Any],
         selector_debug: dict[str, Any],
         control_now_ts_ns: int,
         measurement_dt_s: float | None,
     ) -> dict[str, Any]:
-        if not isinstance(target, Track):
-            observation = MouseObservation(
-                frame_id=context.frame_id,
-                target_id=-1,
-                capture_ts_ns=int(context.capture_ts_ns or 0),
-                control_now_ts_ns=control_now_ts_ns,
-                measurement_dt_s=measurement_dt_s,
-                control_width_px=0.0,
-                control_height_px=0.0,
-                observed_x_px=0.0,
-                observed_y_px=0.0,
-                predicted_x_px=0.0,
-                predicted_y_px=0.0,
-                prediction_horizon_s=0.0,
-                target_confidence=0.0,
-                prediction_confidence=0.0,
-                observed_valid=False,
-                valid=False,
-                invalid_reason="STABLE_TRACK_REQUIRED",
-            )
-            return {"mouse_observation": observation, "mouse_observation_debug": asdict(observation)}
-
         transform = self._coordinate_transform_for_context(context)
         control_width = float(control_metadata.get("control_width") or 0.0)
         control_height = float(control_metadata.get("control_height") or 0.0)
@@ -2595,6 +2580,8 @@ class RuntimeService:
     @classmethod
     def _candidate_filter_payload(cls, selector_debug: dict[str, Any]) -> dict[str, Any]:
         tracked_filter = selector_debug.get("tracked_filter")
+        basic_filter = selector_debug.get("basic_filter")
+        association_filter = selector_debug.get("association_filter")
         effective = tracked_filter if isinstance(tracked_filter, dict) else selector_debug
         candidates = effective.get("candidates")
         rejected = effective.get("rejected")
@@ -2616,11 +2603,12 @@ class RuntimeService:
             ),
             "selection_radius_px": selector_debug.get("fov_radius_px"),
             "basic": {
-                "raw_candidates": cls._debug_int(selector_debug, "raw_candidates"),
-                "filtered_candidates": cls._debug_int(selector_debug, "filtered_candidates"),
-                "rejected_candidates": cls._debug_int(selector_debug, "rejected_candidates"),
-                "rejected": cls._debug_dict_list(selector_debug.get("rejected")),
+                "raw_candidates": cls._debug_int(basic_filter, "raw_candidates") if isinstance(basic_filter, dict) else cls._debug_int(selector_debug, "raw_candidates"),
+                "filtered_candidates": cls._debug_int(basic_filter, "filtered_candidates") if isinstance(basic_filter, dict) else cls._debug_int(selector_debug, "filtered_candidates"),
+                "rejected_candidates": cls._debug_int(basic_filter, "rejected_candidates") if isinstance(basic_filter, dict) else cls._debug_int(selector_debug, "rejected_candidates"),
+                "rejected": cls._debug_dict_list(basic_filter.get("rejected")) if isinstance(basic_filter, dict) else cls._debug_dict_list(selector_debug.get("rejected")),
             },
+            "association": dict(association_filter) if isinstance(association_filter, dict) else None,
             "tracked": dict(tracked_filter) if isinstance(tracked_filter, dict) else None,
         }
 
@@ -2657,7 +2645,13 @@ class RuntimeService:
             "raw_detections": self._debug_int(inference, "raw_detections"),
             "mapped_detections": self._debug_int(inference, "mapped_detections"),
             "basic_candidates": int(candidate["basic"]["filtered_candidates"]),
+            "association_candidates": (
+                self._debug_int(candidate["association"], "filtered_candidates")
+                if isinstance(candidate.get("association"), dict)
+                else int(candidate["filtered_candidates"])
+            ),
             "tracker_active": self._debug_int(tracker, "active_tracks"),
+            "tracker_tentative": self._debug_int(tracker, "tentative_tracks"),
             "tracker_lost": self._debug_int(tracker, "lost_track_count"),
             "filtered_candidates": int(candidate["filtered_candidates"]),
             "inside_fov": int(candidate["inside_fov"]),
@@ -2716,12 +2710,21 @@ class RuntimeService:
                 "basic_filter",
                 selection_reason or "all detections were rejected by class, confidence, or bbox validation",
             )
+        elif counts["association_candidates"] <= 0:
+            reason_codes = set(rejection_reasons)
+            if reason_codes == {"selection_fov"}:
+                code = "OUTSIDE_TARGET_FOV"
+            elif reason_codes == {"ratio_check"}:
+                code = "BBOX_RATIO_REJECTED"
+            elif reason_codes == {"area_filter"}:
+                code = "BBOX_AREA_REJECTED"
+            else:
+                code = "ASSOCIATION_FILTER_REJECTED"
+            stage, message = "association_filter", selection_reason or "all detections were rejected before association"
         elif counts["tracker_active"] <= 0:
-            code, stage, message = (
-                "TRACKER_NO_ACTIVE",
-                "tracker",
-                str(tracker.get("reason") or selection_reason or "tracker produced no ACTIVE track"),
-            )
+            code = "TRACKER_ACQUIRING" if counts["tracker_tentative"] > 0 else "TRACKER_NO_ACTIVE"
+            stage = "tracker"
+            message = str(tracker.get("reason") or selection_reason or "tracker produced no CONFIRMED track")
         elif counts["filtered_candidates"] <= 0 or counts["inside_fov"] <= 0:
             reason_codes = set(rejection_reasons)
             if reason_codes == {"selection_fov"}:
@@ -2759,7 +2762,7 @@ class RuntimeService:
         self,
         selector_debug: dict[str, Any],
         *,
-        target: Track | Detection | None = None,
+        target: Track | None = None,
         selection: TargetSelection | None = None,
     ) -> dict[str, Any]:
         tracker = selector_debug.get("tracker") if isinstance(selector_debug, dict) else {}
@@ -2872,7 +2875,7 @@ class RuntimeService:
             return 0.0
         return max(0.0, (time.monotonic_ns() - int(context.capture_ts_ns)) / 1e6)
 
-    def _target_payload(self, target: Track | Detection, context: FrameContext) -> dict[str, Any]:
+    def _target_payload(self, target: Track, context: FrameContext) -> dict[str, Any]:
         class_name = self._class_display_name(int(target.cls), context)
         coordinate_payload = self._coordinate_payload(target, context)
         payload = {
@@ -2898,8 +2901,7 @@ class RuntimeService:
             "box_offset_y": float(target.cy - context.height / 2),
             **coordinate_payload,
         }
-        if isinstance(target, Track):
-            payload["track_id"] = int(target.track_id)
+        payload["track_id"] = int(target.track_id)
         return payload
 
     def _detection_payload(self, detection: Detection, context: FrameContext) -> dict[str, Any]:

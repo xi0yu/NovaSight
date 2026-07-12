@@ -4,25 +4,20 @@ from dataclasses import dataclass
 import time
 from typing import Iterable
 
-from novasight.contracts import Detection, FrameContext, Track
+from novasight.contracts import FrameContext, Track
 from novasight.runtime.candidates import (
+    AssociationCandidateFilter,
     BasicCandidateFilter,
-    CandidateFilter,
-    CandidateFilterConfig,
-    CandidateFilterResult,
+    CandidateQuality,
     QualityScoreConfig,
     QualityScorer,
-    RatioCheckConfig,
-    ScoredCandidate,
-    SelectionFovConfig,
-    candidate_debug,
+    ScoredTrack,
+    TrackScoreResult,
     parse_allowed_class_ids,
+    scored_track_debug,
 )
 from novasight.runtime.kalman import KalmanConfig
 from novasight.runtime.tracker import RuntimeTracker, TrackerConfig, TrackerUpdate
-
-
-Target = Detection | Track
 
 
 def _context_time_ns(context: FrameContext) -> int:
@@ -34,7 +29,7 @@ def _context_time_ns(context: FrameContext) -> int:
 
 @dataclass(frozen=True)
 class TargetSelection:
-    target: Target | None
+    target: Track | None
     state: str
     reason: str
     candidates: int = 0
@@ -49,9 +44,6 @@ class TargetSelection:
 @dataclass
 class _LockedTarget:
     key: str
-    cx: float
-    cy: float
-    cls: int
 
 
 @dataclass
@@ -76,7 +68,6 @@ class RuntimeTargetSelector:
         self._locked = None
         self._pending_switch = None
         self._lost_count = 0
-        self.tracker.reset()
 
     def select(
         self,
@@ -117,7 +108,7 @@ class RuntimeTargetSelector:
         target_switch_min_continuity_score: float = 0.70,
         target_switch_delay_ms: float = 50.0,
     ) -> TargetSelection:
-        raw_candidates: list[Target] = list(context.detections)
+        raw_candidates = list(context.detections)
         if context.width <= 0 or context.height <= 0:
             self._lost_count += 1 if self._locked is not None else 0
             tracker_update = self.tracker.update(
@@ -162,15 +153,46 @@ class RuntimeTargetSelector:
             min_confidence=max(0.0, min(1.0, float(min_confidence))),
             aim_y_ratio=max(0.0, min(1.0, float(aim_ratio))),
         )
-        filter_debug = filter_result.debug_payload()
-        tracker_update = self.tracker.update(
+        basic_filter_debug = filter_result.debug_payload()
+        center_x = (
+            float(control_center_x_px)
+            if control_center_x_px is not None
+            else float(context.width) * 0.5
+        )
+        center_y = (
+            float(control_center_y_px)
+            if control_center_y_px is not None
+            else float(context.height) * 0.5
+        )
+        fov_radius_px = min(float(context.width), float(context.height)) * max(
+            0.0,
+            min(1.0, float(fov_ratio)),
+        )
+        association_filter_result = AssociationCandidateFilter().apply(
+            context,
             filter_result.observations,
+            center_x_px=center_x,
+            center_y_px=center_y,
+            radius_px=fov_radius_px,
+            max_aspect_ratio=ratio_max_aspect,
+        )
+        association_filter_debug = association_filter_result.debug_payload()
+        filter_debug = {
+            **association_filter_debug,
+            "basic_filter": basic_filter_debug,
+            "association_filter": association_filter_debug,
+        }
+        tracker_update = self.tracker.update(
+            association_filter_result.observations,
             int(context.capture_ts_ns or 0),
             frame_id=context.frame_id,
         )
         if not tracker_update.tracks:
             self._lost_count += 1 if self._locked is not None else 0
             unavailable_reason = (
+                self._first_association_rejection_reason(association_filter_result.rejected)
+                if not association_filter_result.observations and association_filter_result.rejected
+                else
                 self._first_basic_rejection_reason(filter_result.rejected)
                 if filter_result.rejected
                 else tracker_update.reason
@@ -179,6 +201,9 @@ class RuntimeTargetSelector:
                 **filter_debug,
                 "min_confidence": float(min_confidence),
                 "class_filter": str(class_filter),
+                "fov_ratio": float(fov_ratio),
+                "fov_radius_px": fov_radius_px,
+                "control_center_roi_px": {"x": center_x, "y": center_y},
                 "reason": unavailable_reason,
                 "tracker": tracker_update.debug,
             }
@@ -187,7 +212,7 @@ class RuntimeTargetSelector:
                 unavailable_reason,
                 0,
                 0,
-                state=tracker_update.state.lower(),
+                state="no_target",
             )
 
         return self._select_from_tracker_update(
@@ -237,21 +262,6 @@ class RuntimeTargetSelector:
         target_switch_min_continuity_score: float,
         target_switch_delay_ms: float,
     ) -> TargetSelection:
-        track_filter_result = self._filter_candidates(
-            context,
-            list(tracker_update.tracks),
-            min_confidence=min_confidence,
-            fov_ratio=fov_ratio,
-            aim_ratio=aim_ratio,
-            control_center_x_px=control_center_x_px,
-            control_center_y_px=control_center_y_px,
-            class_filter=class_filter,
-            ratio_max_aspect=ratio_max_aspect,
-            quality_confidence_weight=quality_confidence_weight,
-            quality_area_weight=quality_area_weight,
-        )
-        scored_candidates = track_filter_result.candidates
-        candidates = [item.detection for item in scored_candidates]
         center_x = (
             float(control_center_x_px)
             if control_center_x_px is not None
@@ -262,6 +272,16 @@ class RuntimeTargetSelector:
             if control_center_y_px is not None
             else context.height / 2
         )
+        track_filter_result = self._score_confirmed_tracks(
+            context,
+            list(tracker_update.tracks),
+            center_x=center_x,
+            center_y=center_y,
+            quality_confidence_weight=quality_confidence_weight,
+            quality_area_weight=quality_area_weight,
+        )
+        scored_candidates = track_filter_result.tracks
+        candidates = [item.track for item in scored_candidates]
         fov_radius_px = min(float(context.width), float(context.height)) * max(
             0.0,
             min(1.0, float(fov_ratio)),
@@ -289,20 +309,20 @@ class RuntimeTargetSelector:
         aim_ratio = max(0.0, min(1.0, float(aim_ratio)))
         priority = {int(cls): rank for rank, cls in enumerate(class_priority)}
         locked = self._locked_match(candidates) if lock_enabled else None
-        scored_by_id = {id(item.detection): item for item in scored_candidates}
+        scored_by_id = {id(item.track): item for item in scored_candidates}
         quality_margin = max(0.0, float(class_priority_quality_margin))
         best_quality = max(item.quality.quality_score for item in scored_candidates)
         viable_scored = [
             item for item in scored_candidates
             if item.quality.quality_score >= best_quality - quality_margin
         ]
-        viable = [item.detection for item in viable_scored]
+        viable = [item.track for item in viable_scored]
 
         best = min(
             viable,
             key=lambda item: (
                 self._priority_rank(item, priority),
-                self._selection_distance(item, locked, sticky_bias, center_x, center_y, aim_ratio),
+                self._selection_distance(item, locked, sticky_bias, center_x, center_y),
                 -scored_by_id[id(item)].quality.quality_score,
                 -float(item.score),
             ),
@@ -330,7 +350,7 @@ class RuntimeTargetSelector:
             "sticky_bias": float(sticky_bias),
             "lock_enabled": bool(lock_enabled),
             "tracker": tracker_update.debug,
-            "selected": candidate_debug(best_scored),
+            "selected": scored_track_debug(best_scored),
             "selected_key": best_key,
             "locked_key": previous_key,
             "selected_continuity_score": best_continuity,
@@ -354,7 +374,7 @@ class RuntimeTargetSelector:
                 inside_fov=track_filter_result.inside_fov_count,
                 locked=selected_locked,
                 priority_rank=self._priority_rank(best, priority),
-                distance_px=self._aim_distance(best, center_x, center_y, aim_ratio),
+                distance_px=self._aim_distance(best, center_x, center_y),
                 quality_score=best_scored.quality.quality_score,
             )
 
@@ -378,7 +398,7 @@ class RuntimeTargetSelector:
                     locked_scored = scored_by_id.get(id(locked))
                     self._remember(locked)
                     if locked_scored is not None:
-                        self.last_debug["selected"] = candidate_debug(locked_scored)
+                        self.last_debug["selected"] = scored_track_debug(locked_scored)
                     self.last_debug["selected_key"] = self._target_key(locked)
                     return TargetSelection(
                         target=locked,
@@ -393,7 +413,6 @@ class RuntimeTargetSelector:
                             locked,
                             center_x,
                             center_y,
-                            aim_ratio,
                         ),
                         quality_score=(
                             locked_scored.quality.quality_score
@@ -410,11 +429,11 @@ class RuntimeTargetSelector:
                     locked=True,
                     lost_count=self._lost_count,
                     priority_rank=self._priority_rank(best, priority),
-                    distance_px=self._aim_distance(best, center_x, center_y, aim_ratio),
+                    distance_px=self._aim_distance(best, center_x, center_y),
                     quality_score=best_scored.quality.quality_score,
                 )
             self._remember(best)
-            self.last_debug["selected"] = candidate_debug(best_scored)
+            self.last_debug["selected"] = scored_track_debug(best_scored)
             return TargetSelection(
                 target=best,
                 state="switch_committed",
@@ -423,7 +442,7 @@ class RuntimeTargetSelector:
                 inside_fov=track_filter_result.inside_fov_count,
                 locked=False,
                 priority_rank=self._priority_rank(best, priority),
-                distance_px=self._aim_distance(best, center_x, center_y, aim_ratio),
+                distance_px=self._aim_distance(best, center_x, center_y),
                 quality_score=best_scored.quality.quality_score,
             )
 
@@ -437,7 +456,7 @@ class RuntimeTargetSelector:
             "reason": "same locked target",
         }
         selection_state = "locked" if selected_locked else "fresh"
-        selection_reason = "按 ACTIVE track、类别优先级、距离和锁定偏好选择目标"
+        selection_reason = "按 CONFIRMED track、类别优先级、filtered aim 距离和锁定偏好选择目标"
         return TargetSelection(
             target=best,
             state=selection_state,
@@ -446,67 +465,52 @@ class RuntimeTargetSelector:
             inside_fov=track_filter_result.inside_fov_count,
             locked=selected_locked,
             priority_rank=self._priority_rank(best, priority),
-            distance_px=self._aim_distance(best, center_x, center_y, aim_ratio),
+            distance_px=self._aim_distance(best, center_x, center_y),
             quality_score=best_scored.quality.quality_score,
         )
 
-    def _filter_candidates(
+    def _score_confirmed_tracks(
         self,
         context: FrameContext,
-        candidates: list[Target],
+        candidates: list[Track],
         *,
-        min_confidence: float,
-        fov_ratio: float,
-        aim_ratio: float,
-        control_center_x_px: float | None,
-        control_center_y_px: float | None,
-        class_filter: str,
-        ratio_max_aspect: float,
+        center_x: float,
+        center_y: float,
         quality_confidence_weight: float,
         quality_area_weight: float,
-    ) -> CandidateFilterResult:
-        radius_percent = max(0.0, min(100.0, float(fov_ratio) * 100.0))
-        config = CandidateFilterConfig(
-            allowed_class_ids=parse_allowed_class_ids(class_filter),
-            min_confidence=max(0.0, min(1.0, float(min_confidence))),
-            selection_fov=SelectionFovConfig(
-                enabled=True,
-                shape="circle",
-                center_x_px=control_center_x_px,
-                center_y_px=control_center_y_px,
-                radius_x_percent=radius_percent,
-                radius_y_percent=radius_percent,
-            ),
-            ratio_check=RatioCheckConfig(max_aspect_ratio=max(1.0, float(ratio_max_aspect))),
-        )
+    ) -> TrackScoreResult:
         quality = QualityScorer(
             QualityScoreConfig(
                 confidence_weight=max(0.0, float(quality_confidence_weight)),
                 area_weight=max(0.0, float(quality_area_weight)),
             )
         )
-        return CandidateFilter(config, quality_scorer=quality).apply(
-            context,
-            candidates,
-            aim_ratio=aim_ratio,
+        scored: list[ScoredTrack] = []
+        for track in candidates:
+            aim_x, aim_y = track.filtered_aim_px
+            base_quality = quality.score(track, context=context)
+            scored.append(
+                ScoredTrack(
+                    frame_id=int(context.frame_id),
+                    capture_ts_ns=context.capture_ts_ns,
+                    track=track,
+                    quality=CandidateQuality(
+                        conf_score=base_quality.conf_score,
+                        area_score=base_quality.area_score,
+                        quality_score=min(
+                            base_quality.quality_score,
+                            max(0.0, min(1.0, float(track.quality_score))),
+                        ),
+                    ),
+                    distance_px=((aim_x - center_x) ** 2 + (aim_y - center_y) ** 2) ** 0.5,
+                    aim_x=float(aim_x),
+                    aim_y=float(aim_y),
+                )
+            )
+        return TrackScoreResult(
+            tracks=scored,
+            raw_count=len(candidates),
         )
-
-    @staticmethod
-    def _first_rejection_reason(result: CandidateFilterResult) -> str:
-        if not result.rejected:
-            return "no candidate after candidate filter"
-        reasons = [item.reason for item in result.rejected]
-        if all(reason == "selection_fov" for reason in reasons):
-            return "no candidate inside selection fov"
-        if all(reason == "confidence_filter" for reason in reasons):
-            return "no candidate after confidence filter"
-        if all(reason == "class_filter" for reason in reasons):
-            return "no candidate after class filter"
-        if all(reason == "ratio_check" for reason in reasons):
-            return "no candidate after ratio check"
-        if all(reason == "invalid_bbox" for reason in reasons):
-            return "no candidate after bbox validation"
-        return "no candidate after candidate filter"
 
     @staticmethod
     def _first_basic_rejection_reason(rejected: list[dict]) -> str:
@@ -518,6 +522,17 @@ class RuntimeTargetSelector:
         if reasons and all(reason == "invalid_bbox" for reason in reasons):
             return "no candidate after bbox validation"
         return "no candidate after basic candidate filter"
+
+    @staticmethod
+    def _first_association_rejection_reason(rejected: list[dict]) -> str:
+        reasons = [str(item.get("reason") or "") for item in rejected]
+        if reasons and all(reason == "selection_fov" for reason in reasons):
+            return "no candidate inside selection fov"
+        if reasons and all(reason == "ratio_check" for reason in reasons):
+            return "no candidate after ratio check"
+        if reasons and all(reason == "area_filter" for reason in reasons):
+            return "no candidate after area filter"
+        return "no candidate after association candidate filter"
 
     def _lost_or_clear(
         self,
@@ -561,22 +576,18 @@ class RuntimeTargetSelector:
             lost_count=lost_count,
         )
 
-    def _remember(self, target: Target) -> None:
-        self._locked = _LockedTarget(
-            key=self._target_key(target),
-            cx=float(target.cx),
-            cy=float(target.cy),
-            cls=int(target.cls),
-        )
+    def _remember(self, target: Track) -> None:
+        key = self._target_key(target)
+        self._locked = _LockedTarget(key=key)
         self._lost_count = 0
 
     def _advance_switch(
         self,
         *,
-        candidate: Target,
-        candidate_score: ScoredCandidate,
-        locked: Target | None,
-        locked_score: ScoredCandidate | None,
+        candidate: Track,
+        candidate_score: ScoredTrack,
+        locked: Track | None,
+        locked_score: ScoredTrack | None,
         priority: dict[int, int],
         quality_margin: float,
         tracker_update: TrackerUpdate,
@@ -677,10 +688,10 @@ class RuntimeTargetSelector:
 
     def _preference_advantage(
         self,
-        candidate: Target,
-        candidate_score: ScoredCandidate,
-        locked: Target | None,
-        locked_score: ScoredCandidate | None,
+        candidate: Track,
+        candidate_score: ScoredTrack,
+        locked: Track | None,
+        locked_score: ScoredTrack | None,
         *,
         priority: dict[int, int],
         quality_margin: float,
@@ -699,10 +710,8 @@ class RuntimeTargetSelector:
         return advantage
 
     @staticmethod
-    def _track_continuity_score(tracker_update: TrackerUpdate, target: Target) -> float:
-        track_id = getattr(target, "track_id", None)
-        if track_id is None:
-            return 1.0
+    def _track_continuity_score(tracker_update: TrackerUpdate, target: Track) -> float:
+        track_id = target.track_id
         for item in tracker_update.debug.get("tracks", []):
             try:
                 if int(item.get("track_id")) == int(track_id):
@@ -711,35 +720,23 @@ class RuntimeTargetSelector:
                 continue
         return 0.0
 
-    def _locked_match(self, candidates: list[Target]) -> Target | None:
+    def _locked_match(self, candidates: list[Track]) -> Track | None:
         if self._locked is None:
             return None
         for item in candidates:
             if self._target_key(item) == self._locked.key:
                 return item
-        nearest_same_class = [
-            item for item in candidates
-            if getattr(item, "track_id", None) is None and int(item.cls) == self._locked.cls
-        ]
-        if not nearest_same_class:
-            return None
-        nearest = min(
-            nearest_same_class,
-            key=lambda item: ((float(item.cx) - self._locked.cx) ** 2 + (float(item.cy) - self._locked.cy) ** 2) ** 0.5,
-        )
-        distance = ((float(nearest.cx) - self._locked.cx) ** 2 + (float(nearest.cy) - self._locked.cy) ** 2) ** 0.5
-        return nearest if distance <= 96.0 else None
+        return None
 
     def _selection_distance(
         self,
-        target: Target,
-        locked: Target | None,
+        target: Track,
+        locked: Track | None,
         sticky_bias: float,
         center_x: float,
         center_y: float,
-        aim_ratio: float,
     ) -> float:
-        distance = self._aim_distance(target, center_x, center_y, aim_ratio)
+        distance = self._aim_distance(target, center_x, center_y)
         if locked is None or sticky_bias <= 0:
             return distance
         if self._target_key(target) != self._target_key(locked):
@@ -747,51 +744,14 @@ class RuntimeTargetSelector:
         return distance * max(0.0, 1.0 - min(0.9, sticky_bias))
 
     @staticmethod
-    def _target_key(target: Target) -> str:
-        track_id = getattr(target, "track_id", None)
-        if track_id is not None:
-            return f"track:{int(track_id)}"
-        return f"class:{int(target.cls)}:{round(float(target.cx), 1)}:{round(float(target.cy), 1)}"
+    def _target_key(target: Track) -> str:
+        return f"track:{int(target.track_id)}"
 
     @staticmethod
-    def _class_allowed(target: Target, class_filter: str) -> bool:
-        if class_filter == "all":
-            return True
-        try:
-            return int(target.cls) == int(class_filter)
-        except ValueError:
-            return True
-
-    @staticmethod
-    def _priority_rank(target: Target, priority: dict[int, int]) -> int:
+    def _priority_rank(target: Track, priority: dict[int, int]) -> int:
         return priority.get(int(target.cls), len(priority) + int(target.cls))
 
     @staticmethod
-    def _distance(target: Target, center_x: float, center_y: float) -> float:
-        return ((float(target.cx) - center_x) ** 2 + (float(target.cy) - center_y) ** 2) ** 0.5
-
-    @staticmethod
-    def _aim_y(target: Target, aim_ratio: float) -> float:
-        point_y = getattr(target, "point_y", None)
-        ratio = max(0.0, min(1.0, aim_ratio))
-        return float(point_y(ratio)) if callable(point_y) else float(target.y) + float(target.h) * ratio
-
-    def _aim_distance(self, target: Target, center_x: float, center_y: float, aim_ratio: float) -> float:
-        return ((float(target.cx) - center_x) ** 2 + (self._aim_y(target, aim_ratio) - center_y) ** 2) ** 0.5
-
-    def _candidate_debug(self, candidates: list[Target], context: FrameContext, *, aim_ratio: float) -> list[dict]:
-        center_x = context.width / 2
-        center_y = context.height / 2
-        return [
-            {
-                "cls": int(getattr(item, "cls", -1)),
-                "score": float(getattr(item, "score", 0.0)),
-                "cx": float(getattr(item, "cx", 0.0)),
-                "cy": float(getattr(item, "cy", 0.0)),
-                "distance_px": self._distance(item, center_x, center_y),
-                "aim_x": float(getattr(item, "cx", 0.0)),
-                "aim_y": self._aim_y(item, aim_ratio),
-                "aim_distance_px": self._aim_distance(item, center_x, center_y, aim_ratio),
-            }
-            for item in candidates[:12]
-        ]
+    def _aim_distance(target: Track, center_x: float, center_y: float) -> float:
+        aim_x, aim_y = target.filtered_aim_px
+        return ((float(aim_x) - center_x) ** 2 + (float(aim_y) - center_y) ** 2) ** 0.5

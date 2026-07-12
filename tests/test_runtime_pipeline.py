@@ -12,7 +12,7 @@ from novasight.capture.session import CaptureSession
 from novasight.capture.source import CapturedFrame, GstAppSinkFrameSource
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
-from novasight.contracts import Detection, DetectionBatch, FrameContext
+from novasight.contracts import Detection, DetectionBatch, FrameContext, Track
 from novasight.executors import BoxInputState
 from novasight.executors import ExecutionResult, ExecutorRegistry
 from novasight.inference.contracts import InferenceResult
@@ -960,9 +960,10 @@ def test_target_pipeline_diagnostics_explain_selection_fov_rejection() -> None:
     candidate_filter = control["candidate_filter"]
     rejected = candidate_filter["rejected"][0]
     assert diagnostics["code"] == "OUTSIDE_TARGET_FOV"
-    assert diagnostics["stage"] == "target_filter"
+    assert diagnostics["stage"] == "association_filter"
     assert diagnostics["counts"]["mapped_detections"] == 1
-    assert diagnostics["counts"]["tracker_active"] == 1
+    assert diagnostics["counts"]["association_candidates"] == 0
+    assert diagnostics["counts"]["tracker_active"] == 0
     assert diagnostics["counts"]["inside_fov"] == 0
     assert diagnostics["rejection_reasons"] == ["selection_fov"]
     assert control["global_state"] == "TARGET_UNAVAILABLE"
@@ -992,7 +993,12 @@ def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, mon
         capture_ts_ns=time.monotonic_ns(),
         detections=[Detection(cls=0, score=0.9, x1=280, y1=240, x2=360, y2=400)],
     )
-    target = context.detections[0]
+    target = Track(
+        track_id=7,
+        cls=0,
+        score=0.9,
+        box=context.detections[0].box,
+    )
     command = SimpleNamespace(dx=4.0, dy=0.0, reason="test")
 
     with caplog.at_level("INFO", logger="novasight.runtime.service"):

@@ -80,6 +80,8 @@ class KalmanEstimator:
     def measurement_nis(self, x: float, y: float, ts_ns: int) -> float:
         if not self.config.enabled:
             return 0.0
+        if int(ts_ns) == self.last_state_ts_ns:
+            return self.measurement_nis_current(x, y)
         dt = self._dt(ts_ns)
         x_pred, p_pred = self._predict_matrices(dt)
         innovation = [float(x) - x_pred[0], float(y) - x_pred[1]]
@@ -87,6 +89,16 @@ class KalmanEstimator:
         s01 = p_pred[0][1]
         s10 = p_pred[1][0]
         s11 = p_pred[1][1] + max(1e-6, float(self.config.measurement_noise_y))
+        return _mahalanobis_2d(innovation, s00, s01, s10, s11)
+
+    def measurement_nis_current(self, x: float, y: float) -> float:
+        if not self.config.enabled:
+            return 0.0
+        innovation = [float(x) - self.x[0], float(y) - self.x[1]]
+        s00 = self.p[0][0] + max(1e-6, float(self.config.measurement_noise_x))
+        s01 = self.p[0][1]
+        s10 = self.p[1][0]
+        s11 = self.p[1][1] + max(1e-6, float(self.config.measurement_noise_y))
         return _mahalanobis_2d(innovation, s00, s01, s10, s11)
 
     def predict_only(
@@ -189,18 +201,15 @@ class KalmanEstimator:
             x_pred[row] + k[row][0] * innovation[0] + k[row][1] * innovation[1]
             for row in range(4)
         ]
-        kh = [
-            [k[row][0], k[row][1], 0.0, 0.0]
+        self.p = [
+            [
+                p_pred[row][col]
+                - k[row][0] * p_pred[0][col]
+                - k[row][1] * p_pred[1][col]
+                for col in range(4)
+            ]
             for row in range(4)
         ]
-        i_minus_kh = [
-            [1.0 if row == col else 0.0 for col in range(4)]
-            for row in range(4)
-        ]
-        for row in range(4):
-            for col in range(4):
-                i_minus_kh[row][col] -= kh[row][col]
-        self.p = _matmul(i_minus_kh, p_pred)
         self.last_nis = float(nis)
         self.last_state_ts_ns = int(ts_ns)
         self.last_measurement_ts_ns = int(ts_ns)
@@ -254,21 +263,27 @@ class KalmanEstimator:
         return min(raw, max_dt)
 
     def _predict_matrices(self, dt: float) -> tuple[list[float], list[list[float]]]:
-        f = [
-            [1.0, 0.0, dt, 0.0],
-            [0.0, 1.0, 0.0, dt],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
         q = _process_noise(dt, max(1e-6, float(self.config.acceleration_noise)))
         x_pred = [
-            f[row][0] * self.x[0]
-            + f[row][1] * self.x[1]
-            + f[row][2] * self.x[2]
-            + f[row][3] * self.x[3]
+            self.x[0] + dt * self.x[2],
+            self.x[1] + dt * self.x[3],
+            self.x[2],
+            self.x[3],
+        ]
+        p = self.p
+        fp = [
+            [p[0][col] + dt * p[2][col] for col in range(4)],
+            [p[1][col] + dt * p[3][col] for col in range(4)],
+            list(p[2]),
+            list(p[3]),
+        ]
+        p_pred = [
+            [fp[row][0] + dt * fp[row][2], fp[row][1] + dt * fp[row][3], fp[row][2], fp[row][3]]
             for row in range(4)
         ]
-        p_pred = _matadd(_matmul(_matmul(f, self.p), _transpose(f)), q)
+        for row in range(4):
+            for col in range(4):
+                p_pred[row][col] += q[row][col]
         return x_pred, p_pred
 
     def _estimate(
@@ -354,12 +369,14 @@ def _mahalanobis_2d(
     s10: float,
     s11: float,
 ) -> float:
-    inv = _inverse_2x2(s00, s01, s10, s11)
-    if inv is None:
+    det = s00 * s11 - s01 * s10
+    if not isfinite(det) or abs(det) < 1e-12:
         return float("inf")
-    left = innovation[0] * inv[0][0] + innovation[1] * inv[1][0]
-    right = innovation[0] * inv[0][1] + innovation[1] * inv[1][1]
-    return float(left * innovation[0] + right * innovation[1])
+    dx = float(innovation[0])
+    dy = float(innovation[1])
+    return float(
+        (dx * (s11 * dx - s01 * dy) + dy * (-s10 * dx + s00 * dy)) / det
+    )
 
 
 def _inverse_2x2(
@@ -373,30 +390,6 @@ def _inverse_2x2(
         return None
     inv_det = 1.0 / det
     return [[d * inv_det, -b * inv_det], [-c * inv_det, a * inv_det]]
-
-
-def _matmul(left: list[list[float]], right: list[list[float]]) -> list[list[float]]:
-    rows = len(left)
-    cols = len(right[0])
-    inner = len(right)
-    return [
-        [
-            sum(left[row][idx] * right[idx][col] for idx in range(inner))
-            for col in range(cols)
-        ]
-        for row in range(rows)
-    ]
-
-
-def _matadd(left: list[list[float]], right: list[list[float]]) -> list[list[float]]:
-    return [
-        [left[row][col] + right[row][col] for col in range(len(left[row]))]
-        for row in range(len(left))
-    ]
-
-
-def _transpose(matrix: list[list[float]]) -> list[list[float]]:
-    return [list(row) for row in zip(*matrix, strict=True)]
 
 
 def _clamp01(value: float) -> float:

@@ -691,6 +691,7 @@ export function StudioConsoleView({
   const aimConfig = nestedRecord(controlConfig, "aim");
   const calibratedAngularConfig = nestedRecord(controlConfig, "calibrated_angular");
   const universalSaturatedConfig = nestedRecord(controlConfig, "universal_saturated");
+  const ttboxPidAtanConfig = nestedRecord(controlConfig, "ttbox_pid_atan");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
   const configuredActuationDelay = readNumber(controlConfig.configured_actuation_delay_s, 0.004);
@@ -728,6 +729,14 @@ export function StudioConsoleView({
   const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 60);
   const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 50);
   const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 40);
+  const ttboxResponseScaleX = readNumber(ttboxPidAtanConfig.response_scale_x_px, 256);
+  const ttboxResponseScaleY = readNumber(ttboxPidAtanConfig.response_scale_y_px, 256);
+  const ttboxPerFrameGainX = readNumber(ttboxPidAtanConfig.per_frame_gain_x, 0.1);
+  const ttboxPerFrameGainY = readNumber(ttboxPidAtanConfig.per_frame_gain_y, 0.1);
+  const ttboxMaxStepX = readNumber(ttboxPidAtanConfig.max_step_x_counts, 50);
+  const ttboxMaxStepY = readNumber(ttboxPidAtanConfig.max_step_y_counts, 40);
+  const ttboxNormalizeToDt = readBoolean(ttboxPidAtanConfig.normalize_to_dt, true);
+  const ttboxNominalDtS = readNumber(ttboxPidAtanConfig.nominal_dt_s, 0.016);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -835,6 +844,7 @@ export function StudioConsoleView({
   const rejectedControlCandidates = recordArray(controlCandidateFilter.rejected);
   const firstRejectedControlCandidate = rejectedControlCandidates[0] ?? {};
   const trackerRuntimeDebug = asRecord(selectorDebug.tracker);
+  const trackerTiming = asRecord(trackerRuntimeDebug.timing);
   const trackDiagnostics = asRecord(control.track_diagnostics ?? target.track_diagnostics);
   const diagnosticTracks = recordArray(trackDiagnostics.tracks);
   const selectedTrackId = finiteNumber(trackDiagnostics.selected_track_id);
@@ -1678,7 +1688,7 @@ export function StudioConsoleView({
   );
 
   const updateControlGroupField = useCallback(
-    async (group: "aim" | "calibrated_angular" | "universal_saturated" | "shared", key: string, value: RuntimeConfigValue) => {
+    async (group: "aim" | "calibrated_angular" | "universal_saturated" | "ttbox_pid_atan" | "shared", key: string, value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const control = nestedRecord(base, "control");
       const groupValue = {
@@ -2659,7 +2669,7 @@ export function StudioConsoleView({
                 <span>诊断信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
                 <span>检测数量</span><b>{formatOptionalInteger(inferenceTrace.mapped_detections)}</b>
                 <span>解码 / 阈值 / NMS</span><b>{`${formatOptionalInteger(targetPipelineCounts.decode_raw_candidates)} / ${formatOptionalInteger(targetPipelineCounts.threshold_candidates)} / ${formatOptionalInteger(targetPipelineCounts.nms_detections)}`}</b>
-                <span>基础候选 / ACTIVE / FOV 内</span><b>{`${formatOptionalInteger(targetPipelineCounts.basic_candidates)} / ${formatOptionalInteger(targetPipelineCounts.tracker_active)} / ${formatOptionalInteger(targetPipelineCounts.inside_fov)}`}</b>
+                <span>基础 / 关联 / CONFIRMED / FOV 内</span><b>{`${formatOptionalInteger(targetPipelineCounts.basic_candidates)} / ${formatOptionalInteger(targetPipelineCounts.association_candidates)} / ${formatOptionalInteger(targetPipelineCounts.tracker_active)} / ${formatOptionalInteger(targetPipelineCounts.inside_fov)}`}</b>
                 <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                 <span>选择 FOV 中心</span><b>{formatPoint(selectionCenter.x, selectionCenter.y, 1, "px")}</b>
                 <span>选择 FOV 半径</span><b>{formatOptionalNumber(controlCandidateFilter.selection_radius_px, 1, "px")}</b>
@@ -2670,13 +2680,19 @@ export function StudioConsoleView({
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
                 <span>目标类别</span><b>{readString(target.class_name, "") || NO_SAMPLE}</b>
                 <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
+                <span>Track quality</span><b>{formatOptionalNumber(selectedTrackDebug.track_quality, 3)}</b>
                 <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
                 <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
                 <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1, 1)} -> ${formatPoint(target.x2, target.y2, 1)}` : NO_SAMPLE}</b>
                 <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, 1, "px")}</b>
                 <span>Tracker 关联</span><b>{readString(trackerRuntimeDebug.association_algorithm, "") || NO_SAMPLE}</b>
-                <span>ACTIVE / LOST</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.active_tracks ?? trackerRuntimeDebug.available_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.lost_track_count)}`}</b>
+                <span>关联输入 / 截断</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.input_candidates)} / ${formatOptionalInteger(trackerRuntimeDebug.association_candidates_dropped)}`}</b>
+                <span>轨迹 / 检测上限</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.max_active_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.max_detections_for_association)}`}</b>
+                <span>CONFIRMED / TENTATIVE / LOST</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.confirmed_tracks ?? trackerRuntimeDebug.active_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.tentative_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.lost_track_count)}`}</b>
                 <span>本轮恢复 track</span><b>{Array.isArray(trackerRuntimeDebug.restored_track_ids) && trackerRuntimeDebug.restored_track_ids.length > 0 ? trackerRuntimeDebug.restored_track_ids.join(", ") : NO_SAMPLE}</b>
+                <span>Predict / Matrix</span><b>{formatPoint(trackerTiming.tracker_predict_us, trackerTiming.association_matrix_us, 2, "us")}</b>
+                <span>Hungarian / Update</span><b>{formatPoint(trackerTiming.hungarian_us, trackerTiming.tracker_update_us, 2, "us")}</b>
+                <span>Tracker total</span><b>{formatOptionalNumber(trackerTiming.tracker_total_us, 2, "us")}</b>
               </div>
             </div>
             <div className="console-card">
@@ -2773,6 +2789,7 @@ export function StudioConsoleView({
                 <select value={controlMode} onChange={(event) => void updateConfigField("control", "mode", event.target.value)}>
                   <option value="universal_saturated">通用适配</option>
                   <option value="calibrated_angular">精确标定</option>
+                  <option value="ttbox_pid_atan">ttbox_pid_atan</option>
                 </select>
                 <label>触发方式</label>
                 <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
@@ -2796,7 +2813,7 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title={controlMode === "calibrated_angular" ? "控制算法 · 精确标定" : "控制算法 · 通用适配"} />
+                <SectionTitle title={controlMode === "calibrated_angular" ? "控制算法 · 精确标定" : controlMode === "ttbox_pid_atan" ? "控制算法 · ttbox_pid_atan" : "控制算法 · 通用适配"} />
                 {controlMode === "calibrated_angular" ? (
                   <>
                     <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
@@ -2809,6 +2826,17 @@ export function StudioConsoleView({
                     <NumberControl label="D 项 EMA" value={calibratedDEmaAlpha} min={0.01} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "d_ema_alpha", value)} />
                     <NumberControl label="X 最大角度步长 deg" value={calibratedMaxAngleX} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_x_deg", value)} />
                     <NumberControl label="Y 最大角度步长 deg" value={calibratedMaxAngleY} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_y_deg", value)} />
+                  </>
+                ) : controlMode === "ttbox_pid_atan" ? (
+                  <>
+                    <NumberControl label="水平响应尺度 px" value={ttboxResponseScaleX} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "response_scale_x_px", value)} />
+                    <NumberControl label="垂直响应尺度 px" value={ttboxResponseScaleY} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "response_scale_y_px", value)} />
+                    <NumberControl label="X 每帧增益" value={ttboxPerFrameGainX} min={0.001} max={2} step={0.001} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "per_frame_gain_x", value)} />
+                    <NumberControl label="Y 每帧增益" value={ttboxPerFrameGainY} min={0.001} max={2} step={0.001} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "per_frame_gain_y", value)} />
+                    <NumberControl label="X 最大 counts" value={ttboxMaxStepX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "max_step_x_counts", value)} />
+                    <NumberControl label="Y 最大 counts" value={ttboxMaxStepY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "max_step_y_counts", value)} />
+                    <ModuleSwitch label="按 dt 归一" detail="dt/nominal_dt_s 缩放每帧增益；高刷新率下保持一致响应" enabled={ttboxNormalizeToDt} onToggle={(enabled) => updateControlGroupField("ttbox_pid_atan", "normalize_to_dt", enabled)} />
+                    <NumberControl label="标称帧间隔 s" value={ttboxNominalDtS} min={0.001} max={0.2} step={0.001} onCommit={(value) => updateControlGroupField("ttbox_pid_atan", "nominal_dt_s", value)} />
                   </>
                 ) : (
                   <>

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import isfinite
 from typing import Iterable
 
 from novasight.contracts import BBox, Detection, FrameContext, Track
-
-
-Target = Detection | Track
 
 
 @dataclass(frozen=True)
@@ -34,6 +31,77 @@ class BasicCandidateFilterResult:
             "rejected_candidates": len(self.rejected),
             "rejected": list(self.rejected),
         }
+
+
+@dataclass(frozen=True)
+class AssociationCandidateFilterResult:
+    observations: list[TrackObservation]
+    rejected: list[dict]
+    input_count: int
+
+    def debug_payload(self) -> dict:
+        return {
+            "raw_candidates": self.input_count,
+            "filtered_candidates": len(self.observations),
+            "rejected_candidates": len(self.rejected),
+            "rejected": list(self.rejected),
+        }
+
+
+class AssociationCandidateFilter:
+    """Apply control-space geometry gates before building the Hungarian matrix."""
+
+    def apply(
+        self,
+        context: FrameContext,
+        observations: Iterable[TrackObservation],
+        *,
+        center_x_px: float,
+        center_y_px: float,
+        radius_px: float,
+        max_aspect_ratio: float,
+        min_area_px: float = 256.0,
+    ) -> AssociationCandidateFilterResult:
+        source = list(observations)
+        accepted: list[TrackObservation] = []
+        rejected: list[dict] = []
+        radius = max(0.0, float(radius_px))
+        max_aspect = max(1.0, float(max_aspect_ratio))
+        min_area = max(0.0, float(min_area_px))
+        for observation in source:
+            width = float(observation.bbox.width)
+            height = float(observation.bbox.height)
+            distance = (
+                (float(observation.aim_x) - float(center_x_px)) ** 2
+                + (float(observation.aim_y) - float(center_y_px)) ** 2
+            ) ** 0.5
+            reason = ""
+            if radius <= 0.0 or distance > radius:
+                reason = "selection_fov"
+            elif float(observation.bbox.area) < min_area:
+                reason = "area_filter"
+            elif min(width, height) <= 0.0 or max(width / height, height / width) > max_aspect:
+                reason = "ratio_check"
+            if reason:
+                rejected.append(
+                    {
+                        "detection_index": observation.detection_index,
+                        "class_id": observation.class_id,
+                        "confidence": observation.confidence,
+                        "aim_x": observation.aim_x,
+                        "aim_y": observation.aim_y,
+                        "distance_px": distance,
+                        "area_px": observation.bbox.area,
+                        "reason": reason,
+                    }
+                )
+                continue
+            accepted.append(observation)
+        return AssociationCandidateFilterResult(
+            observations=accepted,
+            rejected=rejected,
+            input_count=len(source),
+        )
 
 
 class BasicCandidateFilter:
@@ -88,34 +156,9 @@ class BasicCandidateFilter:
 
 
 @dataclass(frozen=True)
-class SelectionFovConfig:
-    enabled: bool = True
-    shape: str = "circle"
-    center_horizontal_percent: float = 50.0
-    center_vertical_percent_from_top: float = 50.0
-    center_x_px: float | None = None
-    center_y_px: float | None = None
-    radius_x_percent: float = 28.0
-    radius_y_percent: float = 28.0
-
-
-@dataclass(frozen=True)
-class RatioCheckConfig:
-    max_aspect_ratio: float = 6.0
-
-
-@dataclass(frozen=True)
 class QualityScoreConfig:
     confidence_weight: float = 0.7
     area_weight: float = 0.3
-
-
-@dataclass(frozen=True)
-class CandidateFilterConfig:
-    allowed_class_ids: set[int] | None = None
-    min_confidence: float = 0.0
-    selection_fov: SelectionFovConfig = field(default_factory=SelectionFovConfig)
-    ratio_check: RatioCheckConfig = field(default_factory=RatioCheckConfig)
 
 
 @dataclass(frozen=True)
@@ -126,12 +169,10 @@ class CandidateQuality:
 
 
 @dataclass(frozen=True)
-class ScoredCandidate:
+class ScoredTrack:
     frame_id: int
     capture_ts_ns: int | None
-    detection: Target
-    selection_fov_pass: bool
-    ratio_valid: bool
+    track: Track
     quality: CandidateQuality
     distance_px: float
     aim_x: float
@@ -140,34 +181,22 @@ class ScoredCandidate:
 
 
 @dataclass(frozen=True)
-class RejectedCandidate:
-    detection: Target
-    reason: str
-    selection_fov_pass: bool
-    ratio_valid: bool
-    aim_x: float | None = None
-    aim_y: float | None = None
-    distance_px: float | None = None
-
-
-@dataclass(frozen=True)
-class CandidateFilterResult:
-    candidates: list[ScoredCandidate]
-    rejected: list[RejectedCandidate]
+class TrackScoreResult:
+    tracks: list[ScoredTrack]
     raw_count: int
 
     @property
     def inside_fov_count(self) -> int:
-        return sum(1 for item in self.candidates if item.selection_fov_pass)
+        return len(self.tracks)
 
     def debug_payload(self, *, limit: int = 12) -> dict:
         return {
             "raw_candidates": self.raw_count,
-            "filtered_candidates": len(self.candidates),
+            "filtered_candidates": len(self.tracks),
             "inside_fov": self.inside_fov_count,
-            "rejected_candidates": len(self.rejected),
-            "candidates": [candidate_debug(item) for item in self.candidates[:limit]],
-            "rejected": [rejected_debug(item) for item in self.rejected[:limit]],
+            "rejected_candidates": 0,
+            "candidates": [scored_track_debug(item) for item in self.tracks[:limit]],
+            "rejected": [],
         }
 
 
@@ -175,10 +204,10 @@ class QualityScorer:
     def __init__(self, config: QualityScoreConfig | None = None) -> None:
         self.config = config or QualityScoreConfig()
 
-    def score(self, target: Target, *, context: FrameContext) -> CandidateQuality:
-        conf_score = _clamp01(float(target.score))
+    def score(self, track: Track, *, context: FrameContext) -> CandidateQuality:
+        conf_score = _clamp01(float(track.score))
         frame_area = max(1.0, float(context.width) * float(context.height))
-        area_score = _clamp01(float(target.area) / frame_area)
+        area_score = _clamp01(float(track.area) / frame_area)
         confidence_weight = max(0.0, float(self.config.confidence_weight))
         area_weight = max(0.0, float(self.config.area_weight))
         total_weight = confidence_weight + area_weight
@@ -193,78 +222,6 @@ class QualityScorer:
         )
 
 
-class CandidateFilter:
-    def __init__(
-        self,
-        config: CandidateFilterConfig | None = None,
-        *,
-        quality_scorer: QualityScorer | None = None,
-    ) -> None:
-        self.config = config or CandidateFilterConfig()
-        self.quality_scorer = quality_scorer or QualityScorer()
-
-    def apply(
-        self,
-        context: FrameContext,
-        candidates: Iterable[Target] | None = None,
-        *,
-        aim_ratio: float = 50.0,
-    ) -> CandidateFilterResult:
-        raw = list(candidates if candidates is not None else (list(context.tracks) or list(context.detections)))
-        accepted: list[ScoredCandidate] = []
-        rejected: list[RejectedCandidate] = []
-        center_x, center_y = selection_fov_center(context, self.config.selection_fov)
-
-        for item in raw:
-            if not self._class_allowed(item):
-                rejected.append(RejectedCandidate(item, "class_filter", False, False))
-                continue
-            if float(item.score) < float(self.config.min_confidence):
-                rejected.append(RejectedCandidate(item, "confidence_filter", False, False))
-                continue
-            selection_pass = selection_fov_pass(item, context, self.config.selection_fov, aim_ratio=aim_ratio)
-            if not selection_pass:
-                aim_x, aim_y = aim_point(item, aim_ratio)
-                rejected.append(
-                    RejectedCandidate(
-                        item,
-                        "selection_fov",
-                        False,
-                        True,
-                        aim_x=aim_x,
-                        aim_y=aim_y,
-                        distance_px=((aim_x - center_x) ** 2 + (aim_y - center_y) ** 2) ** 0.5,
-                    )
-                )
-                continue
-            if not _bbox_valid(item, context):
-                rejected.append(RejectedCandidate(item, "invalid_bbox", True, False))
-                continue
-            ratio_valid = ratio_check_pass(item, self.config.ratio_check)
-            if not ratio_valid:
-                rejected.append(RejectedCandidate(item, "ratio_check", True, False))
-                continue
-            aim_x, aim_y = aim_point(item, aim_ratio)
-            accepted.append(
-                ScoredCandidate(
-                    frame_id=int(context.frame_id),
-                    capture_ts_ns=context.capture_ts_ns,
-                    detection=item,
-                    selection_fov_pass=True,
-                    ratio_valid=True,
-                    quality=self.quality_scorer.score(item, context=context),
-                    distance_px=((aim_x - center_x) ** 2 + (aim_y - center_y) ** 2) ** 0.5,
-                    aim_x=aim_x,
-                    aim_y=aim_y,
-                )
-            )
-        return CandidateFilterResult(candidates=accepted, rejected=rejected, raw_count=len(raw))
-
-    def _class_allowed(self, target: Target) -> bool:
-        allowed = self.config.allowed_class_ids
-        return allowed is None or int(target.cls) in allowed
-
-
 def parse_allowed_class_ids(value: str) -> set[int] | None:
     selected = str(value or "all").strip()
     if selected == "all":
@@ -275,63 +232,8 @@ def parse_allowed_class_ids(value: str) -> set[int] | None:
         return None
 
 
-def aim_point(target: Target, aim_ratio: float) -> tuple[float, float]:
-    filtered_aim = getattr(target, "filtered_aim_px", None)
-    if isinstance(target, Track) and filtered_aim is not None:
-        return float(filtered_aim[0]), float(filtered_aim[1])
-    point_y = getattr(target, "point_y", None)
-    ratio = max(0.0, min(1.0, float(aim_ratio)))
-    aim_y = float(point_y(ratio)) if callable(point_y) else float(target.y) + float(target.h) * ratio
-    return float(target.cx), aim_y
-
-
-def selection_fov_center(
-    context: FrameContext,
-    config: SelectionFovConfig,
-) -> tuple[float, float]:
-    center_x = config.center_x_px
-    center_y = config.center_y_px
-    return (
-        float(center_x)
-        if center_x is not None and isfinite(float(center_x))
-        else float(context.width) * _clamp_percent(config.center_horizontal_percent),
-        float(center_y)
-        if center_y is not None and isfinite(float(center_y))
-        else float(context.height) * _clamp_percent(config.center_vertical_percent_from_top),
-    )
-
-
-def selection_fov_pass(
-    target: Target,
-    context: FrameContext,
-    config: SelectionFovConfig,
-    *,
-    aim_ratio: float,
-) -> bool:
-    if not config.enabled:
-        return True
-    center_x, center_y = selection_fov_center(context, config)
-    aim_x, aim_y = aim_point(target, aim_ratio)
-    rx = max(1e-6, float(context.width) * _clamp_percent(config.radius_x_percent))
-    ry = max(1e-6, float(context.height) * _clamp_percent(config.radius_y_percent))
-    shape = str(config.shape or "circle").lower()
-    if shape == "ellipse":
-        return ((aim_x - center_x) / rx) ** 2 + ((aim_y - center_y) / ry) ** 2 <= 1.0
-    radius = min(rx, ry)
-    return ((aim_x - center_x) ** 2 + (aim_y - center_y) ** 2) ** 0.5 <= radius
-
-
-def ratio_check_pass(target: Target, config: RatioCheckConfig) -> bool:
-    width = float(target.w)
-    height = float(target.h)
-    if width <= 0 or height <= 0:
-        return False
-    ratio = max(width / height, height / width)
-    return ratio <= max(1.0, float(config.max_aspect_ratio))
-
-
-def candidate_debug(candidate: ScoredCandidate) -> dict:
-    item = candidate.detection
+def scored_track_debug(candidate: ScoredTrack) -> dict:
+    item = candidate.track
     return {
         "frame_id": candidate.frame_id,
         "capture_ts_ns": candidate.capture_ts_ns,
@@ -346,33 +248,15 @@ def candidate_debug(candidate: ScoredCandidate) -> dict:
         "aim_x": float(candidate.aim_x),
         "aim_y": float(candidate.aim_y),
         "distance_px": float(candidate.distance_px),
-        "selection_fov_pass": bool(candidate.selection_fov_pass),
-        "ratio_valid": bool(candidate.ratio_valid),
+        "selection_fov_pass": True,
+        "ratio_valid": True,
         "conf_score": float(candidate.quality.conf_score),
         "area_score": float(candidate.quality.area_score),
         "quality_score": float(candidate.quality.quality_score),
     }
 
 
-def rejected_debug(candidate: RejectedCandidate) -> dict:
-    item = candidate.detection
-    return {
-        "cls": int(item.cls),
-        "score": float(item.score),
-        "x": float(item.x),
-        "y": float(item.y),
-        "w": float(item.w),
-        "h": float(item.h),
-        "aim_x": candidate.aim_x,
-        "aim_y": candidate.aim_y,
-        "distance_px": candidate.distance_px,
-        "reason": candidate.reason,
-        "selection_fov_pass": bool(candidate.selection_fov_pass),
-        "ratio_valid": bool(candidate.ratio_valid),
-    }
-
-
-def _bbox_valid(target: Target, context: FrameContext) -> bool:
+def _bbox_valid(target: Detection, context: FrameContext) -> bool:
     values = (target.x, target.y, target.w, target.h, target.x2, target.y2)
     if not all(isfinite(float(value)) for value in values):
         return False
@@ -387,7 +271,3 @@ def _bbox_valid(target: Target, context: FrameContext) -> bool:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
-
-
-def _clamp_percent(value: float) -> float:
-    return max(0.0, min(100.0, float(value))) / 100.0

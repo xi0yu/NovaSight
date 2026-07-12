@@ -7,7 +7,8 @@ from typing import Any, Protocol
 
 CALIBRATED_ANGULAR = "calibrated_angular"
 UNIVERSAL_SATURATED = "universal_saturated"
-CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED})
+TTBOX_PID_ATAN = "ttbox_pid_atan"
+CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED, TTBOX_PID_ATAN})
 ARRIVAL_CONFIRM_FRAMES = 2
 DEPARTURE_CONFIRM_FRAMES = 2
 
@@ -91,6 +92,18 @@ class UniversalSaturatedControllerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TtboxPidAtanControllerConfig:
+    response_scale_x_px: float
+    response_scale_y_px: float
+    per_frame_gain_x: float
+    per_frame_gain_y: float
+    normalize_to_dt: bool
+    nominal_dt_s: float
+    max_step_x_counts: float
+    max_step_y_counts: float
+
+
+@dataclass(frozen=True, slots=True)
 class SharedOutputConfig:
     deadzone_x_px: float
     deadzone_y_px: float
@@ -109,6 +122,7 @@ class MouseControllerConfig:
     calibrated_angular: CalibratedAngularControllerConfig
     universal_saturated: UniversalSaturatedControllerConfig
     shared: SharedOutputConfig
+    ttbox_pid_atan: TtboxPidAtanControllerConfig | None = None
 
 
 class ControlController(Protocol):
@@ -275,6 +289,56 @@ class UniversalSaturatedController:
         )
 
 
+
+class TtboxPidAtanController:
+    mode = TTBOX_PID_ATAN
+
+    def __init__(self, config: TtboxPidAtanControllerConfig) -> None:
+        self.config = config
+
+    def reset(self) -> None:
+        return None
+
+    def compute_counts(self, value: ControllerInput) -> ControllerComputation:
+        cfg = self.config
+        scale_x = cfg.response_scale_x_px
+        scale_y = cfg.response_scale_y_px
+        gain_x = cfg.per_frame_gain_x
+        gain_y = cfg.per_frame_gain_y
+        if (
+            cfg.normalize_to_dt
+            and value.dt_s is not None
+            and math.isfinite(value.dt_s)
+            and value.dt_s > 0.0
+            and cfg.nominal_dt_s > 0.0
+        ):
+            factor = value.dt_s / cfg.nominal_dt_s
+            gain_x = gain_x * factor
+            gain_y = gain_y * factor
+        raw_x = gain_x * scale_x * math.atan(value.predicted_error_px.x / scale_x)
+        raw_y = gain_y * scale_y * math.atan(value.predicted_error_px.y / scale_y)
+        limited_x = _clamp_axis(raw_x, cfg.max_step_x_counts)
+        limited_y = _clamp_axis(raw_y, cfg.max_step_y_counts)
+        return ControllerComputation(
+            counts=Vec2(limited_x, limited_y),
+            debug={
+                "response_scale_x_px": scale_x,
+                "response_scale_y_px": scale_y,
+                "per_frame_gain_x": cfg.per_frame_gain_x,
+                "per_frame_gain_y": cfg.per_frame_gain_y,
+                "normalize_to_dt": cfg.normalize_to_dt,
+                "nominal_dt_s": cfg.nominal_dt_s,
+                "applied_gain_x": gain_x,
+                "applied_gain_y": gain_y,
+                "raw_counts_x_float": raw_x,
+                "raw_counts_y_float": raw_y,
+                "theoretical_counts_x_float": raw_x,
+                "theoretical_counts_y_float": raw_y,
+                "mode_limited_counts_x_float": limited_x,
+                "mode_limited_counts_y_float": limited_y,
+            },
+        )
+
 class ControllerFactory:
     @staticmethod
     def create(config: MouseControllerConfig) -> ControlController:
@@ -282,6 +346,10 @@ class ControllerFactory:
             return CalibratedAngularController(config.calibrated_angular)
         if config.mode == UNIVERSAL_SATURATED:
             return UniversalSaturatedController(config.universal_saturated)
+        if config.mode == TTBOX_PID_ATAN:
+            if config.ttbox_pid_atan is None:
+                raise ValueError("ttbox_pid_atan controller config is required")
+            return TtboxPidAtanController(config.ttbox_pid_atan)
         raise ValueError(f"unsupported mouse control mode: {config.mode}")
 
 

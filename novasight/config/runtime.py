@@ -152,6 +152,18 @@ class UniversalSaturatedConfig:
 
 
 @dataclass
+class TtboxPidAtanConfig:
+    response_scale_x_px: float = 256.0
+    response_scale_y_px: float = 256.0
+    per_frame_gain_x: float = 0.1
+    per_frame_gain_y: float = 0.1
+    normalize_to_dt: bool = True
+    nominal_dt_s: float = 0.016
+    max_step_x_counts: float = 50.0
+    max_step_y_counts: float = 40.0
+
+
+@dataclass
 class SharedControlConfig:
     max_count_slew_x: float = 10.0
     max_count_slew_y: float = 8.0
@@ -195,6 +207,7 @@ class ControlConfig:
     aim: AimConfig = field(default_factory=AimConfig)
     calibrated_angular: CalibratedAngularConfig = field(default_factory=CalibratedAngularConfig)
     universal_saturated: UniversalSaturatedConfig = field(default_factory=UniversalSaturatedConfig)
+    ttbox_pid_atan: TtboxPidAtanConfig = field(default_factory=TtboxPidAtanConfig)
     shared: SharedControlConfig = field(default_factory=SharedControlConfig)
     configured_actuation_delay_s: float = 0.004
     prediction_strength: float = 1.0
@@ -632,6 +645,9 @@ def _migrate_dual_control_modes(
         control.setdefault("mode", "calibrated_angular")
     control["calibrated_angular"] = calibrated
     control["universal_saturated"] = universal
+    control.setdefault("ttbox_pid_atan", {})
+    if not isinstance(control["ttbox_pid_atan"], dict):
+        control["ttbox_pid_atan"] = {}
     control["shared"] = shared
 
 
@@ -811,9 +827,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'calibration.profile_version' must be >= 1")
     if not cfg.calibration.game_sensitivity_fingerprint.strip():
         raise ValueError("runtime config key 'calibration.game_sensitivity_fingerprint' must be non-empty")
-    if cfg.control.mode not in {"calibrated_angular", "universal_saturated"}:
+    if cfg.control.mode not in {"calibrated_angular", "universal_saturated", "ttbox_pid_atan"}:
         raise ValueError(
-            "runtime config key 'control.mode' must be calibrated_angular or universal_saturated"
+            "runtime config key 'control.mode' must be calibrated_angular, universal_saturated, or ttbox_pid_atan"
         )
     if not math.isfinite(float(cfg.control.aim.y_ratio)):
         raise ValueError("runtime config key 'control.aim.y_ratio' must be finite")
@@ -872,6 +888,29 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(
                 f"runtime config key 'control.universal_saturated.{key}' must be finite and > 0"
             )
+    ttbox = cfg.control.ttbox_pid_atan
+    for key in (
+        "response_scale_x_px",
+        "response_scale_y_px",
+        "max_step_x_counts",
+        "max_step_y_counts",
+    ):
+        value = float(getattr(ttbox, key))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"runtime config key 'control.ttbox_pid_atan.{key}' must be finite and > 0"
+            )
+    for key in ("per_frame_gain_x", "per_frame_gain_y"):
+        value = float(getattr(ttbox, key))
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"runtime config key 'control.ttbox_pid_atan.{key}' must be finite and > 0"
+            )
+    nominal_dt_s = float(ttbox.nominal_dt_s)
+    if not math.isfinite(nominal_dt_s) or nominal_dt_s <= 0.0 or nominal_dt_s > 0.2:
+        raise ValueError(
+            "runtime config key 'control.ttbox_pid_atan.nominal_dt_s' must be finite and in (0, 0.2]"
+        )
     shared = cfg.control.shared
     for key in ("deadzone_x_px", "deadzone_y_px"):
         value = float(getattr(shared, key))

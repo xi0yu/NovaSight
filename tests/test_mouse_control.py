@@ -16,9 +16,13 @@ from novasight.control import (
     MouseObservation,
     RawAimPointProjector,
     SharedOutputConfig,
+    TTBOX_PID_ATAN,
+    TtboxPidAtanController,
+    TtboxPidAtanControllerConfig,
     UniversalSaturatedController,
     UniversalSaturatedControllerConfig,
     normalize_aim_y_ratio,
+    target_motion_estimate_from_debug,
 )
 from novasight.coordinates import CoordinateTransform
 
@@ -28,6 +32,7 @@ def _config(
     mode: str = CALIBRATED_ANGULAR,
     calibrated: dict[str, float] | None = None,
     universal: dict[str, float] | None = None,
+    ttbox: dict[str, float | bool] | None = None,
     shared: dict[str, float | int | bool] | None = None,
 ) -> MouseControllerConfig:
     calibrated_values = {
@@ -48,6 +53,16 @@ def _config(
         "max_step_x_counts": 100.0,
         "max_step_y_counts": 100.0,
     }
+    ttbox_values: dict[str, float | bool] = {
+        "response_scale_x_px": 256.0,
+        "response_scale_y_px": 256.0,
+        "per_frame_gain_x": 0.1,
+        "per_frame_gain_y": 0.1,
+        "normalize_to_dt": True,
+        "nominal_dt_s": 0.016,
+        "max_step_x_counts": 50.0,
+        "max_step_y_counts": 40.0,
+    }
     shared_values: dict[str, float | int | bool] = {
         "deadzone_x_px": 0.0,
         "deadzone_y_px": 0.0,
@@ -61,11 +76,13 @@ def _config(
     }
     calibrated_values.update(calibrated or {})
     universal_values.update(universal or {})
+    ttbox_values.update(ttbox or {})
     shared_values.update(shared or {})
     return MouseControllerConfig(
         mode=mode,
         calibrated_angular=CalibratedAngularControllerConfig(**calibrated_values),
         universal_saturated=UniversalSaturatedControllerConfig(**universal_values),
+        ttbox_pid_atan=TtboxPidAtanControllerConfig(**ttbox_values),
         shared=SharedOutputConfig(**shared_values),
     )
 
@@ -154,6 +171,29 @@ def test_raw_aim_rejects_untrusted_projection_geometry() -> None:
 
     assert aim.valid is False
     assert aim.invalid_reason == "SOURCE_GEOMETRY_UNTRUSTED"
+
+
+def test_missing_tracker_estimate_falls_back_to_the_same_filtered_aim_point() -> None:
+    track = Track(
+        track_id=7,
+        cls=0,
+        score=0.9,
+        x=10,
+        y=20,
+        w=40,
+        h=100,
+        observed_aim_px=(30.0, 42.0),
+        filtered_aim_px=(31.5, 43.5),
+    )
+
+    estimate = target_motion_estimate_from_debug(
+        track=track,
+        capture_ts_ns=1_000_000,
+        tracker_debug={},
+    )
+
+    assert (estimate.x, estimate.y) == pytest.approx(track.filtered_aim_px)
+    assert estimate.y != pytest.approx(track.cy)
 
 
 def test_mouse_controller_uses_predicted_error_for_p() -> None:
@@ -440,3 +480,131 @@ def test_settled_axis_ignores_one_frame_outside_exit_threshold() -> None:
     assert confirmed_departure.debug["arrival_settled_y"] is False
     assert confirmed_departure.debug["arrival_departure_candidate_y_frames"] == 0
     assert confirmed_departure.dy > 0
+
+
+def test_ttbox_pid_atan_factory_and_mode_string() -> None:
+    controller = ControllerFactory.create(_config(mode=TTBOX_PID_ATAN))
+
+    assert isinstance(controller, TtboxPidAtanController)
+    assert controller.mode == TTBOX_PID_ATAN
+    assert not isinstance(controller, UniversalSaturatedController)
+
+
+def test_ttbox_pid_atan_zero_sign_and_bound() -> None:
+    controller = MouseController(
+        _config(
+            mode=TTBOX_PID_ATAN,
+            ttbox={
+                "response_scale_x_px": 100.0,
+                "response_scale_y_px": 100.0,
+                "per_frame_gain_x": 0.5,
+                "per_frame_gain_y": 0.5,
+                "max_step_x_counts": 30.0,
+                "max_step_y_counts": 24.0,
+                "normalize_to_dt": False,
+            },
+        )
+    )
+
+    zero = controller.calculate(_observation(frame_id=1, observed_x=100, observed_y=100))
+    positive = controller.calculate(_observation(frame_id=2, observed_x=10_000, observed_y=10_000))
+    negative = controller.calculate(_observation(frame_id=3, observed_x=-10_000, observed_y=-10_000))
+
+    assert (zero.dx, zero.dy) == (0, 0)
+    assert 0 < positive.dx <= 30
+    assert 0 < positive.dy <= 24
+    assert -30 <= negative.dx < 0
+    assert -24 <= negative.dy < 0
+
+
+def test_ttbox_pid_atan_near_center_gain_matches_gain_x_scale_formula() -> None:
+    controller = MouseController(
+        _config(
+            mode=TTBOX_PID_ATAN,
+            ttbox={
+                "response_scale_x_px": 200.0,
+                "response_scale_y_px": 200.0,
+                "per_frame_gain_x": 0.5,
+                "per_frame_gain_y": 0.5,
+                "max_step_x_counts": 1000.0,
+                "max_step_y_counts": 1000.0,
+                "normalize_to_dt": False,
+            },
+        )
+    )
+
+    command = controller.calculate(_observation(frame_id=1, observed_x=110, observed_y=100))
+
+    expected = 0.5 * 200.0 * math.atan(10.0 / 200.0)
+    assert command.debug["theoretical_counts_x_float"] == pytest.approx(expected)
+    assert command.dx == pytest.approx(_round_trip(expected))
+
+
+def _round_trip(value: float) -> int:
+    if value >= 0.0:
+        return int(math.floor(value + 0.5))
+    return int(math.ceil(value - 0.5))
+
+def test_ttbox_pid_atan_response_scale_controls_near_center_gain() -> None:
+    fast = MouseController(
+        _config(
+            mode=TTBOX_PID_ATAN,
+            ttbox={
+                "response_scale_x_px": 50.0,
+                "per_frame_gain_x": 0.5,
+                "normalize_to_dt": False,
+            },
+        )
+    )
+    soft = MouseController(
+        _config(
+            mode=TTBOX_PID_ATAN,
+            ttbox={
+                "response_scale_x_px": 400.0,
+                "per_frame_gain_x": 0.5,
+                "normalize_to_dt": False,
+            },
+        )
+    )
+    fast_cmd = fast.calculate(_observation(frame_id=1, observed_x=125, observed_y=100))
+    soft_cmd = soft.calculate(_observation(frame_id=1, observed_x=125, observed_y=100))
+
+    assert soft_cmd.debug["theoretical_counts_x_float"] > fast_cmd.debug["theoretical_counts_x_float"] > 0
+    assert fast_cmd.debug["response_scale_x_px"] == 50.0
+    assert soft_cmd.debug["response_scale_x_px"] == 400.0
+
+
+def test_ttbox_pid_atan_normalize_to_dt_scales_with_frame_dt() -> None:
+    controller = MouseController(
+        _config(
+            mode=TTBOX_PID_ATAN,
+            ttbox={
+                "response_scale_x_px": 200.0,
+                "per_frame_gain_x": 1.0,
+                "per_frame_gain_y": 1.0,
+                "normalize_to_dt": True,
+                "nominal_dt_s": 0.016,
+                "max_step_x_counts": 1000.0,
+                "max_step_y_counts": 1000.0,
+            },
+        )
+    )
+
+    slow = controller.calculate(
+        _observation(frame_id=1, observed_x=110, observed_y=100, measurement_dt_s=0.016)
+    )
+    controller.calculate(_observation(frame_id=2, observed_x=110, observed_y=100, measurement_dt_s=0.008))
+    fast_dt = controller.calculate(_observation(frame_id=3, observed_x=110, observed_y=100, measurement_dt_s=0.008))
+
+    expected_fast = 1.0 * 0.5 * 200.0 * math.atan(10.0 / 200.0)
+    expected_slow = 1.0 * 1.0 * 200.0 * math.atan(10.0 / 200.0)
+    assert fast_dt.debug["applied_gain_x"] == pytest.approx(0.5)
+    assert slow.debug["applied_gain_x"] == pytest.approx(1.0)
+    assert fast_dt.debug["theoretical_counts_x_float"] == pytest.approx(expected_fast)
+    assert slow.debug["theoretical_counts_x_float"] == pytest.approx(expected_slow)
+
+
+def test_ttbox_pid_atan_mode_constant_in_export() -> None:
+    from novasight.control import CONTROL_MODES
+
+    assert TTBOX_PID_ATAN in CONTROL_MODES
