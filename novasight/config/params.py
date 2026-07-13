@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 
@@ -86,6 +86,83 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     "control.calibrated_angular.counts_per_360_x": _spec("control.calibrated_angular.counts_per_360_x", "水平每圈 counts", 9980.0, 1.0, 100000.0, 1.0, "counts", "X 轴旋转一整圈对应的设备 counts。"),
     "control.calibrated_angular.counts_per_360_y": _spec("control.calibrated_angular.counts_per_360_y", "垂直每圈 counts", 9980.0, 1.0, 100000.0, 1.0, "counts", "Y 轴旋转一整圈对应的设备 counts。"),
 }
+
+
+for _legacy_prefix, _namespaced_prefix in (
+    ("control.calibrated_angular.", "control.algorithms.calibrated_angular."),
+    ("control.universal_saturated.", "control.algorithms.universal_saturated."),
+    ("control.ttbox_pid_atan.", "control.algorithms.ttbox_pid_atan."),
+):
+    for _key, _value in tuple(CONTROL_PARAM_SPECS.items()):
+        if _key.startswith(_legacy_prefix):
+            _namespaced_key = _namespaced_prefix + _key.removeprefix(_legacy_prefix)
+            CONTROL_PARAM_SPECS[_namespaced_key] = replace(_value, key=_namespaced_key)
+
+
+CONTROL_PARAM_SPECS.update(
+    {
+        "control.algorithms.dual_phase_atan_predictive_v1.far.kp": _spec(
+            "control.algorithms.dual_phase_atan_predictive_v1.far.kp",
+            "双阶段 v1 FAR Kp",
+            0.35,
+            0.001,
+            0.999,
+            0.001,
+            "ratio",
+            "FAR 阶段的 counts 域 Atan 比例增益。",
+        ),
+        "control.algorithms.dual_phase_atan_predictive_v1.near.kp": _spec(
+            "control.algorithms.dual_phase_atan_predictive_v1.near.kp",
+            "双阶段 v1 NEAR Kp",
+            0.15,
+            0.001,
+            0.999,
+            0.001,
+            "ratio",
+            "NEAR 阶段的 counts 域 Atan 比例增益。",
+        ),
+        "control.algorithms.dual_phase_atan_predictive_v1.projection.fov_x_deg": _spec(
+            "control.algorithms.dual_phase_atan_predictive_v1.projection.fov_x_deg",
+            "双阶段 v1 水平 FOVX",
+            105.0,
+            30.0,
+            179.0,
+            0.1,
+            "deg",
+            "完整控制投影空间的水平视场角。",
+        ),
+        "control.algorithms.dual_phase_atan_predictive_v1.projection.counts_per_360": _spec(
+            "control.algorithms.dual_phase_atan_predictive_v1.projection.counts_per_360",
+            "双阶段 v1 每圈 counts",
+            9980.0,
+            1.0,
+            100000.0,
+            1.0,
+            "counts",
+            "设备旋转一整圈所需的标定 counts。",
+        ),
+        "control.algorithms.dual_phase_atan_predictive_v1.prediction.far_weight": _spec(
+            "control.algorithms.dual_phase_atan_predictive_v1.prediction.far_weight",
+            "双阶段 v1 FAR 预测权重",
+            0.30,
+            0.0,
+            1.0,
+            0.01,
+            "ratio",
+            "FAR 阶段在运动与身份置信度之前的预测基础权重。",
+        ),
+        "control.algorithms.dual_phase_atan_predictive_v1.prediction.near_weight": _spec(
+            "control.algorithms.dual_phase_atan_predictive_v1.prediction.near_weight",
+            "双阶段 v1 NEAR 预测权重",
+            0.12,
+            0.0,
+            1.0,
+            0.01,
+            "ratio",
+            "NEAR 阶段更保守的预测基础权重。",
+        ),
+    }
+)
 
 
 def param_schema_for(path: str) -> dict[str, Any]:

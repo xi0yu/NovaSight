@@ -8,7 +8,7 @@ from typing import Any
 
 
 CONTROL_TRACE_SCHEMA_NAME = "novasight.control_trace"
-CONTROL_TRACE_SCHEMA_VERSION = 2
+CONTROL_TRACE_SCHEMA_VERSION = 3
 MONOTONIC_CLOCK_DOMAIN = "monotonic"
 UNKNOWN_REASON_DEVICE_FEEDBACK = "device_feedback_unavailable"
 
@@ -50,6 +50,17 @@ CONTROL_TRACE_FIELD_UNITS: dict[str, str] = {
     "device.send_end_ts": "ns",
     "device.scheduler_send_delay": "us",
     "correlation.capture_ts": "ns",
+    "algorithm.measurement_dt": "ms",
+    "algorithm.aim": "px",
+    "algorithm.error_real": "px",
+    "algorithm.error_control": "px",
+    "algorithm.velocity_x": "px/s",
+    "algorithm.prediction_horizon": "ms",
+    "algorithm.prediction_offset_x": "px",
+    "algorithm.full_error_counts": "counts",
+    "algorithm.float_demand": "counts",
+    "algorithm.integer_command": "counts",
+    "algorithm.quantizer_residual": "counts",
 }
 
 
@@ -199,9 +210,14 @@ def build_control_trace_record(
             ),
             "prediction_horizon_ms": _first_number(
                 _multiply(mouse.get("prediction_horizon_s"), 1000.0),
+                pipeline.get("prediction_horizon_ms"),
                 inference_payload.get("prediction_horizon_ms"),
             ),
-            "prediction_confidence": _first_number(mouse.get("prediction_confidence"), estimate.get("prediction_confidence")),
+            "prediction_confidence": _first_number(
+                pipeline.get("prediction_confidence"),
+                mouse.get("prediction_confidence"),
+                estimate.get("prediction_confidence"),
+            ),
             "prediction_delta_px": prediction_delta_px,
             "prediction_delta_rad": prediction_delta_rad,
             "prediction_velocity_term_rad": prediction_velocity_term,
@@ -223,10 +239,107 @@ def build_control_trace_record(
                 or control_payload.get("selection_reason")
             ),
         },
+        "algorithm_decision": {
+            "algorithm_id": _text(pipeline.get("algorithm") or pipeline.get("algorithm_id")),
+            "phase": _text(pipeline.get("mode") or pipeline.get("control_mode")),
+            "measurement_dt_ms": _first_number(
+                pipeline.get("measurement_dt_ms"),
+                _multiply(pipeline.get("measurement_dt_s"), 1000.0),
+            ),
+            "aim_px": _axis_pair(pipeline.get("aim_x"), pipeline.get("aim_y")),
+            "bbox": {
+                "x1": _optional_number(pipeline.get("bbox_x1")),
+                "y1": _optional_number(pipeline.get("bbox_y1")),
+                "x2": _optional_number(pipeline.get("bbox_x2")),
+                "y2": _optional_number(pipeline.get("bbox_y2")),
+                "width": _optional_number(pipeline.get("bbox_width")),
+                "height": _optional_number(pipeline.get("bbox_height")),
+            },
+            "error_real_px": _axis_pair(
+                pipeline.get("error_real_x"),
+                pipeline.get("error_real_y"),
+            ),
+            "error_control_px": _axis_pair(
+                pipeline.get("error_control_x"),
+                pipeline.get("error_control_y"),
+            ),
+            "estimator": {
+                "velocity_x_px_s": _optional_number(pipeline.get("estimated_velocity_x")),
+                "innovation_x": _optional_number(pipeline.get("innovation_x")),
+                "normalized_innovation_x": _optional_number(
+                    pipeline.get("normalized_innovation_x")
+                ),
+                "motion_confidence": _optional_number(pipeline.get("motion_confidence")),
+                "direction_quality": _optional_number(pipeline.get("direction_quality")),
+                "accepted": _optional_bool(pipeline.get("estimator_accepted")),
+                "reset": _optional_bool(pipeline.get("estimator_reset")),
+            },
+            "prediction": {
+                "horizon_ms": _first_number(
+                    pipeline.get("prediction_horizon_ms"),
+                    _multiply(pipeline.get("prediction_horizon_s"), 1000.0),
+                ),
+                "raw_offset_x": _optional_number(pipeline.get("prediction_raw_offset_x")),
+                "weight": _optional_number(pipeline.get("prediction_weight")),
+                "confidence": _optional_number(pipeline.get("prediction_confidence")),
+                "allowed_cap_x": _optional_number(
+                    pipeline.get("prediction_allowed_cap_x")
+                ),
+                "safe_offset_x": _optional_number(
+                    pipeline.get("prediction_safe_offset_x")
+                ),
+                "allowed": _optional_bool(pipeline.get("prediction_allowed")),
+                "crossing_limited": _optional_bool(
+                    pipeline.get("prediction_crossing_limited")
+                ),
+            },
+            "full_error_counts": _axis_pair(
+                pipeline.get("full_error_counts_x"),
+                pipeline.get("full_error_counts_y"),
+            ),
+            "float_demand": _axis_pair(
+                pipeline.get("float_demand_x"),
+                pipeline.get("float_demand_y"),
+            ),
+            "integer_command": _axis_pair(
+                pipeline.get("integer_command_x"),
+                pipeline.get("integer_command_y"),
+            ),
+            "quantizer_residual": _axis_pair(
+                pipeline.get("quantizer_residual_x"),
+                pipeline.get("quantizer_residual_y"),
+            ),
+            "overzero_detected": {
+                "x": _optional_bool(pipeline.get("overzero_detected_x")),
+                "y": _optional_bool(pipeline.get("overzero_detected_y")),
+            },
+            "will_emit": _optional_bool(pipeline.get("will_emit")),
+            "block_reason": _text(pipeline.get("block_reason")),
+            "delivery_mode": _text(pipeline.get("delivery_mode")),
+            "scheduler_used": _optional_bool(pipeline.get("scheduler_used")),
+        },
         "counts": {
             "planned_counts": _axis_pair(control_payload.get("dx"), control_payload.get("dy")),
-            "theoretical_counts": _axis_pair(pipeline.get("theoretical_counts_x_float"), pipeline.get("theoretical_counts_y_float")),
-            "mode_limited_counts": _axis_pair(pipeline.get("mode_limited_counts_x_float"), pipeline.get("mode_limited_counts_y_float")),
+            "theoretical_counts": _axis_pair(
+                _first_number(
+                    pipeline.get("theoretical_counts_x_float"),
+                    pipeline.get("full_error_counts_x"),
+                ),
+                _first_number(
+                    pipeline.get("theoretical_counts_y_float"),
+                    pipeline.get("full_error_counts_y"),
+                ),
+            ),
+            "mode_limited_counts": _axis_pair(
+                _first_number(
+                    pipeline.get("mode_limited_counts_x_float"),
+                    pipeline.get("float_demand_x"),
+                ),
+                _first_number(
+                    pipeline.get("mode_limited_counts_y_float"),
+                    pipeline.get("float_demand_y"),
+                ),
+            ),
             "deadzone_limited_counts": _axis_pair(pipeline.get("deadzone_limited_counts_x_float"), pipeline.get("deadzone_limited_counts_y_float")),
             "slew_limited_counts": _axis_pair(pipeline.get("slew_limited_counts_x_float"), pipeline.get("slew_limited_counts_y_float")),
             "feasible_counts": _axis_pair(pipeline.get("feasible_counts_x_float"), pipeline.get("feasible_counts_y_float")),
@@ -234,10 +347,30 @@ def build_control_trace_record(
             "sent_counts": sent_counts,
             "estimated_applied_counts": _unknown_axis_pair(UNKNOWN_REASON_DEVICE_FEEDBACK),
             "unobserved_counts": _unknown_axis_pair(UNKNOWN_REASON_DEVICE_FEEDBACK),
-            "residual_counts": _axis_pair(pipeline.get("residual_x_counts"), pipeline.get("residual_y_counts")),
-            "final_counts": _axis_pair(pipeline.get("final_dx"), pipeline.get("final_dy")),
+            "residual_counts": _axis_pair(
+                _first_number(
+                    pipeline.get("residual_x_counts"),
+                    pipeline.get("quantizer_residual_x"),
+                ),
+                _first_number(
+                    pipeline.get("residual_y_counts"),
+                    pipeline.get("quantizer_residual_y"),
+                ),
+            ),
+            "final_counts": _axis_pair(
+                _first_number(
+                    pipeline.get("final_dx"),
+                    pipeline.get("integer_command_x"),
+                ),
+                _first_number(
+                    pipeline.get("final_dy"),
+                    pipeline.get("integer_command_y"),
+                ),
+            ),
         },
         "scheduler": {
+            "used": _optional_bool(pipeline.get("scheduler_used")),
+            "delivery_mode": _text(pipeline.get("delivery_mode")),
             "generation": _first_int(
                 scheduler.get("trajectory_generation"),
                 scheduler.get("pending_trajectory_generation"),

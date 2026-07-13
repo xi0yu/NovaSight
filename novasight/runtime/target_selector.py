@@ -68,6 +68,8 @@ class RuntimeTargetSelector:
         self._locked = None
         self._pending_switch = None
         self._lost_count = 0
+        self.last_debug = {}
+        self.tracker.reset()
 
     def select(
         self,

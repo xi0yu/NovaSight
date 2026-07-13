@@ -227,9 +227,12 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
         "瞄准点与预测",
         "误差与角度",
         "控制器输出",
-        "Scheduler 与设备发送",
     ):
         assert f'<SectionTitle title="{title}" />' in control_page
+    assert (
+        '<SectionTitle title={dualPhaseActive ? "MouseCommandExecutor 与设备发送" '
+        ': "Scheduler 与设备发送"} />'
+    ) in control_page
 
 
 def test_studio_telemetry_uses_explicit_missing_and_capability_states() -> None:
@@ -258,7 +261,8 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
 
     assert '<option value="universal_saturated">通用适配</option>' in studio
     assert '<option value="calibrated_angular">精确标定</option>' in studio
-    assert 'updateConfigField("control", "mode", event.target.value)' in studio
+    assert 'updateConfigField("control", "active_algorithm", event.target.value)' in studio
+    assert '<option value="dual_phase_atan_predictive_v1">双阶段 Atan 预测闭环 v1</option>' in studio
     assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio
     assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio
     assert 'updateControlGroupField("shared", "max_count_slew_x", value)' in studio

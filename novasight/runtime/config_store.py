@@ -25,6 +25,30 @@ class RuntimeConfigStore:
     def status(self) -> dict:
         with self._lock:
             config = self._config
+            dual_phase = config.control.dual_phase_atan_predictive_v1
+            dual_phase_active = (
+                config.control.active_algorithm == "dual_phase_atan_predictive_v1"
+            )
+            fov_x_deg = (
+                dual_phase.projection.fov_x_deg
+                if dual_phase_active
+                else config.control.calibrated_angular.fov_x_deg
+            )
+            counts_per_360_x = (
+                dual_phase.projection.counts_per_360
+                if dual_phase_active
+                else config.control.calibrated_angular.counts_per_360_x
+            )
+            counts_per_360_y = (
+                dual_phase.projection.counts_per_360
+                if dual_phase_active
+                else config.control.calibrated_angular.counts_per_360_y
+            )
+            invert_y = (
+                dual_phase.projection.invert_y
+                if dual_phase_active
+                else config.control.shared.invert_y
+            )
             return {
                 "version": self.version,
                 "source": {
@@ -67,11 +91,11 @@ class RuntimeConfigStore:
                     "profile_id": config.calibration.profile_id,
                     "profile_version": config.calibration.profile_version,
                     "game_sensitivity_fingerprint": config.calibration.game_sensitivity_fingerprint,
-                    "control_mode": config.control.mode,
-                    "fov_x_deg": config.control.calibrated_angular.fov_x_deg,
-                    "counts_per_360_x": config.control.calibrated_angular.counts_per_360_x,
-                    "counts_per_360_y": config.control.calibrated_angular.counts_per_360_y,
-                    "invert_y": config.control.shared.invert_y,
+                    "control_mode": config.control.active_algorithm,
+                    "fov_x_deg": fov_x_deg,
+                    "counts_per_360_x": counts_per_360_x,
+                    "counts_per_360_y": counts_per_360_y,
+                    "invert_y": invert_y,
                 },
                 "consumers": {
                     "preview": config.consumers.preview,

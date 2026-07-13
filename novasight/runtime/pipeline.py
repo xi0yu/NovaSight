@@ -93,12 +93,12 @@ class RuntimePipeline:
 
     def stop(self) -> None:
         self._stop.set()
-        for thread in self._threads:
-            thread.join(timeout=1.0)
         self.runtime.running = False
         cancel_control = getattr(self.runtime, "cancel_control", None)
         if callable(cancel_control):
             cancel_control("RUNTIME_STOPPED")
+        for thread in self._threads:
+            thread.join(timeout=1.0)
         self.stats.stopped_at = time.time()
 
     @property

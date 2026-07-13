@@ -659,11 +659,25 @@ export function StudioConsoleView({
     runtimeInferenceReason,
     runtimeMainlineRunning
   ]);
-  const controlMode = readString(controlConfig.mode, "universal_saturated");
+  const controlMode = readString(controlConfig.active_algorithm ?? controlConfig.mode, "universal_saturated");
+  const algorithmConfigs = nestedRecord(controlConfig, "algorithms");
+  const algorithmConfig = (algorithmId: string): Record<string, unknown> => {
+    const namespaced = nestedRecord(algorithmConfigs, algorithmId);
+    return Object.keys(namespaced).length > 0
+      ? namespaced
+      : nestedRecord(controlConfig, algorithmId);
+  };
   const aimConfig = nestedRecord(controlConfig, "aim");
-  const calibratedAngularConfig = nestedRecord(controlConfig, "calibrated_angular");
-  const universalSaturatedConfig = nestedRecord(controlConfig, "universal_saturated");
-  const ttboxPidAtanConfig = nestedRecord(controlConfig, "ttbox_pid_atan");
+  const calibratedAngularConfig = algorithmConfig("calibrated_angular");
+  const universalSaturatedConfig = algorithmConfig("universal_saturated");
+  const ttboxPidAtanConfig = algorithmConfig("ttbox_pid_atan");
+  const dualPhaseConfig = algorithmConfig("dual_phase_atan_predictive_v1");
+  const dualPhaseAimConfig = nestedRecord(dualPhaseConfig, "aim");
+  const dualPhaseProjectionConfig = nestedRecord(dualPhaseConfig, "projection");
+  const dualPhaseModeConfig = nestedRecord(dualPhaseConfig, "mode");
+  const dualPhaseFarConfig = nestedRecord(dualPhaseConfig, "far");
+  const dualPhaseNearConfig = nestedRecord(dualPhaseConfig, "near");
+  const dualPhasePredictionConfig = nestedRecord(dualPhaseConfig, "prediction");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
   const configuredActuationDelay = readNumber(controlConfig.configured_actuation_delay_s, 0.004);
@@ -709,6 +723,21 @@ export function StudioConsoleView({
   const ttboxMaxStepY = readNumber(ttboxPidAtanConfig.max_step_y_counts, 40);
   const ttboxNormalizeToDt = readBoolean(ttboxPidAtanConfig.normalize_to_dt, true);
   const ttboxNominalDtS = readNumber(ttboxPidAtanConfig.nominal_dt_s, 0.016);
+  const dualPhaseAimYRatio = readNumber(dualPhaseAimConfig.y_ratio, 0.22);
+  const dualPhaseFovX = readNumber(dualPhaseProjectionConfig.fov_x_deg, 105);
+  const dualPhaseCountsPer360 = readNumber(dualPhaseProjectionConfig.counts_per_360, 9980);
+  const dualPhaseNearEnter = readNumber(dualPhaseModeConfig.near_enter_min_px, 12);
+  const dualPhaseNearExit = readNumber(dualPhaseModeConfig.near_exit_min_px, 18);
+  const dualPhaseFarKp = readNumber(dualPhaseFarConfig.kp, 0.35);
+  const dualPhaseNearKp = readNumber(dualPhaseNearConfig.kp, 0.15);
+  const dualPhaseFarScale = readNumber(dualPhaseFarConfig.atan_scale_counts, 256);
+  const dualPhaseNearScale = readNumber(dualPhaseNearConfig.atan_scale_counts, 256);
+  const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, 140);
+  const dualPhaseNearMaxCounts = readNumber(dualPhaseNearConfig.max_counts_per_update, 60);
+  const dualPhaseActuationDelayMs = readNumber(dualPhasePredictionConfig.actuation_delay_ms, 5);
+  const dualPhaseMaxHorizonMs = readNumber(dualPhasePredictionConfig.max_horizon_ms, 35);
+  const dualPhaseFarWeight = readNumber(dualPhasePredictionConfig.far_weight, 0.30);
+  const dualPhaseNearWeight = readNumber(dualPhasePredictionConfig.near_weight, 0.12);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -730,6 +759,14 @@ export function StudioConsoleView({
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
   const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
+  const dualPhaseActive = controlMode === "dual_phase_atan_predictive_v1";
+  const controlModeLabel = dualPhaseActive
+    ? "双阶段 Atan 预测闭环 v1"
+    : controlMode === "calibrated_angular"
+      ? "精确标定"
+      : controlMode === "ttbox_pid_atan"
+        ? "ttbox_pid_atan"
+        : "通用适配";
 
   useEffect(() => {
     if (!runtimeConfig || pendingConfigWritesRef.current > 0) {
@@ -1663,11 +1700,44 @@ export function StudioConsoleView({
     async (group: "aim" | "calibrated_angular" | "universal_saturated" | "ttbox_pid_atan" | "shared", key: string, value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const control = nestedRecord(base, "control");
+      if (group !== "aim" && group !== "shared") {
+        const algorithms = nestedRecord(control, "algorithms");
+        const algorithm = {
+          ...nestedRecord(algorithms, group),
+          [key]: value
+        };
+        await updateConfigField("control", "algorithms", {
+          ...algorithms,
+          [group]: algorithm
+        } as RuntimeConfigValue);
+        return;
+      }
       const groupValue = {
         ...nestedRecord(control, group),
         [key]: value
       };
       await updateConfigField("control", group, groupValue as RuntimeConfigValue);
+    },
+    [runtimeConfig, updateConfigField]
+  );
+
+  const updateDualPhaseField = useCallback(
+    async (group: "aim" | "projection" | "mode" | "far" | "near" | "prediction", key: string, value: RuntimeConfigValue) => {
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const control = nestedRecord(base, "control");
+      const algorithms = nestedRecord(control, "algorithms");
+      const algorithm = nestedRecord(algorithms, "dual_phase_atan_predictive_v1");
+      const nested = {
+        ...nestedRecord(algorithm, group),
+        [key]: value
+      };
+      await updateConfigField("control", "algorithms", {
+        ...algorithms,
+        dual_phase_atan_predictive_v1: {
+          ...algorithm,
+          [group]: nested
+        }
+      } as RuntimeConfigValue);
     },
     [runtimeConfig, updateConfigField]
   );
@@ -2671,7 +2741,7 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="控制器输出" />
               <div className="console-kv">
-                <span>控制模式</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? "精确标定" : "通用适配"}</b>
+                <span>控制模式</span><b>{controlModeLabel}</b>
                 <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
                 <span>Kp X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKpX, calibratedKpY, 2) : NO_SAMPLE}</b>
                 <span>Kd X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKdX, calibratedKdY, 2) : NO_SAMPLE}</b>
@@ -2700,21 +2770,20 @@ export function StudioConsoleView({
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="Scheduler 与设备发送" />
+              <SectionTitle title={dualPhaseActive ? "MouseCommandExecutor 与设备发送" : "Scheduler 与设备发送"} />
               <div className="console-kv">
                 <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
                 <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
                 <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
                 <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
-                <span>待执行 counts</span><b>{formatPoint(schedulerStatus.pending_dx, schedulerStatus.pending_dy, 0, "counts")}</b>
+                <span>{dualPhaseActive ? "发送语义" : "待执行 counts"}</span><b>{dualPhaseActive ? "每观测至多一次 move" : formatPoint(schedulerStatus.pending_dx, schedulerStatus.pending_dy, 0, "counts")}</b>
                 <span>本次发送 counts</span><b>{execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0, "counts") : NO_SAMPLE}</b>
-                <span>剩余 pending steps</span><b>{formatOptionalInteger(schedulerStatus.pending_steps)}</b>
+                <span>{dualPhaseActive ? "跨帧剩余计划" : "剩余 pending steps"}</span><b>{dualPhaseActive ? "无" : formatOptionalInteger(schedulerStatus.pending_steps)}</b>
                 <span>inflight 估计</span><b>{NOT_INSTRUMENTED}</b>
                 <span>发送频率</span><b>{NOT_INSTRUMENTED}</b>
                 <span>设备发送耗时</span><b>{controlSendDuration}</b>
                 <span>最后发送时间</span><b>{formatOptionalInteger(execution.device_send_end_ts_ns ?? executionMeta.device_send_end_ts_ns)}</b>
-                <span>旧计划截断次数</span><b>{formatOptionalInteger(schedulerStatus.cancelled_pending)}</b>
-                <span>最近取消原因</span><b>{readString(schedulerStatus.last_cancel_reason, "") || NO_SAMPLE}</b>
+                {!dualPhaseActive ? <><span>旧计划截断次数</span><b>{formatOptionalInteger(schedulerStatus.cancelled_pending)}</b><span>最近取消原因</span><b>{readString(schedulerStatus.last_cancel_reason, "") || NO_SAMPLE}</b></> : null}
                 <span>设备连接</span><b>{kmnetConnected ? "已连接" : "未连接"}</b>
               </div>
             </div>
@@ -2725,17 +2794,18 @@ export function StudioConsoleView({
           {activePage === "params" ? (
           <>
             <div className="console-metrics">
-              <Metric title="控制模式" value={controlMode === "calibrated_angular" ? "精确标定" : "通用适配"} small={controlMode} />
+              <Metric title="控制模式" value={controlModeLabel} small={controlMode} />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-              <Metric title="瞄点 Y" value={aimYRatio.toFixed(2)} small="bbox ratio" />
-              <Metric title="预测强度" value={predictionStrength.toFixed(2)} small="Kalman" />
-            <Metric title="发送方式" value={schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+              <Metric title="瞄点 Y" value={(dualPhaseActive ? dualPhaseAimYRatio : aimYRatio).toFixed(2)} small="bbox ratio" />
+              <Metric title="预测强度" value={dualPhaseActive ? `${dualPhaseFarWeight.toFixed(2)} / ${dualPhaseNearWeight.toFixed(2)}` : predictionStrength.toFixed(2)} small={dualPhaseActive ? "FAR / NEAR" : "Kalman"} />
+            <Metric title="发送方式" value={dualPhaseActive ? "单观测单命令" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? "MouseCommandExecutor" : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
             <div className="console-grid2">
               <div className="console-card">
                 <SectionTitle title="控制算法 · 通用参数" />
                 <label>控制模式</label>
-                <select value={controlMode} onChange={(event) => void updateConfigField("control", "mode", event.target.value)}>
+                <select value={controlMode} onChange={(event) => void updateConfigField("control", "active_algorithm", event.target.value)}>
+                  <option value="dual_phase_atan_predictive_v1">双阶段 Atan 预测闭环 v1</option>
                   <option value="universal_saturated">通用适配</option>
                   <option value="calibrated_angular">精确标定</option>
                   <option value="ttbox_pid_atan">ttbox_pid_atan</option>
@@ -2756,25 +2826,54 @@ export function StudioConsoleView({
                     onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)}
                   />
                 ) : null}
-                <NumberControl label="瞄点垂直比例" value={aimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)} />
-                <NumberControl label="估计执行延迟 s" value={configuredActuationDelay} min={0} max={0.1} step={0.001} onCommit={(value) => updateConfigField("control", "configured_actuation_delay_s", value)} />
-                <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
-                <ModuleSwitch label="预测 X" detail="使用 Tracker Kalman 未来 X 位置" enabled={predictionXEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_x_enabled", enabled)} />
-                <ModuleSwitch label="预测 Y" detail="使用 Tracker Kalman 未来 Y 位置" enabled={predictionYEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_y_enabled", enabled)} />
-                <NumberControl label="X 到位阈值" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
-                <NumberControl label="Y 到位阈值" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
-                <NumberControl label="X counts 增长限制" detail="限制相邻观测中 X 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
-                <NumberControl label="Y counts 增长限制" detail="限制相邻观测中 Y 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
-                <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
-                <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
-                <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
-                <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
-                <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
+                {dualPhaseActive ? (
+                  <div className="console-kv compact-kv">
+                    <span>输出执行器</span><b>MouseCommandExecutor</b>
+                    <span>每个推理结果</span><b>至多一次 move(dx, dy)</b>
+                    <span>轨迹 Scheduler</span><b>不参与</b>
+                    <span>误差死区</span><b>不使用</b>
+                  </div>
+                ) : (
+                  <>
+                    <NumberControl label="瞄点垂直比例" value={aimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)} />
+                    <NumberControl label="估计执行延迟 s" value={configuredActuationDelay} min={0} max={0.1} step={0.001} onCommit={(value) => updateConfigField("control", "configured_actuation_delay_s", value)} />
+                    <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
+                    <ModuleSwitch label="预测 X" detail="使用 Tracker Kalman 未来 X 位置" enabled={predictionXEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_x_enabled", enabled)} />
+                    <ModuleSwitch label="预测 Y" detail="使用 Tracker Kalman 未来 Y 位置" enabled={predictionYEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_y_enabled", enabled)} />
+                    <NumberControl label="X 到位阈值" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
+                    <NumberControl label="Y 到位阈值" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
+                    <NumberControl label="X counts 增长限制" detail="限制相邻观测中 X 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
+                    <NumberControl label="Y counts 增长限制" detail="限制相邻观测中 Y 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
+                    <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
+                    <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
+                    <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
+                    <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
+                    <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
+                  </>
+                )}
               </div>
 
               <div className="console-card">
-                <SectionTitle title={controlMode === "calibrated_angular" ? "控制算法 · 精确标定" : controlMode === "ttbox_pid_atan" ? "控制算法 · ttbox_pid_atan" : "控制算法 · 通用适配"} />
-                {controlMode === "calibrated_angular" ? (
+                <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
+                {dualPhaseActive ? (
+                  <>
+                    <NumberControl label="瞄点垂直比例" value={dualPhaseAimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("aim", "y_ratio", value)} />
+                    <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection", "fov_x_deg", value)} />
+                    <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection", "counts_per_360", value)} />
+                    <NumberControl label="进入 NEAR 阈值 px" value={dualPhaseNearEnter} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("mode", "near_enter_min_px", value)} />
+                    <NumberControl label="退出 NEAR 阈值 px" value={dualPhaseNearExit} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("mode", "near_exit_min_px", value)} />
+                    <NumberControl label="FAR Kp" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far", "kp", value)} />
+                    <NumberControl label="NEAR Kp" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near", "kp", value)} />
+                    <NumberControl label="FAR Atan 尺度 counts" value={dualPhaseFarScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("far", "atan_scale_counts", value)} />
+                    <NumberControl label="NEAR Atan 尺度 counts" value={dualPhaseNearScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("near", "atan_scale_counts", value)} />
+                    <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("far", "max_counts_per_update", value)} />
+                    <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("near", "max_counts_per_update", value)} />
+                    <NumberControl label="执行延迟 ms" value={dualPhaseActuationDelayMs} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhaseField("prediction", "actuation_delay_ms", value)} />
+                    <NumberControl label="最大预测时域 ms" value={dualPhaseMaxHorizonMs} min={0} max={200} step={0.1} onCommit={(value) => updateDualPhaseField("prediction", "max_horizon_ms", value)} />
+                    <NumberControl label="FAR 预测权重" value={dualPhaseFarWeight} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("prediction", "far_weight", value)} />
+                    <NumberControl label="NEAR 预测权重" value={dualPhaseNearWeight} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("prediction", "near_weight", value)} />
+                  </>
+                ) : controlMode === "calibrated_angular" ? (
                   <>
                     <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
                     <NumberControl label="X 每圈 counts" value={calibratedCountsPer360X} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_x", value)} />
@@ -2939,10 +3038,20 @@ export function StudioConsoleView({
                 <option value="enc_bezier">enc_move_beizer：加密贝塞尔曲线</option>
               </select>
               <label>命令调度</label>
-              <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接调用一次 kmNet" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
-              <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
-              <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
-              <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
+              {dualPhaseActive ? (
+                <div className="console-kv compact-kv">
+                  <span>执行层</span><b>MouseCommandExecutor</b>
+                  <span>行为</span><b>当前观测整数 counts 直接发送一次</b>
+                  <span>Scheduler</span><b>此算法固定绕过</b>
+                </div>
+              ) : (
+                <>
+                  <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接调用一次 kmNet" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
+                  <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
+                  <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
+                  <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
+                </>
+              )}
               <div className="console-action-row">
                 <button
                   className={kmnetConnected || kmnetConnecting ? "console-button danger" : "console-button primary"}

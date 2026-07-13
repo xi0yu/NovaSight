@@ -32,7 +32,11 @@ def detection_batch_to_frame_context(
         frame_id=int(detection_batch.frame_id),
         width=int(width),
         height=int(height),
-        generation=int(detection_batch.generation or detection_batch.frame_id),
+        generation=int(
+            detection_batch.frame_id
+            if detection_batch.generation is None
+            else detection_batch.generation
+        ),
         detections=list(detection_batch.detections),
         tracks=detection_batch_tracks(detection_batch),
         classes=list(detection_batch.classes),

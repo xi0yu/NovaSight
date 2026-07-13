@@ -281,7 +281,6 @@ class RuntimeReconfigurator:
         hardware_changed = self._hardware_changed(previous_config, config)
         current_executors = getattr(self.app.state, "executors", None)
         if current_executors is not None and not hardware_changed:
-            current_executors.update_runtime_config(config)
             next_executors = current_executors
         else:
             if current_executors is not None:
@@ -311,8 +310,10 @@ class RuntimeReconfigurator:
             )
         elif previous_backend == "deepstream_nvinfer":
             self._load_active_model_into_inference()
-        self.app.state.runtime.executors = self.app.state.executors
-        self.app.state.runtime.update_config(config)
+        self.app.state.runtime.update_config(
+            config,
+            executors=self.app.state.executors,
+        )
 
     def _load_active_model_into_inference(self) -> None:
         models = getattr(self.app.state, "models", None)

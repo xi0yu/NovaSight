@@ -833,6 +833,7 @@ def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acqui
             )
         ),
     )
+    service.running = True
     frame = CapturedFrame(
         frame_id=1,
         generation=1,
@@ -898,6 +899,7 @@ def test_target_pipeline_diagnostics_explain_zero_decode_candidates(caplog) -> N
             ),
         ),
     )
+    service.running = True
     frame = CapturedFrame(
         frame_id=1,
         generation=1,
@@ -933,6 +935,7 @@ def test_target_pipeline_diagnostics_explain_selection_fov_rejection() -> None:
             execute=lambda _intent: pytest.fail("rejected target must not execute"),
         ),
     )
+    service.running = True
     capture_ts_ns = time.monotonic_ns()
     batch = DetectionBatch(
         frame_id=1,
@@ -1192,6 +1195,253 @@ def test_scheduler_disabled_sends_detection_budget_in_observation_call() -> None
     assert executors.scheduler is None
 
 
+def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.trigger_mode = "always"
+    # This legacy switch is deliberately left enabled: the algorithm contract
+    # must still bypass the trajectory Scheduler unconditionally.
+    config.control.scheduler_enabled = True
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    observation_result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+    tick_result = service.process_control_tick()
+
+    assert executors.scheduler is None
+    assert executors.single_command_per_observation is True
+    assert len(observation_result.control_intents) == 1
+    assert len(observation_result.execution_results) == 1
+    assert observation_result.execution_results[0].sent is True
+    assert observation_result.execution_results[0].metadata["stage"] == "mouse_command_executor"
+    assert observation_result.execution_results[0].metadata["delivery_mode"] == "single_command_per_observation"
+    assert len(kmnet.outputs) == 1
+    assert int(kmnet.outputs[0].dx) != 0
+    assert tick_result.execution_results == []
+    assert len(kmnet.outputs) == 1
+    assert service.last_control is not None
+    assert service.last_control["pipeline"]["scheduler_used"] is False
+    assert service.last_control["pipeline"]["algorithm"] == "dual_phase_atan_predictive_v1"
+
+
+@pytest.mark.parametrize("terminal_state", ["stopped", "cancelled", "fatal"])
+def test_dual_phase_rejects_late_batch_after_terminal_runtime_state(
+    terminal_state: str,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.trigger_mode = "always"
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    if terminal_state == "stopped":
+        service.running = False
+    elif terminal_state == "cancelled":
+        service.cancel_control("RUNTIME_STOPPED")
+    else:
+        service.record_fatal_error("inference", RuntimeError("boom"), "crash.log")
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[
+            Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)
+        ],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+
+    assert result.control_intents == []
+    assert result.execution_results == []
+    assert kmnet.outputs == []
+    assert service._accepted_batch_generation == -1
+    assert service._accepted_batch_capture_ts_ns == 0
+    assert service.last_inference_status["available"] is False
+    assert service.last_inference_status["terminal_rejected"] is True
+    assert service.last_inference_status["reason"] == (
+        "RUNTIME_FATAL_ERROR" if terminal_state == "fatal" else "RUNTIME_STOPPED"
+    )
+
+
+def test_terminal_state_remains_authoritative_over_concurrent_batch_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=ExecutorRegistry.from_config(config),
+    )
+    service.running = True
+
+    def stop_during_freshness(_batch: DetectionBatch) -> str:
+        service.cancel_control("RUNTIME_STOPPED")
+        return "synthetic generation rollback"
+
+    monkeypatch.setattr(
+        service,
+        "_detection_batch_freshness_reason",
+        stop_during_freshness,
+    )
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    result = service.process_detection_batch(batch, width=640, height=640)
+
+    assert result.execution_results == []
+    assert service.last_inference_status["available"] is False
+    assert service.last_inference_status["terminal_rejected"] is True
+    assert service.last_inference_status["reason"] == "RUNTIME_STOPPED"
+
+
+def test_dual_phase_preserves_zero_generation_through_single_command_path() -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.trigger_mode = "always"
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns()
+    batch = DetectionBatch(
+        frame_id=42,
+        generation=0,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[
+            Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)
+        ],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    result = service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+
+    assert service.last_frame_context is not None
+    assert service.last_frame_context.generation == 0
+    assert result.control_intents[0].trajectory_generation == 0
+    assert result.execution_results[0].metadata["command_generation"] == 0
+    assert service.last_control is not None
+    assert service.last_control["trajectory_generation"] == 0
+    assert service.last_control["pipeline"]["generation"] == 0
+
+
+def test_dual_phase_control_tick_observes_trigger_release_without_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.trigger_mode = "hardware"
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    release_calls: list[bool] = []
+    original_release = service.dual_phase_algorithm.release_trigger
+
+    def record_release() -> None:
+        release_calls.append(True)
+        original_release()
+
+    monkeypatch.setattr(service.dual_phase_algorithm, "release_trigger", record_release)
+
+    result = service.process_control_tick()
+
+    assert release_calls == [True]
+    assert result.execution_results == []
+    assert kmnet.outputs == []
+
+
+def test_cancel_control_resets_detection_batch_generation_cursor() -> None:
+    config = RuntimeConfig()
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=ExecutorRegistry.from_config(config),
+    )
+    service._accepted_batch_generation = 10
+    service._accepted_batch_capture_ts_ns = 2_000_000_000
+
+    service.cancel_control("RUNTIME_STOPPED")
+
+    assert service._accepted_batch_generation == -1
+    assert service._accepted_batch_capture_ts_ns == 0
+
+
 def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
     config = RuntimeConfig()
     config.control.trigger_mode = "hardware"
@@ -1286,6 +1536,7 @@ def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batc
             infer=infer,
         ),
     )
+    service.running = True
     frame = CapturedFrame(
         frame_id=1,
         generation=1,
@@ -1544,6 +1795,7 @@ def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
             execute=lambda _intent: pytest.fail("default hardware trigger should not emit in this seam test"),
         ),
     )
+    service.running = True
     batch = DetectionBatch(
         frame_id=7,
         capture_ts_ns=1_000_000_000,
@@ -1592,6 +1844,7 @@ def test_runtime_service_rejects_stale_detection_batch_before_control() -> None:
             execute=lambda _intent: pytest.fail("stale DetectionBatch must not execute"),
         ),
     )
+    service.running = True
     capture_ts_ns = time.monotonic_ns() - 50_000_000
     batch = DetectionBatch(
         frame_id=17,
@@ -1645,6 +1898,7 @@ def test_runtime_service_rejects_detection_batch_marked_stale() -> None:
             execute=lambda _intent: pytest.fail("stale DetectionBatch must not execute"),
         ),
     )
+    service.running = True
     now_ns = time.monotonic_ns()
     batch = DetectionBatch(
         frame_id=21,
@@ -1689,6 +1943,7 @@ def test_runtime_service_rejects_detection_batch_generation_and_capture_rollback
             execute=lambda _intent: pytest.fail("empty detections should not emit"),
         ),
     )
+    service.running = True
     now_ns = time.monotonic_ns()
     first = DetectionBatch(
         frame_id=30,
@@ -1806,6 +2061,7 @@ def test_runtime_service_rejects_non_roi_detection_batch() -> None:
             execute=lambda _intent: pytest.fail("invalid DetectionBatch must not execute"),
         ),
     )
+    service.running = True
     batch = DetectionBatch(
         frame_id=7,
         capture_ts_ns=1_000_000_000,
@@ -1847,6 +2103,7 @@ def test_runtime_service_rejects_invalid_roi_detection_batch() -> None:
             execute=lambda _intent: pytest.fail("invalid DetectionBatch must not execute"),
         ),
     )
+    service.running = True
     batch = DetectionBatch(
         frame_id=8,
         capture_ts_ns=1_000_000_000,

@@ -69,14 +69,14 @@ class DeepStreamRuntimePipeline:
 
     def stop(self) -> None:
         self._stop.set()
-        self.backend.stop()
-        for thread in self._threads:
-            if thread is not threading.current_thread():
-                thread.join(timeout=1.0)
         self.runtime.running = False
         cancel_control = getattr(self.runtime, "cancel_control", None)
         if callable(cancel_control):
             cancel_control("RUNTIME_STOPPED")
+        self.backend.stop()
+        for thread in self._threads:
+            if thread is not threading.current_thread():
+                thread.join(timeout=1.0)
         self.stats.stopped_at = time.time()
 
     def status(self) -> dict[str, object]:

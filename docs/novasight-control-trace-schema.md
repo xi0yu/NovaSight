@@ -1,7 +1,7 @@
 # NovaSight Control Trace Schema
 
 文档状态：trace 字段说明  
-schema：`novasight.control_trace` version `1`  
+schema：`novasight.control_trace` version `3`
 格式：JSONL，每行一个 control observation trace record
 
 ## 范围
@@ -12,7 +12,7 @@ schema：`novasight.control_trace` version `1`
 DetectionBatch
 -> Tracker / Kalman
 -> control calculation
--> Scheduler
+-> algorithm-specific delivery (MouseCommandExecutor or legacy Scheduler)
 -> device send result
 ```
 
@@ -27,6 +27,7 @@ correlation
 detection
 tracker
 control
+algorithm_decision
 counts
 scheduler
 device
@@ -46,7 +47,7 @@ device
 - `DetectionBatch.publish_ts_ns`：monotonic ns。
 - `Tracker/Kalman state_ts_ns`：monotonic ns。
 - `control_now_ts_ns`：monotonic ns。
-- `Scheduler created/expires`：monotonic ns。
+- legacy `Scheduler created/expires`：monotonic ns；直发算法保持空值。
 - `device_send_start/end_ts_ns`：monotonic ns。
 
 GStreamer PTS 或 wall clock 不得直接与这些字段相减。
@@ -64,11 +65,14 @@ GStreamer PTS 或 wall clock 不得直接与这些字段相减。
 | control error_rad | rad |
 | control error_rate_rad_s | rad/s |
 | P、D、U、prediction velocity term | rad |
+| algorithm aim/real error/control error/prediction offset | px |
+| algorithm velocity_x | px/s |
+| algorithm full error/float demand/integer command/residual | counts |
 | counts planned/queued/sent/estimated_applied/unobserved | counts |
 | scheduler pending_age | ms |
 | timestamp fields | ns |
 
-`tracker.velocity_px_s` in schema v1 is a legacy field name. Its meaning is observed/estimated screen-space line-of-sight velocity, not target-world velocity. The `predictive_pid_v2` path will use explicit `raw_observed_*` and `filtered_observed_*` names in its next trace version.
+`tracker.velocity_px_s` 是兼容字段名，含义是屏幕表观速度，不是目标世界速度。`algorithm_decision.estimator.velocity_x_px_s` 是 `dual_phase_atan_predictive_v1` 专用 raw-aim X 估计器的结果。
 
 ## Correlation ID
 
@@ -82,7 +86,7 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 - DetectionBatch generation/frame/capture
 - control calculation
-- Scheduler trajectory_generation / command_id
+- legacy Scheduler trajectory_generation / command_id（直发算法为空）
 - device send result
 
 `correlation.capture_ts` 也使用 timestamp 对象格式，不能保存裸 `*_ns` 整数。
@@ -113,12 +117,39 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 禁止用猜测值填充这两个字段。
 
+## algorithm_decision
+
+版本 3 新增专用算法决策块。`dual_phase_atan_predictive_v1` 至少记录：
+
+```text
+algorithm_id / phase / measurement_dt_ms
+aim_px / bbox
+error_real_px / error_control_px
+estimator velocity / innovation / normalized innovation / confidence
+prediction horizon / raw offset / weight / cap / safe offset / crossing limit
+full_error_counts / float_demand / integer_command / quantizer_residual
+overzero_detected / will_emit / block_reason
+delivery_mode / scheduler_used
+```
+
+该算法的固定发送语义为：
+
+```json
+{
+  "delivery_mode": "single_command_per_observation",
+  "scheduler_used": false
+}
+```
+
+`scheduler` 顶层仍为兼容结构，但新算法只写入 `used=false` 和 delivery mode，不存在 pending steps 或旧计划。
+
 ## 采集位置
 
 - Runtime 在已有 recording hook 中调用 `build_control_trace_record()`。
 - Tracker/Kalman 指标来自 `last_control.pipeline.estimated_target_state` 和 `track_diagnostics`。
 - Angular Controller 指标来自 `last_control.pipeline.angular_controller` 及控制 debug payload。
-- Scheduler 指标来自 execution metadata 中的 `scheduler` 或 `scheduler.status()`。
+- 新算法的完整估计、预测、counts 和直发语义来自 `last_control.pipeline`。
+- legacy Scheduler 指标来自 execution metadata 中的 `scheduler` 或 `scheduler.status()`。
 - Device send 时间来自 `ExecutorRegistry` 包裹实际 executor 调用时记录的 monotonic start/end。
 
 ## 示例
@@ -126,7 +157,7 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 测试生成的示例见：
 
 ```text
-docs/examples/control_trace_v1.jsonl
+tests/test_control_trace.py
 ```
 
-该示例不是 Jetson 实测数据，只用于固定 schema 和序列化形态。
+测试数据不是 Jetson 实测数据，只用于固定 schema 和序列化形态。

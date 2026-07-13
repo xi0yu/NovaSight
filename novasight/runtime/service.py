@@ -13,6 +13,7 @@ from novasight.config import RuntimeConfig
 from novasight.coordinates import CoordinateTransform
 from novasight.control import (
     CalibratedAngularControllerConfig,
+    MoveCommand,
     MouseControllerConfig,
     MouseController,
     MouseObservation,
@@ -22,6 +23,18 @@ from novasight.control import (
     UniversalSaturatedControllerConfig,
     plan_step_capacity,
     target_motion_estimate_from_debug,
+)
+from novasight.control.algorithms.dual_phase_atan_predictive_v1 import (
+    ALGORITHM_ID as DUAL_PHASE_ATAN_PREDICTIVE_V1,
+    AtanPhaseConfig as DualPhaseAtanPhaseConfig,
+    DualPhaseAtanPredictiveV1Algorithm,
+    DualPhaseAtanPredictiveV1Config as DualPhaseAlgorithmConfig,
+    DualPhaseAtanPredictiveV1Observation,
+    EstimatorConfig as DualPhaseEstimatorConfig,
+    ModeSelectorConfig as DualPhaseModeSelectorConfig,
+    PredictionConfig as DualPhasePredictionConfig,
+    ProjectionConfig as DualPhaseProjectionConfig,
+    QuantizerConfig as DualPhaseQuantizerConfig,
 )
 from novasight.executors import BoxInputState, ExecutorRegistry
 from novasight.inference import InferenceResult
@@ -108,6 +121,7 @@ class RuntimeService:
         self.control_timing = ControlTimingModel()
         self.last_control_timing: dict[str, Any] = {}
         self.mouse_controller = self._create_mouse_controller(config)
+        self.dual_phase_algorithm = self._create_dual_phase_algorithm(config)
         self.target_selector = RuntimeTargetSelector()
         self.raw_aim_projector = RawAimPointProjector()
         self._runtime_calibration_signature = self._config_calibration_signature(config)
@@ -331,7 +345,12 @@ class RuntimeService:
             **payload,
         }
 
-    def update_config(self, config: RuntimeConfig) -> RuntimeConfig:
+    def update_config(
+        self,
+        config: RuntimeConfig,
+        *,
+        executors: ExecutorRegistry | None = None,
+    ) -> RuntimeConfig:
         mode_changed = str(config.control.mode) != str(self.config.control.mode)
         new_calibration_signature = self._config_calibration_signature(config)
         calibration_changed = new_calibration_signature != self._runtime_calibration_signature
@@ -343,10 +362,13 @@ class RuntimeService:
             else "CONTROL_CONFIG_UPDATED"
         )
         with self._control_lock:
+            if executors is not None:
+                self.executors = executors
             self.config = config
             self.control_timing.reset()
             self.last_control_timing = {}
             self.mouse_controller = self._create_mouse_controller(config)
+            self.dual_phase_algorithm = self._create_dual_phase_algorithm(config)
             self._clear_pending_commands(reset_reason)
             self.executors.update_runtime_config(config)
             if calibration_changed:
@@ -404,16 +426,21 @@ class RuntimeService:
     def _config_calibration_signature(config: RuntimeConfig) -> tuple[Any, ...]:
         calibration = config.calibration
         calibrated = config.control.calibrated_angular
+        dual_phase = config.control.dual_phase_atan_predictive_v1
         shared = config.control.shared
         capture = config.capture
         roi = config.roi
         return (
+            str(config.control.active_algorithm),
             str(calibration.profile_id).strip(),
             int(calibration.profile_version),
             float(calibrated.fov_x_deg),
             float(calibrated.counts_per_360_x),
             float(calibrated.counts_per_360_y),
             bool(shared.invert_y),
+            float(dual_phase.projection.fov_x_deg),
+            float(dual_phase.projection.counts_per_360),
+            bool(dual_phase.projection.invert_y),
             str(calibration.game_sensitivity_fingerprint).strip(),
             int(capture.width),
             int(capture.height),
@@ -429,6 +456,7 @@ class RuntimeService:
         self.control_timing.reset()
         self.last_control_timing = {}
         self._reset_control_motion_state()
+        self._reset_direct_command_executor()
         self._clear_pending_commands(reason)
         self.last_frame_context = None
         self.last_target = None
@@ -446,33 +474,74 @@ class RuntimeService:
             "calibration_status": self._calibration_fingerprint_status(),
             "candidate_filter": self._candidate_filter_payload({}),
         }
+        if reason in {"RUNTIME_STOPPED", "RUNTIME_FATAL_ERROR"}:
+            self.last_inference_reason = reason
+            if isinstance(self.last_inference_status, dict):
+                self.last_inference_status.update(
+                    {
+                        "available": False,
+                        "reason": reason,
+                        "terminal_rejected": True,
+                    }
+                )
 
     def _log_production_control_chain(self, event: str) -> None:
         calibration = self.config.calibration
         calibrated = self.config.control.calibrated_angular
+        dual_phase = self.config.control.dual_phase_atan_predictive_v1
         shared = self.config.control.shared
-        mode = self.config.control.mode
+        mode = self.config.control.active_algorithm
         selected_executor = getattr(self.executors, "selected", None) or "kmnet"
+        is_dual_phase = mode == DUAL_PHASE_ATAN_PREDICTIVE_V1
+        fov_x_deg = (
+            dual_phase.projection.fov_x_deg
+            if is_dual_phase
+            else calibrated.fov_x_deg
+        )
+        counts_per_360_x = (
+            dual_phase.projection.counts_per_360
+            if is_dual_phase
+            else calibrated.counts_per_360_x
+        )
+        counts_per_360_y = (
+            dual_phase.projection.counts_per_360
+            if is_dual_phase
+            else calibrated.counts_per_360_y
+        )
+        invert_y = (
+            dual_phase.projection.invert_y
+            if is_dual_phase
+            else shared.invert_y
+        )
         delivery_stage = (
-            "CommandScheduler"
+            "MouseCommandExecutor(single-command-per-observation)"
+            if is_dual_phase
+            else "CommandScheduler"
             if bool(self.config.control.scheduler_enabled)
             else "DirectObservationSend"
+        )
+        chain = (
+            "RawAimObservation->RealError+BoundedXPrediction->FAR/NEARCountsAtan"
+            f"->IntegerQuantizer->{delivery_stage}->kmNet"
+            if is_dual_phase
+            else "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController"
+            f"->SharedCountLimits->{delivery_stage}->kmNet"
         )
         logger.info(
             "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
             "counts_per_360_x=%.3f counts_per_360_y=%.3f invert_y=%s",
             event,
-            f"RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController->SharedCountLimits->{delivery_stage}->kmNet",
+            chain,
             mode,
             selected_executor,
             self.config.control.trigger_mode,
             calibration.profile_id,
             calibration.profile_version,
-            float(calibrated.fov_x_deg),
-            float(calibrated.counts_per_360_x),
-            float(calibrated.counts_per_360_y),
-            bool(shared.invert_y),
+            float(fov_x_deg),
+            float(counts_per_360_x),
+            float(counts_per_360_y),
+            bool(invert_y),
         )
 
     def _calibration_fingerprint_status(self) -> dict[str, Any]:
@@ -480,7 +549,10 @@ class RuntimeService:
         observed = str(self._external_sensitivity_fingerprint).strip()
         source = str(self._external_sensitivity_source).strip()
         updated_ts_ns = int(self._external_sensitivity_ts_ns or 0)
-        if self.config.control.mode != "calibrated_angular":
+        if self.config.control.active_algorithm not in {
+            "calibrated_angular",
+            DUAL_PHASE_ATAN_PREDICTIVE_V1,
+        }:
             return {
                 "state": "not_required",
                 "control_allowed": True,
@@ -489,7 +561,7 @@ class RuntimeService:
                 "source": source,
                 "updated_ts_ns": updated_ts_ns,
                 "reason_code": "",
-                "reason": "universal_saturated does not require angular calibration",
+                "reason": f"{self.config.control.active_algorithm} does not require angular calibration",
             }
         if not observed:
             return {
@@ -526,23 +598,42 @@ class RuntimeService:
 
     def record_fatal_error(self, thread_name: str, exc: BaseException, path) -> None:
         with self._control_lock:
+            self.running = False
+            self.fatal_error = {
+                "type": "FATAL_ERROR",
+                "thread": thread_name,
+                "message": str(exc),
+                "crash_log": str(path),
+            }
+            self._reset_detection_batch_cursor()
             self._reset_runtime_control_state("RUNTIME_FATAL_ERROR")
-        self.fatal_error = {
-            "type": "FATAL_ERROR",
-            "thread": thread_name,
-            "message": str(exc),
-            "crash_log": str(path),
-        }
 
     def process_frame(self, context: FrameContext) -> RuntimeFrameResult:
         execution_payload: dict[str, Any] | None = None
         with self._control_lock:
+            if not self.running or self.fatal_error is not None:
+                reason = (
+                    "RUNTIME_FATAL_ERROR"
+                    if self.fatal_error is not None
+                    else "RUNTIME_STOPPED"
+                )
+                self._reset_detection_batch_cursor()
+                self._reset_runtime_control_state(reason)
+                return self._empty_runtime_frame_result()
             self.last_frame_context = context
             intent = self._control_intent_from_context(context)
             self._last_control_tick_ns = time.monotonic_ns()
             control_intents = [intent] if intent is not None else []
             execution_results = [self.executors.execute(intent) for intent in control_intents]
             for result in execution_results:
+                if (
+                    self.config.control.active_algorithm
+                    == DUAL_PHASE_ATAN_PREDICTIVE_V1
+                    and not bool(getattr(result, "sent", False))
+                ):
+                    # A failed or blocked device call must not leave fractional
+                    # demand from an unsent observation to a later frame.
+                    self.dual_phase_algorithm.release_trigger()
                 self._record_executed_control(result)
             if execution_results:
                 self.last_execution = self._execution_result_payload(execution_results[-1])
@@ -575,6 +666,22 @@ class RuntimeService:
         )
 
     def process_control_tick(self) -> RuntimeFrameResult:
+        if self.config.control.active_algorithm == DUAL_PHASE_ATAN_PREDICTIVE_V1:
+            # No command is emitted here. The tick only observes release/stop
+            # edges so fractional counts cannot survive between inference
+            # results.
+            with self._control_lock:
+                if not self.running:
+                    self._reset_control_motion_state()
+                    self._reset_direct_command_executor()
+                    return self._empty_runtime_frame_result()
+                if (
+                    str(self.config.control.trigger_mode) == "hardware"
+                    and not self._box_input_state().active
+                ):
+                    self.dual_phase_algorithm.release_trigger()
+                    self._clear_pending_commands("TRIGGER_INACTIVE")
+            return self._empty_runtime_frame_result()
         tick_pending = getattr(self.executors, "tick_pending", None)
         if not callable(tick_pending):
             return self._empty_runtime_frame_result()
@@ -606,6 +713,22 @@ class RuntimeService:
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
         return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False)
 
+    def _finalize_detection_batch_early_result(self) -> RuntimeFrameResult:
+        """Keep terminal runtime state authoritative over concurrent early exits."""
+
+        with self._control_lock:
+            terminal_reason = (
+                "RUNTIME_FATAL_ERROR"
+                if self.fatal_error is not None
+                else "RUNTIME_STOPPED"
+                if not self.running
+                else ""
+            )
+            if terminal_reason:
+                self._reset_detection_batch_cursor()
+                self._reset_runtime_control_state(terminal_reason)
+        return self._empty_runtime_frame_result()
+
     def process_detection_batch(
         self,
         detection_batch: DetectionBatch,
@@ -633,6 +756,42 @@ class RuntimeService:
             roi_offset_x=roi_offset_x,
             roi_offset_y=roi_offset_y,
         )
+        with self._control_lock:
+            terminal_reason = (
+                "RUNTIME_FATAL_ERROR"
+                if self.fatal_error is not None
+                else "RUNTIME_STOPPED"
+                if not self.running
+                else ""
+            )
+            if terminal_reason:
+                done_ns = time.monotonic_ns()
+                self._reset_detection_batch_cursor()
+                self._reset_runtime_control_state(terminal_reason)
+                self.last_inference_reason = terminal_reason
+                self._set_detection_batch_pipeline_timings(
+                    detection_batch,
+                    total_start_ns=total_start_ns,
+                    control_start_ns=None,
+                    done_ns=done_ns,
+                )
+                self.last_inference_status = self._detection_batch_status_payload(
+                    detection_batch,
+                    width=int(width),
+                    height=int(height),
+                    now_ns=done_ns,
+                    reason=terminal_reason,
+                    available=False,
+                    mapped_detections=0,
+                    source_width=resolved_source_width,
+                    source_height=resolved_source_height,
+                    source_geometry_source=source_geometry_source,
+                    source_geometry_trusted=source_geometry_trusted,
+                    roi_offset_x=resolved_roi_offset_x,
+                    roi_offset_y=resolved_roi_offset_y,
+                    extra={"terminal_rejected": True},
+                )
+                return self._empty_runtime_frame_result()
         freshness_reason = self._detection_batch_freshness_reason(detection_batch)
         if freshness_reason:
             self.stale_drop_count += 1
@@ -660,7 +819,7 @@ class RuntimeService:
                 roi_offset_y=resolved_roi_offset_y,
                 extra={"latest_rejected": True},
             )
-            return self._empty_runtime_frame_result()
+            return self._finalize_detection_batch_early_result()
         if detection_batch.coordinate_space != "roi":
             self._reset_runtime_control_state("DETECTION_BATCH_COORDINATE_SPACE_INVALID")
             self.last_inference_reason = "DetectionBatch coordinate_space must be roi"
@@ -685,7 +844,7 @@ class RuntimeService:
                 roi_offset_x=resolved_roi_offset_x,
                 roi_offset_y=resolved_roi_offset_y,
             )
-            return self._empty_runtime_frame_result()
+            return self._finalize_detection_batch_early_result()
         contract_reason = self._detection_batch_roi_contract_reason(
             detection_batch,
             width=int(width),
@@ -715,7 +874,7 @@ class RuntimeService:
                 roi_offset_x=resolved_roi_offset_x,
                 roi_offset_y=resolved_roi_offset_y,
             )
-            return self._empty_runtime_frame_result()
+            return self._finalize_detection_batch_early_result()
         stale_reason = self._detection_batch_stale_reason(
             detection_batch,
             now_ns=total_start_ns,
@@ -746,7 +905,7 @@ class RuntimeService:
                 roi_offset_y=resolved_roi_offset_y,
                 extra={"stale_rejected": True},
             )
-            return self._empty_runtime_frame_result()
+            return self._finalize_detection_batch_early_result()
         self.last_inference_reason = ""
         self.last_inference_status = self._detection_batch_status_payload(
             detection_batch,
@@ -1405,7 +1564,11 @@ class RuntimeService:
             if broker_published_frame_id is not None
             else acquired_frame_id
         )
-        detection_generation = int(detection_batch.generation or detection_batch.frame_id)
+        detection_generation = int(
+            detection_batch.frame_id
+            if detection_batch.generation is None
+            else detection_batch.generation
+        )
         freshness_extra = {
             "acquired_generation": acquired_generation,
             "acquired_frame_id": acquired_frame_id,
@@ -1690,7 +1853,11 @@ class RuntimeService:
             self.last_control = {
                 "frame_id": context.frame_id,
                 "control_now_ts_ns": control_now_ns,
-                "trajectory_generation": int(context.generation or context.frame_id),
+                "trajectory_generation": int(
+                    context.frame_id
+                    if context.generation is None
+                    else context.generation
+                ),
                 "global_state": self._global_state_from_selection_state(selection.state),
                 "selector_state": selection.state,
                 "selection_reason": selection.reason,
@@ -1760,7 +1927,11 @@ class RuntimeService:
                 "frame_id": context.frame_id,
                 "capture_ts_ns": context.capture_ts_ns,
                 "control_now_ts_ns": time.monotonic_ns(),
-                "trajectory_generation": int(context.generation or context.frame_id),
+                "trajectory_generation": int(
+                    context.frame_id
+                    if context.generation is None
+                    else context.generation
+                ),
                 "frame_age_ms": frame_age_ms,
                 "global_state": "DISABLED",
                 "selector_state": selection.state,
@@ -1831,30 +2002,67 @@ class RuntimeService:
             control_now_ts_ns=control_now_ns,
         )
         measurement_dt_ms = timing_payload.get("measurement_dt_ms")
-        control_metadata.update(
-            self._mouse_observation_metadata(
+        algorithm_id = self.config.control.active_algorithm
+        algorithm_trigger_active = bool(
+            trigger_activation_ready
+            and (box_input.active or trigger_mode == "always")
+        )
+        if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1:
+            command, observation_metadata = self._dual_phase_control_command(
                 context=context,
                 target=target,
                 control_metadata=control_metadata,
                 selector_debug=selector_debug,
                 control_now_ts_ns=control_now_ns,
-                measurement_dt_s=(
-                    float(measurement_dt_ms) / 1000.0
-                    if isinstance(measurement_dt_ms, (int, float))
-                    else None
-                ),
-                left_trigger_active=bool(hardware_input.left),
-                left_trigger_hold_ms=left_trigger_hold_ms,
+                trigger_active=algorithm_trigger_active,
             )
+            control_metadata.update(observation_metadata)
+        else:
+            control_metadata.update(
+                self._mouse_observation_metadata(
+                    context=context,
+                    target=target,
+                    control_metadata=control_metadata,
+                    selector_debug=selector_debug,
+                    control_now_ts_ns=control_now_ns,
+                    measurement_dt_s=(
+                        float(measurement_dt_ms) / 1000.0
+                        if isinstance(measurement_dt_ms, (int, float))
+                        else None
+                    ),
+                    left_trigger_active=bool(hardware_input.left),
+                    left_trigger_hold_ms=left_trigger_hold_ms,
+                )
+            )
+            observation = control_metadata["mouse_observation"]
+            command = self.mouse_controller.calculate(observation)
+        mouse_observation_debug = dict(
+            control_metadata.get("mouse_observation_debug") or {}
         )
-        observation = control_metadata["mouse_observation"]
-        mouse_observation_debug = dict(control_metadata.get("mouse_observation_debug") or {})
+        active_aim_y_ratio = (
+            float(self.config.control.dual_phase_atan_predictive_v1.aim.y_ratio)
+            if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+            else float(self.config.control.aim.y_ratio)
+        )
         aim_x = float(mouse_observation_debug.get("predicted_x_px") or 0.0)
         aim_y = float(mouse_observation_debug.get("predicted_y_px") or 0.0)
-        command = self.mouse_controller.calculate(observation)
         pipeline_debug = dict(command.debug)
         predicted_source = bool(getattr(target, "is_predicted", False))
-        trajectory_generation = int(context.generation or context.frame_id)
+        trajectory_generation = int(
+            context.frame_id if context.generation is None else context.generation
+        )
+        requires_trigger = trigger_mode != "always"
+        command_expires_ts_ns = (
+            int(context.capture_ts_ns or 0)
+            + int(
+                float(
+                    self.config.control.dual_phase_atan_predictive_v1.freshness_threshold_ms
+                )
+                * 1_000_000.0
+            )
+            if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+            else None
+        )
         intent = ControlIntent(
             dx=command.dx,
             dy=command.dy,
@@ -1870,10 +2078,20 @@ class RuntimeService:
             source_track_id=int(getattr(target, "track_id")) if hasattr(target, "track_id") else None,
             predicted_source=predicted_source,
             trajectory_generation=trajectory_generation,
+            trigger_required=(
+                requires_trigger
+                if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+                else None
+            ),
+            trigger_active=(
+                algorithm_trigger_active
+                if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+                else None
+            ),
+            command_expires_ts_ns=command_expires_ts_ns,
         )
         output_mode = str(getattr(self.executors, "selected", "kmnet") or "kmnet")
         hardware_kind = "kmnet"
-        requires_trigger = trigger_mode != "always"
         control_allowed = bool(pipeline_debug.get("control_allowed", True))
         calibration_status = self._calibration_fingerprint_status()
         if calibration_status["control_allowed"] is not True:
@@ -1920,7 +2138,7 @@ class RuntimeService:
         self.last_target = {
             **self._target_payload(target, context),
             "target_detection_index": target_detection_index,
-            "aim_y_ratio": float(self.config.control.aim.y_ratio),
+            "aim_y_ratio": active_aim_y_ratio,
             "aim_x": aim_x,
             "aim_y": aim_y,
             "observed_aim_x": mouse_observation_debug.get("observed_x_px"),
@@ -1955,7 +2173,7 @@ class RuntimeService:
             "aim_error_y": aim_error_y,
             "raw_error_x": raw_error_x,
             "raw_error_y": raw_error_y,
-            "aim_y_ratio": float(self.config.control.aim.y_ratio),
+            "aim_y_ratio": active_aim_y_ratio,
             "aim_x": aim_x,
             "aim_y": aim_y,
             "dx": command.dx,
@@ -2006,7 +2224,11 @@ class RuntimeService:
         if not can_emit:
             clear_reason = no_send_reason or "CONTROL_NOT_ALLOWED"
             self._clear_pending_commands(clear_reason)
-            self._reset_control_motion_state()
+            # The high-frequency algorithm keeps estimator/mode state while the
+            # trigger is released; its quantizer clears itself before returning.
+            # Legacy controllers retain their historical full reset behavior.
+            if algorithm_id != DUAL_PHASE_ATAN_PREDICTIVE_V1:
+                self._reset_control_motion_state()
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
                 "sent": False,
@@ -2077,8 +2299,15 @@ class RuntimeService:
         if callable(fallback_clear):
             fallback_clear(reason)
 
+    def _reset_direct_command_executor(self) -> None:
+        reset = getattr(self.executors, "reset_mouse_command_executor", None)
+        if callable(reset):
+            reset()
+
     def cancel_control(self, reason: str = "RUNTIME_STOPPED") -> None:
         with self._control_lock:
+            self.running = False
+            self._reset_detection_batch_cursor()
             self._reset_runtime_control_state(reason)
 
     def _record_executed_control(self, result: Any) -> None:
@@ -2433,6 +2662,10 @@ class RuntimeService:
         return context.width * 0.5, context.height * 0.5
 
     def _active_aim_ratio(self) -> float:
+        if self.config.control.active_algorithm == DUAL_PHASE_ATAN_PREDICTIVE_V1:
+            return float(
+                self.config.control.dual_phase_atan_predictive_v1.aim.y_ratio
+            )
         return float(self.config.control.aim.y_ratio)
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
@@ -2505,9 +2738,14 @@ class RuntimeService:
         universal = config.control.universal_saturated
         ttbox = config.control.ttbox_pid_atan
         shared = config.control.shared
+        legacy_mode = (
+            "universal_saturated"
+            if config.control.active_algorithm == DUAL_PHASE_ATAN_PREDICTIVE_V1
+            else str(config.control.active_algorithm)
+        )
         return MouseController(
             MouseControllerConfig(
-                mode=str(config.control.mode),
+                mode=legacy_mode,
                 calibrated_angular=CalibratedAngularControllerConfig(
                     fov_x_deg=float(calibrated.fov_x_deg),
                     counts_per_360_x=float(calibrated.counts_per_360_x),
@@ -2555,8 +2793,82 @@ class RuntimeService:
             )
         )
 
+    @staticmethod
+    def _create_dual_phase_algorithm(
+        config: RuntimeConfig,
+    ) -> DualPhaseAtanPredictiveV1Algorithm:
+        source = config.control.dual_phase_atan_predictive_v1
+        return DualPhaseAtanPredictiveV1Algorithm(
+            DualPhaseAlgorithmConfig(
+                freshness_threshold_ms=float(source.freshness_threshold_ms),
+                projection=DualPhaseProjectionConfig(
+                    fov_x_deg=float(source.projection.fov_x_deg),
+                    counts_per_360=float(source.projection.counts_per_360),
+                    invert_y=bool(source.projection.invert_y),
+                ),
+                mode=DualPhaseModeSelectorConfig(
+                    near_enter_min_px=float(source.mode.near_enter_min_px),
+                    near_exit_min_px=float(source.mode.near_exit_min_px),
+                    near_enter_bbox_h_ratio=float(source.mode.near_enter_bbox_h_ratio),
+                    near_exit_bbox_h_ratio=float(source.mode.near_exit_bbox_h_ratio),
+                ),
+                far=DualPhaseAtanPhaseConfig(
+                    kp=float(source.far.kp),
+                    atan_scale_counts=float(source.far.atan_scale_counts),
+                    max_counts_per_update=float(source.far.max_counts_per_update),
+                ),
+                near=DualPhaseAtanPhaseConfig(
+                    kp=float(source.near.kp),
+                    atan_scale_counts=float(source.near.atan_scale_counts),
+                    max_counts_per_update=float(source.near.max_counts_per_update),
+                ),
+                estimator=DualPhaseEstimatorConfig(
+                    measurement_std_px=float(source.estimator.measurement_std_px),
+                    acceleration_std_px_s2=float(source.estimator.acceleration_std_px_s2),
+                    min_dt_s=float(source.estimator.min_dt_ms) / 1000.0,
+                    reset_dt_s=float(source.estimator.reset_dt_ms) / 1000.0,
+                    innovation_soft_gate_sigma=float(
+                        source.estimator.innovation_soft_gate_sigma
+                    ),
+                    innovation_hard_gate_sigma=float(
+                        source.estimator.innovation_hard_gate_sigma
+                    ),
+                    hard_outlier_reset_count=int(
+                        source.estimator.hard_outlier_reset_count
+                    ),
+                    max_velocity_px_s=float(source.estimator.max_velocity_px_s),
+                    warmup_updates=int(source.estimator.warmup_updates),
+                ),
+                prediction=DualPhasePredictionConfig(
+                    enabled_x=bool(source.prediction.enabled_x),
+                    enabled_y=bool(source.prediction.enabled_y),
+                    actuation_delay_s=float(source.prediction.actuation_delay_ms) / 1000.0,
+                    max_horizon_s=float(source.prediction.max_horizon_ms) / 1000.0,
+                    far_weight=float(source.prediction.far_weight),
+                    near_weight=float(source.prediction.near_weight),
+                    far_abs_cap_px=float(source.prediction.far_abs_cap_px),
+                    near_abs_cap_px=float(source.prediction.near_abs_cap_px),
+                    far_base_cap_px=float(source.prediction.far_base_cap_px),
+                    near_base_cap_px=float(source.prediction.near_base_cap_px),
+                    far_relative_cap=float(source.prediction.far_relative_cap),
+                    near_relative_cap=float(source.prediction.near_relative_cap),
+                    near_cross_allow_px=float(source.prediction.near_cross_allow_px),
+                    high_confidence_cross_threshold=float(
+                        source.prediction.high_confidence_cross_threshold
+                    ),
+                    overzero_cooldown_frames=int(
+                        source.prediction.overzero_cooldown_frames
+                    ),
+                ),
+                quantizer=DualPhaseQuantizerConfig(
+                    min_effective_counts=int(source.quantizer.min_effective_counts),
+                ),
+            )
+        )
+
     def _reset_control_motion_state(self) -> None:
         self.mouse_controller.reset()
+        self.dual_phase_algorithm.reset()
 
     @staticmethod
     def _target_detection_index(context: FrameContext, target: Track) -> int | None:
@@ -2577,6 +2889,172 @@ class RuntimeService:
     @staticmethod
     def _control_target_key(target: Track) -> str:
         return f"track:{int(target.track_id)}"
+
+    def _dual_phase_control_command(
+        self,
+        *,
+        context: FrameContext,
+        target: Track,
+        control_metadata: dict[str, Any],
+        selector_debug: dict[str, Any],
+        control_now_ts_ns: int,
+        trigger_active: bool,
+    ) -> tuple[MoveCommand, dict[str, Any]]:
+        config = self.config.control.dual_phase_atan_predictive_v1
+        transform = self._coordinate_transform_for_context(context)
+        control_width = float(control_metadata.get("control_width") or 0.0)
+        control_height = float(control_metadata.get("control_height") or 0.0)
+        raw_aim = self.raw_aim_projector.project(
+            track=target,
+            frame_id=context.frame_id,
+            capture_ts_ns=int(context.capture_ts_ns or 0),
+            y_ratio=float(config.aim.y_ratio),
+            coordinate_transform=transform,
+            control_width_px=control_width,
+            control_height_px=control_height,
+            source_geometry_trusted=(
+                control_metadata.get("capture_geometry_trusted") is True
+            ),
+        )
+        if transform is None:
+            crosshair_roi_x = 0.0
+            crosshair_roi_y = 0.0
+            source_width = 0
+            source_height = 0
+            roi_width = 0
+            roi_height = 0
+            roi_left = 0
+            roi_top = 0
+        else:
+            crosshair_capture = transform.control_to_capture_point(
+                control_width * 0.5,
+                control_height * 0.5,
+            )
+            crosshair_roi = transform.capture_to_roi_point(
+                crosshair_capture.x,
+                crosshair_capture.y,
+            )
+            crosshair_roi_x = float(crosshair_roi.x)
+            crosshair_roi_y = float(crosshair_roi.y)
+            source_width = int(round(transform.capture_width))
+            source_height = int(round(transform.capture_height))
+            roi_width = int(round(transform.roi_width))
+            roi_height = int(round(transform.roi_height))
+            roi_left = int(round(transform.roi_x))
+            roi_top = int(round(transform.roi_y))
+
+        motion = target_motion_estimate_from_debug(
+            track=target,
+            capture_ts_ns=context.capture_ts_ns,
+            tracker_debug=selector_debug,
+        )
+        track_confidence = (
+            float(motion.identity_confidence)
+            if motion.valid and math.isfinite(float(motion.identity_confidence))
+            else 0.0
+        )
+        observation = DualPhaseAtanPredictiveV1Observation(
+            generation=int(
+                context.frame_id if context.generation is None else context.generation
+            ),
+            frame_id=int(context.frame_id),
+            target_id=int(target.track_id),
+            capture_ts_ns=int(context.capture_ts_ns or 0),
+            inference_end_ts_ns=int(context.inference_end_ts_ns or control_now_ts_ns),
+            control_now_ns=int(control_now_ts_ns),
+            aim_x=float(raw_aim.aim_roi_x_px),
+            aim_y=float(raw_aim.aim_roi_y_px),
+            crosshair_x=crosshair_roi_x,
+            crosshair_y=crosshair_roi_y,
+            bbox_x1=float(target.x1),
+            bbox_y1=float(target.y1),
+            bbox_x2=float(target.x2),
+            bbox_y2=float(target.y2),
+            observation_width=int(context.width),
+            observation_height=int(context.height),
+            roi_left=roi_left,
+            roi_top=roi_top,
+            roi_width=roi_width,
+            roi_height=roi_height,
+            source_width=source_width,
+            source_height=source_height,
+            detection_confidence=float(target.score),
+            track_confidence=max(0.0, min(1.0, track_confidence)),
+            trigger_active=bool(trigger_active),
+            target_valid=bool(
+                raw_aim.valid
+                and not getattr(target, "is_predicted", False)
+                and not getattr(target, "is_stale", False)
+            ),
+        )
+        decision = self.dual_phase_algorithm.calculate(observation)
+        telemetry = {
+            **decision.telemetry,
+            "capture_ts_ns": observation.capture_ts_ns,
+            "inference_end_ts_ns": observation.inference_end_ts_ns,
+            "control_now_ns": observation.control_now_ns,
+            "aim_x": observation.aim_x,
+            "aim_y": observation.aim_y,
+            "bbox_x1": observation.bbox_x1,
+            "bbox_y1": observation.bbox_y1,
+            "bbox_x2": observation.bbox_x2,
+            "bbox_y2": observation.bbox_y2,
+            "bbox_width": max(0.0, observation.bbox_x2 - observation.bbox_x1),
+            "bbox_height": max(0.0, observation.bbox_y2 - observation.bbox_y1),
+            "detection_confidence": observation.detection_confidence,
+            "track_confidence": observation.track_confidence,
+            "delivery_mode": "single_command_per_observation",
+            "scheduler_used": False,
+        }
+        block_reason = str(decision.block_reason or "")
+        control_allowed = block_reason in {"", "TRIGGER_INACTIVE"}
+        reason = (
+            block_reason
+            if block_reason
+            else DUAL_PHASE_ATAN_PREDICTIVE_V1
+            if decision.dx != 0 or decision.dy != 0
+            else "ACCUMULATING_FRACTIONAL_COUNTS"
+        )
+        debug = {
+            **telemetry,
+            "algorithm": DUAL_PHASE_ATAN_PREDICTIVE_V1,
+            "control_mode": telemetry.get("mode", "far"),
+            "control_allowed": control_allowed,
+            "observed_error_x_px": float(telemetry.get("error_real_x") or 0.0),
+            "observed_error_y_px": float(telemetry.get("error_real_y") or 0.0),
+            "predicted_error_x_px": float(telemetry.get("error_control_x") or 0.0),
+            "predicted_error_y_px": float(telemetry.get("error_control_y") or 0.0),
+        }
+        source_prediction_offset_x = float(
+            telemetry.get("prediction_safe_offset_x") or 0.0
+        ) * (roi_width / max(1, int(context.width)))
+        mouse_observation_debug = {
+            "algorithm_id": DUAL_PHASE_ATAN_PREDICTIVE_V1,
+            "observed_x_px": float(raw_aim.aim_control_x_px),
+            "observed_y_px": float(raw_aim.aim_control_y_px),
+            "predicted_x_px": float(raw_aim.aim_control_x_px)
+            + source_prediction_offset_x,
+            "predicted_y_px": float(raw_aim.aim_control_y_px),
+            "observed_x_roi_px": observation.aim_x,
+            "observed_y_roi_px": observation.aim_y,
+            "crosshair_x_roi_px": observation.crosshair_x,
+            "crosshair_y_roi_px": observation.crosshair_y,
+            "valid": observation.target_valid,
+            "invalid_reason": raw_aim.invalid_reason,
+            "raw_aim": raw_aim.debug_payload(),
+            "telemetry": telemetry,
+        }
+        command = MoveCommand(
+            dx=int(decision.dx),
+            dy=int(decision.dy),
+            confidence=float(target.score),
+            reason=reason,
+            debug=debug,
+        )
+        return command, {
+            "mouse_observation": observation,
+            "mouse_observation_debug": mouse_observation_debug,
+        }
 
     def _mouse_observation_metadata(
         self,

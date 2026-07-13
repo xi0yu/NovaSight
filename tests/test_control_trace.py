@@ -133,6 +133,69 @@ def test_control_trace_prefers_explicit_no_send_reason() -> None:
     assert trace["control"]["reason"] == "CONTROL_OUTPUT_ZERO"
 
 
+def test_control_trace_preserves_dual_phase_decision_and_direct_delivery() -> None:
+    trace = build_control_trace_record(
+        control={
+            "frame_id": 8,
+            "trajectory_generation": 8,
+            "capture_ts_ns": 1_000_000_000,
+            "control_now_ts_ns": 1_008_000_000,
+            "dx": 12,
+            "dy": 1,
+            "pipeline": {
+                "algorithm": "dual_phase_atan_predictive_v1",
+                "mode": "far",
+                "measurement_dt_ms": 8.3,
+                "aim_x": 400.0,
+                "aim_y": 320.0,
+                "error_real_x": 40.0,
+                "error_real_y": 0.0,
+                "error_control_x": 42.0,
+                "error_control_y": 0.0,
+                "estimated_velocity_x": 240.0,
+                "innovation_x": 0.8,
+                "normalized_innovation_x": 0.2,
+                "motion_confidence": 0.9,
+                "prediction_horizon_ms": 13.0,
+                "prediction_raw_offset_x": 3.12,
+                "prediction_weight": 0.27,
+                "prediction_allowed_cap_x": 8.0,
+                "prediction_safe_offset_x": 2.0,
+                "prediction_allowed": True,
+                "prediction_crossing_limited": False,
+                "full_error_counts_x": 70.0,
+                "full_error_counts_y": 0.0,
+                "float_demand_x": 12.4,
+                "float_demand_y": 1.1,
+                "integer_command_x": 12,
+                "integer_command_y": 1,
+                "quantizer_residual_x": 0.4,
+                "quantizer_residual_y": 0.1,
+                "overzero_detected_x": False,
+                "overzero_detected_y": False,
+                "will_emit": True,
+                "block_reason": "",
+                "delivery_mode": "single_command_per_observation",
+                "scheduler_used": False,
+            },
+        },
+        target={"track_id": 3},
+        inference={"generation": 8, "frame_id": 8, "capture_ts_ns": 1_000_000_000},
+        execution={"sent": True, "output_dx": 12, "output_dy": 1},
+    )
+
+    decision = trace["algorithm_decision"]
+    assert decision["algorithm_id"] == "dual_phase_atan_predictive_v1"
+    assert decision["phase"] == "far"
+    assert decision["error_real_px"] == {"x": 40.0, "y": 0.0}
+    assert decision["error_control_px"] == {"x": 42.0, "y": 0.0}
+    assert decision["prediction"]["safe_offset_x"] == 2.0
+    assert decision["integer_command"] == {"x": 12.0, "y": 1.0}
+    assert decision["delivery_mode"] == "single_command_per_observation"
+    assert decision["scheduler_used"] is False
+    assert trace["scheduler"]["used"] is False
+
+
 def test_control_trace_schema_serializes_units_and_correlation() -> None:
     trace = _trace_payload()
 

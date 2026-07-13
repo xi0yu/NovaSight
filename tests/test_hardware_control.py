@@ -298,9 +298,9 @@ def test_runtime_service_production_control_contract_is_static() -> None:
     assert "RawAimPointProjector" in observation_source
 
     submit_index = executor_source.index(
-        "decision = self.scheduler.submit(bounded, emit_immediately=False)"
+        "decision = scheduler.submit(bounded, emit_immediately=False)"
     )
-    send_index = executor_source.index("self.executors[self.selected].execute(bounded)")
+    send_index = executor_source.index("self.executors[selected].execute(bounded)")
     assert submit_index < send_index
     assert "command scheduler required" in executor_source
 

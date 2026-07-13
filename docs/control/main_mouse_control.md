@@ -1,156 +1,155 @@
 # NovaSight Main Mouse Control
 
-Date: 2026-07-10
+Date: 2026-07-13
 
-Status: frozen single-chain, dual-mode implementation contract.
+Status: `dual_phase_atan_predictive_v1` is the configured mainline. Older algorithms remain isolated compatibility implementations.
 
-## Route
-
-```text
-DetectionBatch
--> basic candidate filtering
--> Hungarian Tracker / Kalman
--> TargetSelector
--> observed raw aim and predicted future aim
--> trusted full control-space projection
--> predicted pixel error
--> exactly one mode controller
--> shared count protection and fractional residual
--> replaceable Scheduler plan
--> kmNet
-```
-
-Kalman is the only position predictor. There is no LOS prediction pass after Kalman.
-
-## Aim And Prediction
+## Mainline Route
 
 ```text
-aim_x = bbox_left + bbox_width / 2
-aim_y = bbox_top + bbox_height * control.aim.y_ratio
-
-frame_age_s = control_now_ts_ns - capture_ts_ns
-horizon_s = frame_age_s + configured_actuation_delay_s
-predicted_aim = filtered_aim
-  + kalman_velocity * horizon_s * prediction_strength * prediction_confidence
+latest DetectionBatch
+-> freshness and monotonic timestamp checks
+-> TargetSelector / Tracker identity
+-> raw bbox aim point
+-> current real ROI error
+-> FAR / NEAR hysteresis from real error
+-> variable-dt X motion estimate
+-> confidence-weighted bounded X prediction
+-> complete source/FOV/counts projection
+-> counts-domain Atan shaping
+-> per-observation output clamp
+-> truncating integer quantizer
+-> MouseCommandExecutor
+-> exactly one move(dx, dy)
 ```
 
-`aim.y_ratio` is clamped to `0.00..1.00`, rounded to `0.01`, and defaults to `0.22`. Recent successful device counts conservatively reduce prediction confidence; they are not a self-motion subtraction model.
-
-## Mode Selection
-
-`control.mode` accepts:
+The algorithm recalculates from the next real observation. It creates no trajectory plan, stores no unexecuted movement target, and has no Scheduler tick.
 
 ```text
-universal_saturated
-calibrated_angular
+frame 1 -> move(20, 3)
+frame 2 -> move(14, 2)
+frame 3 -> move(7, 1)
+frame 4 -> move(2, 0)
 ```
 
-`ControllerFactory` creates one controller. The inactive controller is not evaluated and cannot contribute counts. A mode change recreates the controller, clears its history and fractional residual, and cancels the current Scheduler plan before the next `DetectionBatch`.
+`Kp + Atan + max_counts_per_update` already implement the incremental closed-loop approach. Splitting that increment again would create a stale open-loop tail and double-slow the response.
 
-## Calibrated Angular
+## Algorithm And Configuration Isolation
 
-The aim point must be mapped from ROI coordinates to the complete control projection before angle conversion.
+The serialized selector is `control.active_algorithm`; implementation-specific values live under `control.algorithms.<algorithm_id>`.
+
+```yaml
+control:
+  active_algorithm: dual_phase_atan_predictive_v1
+  algorithms:
+    dual_phase_atan_predictive_v1:
+      far:
+        kp: 0.35
+      near:
+        kp: 0.15
+    calibrated_angular:
+      kp_x: 1.0
+```
+
+The source namespace is:
 
 ```text
-focal_x = (control_width / 2) / tan(fov_x / 2)
-fov_y = 2 * atan(tan(fov_x / 2) * control_height / control_width)
-focal_y = (control_height / 2) / tan(fov_y / 2)
-
-predicted_error_rad = atan(predicted_error_px / focal)
-observed_error_rad = atan(observed_error_px / focal)
-d_raw = (observed_error_rad_t - observed_error_rad_previous) / measurement_dt_s
-d_ema = d_ema_alpha * d_raw + (1 - d_ema_alpha) * d_ema_previous
-output_rad = Kp * predicted_error_rad + Kd * d_ema
-limited_rad = clamp(output_rad, -max_angle_step_rad, max_angle_step_rad)
-counts_float = limited_rad * counts_per_360 / (2*pi)
+novasight.control.algorithms.dual_phase_atan_predictive_v1
 ```
 
-The first observation, target switch, and invalid measurement interval use `D=0`. D differentiates observed error only; prediction parameter changes cannot create a synthetic derivative spike.
+Consequently, `far.kp`, `near.kp`, and similarly named values in other algorithm namespaces are independent. Transitional Python properties and one-way config migration keep old configurations loadable; new serialized output uses only the explicit namespace.
 
-Parameters:
+## Algorithm Differences
+
+| Algorithm ID | Error/units | Prediction | Near behavior | Delivery |
+| --- | --- | --- | --- | --- |
+| `dual_phase_atan_predictive_v1` | ROI real error -> source angle -> full correction counts -> counts-domain Atan | dedicated robust X-only estimator, confidence weighting, absolute/relative caps | FAR/NEAR hysteresis; no movement deadzone | one direct integer command per observation |
+| `calibrated_angular` | full-space angular PD | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
+| `universal_saturated` | empirical pixel-domain saturated Atan | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
+| `ttbox_pid_atan` | empirical pixel-domain Atan; despite its historical name, not a complete PID | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
+
+The new algorithm bypasses the entire legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and Scheduler capacity cannot alter its result.
+
+## Real And Control Error
 
 ```text
-control.calibrated_angular.fov_x_deg
-control.calibrated_angular.counts_per_360_x
-control.calibrated_angular.counts_per_360_y
-control.calibrated_angular.kp_x / kp_y
-control.calibrated_angular.kd_x / kd_y
-control.calibrated_angular.d_ema_alpha
-control.calibrated_angular.max_angle_step_x_deg
-control.calibrated_angular.max_angle_step_y_deg
+e_real = current raw aim - crosshair
+e_ctrl.x = e_real.x + safe_prediction_offset_x
+e_ctrl.y = e_real.y
 ```
 
-## Universal Saturated
+`e_real` owns FAR/NEAR selection, actual zero-cross detection, convergence, reset decisions, and telemetry. `e_ctrl` only feeds the projection and Atan calculation. V1 never predicts Y.
 
-This mode maps full-control-space pixel error directly to counts and has no angle, PD, D EMA, FOV, or counts-per-360 dependency.
+Prediction is a small reversible addition to the current observation, not the primary controller:
 
 ```text
-counts_x = max_step_x_counts * (2/pi) * atan(error_x_px / response_scale_x_px)
-counts_y = max_step_y_counts * (2/pi) * atan(error_y_px / response_scale_y_px)
+h = clamp(frame_age + actuation_delay, 0, max_horizon)
+raw_offset_x = estimated_velocity_x * h
+weight = mode_weight * motion_confidence * track_confidence
+allowed = min(absolute_cap, base_cap + relative_cap * abs(e_real.x))
+safe_offset_x = clamp(weight * raw_offset_x, -allowed, allowed)
 ```
 
-Near the center it is approximately linear. At large error it approaches the configured maximum without exceeding it.
+NEAR mode prevents low-confidence prediction from changing the X control direction. Every actual `e_real(t) * e_real(t-1) < 0` zero-cross clears that axis's fractional residual, damps velocity, and starts a short prediction cooldown.
 
-Parameters:
+## Projection And Control Law
+
+Detection coordinates are ROI coordinates. Trusted `CoordinateTransform` geometry identifies the crosshair in that ROI and maps the ROI error into the complete source projection.
 
 ```text
-control.universal_saturated.response_scale_x_px
-control.universal_saturated.response_scale_y_px
-control.universal_saturated.max_step_x_counts
-control.universal_saturated.max_step_y_counts
+source_error = observation_error * roi_size / observation_size
+focal_x = (source_width / 2) / tan(fov_x / 2)
+theta = atan(source_error / focal)
+full_error_counts = theta * counts_per_360 / (2*pi)
 ```
 
-## Shared Output
-
-Both modes pass through the same sequence:
+For the active FAR or NEAR phase:
 
 ```text
-mode counts
--> observed-error pixel deadzone
--> optional Y inversion
--> per-observation count slew
--> Scheduler-capacity feasible budget
--> fractional residual integer conversion
+u = kp * atan_scale_counts * atan(full_error_counts / atan_scale_counts)
+u = clamp(u, -max_counts_per_update, max_counts_per_update)
 ```
+
+The motion estimator uses real capture `dt`; controller Kp remains the configured per-observation gain. No D term or velocity feed-forward is added.
+
+## Integer Quantizer And Direct Executor
+
+The quantizer retains only sub-count demand:
 
 ```text
-slew_limited = previous_counts
-  + clamp(requested_counts - previous_counts, -max_count_slew, max_count_slew)
-
-total = feasible_counts + previous_fractional_residual
-integer_budget = trunc(total)
-fractional_residual = total - integer_budget
+accumulator += float_demand
+integer_count = trunc(accumulator)
+accumulator -= integer_count
 ```
 
-Clamped counts are discarded and never stored as hidden debt.
+Direction changes clear the opposite-direction residual. Trigger-inactive observations may continue updating the motion estimate, but the quantizer is cleared and cannot bank historical movement.
 
-Shared parameters:
+`MouseCommandExecutor` rechecks the trigger snapshot, freshness deadline, and monotonically increasing generation immediately before its serialized device invocation, then reports timing or failure. It does not:
+
+- split a command into a trajectory;
+- retain pending counts across observations;
+- run an independent send tick;
+- finish an old frame after a newer frame arrives.
+
+If a device protocol has a smaller single-packet range, the controller limit should normally be configured to that range. Any unavoidable transport fragmentation belongs below the control algorithm, must complete promptly, and must remain discardable by newer input.
+
+## Strict Blocks And Resets
+
+The algorithm emits `(0, 0)` for future/stale/non-monotonic observations, invalid geometry, invalid or predicted-only targets, and incompatible timestamp domains. Global generation/frame/capture cursors remain monotonic across target switches; target-local mode, estimator, prediction cooldown, and residual state reset independently.
+
+Target loss, runtime restart, algorithm/config/calibration changes, and capture/inference restarts clear all control state. Releasing the trigger clears quantizer residual without creating historical debt.
+
+## Telemetry
+
+The decision trace includes identity and timestamps, aim/bbox and real/control errors, FAR/NEAR state, variable `dt`, estimator innovation/velocity/confidence, prediction horizon/weight/caps/offset, full correction counts, float demand, integer command, quantizer residual, zero-cross state, block reason, and:
 
 ```text
-control.shared.deadzone_x_px / deadzone_y_px
-control.shared.max_count_slew_x / max_count_slew_y
-control.shared.invert_y
-control.scheduler_step_counts_x / scheduler_step_counts_y
-control.scheduler_interval_ms
+delivery_mode: single_command_per_observation
+scheduler_used: false
 ```
 
-## Scheduler
+See `docs/control/dual_phase_atan_predictive_v1.md` for the frozen implementation contract and tuning boundaries.
 
-The maximum plan duration is 24ms. Capacity is:
+## Remaining Physical Uncertainty
 
-```text
-plan_step_capacity = floor(24ms / scheduler_interval_ms) + 1
-max_budget_axis = scheduler_step_counts_axis * plan_step_capacity
-```
-
-Cumulative rounding conserves the feasible integer budget. The Scheduler stores one current plan. A new frame, target switch, direction change, trigger release, stale input, device failure, runtime stop, or mode/config change cancels pending steps. Unexecuted counts are discarded.
-
-## Migration And Removed Code
-
-The loader performs one-way migration from the preceding flat angular schema into `control.calibrated_angular` and `control.shared`, selecting `calibrated_angular` to preserve behavior. Fresh configurations default to `universal_saturated`.
-
-No production route exists for experimental-angle PID, integral control, magnetic assist, AimPoint position EMA, LOS angular prediction, LatencyCompensator, HID direct send, or alternate Scheduler queues.
-
-## Deferred
-
-Self-motion subtraction, measured send-to-visual alignment, adaptive Kalman tuning, pixel-domain D for universal mode, condition integral control, and pending-control observers are not part of this implementation.
+`prediction.actuation_delay_ms` still requires Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V1 but do not remove it.

@@ -428,7 +428,10 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.inference.backend == "deepstream_nvinfer"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
-    assert cfg.control.mode == "universal_saturated"
+    assert cfg.control.active_algorithm == "dual_phase_atan_predictive_v1"
+    assert cfg.control.dual_phase_atan_predictive_v1.far.kp == pytest.approx(0.35)
+    assert cfg.control.dual_phase_atan_predictive_v1.near.kp == pytest.approx(0.15)
+    assert cfg.control.dual_phase_atan_predictive_v1.prediction.enabled_y is False
     assert cfg.control.calibrated_angular.fov_x_deg == 105
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980
     assert cfg.control.shared.invert_y is False
@@ -568,7 +571,7 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"calibration": {"profile_id": ""}}, "calibration.profile_id"),
         ({"calibration": {"profile_version": 0}}, "calibration.profile_version"),
         ({"calibration": {"game_sensitivity_fingerprint": ""}}, "calibration.game_sensitivity_fingerprint"),
-        ({"control": {"mode": "mixed"}}, "control.mode"),
+        ({"control": {"mode": "mixed"}}, "control.active_algorithm"),
         ({"control": {"calibrated_angular": {"fov_x_deg": 180}}}, "control.calibrated_angular.fov_x_deg"),
         ({"control": {"calibrated_angular": {"counts_per_360_x": 0}}}, "control.calibrated_angular.counts_per_360_x"),
         ({"control": {"calibrated_angular": {"counts_per_360_y": 0}}}, "control.calibrated_angular.counts_per_360_y"),
@@ -814,26 +817,30 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
 
     assert {
         "control.trigger_mode",
-        "control.mode",
+        "control.active_algorithm",
         "control.aim.y_ratio",
         "control.configured_actuation_delay_s",
         "control.prediction_strength",
         "control.prediction_x_enabled",
         "control.prediction_y_enabled",
-        "control.calibrated_angular.fov_x_deg",
-        "control.calibrated_angular.counts_per_360_x",
-        "control.calibrated_angular.counts_per_360_y",
-        "control.calibrated_angular.kp_x",
-        "control.calibrated_angular.kp_y",
-        "control.calibrated_angular.kd_x",
-        "control.calibrated_angular.kd_y",
-        "control.calibrated_angular.d_ema_alpha",
-        "control.calibrated_angular.max_angle_step_x_deg",
-        "control.calibrated_angular.max_angle_step_y_deg",
-        "control.universal_saturated.response_scale_x_px",
-        "control.universal_saturated.response_scale_y_px",
-        "control.universal_saturated.max_step_x_counts",
-        "control.universal_saturated.max_step_y_counts",
+        "control.algorithms.calibrated_angular.fov_x_deg",
+        "control.algorithms.calibrated_angular.counts_per_360_x",
+        "control.algorithms.calibrated_angular.counts_per_360_y",
+        "control.algorithms.calibrated_angular.kp_x",
+        "control.algorithms.calibrated_angular.kp_y",
+        "control.algorithms.calibrated_angular.kd_x",
+        "control.algorithms.calibrated_angular.kd_y",
+        "control.algorithms.calibrated_angular.d_ema_alpha",
+        "control.algorithms.calibrated_angular.max_angle_step_x_deg",
+        "control.algorithms.calibrated_angular.max_angle_step_y_deg",
+        "control.algorithms.universal_saturated.response_scale_x_px",
+        "control.algorithms.universal_saturated.response_scale_y_px",
+        "control.algorithms.universal_saturated.max_step_x_counts",
+        "control.algorithms.universal_saturated.max_step_y_counts",
+        "control.algorithms.dual_phase_atan_predictive_v1.far.kp",
+        "control.algorithms.dual_phase_atan_predictive_v1.near.kp",
+        "control.algorithms.dual_phase_atan_predictive_v1.prediction.enabled_x",
+        "control.algorithms.dual_phase_atan_predictive_v1.prediction.enabled_y",
         "control.shared.deadzone_x_px",
         "control.shared.deadzone_y_px",
         "control.shared.max_count_slew_x",
@@ -843,7 +850,6 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.scheduler_step_counts_y",
         "control.scheduler_interval_ms",
         "control.target_fov_radius_px",
-        "control.min_confidence",
         "control.target_switch_delay_ms",
     }.issubset(paths)
     assert "control.pid_kp_x" not in paths

@@ -362,6 +362,9 @@ class ControlIntent:
     source_track_id: int | None = None
     predicted_source: bool = False
     trajectory_generation: int | None = None
+    trigger_required: bool | None = None
+    trigger_active: bool | None = None
+    command_expires_ts_ns: int | None = None
 
 
 def _coerce_box(

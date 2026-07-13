@@ -152,6 +152,38 @@ def test_runtime_reconfigurator_rewires_gpu_preprocessor_for_nvmm_latest(
     assert isinstance(app.state.inference._gpu_preprocessor, JetsonGpuResourcePreprocessor)
 
 
+def test_runtime_reconfigurator_switches_algorithm_and_executor_under_runtime_lock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "missing.yaml",
+        config=cfg,
+    )
+    registry = app.state.executors
+    original_update = registry.update_runtime_config
+    observed_runtime_algorithms: list[str] = []
+
+    def record_update(next_config: RuntimeConfig) -> None:
+        observed_runtime_algorithms.append(
+            app.state.runtime.config.control.active_algorithm
+        )
+        original_update(next_config)
+
+    monkeypatch.setattr(registry, "update_runtime_config", record_update)
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.control.active_algorithm = "universal_saturated"
+
+    RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert observed_runtime_algorithms == ["universal_saturated"]
+    assert app.state.runtime.executors is registry
+    assert registry.single_command_per_observation is False
+
+
 def test_runtime_reconfigurator_disconnects_old_kmnet_before_hardware_replacement(
     tmp_path,
     monkeypatch,

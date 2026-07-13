@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+import math
 import threading
 import time
 from typing import Any
@@ -16,6 +17,7 @@ from novasight.control import (
 )
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.kmnet import KmNetExecutor
+from novasight.executors.mouse_command import MouseCommandExecutor
 from novasight.contracts import ControlIntent
 
 
@@ -27,15 +29,20 @@ class ExecutorRegistry:
         policy: ControlOutputPolicy | None = None,
         scheduler: CommandScheduler | None = None,
         direct_output: bool = False,
+        single_command_per_observation: bool = False,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
         if default not in self.executors:
             raise ValueError(f"unknown executor: {default}")
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
-        self.scheduler = scheduler
-        self.direct_output = bool(direct_output)
+        self.single_command_per_observation = bool(single_command_per_observation)
+        self.scheduler = None if self.single_command_per_observation else scheduler
+        self.direct_output = bool(direct_output) or self.single_command_per_observation
+        self._config_epoch = 0
         self._scheduler_lock = threading.Lock()
+        self._executor_lock = threading.Lock()
+        self.mouse_command_executor = MouseCommandExecutor(self._executor_lock)
 
     @classmethod
     def with_builtin_executors(
@@ -45,6 +52,7 @@ class ExecutorRegistry:
         policy: ControlOutputPolicy | None = None,
         scheduler: CommandScheduler | None = None,
         direct_output: bool = False,
+        single_command_per_observation: bool = False,
     ) -> ExecutorRegistry:
         kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
         return cls(
@@ -55,6 +63,7 @@ class ExecutorRegistry:
             policy=policy,
             scheduler=scheduler,
             direct_output=direct_output,
+            single_command_per_observation=single_command_per_observation,
         )
 
     @classmethod
@@ -64,46 +73,74 @@ class ExecutorRegistry:
             default="kmnet",
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
-            direct_output=not bool(config.control.scheduler_enabled),
+            direct_output=(
+                config.control.active_algorithm == "dual_phase_atan_predictive_v1"
+                or not bool(config.control.scheduler_enabled)
+            ),
+            single_command_per_observation=(
+                config.control.active_algorithm == "dual_phase_atan_predictive_v1"
+            ),
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
         selected = "kmnet"
         if selected not in self.executors:
             raise ValueError(f"unknown executor: {selected}")
-        self.selected = selected
-        self.policy = policy_from_config(config)
-        kmnet = self.executors.get("kmnet")
-        if isinstance(kmnet, KmNetExecutor):
-            kmnet.button_poll_interval_s = max(
-                0.001,
-                min(0.050, float(config.control.scheduler_interval_ms) / 1000.0),
-            )
+        single_command = (
+            config.control.active_algorithm == "dual_phase_atan_predictive_v1"
+        )
+        scheduler = None if single_command else scheduler_from_config(config)
+        direct_output = single_command or not bool(config.control.scheduler_enabled)
+        policy = policy_from_config(config)
         with self._scheduler_lock:
-            self.scheduler = scheduler_from_config(config)
-            self.direct_output = not bool(config.control.scheduler_enabled)
+            self.selected = selected
+            self.policy = policy
+            self.scheduler = scheduler
+            self.direct_output = direct_output
+            self.single_command_per_observation = single_command
+            self._config_epoch += 1
+            kmnet = self.executors.get("kmnet")
+            if isinstance(kmnet, KmNetExecutor):
+                kmnet.button_poll_interval_s = max(
+                    0.001,
+                    min(0.050, float(config.control.scheduler_interval_ms) / 1000.0),
+                )
 
     def execute(self, intent: ControlIntent) -> ExecutionResult:
-        bounded = self.policy.apply(intent)
-        if self.scheduler is None:
-            if self.direct_output:
-                return self._execute_direct(bounded)
+        with self._scheduler_lock:
+            bounded = self.policy.apply(intent)
+            single_command = self.single_command_per_observation
+            scheduler = None if single_command else self.scheduler
+            direct_output = self.direct_output or single_command
+            selected = self.selected
+            config_epoch = self._config_epoch
+            if scheduler is not None:
+                decision = scheduler.submit(bounded, emit_immediately=False)
+            else:
+                decision = None
+        if scheduler is None:
+            if direct_output:
+                return self._execute_direct(
+                    bounded,
+                    expected_config_epoch=config_epoch,
+                    expected_selected=selected,
+                    expected_single_command=single_command,
+                )
             return ExecutionResult(
-                executor_id=self.selected,
+                executor_id=selected,
                 sent=False,
                 intent=bounded,
                 message="command scheduler required",
                 metadata={
                     "stage": "scheduler_required",
-                    "selected_executor": self.selected,
+                    "selected_executor": selected,
                     "accepted": bool(bounded.accepted),
                     "clipped": bool(bounded.clipped),
                     "policy_reason": str(bounded.reason),
                 },
             )
+        assert decision is not None
         scheduler_metadata: dict[str, Any] | None = None
-        with self._scheduler_lock:
-            decision = self.scheduler.submit(bounded, emit_immediately=False)
         scheduler_metadata = decision.metadata
         if decision.output is None:
             message = (
@@ -112,25 +149,36 @@ class ExecutorRegistry:
                 else "control command scheduled"
             )
             return ExecutionResult(
-                executor_id=self.selected,
+                executor_id=selected,
                 sent=False,
                 intent=bounded,
                 message=message,
                 metadata={
                     "stage": "scheduler",
-                    "selected_executor": self.selected,
+                    "selected_executor": selected,
                     **scheduler_metadata,
                 },
             )
         bounded = decision.output
-        device_send_start_ts_ns = time.monotonic_ns()
-        result = self.executors[self.selected].execute(bounded)
-        device_send_end_ts_ns = time.monotonic_ns()
-        scheduler_execution_metadata: dict[str, Any] | None = None
-        scheduler_execution_metadata = self.scheduler.record_execution_result(
-            sent=bool(result.sent),
-            message=str(result.message),
-        )
+        with self._executor_lock:
+            with self._scheduler_lock:
+                if (
+                    self._config_epoch != config_epoch
+                    or self.selected != selected
+                    or self.single_command_per_observation
+                    or self.scheduler is not scheduler
+                ):
+                    return _scheduler_superseded_result(
+                        selected=selected,
+                        output=bounded,
+                    )
+                device_send_start_ts_ns = time.monotonic_ns()
+                result = self.executors[selected].execute(bounded)
+                device_send_end_ts_ns = time.monotonic_ns()
+                scheduler_execution_metadata = scheduler.record_execution_result(
+                    sent=bool(result.sent),
+                    message=str(result.message),
+                )
         device_timing_metadata = {
             "device_send_start_ts_ns": device_send_start_ts_ns,
             "device_send_end_ts_ns": device_send_end_ts_ns,
@@ -162,7 +210,7 @@ class ExecutorRegistry:
             message=result.message,
             metadata={
                 "stage": "executor",
-                "selected_executor": self.selected,
+                "selected_executor": selected,
                 "accepted": bool(bounded.accepted),
                 "clipped": bool(bounded.clipped),
                 "policy_reason": str(bounded.reason),
@@ -180,28 +228,62 @@ class ExecutorRegistry:
             },
         )
 
-    def _execute_direct(self, bounded: ControlOutput) -> ExecutionResult:
-        if bounded.action == "move" and int(bounded.dx) == 0 and int(bounded.dy) == 0:
-            return ExecutionResult(
-                executor_id=self.selected,
-                sent=False,
-                intent=bounded,
-                message="zero control command ignored",
-                metadata={
-                    "stage": "direct_output",
-                    "selected_executor": self.selected,
-                    "scheduler_enabled": False,
-                    "action": "zero_output",
-                },
-            )
-        device_send_start_ts_ns = time.monotonic_ns()
-        result = self.executors[self.selected].execute(bounded)
-        device_send_end_ts_ns = time.monotonic_ns()
+    def _execute_direct(
+        self,
+        bounded: ControlOutput,
+        *,
+        expected_config_epoch: int,
+        expected_selected: str,
+        expected_single_command: bool,
+    ) -> ExecutionResult:
+        with self._executor_lock:
+            with self._scheduler_lock:
+                if (
+                    self._config_epoch != expected_config_epoch
+                    or self.selected != expected_selected
+                    or self.single_command_per_observation
+                    != expected_single_command
+                    or not (self.direct_output or self.single_command_per_observation)
+                ):
+                    return _direct_executor_superseded_result(
+                        selected=expected_selected,
+                        output=bounded,
+                    )
+                executor = self.executors[expected_selected]
+                if expected_single_command:
+                    return self.mouse_command_executor.execute_locked(
+                        executor=executor,
+                        command=bounded,
+                    )
+                stage = "direct_output"
+                delivery_mode = "direct"
+                if (
+                    bounded.action == "move"
+                    and int(bounded.dx) == 0
+                    and int(bounded.dy) == 0
+                ):
+                    return ExecutionResult(
+                        executor_id=expected_selected,
+                        sent=False,
+                        intent=bounded,
+                        message="zero control command ignored",
+                        metadata={
+                            "stage": stage,
+                            "delivery_mode": delivery_mode,
+                            "selected_executor": expected_selected,
+                            "scheduler_enabled": False,
+                            "action": "zero_output",
+                        },
+                    )
+                device_send_start_ts_ns = time.monotonic_ns()
+                result = executor.execute(bounded)
+                device_send_end_ts_ns = time.monotonic_ns()
         metadata = dict(result.metadata or {})
         metadata.update(
             {
-                "stage": "direct_output",
-                "selected_executor": self.selected,
+                "stage": stage,
+                "delivery_mode": delivery_mode,
+                "selected_executor": expected_selected,
                 "scheduler_enabled": False,
                 "device_send_start_ts_ns": device_send_start_ts_ns,
                 "device_send_end_ts_ns": device_send_end_ts_ns,
@@ -211,41 +293,71 @@ class ExecutorRegistry:
         return replace(result, metadata=metadata)
 
     def tick_pending(self, *, now_s: float | None = None) -> ExecutionResult:
-        if self.scheduler is None:
+        with self._scheduler_lock:
+            single_command = self.single_command_per_observation
+            scheduler = None if single_command else self.scheduler
+            selected = self.selected
+            config_epoch = self._config_epoch
+            decision = scheduler.tick(now_s=now_s) if scheduler is not None else None
+        if scheduler is None:
+            if single_command:
+                return ExecutionResult(
+                    executor_id=selected,
+                    sent=False,
+                    intent=_scheduler_status_output("single_command_executor_idle"),
+                    message="no pending control command ready",
+                    metadata={
+                        "stage": "mouse_command_executor",
+                        "delivery_mode": "single_command_per_observation",
+                        "selected_executor": selected,
+                        "scheduler_enabled": False,
+                        "action": "no_pending_state",
+                    },
+                )
             return ExecutionResult(
-                executor_id=self.selected,
+                executor_id=selected,
                 sent=False,
                 intent=_scheduler_status_output("scheduler_required"),
                 message="command scheduler required",
                 metadata={
                     "stage": "scheduler_required",
-                    "selected_executor": self.selected,
+                    "selected_executor": selected,
                 },
             )
-        with self._scheduler_lock:
-            decision = self.scheduler.tick(now_s=now_s)
+        assert decision is not None
         scheduler_metadata = decision.metadata
         if decision.output is None:
             return ExecutionResult(
-                executor_id=self.selected,
+                executor_id=selected,
                 sent=False,
                 intent=_scheduler_status_output(str(scheduler_metadata.get("action") or "scheduler_idle")),
                 message="no pending control command ready",
                 metadata={
                     "stage": "scheduler",
-                    "selected_executor": self.selected,
+                    "selected_executor": selected,
                     **scheduler_metadata,
                 },
             )
-        device_send_start_ts_ns = time.monotonic_ns()
-        result = self.executors[self.selected].execute(decision.output)
-        device_send_end_ts_ns = time.monotonic_ns()
-        with self._scheduler_lock:
-            scheduler_execution_metadata = self.scheduler.record_execution_result(
-                sent=bool(result.sent),
-                message=str(result.message),
-                now_s=now_s,
-            )
+        with self._executor_lock:
+            with self._scheduler_lock:
+                if (
+                    self._config_epoch != config_epoch
+                    or self.selected != selected
+                    or self.single_command_per_observation
+                    or self.scheduler is not scheduler
+                ):
+                    return _scheduler_superseded_result(
+                        selected=selected,
+                        output=decision.output,
+                    )
+                device_send_start_ts_ns = time.monotonic_ns()
+                result = self.executors[selected].execute(decision.output)
+                device_send_end_ts_ns = time.monotonic_ns()
+                scheduler_execution_metadata = scheduler.record_execution_result(
+                    sent=bool(result.sent),
+                    message=str(result.message),
+                    now_s=now_s,
+                )
         metadata = dict(result.metadata or {})
         metadata.update(
             {
@@ -277,6 +389,14 @@ class ExecutorRegistry:
         return {
             "selected": self.selected,
             "direct_output": self.direct_output,
+            "single_command_per_observation": self.single_command_per_observation,
+            "delivery_mode": (
+                "single_command_per_observation"
+                if self.single_command_per_observation
+                else "direct"
+                if self.direct_output
+                else "legacy_scheduler"
+            ),
             "scheduler": self._scheduler_status(),
             "executors": {
                 executor_id: executor_status(executor)
@@ -293,31 +413,58 @@ class ExecutorRegistry:
 
     def clear_scheduler(self, reason: str) -> None:
         with self._scheduler_lock:
-            if self.scheduler is not None:
+            if not self.single_command_per_observation and self.scheduler is not None:
                 self.scheduler.clear(reason)
+
+    def reset_mouse_command_executor(self) -> None:
+        self.mouse_command_executor.reset()
 
     def _scheduler_status(self) -> dict[str, Any]:
         with self._scheduler_lock:
-            if self.scheduler is not None:
+            if not self.single_command_per_observation and self.scheduler is not None:
                 return self.scheduler.status()
-            return {"enabled": False, "direct_output": self.direct_output}
+            return {
+                "enabled": False,
+                "direct_output": self.direct_output,
+                "single_command_per_observation": self.single_command_per_observation,
+                "delivery_mode": (
+                    "single_command_per_observation"
+                    if self.single_command_per_observation
+                    else "direct"
+                ),
+            }
 
 
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
-    capacity = plan_step_capacity(config.control.scheduler_interval_ms)
+    if config.control.active_algorithm == "dual_phase_atan_predictive_v1":
+        precise = config.control.dual_phase_atan_predictive_v1
+        maximum = int(math.ceil(max(
+            precise.far.max_counts_per_update,
+            precise.near.max_counts_per_update,
+        )))
+        return ControlOutputPolicy(
+            max_abs_dx=maximum,
+            max_abs_dy=maximum,
+            min_confidence=0.0,
+        )
+    step_x, step_y, interval_ms = _scheduler_delivery_config(config)
+    capacity = plan_step_capacity(interval_ms)
     return ControlOutputPolicy(
-        max_abs_dx=int(config.control.scheduler_step_counts_x) * capacity,
-        max_abs_dy=int(config.control.scheduler_step_counts_y) * capacity,
+        max_abs_dx=step_x * capacity,
+        max_abs_dy=step_y * capacity,
         min_confidence=0.0,
     )
 
 
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
+    if config.control.active_algorithm == "dual_phase_atan_predictive_v1":
+        return None
     if not bool(config.control.scheduler_enabled):
         return None
-    interval_ms = max(1.0, min(10.0, float(config.control.scheduler_interval_ms)))
+    step_x, step_y, configured_interval_ms = _scheduler_delivery_config(config)
+    interval_ms = max(1.0, min(10.0, configured_interval_ms))
     interval_s = interval_ms / 1000.0
-    capacity = plan_step_capacity(config.control.scheduler_interval_ms)
+    capacity = plan_step_capacity(interval_ms)
     expiry_s = (MAX_PLAN_DURATION_MS + interval_ms) / 1000.0
     return CommandScheduler(
         min_interval_s=interval_s,
@@ -326,10 +473,18 @@ def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
         cancel_on_new_frame=True,
         cancel_on_direction_change=True,
         cancel_on_track_change=True,
-        max_step_x=int(config.control.scheduler_step_counts_x),
-        max_step_y=int(config.control.scheduler_step_counts_y),
+        max_step_x=step_x,
+        max_step_y=step_y,
         queue_hard_limit=capacity,
         device_error_cooldown_s=0.050,
+    )
+
+
+def _scheduler_delivery_config(config: RuntimeConfig) -> tuple[int, int, float]:
+    return (
+        int(config.control.scheduler_step_counts_x),
+        int(config.control.scheduler_step_counts_y),
+        float(config.control.scheduler_interval_ms),
     )
 
 
@@ -343,6 +498,44 @@ def _scheduler_status_output(reason: str) -> ControlOutput:
         accepted=False,
         clipped=False,
         reason=reason,
+    )
+
+
+def _scheduler_superseded_result(
+    *,
+    selected: str,
+    output: ControlOutput,
+) -> ExecutionResult:
+    return ExecutionResult(
+        executor_id=selected,
+        sent=False,
+        intent=output,
+        message="scheduled command discarded after executor reconfiguration",
+        metadata={
+            "stage": "scheduler",
+            "selected_executor": selected,
+            "action": "scheduler_superseded",
+            "cancel_reason": "EXECUTOR_RECONFIGURED",
+        },
+    )
+
+
+def _direct_executor_superseded_result(
+    *,
+    selected: str,
+    output: ControlOutput,
+) -> ExecutionResult:
+    return ExecutionResult(
+        executor_id=selected,
+        sent=False,
+        intent=output,
+        message="direct command discarded after executor reconfiguration",
+        metadata={
+            "stage": "mouse_command_executor",
+            "selected_executor": selected,
+            "action": "executor_superseded",
+            "cancel_reason": "EXECUTOR_RECONFIGURED",
+        },
     )
 
 

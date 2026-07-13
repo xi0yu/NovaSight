@@ -60,25 +60,85 @@ calibration:
   profile_version: 1
   game_sensitivity_fingerprint: unverified-default
 control:
-  mode: universal_saturated
+  active_algorithm: dual_phase_atan_predictive_v1
   aim:
     y_ratio: 0.22
-  calibrated_angular:
-    fov_x_deg: 105.0
-    counts_per_360_x: 9980.0
-    counts_per_360_y: 9980.0
-    kp_x: 1.0
-    kp_y: 1.0
-    kd_x: 0.0
-    kd_y: 0.0
-    d_ema_alpha: 0.30
-    max_angle_step_x_deg: 2.0
-    max_angle_step_y_deg: 1.5
-  universal_saturated:
-    response_scale_x_px: 80.0
-    response_scale_y_px: 60.0
-    max_step_x_counts: 50.0
-    max_step_y_counts: 40.0
+  algorithms:
+    calibrated_angular:
+      fov_x_deg: 105.0
+      counts_per_360_x: 9980.0
+      counts_per_360_y: 9980.0
+      kp_x: 1.0
+      kp_y: 1.0
+      kd_x: 0.0
+      kd_y: 0.0
+      d_ema_alpha: 0.30
+      max_angle_step_x_deg: 2.0
+      max_angle_step_y_deg: 1.5
+    universal_saturated:
+      response_scale_x_px: 80.0
+      response_scale_y_px: 60.0
+      max_step_x_counts: 50.0
+      max_step_y_counts: 40.0
+    ttbox_pid_atan:
+      response_scale_x_px: 256.0
+      response_scale_y_px: 256.0
+      per_frame_gain_x: 0.1
+      per_frame_gain_y: 0.1
+      normalize_to_dt: true
+      nominal_dt_s: 0.016
+      max_step_x_counts: 50.0
+      max_step_y_counts: 40.0
+    dual_phase_atan_predictive_v1:
+      schema_version: 1
+      freshness_threshold_ms: 55.0
+      aim:
+        y_ratio: 0.22
+      projection:
+        fov_x_deg: 105.0
+        counts_per_360: 9980.0
+        invert_y: false
+      mode:
+        near_enter_min_px: 12.0
+        near_exit_min_px: 18.0
+        near_enter_bbox_h_ratio: 0.45
+        near_exit_bbox_h_ratio: 0.60
+      far:
+        kp: 0.35
+        atan_scale_counts: 256.0
+        max_counts_per_update: 140.0
+      near:
+        kp: 0.15
+        atan_scale_counts: 256.0
+        max_counts_per_update: 60.0
+      estimator:
+        measurement_std_px: 1.5
+        acceleration_std_px_s2: 600.0
+        min_dt_ms: 3.0
+        reset_dt_ms: 80.0
+        innovation_soft_gate_sigma: 3.0
+        innovation_hard_gate_sigma: 8.0
+        hard_outlier_reset_count: 2
+        max_velocity_px_s: 3000.0
+        warmup_updates: 4
+      prediction:
+        enabled_x: true
+        enabled_y: false
+        actuation_delay_ms: 5.0
+        max_horizon_ms: 35.0
+        far_weight: 0.30
+        near_weight: 0.12
+        far_abs_cap_px: 8.0
+        near_abs_cap_px: 2.0
+        far_base_cap_px: 1.0
+        near_base_cap_px: 0.5
+        far_relative_cap: 0.25
+        near_relative_cap: 0.15
+        near_cross_allow_px: 0.5
+        high_confidence_cross_threshold: 0.85
+        overzero_cooldown_frames: 2
+      quantizer:
+        min_effective_counts: 1
   shared:
     max_count_slew_x: 10.0
     max_count_slew_y: 8.0
@@ -96,6 +156,8 @@ control:
   prediction_strength: 1.0
   prediction_x_enabled: true
   prediction_y_enabled: true
+  # Legacy algorithms only. dual_phase_atan_predictive_v1 always uses one
+  # immediate MouseCommandExecutor call per accepted observation.
   scheduler_enabled: true
   scheduler_step_counts_x: 8
   scheduler_step_counts_y: 8
