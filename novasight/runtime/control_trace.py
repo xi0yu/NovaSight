@@ -8,7 +8,7 @@ from typing import Any
 
 
 CONTROL_TRACE_SCHEMA_NAME = "novasight.control_trace"
-CONTROL_TRACE_SCHEMA_VERSION = 3
+CONTROL_TRACE_SCHEMA_VERSION = 4
 MONOTONIC_CLOCK_DOMAIN = "monotonic"
 UNKNOWN_REASON_DEVICE_FEEDBACK = "device_feedback_unavailable"
 
@@ -52,9 +52,12 @@ CONTROL_TRACE_FIELD_UNITS: dict[str, str] = {
     "correlation.capture_ts": "ns",
     "algorithm.measurement_dt": "ms",
     "algorithm.aim": "px",
+    "algorithm.error_measured": "px",
     "algorithm.error_real": "px",
     "algorithm.error_control": "px",
     "algorithm.velocity_x": "px/s",
+    "algorithm.robust_velocity_x": "px/ms",
+    "algorithm.velocity_spread": "px/ms",
     "algorithm.prediction_horizon": "ms",
     "algorithm.prediction_offset_x": "px",
     "algorithm.full_error_counts": "counts",
@@ -115,6 +118,7 @@ def build_control_trace_record(
     execution_payload = _dict(execution)
     execution_metadata = _dict(execution_payload.get("metadata"))
     pipeline = _dict(control_payload.get("pipeline"))
+    algorithm_velocity_unit = _text(pipeline.get("velocity_unit"))
     mouse = _first_dict(
         control_payload.get("mouse_observation"),
         target_payload.get("mouse_observation"),
@@ -259,12 +263,20 @@ def build_control_trace_record(
                 pipeline.get("error_real_x"),
                 pipeline.get("error_real_y"),
             ),
+            "error_measured_px": _axis_pair(
+                _first_number(pipeline.get("error_meas_x"), pipeline.get("error_real_x")),
+                _first_number(pipeline.get("error_meas_y"), pipeline.get("error_real_y")),
+            ),
             "error_control_px": _axis_pair(
                 pipeline.get("error_control_x"),
                 pipeline.get("error_control_y"),
             ),
             "estimator": {
-                "velocity_x_px_s": _optional_number(pipeline.get("estimated_velocity_x")),
+                "velocity_x_px_s": (
+                    None
+                    if algorithm_velocity_unit == "px/ms"
+                    else _optional_number(pipeline.get("estimated_velocity_x"))
+                ),
                 "innovation_x": _optional_number(pipeline.get("innovation_x")),
                 "normalized_innovation_x": _optional_number(
                     pipeline.get("normalized_innovation_x")
@@ -274,12 +286,41 @@ def build_control_trace_record(
                 "accepted": _optional_bool(pipeline.get("estimator_accepted")),
                 "reset": _optional_bool(pipeline.get("estimator_reset")),
             },
+            "robust_velocity": {
+                "unit": algorithm_velocity_unit,
+                "history_position_count": _first_int(
+                    pipeline.get("history_position_count")
+                ),
+                "segments_px_ms": [
+                    _optional_number(pipeline.get("velocity_1")),
+                    _optional_number(pipeline.get("velocity_2")),
+                    _optional_number(pipeline.get("velocity_3")),
+                ],
+                "median_px_ms": _optional_number(pipeline.get("median_velocity")),
+                "filtered_px_ms": _optional_number(pipeline.get("filtered_velocity")),
+                "spread_px_ms": _optional_number(pipeline.get("velocity_spread")),
+                "history_quality": _optional_number(pipeline.get("history_quality")),
+                "spread_quality": _optional_number(pipeline.get("spread_quality")),
+                "trend_quality": _optional_number(pipeline.get("trend_quality")),
+                "detection_quality": _optional_number(pipeline.get("detection_quality")),
+                "track_quality": _optional_number(pipeline.get("track_quality")),
+                "motion_confidence": _optional_number(pipeline.get("motion_confidence")),
+            },
             "prediction": {
                 "horizon_ms": _first_number(
                     pipeline.get("prediction_horizon_ms"),
                     _multiply(pipeline.get("prediction_horizon_s"), 1000.0),
                 ),
                 "raw_offset_x": _optional_number(pipeline.get("prediction_raw_offset_x")),
+                "coefficient": _optional_number(
+                    pipeline.get("prediction_coefficient")
+                ),
+                "coefficient_offset_x": _optional_number(
+                    pipeline.get("prediction_coefficient_offset_x")
+                ),
+                "weighted_offset_x": _optional_number(
+                    pipeline.get("prediction_weighted_offset_x")
+                ),
                 "weight": _optional_number(pipeline.get("prediction_weight")),
                 "confidence": _optional_number(pipeline.get("prediction_confidence")),
                 "allowed_cap_x": _optional_number(
@@ -315,6 +356,8 @@ def build_control_trace_record(
             },
             "will_emit": _optional_bool(pipeline.get("will_emit")),
             "block_reason": _text(pipeline.get("block_reason")),
+            "executor_success": _optional_bool(pipeline.get("executor_success")),
+            "executor_block_reason": _text(pipeline.get("executor_block_reason")),
             "delivery_mode": _text(pipeline.get("delivery_mode")),
             "scheduler_used": _optional_bool(pipeline.get("scheduler_used")),
         },

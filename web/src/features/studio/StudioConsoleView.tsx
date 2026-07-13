@@ -671,13 +671,24 @@ export function StudioConsoleView({
   const calibratedAngularConfig = algorithmConfig("calibrated_angular");
   const universalSaturatedConfig = algorithmConfig("universal_saturated");
   const ttboxPidAtanConfig = algorithmConfig("ttbox_pid_atan");
-  const dualPhaseConfig = algorithmConfig("dual_phase_atan_predictive_v1");
+  const dualPhaseV1Config = algorithmConfig("dual_phase_atan_predictive_v1");
+  const dualPhaseV2Config = algorithmConfig("dual_phase_atan_robust_predictive_v2");
+  const dualPhaseV2Active = controlMode === "dual_phase_atan_robust_predictive_v2";
+  const dualPhaseConfig = dualPhaseV2Active ? dualPhaseV2Config : dualPhaseV1Config;
   const dualPhaseAimConfig = nestedRecord(dualPhaseConfig, "aim");
   const dualPhaseProjectionConfig = nestedRecord(dualPhaseConfig, "projection");
   const dualPhaseModeConfig = nestedRecord(dualPhaseConfig, "mode");
-  const dualPhaseFarConfig = nestedRecord(dualPhaseConfig, "far");
-  const dualPhaseNearConfig = nestedRecord(dualPhaseConfig, "near");
+  const dualPhaseAtanConfig = nestedRecord(dualPhaseConfig, "atan");
+  const dualPhaseFarConfig = dualPhaseV2Active
+    ? nestedRecord(dualPhaseAtanConfig, "far")
+    : nestedRecord(dualPhaseConfig, "far");
+  const dualPhaseNearConfig = dualPhaseV2Active
+    ? nestedRecord(dualPhaseAtanConfig, "near")
+    : nestedRecord(dualPhaseConfig, "near");
+  const dualPhaseVelocityConfig = nestedRecord(dualPhaseConfig, "velocity");
   const dualPhasePredictionConfig = nestedRecord(dualPhaseConfig, "prediction");
+  const dualPhasePredictionFarConfig = nestedRecord(dualPhasePredictionConfig, "far");
+  const dualPhasePredictionNearConfig = nestedRecord(dualPhasePredictionConfig, "near");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
   const configuredActuationDelay = readNumber(controlConfig.configured_actuation_delay_s, 0.004);
@@ -730,14 +741,19 @@ export function StudioConsoleView({
   const dualPhaseNearExit = readNumber(dualPhaseModeConfig.near_exit_min_px, 18);
   const dualPhaseFarKp = readNumber(dualPhaseFarConfig.kp, 0.35);
   const dualPhaseNearKp = readNumber(dualPhaseNearConfig.kp, 0.15);
-  const dualPhaseFarScale = readNumber(dualPhaseFarConfig.atan_scale_counts, 256);
-  const dualPhaseNearScale = readNumber(dualPhaseNearConfig.atan_scale_counts, 256);
-  const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, 140);
+  const dualPhaseFarScale = readNumber(dualPhaseV2Active ? dualPhaseFarConfig.scale_counts : dualPhaseFarConfig.atan_scale_counts, 256);
+  const dualPhaseNearScale = readNumber(dualPhaseV2Active ? dualPhaseNearConfig.scale_counts : dualPhaseNearConfig.atan_scale_counts, 256);
+  const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, dualPhaseV2Active ? 127 : 140);
   const dualPhaseNearMaxCounts = readNumber(dualPhaseNearConfig.max_counts_per_update, 60);
   const dualPhaseActuationDelayMs = readNumber(dualPhasePredictionConfig.actuation_delay_ms, 5);
   const dualPhaseMaxHorizonMs = readNumber(dualPhasePredictionConfig.max_horizon_ms, 35);
   const dualPhaseFarWeight = readNumber(dualPhasePredictionConfig.far_weight, 0.30);
   const dualPhaseNearWeight = readNumber(dualPhasePredictionConfig.near_weight, 0.12);
+  const dualPhasePredictionCoefficient = readNumber(dualPhasePredictionConfig.coefficient, 1.0);
+  const dualPhaseVelocityTauMs = readNumber(dualPhaseVelocityConfig.smoothing_tau_ms, 30.0);
+  const dualPhaseHistoryResetGapMs = readNumber(dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
+  const dualPhaseFarPredictionCap = readNumber(dualPhasePredictionFarConfig.absolute_cap_px, 8.0);
+  const dualPhaseNearPredictionCap = readNumber(dualPhasePredictionNearConfig.absolute_cap_px, 2.0);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -759,9 +775,11 @@ export function StudioConsoleView({
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
   const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
-  const dualPhaseActive = controlMode === "dual_phase_atan_predictive_v1";
-  const controlModeLabel = dualPhaseActive
-    ? "双阶段 Atan 预测闭环 v1"
+  const dualPhaseActive = controlMode === "dual_phase_atan_predictive_v1" || dualPhaseV2Active;
+  const controlModeLabel = dualPhaseV2Active
+    ? "精确双阶段稳健预测 v2"
+    : dualPhaseActive
+      ? "双阶段 Atan 预测闭环 v1"
     : controlMode === "calibrated_angular"
       ? "精确标定"
       : controlMode === "ttbox_pid_atan"
@@ -1721,22 +1739,34 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
-  const updateDualPhaseField = useCallback(
-    async (group: "aim" | "projection" | "mode" | "far" | "near" | "prediction", key: string, value: RuntimeConfigValue) => {
+  const updateDualPhasePath = useCallback(
+    async (path: string[], value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const control = nestedRecord(base, "control");
       const algorithms = nestedRecord(control, "algorithms");
-      const algorithm = nestedRecord(algorithms, "dual_phase_atan_predictive_v1");
-      const nested = {
-        ...nestedRecord(algorithm, group),
-        [key]: value
+      const algorithmId = readString(
+        control.active_algorithm,
+        "dual_phase_atan_robust_predictive_v2"
+      );
+      const algorithm = nestedRecord(algorithms, algorithmId);
+      const writeNested = (
+        record: Record<string, unknown>,
+        remainingPath: string[]
+      ): Record<string, unknown> => {
+        const [head, ...rest] = remainingPath;
+        if (!head) {
+          return record;
+        }
+        return {
+          ...record,
+          [head]: rest.length > 0
+            ? writeNested(nestedRecord(record, head), rest)
+            : value
+        };
       };
       await updateConfigField("control", "algorithms", {
         ...algorithms,
-        dual_phase_atan_predictive_v1: {
-          ...algorithm,
-          [group]: nested
-        }
+        [algorithmId]: writeNested(algorithm, path)
       } as RuntimeConfigValue);
     },
     [runtimeConfig, updateConfigField]
@@ -2797,7 +2827,7 @@ export function StudioConsoleView({
               <Metric title="控制模式" value={controlModeLabel} small={controlMode} />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="瞄点 Y" value={(dualPhaseActive ? dualPhaseAimYRatio : aimYRatio).toFixed(2)} small="bbox ratio" />
-              <Metric title="预测强度" value={dualPhaseActive ? `${dualPhaseFarWeight.toFixed(2)} / ${dualPhaseNearWeight.toFixed(2)}` : predictionStrength.toFixed(2)} small={dualPhaseActive ? "FAR / NEAR" : "Kalman"} />
+              <Metric title="预测强度" value={dualPhaseV2Active ? dualPhasePredictionCoefficient.toFixed(2) : dualPhaseActive ? `${dualPhaseFarWeight.toFixed(2)} / ${dualPhaseNearWeight.toFixed(2)}` : predictionStrength.toFixed(2)} small={dualPhaseV2Active ? "coefficient" : dualPhaseActive ? "FAR / NEAR" : "Kalman"} />
             <Metric title="发送方式" value={dualPhaseActive ? "单观测单命令" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? "MouseCommandExecutor" : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
             <div className="console-grid2">
@@ -2805,6 +2835,7 @@ export function StudioConsoleView({
                 <SectionTitle title="控制算法 · 通用参数" />
                 <label>控制模式</label>
                 <select value={controlMode} onChange={(event) => void updateConfigField("control", "active_algorithm", event.target.value)}>
+                  <option value="dual_phase_atan_robust_predictive_v2">精确双阶段稳健预测 v2</option>
                   <option value="dual_phase_atan_predictive_v1">双阶段 Atan 预测闭环 v1</option>
                   <option value="universal_saturated">通用适配</option>
                   <option value="calibrated_angular">精确标定</option>
@@ -2857,21 +2888,33 @@ export function StudioConsoleView({
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
                 {dualPhaseActive ? (
                   <>
-                    <NumberControl label="瞄点垂直比例" value={dualPhaseAimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("aim", "y_ratio", value)} />
-                    <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection", "fov_x_deg", value)} />
-                    <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection", "counts_per_360", value)} />
-                    <NumberControl label="进入 NEAR 阈值 px" value={dualPhaseNearEnter} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("mode", "near_enter_min_px", value)} />
-                    <NumberControl label="退出 NEAR 阈值 px" value={dualPhaseNearExit} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("mode", "near_exit_min_px", value)} />
-                    <NumberControl label="FAR Kp" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far", "kp", value)} />
-                    <NumberControl label="NEAR Kp" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near", "kp", value)} />
-                    <NumberControl label="FAR Atan 尺度 counts" value={dualPhaseFarScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("far", "atan_scale_counts", value)} />
-                    <NumberControl label="NEAR Atan 尺度 counts" value={dualPhaseNearScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("near", "atan_scale_counts", value)} />
-                    <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("far", "max_counts_per_update", value)} />
-                    <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("near", "max_counts_per_update", value)} />
-                    <NumberControl label="执行延迟 ms" value={dualPhaseActuationDelayMs} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhaseField("prediction", "actuation_delay_ms", value)} />
-                    <NumberControl label="最大预测时域 ms" value={dualPhaseMaxHorizonMs} min={0} max={200} step={0.1} onCommit={(value) => updateDualPhaseField("prediction", "max_horizon_ms", value)} />
-                    <NumberControl label="FAR 预测权重" value={dualPhaseFarWeight} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("prediction", "far_weight", value)} />
-                    <NumberControl label="NEAR 预测权重" value={dualPhaseNearWeight} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("prediction", "near_weight", value)} />
+                    <NumberControl label="瞄点垂直比例" value={dualPhaseAimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhasePath(["aim", "y_ratio"], value)} />
+                    <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhasePath(["projection", "fov_x_deg"], value)} />
+                    <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhasePath(["projection", "counts_per_360"], value)} />
+                    <NumberControl label="进入 NEAR 阈值 px" value={dualPhaseNearEnter} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhasePath(["mode", "near_enter_min_px"], value)} />
+                    <NumberControl label="退出 NEAR 阈值 px" value={dualPhaseNearExit} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhasePath(["mode", "near_exit_min_px"], value)} />
+                    <NumberControl label="FAR Kp" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(dualPhaseV2Active ? ["atan", "far", "kp"] : ["far", "kp"], value)} />
+                    <NumberControl label="NEAR Kp" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(dualPhaseV2Active ? ["atan", "near", "kp"] : ["near", "kp"], value)} />
+                    <NumberControl label="FAR Atan 尺度 counts" value={dualPhaseFarScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(dualPhaseV2Active ? ["atan", "far", "scale_counts"] : ["far", "atan_scale_counts"], value)} />
+                    <NumberControl label="NEAR Atan 尺度 counts" value={dualPhaseNearScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(dualPhaseV2Active ? ["atan", "near", "scale_counts"] : ["near", "atan_scale_counts"], value)} />
+                    <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={dualPhaseV2Active ? 127 : 1000} step={1} onCommit={(value) => updateDualPhasePath(dualPhaseV2Active ? ["atan", "far", "max_counts_per_update"] : ["far", "max_counts_per_update"], value)} />
+                    <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={dualPhaseV2Active ? 127 : 1000} step={1} onCommit={(value) => updateDualPhasePath(dualPhaseV2Active ? ["atan", "near", "max_counts_per_update"] : ["near", "max_counts_per_update"], value)} />
+                    <NumberControl label="执行延迟 ms" value={dualPhaseActuationDelayMs} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "actuation_delay_ms"], value)} />
+                    <NumberControl label="最大预测时域 ms" value={dualPhaseMaxHorizonMs} min={0} max={200} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "max_horizon_ms"], value)} />
+                    {dualPhaseV2Active ? (
+                      <>
+                        <NumberControl label="预测强度" detail="0 关闭预测，1 为标准预测，最高 2；安全上限始终生效。" value={dualPhasePredictionCoefficient} min={0} max={2} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "coefficient"], value)} />
+                        <NumberControl label="速度 EMA 时间常数 ms" value={dualPhaseVelocityTauMs} min={0.1} max={200} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_tau_ms"], value)} />
+                        <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />
+                        <NumberControl label="FAR 预测绝对上限 px" value={dualPhaseFarPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far", "absolute_cap_px"], value)} />
+                        <NumberControl label="NEAR 预测绝对上限 px" value={dualPhaseNearPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near", "absolute_cap_px"], value)} />
+                      </>
+                    ) : (
+                      <>
+                        <NumberControl label="FAR 预测权重" value={dualPhaseFarWeight} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "far_weight"], value)} />
+                        <NumberControl label="NEAR 预测权重" value={dualPhaseNearWeight} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "near_weight"], value)} />
+                      </>
+                    )}
                   </>
                 ) : controlMode === "calibrated_angular" ? (
                   <>

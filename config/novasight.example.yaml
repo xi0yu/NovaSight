@@ -60,7 +60,7 @@ calibration:
   profile_version: 1
   game_sensitivity_fingerprint: unverified-default
 control:
-  active_algorithm: dual_phase_atan_predictive_v1
+  active_algorithm: dual_phase_atan_robust_predictive_v2
   aim:
     y_ratio: 0.22
   algorithms:
@@ -139,6 +139,52 @@ control:
         overzero_cooldown_frames: 2
       quantizer:
         min_effective_counts: 1
+    dual_phase_atan_robust_predictive_v2:
+      schema_version: 2
+      freshness_threshold_ms: 55.0
+      aim:
+        y_ratio: 0.22
+      projection:
+        fov_x_deg: 105.0
+        counts_per_360: 9980.0
+        invert_y: false
+      mode:
+        near_enter_min_px: 12.0
+        near_exit_min_px: 18.0
+        near_enter_bbox_h_ratio: 0.45
+        near_exit_bbox_h_ratio: 0.60
+      velocity:
+        history_size: 4
+        velocity_sample_count: 3
+        smoothing_tau_ms: 30.0
+        history_reset_gap_ms: 80.0
+        spread_base_px_ms: 0.10
+        spread_relative: 0.50
+        change_base_px_ms: 0.15
+        change_relative: 0.75
+      prediction:
+        enabled_x: true
+        enabled_y: false
+        coefficient: 1.0
+        actuation_delay_ms: 5.0
+        max_horizon_ms: 35.0
+        far:
+          absolute_cap_px: 8.0
+          base_cap_px: 1.0
+          relative_cap: 0.25
+        near:
+          absolute_cap_px: 2.0
+          base_cap_px: 0.5
+          relative_cap: 0.15
+      atan:
+        far:
+          kp: 0.35
+          scale_counts: 256.0
+          max_counts_per_update: 127.0
+        near:
+          kp: 0.15
+          scale_counts: 256.0
+          max_counts_per_update: 60.0
   shared:
     max_count_slew_x: 10.0
     max_count_slew_y: 8.0
@@ -156,7 +202,7 @@ control:
   prediction_strength: 1.0
   prediction_x_enabled: true
   prediction_y_enabled: true
-  # Legacy algorithms only. dual_phase_atan_predictive_v1 always uses one
+  # Legacy algorithms only. Both isolated dual-phase algorithms always use one
   # immediate MouseCommandExecutor call per accepted observation.
   scheduler_enabled: true
   scheduler_step_counts_x: 8

@@ -165,6 +165,82 @@ CONTROL_PARAM_SPECS.update(
 )
 
 
+CONTROL_PARAM_SPECS.update(
+    {
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio",
+            "精确 v2 瞄点高度",
+            0.22,
+            0.0,
+            1.0,
+            0.01,
+            "ratio",
+            "目标框顶部向下的测量瞄点比例。",
+        ),
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg",
+            "精确 v2 水平 FOVX",
+            105.0,
+            30.0,
+            179.0,
+            0.1,
+            "deg",
+            "用于将完整画面像素误差转换为角度误差。",
+        ),
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360",
+            "精确 v2 每圈 counts",
+            9980.0,
+            1.0,
+            100000.0,
+            1.0,
+            "counts",
+            "设备旋转一整圈所需的标定 counts。",
+        ),
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
+            "精确 v2 预测强度",
+            1.0,
+            0.0,
+            2.0,
+            0.01,
+            "ratio",
+            "缩放短窗 EMA 预测量；运动可信度和安全上限仍然生效。",
+        ),
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
+            "精确 v2 远距离跟进强度",
+            0.35,
+            0.001,
+            0.999,
+            0.001,
+            "ratio",
+            "FAR 阶段完整修正 counts 的 Atan 比例增益。",
+        ),
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
+            "精确 v2 近距离跟随强度",
+            0.15,
+            0.001,
+            0.999,
+            0.001,
+            "ratio",
+            "NEAR 阶段无死区小幅持续修正增益。",
+        ),
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
+            "精确 v2 速度平滑时间常数",
+            30.0,
+            0.1,
+            200.0,
+            0.1,
+            "ms",
+            "按真实采集 dt 计算 EMA alpha，避免固定 FPS 假设。",
+        ),
+    }
+)
+
+
 def param_schema_for(path: str) -> dict[str, Any]:
     spec = CONTROL_PARAM_SPECS.get(path)
     return spec.to_schema() if spec is not None else {}

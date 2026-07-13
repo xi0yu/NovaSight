@@ -1,0 +1,118 @@
+# Dual-Phase Atan Robust Predictive Control V2
+
+Formal algorithm ID: `dual_phase_atan_robust_predictive_v2`
+
+Formal name: 双阶段 Atan 非线性控制 + 同目标短窗稳健速度估计 + 小幅受限预测
+
+## Frozen Data Path
+
+```text
+latest valid DetectionBatch
+-> measured aim point
+-> measured error and FAR/NEAR hysteresis
+-> same-target four-position history
+-> three adjacent capture-time velocities in px/ms
+-> median velocity
+-> time-adaptive EMA
+-> motion confidence
+-> bounded X prediction around the measured position
+-> ROI/source projection and geometric atan
+-> calibrated full correction counts
+-> counts-domain control atan and per-update clamp
+-> truncating fractional quantizer
+-> one MouseCommandExecutor device call
+```
+
+There is no algorithm-layer trajectory Scheduler. A new inference result never finishes, replaces, or repays an older movement plan because no such plan exists.
+
+## State Ownership
+
+Velocity history contains exactly four `(aim_x, capture_ts_ns)` samples from one `target_id`. Target switch, target loss, Tracker create/restore notification, timestamp discontinuity, geometry/ROI change, runtime restart, calibration change, or a history gap greater than `history_reset_gap_ms` clears the history, filtered velocity, confidence, and prediction availability.
+
+A capture timestamp regression is not admitted into the new history. If its clock domain and frame freshness are otherwise valid, that observation still runs pure measured-position feedback with prediction disabled, and establishes a new timestamp epoch for following frames. It cannot lock feedback until the old timestamp is exceeded.
+
+Global generation/frame/capture cursors are not transferred into target-local state. A new target cannot inherit the old target's speed or fractional count.
+
+## Robust Velocity
+
+```text
+v1 = (P2 - P1) / dt12_ms
+v2 = (P3 - P2) / dt23_ms
+v3 = (P4 - P3) / dt34_ms
+v_median = median(v1, v2, v3)
+
+alpha = 1 - exp(-latest_dt_ms / smoothing_tau_ms)
+v_filtered = (1 - alpha) * previous_filtered + alpha * v_median
+```
+
+The first three positions produce no prediction. The first complete window is confidence-warmed; a second confirmed window reaches full history quality. There is no stationary-target forced-zero branch. Repeated zero segment medians drive the EMA naturally toward zero.
+
+One position spike normally creates two opposite extreme velocities. The median preserves the remaining normal segment, while median absolute spread reduces prediction confidence.
+
+## Motion Confidence
+
+```text
+spread = median(abs(vi - v_median))
+q_spread = 1 / (1 + spread / (spread_base + spread_relative * abs(v_median)))
+
+trend_delta = abs(v_median - previous_filtered)
+q_trend = 1 / (1 + trend_delta / (change_base + change_relative * abs(previous_filtered)))
+
+q_motion = clamp(q_history * q_spread * q_trend
+                 * q_detection * q_track_identity, 0, 1)
+```
+
+Fast acceleration, stop, reversal, or segment disagreement reduces prediction confidence but does not invalidate the current measured position or disable feedback control.
+
+## Prediction
+
+All prediction time uses milliseconds and velocity uses pixels per millisecond.
+
+```text
+h_ms = clamp(frame_age_ms + actuation_delay_ms, 0, max_horizon_ms)
+raw = v_filtered_px_ms * h_ms
+coefficient_offset = raw * prediction_coefficient
+weighted = coefficient_offset * q_motion
+allowed = min(mode.absolute_cap_px,
+              mode.base_cap_px + mode.relative_cap * abs(e_meas.x))
+safe = clamp(weighted, -allowed, allowed)
+
+e_ctrl.x = e_meas.x + safe
+e_ctrl.y = e_meas.y
+```
+
+`prediction_coefficient` is limited to `[0, 2]`. Zero provides the pure-feedback/shadow baseline. Increasing it cannot bypass confidence, horizon, absolute, relative, freshness, or X-only constraints.
+
+## Projection And Control Atan
+
+The two Atan operations are different:
+
+```text
+source_error = observation_error * roi_size / observation_size
+focal_x = (source_width / 2) / tan(FOV_x / 2)
+theta = atan(source_error / focal_x)                 # geometric projection
+full_counts = theta * counts_per_360 / (2*pi)
+
+u = K_mode * S_counts * atan(full_counts / S_counts) # control shaping
+u = clamp(u, -max_counts_per_update, max_counts_per_update)
+```
+
+FAR and NEAR are the only modes. Measured radial error selects them with hysteresis. Neither mode is a movement deadzone. No D term or separate velocity feed-forward is present.
+
+## Integer And Delivery Contract
+
+```text
+accumulator += u
+integer = trunc(accumulator)
+accumulator -= integer
+```
+
+Opposite demand clears an old-direction fraction. Trigger release, stale blocking, target switch/loss, geometry change, or runtime reset clears unsent fractions. Trigger-inactive observations never bank output counts.
+
+Every accepted observation yields at most one integer `move(dx, dy)`. V2 configuration validation requires each per-update limit to remain in `(0, 127]`; defaults are FAR 127 and NEAR 60 counts. `MouseCommandExecutor` also rejects non-integer counts and values outside its declared device range before the driver call.
+
+The deterministic closed-loop test compares coefficient `0` against enabled limited prediction for a constant-velocity target and requires the predictive run to have lower post-warmup mean absolute error. This is a regression baseline, not a substitute for real-device A/B calibration.
+
+## Main Remaining Calibration
+
+`actuation_delay_ms`, `counts_per_360`, FOV, Kp, Atan scale, prediction caps, and EMA confidence scales require real Jetson/device/game traces. The current estimator intentionally measures apparent target-to-crosshair screen motion and does not yet subtract manual or NovaSight-induced camera motion.

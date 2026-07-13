@@ -21,6 +21,14 @@ from novasight.executors.mouse_command import MouseCommandExecutor
 from novasight.contracts import ControlIntent
 
 
+SINGLE_COMMAND_ALGORITHM_IDS = frozenset(
+    {
+        "dual_phase_atan_predictive_v1",
+        "dual_phase_atan_robust_predictive_v2",
+    }
+)
+
+
 class ExecutorRegistry:
     def __init__(
         self,
@@ -74,11 +82,11 @@ class ExecutorRegistry:
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
             direct_output=(
-                config.control.active_algorithm == "dual_phase_atan_predictive_v1"
+                config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS
                 or not bool(config.control.scheduler_enabled)
             ),
             single_command_per_observation=(
-                config.control.active_algorithm == "dual_phase_atan_predictive_v1"
+                config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS
             ),
         )
 
@@ -86,9 +94,7 @@ class ExecutorRegistry:
         selected = "kmnet"
         if selected not in self.executors:
             raise ValueError(f"unknown executor: {selected}")
-        single_command = (
-            config.control.active_algorithm == "dual_phase_atan_predictive_v1"
-        )
+        single_command = config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS
         scheduler = None if single_command else scheduler_from_config(config)
         direct_output = single_command or not bool(config.control.scheduler_enabled)
         policy = policy_from_config(config)
@@ -447,6 +453,21 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
             max_abs_dy=maximum,
             min_confidence=0.0,
         )
+    if config.control.active_algorithm == "dual_phase_atan_robust_predictive_v2":
+        precise = config.control.dual_phase_atan_robust_predictive_v2
+        maximum = int(
+            math.ceil(
+                max(
+                    precise.atan.far.max_counts_per_update,
+                    precise.atan.near.max_counts_per_update,
+                )
+            )
+        )
+        return ControlOutputPolicy(
+            max_abs_dx=maximum,
+            max_abs_dy=maximum,
+            min_confidence=0.0,
+        )
     step_x, step_y, interval_ms = _scheduler_delivery_config(config)
     capacity = plan_step_capacity(interval_ms)
     return ControlOutputPolicy(
@@ -457,7 +478,7 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
 
 
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
-    if config.control.active_algorithm == "dual_phase_atan_predictive_v1":
+    if config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS:
         return None
     if not bool(config.control.scheduler_enabled):
         return None

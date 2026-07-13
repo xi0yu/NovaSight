@@ -196,6 +196,56 @@ def test_control_trace_preserves_dual_phase_decision_and_direct_delivery() -> No
     assert trace["scheduler"]["used"] is False
 
 
+def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
+    trace = build_control_trace_record(
+        control={
+            "frame_id": 9,
+            "trajectory_generation": 9,
+            "capture_ts_ns": 1_000_000_000,
+            "pipeline": {
+                "algorithm": "dual_phase_atan_robust_predictive_v2",
+                "mode": "far",
+                "error_meas_x": 40.0,
+                "error_meas_y": 1.0,
+                "error_ctrl_x": 42.0,
+                "error_ctrl_y": 1.0,
+                "error_real_x": 40.0,
+                "error_real_y": 1.0,
+                "error_control_x": 42.0,
+                "error_control_y": 1.0,
+                "velocity_unit": "px/ms",
+                "history_position_count": 4,
+                "velocity_1": 0.4,
+                "velocity_2": 0.5,
+                "velocity_3": 0.6,
+                "median_velocity": 0.5,
+                "filtered_velocity": 0.45,
+                "velocity_spread": 0.1,
+                "motion_confidence": 0.8,
+                "prediction_coefficient": 1.5,
+                "prediction_raw_offset_x": 5.0,
+                "prediction_coefficient_offset_x": 7.5,
+                "prediction_weighted_offset_x": 6.0,
+                "prediction_safe_offset_x": 2.0,
+                "executor_success": True,
+            },
+        },
+        target={"track_id": 3},
+        inference={"generation": 9, "frame_id": 9, "capture_ts_ns": 1_000_000_000},
+        execution={"sent": True, "output_dx": 12, "output_dy": 1},
+    )
+
+    decision = trace["algorithm_decision"]
+    assert decision["error_measured_px"] == {"x": 40.0, "y": 1.0}
+    assert decision["estimator"]["velocity_x_px_s"] is None
+    assert decision["robust_velocity"]["unit"] == "px/ms"
+    assert decision["robust_velocity"]["segments_px_ms"] == [0.4, 0.5, 0.6]
+    assert decision["robust_velocity"]["median_px_ms"] == 0.5
+    assert decision["prediction"]["coefficient"] == 1.5
+    assert decision["prediction"]["weighted_offset_x"] == 6.0
+    assert decision["executor_success"] is True
+
+
 def test_control_trace_schema_serializes_units_and_correlation() -> None:
     trace = _trace_payload()
 

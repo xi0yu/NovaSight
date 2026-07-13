@@ -1,7 +1,7 @@
 # NovaSight Control Trace Schema
 
 文档状态：trace 字段说明  
-schema：`novasight.control_trace` version `3`
+schema：`novasight.control_trace` version `4`
 格式：JSONL，每行一个 control observation trace record
 
 ## 范围
@@ -67,12 +67,13 @@ GStreamer PTS 或 wall clock 不得直接与这些字段相减。
 | P、D、U、prediction velocity term | rad |
 | algorithm aim/real error/control error/prediction offset | px |
 | algorithm velocity_x | px/s |
+| V2 robust velocity segments/median/EMA/spread | px/ms |
 | algorithm full error/float demand/integer command/residual | counts |
 | counts planned/queued/sent/estimated_applied/unobserved | counts |
 | scheduler pending_age | ms |
 | timestamp fields | ns |
 
-`tracker.velocity_px_s` 是兼容字段名，含义是屏幕表观速度，不是目标世界速度。`algorithm_decision.estimator.velocity_x_px_s` 是 `dual_phase_atan_predictive_v1` 专用 raw-aim X 估计器的结果。
+`tracker.velocity_px_s` 是兼容字段名，含义是屏幕表观速度，不是目标世界速度。`algorithm_decision.estimator.velocity_x_px_s` 是 V1 Kalman 估计结果；V2 使用 `algorithm_decision.robust_velocity`，单位固定为 `px/ms`，两者不得混算。
 
 ## Correlation ID
 
@@ -119,18 +120,20 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 ## algorithm_decision
 
-版本 3 新增专用算法决策块。`dual_phase_atan_predictive_v1` 至少记录：
+版本 3 新增专用算法决策块。版本 4 为 `dual_phase_atan_robust_predictive_v2` 增加 measured error、四点短窗速度和预测系数。V2 至少记录：
 
 ```text
 algorithm_id / phase / measurement_dt_ms
 aim_px / bbox
-error_real_px / error_control_px
-estimator velocity / innovation / normalized innovation / confidence
-prediction horizon / raw offset / weight / cap / safe offset / crossing limit
+error_measured_px / error_control_px
+history position count / three segment velocities / median / EMA / spread / detection and track confidence
+prediction horizon / coefficient / coefficient offset / weighted offset / cap / safe offset
 full_error_counts / float_demand / integer_command / quantizer_residual
-overzero_detected / will_emit / block_reason
+overzero_detected / will_emit / block_reason / executor_success
 delivery_mode / scheduler_used
 ```
+
+`executor_success` 在控制计算完成、尚未调用设备时为 `null`；设备调用完成后由 Runtime 回写为实际发送结果。它不表示目标检测或控制计算是否有效。
 
 该算法的固定发送语义为：
 
@@ -141,7 +144,7 @@ delivery_mode / scheduler_used
 }
 ```
 
-`scheduler` 顶层仍为兼容结构，但新算法只写入 `used=false` 和 delivery mode，不存在 pending steps 或旧计划。
+`scheduler` 顶层仍为兼容结构，但 V1/V2 直发算法只写入 `used=false` 和 delivery mode，不存在 pending steps 或旧计划。
 
 ## 采集位置
 

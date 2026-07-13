@@ -2,6 +2,8 @@
 
 Formal algorithm ID: `dual_phase_atan_predictive_v1`
 
+Status: isolated compatibility/A-B baseline. The configured precise mainline is `dual_phase_atan_robust_predictive_v2`.
+
 Formal name: 双阶段 Atan 非线性反馈控制 + 置信度加权受限预测 + 最新帧重计算
 
 ## Frozen Semantics

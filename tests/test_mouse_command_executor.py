@@ -4,6 +4,8 @@ from dataclasses import replace
 import threading
 import time
 
+import pytest
+
 from novasight.config import RuntimeConfig
 from novasight.control import ControlOutput, ScheduleDecision
 from novasight.executors import ExecutionResult, ExecutorRegistry, MouseCommandExecutor
@@ -131,6 +133,27 @@ def test_mouse_command_executor_requires_explicit_trigger_contract() -> None:
 
     assert blocked.sent is False
     assert blocked.metadata["block_reason"] == "TRIGGER_REQUIREMENT_MISSING"
+    assert device.outputs == []
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        (replace(_command(1), dx=1.5), "COMMAND_COUNTS_NOT_INTEGER"),
+        (replace(_command(1), dx=32_768), "COMMAND_COUNTS_OUT_OF_DEVICE_RANGE"),
+    ],
+)
+def test_mouse_command_executor_rejects_invalid_device_counts(
+    command: ControlOutput,
+    reason: str,
+) -> None:
+    device = _RecordingExecutor()
+    executor = MouseCommandExecutor()
+
+    blocked = executor.execute(executor=device, command=command)
+
+    assert blocked.sent is False
+    assert blocked.metadata["block_reason"] == reason
     assert device.outputs == []
 
 

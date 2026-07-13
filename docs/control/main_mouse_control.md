@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 
-Status: `dual_phase_atan_predictive_v1` is the configured mainline. Older algorithms remain isolated compatibility implementations.
+Status: `dual_phase_atan_robust_predictive_v2` is the configured precise mainline. V1 and older algorithms remain isolated compatibility/A-B implementations.
 
 ## Mainline Route
 
@@ -11,9 +11,10 @@ latest DetectionBatch
 -> freshness and monotonic timestamp checks
 -> TargetSelector / Tracker identity
 -> raw bbox aim point
--> current real ROI error
--> FAR / NEAR hysteresis from real error
--> variable-dt X motion estimate
+-> current measured ROI error
+-> FAR / NEAR hysteresis from measured error
+-> four same-target X positions / three segment velocities
+-> median velocity / time-adaptive EMA
 -> confidence-weighted bounded X prediction
 -> complete source/FOV/counts projection
 -> counts-domain Atan shaping
@@ -40,13 +41,20 @@ The serialized selector is `control.active_algorithm`; implementation-specific v
 
 ```yaml
 control:
-  active_algorithm: dual_phase_atan_predictive_v1
+  active_algorithm: dual_phase_atan_robust_predictive_v2
   algorithms:
-    dual_phase_atan_predictive_v1:
-      far:
-        kp: 0.35
-      near:
-        kp: 0.15
+    dual_phase_atan_robust_predictive_v2:
+      velocity:
+        history_size: 4
+        velocity_sample_count: 3
+        smoothing_tau_ms: 30.0
+      prediction:
+        coefficient: 1.0
+      atan:
+        far:
+          kp: 0.35
+        near:
+          kp: 0.15
     calibrated_angular:
       kp_x: 1.0
 ```
@@ -54,43 +62,45 @@ control:
 The source namespace is:
 
 ```text
-novasight.control.algorithms.dual_phase_atan_predictive_v1
+novasight.control.algorithms.dual_phase_atan_robust_predictive_v2
 ```
 
-Consequently, `far.kp`, `near.kp`, and similarly named values in other algorithm namespaces are independent. Transitional Python properties and one-way config migration keep old configurations loadable; new serialized output uses only the explicit namespace.
+Consequently, `prediction.coefficient`, `atan.far.kp`, and similarly named values in other algorithm namespaces are independent. V1 remains selectable without sharing mutable estimator, mode, prediction, or quantizer state with V2.
 
 ## Algorithm Differences
 
 | Algorithm ID | Error/units | Prediction | Near behavior | Delivery |
 | --- | --- | --- | --- | --- |
-| `dual_phase_atan_predictive_v1` | ROI real error -> source angle -> full correction counts -> counts-domain Atan | dedicated robust X-only estimator, confidence weighting, absolute/relative caps | FAR/NEAR hysteresis; no movement deadzone | one direct integer command per observation |
+| `dual_phase_atan_robust_predictive_v2` | measured ROI px -> source px -> radians -> full counts -> counts-domain Atan | four positions, three `px/ms` velocities, median, dynamic EMA, confidence and caps | FAR/NEAR hysteresis; no movement deadzone | one direct integer command per observation |
+| `dual_phase_atan_predictive_v1` | ROI error -> source angle -> full correction counts -> counts-domain Atan | constant-velocity Kalman compatibility baseline | FAR/NEAR hysteresis; no movement deadzone | one direct integer command per observation |
 | `calibrated_angular` | full-space angular PD | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 | `universal_saturated` | empirical pixel-domain saturated Atan | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 | `ttbox_pid_atan` | empirical pixel-domain Atan; despite its historical name, not a complete PID | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 
 The new algorithm bypasses the entire legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and Scheduler capacity cannot alter its result.
 
-## Real And Control Error
+## Measured And Control Error
 
 ```text
-e_real = current raw aim - crosshair
-e_ctrl.x = e_real.x + safe_prediction_offset_x
-e_ctrl.y = e_real.y
+e_meas = current measured aim - crosshair
+e_ctrl.x = e_meas.x + safe_prediction_offset_x
+e_ctrl.y = e_meas.y
 ```
 
-`e_real` owns FAR/NEAR selection, actual zero-cross detection, convergence, reset decisions, and telemetry. `e_ctrl` only feeds the projection and Atan calculation. V1 never predicts Y.
+`e_meas` owns FAR/NEAR selection, actual zero-cross detection, convergence, fallback, and telemetry. `e_ctrl` only feeds projection and Atan calculation. V2 never predicts Y.
 
 Prediction is a small reversible addition to the current observation, not the primary controller:
 
 ```text
-h = clamp(frame_age + actuation_delay, 0, max_horizon)
-raw_offset_x = estimated_velocity_x * h
-weight = mode_weight * motion_confidence * track_confidence
-allowed = min(absolute_cap, base_cap + relative_cap * abs(e_real.x))
-safe_offset_x = clamp(weight * raw_offset_x, -allowed, allowed)
+h_ms = clamp(frame_age_ms + actuation_delay_ms, 0, max_horizon_ms)
+raw_offset_x = filtered_velocity_x_px_ms * h_ms
+coefficient_offset_x = raw_offset_x * prediction_coefficient
+weighted_offset_x = coefficient_offset_x * motion_confidence
+allowed = min(mode_absolute_cap, mode_base_cap + mode_relative_cap * abs(e_meas.x))
+safe_offset_x = clamp(weighted_offset_x, -allowed, allowed)
 ```
 
-NEAR mode prevents low-confidence prediction from changing the X control direction. Every actual `e_real(t) * e_real(t-1) < 0` zero-cross clears that axis's fractional residual, damps velocity, and starts a short prediction cooldown.
+The velocity path is frozen to four current-target samples and three adjacent capture-time velocities. Their median rejects one-position spikes; EMA uses `alpha = 1 - exp(-dt_ms / tau_ms)`. Motion confidence also includes current detection and Tracker identity confidence. Stationary observations decay the previous velocity naturally—there is no forced-zero branch. A measured-error sign crossing clears only the opposite-direction fractional count; it does not damp or overwrite the motion estimate.
 
 ## Projection And Control Law
 
@@ -106,11 +116,11 @@ full_error_counts = theta * counts_per_360 / (2*pi)
 For the active FAR or NEAR phase:
 
 ```text
-u = kp * atan_scale_counts * atan(full_error_counts / atan_scale_counts)
+u = kp * scale_counts * atan(full_error_counts / scale_counts)
 u = clamp(u, -max_counts_per_update, max_counts_per_update)
 ```
 
-The motion estimator uses real capture `dt`; controller Kp remains the configured per-observation gain. No D term or velocity feed-forward is added.
+The motion estimator uses adjacent `capture_ts_ns` deltas converted to milliseconds; controller Kp remains the configured per-observation gain. No D term or velocity feed-forward is added.
 
 ## Integer Quantizer And Direct Executor
 
@@ -131,25 +141,25 @@ Direction changes clear the opposite-direction residual. Trigger-inactive observ
 - run an independent send tick;
 - finish an old frame after a newer frame arrives.
 
-If a device protocol has a smaller single-packet range, the controller limit should normally be configured to that range. Any unavoidable transport fragmentation belongs below the control algorithm, must complete promptly, and must remain discardable by newer input.
+V2 restricts configured per-observation limits to at most 127 counts. The executor additionally rejects non-integer or out-of-device-range values before calling the driver. Any unavoidable transport fragmentation belongs below the control algorithm, must complete promptly, and must remain discardable by newer input.
 
 ## Strict Blocks And Resets
 
-The algorithm emits `(0, 0)` for future/stale/non-monotonic observations, invalid geometry, invalid or predicted-only targets, and incompatible timestamp domains. Global generation/frame/capture cursors remain monotonic across target switches; target-local mode, estimator, prediction cooldown, and residual state reset independently.
+The algorithm emits `(0, 0)` for future/stale observations, non-monotonic generation/frame results, invalid geometry, invalid or predicted-only targets, and incompatible timestamp domains. A regressed capture timestamp is excluded from velocity history and disables prediction for that observation, but valid measured-position feedback still runs and the following frame can start a new epoch. Target-local mode, four-point history, EMA state, confidence, and residual state reset on target or Tracker lifecycle changes. A history gap over `velocity.history_reset_gap_ms` starts a new one-point window.
 
 Target loss, runtime restart, algorithm/config/calibration changes, and capture/inference restarts clear all control state. Releasing the trigger clears quantizer residual without creating historical debt.
 
 ## Telemetry
 
-The decision trace includes identity and timestamps, aim/bbox and real/control errors, FAR/NEAR state, variable `dt`, estimator innovation/velocity/confidence, prediction horizon/weight/caps/offset, full correction counts, float demand, integer command, quantizer residual, zero-cross state, block reason, and:
+The decision trace includes identity/timestamps, aim/bbox, measured/control errors, FAR/NEAR state, four-point history count, three `px/ms` velocities, median/EMA/spread/confidence, prediction horizon/coefficient/caps/offset, full correction counts, float demand, integer command, quantizer residual, zero-cross state, and block reason, plus:
 
 ```text
 delivery_mode: single_command_per_observation
 scheduler_used: false
 ```
 
-See `docs/control/dual_phase_atan_predictive_v1.md` for the frozen implementation contract and tuning boundaries.
+See `docs/control/dual_phase_atan_robust_predictive_v2.md` for the frozen V2 implementation contract and tuning boundaries.
 
 ## Remaining Physical Uncertainty
 
-`prediction.actuation_delay_ms` still requires Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V1 but do not remove it.
+`prediction.actuation_delay_ms` still requires Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V2 but do not remove it.

@@ -16,6 +16,8 @@ class MouseCommandExecutor:
     no queue, movement target, trajectory, or cross-frame count debt.
     """
 
+    MAX_ABS_DEVICE_COUNT = 32_767
+
     def __init__(self, lock: LockType | None = None) -> None:
         self._lock = lock or threading.Lock()
         self._last_generation: int | None = None
@@ -118,6 +120,18 @@ class MouseCommandExecutor:
     ) -> str:
         if not command.accepted:
             return "CONTROL_OUTPUT_REJECTED"
+        if (
+            not isinstance(command.dx, int)
+            or isinstance(command.dx, bool)
+            or not isinstance(command.dy, int)
+            or isinstance(command.dy, bool)
+        ):
+            return "COMMAND_COUNTS_NOT_INTEGER"
+        if (
+            abs(command.dx) > self.MAX_ABS_DEVICE_COUNT
+            or abs(command.dy) > self.MAX_ABS_DEVICE_COUNT
+        ):
+            return "COMMAND_COUNTS_OUT_OF_DEVICE_RANGE"
         if not isinstance(command.trigger_required, bool):
             return "TRIGGER_REQUIREMENT_MISSING"
         if command.trigger_required:

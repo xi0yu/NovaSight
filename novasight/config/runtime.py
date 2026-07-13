@@ -258,12 +258,112 @@ class DualPhaseAtanPredictiveV1Config:
 
 
 @dataclass
+class DualPhaseRobustVelocityConfig:
+    history_size: int = 4
+    velocity_sample_count: int = 3
+    smoothing_tau_ms: float = 30.0
+    history_reset_gap_ms: float = 80.0
+    spread_base_px_ms: float = 0.10
+    spread_relative: float = 0.50
+    change_base_px_ms: float = 0.15
+    change_relative: float = 0.75
+
+
+@dataclass
+class DualPhaseRobustPredictionModeConfig:
+    absolute_cap_px: float
+    base_cap_px: float
+    relative_cap: float
+
+
+def _default_dual_phase_robust_far_prediction() -> DualPhaseRobustPredictionModeConfig:
+    return DualPhaseRobustPredictionModeConfig(
+        absolute_cap_px=8.0,
+        base_cap_px=1.0,
+        relative_cap=0.25,
+    )
+
+
+def _default_dual_phase_robust_near_prediction() -> DualPhaseRobustPredictionModeConfig:
+    return DualPhaseRobustPredictionModeConfig(
+        absolute_cap_px=2.0,
+        base_cap_px=0.5,
+        relative_cap=0.15,
+    )
+
+
+@dataclass
+class DualPhaseRobustPredictionConfig:
+    enabled_x: bool = True
+    enabled_y: bool = False
+    coefficient: float = 1.0
+    actuation_delay_ms: float = 5.0
+    max_horizon_ms: float = 35.0
+    far: DualPhaseRobustPredictionModeConfig = field(
+        default_factory=_default_dual_phase_robust_far_prediction
+    )
+    near: DualPhaseRobustPredictionModeConfig = field(
+        default_factory=_default_dual_phase_robust_near_prediction
+    )
+
+
+@dataclass
+class DualPhaseRobustAtanModeConfig:
+    kp: float
+    scale_counts: float
+    max_counts_per_update: float
+
+
+def _default_dual_phase_robust_far_atan() -> DualPhaseRobustAtanModeConfig:
+    return DualPhaseRobustAtanModeConfig(
+        kp=0.35,
+        scale_counts=256.0,
+        max_counts_per_update=127.0,
+    )
+
+
+def _default_dual_phase_robust_near_atan() -> DualPhaseRobustAtanModeConfig:
+    return DualPhaseRobustAtanModeConfig(
+        kp=0.15,
+        scale_counts=256.0,
+        max_counts_per_update=60.0,
+    )
+
+
+@dataclass
+class DualPhaseRobustAtanConfig:
+    far: DualPhaseRobustAtanModeConfig = field(
+        default_factory=_default_dual_phase_robust_far_atan
+    )
+    near: DualPhaseRobustAtanModeConfig = field(
+        default_factory=_default_dual_phase_robust_near_atan
+    )
+
+
+@dataclass
+class DualPhaseAtanRobustPredictiveV2Config:
+    schema_version: int = 2
+    freshness_threshold_ms: float = 55.0
+    aim: DualPhaseAimConfig = field(default_factory=DualPhaseAimConfig)
+    projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
+    mode: DualPhaseModeSelectorConfig = field(default_factory=DualPhaseModeSelectorConfig)
+    velocity: DualPhaseRobustVelocityConfig = field(default_factory=DualPhaseRobustVelocityConfig)
+    prediction: DualPhaseRobustPredictionConfig = field(
+        default_factory=DualPhaseRobustPredictionConfig
+    )
+    atan: DualPhaseRobustAtanConfig = field(default_factory=DualPhaseRobustAtanConfig)
+
+
+@dataclass
 class ControlAlgorithmConfigs:
     calibrated_angular: CalibratedAngularConfig = field(default_factory=CalibratedAngularConfig)
     universal_saturated: UniversalSaturatedConfig = field(default_factory=UniversalSaturatedConfig)
     ttbox_pid_atan: TtboxPidAtanConfig = field(default_factory=TtboxPidAtanConfig)
     dual_phase_atan_predictive_v1: DualPhaseAtanPredictiveV1Config = field(
         default_factory=DualPhaseAtanPredictiveV1Config
+    )
+    dual_phase_atan_robust_predictive_v2: DualPhaseAtanRobustPredictiveV2Config = field(
+        default_factory=DualPhaseAtanRobustPredictiveV2Config
     )
 
 
@@ -351,6 +451,12 @@ class ControlConfig:
     @property
     def dual_phase_atan_predictive_v1(self) -> DualPhaseAtanPredictiveV1Config:
         return self.algorithms.dual_phase_atan_predictive_v1
+
+    @property
+    def dual_phase_atan_robust_predictive_v2(
+        self,
+    ) -> DualPhaseAtanRobustPredictiveV2Config:
+        return self.algorithms.dual_phase_atan_robust_predictive_v2
 
 
 @dataclass
@@ -809,6 +915,7 @@ def _migrate_control_algorithm_namespaces(control: dict[str, Any]) -> None:
         "universal_saturated",
         "ttbox_pid_atan",
         "dual_phase_atan_predictive_v1",
+        "dual_phase_atan_robust_predictive_v2",
     ):
         legacy_config = control.pop(algorithm_id, None)
         if legacy_config is not None:
@@ -1055,6 +1162,143 @@ def _validate_dual_phase_algorithm(cfg: DualPhaseAtanPredictiveV1Config) -> None
         )
 
 
+def _validate_dual_phase_robust_v2_algorithm(
+    cfg: DualPhaseAtanRobustPredictiveV2Config,
+) -> None:
+    prefix = "control.algorithms.dual_phase_atan_robust_predictive_v2"
+
+    def finite(name: str, value: float) -> float:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
+        return numeric
+
+    if int(cfg.schema_version) != 2:
+        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 2")
+    freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
+    if freshness_ms <= 0.0:
+        raise ValueError(
+            f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0"
+        )
+
+    aim_ratio = finite("aim.y_ratio", cfg.aim.y_ratio)
+    if not 0.0 <= aim_ratio <= 1.0:
+        raise ValueError(f"runtime config key '{prefix}.aim.y_ratio' must be in [0, 1]")
+    cfg.aim.y_ratio = round(aim_ratio, 2)
+
+    fov_x_deg = finite("projection.fov_x_deg", cfg.projection.fov_x_deg)
+    if not 30.0 <= fov_x_deg <= 179.0:
+        raise ValueError(
+            f"runtime config key '{prefix}.projection.fov_x_deg' must be in [30, 179]"
+        )
+    if finite("projection.counts_per_360", cfg.projection.counts_per_360) <= 0.0:
+        raise ValueError(
+            f"runtime config key '{prefix}.projection.counts_per_360' must be > 0"
+        )
+
+    selector = cfg.mode
+    enter_min = finite("mode.near_enter_min_px", selector.near_enter_min_px)
+    exit_min = finite("mode.near_exit_min_px", selector.near_exit_min_px)
+    enter_ratio = finite(
+        "mode.near_enter_bbox_h_ratio",
+        selector.near_enter_bbox_h_ratio,
+    )
+    exit_ratio = finite(
+        "mode.near_exit_bbox_h_ratio",
+        selector.near_exit_bbox_h_ratio,
+    )
+    if enter_min < 0.0 or enter_min >= exit_min:
+        raise ValueError(
+            f"runtime config key '{prefix}.mode' requires "
+            "0 <= near_enter_min_px < near_exit_min_px"
+        )
+    ratios_are_valid = (0.0 <= enter_ratio < exit_ratio) or (
+        enter_ratio == 0.0 and exit_ratio == 0.0
+    )
+    if not ratios_are_valid:
+        raise ValueError(
+            f"runtime config key '{prefix}.mode' requires "
+            "both bbox ratios disabled at 0 or "
+            "0 <= near_enter_bbox_h_ratio < near_exit_bbox_h_ratio"
+        )
+
+    velocity = cfg.velocity
+    if velocity.history_size != 4 or velocity.velocity_sample_count != 3:
+        raise ValueError(
+            f"runtime config key '{prefix}.velocity' requires "
+            "history_size=4 and velocity_sample_count=3"
+        )
+    for key in (
+        "smoothing_tau_ms",
+        "history_reset_gap_ms",
+        "spread_base_px_ms",
+        "change_base_px_ms",
+    ):
+        if finite(f"velocity.{key}", getattr(velocity, key)) <= 0.0:
+            raise ValueError(f"runtime config key '{prefix}.velocity.{key}' must be > 0")
+    for key in ("spread_relative", "change_relative"):
+        if finite(f"velocity.{key}", getattr(velocity, key)) < 0.0:
+            raise ValueError(f"runtime config key '{prefix}.velocity.{key}' must be >= 0")
+
+    prediction = cfg.prediction
+    if prediction.enabled_y:
+        raise ValueError(
+            f"runtime config key '{prefix}.prediction.enabled_y' must be false for v2"
+        )
+    coefficient = finite("prediction.coefficient", prediction.coefficient)
+    if not 0.0 <= coefficient <= 2.0:
+        raise ValueError(
+            f"runtime config key '{prefix}.prediction.coefficient' must be in [0, 2]"
+        )
+    actuation_ms = finite("prediction.actuation_delay_ms", prediction.actuation_delay_ms)
+    horizon_ms = finite("prediction.max_horizon_ms", prediction.max_horizon_ms)
+    if actuation_ms < 0.0 or actuation_ms > horizon_ms or horizon_ms > freshness_ms:
+        raise ValueError(
+            f"runtime config key '{prefix}.prediction' requires "
+            "0 <= actuation_delay_ms <= max_horizon_ms <= freshness_threshold_ms"
+        )
+    for mode_name, mode_cfg in (("far", prediction.far), ("near", prediction.near)):
+        for key in ("absolute_cap_px", "base_cap_px", "relative_cap"):
+            if finite(f"prediction.{mode_name}.{key}", getattr(mode_cfg, key)) < 0.0:
+                raise ValueError(
+                    f"runtime config key '{prefix}.prediction.{mode_name}.{key}' "
+                    "must be >= 0"
+                )
+    if (
+        prediction.near.absolute_cap_px > prediction.far.absolute_cap_px
+        or prediction.near.base_cap_px > prediction.far.base_cap_px
+        or prediction.near.relative_cap > prediction.far.relative_cap
+    ):
+        raise ValueError(
+            f"runtime config key '{prefix}.prediction' requires NEAR limits <= FAR limits"
+        )
+
+    far = cfg.atan.far
+    near = cfg.atan.near
+    far_kp = finite("atan.far.kp", far.kp)
+    near_kp = finite("atan.near.kp", near.kp)
+    if not 0.0 < near_kp < far_kp < 1.0:
+        raise ValueError(
+            f"runtime config key '{prefix}.atan' requires 0 < near.kp < far.kp < 1"
+        )
+    for mode_name, mode_cfg in (("far", far), ("near", near)):
+        for key in ("scale_counts", "max_counts_per_update"):
+            if finite(f"atan.{mode_name}.{key}", getattr(mode_cfg, key)) <= 0.0:
+                raise ValueError(
+                    f"runtime config key '{prefix}.atan.{mode_name}.{key}' must be > 0"
+                )
+        if mode_cfg.max_counts_per_update > 127.0:
+            raise ValueError(
+                f"runtime config key '{prefix}.atan.{mode_name}.max_counts_per_update' "
+                "must be <= 127 for one protocol-safe command"
+            )
+    if near.max_counts_per_update > far.max_counts_per_update:
+        raise ValueError(
+            f"runtime config key '{prefix}.atan' requires "
+            "near.max_counts_per_update <= far.max_counts_per_update"
+        )
+
+
 def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.source.default not in {"null", "capture", "image"} and not cfg.source.default.startswith("image:"):
         raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
@@ -1159,6 +1403,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         "universal_saturated",
         "ttbox_pid_atan",
         "dual_phase_atan_predictive_v1",
+        "dual_phase_atan_robust_predictive_v2",
     }:
         raise ValueError(
             "runtime config key 'control.active_algorithm' must select a configured algorithm"
@@ -1244,6 +1489,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             "must be finite and in (0, 0.2]"
         )
     _validate_dual_phase_algorithm(cfg.control.dual_phase_atan_predictive_v1)
+    _validate_dual_phase_robust_v2_algorithm(
+        cfg.control.dual_phase_atan_robust_predictive_v2
+    )
     shared = cfg.control.shared
     for key in ("deadzone_x_px", "deadzone_y_px"):
         value = float(getattr(shared, key))

@@ -428,10 +428,14 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.inference.backend == "deepstream_nvinfer"
     assert cfg.consumers.inference is True
     assert cfg.consumers.recording_format == "csv"
-    assert cfg.control.active_algorithm == "dual_phase_atan_predictive_v1"
-    assert cfg.control.dual_phase_atan_predictive_v1.far.kp == pytest.approx(0.35)
-    assert cfg.control.dual_phase_atan_predictive_v1.near.kp == pytest.approx(0.15)
-    assert cfg.control.dual_phase_atan_predictive_v1.prediction.enabled_y is False
+    assert cfg.control.active_algorithm == "dual_phase_atan_robust_predictive_v2"
+    robust = cfg.control.dual_phase_atan_robust_predictive_v2
+    assert robust.velocity.history_size == 4
+    assert robust.velocity.velocity_sample_count == 3
+    assert robust.prediction.coefficient == pytest.approx(1.0)
+    assert robust.prediction.enabled_y is False
+    assert robust.atan.far.kp == pytest.approx(0.35)
+    assert robust.atan.near.kp == pytest.approx(0.15)
     assert cfg.control.calibrated_angular.fov_x_deg == 105
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980
     assert cfg.control.shared.invert_y is False
@@ -841,6 +845,16 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.algorithms.dual_phase_atan_predictive_v1.near.kp",
         "control.algorithms.dual_phase_atan_predictive_v1.prediction.enabled_x",
         "control.algorithms.dual_phase_atan_predictive_v1.prediction.enabled_y",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_enter_bbox_h_ratio",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_exit_bbox_h_ratio",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.base_cap_px",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.relative_cap",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.base_cap_px",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.relative_cap",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
         "control.shared.deadzone_x_px",
         "control.shared.deadzone_y_px",
         "control.shared.max_count_slew_x",

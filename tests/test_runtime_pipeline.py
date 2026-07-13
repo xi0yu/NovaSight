@@ -1195,9 +1195,18 @@ def test_scheduler_disabled_sends_detection_budget_in_observation_call() -> None
     assert executors.scheduler is None
 
 
-def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() -> None:
+@pytest.mark.parametrize(
+    "algorithm_id",
+    [
+        "dual_phase_atan_predictive_v1",
+        "dual_phase_atan_robust_predictive_v2",
+    ],
+)
+def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch(
+    algorithm_id: str,
+) -> None:
     config = RuntimeConfig()
-    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.active_algorithm = algorithm_id
     config.control.trigger_mode = "always"
     # This legacy switch is deliberately left enabled: the algorithm contract
     # must still bypass the trajectory Scheduler unconditionally.
@@ -1247,7 +1256,8 @@ def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() ->
     assert len(kmnet.outputs) == 1
     assert service.last_control is not None
     assert service.last_control["pipeline"]["scheduler_used"] is False
-    assert service.last_control["pipeline"]["algorithm"] == "dual_phase_atan_predictive_v1"
+    assert service.last_control["pipeline"]["algorithm"] == algorithm_id
+    assert service.last_control["pipeline"]["executor_success"] is True
 
 
 @pytest.mark.parametrize("terminal_state", ["stopped", "cancelled", "fatal"])

@@ -262,6 +262,7 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert '<option value="universal_saturated">通用适配</option>' in studio
     assert '<option value="calibrated_angular">精确标定</option>' in studio
     assert 'updateConfigField("control", "active_algorithm", event.target.value)' in studio
+    assert '<option value="dual_phase_atan_robust_predictive_v2">精确双阶段稳健预测 v2</option>' in studio
     assert '<option value="dual_phase_atan_predictive_v1">双阶段 Atan 预测闭环 v1</option>' in studio
     assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio
     assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio

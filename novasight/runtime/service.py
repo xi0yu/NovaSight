@@ -36,6 +36,19 @@ from novasight.control.algorithms.dual_phase_atan_predictive_v1 import (
     ProjectionConfig as DualPhaseProjectionConfig,
     QuantizerConfig as DualPhaseQuantizerConfig,
 )
+from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
+    ALGORITHM_ID as DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
+    AtanControllerConfig as DualPhaseRobustAtanControllerConfig,
+    AtanModeConfig as DualPhaseRobustAtanModeConfig,
+    DualPhaseAtanRobustPredictiveV2Algorithm,
+    DualPhaseAtanRobustPredictiveV2Config as DualPhaseRobustAlgorithmConfig,
+    DualPhaseAtanRobustPredictiveV2Observation,
+    ModeSelectorConfig as DualPhaseRobustModeSelectorConfig,
+    PredictionConfig as DualPhaseRobustPredictionConfig,
+    PredictionModeConfig as DualPhaseRobustPredictionModeConfig,
+    ProjectionConfig as DualPhaseRobustProjectionConfig,
+    VelocityConfig as DualPhaseRobustVelocityConfig,
+)
 from novasight.executors import BoxInputState, ExecutorRegistry
 from novasight.inference import InferenceResult
 from novasight.inference.jetson import create_gpu_resource_preprocessor
@@ -53,6 +66,13 @@ from .control_trace import build_control_trace_record
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
+
+DUAL_PHASE_ALGORITHM_IDS = frozenset(
+    {
+        DUAL_PHASE_ATAN_PREDICTIVE_V1,
+        DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
+    }
+)
 
 
 def _status_statistic(
@@ -423,10 +443,16 @@ class RuntimeService:
         return status
 
     @staticmethod
+    def _active_dual_phase_config(config: RuntimeConfig) -> Any:
+        if config.control.active_algorithm == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
+            return config.control.dual_phase_atan_robust_predictive_v2
+        return config.control.dual_phase_atan_predictive_v1
+
+    @staticmethod
     def _config_calibration_signature(config: RuntimeConfig) -> tuple[Any, ...]:
         calibration = config.calibration
         calibrated = config.control.calibrated_angular
-        dual_phase = config.control.dual_phase_atan_predictive_v1
+        dual_phase = RuntimeService._active_dual_phase_config(config)
         shared = config.control.shared
         capture = config.capture
         roi = config.roi
@@ -488,11 +514,11 @@ class RuntimeService:
     def _log_production_control_chain(self, event: str) -> None:
         calibration = self.config.calibration
         calibrated = self.config.control.calibrated_angular
-        dual_phase = self.config.control.dual_phase_atan_predictive_v1
+        dual_phase = self._active_dual_phase_config(self.config)
         shared = self.config.control.shared
         mode = self.config.control.active_algorithm
         selected_executor = getattr(self.executors, "selected", None) or "kmnet"
-        is_dual_phase = mode == DUAL_PHASE_ATAN_PREDICTIVE_V1
+        is_dual_phase = mode in DUAL_PHASE_ALGORITHM_IDS
         fov_x_deg = (
             dual_phase.projection.fov_x_deg
             if is_dual_phase
@@ -520,13 +546,22 @@ class RuntimeService:
             if bool(self.config.control.scheduler_enabled)
             else "DirectObservationSend"
         )
-        chain = (
-            "RawAimObservation->RealError+BoundedXPrediction->FAR/NEARCountsAtan"
-            f"->IntegerQuantizer->{delivery_stage}->kmNet"
-            if is_dual_phase
-            else "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController"
-            f"->SharedCountLimits->{delivery_stage}->kmNet"
-        )
+        if mode == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
+            chain = (
+                "MeasuredAim->FAR/NEAR->FourPointMedianVelocity->AdaptiveEMA"
+                "->BoundedXPrediction->ProjectionAngle->FullCounts->CountsAtan"
+                f"->IntegerQuantizer->{delivery_stage}->kmNet"
+            )
+        elif is_dual_phase:
+            chain = (
+                "RawAimObservation->RealError+BoundedXPrediction->FAR/NEARCountsAtan"
+                f"->IntegerQuantizer->{delivery_stage}->kmNet"
+            )
+        else:
+            chain = (
+                "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController"
+                f"->SharedCountLimits->{delivery_stage}->kmNet"
+            )
         logger.info(
             "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
@@ -551,7 +586,7 @@ class RuntimeService:
         updated_ts_ns = int(self._external_sensitivity_ts_ns or 0)
         if self.config.control.active_algorithm not in {
             "calibrated_angular",
-            DUAL_PHASE_ATAN_PREDICTIVE_V1,
+            *DUAL_PHASE_ALGORITHM_IDS,
         }:
             return {
                 "state": "not_required",
@@ -627,8 +662,7 @@ class RuntimeService:
             execution_results = [self.executors.execute(intent) for intent in control_intents]
             for result in execution_results:
                 if (
-                    self.config.control.active_algorithm
-                    == DUAL_PHASE_ATAN_PREDICTIVE_V1
+                    self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS
                     and not bool(getattr(result, "sent", False))
                 ):
                     # A failed or blocked device call must not leave fractional
@@ -666,7 +700,7 @@ class RuntimeService:
         )
 
     def process_control_tick(self) -> RuntimeFrameResult:
-        if self.config.control.active_algorithm == DUAL_PHASE_ATAN_PREDICTIVE_V1:
+        if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS:
             # No command is emitted here. The tick only observes release/stop
             # edges so fractional counts cannot survive between inference
             # results.
@@ -2007,7 +2041,7 @@ class RuntimeService:
             trigger_activation_ready
             and (box_input.active or trigger_mode == "always")
         )
-        if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1:
+        if algorithm_id in DUAL_PHASE_ALGORITHM_IDS:
             command, observation_metadata = self._dual_phase_control_command(
                 context=context,
                 target=target,
@@ -2040,8 +2074,8 @@ class RuntimeService:
             control_metadata.get("mouse_observation_debug") or {}
         )
         active_aim_y_ratio = (
-            float(self.config.control.dual_phase_atan_predictive_v1.aim.y_ratio)
-            if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+            float(self._active_dual_phase_config(self.config).aim.y_ratio)
+            if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
             else float(self.config.control.aim.y_ratio)
         )
         aim_x = float(mouse_observation_debug.get("predicted_x_px") or 0.0)
@@ -2056,11 +2090,11 @@ class RuntimeService:
             int(context.capture_ts_ns or 0)
             + int(
                 float(
-                    self.config.control.dual_phase_atan_predictive_v1.freshness_threshold_ms
+                    self._active_dual_phase_config(self.config).freshness_threshold_ms
                 )
                 * 1_000_000.0
             )
-            if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+            if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
             else None
         )
         intent = ControlIntent(
@@ -2080,12 +2114,12 @@ class RuntimeService:
             trajectory_generation=trajectory_generation,
             trigger_required=(
                 requires_trigger
-                if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+                if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
                 else None
             ),
             trigger_active=(
                 algorithm_trigger_active
-                if algorithm_id == DUAL_PHASE_ATAN_PREDICTIVE_V1
+                if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
                 else None
             ),
             command_expires_ts_ns=command_expires_ts_ns,
@@ -2227,7 +2261,7 @@ class RuntimeService:
             # The high-frequency algorithm keeps estimator/mode state while the
             # trigger is released; its quantizer clears itself before returning.
             # Legacy controllers retain their historical full reset behavior.
-            if algorithm_id != DUAL_PHASE_ATAN_PREDICTIVE_V1:
+            if algorithm_id not in DUAL_PHASE_ALGORITHM_IDS:
                 self._reset_control_motion_state()
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
@@ -2662,9 +2696,9 @@ class RuntimeService:
         return context.width * 0.5, context.height * 0.5
 
     def _active_aim_ratio(self) -> float:
-        if self.config.control.active_algorithm == DUAL_PHASE_ATAN_PREDICTIVE_V1:
+        if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS:
             return float(
-                self.config.control.dual_phase_atan_predictive_v1.aim.y_ratio
+                self._active_dual_phase_config(self.config).aim.y_ratio
             )
         return float(self.config.control.aim.y_ratio)
 
@@ -2740,7 +2774,7 @@ class RuntimeService:
         shared = config.control.shared
         legacy_mode = (
             "universal_saturated"
-            if config.control.active_algorithm == DUAL_PHASE_ATAN_PREDICTIVE_V1
+            if config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS
             else str(config.control.active_algorithm)
         )
         return MouseController(
@@ -2796,7 +2830,86 @@ class RuntimeService:
     @staticmethod
     def _create_dual_phase_algorithm(
         config: RuntimeConfig,
-    ) -> DualPhaseAtanPredictiveV1Algorithm:
+    ) -> DualPhaseAtanPredictiveV1Algorithm | DualPhaseAtanRobustPredictiveV2Algorithm:
+        if config.control.active_algorithm == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
+            source_v2 = config.control.dual_phase_atan_robust_predictive_v2
+            return DualPhaseAtanRobustPredictiveV2Algorithm(
+                DualPhaseRobustAlgorithmConfig(
+                    freshness_threshold_ms=float(source_v2.freshness_threshold_ms),
+                    projection=DualPhaseRobustProjectionConfig(
+                        fov_x_deg=float(source_v2.projection.fov_x_deg),
+                        counts_per_360=float(source_v2.projection.counts_per_360),
+                        invert_y=bool(source_v2.projection.invert_y),
+                    ),
+                    mode=DualPhaseRobustModeSelectorConfig(
+                        near_enter_min_px=float(source_v2.mode.near_enter_min_px),
+                        near_exit_min_px=float(source_v2.mode.near_exit_min_px),
+                        near_enter_bbox_h_ratio=float(
+                            source_v2.mode.near_enter_bbox_h_ratio
+                        ),
+                        near_exit_bbox_h_ratio=float(
+                            source_v2.mode.near_exit_bbox_h_ratio
+                        ),
+                    ),
+                    velocity=DualPhaseRobustVelocityConfig(
+                        history_size=int(source_v2.velocity.history_size),
+                        velocity_sample_count=int(
+                            source_v2.velocity.velocity_sample_count
+                        ),
+                        smoothing_tau_ms=float(source_v2.velocity.smoothing_tau_ms),
+                        history_reset_gap_ms=float(
+                            source_v2.velocity.history_reset_gap_ms
+                        ),
+                        spread_base_px_ms=float(
+                            source_v2.velocity.spread_base_px_ms
+                        ),
+                        spread_relative=float(source_v2.velocity.spread_relative),
+                        change_base_px_ms=float(
+                            source_v2.velocity.change_base_px_ms
+                        ),
+                        change_relative=float(source_v2.velocity.change_relative),
+                    ),
+                    prediction=DualPhaseRobustPredictionConfig(
+                        enabled_x=bool(source_v2.prediction.enabled_x),
+                        enabled_y=bool(source_v2.prediction.enabled_y),
+                        coefficient=float(source_v2.prediction.coefficient),
+                        actuation_delay_ms=float(
+                            source_v2.prediction.actuation_delay_ms
+                        ),
+                        max_horizon_ms=float(source_v2.prediction.max_horizon_ms),
+                        far=DualPhaseRobustPredictionModeConfig(
+                            absolute_cap_px=float(
+                                source_v2.prediction.far.absolute_cap_px
+                            ),
+                            base_cap_px=float(source_v2.prediction.far.base_cap_px),
+                            relative_cap=float(source_v2.prediction.far.relative_cap),
+                        ),
+                        near=DualPhaseRobustPredictionModeConfig(
+                            absolute_cap_px=float(
+                                source_v2.prediction.near.absolute_cap_px
+                            ),
+                            base_cap_px=float(source_v2.prediction.near.base_cap_px),
+                            relative_cap=float(source_v2.prediction.near.relative_cap),
+                        ),
+                    ),
+                    atan=DualPhaseRobustAtanControllerConfig(
+                        far=DualPhaseRobustAtanModeConfig(
+                            kp=float(source_v2.atan.far.kp),
+                            scale_counts=float(source_v2.atan.far.scale_counts),
+                            max_counts_per_update=float(
+                                source_v2.atan.far.max_counts_per_update
+                            ),
+                        ),
+                        near=DualPhaseRobustAtanModeConfig(
+                            kp=float(source_v2.atan.near.kp),
+                            scale_counts=float(source_v2.atan.near.scale_counts),
+                            max_counts_per_update=float(
+                                source_v2.atan.near.max_counts_per_update
+                            ),
+                        ),
+                    ),
+                )
+            )
         source = config.control.dual_phase_atan_predictive_v1
         return DualPhaseAtanPredictiveV1Algorithm(
             DualPhaseAlgorithmConfig(
@@ -2900,7 +3013,8 @@ class RuntimeService:
         control_now_ts_ns: int,
         trigger_active: bool,
     ) -> tuple[MoveCommand, dict[str, Any]]:
-        config = self.config.control.dual_phase_atan_predictive_v1
+        algorithm_id = self.config.control.active_algorithm
+        config = self._active_dual_phase_config(self.config)
         transform = self._coordinate_transform_for_context(context)
         control_width = float(control_metadata.get("control_width") or 0.0)
         control_height = float(control_metadata.get("control_height") or 0.0)
@@ -2953,40 +3067,63 @@ class RuntimeService:
             if motion.valid and math.isfinite(float(motion.identity_confidence))
             else 0.0
         )
-        observation = DualPhaseAtanPredictiveV1Observation(
-            generation=int(
+        observation_type = (
+            DualPhaseAtanRobustPredictiveV2Observation
+            if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
+            else DualPhaseAtanPredictiveV1Observation
+        )
+        observation_kwargs = {
+            "generation": int(
                 context.frame_id if context.generation is None else context.generation
             ),
-            frame_id=int(context.frame_id),
-            target_id=int(target.track_id),
-            capture_ts_ns=int(context.capture_ts_ns or 0),
-            inference_end_ts_ns=int(context.inference_end_ts_ns or control_now_ts_ns),
-            control_now_ns=int(control_now_ts_ns),
-            aim_x=float(raw_aim.aim_roi_x_px),
-            aim_y=float(raw_aim.aim_roi_y_px),
-            crosshair_x=crosshair_roi_x,
-            crosshair_y=crosshair_roi_y,
-            bbox_x1=float(target.x1),
-            bbox_y1=float(target.y1),
-            bbox_x2=float(target.x2),
-            bbox_y2=float(target.y2),
-            observation_width=int(context.width),
-            observation_height=int(context.height),
-            roi_left=roi_left,
-            roi_top=roi_top,
-            roi_width=roi_width,
-            roi_height=roi_height,
-            source_width=source_width,
-            source_height=source_height,
-            detection_confidence=float(target.score),
-            track_confidence=max(0.0, min(1.0, track_confidence)),
-            trigger_active=bool(trigger_active),
-            target_valid=bool(
+            "frame_id": int(context.frame_id),
+            "target_id": int(target.track_id),
+            "capture_ts_ns": int(context.capture_ts_ns or 0),
+            "inference_end_ts_ns": int(
+                context.inference_end_ts_ns or control_now_ts_ns
+            ),
+            "control_now_ns": int(control_now_ts_ns),
+            "aim_x": float(raw_aim.aim_roi_x_px),
+            "aim_y": float(raw_aim.aim_roi_y_px),
+            "crosshair_x": crosshair_roi_x,
+            "crosshair_y": crosshair_roi_y,
+            "bbox_x1": float(target.x1),
+            "bbox_y1": float(target.y1),
+            "bbox_x2": float(target.x2),
+            "bbox_y2": float(target.y2),
+            "observation_width": int(context.width),
+            "observation_height": int(context.height),
+            "roi_left": roi_left,
+            "roi_top": roi_top,
+            "roi_width": roi_width,
+            "roi_height": roi_height,
+            "source_width": source_width,
+            "source_height": source_height,
+            "detection_confidence": float(target.score),
+            "track_confidence": max(0.0, min(1.0, track_confidence)),
+            "trigger_active": bool(trigger_active),
+            "target_valid": bool(
                 raw_aim.valid
                 and not getattr(target, "is_predicted", False)
                 and not getattr(target, "is_stale", False)
             ),
-        )
+        }
+        if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
+            tracker_debug = (
+                selector_debug.get("tracker")
+                if isinstance(selector_debug, dict)
+                else None
+            )
+            if not isinstance(tracker_debug, dict):
+                tracker_debug = {}
+            rebuilt_track_ids = {
+                int(track_id)
+                for key in ("created_track_ids", "restored_track_ids")
+                for track_id in tracker_debug.get(key, [])
+                if isinstance(track_id, int)
+            }
+            observation_kwargs["track_rebuilt"] = int(target.track_id) in rebuilt_track_ids
+        observation = observation_type(**observation_kwargs)
         decision = self.dual_phase_algorithm.calculate(observation)
         telemetry = {
             **decision.telemetry,
@@ -3011,13 +3148,13 @@ class RuntimeService:
         reason = (
             block_reason
             if block_reason
-            else DUAL_PHASE_ATAN_PREDICTIVE_V1
+            else algorithm_id
             if decision.dx != 0 or decision.dy != 0
             else "ACCUMULATING_FRACTIONAL_COUNTS"
         )
         debug = {
             **telemetry,
-            "algorithm": DUAL_PHASE_ATAN_PREDICTIVE_V1,
+            "algorithm": algorithm_id,
             "control_mode": telemetry.get("mode", "far"),
             "control_allowed": control_allowed,
             "observed_error_x_px": float(telemetry.get("error_real_x") or 0.0),
@@ -3029,7 +3166,7 @@ class RuntimeService:
             telemetry.get("prediction_safe_offset_x") or 0.0
         ) * (roi_width / max(1, int(context.width)))
         mouse_observation_debug = {
-            "algorithm_id": DUAL_PHASE_ATAN_PREDICTIVE_V1,
+            "algorithm_id": algorithm_id,
             "observed_x_px": float(raw_aim.aim_control_x_px),
             "observed_y_px": float(raw_aim.aim_control_y_px),
             "predicted_x_px": float(raw_aim.aim_control_x_px)
@@ -4023,6 +4160,16 @@ class RuntimeService:
         if execution_global_state is not None:
             payload["global_state"] = execution_global_state
         self.last_control.update(payload)
+        pipeline = self.last_control.get("pipeline")
+        if (
+            isinstance(pipeline, dict)
+            and str(pipeline.get("algorithm") or pipeline.get("algorithm_id"))
+            in DUAL_PHASE_ALGORITHM_IDS
+        ):
+            pipeline["executor_success"] = bool(execution.get("sent", False))
+            pipeline["executor_block_reason"] = str(metadata.get("block_reason") or "")
+            pipeline["device_send_start_ts_ns"] = metadata.get("device_send_start_ts_ns")
+            pipeline["device_send_end_ts_ns"] = metadata.get("device_send_end_ts_ns")
 
     def _source_width(self, frame: CapturedFrame) -> int:
         return int(frame.source_width or frame.width)
