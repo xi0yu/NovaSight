@@ -129,6 +129,12 @@ export type DeepStreamRecommendationResponse = {
   artifact_id: number;
   artifact_path: string;
   recommendation: DeepStreamPreparePayload;
+  io_tensors: Array<{
+    name: string;
+    shape: number[];
+    dtype: string;
+    mode: "input" | "output";
+  }>;
   class_names: string[];
   output_has_objectness: boolean;
   sources: Record<string, string>;

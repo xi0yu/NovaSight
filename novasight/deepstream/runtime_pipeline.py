@@ -192,6 +192,16 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
             engine_path,
             resolved_classes,
         )
+    resolved_input_shape = "x".join(str(value) for value in manifest.input.shape)
+    if version.input_shape != resolved_input_shape:
+        models.update_version_input_shape(version.id, resolved_input_shape)
+        logger.warning(
+            "synchronized model input shape from TensorRT engine path=%s "
+            "registered=%s engine=%s",
+            engine_path,
+            version.input_shape,
+            resolved_input_shape,
+        )
     if generated_manifest:
         models.update_artifact_status(
             artifact.id,

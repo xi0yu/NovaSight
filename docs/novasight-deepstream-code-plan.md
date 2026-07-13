@@ -91,7 +91,10 @@ Completed:
   - `need_confirm`: artifact can be fingerprinted, but manifest or DeepStream config is missing.
   - `invalid`: manifest exists but does not match artifact.
   - `unsupported`: file suffix or required shape/parser information is not supported.
-- Generate `model.manifest.json` and `deepstream.ini` only after model semantics are confirmed.
+- Generate `model.manifest.json` and `deepstream.ini` only after deserializing the TensorRT
+  engine and enumerating its I/O tensor names, modes, effective shapes, and dtypes. An existing
+  manifest is reused only when its tensor contract still matches the engine; stale contracts are
+  rebuilt atomically from the engine probe.
 - `/api/models/scan` returns artifact configuration status. `GET` is supported for the no-parameter scan path; `POST` remains compatible.
   The same scan also syncs registry artifact status for the model page: `ready` only for a complete DeepStream artifact, `pending` for `need_confirm`, and `failed` for invalid artifacts.
 - Uploading or rescanning a model refreshes the registry checksum for an existing artifact path. Uploaded TensorRT `.engine` files stay `pending` until DeepStream manifest/config preparation proves the artifact is runnable.
@@ -99,7 +102,14 @@ Completed:
 - `/api/models/artifacts/{artifact_id}/deepstream/pipeline` builds the concrete NVMM/nvinfer pipeline from the confirmed manifest and ROI/capture parameters.
   The pipeline preview endpoint accepts `pixel_format`; the current DeepStream pipeline rejects non-MJPEG values instead of returning a misleading MJPEG pipeline.
 - The model page exposes `准备 DeepStream` for pending TensorRT `.engine` artifacts.
-  It derives the NCHW input shape from the selected version, derives YOLO candidate count from strides 8/16/32, calls `/api/models/artifacts/{artifact_id}/deepstream/prepare`, and refreshes the artifact list so a validated artifact becomes publishable.
+  The backend reads the engine I/O contract through TensorRT, returns the actual NCHW input and
+  output tensor metadata for confirmation, calls `/api/models/artifacts/{artifact_id}/deepstream/prepare`,
+  and synchronizes the registered input shape to the probed engine value. It does not derive model
+  dimensions from the configured ROI or a `640` fallback.
+  Newly scanned or uploaded engines show `engine-probe-required` until that probe succeeds; a
+  filename or upload form value is not treated as an engine tensor contract.
+- ROI remains an independent capture/search-region setting. The pipeline crops that ROI first and
+  then resizes the NVMM surface to the engine-reported model input width and height.
 - Publishing a DeepStream `.engine` updates the manifest/config binding and clears the runtime pipeline. It is a prepared state, not a legacy `loaded=true` state; `nvinfer` loads the engine when the runtime is started.
 
 Next:

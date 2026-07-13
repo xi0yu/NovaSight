@@ -456,7 +456,7 @@ def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_pat
         "onnx",
         "demo.engine",
         ["body", "head"],
-        "1x3x256x256",
+        "1x3x640x640",
     )
     engine_path = registry.data_dir / project.name / version.version / "demo.engine"
     engine_path.parent.mkdir(parents=True, exist_ok=True)
@@ -502,6 +502,59 @@ def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_pat
     assert manifest.output.class_names == ["body", "head"]
     assert registry.get_artifact(artifact.id).status == "ready"
     assert registry.get_artifact(artifact.id).checksum == manifest.artifact.sha256
+    assert registry.get_version(version.id).input_shape == "1x3x256x256"
+
+
+def test_existing_manifest_is_rebuilt_when_engine_tensor_contract_changed(
+    tmp_path: Path,
+) -> None:
+    engine_path = tmp_path / "demo.engine"
+    engine_path.write_bytes(b"engine")
+    stale_manifest = build_engine_manifest(
+        model_id="demo",
+        display_name="demo",
+        engine_path=engine_path,
+        input_spec=TensorSpec("images", [1, 3, 640, 640], "float32", "NCHW"),
+        output_spec=TensorSpec("output0", [1, 6, 1344], "float32", "NCHW"),
+        class_count=2,
+        class_names=["body", "head"],
+        output_has_objectness=False,
+        validated=True,
+    )
+    write_manifest(stale_manifest, engine_path.with_name("model.manifest.json"))
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "input_tensor",
+            "input_shape": "1x3x320x512",
+            "input_dtype": "float16",
+            "output_name": "output0",
+            "output_shape": "1x6x1344",
+            "output_dtype": "float32",
+            "outputs": {
+                "output0": {
+                    "shape": [1, 6, 1344],
+                    "dtype": "float32",
+                }
+            },
+        }
+    )
+
+    manifest, regenerated = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="demo",
+        display_name="demo",
+        classes=["body", "head"],
+        registered_input_shape="1x3x640x640",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+    )
+
+    assert regenerated is True
+    assert manifest.input.name == "input_tensor"
+    assert manifest.input.shape == [1, 3, 320, 512]
+    assert manifest.input.dtype == "float16"
 
 
 def test_deepstream_runtime_replaces_placeholder_classes_from_raw_yolo_output(

@@ -94,6 +94,7 @@ class TensorRtInferenceEngine:
         self._engine_input_shape: tuple[int, ...] = ()
         self._input_profile_shapes: dict[str, tuple[int, ...]] = {}
         self._input_shape_source = ""
+        self._io_tensors: list[dict[str, Any]] = []
         self._last_slow_log_ns = 0
         self._last_preprocess_backend = ""
         self._last_preprocess_reason = ""
@@ -152,6 +153,7 @@ class TensorRtInferenceEngine:
                 }
                 for name in self._output_shapes
             },
+            "io_tensors": [dict(tensor) for tensor in self._io_tensors],
             "confidence_threshold": self.confidence_threshold,
             "nms_threshold": self.nms_threshold,
             "last_input_mode": self._last_input.mode if self._last_input is not None else "",
@@ -365,6 +367,11 @@ class TensorRtInferenceEngine:
                 output_names.append(name)
         if not input_names or not output_names:
             raise RuntimeError(f"TensorRT engine missing input/output tensors: {artifact_path}")
+        if len(input_names) != 1:
+            raise RuntimeError(
+                "NovaSight TensorRT runtime requires exactly one input tensor, "
+                f"got {input_names}"
+            )
 
         input_name = input_names[0]
         engine_input_shape = _shape_tuple(engine.get_tensor_shape(input_name))
@@ -453,6 +460,25 @@ class TensorRtInferenceEngine:
             )
         self._output_shape = self._output_shapes[self._output_name]
         self._output_dtype = self._output_dtypes.get(self._output_name, "")
+        self._io_tensors = [
+            {
+                "name": input_name,
+                "shape": list(input_shape),
+                "engine_shape": list(engine_input_shape),
+                "dtype": str(input_dtype),
+                "mode": "input",
+            },
+            *[
+                {
+                    "name": name,
+                    "shape": list(self._output_shapes[name]),
+                    "engine_shape": list(_shape_tuple(engine.get_tensor_shape(name))),
+                    "dtype": self._output_dtypes[name],
+                    "mode": "output",
+                }
+                for name in output_names
+            ],
+        ]
         logger.info(
             "TensorRT engine loaded path=%s engine_input=%s selected_input=%s input_source=%s profile=%s output=%s shape=%s dtype=%s outputs=%s",
             artifact_path,
@@ -710,10 +736,12 @@ class TensorRtInferenceEngine:
         self._output_dtype = ""
         self._output_candidate_columns = None
         self._input_dtype = "float32"
+        self._input_name = ""
         self._output_name = ""
         self._engine_input_shape = ()
         self._input_profile_shapes = {}
         self._input_shape_source = ""
+        self._io_tensors = []
         self._loaded = False
         self._warmed = False
 

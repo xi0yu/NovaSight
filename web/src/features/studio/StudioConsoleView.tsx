@@ -782,7 +782,9 @@ export function StudioConsoleView({
   const activeArtifactLabel = artifact ? `${artifact.kind.toUpperCase()} · ${artifact.path}` : "未加载产物";
   const lastModelSwitchError = readString(runtime?.inference?.last_switch_error, "");
   const runtimeInputShape = readString(runtime?.inference?.input_shape, "");
-  const registeredInputShape = version?.input_shape ?? "";
+  const registeredInputShape = version?.input_shape === "engine-probe-required"
+    ? "等待 TensorRT engine 探测"
+    : version?.input_shape ?? "";
   const displayedInputShape = runtimeInputShape || registeredInputShape;
   const deepstreamModelOutputSummary = formatShape(runtimeModelOutput.shape);
   const deepstreamClassNamesSummary =
@@ -1983,9 +1985,13 @@ export function StudioConsoleView({
           `输出契约：${probe.sources.output_contract}`,
           `预处理：${probe.sources.input_color_format}`
         ].join(" / ");
+        const tensorSummary = probe.io_tensors
+          .map((tensor) => `${tensor.mode.toUpperCase()} ${tensor.name} ${tensor.shape.join("x")} ${tensor.dtype}`)
+          .join("\n");
         const confirmed = window.confirm(
           [
             `已读取 ${selectedSwitchArtifact.path} 的 TensorRT 契约：`,
+            tensorSummary,
             `输入：${recommendation.input_shape.join("x")} / ${recommendation.input_name} / ${recommendation.input_dtype}`,
             `输出：${recommendation.output_shape.join("x")} / ${recommendation.output_name} / ${recommendation.output_dtype}`,
             `类别：${recommendation.class_count}（${probe.class_names.join(", ")}）`,

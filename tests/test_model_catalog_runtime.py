@@ -221,12 +221,28 @@ def test_deepstream_recommendation_uses_engine_contract_instead_of_ui_shape_gues
     request = _request_with_registry(registry)
     request.app.state.inference.probe = lambda *_args: {
         "loaded": True,
-        "input_name": "input_tensor",
-        "input_shape": "1x3x320x512",
-        "input_dtype": "float16",
-        "output_name": "predictions",
+        # Flat fields may be stale registry/status values. The enumerated
+        # TensorRT I/O contract must be authoritative.
+        "input_name": "guessed_input",
+        "input_shape": "1x3x640x640",
+        "input_dtype": "float32",
+        "output_name": "guessed_output",
         "output_shape": "1x8400x7",
-        "output_dtype": "float16",
+        "output_dtype": "float32",
+        "io_tensors": [
+            {
+                "name": "input_tensor",
+                "shape": [1, 3, 320, 512],
+                "dtype": "float16",
+                "mode": "input",
+            },
+            {
+                "name": "predictions",
+                "shape": [1, 8400, 7],
+                "dtype": "float16",
+                "mode": "output",
+            },
+        ],
     }
 
     result = routes_models.recommend_deepstream_artifact(request, artifact.id)
@@ -239,6 +255,20 @@ def test_deepstream_recommendation_uses_engine_contract_instead_of_ui_shape_gues
     assert recommendation["output_shape"] == [1, 8400, 7]
     assert recommendation["output_dtype"] == "float16"
     assert recommendation["class_count"] == 3
+    assert result["io_tensors"] == [
+        {
+            "name": "input_tensor",
+            "shape": [1, 3, 320, 512],
+            "dtype": "float16",
+            "mode": "input",
+        },
+        {
+            "name": "predictions",
+            "shape": [1, 8400, 7],
+            "dtype": "float16",
+            "mode": "output",
+        },
+    ]
     assert result["class_names"] == ["class_0", "class_1", "class_2"]
     assert result["output_has_objectness"] is False
     assert result["sources"]["input_contract"] == "tensorrt_engine_probe"
@@ -351,7 +381,7 @@ def test_model_replacement_keeps_deployed_artifact_file_immutable(tmp_path) -> N
     assert versions[-1].classes == version.classes
 
 
-def test_engine_replacement_without_sidecar_inherits_model_metadata(tmp_path) -> None:
+def test_engine_replacement_inherits_classes_but_requires_a_fresh_shape_probe(tmp_path) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     source_root = tmp_path / "models"
     source_root.mkdir()
@@ -367,7 +397,7 @@ def test_engine_replacement_without_sidecar_inherits_model_metadata(tmp_path) ->
     project = registry.list_projects()[0]
     first_version = registry.list_versions(project.id)[0]
     assert first_version.classes == ["person", "head"]
-    assert first_version.input_shape == "1x3x320x320"
+    assert first_version.input_shape == "engine-probe-required"
 
     sidecar_path.unlink()
     source_path.write_bytes(b"replacement-engine")
@@ -376,7 +406,7 @@ def test_engine_replacement_without_sidecar_inherits_model_metadata(tmp_path) ->
     replacement_version = registry.list_versions(project.id)[-1]
     assert replacement_version.id != first_version.id
     assert replacement_version.classes == ["person", "head"]
-    assert replacement_version.input_shape == "1x3x320x320"
+    assert replacement_version.input_shape == "engine-probe-required"
 
 
 def test_publish_validates_pending_engine_before_marking_it_ready(tmp_path, monkeypatch) -> None:

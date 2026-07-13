@@ -39,6 +39,7 @@ router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
 _MODEL_SYNC_LOCK = threading.RLock()
 _MODEL_SYNC_CACHE: dict[tuple[str, str], tuple[int, ...]] = {}
+_ENGINE_INPUT_SHAPE_PENDING = "engine-probe-required"
 
 
 @dataclass(frozen=True)
@@ -374,6 +375,8 @@ def _detect_input_shape_from_filename(model_file: Path) -> str | None:
 
 
 def _detect_input_shape(model_file: Path, sidecar: dict[str, Any]) -> str:
+    if model_file.suffix.lower() == ".engine":
+        return _ENGINE_INPUT_SHAPE_PENDING
     if "input_shape" in sidecar:
         return _normalize_input_shape(sidecar.get("input_shape"))
     detected_from_name = _detect_input_shape_from_filename(model_file)
@@ -551,12 +554,6 @@ def _sync_model_file(
         if existing_version is not None:
             if "classes" not in sidecar and "names" not in sidecar:
                 classes = list(existing_version.classes)
-            if (
-                kind == "engine"
-                and "input_shape" not in sidecar
-                and _detect_input_shape_from_filename(model_file) is None
-            ):
-                input_shape = existing_version.input_shape
         inspection = inspect_model_artifact(model_file, force=force)
         checksum = inspection.sha256
         project = existing_project
@@ -1078,6 +1075,16 @@ def _ensure_registered_deepstream_manifest(
             artifact_path,
             resolved_classes,
         )
+    resolved_input_shape = "x".join(str(value) for value in manifest.input.shape)
+    if version.input_shape != resolved_input_shape:
+        registry.update_version_input_shape(version.id, resolved_input_shape)
+        logger.warning(
+            "synchronized model input shape from TensorRT engine path=%s "
+            "registered=%s engine=%s",
+            artifact_path,
+            version.input_shape,
+            resolved_input_shape,
+        )
     if generated or artifact.status != "ready" or artifact.checksum != manifest.artifact.sha256:
         registry.update_artifact_status(
             artifact.id,
@@ -1227,6 +1234,20 @@ def recommend_deepstream_artifact(request: Request, artifact_id: int) -> dict[st
         "artifact_id": artifact.id,
         "artifact_path": artifact.path,
         "recommendation": recommendation,
+        "io_tensors": [
+            {
+                "name": contract.input_name,
+                "shape": list(contract.input_shape),
+                "dtype": contract.input_dtype,
+                "mode": "input",
+            },
+            {
+                "name": contract.output_name,
+                "shape": list(contract.output_shape),
+                "dtype": contract.output_dtype,
+                "mode": "output",
+            },
+        ],
         "class_names": list(resolved.class_names),
         "output_has_objectness": resolved.output_has_objectness,
         "sources": {
@@ -1405,11 +1426,12 @@ async def upload_model(
         with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as handle:
             handle.write(content)
             tmp_path = Path(handle.name)
-        resolved_input_shape = (
-            _normalize_input_shape(input_shape)
-            if input_shape.strip()
-            else _detect_input_shape(tmp_path, {})
-        )
+        if kind == "engine":
+            resolved_input_shape = _ENGINE_INPUT_SHAPE_PENDING
+        elif input_shape.strip():
+            resolved_input_shape = _normalize_input_shape(input_shape)
+        else:
+            resolved_input_shape = _detect_input_shape(tmp_path, {})
         checksum = _sha256(tmp_path)
         project = _find_project_by_name(registry, project_name)
         if project is None:

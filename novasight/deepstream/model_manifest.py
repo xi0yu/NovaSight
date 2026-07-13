@@ -56,6 +56,9 @@ def probe_engine_contract(
         raise ValueError(
             f"TensorRT engine probe failed: {status.get('reason') or 'loaded=false'}"
         )
+    io_tensors = status.get("io_tensors")
+    if isinstance(io_tensors, list):
+        return _contract_from_io_tensors(io_tensors)
     outputs = status.get("outputs")
     if isinstance(outputs, dict) and len(outputs) != 1:
         raise ValueError(
@@ -73,6 +76,42 @@ def probe_engine_contract(
         output_name=output_name,
         output_shape=parse_runtime_shape(status.get("output_shape"), "output_shape"),
         output_dtype=normalize_tensor_dtype(status.get("output_dtype")),
+    )
+
+
+def _contract_from_io_tensors(io_tensors: list[object]) -> EngineTensorContract:
+    inputs: list[dict[str, object]] = []
+    outputs: list[dict[str, object]] = []
+    for raw_tensor in io_tensors:
+        if not isinstance(raw_tensor, dict):
+            raise ValueError("TensorRT engine probe returned a malformed I/O tensor entry")
+        mode = str(raw_tensor.get("mode") or "").strip().lower()
+        if mode == "input":
+            inputs.append(raw_tensor)
+        elif mode == "output":
+            outputs.append(raw_tensor)
+        else:
+            raise ValueError(
+                "TensorRT engine probe returned an I/O tensor without input/output mode"
+            )
+    if len(inputs) != 1 or len(outputs) != 1:
+        raise ValueError(
+            "DeepStream native parser requires exactly one TensorRT input and one output "
+            f"tensor, got inputs={len(inputs)} outputs={len(outputs)}"
+        )
+    input_tensor = inputs[0]
+    output_tensor = outputs[0]
+    input_name = str(input_tensor.get("name") or "").strip()
+    output_name = str(output_tensor.get("name") or "").strip()
+    if not input_name or not output_name:
+        raise ValueError("TensorRT engine probe returned an unnamed I/O tensor")
+    return EngineTensorContract(
+        input_name=input_name,
+        input_shape=parse_runtime_shape(input_tensor.get("shape"), "input_shape"),
+        input_dtype=normalize_tensor_dtype(input_tensor.get("dtype")),
+        output_name=output_name,
+        output_shape=parse_runtime_shape(output_tensor.get("shape"), "output_shape"),
+        output_dtype=normalize_tensor_dtype(output_tensor.get("dtype")),
     )
 
 
@@ -275,35 +314,64 @@ def ensure_engine_manifest(
     class_count_hint = infer_class_count_hint_from_name(path.name)
     objectness_hint = infer_yolo_objectness_hint_from_name(path.name)
     with _MANIFEST_LOCK:
+        existing_manifest: ModelManifest | None = None
         if manifest_path.is_file():
-            manifest = read_manifest(manifest_path)
-            validate_manifest_engine_artifact(manifest, path)
-            if not _manifest_needs_class_hint_reconciliation(
-                manifest,
-                class_count_hint,
-                objectness_hint,
-            ):
-                return manifest, False
-            logger.warning(
-                "regenerating automatic DeepStream manifest from engine filename class hint "
-                "path=%s previous_classes=%s hinted_classes=%s",
-                path,
-                manifest.output.class_count,
-                class_count_hint,
-            )
-        if not classes:
+            existing_manifest = read_manifest(manifest_path)
+            validate_manifest_engine_artifact(existing_manifest, path)
+
+        probe_classes = [str(item) for item in classes if str(item).strip()]
+        if (
+            existing_manifest is not None
+            and _automatic_class_names(probe_classes)
+            and not _automatic_class_names(list(existing_manifest.output.class_names))
+        ):
+            probe_classes = list(existing_manifest.output.class_names)
+        if not probe_classes:
             raise ValueError(
                 "cannot generate DeepStream manifest because the model registry has no classes"
             )
         recommendation = recommend_engine_manifest(
             inference,
             artifact_path=path,
-            registered_classes=classes,
+            registered_classes=probe_classes,
             registered_input_shape=registered_input_shape,
         )
         contract = recommendation.contract
         resolved_classes = recommendation.class_names
         output_has_objectness = recommendation.output_has_objectness
+        if existing_manifest is not None:
+            tensor_contract_matches = _manifest_matches_engine_contract(
+                existing_manifest,
+                contract,
+            )
+            class_contract_matches = (
+                list(existing_manifest.output.class_names) == resolved_classes
+                and bool(existing_manifest.output.has_objectness) == output_has_objectness
+            )
+            needs_hint_reconciliation = _manifest_needs_class_hint_reconciliation(
+                existing_manifest,
+                class_count_hint,
+                objectness_hint,
+            )
+            if (
+                tensor_contract_matches
+                and class_contract_matches
+                and not needs_hint_reconciliation
+            ):
+                return existing_manifest, False
+            logger.warning(
+                "regenerating DeepStream manifest from TensorRT engine contract "
+                "path=%s tensor_contract_matches=%s class_contract_matches=%s "
+                "hint_reconciliation=%s manifest_input=%s engine_input=%s",
+                path,
+                tensor_contract_matches,
+                class_contract_matches,
+                needs_hint_reconciliation,
+                list(existing_manifest.input.shape),
+                contract.input_shape,
+            )
+
+        template = existing_manifest
         manifest = build_engine_manifest(
             model_id=model_id,
             display_name=display_name,
@@ -324,29 +392,68 @@ def ensure_engine_manifest(
             class_names=resolved_classes,
             confidence_threshold=float(confidence_threshold),
             nms_iou_threshold=float(nms_iou_threshold),
-            runtime_precision=runtime_precision,
-            input_color_format="RGB",
-            input_scale_factor=1.0 / 255.0,
+            runtime_precision=(
+                template.runtime.precision if template is not None else runtime_precision
+            ),
+            input_color_format=(
+                template.input.color_format if template is not None else "RGB"
+            ),
+            input_scale_factor=(
+                template.input.scale_factor if template is not None else 1.0 / 255.0
+            ),
+            maintain_aspect_ratio=(
+                template.input.maintain_aspect_ratio if template is not None else False
+            ),
+            symmetric_padding=(
+                template.input.symmetric_padding if template is not None else False
+            ),
+            output_format=(
+                template.output.format
+                if template is not None
+                else "yolo_cxcywh_class_scores"
+            ),
             output_has_objectness=output_has_objectness,
+            output_coordinate_mode=(
+                template.output.coordinate_mode if template is not None else "pixel"
+            ),
+            postprocess_parser=(
+                template.postprocess.parser if template is not None else "yolo"
+            ),
             validated=True,
         )
+        validate_manifest_engine_artifact(manifest, path)
         temporary_path = manifest_path.with_suffix(".json.tmp")
         try:
             write_manifest(manifest, temporary_path)
             temporary_path.replace(manifest_path)
-            validate_manifest_engine_artifact(manifest, path)
         except Exception:
             temporary_path.unlink(missing_ok=True)
-            manifest_path.unlink(missing_ok=True)
             raise
         return manifest, True
 
 
+def _manifest_matches_engine_contract(
+    manifest: ModelManifest,
+    contract: EngineTensorContract,
+) -> bool:
+    return (
+        manifest.input.name == contract.input_name
+        and list(manifest.input.shape) == contract.input_shape
+        and normalize_tensor_dtype(manifest.input.dtype) == contract.input_dtype
+        and manifest.output.name == contract.output_name
+        and list(manifest.output.shape) == contract.output_shape
+        and normalize_tensor_dtype(manifest.output.dtype) == contract.output_dtype
+    )
+
+
 def parse_runtime_shape(value: object, label: str) -> list[int]:
-    parts = [item for item in re.split(r"[xX,\s]+", str(value or "").strip()) if item]
+    if isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = [item for item in re.split(r"[xX,\s]+", str(value or "").strip()) if item]
     try:
         shape = [int(item) for item in parts]
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError(f"TensorRT engine probe returned invalid {label}: {value}") from exc
     if not shape or any(item <= 0 for item in shape):
         raise ValueError(f"TensorRT engine probe returned unresolved {label}: {value}")
