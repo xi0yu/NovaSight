@@ -210,9 +210,7 @@ def test_single_command_is_discarded_when_algorithm_switches_before_send() -> No
     registry._execute_direct = execute_direct_after_snapshot  # type: ignore[method-assign]
     registry._executor_lock.acquire()
     result_holder: list[ExecutionResult] = []
-    thread = threading.Thread(
-        target=lambda: result_holder.append(registry.execute(_command(10)))
-    )
+    thread = threading.Thread(target=lambda: result_holder.append(registry.execute(_command(10))))
 
     try:
         thread.start()
@@ -247,7 +245,7 @@ def test_scheduler_tick_is_discarded_when_algorithm_switches_before_device_send(
         thread.start()
         assert tick_ready.wait(timeout=1.0)
         updated = RuntimeConfig()
-        updated.control.active_algorithm = "dual_phase_atan_predictive_v1"
+        updated.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
         registry.update_runtime_config(updated)
     finally:
         registry._executor_lock.release()

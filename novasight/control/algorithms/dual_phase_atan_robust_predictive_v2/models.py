@@ -22,21 +22,18 @@ class ProjectionConfig:
 
 @dataclass(frozen=True, slots=True)
 class ModeSelectorConfig:
-    near_enter_min_px: float = 12.0
-    near_exit_min_px: float = 18.0
-    near_enter_bbox_h_ratio: float = 0.45
-    near_exit_bbox_h_ratio: float = 0.60
+    near_threshold_px: float = 12.0
 
 
 @dataclass(frozen=True, slots=True)
 class VelocityConfig:
     history_size: int = 4
     velocity_sample_count: int = 3
-    smoothing_tau_ms: float = 30.0
+    smoothing_tau_ms: float = 22.0
     history_reset_gap_ms: float = 80.0
-    spread_base_px_ms: float = 0.10
+    spread_base_px_ms: float = 0.12
     spread_relative: float = 0.50
-    change_base_px_ms: float = 0.15
+    change_base_px_ms: float = 0.20
     change_relative: float = 0.75
 
 
@@ -49,23 +46,23 @@ class PredictionModeConfig:
 
 def _default_far_prediction() -> PredictionModeConfig:
     return PredictionModeConfig(
-        absolute_cap_px=8.0,
-        base_cap_px=1.0,
-        relative_cap=0.25,
+        absolute_cap_px=10.0,
+        base_cap_px=1.25,
+        relative_cap=0.30,
     )
 
 
 def _default_near_prediction() -> PredictionModeConfig:
     return PredictionModeConfig(
-        absolute_cap_px=2.0,
-        base_cap_px=0.5,
-        relative_cap=0.15,
+        absolute_cap_px=3.0,
+        base_cap_px=0.75,
+        relative_cap=0.20,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class PredictionConfig:
-    coefficient: float = 1.0
+    coefficient: float = 1.20
     actuation_delay_ms: float = 5.0
     max_horizon_ms: float = 35.0
     far: PredictionModeConfig = field(default_factory=_default_far_prediction)
@@ -77,28 +74,26 @@ class PredictionConfig:
 @dataclass(frozen=True, slots=True)
 class AtanModeConfig:
     kp: float
-    scale_counts: float
     max_counts_per_update: float
 
 
 def _default_far_atan() -> AtanModeConfig:
     return AtanModeConfig(
-        kp=0.35,
-        scale_counts=256.0,
+        kp=0.45,
         max_counts_per_update=127.0,
     )
 
 
 def _default_near_atan() -> AtanModeConfig:
     return AtanModeConfig(
-        kp=0.15,
-        scale_counts=256.0,
-        max_counts_per_update=60.0,
+        kp=0.22,
+        max_counts_per_update=72.0,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class AtanControllerConfig:
+    scale_counts: float = 256.0
     far: AtanModeConfig = field(default_factory=_default_far_atan)
     near: AtanModeConfig = field(default_factory=_default_near_atan)
 

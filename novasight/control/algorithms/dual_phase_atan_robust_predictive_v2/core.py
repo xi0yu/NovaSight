@@ -20,7 +20,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
     def __init__(self, config: DualPhaseAtanRobustPredictiveV2Config) -> None:
         _validate_config(config)
         self.config = config
-        self._mode = ControlMode.FAR
         self._target_id: int | None = None
         self._last_generation: int | None = None
         self._last_frame_id: int | None = None
@@ -41,7 +40,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._geometry_signature = None
 
     def _reset_target_state(self) -> None:
-        self._mode = ControlMode.FAR
         self._target_id = None
         self._quantizer_x.reset()
         self._quantizer_y.reset()
@@ -80,9 +78,8 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 frame_age_ms=frame_age_ms,
             )
         if (
-            (self._last_generation is not None and observation.generation <= self._last_generation)
-            or (self._last_frame_id is not None and observation.frame_id <= self._last_frame_id)
-        ):
+            self._last_generation is not None and observation.generation <= self._last_generation
+        ) or (self._last_frame_id is not None and observation.frame_id <= self._last_frame_id):
             return self._blocked_decision(
                 observation,
                 "NON_MONOTONIC_OBSERVATION",
@@ -101,8 +98,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._last_capture_ts_ns = observation.capture_ts_ns
 
         if (
-            self._target_id is not None
-            and observation.target_id != self._target_id
+            self._target_id is not None and observation.target_id != self._target_id
         ) or observation.track_rebuilt:
             self._reset_target_state()
         if not observation.target_valid:
@@ -139,20 +135,10 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         if crossed_y:
             self._quantizer_y.reset()
 
-        bbox_height = float(observation.bbox_y2 - observation.bbox_y1)
         distance = hypot(error_meas_x, error_meas_y)
-        near_enter = max(
-            self.config.mode.near_enter_min_px,
-            bbox_height * self.config.mode.near_enter_bbox_h_ratio,
+        mode = (
+            ControlMode.NEAR if distance <= self.config.mode.near_threshold_px else ControlMode.FAR
         )
-        near_exit = max(
-            self.config.mode.near_exit_min_px,
-            bbox_height * self.config.mode.near_exit_bbox_h_ratio,
-        )
-        if self._mode is ControlMode.FAR and distance <= near_enter:
-            self._mode = ControlMode.NEAR
-        elif self._mode is ControlMode.NEAR and distance >= near_exit:
-            self._mode = ControlMode.FAR
 
         estimate = None
         if not capture_timestamp_discontinuity:
@@ -166,7 +152,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         filtered_velocity_x = estimate.filtered_velocity if estimate is not None else 0.0
         motion_confidence = estimate.motion_confidence if estimate is not None else 0.0
         prediction = self._calculate_prediction(
-            mode=self._mode,
+            mode=mode,
             error_meas_x=error_meas_x,
             filtered_velocity_x=filtered_velocity_x,
             motion_confidence=motion_confidence,
@@ -188,13 +174,9 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         if self.config.projection.invert_y:
             full_counts_y = -full_counts_y
 
-        atan_mode = (
-            self.config.atan.far
-            if self._mode is ControlMode.FAR
-            else self.config.atan.near
-        )
-        demand_x = _atan_demand(full_counts_x, atan_mode)
-        demand_y = _atan_demand(full_counts_y, atan_mode)
+        atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
+        demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)
+        demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
         if observation.trigger_active:
             dx, residual_direction_reset_x = self._quantizer_x.quantize(demand_x)
             dy, residual_direction_reset_y = self._quantizer_y.quantize(demand_y)
@@ -227,9 +209,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "inference_end_ts_ns": observation.inference_end_ts_ns,
                 "control_now_ns": observation.control_now_ns,
                 "frame_age_ms": frame_age_ms,
-                "measurement_dt_ms": (
-                    estimate.measurement_dt_ms if estimate is not None else None
-                ),
+                "measurement_dt_ms": (estimate.measurement_dt_ms if estimate is not None else None),
                 "aim_x": observation.aim_x,
                 "aim_y": observation.aim_y,
                 "bbox_x1": observation.bbox_x1,
@@ -237,7 +217,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "bbox_x2": observation.bbox_x2,
                 "bbox_y2": observation.bbox_y2,
                 "bbox_width": observation.bbox_x2 - observation.bbox_x1,
-                "bbox_height": bbox_height,
+                "bbox_height": observation.bbox_y2 - observation.bbox_y1,
                 "detection_confidence": observation.detection_confidence,
                 "track_confidence": _clamp(observation.track_confidence, 0.0, 1.0),
                 "track_rebuilt": observation.track_rebuilt,
@@ -251,9 +231,8 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "error_ctrl_y": error_ctrl_y,
                 "error_control_x": error_ctrl_x,
                 "error_control_y": error_ctrl_y,
-                "mode": self._mode.value,
-                "near_enter_threshold_px": near_enter,
-                "near_exit_threshold_px": near_exit,
+                "mode": mode.value,
+                "near_threshold_px": self.config.mode.near_threshold_px,
                 "history_position_count": self._velocity_x.history_position_count,
                 "velocity_1": raw_velocities[0],
                 "velocity_2": raw_velocities[1],
@@ -266,9 +245,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "history_quality": estimate.history_quality if estimate is not None else 0.0,
                 "spread_quality": estimate.spread_quality if estimate is not None else 0.0,
                 "trend_quality": estimate.trend_quality if estimate is not None else 0.0,
-                "detection_quality": (
-                    estimate.detection_quality if estimate is not None else 0.0
-                ),
+                "detection_quality": (estimate.detection_quality if estimate is not None else 0.0),
                 "track_quality": estimate.track_quality if estimate is not None else 0.0,
                 "motion_confidence": motion_confidence,
                 "prediction_confidence": motion_confidence,
@@ -327,9 +304,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         raw_offset_x = filtered_velocity_x * horizon_ms
         coefficient_offset_x = raw_offset_x * prediction_config.coefficient
         weighted_offset_x = coefficient_offset_x * effective_confidence
-        mode_config = (
-            prediction_config.far if mode is ControlMode.FAR else prediction_config.near
-        )
+        mode_config = prediction_config.far if mode is ControlMode.FAR else prediction_config.near
         allowed_cap_x = min(
             mode_config.absolute_cap_px,
             mode_config.base_cap_px + mode_config.relative_cap * abs(error_meas_x),
@@ -380,7 +355,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "bbox_y2": observation.bbox_y2,
                 "detection_confidence": observation.detection_confidence,
                 "track_confidence": observation.track_confidence,
-                "mode": self._mode.value,
+                "mode": ControlMode.FAR.value,
                 "history_position_count": self._velocity_x.history_position_count,
                 "motion_confidence": 0.0,
                 "trigger_active": observation.trigger_active,
@@ -415,14 +390,14 @@ class _AxisQuantizer:
         return int(output), direction_reset
 
 
-def _atan_demand(full_error_counts: float, config: AtanModeConfig) -> float:
-    if (
-        not isfinite(full_error_counts)
-        or not isfinite(config.scale_counts)
-        or config.scale_counts <= 0.0
-    ):
+def _atan_demand(
+    full_error_counts: float,
+    config: AtanModeConfig,
+    scale_counts: float,
+) -> float:
+    if not isfinite(full_error_counts) or not isfinite(scale_counts) or scale_counts <= 0.0:
         return 0.0
-    value = config.kp * config.scale_counts * atan(full_error_counts / config.scale_counts)
+    value = config.kp * scale_counts * atan(full_error_counts / scale_counts)
     return _clamp(
         value,
         -config.max_counts_per_update,
@@ -505,18 +480,8 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
         raise ValueError("fov_x_deg must be in (0, 180)")
     if config.projection.counts_per_360 <= 0.0:
         raise ValueError("counts_per_360 must be > 0")
-    ratios_are_valid = (
-        0.0 <= config.mode.near_enter_bbox_h_ratio
-        < config.mode.near_exit_bbox_h_ratio
-    ) or (
-        config.mode.near_enter_bbox_h_ratio == 0.0
-        and config.mode.near_exit_bbox_h_ratio == 0.0
-    )
-    if (
-        config.mode.near_enter_min_px >= config.mode.near_exit_min_px
-        or not ratios_are_valid
-    ):
-        raise ValueError("NEAR enter thresholds must be smaller than exit thresholds")
+    if not isfinite(config.mode.near_threshold_px) or config.mode.near_threshold_px < 0.0:
+        raise ValueError("near_threshold_px must be finite and >= 0")
     prediction = config.prediction
     if prediction.enabled_y:
         raise ValueError("V2 predicts X only")
@@ -525,17 +490,21 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
     if not 0.0 <= prediction.actuation_delay_ms <= prediction.max_horizon_ms:
         raise ValueError("prediction delay must fit the prediction horizon")
     for mode_config in (prediction.far, prediction.near):
-        if min(
-            mode_config.absolute_cap_px,
-            mode_config.base_cap_px,
-            mode_config.relative_cap,
-        ) < 0.0:
+        if (
+            min(
+                mode_config.absolute_cap_px,
+                mode_config.base_cap_px,
+                mode_config.relative_cap,
+            )
+            < 0.0
+        ):
             raise ValueError("prediction caps must be >= 0")
+    if not isfinite(config.atan.scale_counts) or config.atan.scale_counts <= 0.0:
+        raise ValueError("Atan scale must be finite and > 0")
     for mode_config in (config.atan.far, config.atan.near):
         if (
             mode_config.kp <= 0.0
-            or mode_config.scale_counts <= 0.0
             or mode_config.max_counts_per_update <= 0.0
             or mode_config.max_counts_per_update > 127.0
         ):
-            raise ValueError("Atan Kp/scale must be > 0 and output limit must be in (0, 127]")
+            raise ValueError("Atan Kp must be > 0 and output limit must be in (0, 127]")

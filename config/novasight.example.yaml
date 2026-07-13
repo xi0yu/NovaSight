@@ -80,67 +80,8 @@ control:
       response_scale_y_px: 60.0
       max_step_x_counts: 50.0
       max_step_y_counts: 40.0
-    ttbox_pid_atan:
-      response_scale_x_px: 256.0
-      response_scale_y_px: 256.0
-      per_frame_gain_x: 0.1
-      per_frame_gain_y: 0.1
-      normalize_to_dt: true
-      nominal_dt_s: 0.016
-      max_step_x_counts: 50.0
-      max_step_y_counts: 40.0
-    dual_phase_atan_predictive_v1:
-      schema_version: 1
-      freshness_threshold_ms: 55.0
-      aim:
-        y_ratio: 0.22
-      projection:
-        fov_x_deg: 105.0
-        counts_per_360: 9980.0
-        invert_y: false
-      mode:
-        near_enter_min_px: 12.0
-        near_exit_min_px: 18.0
-        near_enter_bbox_h_ratio: 0.45
-        near_exit_bbox_h_ratio: 0.60
-      far:
-        kp: 0.35
-        atan_scale_counts: 256.0
-        max_counts_per_update: 140.0
-      near:
-        kp: 0.15
-        atan_scale_counts: 256.0
-        max_counts_per_update: 60.0
-      estimator:
-        measurement_std_px: 1.5
-        acceleration_std_px_s2: 600.0
-        min_dt_ms: 3.0
-        reset_dt_ms: 80.0
-        innovation_soft_gate_sigma: 3.0
-        innovation_hard_gate_sigma: 8.0
-        hard_outlier_reset_count: 2
-        max_velocity_px_s: 3000.0
-        warmup_updates: 4
-      prediction:
-        enabled_x: true
-        enabled_y: false
-        actuation_delay_ms: 5.0
-        max_horizon_ms: 35.0
-        far_weight: 0.30
-        near_weight: 0.12
-        far_abs_cap_px: 8.0
-        near_abs_cap_px: 2.0
-        far_base_cap_px: 1.0
-        near_base_cap_px: 0.5
-        far_relative_cap: 0.25
-        near_relative_cap: 0.15
-        near_cross_allow_px: 0.5
-        high_confidence_cross_threshold: 0.85
-        overzero_cooldown_frames: 2
-      quantizer:
-        min_effective_counts: 1
     dual_phase_atan_robust_predictive_v2:
-      schema_version: 2
+      schema_version: 3
       freshness_threshold_ms: 55.0
       aim:
         y_ratio: 0.22
@@ -149,42 +90,38 @@ control:
         counts_per_360: 9980.0
         invert_y: false
       mode:
-        near_enter_min_px: 12.0
-        near_exit_min_px: 18.0
-        near_enter_bbox_h_ratio: 0.45
-        near_exit_bbox_h_ratio: 0.60
+        near_threshold_px: 12.0
       velocity:
         history_size: 4
         velocity_sample_count: 3
-        smoothing_tau_ms: 30.0
+        smoothing_tau_ms: 22.0
         history_reset_gap_ms: 80.0
-        spread_base_px_ms: 0.10
+        spread_base_px_ms: 0.12
         spread_relative: 0.50
-        change_base_px_ms: 0.15
+        change_base_px_ms: 0.20
         change_relative: 0.75
       prediction:
         enabled_x: true
         enabled_y: false
-        coefficient: 1.0
+        coefficient: 1.20
         actuation_delay_ms: 5.0
         max_horizon_ms: 35.0
         far:
-          absolute_cap_px: 8.0
-          base_cap_px: 1.0
-          relative_cap: 0.25
+          absolute_cap_px: 10.0
+          base_cap_px: 1.25
+          relative_cap: 0.30
         near:
-          absolute_cap_px: 2.0
-          base_cap_px: 0.5
-          relative_cap: 0.15
+          absolute_cap_px: 3.0
+          base_cap_px: 0.75
+          relative_cap: 0.20
       atan:
+        scale_counts: 256.0
         far:
-          kp: 0.35
-          scale_counts: 256.0
+          kp: 0.45
           max_counts_per_update: 127.0
         near:
-          kp: 0.15
-          scale_counts: 256.0
-          max_counts_per_update: 60.0
+          kp: 0.22
+          max_counts_per_update: 72.0
   shared:
     max_count_slew_x: 10.0
     max_count_slew_y: 8.0
@@ -202,8 +139,8 @@ control:
   prediction_strength: 1.0
   prediction_x_enabled: true
   prediction_y_enabled: true
-  # Legacy algorithms only. Both isolated dual-phase algorithms always use one
-  # immediate MouseCommandExecutor call per accepted observation.
+  # The precise V2 algorithm always uses one immediate MouseCommandExecutor
+  # call per accepted observation; it never creates a cross-frame move plan.
   scheduler_enabled: true
   scheduler_step_counts_x: 8
   scheduler_step_counts_y: 8

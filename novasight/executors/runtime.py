@@ -23,7 +23,6 @@ from novasight.contracts import ControlIntent
 
 SINGLE_COMMAND_ALGORITHM_IDS = frozenset(
     {
-        "dual_phase_atan_predictive_v1",
         "dual_phase_atan_robust_predictive_v2",
     }
 )
@@ -201,7 +200,11 @@ class ExecutorRegistry:
                 if scheduler_metadata is not None:
                     metadata["scheduler"] = {
                         **scheduler_metadata,
-                        **({"execution": scheduler_execution_metadata} if scheduler_execution_metadata is not None else {}),
+                        **(
+                            {"execution": scheduler_execution_metadata}
+                            if scheduler_execution_metadata is not None
+                            else {}
+                        ),
                     }
                 elif scheduler_execution_metadata is not None:
                     metadata["scheduler"] = {"execution": scheduler_execution_metadata}
@@ -225,7 +228,11 @@ class ExecutorRegistry:
                     {
                         "scheduler": {
                             **(scheduler_metadata or {}),
-                            **({"execution": scheduler_execution_metadata} if scheduler_execution_metadata is not None else {}),
+                            **(
+                                {"execution": scheduler_execution_metadata}
+                                if scheduler_execution_metadata is not None
+                                else {}
+                            ),
                         }
                     }
                     if scheduler_metadata is not None or scheduler_execution_metadata is not None
@@ -247,8 +254,7 @@ class ExecutorRegistry:
                 if (
                     self._config_epoch != expected_config_epoch
                     or self.selected != expected_selected
-                    or self.single_command_per_observation
-                    != expected_single_command
+                    or self.single_command_per_observation != expected_single_command
                     or not (self.direct_output or self.single_command_per_observation)
                 ):
                     return _direct_executor_superseded_result(
@@ -263,11 +269,7 @@ class ExecutorRegistry:
                     )
                 stage = "direct_output"
                 delivery_mode = "direct"
-                if (
-                    bounded.action == "move"
-                    and int(bounded.dx) == 0
-                    and int(bounded.dy) == 0
-                ):
+                if bounded.action == "move" and int(bounded.dx) == 0 and int(bounded.dy) == 0:
                     return ExecutionResult(
                         executor_id=expected_selected,
                         sent=False,
@@ -336,7 +338,9 @@ class ExecutorRegistry:
             return ExecutionResult(
                 executor_id=selected,
                 sent=False,
-                intent=_scheduler_status_output(str(scheduler_metadata.get("action") or "scheduler_idle")),
+                intent=_scheduler_status_output(
+                    str(scheduler_metadata.get("action") or "scheduler_idle")
+                ),
                 message="no pending control command ready",
                 metadata={
                     "stage": "scheduler",
@@ -414,7 +418,12 @@ class ExecutorRegistry:
         kmnet = self.executors.get("kmnet")
         reader = getattr(kmnet, "read_buttons", None)
         if not callable(reader):
-            return {"available": False, "left": False, "right": False, "reason": "kmNet executor is unavailable"}
+            return {
+                "available": False,
+                "left": False,
+                "right": False,
+                "reason": "kmNet executor is unavailable",
+            }
         return reader()
 
     def clear_scheduler(self, reason: str) -> None:
@@ -442,17 +451,6 @@ class ExecutorRegistry:
 
 
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
-    if config.control.active_algorithm == "dual_phase_atan_predictive_v1":
-        precise = config.control.dual_phase_atan_predictive_v1
-        maximum = int(math.ceil(max(
-            precise.far.max_counts_per_update,
-            precise.near.max_counts_per_update,
-        )))
-        return ControlOutputPolicy(
-            max_abs_dx=maximum,
-            max_abs_dy=maximum,
-            min_confidence=0.0,
-        )
     if config.control.active_algorithm == "dual_phase_atan_robust_predictive_v2":
         precise = config.control.dual_phase_atan_robust_predictive_v2
         maximum = int(

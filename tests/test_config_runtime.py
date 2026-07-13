@@ -4,6 +4,7 @@ Covers the schema-enforced contract: round-trip, missing/empty inputs,
 unknown keys, and type errors. Defaults are exercised in one test, and
 unknown-key rejection is parametrized.
 """
+
 from pathlib import Path
 
 import pytest
@@ -32,23 +33,19 @@ def test_packaging_includes_jetson_bridge_adapter_packages() -> None:
         'novasight_jetson_preprocess_native = ["include/*.h", '
         '"native/CMakeLists.txt", "native/src/*.cpp", '
         '"native/src/jetson/*.cpp", "native/src/jetson/*.cu", '
-        '"native/src/jetson/*.h", "native/README.md", "native/IMPLEMENTATION.md"]'
-        in pyproject
+        '"native/src/jetson/*.h", "native/README.md", "native/IMPLEMENTATION.md"]' in pyproject
     )
     assert Path(
-        "novasight_jetson_preprocess_native/include/"
-        "novasight_jetson_preprocess_native.h"
+        "novasight_jetson_preprocess_native/include/novasight_jetson_preprocess_native.h"
     ).is_file()
     header = Path(
-        "novasight_jetson_preprocess_native/include/"
-        "novasight_jetson_preprocess_native.h"
+        "novasight_jetson_preprocess_native/include/novasight_jetson_preprocess_native.h"
     ).read_text(encoding="utf-8")
     assert "NOVASIGHT_JETSON_PREPROCESS_ABI_VERSION 1" in header
     assert "uint32_t novasight_abi_version(void)" in header
     assert Path("novasight_jetson_preprocess_native/native/CMakeLists.txt").is_file()
     assert Path(
-        "novasight_jetson_preprocess_native/native/src/"
-        "novasight_jetson_preprocess_native.cpp"
+        "novasight_jetson_preprocess_native/native/src/novasight_jetson_preprocess_native.cpp"
     ).is_file()
     assert Path(
         "novasight_jetson_preprocess_native/native/src/jetson/"
@@ -70,9 +67,9 @@ def test_packaging_includes_jetson_bridge_adapter_packages() -> None:
 
 
 def test_native_jetson_preprocess_cmake_has_production_gate() -> None:
-    cmake = Path(
-        "novasight_jetson_preprocess_native/native/CMakeLists.txt"
-    ).read_text(encoding="utf-8")
+    cmake = Path("novasight_jetson_preprocess_native/native/CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
 
     assert 'NOVASIGHT_JETSON_PREPROCESS_IMPL "reference"' in cmake
     assert "reference jetson_scaffold jetson" in cmake
@@ -168,8 +165,7 @@ def test_native_jetson_support_validates_required_payload_contract() -> None:
         "novasight_jetson_preprocess_native_jetson_support.cpp"
     ).read_text(encoding="utf-8")
     reference = Path(
-        "novasight_jetson_preprocess_native/native/src/"
-        "novasight_jetson_preprocess_native.cpp"
+        "novasight_jetson_preprocess_native/native/src/novasight_jetson_preprocess_native.cpp"
     ).read_text(encoding="utf-8")
 
     for source in (support, reference):
@@ -183,23 +179,23 @@ def test_native_jetson_support_validates_required_payload_contract() -> None:
         assert "bool expect_value = true" in source
         assert 'capture_ts_ns"' in source
         assert 'dmabuf_fd"' in source
-        assert 'resource_source' in source
-        assert 'resource_width' in source
-        assert 'resource_height' in source
-        assert 'resource_pixel_format' in source
-        assert 'resource_geometry_mismatch' in source
-        assert 'resource_format_mismatch' in source
+        assert "resource_source" in source
+        assert "resource_width" in source
+        assert "resource_height" in source
+        assert "resource_pixel_format" in source
+        assert "resource_geometry_mismatch" in source
+        assert "resource_format_mismatch" in source
         assert "appsink" in source
-        assert 'pixel_format' in source
+        assert "pixel_format" in source
         assert "NV12" in source
-        assert 'roi_offset_x' in source
-        assert 'roi_offset_y' in source
+        assert "roi_offset_x" in source
+        assert "roi_offset_y" in source
         assert "invalid_roi_offset" in source
-        assert 'needs_resize' in source
+        assert "needs_resize" in source
         assert "needs_resize_required" in source
         assert 'read_object_field(json, "model_shape", &model_shape_json)' in source
         assert 'for (const char* key : {"batch", "channels", "height", "width"})' in source
-        assert 'Expected positive integer field: model_shape.' in source
+        assert "Expected positive integer field: model_shape." in source
         assert 'read_int_array_field(json, "nchw"' in source
 
 
@@ -353,7 +349,7 @@ def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
                 "deepstream_config_path": "combat/default/deepstream.ini",
                 "deepstream_io_mode": 4,
                 "deepstream_batched_push_timeout_us": 12000,
-            }
+            },
         }
     )
 
@@ -432,10 +428,13 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     robust = cfg.control.dual_phase_atan_robust_predictive_v2
     assert robust.velocity.history_size == 4
     assert robust.velocity.velocity_sample_count == 3
-    assert robust.prediction.coefficient == pytest.approx(1.0)
+    assert robust.schema_version == 3
+    assert robust.mode.near_threshold_px == pytest.approx(12.0)
+    assert robust.prediction.coefficient == pytest.approx(1.20)
     assert robust.prediction.enabled_y is False
-    assert robust.atan.far.kp == pytest.approx(0.35)
-    assert robust.atan.near.kp == pytest.approx(0.15)
+    assert robust.atan.scale_counts == pytest.approx(256.0)
+    assert robust.atan.far.kp == pytest.approx(0.45)
+    assert robust.atan.near.kp == pytest.approx(0.22)
     assert cfg.control.calibrated_angular.fov_x_deg == 105
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980
     assert cfg.control.shared.invert_y is False
@@ -445,9 +444,7 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
 
 
 def test_runtime_config_migrates_legacy_axis_signs() -> None:
-    cfg = parse_runtime_config(
-        {"calibration": {"axis_sign_x": 1, "axis_sign_y": -1}}
-    )
+    cfg = parse_runtime_config({"calibration": {"axis_sign_x": 1, "axis_sign_y": -1}})
 
     assert cfg.control.shared.invert_y is True
     assert not hasattr(cfg.calibration, "axis_sign_x")
@@ -498,9 +495,7 @@ def test_runtime_config_drops_legacy_noop_hardware_flip_dy() -> None:
 
 def test_runtime_config_rejects_unrepresentable_legacy_x_inversion() -> None:
     with pytest.raises(ValueError, match="axis_sign_x=-1.*cannot be migrated"):
-        parse_runtime_config(
-            {"calibration": {"axis_sign_x": -1, "axis_sign_y": 1}}
-        )
+        parse_runtime_config({"calibration": {"axis_sign_x": -1, "axis_sign_y": 1}})
 
 
 def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
@@ -559,9 +554,14 @@ def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
 
 
 def test_runtime_config_validates_recording_format() -> None:
-    assert parse_runtime_config({"consumers": {"recording_format": "csv"}}).consumers.recording_format == "csv"
     assert (
-        parse_runtime_config({"consumers": {"recording_format": "parquet"}}).consumers.recording_format
+        parse_runtime_config({"consumers": {"recording_format": "csv"}}).consumers.recording_format
+        == "csv"
+    )
+    assert (
+        parse_runtime_config(
+            {"consumers": {"recording_format": "parquet"}}
+        ).consumers.recording_format
         == "parquet"
     )
 
@@ -574,19 +574,46 @@ def test_runtime_config_validates_recording_format() -> None:
     [
         ({"calibration": {"profile_id": ""}}, "calibration.profile_id"),
         ({"calibration": {"profile_version": 0}}, "calibration.profile_version"),
-        ({"calibration": {"game_sensitivity_fingerprint": ""}}, "calibration.game_sensitivity_fingerprint"),
+        (
+            {"calibration": {"game_sensitivity_fingerprint": ""}},
+            "calibration.game_sensitivity_fingerprint",
+        ),
         ({"control": {"mode": "mixed"}}, "control.active_algorithm"),
-        ({"control": {"calibrated_angular": {"fov_x_deg": 180}}}, "control.calibrated_angular.fov_x_deg"),
-        ({"control": {"calibrated_angular": {"counts_per_360_x": 0}}}, "control.calibrated_angular.counts_per_360_x"),
-        ({"control": {"calibrated_angular": {"counts_per_360_y": 0}}}, "control.calibrated_angular.counts_per_360_y"),
-        ({"control": {"configured_actuation_delay_s": -0.001}}, "control.configured_actuation_delay_s"),
+        (
+            {"control": {"calibrated_angular": {"fov_x_deg": 180}}},
+            "control.calibrated_angular.fov_x_deg",
+        ),
+        (
+            {"control": {"calibrated_angular": {"counts_per_360_x": 0}}},
+            "control.calibrated_angular.counts_per_360_x",
+        ),
+        (
+            {"control": {"calibrated_angular": {"counts_per_360_y": 0}}},
+            "control.calibrated_angular.counts_per_360_y",
+        ),
+        (
+            {"control": {"configured_actuation_delay_s": -0.001}},
+            "control.configured_actuation_delay_s",
+        ),
         ({"control": {"prediction_strength": 1.51}}, "control.prediction_strength"),
         ({"control": {"calibrated_angular": {"kp_x": 2.01}}}, "control.calibrated_angular.kp_x"),
         ({"control": {"calibrated_angular": {"kd_y": -0.01}}}, "control.calibrated_angular.kd_y"),
-        ({"control": {"calibrated_angular": {"d_ema_alpha": 0.0}}}, "control.calibrated_angular.d_ema_alpha"),
-        ({"control": {"calibrated_angular": {"max_angle_step_x_deg": 0.0}}}, "control.calibrated_angular.max_angle_step_x_deg"),
-        ({"control": {"universal_saturated": {"response_scale_x_px": 0.0}}}, "control.universal_saturated.response_scale_x_px"),
-        ({"control": {"universal_saturated": {"max_step_y_counts": 0.0}}}, "control.universal_saturated.max_step_y_counts"),
+        (
+            {"control": {"calibrated_angular": {"d_ema_alpha": 0.0}}},
+            "control.calibrated_angular.d_ema_alpha",
+        ),
+        (
+            {"control": {"calibrated_angular": {"max_angle_step_x_deg": 0.0}}},
+            "control.calibrated_angular.max_angle_step_x_deg",
+        ),
+        (
+            {"control": {"universal_saturated": {"response_scale_x_px": 0.0}}},
+            "control.universal_saturated.response_scale_x_px",
+        ),
+        (
+            {"control": {"universal_saturated": {"max_step_y_counts": 0.0}}},
+            "control.universal_saturated.max_step_y_counts",
+        ),
         ({"control": {"shared": {"deadzone_x_px": 10.1}}}, "control.shared.deadzone_x_px"),
         ({"control": {"shared": {"max_count_slew_y": 0.0}}}, "control.shared.max_count_slew_y"),
         ({"control": {"scheduler_interval_ms": 0.1}}, "control.scheduler_interval_ms"),
@@ -596,14 +623,29 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"min_confidence": 0.09}}, "control.min_confidence"),
         ({"control": {"target_switch_delay_ms": 501}}, "control.target_switch_delay_ms"),
         ({"control": {"tracker_max_match_distance": 0}}, "control.tracker_max_match_distance"),
-        ({"control": {"tracker_position_cost_weight": -0.1}}, "control.tracker_position_cost_weight"),
+        (
+            {"control": {"tracker_position_cost_weight": -0.1}},
+            "control.tracker_position_cost_weight",
+        ),
         ({"control": {"tracker_iou_cost_weight": -0.1}}, "control.tracker_iou_cost_weight"),
         ({"control": {"tracker_max_missed_frames": -1}}, "control.tracker_max_missed_frames"),
-        ({"control": {"target_switch_min_preference_advantage": -0.1}}, "control.target_switch_min_preference_advantage"),
-        ({"control": {"target_switch_min_continuity_score": 1.5}}, "control.target_switch_min_continuity_score"),
+        (
+            {"control": {"target_switch_min_preference_advantage": -0.1}},
+            "control.target_switch_min_preference_advantage",
+        ),
+        (
+            {"control": {"target_switch_min_continuity_score": 1.5}},
+            "control.target_switch_min_continuity_score",
+        ),
         ({"control": {"kalman_max_predict_steps": 0}}, "control.kalman_max_predict_steps"),
-        ({"control": {"kalman_min_prediction_confidence": 1.5}}, "control.kalman_min_prediction_confidence"),
-        ({"control": {"kalman_nis_hard_reject": 8, "kalman_nis_threshold": 9}}, "control.kalman_nis_hard_reject"),
+        (
+            {"control": {"kalman_min_prediction_confidence": 1.5}},
+            "control.kalman_min_prediction_confidence",
+        ),
+        (
+            {"control": {"kalman_nis_hard_reject": 8, "kalman_nis_threshold": 9}},
+            "control.kalman_nis_hard_reject",
+        ),
     ],
 )
 def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_path: str) -> None:
@@ -612,9 +654,18 @@ def test_runtime_config_rejects_invalid_calibration(raw: dict[str, object], key_
 
 
 def test_runtime_config_has_one_kmnet_runtime_path() -> None:
-    assert parse_runtime_config({"control": {"trigger_mode": "hardware"}}).control.trigger_mode == "hardware"
-    assert parse_runtime_config({"control": {"trigger_mode": "always"}}).control.trigger_mode == "always"
-    assert parse_runtime_config({"control": {"scheduler_enabled": False}}).control.scheduler_enabled is False
+    assert (
+        parse_runtime_config({"control": {"trigger_mode": "hardware"}}).control.trigger_mode
+        == "hardware"
+    )
+    assert (
+        parse_runtime_config({"control": {"trigger_mode": "always"}}).control.trigger_mode
+        == "always"
+    )
+    assert (
+        parse_runtime_config({"control": {"scheduler_enabled": False}}).control.scheduler_enabled
+        is False
+    )
 
     with pytest.raises(ValueError, match="control.trigger_mode.*hardware or always"):
         parse_runtime_config({"control": {"trigger_mode": "telemetry"}})
@@ -678,9 +729,7 @@ def test_runtime_config_rejects_nested_non_mapping_section(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("unknown_key", ["model_registry", "weeb"])
-def test_runtime_config_rejects_unknown_top_level_key(
-    tmp_path: Path, unknown_key: str
-) -> None:
+def test_runtime_config_rejects_unknown_top_level_key(tmp_path: Path, unknown_key: str) -> None:
     path = tmp_path / "novasight.yaml"
     path.write_text(f"{unknown_key}: {{}}\n", encoding="utf-8")
 
@@ -771,9 +820,16 @@ def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
 def test_runtime_config_capture_memory_matches_backend() -> None:
     assert parse_runtime_config({}).capture.memory == "system"
     assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "system"
-    assert parse_runtime_config(
-        {"capture": {"backend": "nvmm_latest", "memory": "nvmm"}, "preprocess": {"backend": "cuda"}, "inference": {"backend": "nvmm_latest"}}
-    ).capture.memory == "nvmm"
+    assert (
+        parse_runtime_config(
+            {
+                "capture": {"backend": "nvmm_latest", "memory": "nvmm"},
+                "preprocess": {"backend": "cuda"},
+                "inference": {"backend": "nvmm_latest"},
+            }
+        ).capture.memory
+        == "nvmm"
+    )
 
     with pytest.raises(ValueError, match="capture.memory.*system or nvmm"):
         parse_runtime_config({"capture": {"memory": "dmabuf"}})
@@ -841,20 +897,16 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.algorithms.universal_saturated.response_scale_y_px",
         "control.algorithms.universal_saturated.max_step_x_counts",
         "control.algorithms.universal_saturated.max_step_y_counts",
-        "control.algorithms.dual_phase_atan_predictive_v1.far.kp",
-        "control.algorithms.dual_phase_atan_predictive_v1.near.kp",
-        "control.algorithms.dual_phase_atan_predictive_v1.prediction.enabled_x",
-        "control.algorithms.dual_phase_atan_predictive_v1.prediction.enabled_y",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_enter_bbox_h_ratio",
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_exit_bbox_h_ratio",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.base_cap_px",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.relative_cap",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.base_cap_px",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.relative_cap",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts",
         "control.shared.deadzone_x_px",
         "control.shared.deadzone_y_px",
         "control.shared.max_count_slew_x",
@@ -910,7 +962,9 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
 
 def test_runtime_config_schema_exposes_calibration_profile() -> None:
     schema = runtime_config_schema(RuntimeConfig())
-    calibration_section = next(section for section in schema["sections"] if section["id"] == "calibration")
+    calibration_section = next(
+        section for section in schema["sections"] if section["id"] == "calibration"
+    )
     paths = {field["path"] for field in calibration_section["fields"]}
 
     assert {
@@ -924,7 +978,9 @@ def test_runtime_config_schema_exposes_calibration_profile() -> None:
 
 def test_runtime_config_schema_exposes_kmnet_auto_connect() -> None:
     schema = runtime_config_schema(RuntimeConfig())
-    hardware_section = next(section for section in schema["sections"] if section["id"] == "hardware")
+    hardware_section = next(
+        section for section in schema["sections"] if section["id"] == "hardware"
+    )
     fields = {field["path"]: field for field in hardware_section["fields"]}
 
     assert fields["hardware.auto_connect"] == {
@@ -937,7 +993,9 @@ def test_runtime_config_schema_exposes_kmnet_auto_connect() -> None:
 
 def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     schema = runtime_config_schema(RuntimeConfig())
-    inference_section = next(section for section in schema["sections"] if section["id"] == "inference")
+    inference_section = next(
+        section for section in schema["sections"] if section["id"] == "inference"
+    )
     paths = {field["path"] for field in inference_section["fields"]}
 
     assert {

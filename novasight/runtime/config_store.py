@@ -25,16 +25,10 @@ class RuntimeConfigStore:
     def status(self) -> dict:
         with self._lock:
             config = self._config
-            dual_phase_active = config.control.active_algorithm in {
-                "dual_phase_atan_predictive_v1",
-                "dual_phase_atan_robust_predictive_v2",
-            }
-            dual_phase = (
-                config.control.dual_phase_atan_robust_predictive_v2
-                if config.control.active_algorithm
-                == "dual_phase_atan_robust_predictive_v2"
-                else config.control.dual_phase_atan_predictive_v1
+            dual_phase_active = (
+                config.control.active_algorithm == "dual_phase_atan_robust_predictive_v2"
             )
+            dual_phase = config.control.dual_phase_atan_robust_predictive_v2
             fov_x_deg = (
                 dual_phase.projection.fov_x_deg
                 if dual_phase_active

@@ -58,7 +58,7 @@ If source geometry is unavailable or untrusted, the aim observation is invalid a
 
 The new algorithm alone owns:
 
-- FAR/NEAR hysteresis;
+- FAR/NEAR selection with one measured-error threshold;
 - four-position same-target history;
 - three-segment median and time-adaptive EMA;
 - spread/trend/detection/track-identity prediction confidence;
@@ -70,16 +70,14 @@ The runtime owns target selection, initial trigger readiness, algorithm calculat
 
 ## Compatibility Algorithms
 
-The legacy implementations remain selectable under their own config namespaces:
+The remaining compatibility implementations stay selectable under their own config namespaces:
 
 ```text
 control.algorithms.calibrated_angular
 control.algorithms.universal_saturated
-control.algorithms.ttbox_pid_atan
-control.algorithms.dual_phase_atan_predictive_v1
 ```
 
-The three older generic controllers continue to use the existing `MouseController` envelope and legacy `scheduler_enabled` choice. V1, like V2, uses direct single-command delivery, but its Kalman estimator/configuration/state remains isolated from V2.
+These generic controllers continue to use the existing `MouseController` envelope and legacy `scheduler_enabled` choice. Removed `ttbox_pid_atan` and `dual_phase_atan_predictive_v1` config blocks are discarded during legacy migration; an old configuration that still selects either ID is migrated to `dual_phase_atan_robust_predictive_v2`.
 
 ## Configuration Contract
 

@@ -1,4 +1,5 @@
 """Tests for core runtime primitives and pipeline behavior."""
+
 import copy
 import math
 import threading
@@ -155,9 +156,15 @@ def test_gst_cpu_latest_pipeline_uses_single_frame_leaky_appsink() -> None:
     assert "nvvidconv left=640 right=1280 top=220 bottom=860" in pipeline
     assert "video/x-raw,format=BGRx,width=640,height=640" in pipeline
     assert "appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false" in pipeline
-    assert any("video/x-raw,format=RGBA,width=640,height=640" in item.pipeline for item in candidates)
-    assert any("video/x-raw,format=RGB,width=640,height=640" in item.pipeline for item in candidates)
-    assert any("video/x-raw,format=I420,width=640,height=640" in item.pipeline for item in candidates)
+    assert any(
+        "video/x-raw,format=RGBA,width=640,height=640" in item.pipeline for item in candidates
+    )
+    assert any(
+        "video/x-raw,format=RGB,width=640,height=640" in item.pipeline for item in candidates
+    )
+    assert any(
+        "video/x-raw,format=I420,width=640,height=640" in item.pipeline for item in candidates
+    )
 
 
 def test_cpu_compatible_capture_backend_is_public_appsink_bridge() -> None:
@@ -537,7 +544,9 @@ def test_runtime_pipeline_requires_gpu_bridge_for_nvmm_latest_inference() -> Non
                 },
             }
         },
-        process_captured_frame=lambda frame, *, acquired_generation=None: pytest.fail("inference must not start"),
+        process_captured_frame=lambda frame, *, acquired_generation=None: pytest.fail(
+            "inference must not start"
+        ),
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
@@ -569,7 +578,9 @@ def test_runtime_pipeline_allows_nvmm_capture_when_inference_is_disabled() -> No
                 "reason": "JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE",
             }
         },
-        process_captured_frame=lambda frame, *, acquired_generation=None: pytest.fail("inference is disabled"),
+        process_captured_frame=lambda frame, *, acquired_generation=None: pytest.fail(
+            "inference is disabled"
+        ),
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
 
@@ -592,7 +603,9 @@ def test_runtime_pipeline_consumes_latest_frames_without_read_frame() -> None:
                 return frame
         return None
 
-    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> None:
+    def process_captured_frame(
+        frame: CapturedFrame, *, acquired_generation: int | None = None
+    ) -> None:
         processed.append(frame.frame_id)
         if len(processed) >= 2:
             processed_two.set()
@@ -653,7 +666,9 @@ def test_runtime_pipeline_prefers_latest_frame_broker_over_preview_wait() -> Non
         state=SimpleNamespace(available=True),
         session=SimpleNamespace(running=True),
         latest_frame_broker=broker,
-        wait_preview_frame=lambda **_kwargs: pytest.fail("broker path must not poll preview frames"),
+        wait_preview_frame=lambda **_kwargs: pytest.fail(
+            "broker path must not poll preview frames"
+        ),
     )
     runtime = SimpleNamespace(
         running=False,
@@ -718,10 +733,14 @@ def test_runtime_pipeline_skips_stale_frame_before_inference() -> None:
                 return frame
         return None
 
-    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> RuntimeFrameResult:
+    def process_captured_frame(
+        frame: CapturedFrame, *, acquired_generation: int | None = None
+    ) -> RuntimeFrameResult:
         processed.append(frame.frame_id)
         processed_fresh.set()
-        return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False)
+        return RuntimeFrameResult(
+            control_intents=[], execution_results=[], observation_updated=False
+        )
 
     capture = SimpleNamespace(
         source=object(),
@@ -830,7 +849,7 @@ def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acqui
                 detections=[],
                 classes=["target"],
                 debug={"timings": {}, "preprocess": {"model_width": 2, "model_height": 2}},
-            )
+            ),
         ),
     )
     service.running = True
@@ -1043,8 +1062,12 @@ def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, mon
             trigger_mode="hardware",
         )
 
-    box_logs = [record for record in caplog.records if record.getMessage().startswith("box input source=")]
-    decision_logs = [record for record in caplog.records if record.getMessage().startswith("control decision")]
+    box_logs = [
+        record for record in caplog.records if record.getMessage().startswith("box input source=")
+    ]
+    decision_logs = [
+        record for record in caplog.records if record.getMessage().startswith("control decision")
+    ]
     assert len(box_logs) == 1
     assert "active=True" in box_logs[0].getMessage()
     assert len(decision_logs) == 2
@@ -1052,7 +1075,9 @@ def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, mon
     assert "emit=True" in decision_logs[1].getMessage()
 
 
-def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_scheduler_and_kmnet() -> None:
+def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_scheduler_and_kmnet() -> (
+    None
+):
     config = RuntimeConfig()
     config.control.trigger_mode = "hardware"
     config.control.mode = "universal_saturated"
@@ -1099,7 +1124,9 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         "x": 360.0,
         "y": 320.0,
     }
-    assert service.last_control["mouse_observation"]["predicted_aim_x_roi_px"] == pytest.approx(410.0)
+    assert service.last_control["mouse_observation"]["predicted_aim_x_roi_px"] == pytest.approx(
+        410.0
+    )
     assert service.last_control["pipeline"]["predicted_error_x_px"] == pytest.approx(50.0)
     assert service.last_control["dx"] == 18
     assert service.last_control["dy"] == 0
@@ -1195,16 +1222,8 @@ def test_scheduler_disabled_sends_detection_budget_in_observation_call() -> None
     assert executors.scheduler is None
 
 
-@pytest.mark.parametrize(
-    "algorithm_id",
-    [
-        "dual_phase_atan_predictive_v1",
-        "dual_phase_atan_robust_predictive_v2",
-    ],
-)
-def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch(
-    algorithm_id: str,
-) -> None:
+def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() -> None:
+    algorithm_id = "dual_phase_atan_robust_predictive_v2"
     config = RuntimeConfig()
     config.control.active_algorithm = algorithm_id
     config.control.trigger_mode = "always"
@@ -1249,7 +1268,10 @@ def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch(
     assert len(observation_result.execution_results) == 1
     assert observation_result.execution_results[0].sent is True
     assert observation_result.execution_results[0].metadata["stage"] == "mouse_command_executor"
-    assert observation_result.execution_results[0].metadata["delivery_mode"] == "single_command_per_observation"
+    assert (
+        observation_result.execution_results[0].metadata["delivery_mode"]
+        == "single_command_per_observation"
+    )
     assert len(kmnet.outputs) == 1
     assert int(kmnet.outputs[0].dx) != 0
     assert tick_result.execution_results == []
@@ -1265,7 +1287,7 @@ def test_dual_phase_rejects_late_batch_after_terminal_runtime_state(
     terminal_state: str,
 ) -> None:
     config = RuntimeConfig()
-    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     config.control.trigger_mode = "always"
     kmnet = _UnavailableButtonKmNet()
     executors = ExecutorRegistry.from_config(config)
@@ -1289,9 +1311,7 @@ def test_dual_phase_rejects_late_batch_after_terminal_runtime_state(
         capture_ts_ns=capture_ts_ns,
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
-        detections=[
-            Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)
-        ],
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
@@ -1322,7 +1342,7 @@ def test_terminal_state_remains_authoritative_over_concurrent_batch_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = RuntimeConfig()
-    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     service = RuntimeService(
         config,
         models=SimpleNamespace(get_active_deployment=lambda: None),
@@ -1361,7 +1381,7 @@ def test_terminal_state_remains_authoritative_over_concurrent_batch_rejection(
 
 def test_dual_phase_preserves_zero_generation_through_single_command_path() -> None:
     config = RuntimeConfig()
-    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     config.control.trigger_mode = "always"
     kmnet = _UnavailableButtonKmNet()
     executors = ExecutorRegistry.from_config(config)
@@ -1379,9 +1399,7 @@ def test_dual_phase_preserves_zero_generation_through_single_command_path() -> N
         capture_ts_ns=capture_ts_ns,
         inference_start_ts_ns=capture_ts_ns + 1_000,
         inference_end_ts_ns=capture_ts_ns + 2_000,
-        detections=[
-            Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)
-        ],
+        detections=[Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568)],
         classes=["target"],
         coordinate_space="roi",
     )
@@ -1409,7 +1427,7 @@ def test_dual_phase_control_tick_observes_trigger_release_without_sending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = RuntimeConfig()
-    config.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     config.control.trigger_mode = "hardware"
     kmnet = _UnavailableButtonKmNet()
     executors = ExecutorRegistry.from_config(config)
@@ -1598,7 +1616,7 @@ def test_runtime_service_rejects_batch_older_than_acquired_generation() -> None:
                 detections=[],
                 classes=["target"],
                 debug={"timings": {}, "preprocess": {"model_width": 2, "model_height": 2}},
-            )
+            ),
         ),
     )
     frame = CapturedFrame(
@@ -1635,7 +1653,9 @@ def test_runtime_pipeline_resets_frame_cursor_when_restarted() -> None:
                 return frame
         return None
 
-    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> None:
+    def process_captured_frame(
+        frame: CapturedFrame, *, acquired_generation: int | None = None
+    ) -> None:
         processed.append(frame.frame_id)
         processed_one.set()
 
@@ -1684,7 +1704,9 @@ def test_runtime_pipeline_stops_when_capture_becomes_unavailable() -> None:
     runtime = SimpleNamespace(
         running=False,
         config=cfg,
-        process_captured_frame=lambda _frame, *, acquired_generation=None: pytest.fail("unavailable capture must not process inference"),
+        process_captured_frame=lambda _frame, *, acquired_generation=None: pytest.fail(
+            "unavailable capture must not process inference"
+        ),
         process_control_tick=lambda: None,
     )
     pipeline = RuntimePipeline(capture=capture, runtime=runtime)
@@ -1743,7 +1765,9 @@ def test_runtime_pipeline_consumes_frames_from_capture_session_thread() -> None:
     processed: list[int] = []
     processed_two = threading.Event()
 
-    def process_captured_frame(frame: CapturedFrame, *, acquired_generation: int | None = None) -> None:
+    def process_captured_frame(
+        frame: CapturedFrame, *, acquired_generation: int | None = None
+    ) -> None:
         processed.append(frame.frame_id)
         if len(processed) >= 2:
             processed_two.set()
@@ -1802,7 +1826,9 @@ def test_runtime_service_process_detection_batch_uses_roi_contract() -> None:
             selected="noop",
             status=lambda: {},
             update_runtime_config=lambda _cfg: None,
-            execute=lambda _intent: pytest.fail("default hardware trigger should not emit in this seam test"),
+            execute=lambda _intent: pytest.fail(
+                "default hardware trigger should not emit in this seam test"
+            ),
         ),
     )
     service.running = True
@@ -2090,7 +2116,9 @@ def test_runtime_service_rejects_non_roi_detection_batch() -> None:
     assert service.last_pipeline_timings["control_ms"] == 0.0
     assert service.last_control is not None
     assert service.last_control["control_allowed"] is False
-    assert service.last_control["runtime_reset_reason"] == "DETECTION_BATCH_COORDINATE_SPACE_INVALID"
+    assert (
+        service.last_control["runtime_reset_reason"] == "DETECTION_BATCH_COORDINATE_SPACE_INVALID"
+    )
     assert service.last_inference_status["available"] is False
     assert service.last_inference_status["source"] == "detection_batch"
     assert service.last_inference_status["reason"] == "DetectionBatch coordinate_space must be roi"

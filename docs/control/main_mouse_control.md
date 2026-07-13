@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 
-Status: `dual_phase_atan_robust_predictive_v2` is the configured precise mainline. V1 and older algorithms remain isolated compatibility/A-B implementations.
+Status: `dual_phase_atan_robust_predictive_v2` is the configured precise mainline. `ttbox_pid_atan` and `dual_phase_atan_predictive_v1` have been removed.
 
 ## Mainline Route
 
@@ -12,7 +12,7 @@ latest DetectionBatch
 -> TargetSelector / Tracker identity
 -> raw bbox aim point
 -> current measured ROI error
--> FAR / NEAR hysteresis from measured error
+-> FAR / NEAR selection from one measured-error threshold
 -> four same-target X positions / three segment velocities
 -> median velocity / time-adaptive EMA
 -> confidence-weighted bounded X prediction
@@ -47,14 +47,15 @@ control:
       velocity:
         history_size: 4
         velocity_sample_count: 3
-        smoothing_tau_ms: 30.0
+        smoothing_tau_ms: 22.0
       prediction:
-        coefficient: 1.0
+        coefficient: 1.20
       atan:
+        scale_counts: 256.0
         far:
-          kp: 0.35
+          kp: 0.45
         near:
-          kp: 0.15
+          kp: 0.22
     calibrated_angular:
       kp_x: 1.0
 ```
@@ -65,17 +66,15 @@ The source namespace is:
 novasight.control.algorithms.dual_phase_atan_robust_predictive_v2
 ```
 
-Consequently, `prediction.coefficient`, `atan.far.kp`, and similarly named values in other algorithm namespaces are independent. V1 remains selectable without sharing mutable estimator, mode, prediction, or quantizer state with V2.
+Consequently, `prediction.coefficient`, `atan.far.kp`, and similarly named values in other algorithm namespaces are independent.
 
 ## Algorithm Differences
 
 | Algorithm ID | Error/units | Prediction | Near behavior | Delivery |
 | --- | --- | --- | --- | --- |
-| `dual_phase_atan_robust_predictive_v2` | measured ROI px -> source px -> radians -> full counts -> counts-domain Atan | four positions, three `px/ms` velocities, median, dynamic EMA, confidence and caps | FAR/NEAR hysteresis; no movement deadzone | one direct integer command per observation |
-| `dual_phase_atan_predictive_v1` | ROI error -> source angle -> full correction counts -> counts-domain Atan | constant-velocity Kalman compatibility baseline | FAR/NEAR hysteresis; no movement deadzone | one direct integer command per observation |
+| `dual_phase_atan_robust_predictive_v2` | measured ROI px -> source px -> radians -> full counts -> counts-domain Atan | four positions, three `px/ms` velocities, median, dynamic EMA, confidence and caps | one NEAR threshold; all other error is FAR; no movement deadzone | one direct integer command per observation |
 | `calibrated_angular` | full-space angular PD | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 | `universal_saturated` | empirical pixel-domain saturated Atan | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
-| `ttbox_pid_atan` | empirical pixel-domain Atan; despite its historical name, not a complete PID | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 
 The new algorithm bypasses the entire legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and Scheduler capacity cannot alter its result.
 
@@ -113,7 +112,7 @@ theta = atan(source_error / focal)
 full_error_counts = theta * counts_per_360 / (2*pi)
 ```
 
-For the active FAR or NEAR phase:
+FAR and NEAR share one Atan scale. The active phase selects only Kp and its output limit:
 
 ```text
 u = kp * scale_counts * atan(full_error_counts / scale_counts)

@@ -9,7 +9,7 @@ Formal name: 双阶段 Atan 非线性控制 + 同目标短窗稳健速度估计 
 ```text
 latest valid DetectionBatch
 -> measured aim point
--> measured error and FAR/NEAR hysteresis
+-> measured error and single-threshold FAR/NEAR selection
 -> same-target four-position history
 -> three adjacent capture-time velocities in px/ms
 -> median velocity
@@ -97,7 +97,7 @@ u = K_mode * S_counts * atan(full_counts / S_counts) # control shaping
 u = clamp(u, -max_counts_per_update, max_counts_per_update)
 ```
 
-FAR and NEAR are the only modes. Measured radial error selects them with hysteresis. Neither mode is a movement deadzone. No D term or separate velocity feed-forward is present.
+FAR and NEAR are the only modes. A single measured radial-error threshold selects NEAR; every value above it is FAR. There is no enter/exit hysteresis and neither mode is a movement deadzone. Both phases share one `scale_counts`; only Kp and the per-update output limit differ. No D term or separate velocity feed-forward is present.
 
 ## Integer And Delivery Contract
 
@@ -109,7 +109,9 @@ accumulator -= integer
 
 Opposite demand clears an old-direction fraction. Trigger release, stale blocking, target switch/loss, geometry change, or runtime reset clears unsent fractions. Trigger-inactive observations never bank output counts.
 
-Every accepted observation yields at most one integer `move(dx, dy)`. V2 configuration validation requires each per-update limit to remain in `(0, 127]`; defaults are FAR 127 and NEAR 60 counts. `MouseCommandExecutor` also rejects non-integer counts and values outside its declared device range before the driver call.
+Every accepted observation yields at most one integer `move(dx, dy)`. V2 configuration validation requires each per-update limit to remain in `(0, 127]`; defaults are FAR 127 and NEAR 72 counts. `MouseCommandExecutor` also rejects non-integer counts and values outside its declared device range before the driver call.
+
+The tighter first-pass profile uses FAR Kp `0.45`, NEAR Kp `0.22`, shared Atan scale `256`, prediction coefficient `1.20`, and a `22 ms` velocity EMA time constant. These values increase response authority relative to the original V2 profile while retaining projection, prediction caps, freshness checks, and protocol-safe output limits.
 
 The deterministic closed-loop test compares coefficient `0` against enabled limited prediction for a constant-velocity target and requires the predictive run to have lower post-warmup mean absolute error. This is a regression baseline, not a substitute for real-device A/B calibration.
 

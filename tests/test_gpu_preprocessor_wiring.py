@@ -28,7 +28,12 @@ from novasight.inference.jetson import (
     JetsonGpuResourcePreprocessor,
     create_gpu_resource_preprocessor,
 )
-from novasight.inference.preprocess import DeviceTensor, TensorPreprocessResult, prepare_host_tensor, prepare_tensor
+from novasight.inference.preprocess import (
+    DeviceTensor,
+    TensorPreprocessResult,
+    prepare_host_tensor,
+    prepare_tensor,
+)
 import novasight.inference.tensorrt as tensorrt_module
 from novasight.inference.runtime import InferenceRuntime
 from novasight.inference.tensorrt import TensorRtInferenceEngine
@@ -157,7 +162,7 @@ def test_runtime_reconfigurator_switches_algorithm_and_executor_under_runtime_lo
     monkeypatch,
 ) -> None:
     cfg = RuntimeConfig()
-    cfg.control.active_algorithm = "dual_phase_atan_predictive_v1"
+    cfg.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     app = create_app(
         data_dir=tmp_path / "data",
         config_path=tmp_path / "missing.yaml",
@@ -168,9 +173,7 @@ def test_runtime_reconfigurator_switches_algorithm_and_executor_under_runtime_lo
     observed_runtime_algorithms: list[str] = []
 
     def record_update(next_config: RuntimeConfig) -> None:
-        observed_runtime_algorithms.append(
-            app.state.runtime.config.control.active_algorithm
-        )
+        observed_runtime_algorithms.append(app.state.runtime.config.control.active_algorithm)
         original_update(next_config)
 
     monkeypatch.setattr(registry, "update_runtime_config", record_update)
@@ -505,7 +508,10 @@ def test_capture_select_reports_runtime_restart_failure_when_pipeline_was_runnin
     assert report.applied is False
     assert report.rolled_back is False
     assert report.message.startswith("采集配置已应用，但启动主链失败")
-    assert any(section.section == "runtime_pipeline" and section.status == "failed" for section in report.sections)
+    assert any(
+        section.section == "runtime_pipeline" and section.status == "failed"
+        for section in report.sections
+    )
     assert app.state.runtime.running is False
 
 
@@ -1339,7 +1345,9 @@ def test_tensorrt_inference_debug_includes_native_preprocess_timings(
         "prepare_tensor",
         lambda _prepared, _shape, *, gpu_preprocessor: preprocess_result,
     )
-    monkeypatch.setattr(engine, "_execute", lambda _tensor: ([], {"timings": {"input_location": "device"}}))
+    monkeypatch.setattr(
+        engine, "_execute", lambda _tensor: ([], {"timings": {"input_location": "device"}})
+    )
 
     result = engine.infer(object())
 
@@ -1406,7 +1414,12 @@ def test_native_ctypes_bridge_auto_builds_default_library_on_jetson(
         native_backend._reset_library_cache()
 
     assert len(calls) == 2
-    assert calls[0][:4] == ["cmake", "-S", str(Path(native_backend.__file__).resolve().parent / "native"), "-B"]
+    assert calls[0][:4] == [
+        "cmake",
+        "-S",
+        str(Path(native_backend.__file__).resolve().parent / "native"),
+        "-B",
+    ]
     assert calls[0][4] == str(tmp_path / "build" / "jetson-native")
     assert calls[1] == ["cmake", "--build", str(tmp_path / "build" / "jetson-native")]
     assert status["available"] is False

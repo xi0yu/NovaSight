@@ -19,22 +19,9 @@ from novasight.control import (
     MouseObservation,
     RawAimPointProjector,
     SharedOutputConfig,
-    TtboxPidAtanControllerConfig,
     UniversalSaturatedControllerConfig,
     plan_step_capacity,
     target_motion_estimate_from_debug,
-)
-from novasight.control.algorithms.dual_phase_atan_predictive_v1 import (
-    ALGORITHM_ID as DUAL_PHASE_ATAN_PREDICTIVE_V1,
-    AtanPhaseConfig as DualPhaseAtanPhaseConfig,
-    DualPhaseAtanPredictiveV1Algorithm,
-    DualPhaseAtanPredictiveV1Config as DualPhaseAlgorithmConfig,
-    DualPhaseAtanPredictiveV1Observation,
-    EstimatorConfig as DualPhaseEstimatorConfig,
-    ModeSelectorConfig as DualPhaseModeSelectorConfig,
-    PredictionConfig as DualPhasePredictionConfig,
-    ProjectionConfig as DualPhaseProjectionConfig,
-    QuantizerConfig as DualPhaseQuantizerConfig,
 )
 from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
     ALGORITHM_ID as DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
@@ -69,7 +56,6 @@ logger = logging.getLogger("novasight.runtime.service")
 
 DUAL_PHASE_ALGORITHM_IDS = frozenset(
     {
-        DUAL_PHASE_ATAN_PREDICTIVE_V1,
         DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
     }
 )
@@ -191,38 +177,26 @@ class RuntimeService:
             statistics.setdefault("control_observe_fps", 0.0)
             statistics.setdefault("inference_ms", 0.0)
         deepstream_status = (
-            pipeline_payload.get("deepstream", {})
-            if isinstance(pipeline_payload, dict)
-            else {}
+            pipeline_payload.get("deepstream", {}) if isinstance(pipeline_payload, dict) else {}
         )
         if isinstance(deepstream_status, dict) and deepstream_status:
             mailbox_status = deepstream_status.get("detection_batch_mailbox", {})
             mailbox_status = mailbox_status if isinstance(mailbox_status, dict) else {}
             stale_dropped = int(deepstream_status.get("stale_dropped_batches") or 0)
-            timestamp_rejected = int(
-                deepstream_status.get("timestamp_rejected_batches") or 0
-            )
-            non_monotonic_dropped = int(
-                deepstream_status.get("non_monotonic_dropped_batches") or 0
-            )
+            timestamp_rejected = int(deepstream_status.get("timestamp_rejected_batches") or 0)
+            non_monotonic_dropped = int(deepstream_status.get("non_monotonic_dropped_batches") or 0)
             mailbox_overwritten = int(mailbox_status.get("overwritten_batches") or 0)
             statistics["capture_counter"] = int(deepstream_status.get("input_frames") or 0)
             statistics["capture_fps"] = float(deepstream_status.get("input_fps") or 0.0)
-            statistics["inference_counter"] = int(
-                deepstream_status.get("output_buffers") or 0
-            )
+            statistics["inference_counter"] = int(deepstream_status.get("output_buffers") or 0)
             statistics["detection_batch_counter"] = int(
                 deepstream_status.get("published_batches") or 0
             )
             statistics["detection_batch_consumed_counter"] = int(
                 getattr(pipeline_stats, "processed_frames", 0)
             )
-            statistics["inference_fps"] = float(
-                deepstream_status.get("output_fps") or 0.0
-            )
-            statistics["detection_batch_fps"] = float(
-                deepstream_status.get("published_fps") or 0.0
-            )
+            statistics["inference_fps"] = float(deepstream_status.get("output_fps") or 0.0)
+            statistics["detection_batch_fps"] = float(deepstream_status.get("published_fps") or 0.0)
             statistics["control_observation_counter"] = int(
                 getattr(pipeline_stats, "control_observations", 0)
             )
@@ -231,20 +205,13 @@ class RuntimeService:
             statistics["non_monotonic_dropped_batches"] = non_monotonic_dropped
             statistics["mailbox_overwritten_batches"] = mailbox_overwritten
             statistics["skipped_counter"] = (
-                stale_dropped
-                + timestamp_rejected
-                + non_monotonic_dropped
-                + mailbox_overwritten
+                stale_dropped + timestamp_rejected + non_monotonic_dropped + mailbox_overwritten
             )
-            statistics["timestamp_source"] = str(
-                deepstream_status.get("timestamp_source") or ""
-            )
+            statistics["timestamp_source"] = str(deepstream_status.get("timestamp_source") or "")
             statistics["last_frame_age_ms"] = float(
                 deepstream_status.get("latest_frame_age_ms") or 0.0
             )
-            statistics["batch_age_ms"] = float(
-                deepstream_status.get("last_batch_age_ms") or 0.0
-            )
+            statistics["batch_age_ms"] = float(deepstream_status.get("last_batch_age_ms") or 0.0)
             nvinfer_ms = _status_statistic(
                 deepstream_status,
                 "nvinfer_total_ms_stats",
@@ -275,9 +242,7 @@ class RuntimeService:
             statistics["latest_frame_age_ms"] = latest_frame_age_ms
         if inference_observation:
             if "frame_age_ms" in inference_observation:
-                statistics["batch_age_ms"] = float(
-                    inference_observation.get("frame_age_ms") or 0.0
-                )
+                statistics["batch_age_ms"] = float(inference_observation.get("frame_age_ms") or 0.0)
             if "preprocess_ms" in inference_observation:
                 statistics["preprocess_ms"] = float(
                     inference_observation.get("preprocess_ms") or 0.0
@@ -318,18 +283,12 @@ class RuntimeService:
         active_model: dict | None,
     ) -> dict[str, Any]:
         backend = str(getattr(self.config.inference, "backend", "")).lower()
-        status = (
-            inference_state.status()
-            if inference_state is not None
-            else {"available": False}
-        )
+        status = inference_state.status() if inference_state is not None else {"available": False}
         payload = dict(status) if isinstance(status, dict) else {"available": False}
         if backend == "deepstream_nvinfer" and self.pipeline is not None:
             pipeline_status = self.pipeline.status()
             deepstream_status = (
-                pipeline_status.get("deepstream", {})
-                if isinstance(pipeline_status, dict)
-                else {}
+                pipeline_status.get("deepstream", {}) if isinstance(pipeline_status, dict) else {}
             )
             if isinstance(deepstream_status, dict) and deepstream_status:
                 payload = {**payload, **deepstream_status}
@@ -444,9 +403,7 @@ class RuntimeService:
 
     @staticmethod
     def _active_dual_phase_config(config: RuntimeConfig) -> Any:
-        if config.control.active_algorithm == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
-            return config.control.dual_phase_atan_robust_predictive_v2
-        return config.control.dual_phase_atan_predictive_v1
+        return config.control.dual_phase_atan_robust_predictive_v2
 
     @staticmethod
     def _config_calibration_signature(config: RuntimeConfig) -> tuple[Any, ...]:
@@ -519,26 +476,14 @@ class RuntimeService:
         mode = self.config.control.active_algorithm
         selected_executor = getattr(self.executors, "selected", None) or "kmnet"
         is_dual_phase = mode in DUAL_PHASE_ALGORITHM_IDS
-        fov_x_deg = (
-            dual_phase.projection.fov_x_deg
-            if is_dual_phase
-            else calibrated.fov_x_deg
-        )
+        fov_x_deg = dual_phase.projection.fov_x_deg if is_dual_phase else calibrated.fov_x_deg
         counts_per_360_x = (
-            dual_phase.projection.counts_per_360
-            if is_dual_phase
-            else calibrated.counts_per_360_x
+            dual_phase.projection.counts_per_360 if is_dual_phase else calibrated.counts_per_360_x
         )
         counts_per_360_y = (
-            dual_phase.projection.counts_per_360
-            if is_dual_phase
-            else calibrated.counts_per_360_y
+            dual_phase.projection.counts_per_360 if is_dual_phase else calibrated.counts_per_360_y
         )
-        invert_y = (
-            dual_phase.projection.invert_y
-            if is_dual_phase
-            else shared.invert_y
-        )
+        invert_y = dual_phase.projection.invert_y if is_dual_phase else shared.invert_y
         delivery_stage = (
             "MouseCommandExecutor(single-command-per-observation)"
             if is_dual_phase
@@ -648,9 +593,7 @@ class RuntimeService:
         with self._control_lock:
             if not self.running or self.fatal_error is not None:
                 reason = (
-                    "RUNTIME_FATAL_ERROR"
-                    if self.fatal_error is not None
-                    else "RUNTIME_STOPPED"
+                    "RUNTIME_FATAL_ERROR" if self.fatal_error is not None else "RUNTIME_STOPPED"
                 )
                 self._reset_detection_batch_cursor()
                 self._reset_runtime_control_state(reason)
@@ -661,9 +604,8 @@ class RuntimeService:
             control_intents = [intent] if intent is not None else []
             execution_results = [self.executors.execute(intent) for intent in control_intents]
             for result in execution_results:
-                if (
-                    self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS
-                    and not bool(getattr(result, "sent", False))
+                if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS and not bool(
+                    getattr(result, "sent", False)
                 ):
                     # A failed or blocked device call must not leave fractional
                     # demand from an unsent observation to a later frame.
@@ -724,7 +666,10 @@ class RuntimeService:
                 self._reset_control_motion_state()
                 self._clear_pending_commands("RUNTIME_STOPPED")
                 return self._empty_runtime_frame_result()
-            if str(self.config.control.trigger_mode) == "hardware" and not self._box_input_state().active:
+            if (
+                str(self.config.control.trigger_mode) == "hardware"
+                and not self._box_input_state().active
+            ):
                 self._reset_control_motion_state()
                 self._clear_pending_commands("TRIGGER_INACTIVE")
                 return self._empty_runtime_frame_result()
@@ -745,7 +690,9 @@ class RuntimeService:
 
     @staticmethod
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
-        return RuntimeFrameResult(control_intents=[], execution_results=[], observation_updated=False)
+        return RuntimeFrameResult(
+            control_intents=[], execution_results=[], observation_updated=False
+        )
 
     def _finalize_detection_batch_early_result(self) -> RuntimeFrameResult:
         """Keep terminal runtime state authoritative over concurrent early exits."""
@@ -1000,9 +947,7 @@ class RuntimeService:
             "engine_execute_ms": nvinfer_total_ms,
             "decode_ms": decode_ms,
             "nms_ms": None,
-            "detection_batch_build_ms": float(
-                metadata.get("detection_batch_build_ms") or 0.0
-            ),
+            "detection_batch_build_ms": float(metadata.get("detection_batch_build_ms") or 0.0),
             "handoff_ms": max(
                 0.0,
                 (handoff_start_ns - int(detection_batch.inference_end_ts_ns)) / 1e6,
@@ -1047,7 +992,9 @@ class RuntimeService:
             "publish_ts_ns": int(detection_batch.publish_ts_ns),
             "clock_domain": str(detection_batch.clock_domain),
             "input_age_ms": float(detection_batch.input_age_ms),
-            "inference_ms": float(detection_batch.inference_ms or detection_batch.inference_latency_ms),
+            "inference_ms": float(
+                detection_batch.inference_ms or detection_batch.inference_latency_ms
+            ),
             "result_age_ms": float(detection_batch.result_age_ms),
             "is_stale": bool(detection_batch.is_stale),
             "control_now_ts_ns": int(now_ns),
@@ -1307,7 +1254,14 @@ class RuntimeService:
             offset_x=int(getattr(roi_config, "offset_x", 0) or 0),
             offset_y=int(getattr(roi_config, "offset_y", 0) or 0),
         )
-        return config_source_width, config_source_height, int(roi_x), int(roi_y), True, "runtime_config"
+        return (
+            config_source_width,
+            config_source_height,
+            int(roi_x),
+            int(roi_y),
+            True,
+            "runtime_config",
+        )
 
     @staticmethod
     def _detection_batch_roi_contract_reason(
@@ -1706,8 +1660,12 @@ class RuntimeService:
             return max(0.0, (end - start) / 1e6)
 
         inference_debug = self.last_inference_status.get("debug", {})
-        debug_timings = inference_debug.get("timings", {}) if isinstance(inference_debug, dict) else {}
-        decode_debug = inference_debug.get("decode", {}) if isinstance(inference_debug, dict) else {}
+        debug_timings = (
+            inference_debug.get("timings", {}) if isinstance(inference_debug, dict) else {}
+        )
+        decode_debug = (
+            inference_debug.get("decode", {}) if isinstance(inference_debug, dict) else {}
+        )
         decode_timings = decode_debug.get("timings", {}) if isinstance(decode_debug, dict) else {}
         decode_ms = float(decode_timings.get("decode_ms") or debug_timings.get("decode_ms") or 0.0)
         preprocess_ms = float(
@@ -1716,7 +1674,9 @@ class RuntimeService:
             or 0.0
         )
         h2d_ms = float(decode_timings.get("h2d_enqueue_ms") or 0.0)
-        engine_total_ms = float(decode_timings.get("total_ms") or debug_timings.get("execute_total_ms") or 0.0)
+        engine_total_ms = float(
+            decode_timings.get("total_ms") or debug_timings.get("execute_total_ms") or 0.0
+        )
         engine_execute_ms = max(0.0, engine_total_ms - decode_ms)
         self.last_pipeline_timings = {
             "roi_ms": ms(roi_start_ns, infer_start_ns),
@@ -1766,7 +1726,11 @@ class RuntimeService:
         input_pixel_ratio = self._debug_float(preprocess_debug, "pixel_ratio")
         decode_debug = debug_payload.get("decode")
         decode_timings = decode_debug.get("timings", {}) if isinstance(decode_debug, dict) else {}
-        debug_timings = debug_payload.get("timings", {}) if isinstance(debug_payload.get("timings"), dict) else {}
+        debug_timings = (
+            debug_payload.get("timings", {})
+            if isinstance(debug_payload.get("timings"), dict)
+            else {}
+        )
         preprocess_ms = float(
             debug_timings.get("native_preprocess_total_ms")
             or debug_timings.get("numpy_tensor_ms")
@@ -1806,23 +1770,47 @@ class RuntimeService:
             "reason": reason,
             "raw_detections": raw_detections,
             "mapped_detections": mapped_detections,
-            "detection_batch_frame_id": detection_batch.frame_id if detection_batch is not None else 0,
-            "detection_batch_generation": int(detection_batch.generation or 0) if detection_batch is not None else 0,
-            "detection_batch_capture_ts_ns": detection_batch.capture_ts_ns if detection_batch is not None else 0,
-            "detection_batch_publish_ts_ns": detection_batch.publish_ts_ns if detection_batch is not None else 0,
-            "detection_batch_source_sequence": int(detection_batch.source_sequence or 0) if detection_batch is not None else 0,
-            "detection_batch_clock_domain": detection_batch.clock_domain if detection_batch is not None else "",
-            "detection_batch_input_age_ms": detection_batch.input_age_ms if detection_batch is not None else 0.0,
-            "detection_batch_result_age_ms": detection_batch.result_age_ms if detection_batch is not None else 0.0,
-            "detection_batch_is_stale": detection_batch.is_stale if detection_batch is not None else False,
+            "detection_batch_frame_id": detection_batch.frame_id
+            if detection_batch is not None
+            else 0,
+            "detection_batch_generation": int(detection_batch.generation or 0)
+            if detection_batch is not None
+            else 0,
+            "detection_batch_capture_ts_ns": detection_batch.capture_ts_ns
+            if detection_batch is not None
+            else 0,
+            "detection_batch_publish_ts_ns": detection_batch.publish_ts_ns
+            if detection_batch is not None
+            else 0,
+            "detection_batch_source_sequence": int(detection_batch.source_sequence or 0)
+            if detection_batch is not None
+            else 0,
+            "detection_batch_clock_domain": detection_batch.clock_domain
+            if detection_batch is not None
+            else "",
+            "detection_batch_input_age_ms": detection_batch.input_age_ms
+            if detection_batch is not None
+            else 0.0,
+            "detection_batch_result_age_ms": detection_batch.result_age_ms
+            if detection_batch is not None
+            else 0.0,
+            "detection_batch_is_stale": detection_batch.is_stale
+            if detection_batch is not None
+            else False,
             "detection_batch_model_input_size": (
                 list(detection_batch.model_input_size)
                 if detection_batch is not None and detection_batch.model_input_size is not None
                 else []
             ),
-            "inference_start_ts_ns": detection_batch.inference_start_ts_ns if detection_batch is not None else 0,
-            "inference_end_ts_ns": detection_batch.inference_end_ts_ns if detection_batch is not None else 0,
-            "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms if detection_batch is not None else 0.0,
+            "inference_start_ts_ns": detection_batch.inference_start_ts_ns
+            if detection_batch is not None
+            else 0,
+            "inference_end_ts_ns": detection_batch.inference_end_ts_ns
+            if detection_batch is not None
+            else 0,
+            "detection_batch_inference_latency_ms": detection_batch.inference_latency_ms
+            if detection_batch is not None
+            else 0.0,
             "classes": list(classes or []),
             "input_width": int(getattr(roi_frame, "width", frame.width)),
             "input_height": int(getattr(roi_frame, "height", frame.height)),
@@ -1839,7 +1827,9 @@ class RuntimeService:
             "input_downscale_factor": input_downscale_factor,
             "input_pixel_ratio": input_pixel_ratio,
             "input_density_warning": bool(preprocess_debug.get("density_warning", False)),
-            "detection_coordinate_space": detection_batch.coordinate_space if detection_batch is not None else "roi",
+            "detection_coordinate_space": detection_batch.coordinate_space
+            if detection_batch is not None
+            else "roi",
             "source_width": source_width,
             "source_height": source_height,
             "source_geometry_source": source_geometry_source,
@@ -1888,9 +1878,7 @@ class RuntimeService:
                 "frame_id": context.frame_id,
                 "control_now_ts_ns": control_now_ns,
                 "trajectory_generation": int(
-                    context.frame_id
-                    if context.generation is None
-                    else context.generation
+                    context.frame_id if context.generation is None else context.generation
                 ),
                 "global_state": self._global_state_from_selection_state(selection.state),
                 "selector_state": selection.state,
@@ -1962,9 +1950,7 @@ class RuntimeService:
                 "capture_ts_ns": context.capture_ts_ns,
                 "control_now_ts_ns": time.monotonic_ns(),
                 "trajectory_generation": int(
-                    context.frame_id
-                    if context.generation is None
-                    else context.generation
+                    context.frame_id if context.generation is None else context.generation
                 ),
                 "frame_age_ms": frame_age_ms,
                 "global_state": "DISABLED",
@@ -2025,10 +2011,7 @@ class RuntimeService:
         )
         trigger_activation_ready = bool(
             trigger_mode == "always"
-            or (
-                box_input.active
-                and trigger_hold_ms >= activation_delay_ms
-            )
+            or (box_input.active and trigger_hold_ms >= activation_delay_ms)
         )
         timing_payload = self._record_control_timing(
             context,
@@ -2038,8 +2021,7 @@ class RuntimeService:
         measurement_dt_ms = timing_payload.get("measurement_dt_ms")
         algorithm_id = self.config.control.active_algorithm
         algorithm_trigger_active = bool(
-            trigger_activation_ready
-            and (box_input.active or trigger_mode == "always")
+            trigger_activation_ready and (box_input.active or trigger_mode == "always")
         )
         if algorithm_id in DUAL_PHASE_ALGORITHM_IDS:
             command, observation_metadata = self._dual_phase_control_command(
@@ -2070,9 +2052,7 @@ class RuntimeService:
             )
             observation = control_metadata["mouse_observation"]
             command = self.mouse_controller.calculate(observation)
-        mouse_observation_debug = dict(
-            control_metadata.get("mouse_observation_debug") or {}
-        )
+        mouse_observation_debug = dict(control_metadata.get("mouse_observation_debug") or {})
         active_aim_y_ratio = (
             float(self._active_dual_phase_config(self.config).aim.y_ratio)
             if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
@@ -2089,9 +2069,7 @@ class RuntimeService:
         command_expires_ts_ns = (
             int(context.capture_ts_ns or 0)
             + int(
-                float(
-                    self._active_dual_phase_config(self.config).freshness_threshold_ms
-                )
+                float(self._active_dual_phase_config(self.config).freshness_threshold_ms)
                 * 1_000_000.0
             )
             if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
@@ -2109,18 +2087,16 @@ class RuntimeService:
             trace_ms=command.trace_ms,
             bezier_ctrl=command.bezier_ctrl,
             source_frame_id=context.frame_id,
-            source_track_id=int(getattr(target, "track_id")) if hasattr(target, "track_id") else None,
+            source_track_id=int(getattr(target, "track_id"))
+            if hasattr(target, "track_id")
+            else None,
             predicted_source=predicted_source,
             trajectory_generation=trajectory_generation,
             trigger_required=(
-                requires_trigger
-                if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
-                else None
+                requires_trigger if algorithm_id in DUAL_PHASE_ALGORITHM_IDS else None
             ),
             trigger_active=(
-                algorithm_trigger_active
-                if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
-                else None
+                algorithm_trigger_active if algorithm_id in DUAL_PHASE_ALGORITHM_IDS else None
             ),
             command_expires_ts_ns=command_expires_ts_ns,
         )
@@ -2234,7 +2210,12 @@ class RuntimeService:
             "left_trigger_active": bool(hardware_input.left),
             "left_trigger_hold_ms": left_trigger_hold_ms,
             "trigger_requirement": trigger_requirement,
-            "trigger_reason": str(trigger_raw.get("reason") or trigger_raw.get("mode") or trigger_raw.get("source") or ""),
+            "trigger_reason": str(
+                trigger_raw.get("reason")
+                or trigger_raw.get("mode")
+                or trigger_raw.get("source")
+                or ""
+            ),
             "trigger_raw": trigger_raw,
             "output_mode": output_mode,
             "will_emit": will_emit,
@@ -2387,7 +2368,11 @@ class RuntimeService:
             )
             for window_ms in (20, 40, 60)
         }
-        if measurement_dt_s is not None and math.isfinite(measurement_dt_s) and measurement_dt_s > 0.0:
+        if (
+            measurement_dt_s is not None
+            and math.isfinite(measurement_dt_s)
+            and measurement_dt_s > 0.0
+        ):
             previous_capture_ts_ns = capture_ts_ns - int(measurement_dt_s * 1e9)
             between_observations = totals(previous_capture_ts_ns, capture_ts_ns)
         else:
@@ -2396,19 +2381,11 @@ class RuntimeService:
         recent_abs_x_60 = recent[60][3]
         recent_abs_y_60 = recent[60][4]
         latest_send_x_ts_ns = max(
-            (
-                send_ts_ns
-                for send_ts_ns, dx, _ in self._executed_control_samples
-                if dx != 0
-            ),
+            (send_ts_ns for send_ts_ns, dx, _ in self._executed_control_samples if dx != 0),
             default=0,
         )
         latest_send_y_ts_ns = max(
-            (
-                send_ts_ns
-                for send_ts_ns, _, dy in self._executed_control_samples
-                if dy != 0
-            ),
+            (send_ts_ns for send_ts_ns, _, dy in self._executed_control_samples if dy != 0),
             default=0,
         )
         configured_feedback_delay_ns = int(
@@ -2426,12 +2403,10 @@ class RuntimeService:
         feedback_visible_after_x_ts_ns = latest_send_x_ts_ns + feedback_wait_ns
         feedback_visible_after_y_ts_ns = latest_send_y_ts_ns + feedback_wait_ns
         actuation_pending_x = bool(
-            latest_send_x_ts_ns > 0
-            and capture_ts_ns <= feedback_visible_after_x_ts_ns
+            latest_send_x_ts_ns > 0 and capture_ts_ns <= feedback_visible_after_x_ts_ns
         )
         actuation_pending_y = bool(
-            latest_send_y_ts_ns > 0
-            and capture_ts_ns <= feedback_visible_after_y_ts_ns
+            latest_send_y_ts_ns > 0 and capture_ts_ns <= feedback_visible_after_y_ts_ns
         )
         confidence_zero_x = 1
         confidence_zero_y = 1
@@ -2489,7 +2464,14 @@ class RuntimeService:
             "committed_initial",
         }:
             return "TRACKING"
-        if normalized in {"target_unavailable", "missing", "no_target", "reacquire", "lost", "switch_pending"}:
+        if normalized in {
+            "target_unavailable",
+            "missing",
+            "no_target",
+            "reacquire",
+            "lost",
+            "switch_pending",
+        }:
             return "TARGET_UNAVAILABLE"
         if normalized == "cooldown":
             return "COOLDOWN"
@@ -2505,18 +2487,26 @@ class RuntimeService:
         scheduler_execution_payload = (
             dict(scheduler_execution) if isinstance(scheduler_execution, dict) else {}
         )
-        command_status = str(
-            scheduler_execution_payload.get("command_status")
-            or scheduler_payload.get("command_status")
-            or metadata.get("command_status")
-            or ""
-        ).strip().lower()
-        cancel_reason = str(
-            scheduler_execution_payload.get("cancel_reason")
-            or scheduler_payload.get("cancel_reason")
-            or metadata.get("cancel_reason")
-            or ""
-        ).strip().upper()
+        command_status = (
+            str(
+                scheduler_execution_payload.get("command_status")
+                or scheduler_payload.get("command_status")
+                or metadata.get("command_status")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        cancel_reason = (
+            str(
+                scheduler_execution_payload.get("cancel_reason")
+                or scheduler_payload.get("cancel_reason")
+                or metadata.get("cancel_reason")
+                or ""
+            )
+            .strip()
+            .upper()
+        )
         cooldown = (
             scheduler_execution_payload.get("cooldown") is True
             or scheduler_payload.get("cooldown") is True
@@ -2552,7 +2542,9 @@ class RuntimeService:
         hardware_kind: str,
         trigger_mode: str,
     ) -> None:
-        trigger_source = str(trigger_raw.get("source") or trigger_raw.get("mode") or trigger_raw.get("reason") or "")
+        trigger_source = str(
+            trigger_raw.get("source") or trigger_raw.get("mode") or trigger_raw.get("reason") or ""
+        )
         target_key = self._control_target_key(target)
         signature = (
             f"target={target_key}|emit={can_emit}|out={output_mode}|hardware={hardware_kind}|"
@@ -2651,9 +2643,15 @@ class RuntimeService:
             lock_enabled=bool(getattr(self.config.control, "target_lock_enabled", True)),
             lost_grace_frames=0,
             ratio_max_aspect=float(getattr(self.config.control, "candidate_ratio_max_aspect", 6.0)),
-            quality_confidence_weight=float(getattr(self.config.control, "candidate_quality_confidence_weight", 0.7)),
-            quality_area_weight=float(getattr(self.config.control, "candidate_quality_area_weight", 0.3)),
-            class_priority_quality_margin=float(getattr(self.config.control, "class_priority_quality_margin", 0.08)),
+            quality_confidence_weight=float(
+                getattr(self.config.control, "candidate_quality_confidence_weight", 0.7)
+            ),
+            quality_area_weight=float(
+                getattr(self.config.control, "candidate_quality_area_weight", 0.3)
+            ),
+            class_priority_quality_margin=float(
+                getattr(self.config.control, "class_priority_quality_margin", 0.08)
+            ),
             tracker_max_match_distance=float(
                 getattr(self.config.control, "tracker_max_match_distance", 1.5)
             ),
@@ -2666,22 +2664,50 @@ class RuntimeService:
             tracker_max_missed_frames=int(
                 getattr(self.config.control, "tracker_max_missed_frames", 2)
             ),
-            target_switch_min_preference_advantage=float(getattr(self.config.control, "target_switch_min_preference_advantage", 0.08)),
-            target_switch_min_continuity_score=float(getattr(self.config.control, "target_switch_min_continuity_score", 0.70)),
+            target_switch_min_preference_advantage=float(
+                getattr(self.config.control, "target_switch_min_preference_advantage", 0.08)
+            ),
+            target_switch_min_continuity_score=float(
+                getattr(self.config.control, "target_switch_min_continuity_score", 0.70)
+            ),
             target_switch_delay_ms=float(self.config.control.target_switch_delay_ms),
-            kalman_acceleration_noise=float(getattr(self.config.control, "kalman_acceleration_noise", 1200.0)),
-            kalman_measurement_noise_x=float(getattr(self.config.control, "kalman_measurement_noise_x", 16.0)),
-            kalman_measurement_noise_y=float(getattr(self.config.control, "kalman_measurement_noise_y", 16.0)),
-            kalman_max_predict_missing_ms=float(getattr(self.config.control, "kalman_max_predict_missing_ms", 80.0)),
-            kalman_max_predict_steps=int(getattr(self.config.control, "kalman_max_predict_steps", 5)),
-            kalman_max_predict_dt_ms=float(getattr(self.config.control, "kalman_max_predict_dt_ms", 35.0)),
-            kalman_max_position_sigma_px=float(getattr(self.config.control, "kalman_max_position_sigma_px", 45.0)),
-            kalman_max_covariance_trace=float(getattr(self.config.control, "kalman_max_covariance_trace", 5000.0)),
+            kalman_acceleration_noise=float(
+                getattr(self.config.control, "kalman_acceleration_noise", 1200.0)
+            ),
+            kalman_measurement_noise_x=float(
+                getattr(self.config.control, "kalman_measurement_noise_x", 16.0)
+            ),
+            kalman_measurement_noise_y=float(
+                getattr(self.config.control, "kalman_measurement_noise_y", 16.0)
+            ),
+            kalman_max_predict_missing_ms=float(
+                getattr(self.config.control, "kalman_max_predict_missing_ms", 80.0)
+            ),
+            kalman_max_predict_steps=int(
+                getattr(self.config.control, "kalman_max_predict_steps", 5)
+            ),
+            kalman_max_predict_dt_ms=float(
+                getattr(self.config.control, "kalman_max_predict_dt_ms", 35.0)
+            ),
+            kalman_max_position_sigma_px=float(
+                getattr(self.config.control, "kalman_max_position_sigma_px", 45.0)
+            ),
+            kalman_max_covariance_trace=float(
+                getattr(self.config.control, "kalman_max_covariance_trace", 5000.0)
+            ),
             kalman_nis_threshold=float(getattr(self.config.control, "kalman_nis_threshold", 9.21)),
-            kalman_nis_hard_reject=float(getattr(self.config.control, "kalman_nis_hard_reject", 16.0)),
-            kalman_min_identity_confidence=float(getattr(self.config.control, "kalman_min_identity_confidence", 0.70)),
-            kalman_min_prediction_confidence=float(getattr(self.config.control, "kalman_min_prediction_confidence", 0.35)),
-            kalman_prediction_decay_tau_ms=float(getattr(self.config.control, "kalman_prediction_decay_tau_ms", 45.0)),
+            kalman_nis_hard_reject=float(
+                getattr(self.config.control, "kalman_nis_hard_reject", 16.0)
+            ),
+            kalman_min_identity_confidence=float(
+                getattr(self.config.control, "kalman_min_identity_confidence", 0.70)
+            ),
+            kalman_min_prediction_confidence=float(
+                getattr(self.config.control, "kalman_min_prediction_confidence", 0.35)
+            ),
+            kalman_prediction_decay_tau_ms=float(
+                getattr(self.config.control, "kalman_prediction_decay_tau_ms", 45.0)
+            ),
         )
 
     def _control_center_in_roi(self, context: FrameContext) -> tuple[float, float]:
@@ -2697,9 +2723,7 @@ class RuntimeService:
 
     def _active_aim_ratio(self) -> float:
         if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS:
-            return float(
-                self._active_dual_phase_config(self.config).aim.y_ratio
-            )
+            return float(self._active_dual_phase_config(self.config).aim.y_ratio)
         return float(self.config.control.aim.y_ratio)
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
@@ -2733,7 +2757,12 @@ class RuntimeService:
             try:
                 buttons = button_reader()
             except Exception as exc:
-                buttons = {"available": False, "left": False, "right": False, "reason": f"button reader exception: {exc}"}
+                buttons = {
+                    "available": False,
+                    "left": False,
+                    "right": False,
+                    "reason": f"button reader exception: {exc}",
+                }
                 logger.warning("box input button reader failed: %s", exc)
             if buttons.get("available") is True:
                 hardware_state = BoxInputState(
@@ -2770,7 +2799,6 @@ class RuntimeService:
         max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
         calibrated = config.control.calibrated_angular
         universal = config.control.universal_saturated
-        ttbox = config.control.ttbox_pid_atan
         shared = config.control.shared
         legacy_mode = (
             "universal_saturated"
@@ -2798,24 +2826,16 @@ class RuntimeService:
                     max_step_x_counts=float(universal.max_step_x_counts),
                     max_step_y_counts=float(universal.max_step_y_counts),
                 ),
-                ttbox_pid_atan=TtboxPidAtanControllerConfig(
-                    response_scale_x_px=float(ttbox.response_scale_x_px),
-                    response_scale_y_px=float(ttbox.response_scale_y_px),
-                    per_frame_gain_x=float(ttbox.per_frame_gain_x),
-                    per_frame_gain_y=float(ttbox.per_frame_gain_y),
-                    normalize_to_dt=bool(ttbox.normalize_to_dt),
-                    nominal_dt_s=float(ttbox.nominal_dt_s),
-                    max_step_x_counts=float(ttbox.max_step_x_counts),
-                    max_step_y_counts=float(ttbox.max_step_y_counts),
-                ),
                 shared=SharedOutputConfig(
                     deadzone_x_px=float(shared.deadzone_x_px),
                     deadzone_y_px=float(shared.deadzone_y_px),
                     max_count_slew_x=float(shared.max_count_slew_x),
                     max_count_slew_y=float(shared.max_count_slew_y),
                     invert_y=bool(shared.invert_y),
-                    max_budget_counts_x=int(config.control.scheduler_step_counts_x) * max_plan_steps,
-                    max_budget_counts_y=int(config.control.scheduler_step_counts_y) * max_plan_steps,
+                    max_budget_counts_x=int(config.control.scheduler_step_counts_x)
+                    * max_plan_steps,
+                    max_budget_counts_y=int(config.control.scheduler_step_counts_y)
+                    * max_plan_steps,
                     recoil_enabled=bool(shared.recoil_enabled),
                     recoil_start_delay_ms=float(shared.recoil_start_delay_ms),
                     recoil_y_rate_counts_s=float(shared.recoil_y_rate_counts_s),
@@ -2830,151 +2850,56 @@ class RuntimeService:
     @staticmethod
     def _create_dual_phase_algorithm(
         config: RuntimeConfig,
-    ) -> DualPhaseAtanPredictiveV1Algorithm | DualPhaseAtanRobustPredictiveV2Algorithm:
-        if config.control.active_algorithm == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
-            source_v2 = config.control.dual_phase_atan_robust_predictive_v2
-            return DualPhaseAtanRobustPredictiveV2Algorithm(
-                DualPhaseRobustAlgorithmConfig(
-                    freshness_threshold_ms=float(source_v2.freshness_threshold_ms),
-                    projection=DualPhaseRobustProjectionConfig(
-                        fov_x_deg=float(source_v2.projection.fov_x_deg),
-                        counts_per_360=float(source_v2.projection.counts_per_360),
-                        invert_y=bool(source_v2.projection.invert_y),
-                    ),
-                    mode=DualPhaseRobustModeSelectorConfig(
-                        near_enter_min_px=float(source_v2.mode.near_enter_min_px),
-                        near_exit_min_px=float(source_v2.mode.near_exit_min_px),
-                        near_enter_bbox_h_ratio=float(
-                            source_v2.mode.near_enter_bbox_h_ratio
-                        ),
-                        near_exit_bbox_h_ratio=float(
-                            source_v2.mode.near_exit_bbox_h_ratio
-                        ),
-                    ),
-                    velocity=DualPhaseRobustVelocityConfig(
-                        history_size=int(source_v2.velocity.history_size),
-                        velocity_sample_count=int(
-                            source_v2.velocity.velocity_sample_count
-                        ),
-                        smoothing_tau_ms=float(source_v2.velocity.smoothing_tau_ms),
-                        history_reset_gap_ms=float(
-                            source_v2.velocity.history_reset_gap_ms
-                        ),
-                        spread_base_px_ms=float(
-                            source_v2.velocity.spread_base_px_ms
-                        ),
-                        spread_relative=float(source_v2.velocity.spread_relative),
-                        change_base_px_ms=float(
-                            source_v2.velocity.change_base_px_ms
-                        ),
-                        change_relative=float(source_v2.velocity.change_relative),
-                    ),
-                    prediction=DualPhaseRobustPredictionConfig(
-                        enabled_x=bool(source_v2.prediction.enabled_x),
-                        enabled_y=bool(source_v2.prediction.enabled_y),
-                        coefficient=float(source_v2.prediction.coefficient),
-                        actuation_delay_ms=float(
-                            source_v2.prediction.actuation_delay_ms
-                        ),
-                        max_horizon_ms=float(source_v2.prediction.max_horizon_ms),
-                        far=DualPhaseRobustPredictionModeConfig(
-                            absolute_cap_px=float(
-                                source_v2.prediction.far.absolute_cap_px
-                            ),
-                            base_cap_px=float(source_v2.prediction.far.base_cap_px),
-                            relative_cap=float(source_v2.prediction.far.relative_cap),
-                        ),
-                        near=DualPhaseRobustPredictionModeConfig(
-                            absolute_cap_px=float(
-                                source_v2.prediction.near.absolute_cap_px
-                            ),
-                            base_cap_px=float(source_v2.prediction.near.base_cap_px),
-                            relative_cap=float(source_v2.prediction.near.relative_cap),
-                        ),
-                    ),
-                    atan=DualPhaseRobustAtanControllerConfig(
-                        far=DualPhaseRobustAtanModeConfig(
-                            kp=float(source_v2.atan.far.kp),
-                            scale_counts=float(source_v2.atan.far.scale_counts),
-                            max_counts_per_update=float(
-                                source_v2.atan.far.max_counts_per_update
-                            ),
-                        ),
-                        near=DualPhaseRobustAtanModeConfig(
-                            kp=float(source_v2.atan.near.kp),
-                            scale_counts=float(source_v2.atan.near.scale_counts),
-                            max_counts_per_update=float(
-                                source_v2.atan.near.max_counts_per_update
-                            ),
-                        ),
-                    ),
-                )
-            )
-        source = config.control.dual_phase_atan_predictive_v1
-        return DualPhaseAtanPredictiveV1Algorithm(
-            DualPhaseAlgorithmConfig(
-                freshness_threshold_ms=float(source.freshness_threshold_ms),
-                projection=DualPhaseProjectionConfig(
-                    fov_x_deg=float(source.projection.fov_x_deg),
-                    counts_per_360=float(source.projection.counts_per_360),
-                    invert_y=bool(source.projection.invert_y),
+    ) -> DualPhaseAtanRobustPredictiveV2Algorithm:
+        source_v2 = config.control.dual_phase_atan_robust_predictive_v2
+        return DualPhaseAtanRobustPredictiveV2Algorithm(
+            DualPhaseRobustAlgorithmConfig(
+                freshness_threshold_ms=float(source_v2.freshness_threshold_ms),
+                projection=DualPhaseRobustProjectionConfig(
+                    fov_x_deg=float(source_v2.projection.fov_x_deg),
+                    counts_per_360=float(source_v2.projection.counts_per_360),
+                    invert_y=bool(source_v2.projection.invert_y),
                 ),
-                mode=DualPhaseModeSelectorConfig(
-                    near_enter_min_px=float(source.mode.near_enter_min_px),
-                    near_exit_min_px=float(source.mode.near_exit_min_px),
-                    near_enter_bbox_h_ratio=float(source.mode.near_enter_bbox_h_ratio),
-                    near_exit_bbox_h_ratio=float(source.mode.near_exit_bbox_h_ratio),
+                mode=DualPhaseRobustModeSelectorConfig(
+                    near_threshold_px=float(source_v2.mode.near_threshold_px),
                 ),
-                far=DualPhaseAtanPhaseConfig(
-                    kp=float(source.far.kp),
-                    atan_scale_counts=float(source.far.atan_scale_counts),
-                    max_counts_per_update=float(source.far.max_counts_per_update),
+                velocity=DualPhaseRobustVelocityConfig(
+                    history_size=int(source_v2.velocity.history_size),
+                    velocity_sample_count=int(source_v2.velocity.velocity_sample_count),
+                    smoothing_tau_ms=float(source_v2.velocity.smoothing_tau_ms),
+                    history_reset_gap_ms=float(source_v2.velocity.history_reset_gap_ms),
+                    spread_base_px_ms=float(source_v2.velocity.spread_base_px_ms),
+                    spread_relative=float(source_v2.velocity.spread_relative),
+                    change_base_px_ms=float(source_v2.velocity.change_base_px_ms),
+                    change_relative=float(source_v2.velocity.change_relative),
                 ),
-                near=DualPhaseAtanPhaseConfig(
-                    kp=float(source.near.kp),
-                    atan_scale_counts=float(source.near.atan_scale_counts),
-                    max_counts_per_update=float(source.near.max_counts_per_update),
-                ),
-                estimator=DualPhaseEstimatorConfig(
-                    measurement_std_px=float(source.estimator.measurement_std_px),
-                    acceleration_std_px_s2=float(source.estimator.acceleration_std_px_s2),
-                    min_dt_s=float(source.estimator.min_dt_ms) / 1000.0,
-                    reset_dt_s=float(source.estimator.reset_dt_ms) / 1000.0,
-                    innovation_soft_gate_sigma=float(
-                        source.estimator.innovation_soft_gate_sigma
+                prediction=DualPhaseRobustPredictionConfig(
+                    enabled_x=bool(source_v2.prediction.enabled_x),
+                    enabled_y=bool(source_v2.prediction.enabled_y),
+                    coefficient=float(source_v2.prediction.coefficient),
+                    actuation_delay_ms=float(source_v2.prediction.actuation_delay_ms),
+                    max_horizon_ms=float(source_v2.prediction.max_horizon_ms),
+                    far=DualPhaseRobustPredictionModeConfig(
+                        absolute_cap_px=float(source_v2.prediction.far.absolute_cap_px),
+                        base_cap_px=float(source_v2.prediction.far.base_cap_px),
+                        relative_cap=float(source_v2.prediction.far.relative_cap),
                     ),
-                    innovation_hard_gate_sigma=float(
-                        source.estimator.innovation_hard_gate_sigma
-                    ),
-                    hard_outlier_reset_count=int(
-                        source.estimator.hard_outlier_reset_count
-                    ),
-                    max_velocity_px_s=float(source.estimator.max_velocity_px_s),
-                    warmup_updates=int(source.estimator.warmup_updates),
-                ),
-                prediction=DualPhasePredictionConfig(
-                    enabled_x=bool(source.prediction.enabled_x),
-                    enabled_y=bool(source.prediction.enabled_y),
-                    actuation_delay_s=float(source.prediction.actuation_delay_ms) / 1000.0,
-                    max_horizon_s=float(source.prediction.max_horizon_ms) / 1000.0,
-                    far_weight=float(source.prediction.far_weight),
-                    near_weight=float(source.prediction.near_weight),
-                    far_abs_cap_px=float(source.prediction.far_abs_cap_px),
-                    near_abs_cap_px=float(source.prediction.near_abs_cap_px),
-                    far_base_cap_px=float(source.prediction.far_base_cap_px),
-                    near_base_cap_px=float(source.prediction.near_base_cap_px),
-                    far_relative_cap=float(source.prediction.far_relative_cap),
-                    near_relative_cap=float(source.prediction.near_relative_cap),
-                    near_cross_allow_px=float(source.prediction.near_cross_allow_px),
-                    high_confidence_cross_threshold=float(
-                        source.prediction.high_confidence_cross_threshold
-                    ),
-                    overzero_cooldown_frames=int(
-                        source.prediction.overzero_cooldown_frames
+                    near=DualPhaseRobustPredictionModeConfig(
+                        absolute_cap_px=float(source_v2.prediction.near.absolute_cap_px),
+                        base_cap_px=float(source_v2.prediction.near.base_cap_px),
+                        relative_cap=float(source_v2.prediction.near.relative_cap),
                     ),
                 ),
-                quantizer=DualPhaseQuantizerConfig(
-                    min_effective_counts=int(source.quantizer.min_effective_counts),
+                atan=DualPhaseRobustAtanControllerConfig(
+                    scale_counts=float(source_v2.atan.scale_counts),
+                    far=DualPhaseRobustAtanModeConfig(
+                        kp=float(source_v2.atan.far.kp),
+                        max_counts_per_update=float(source_v2.atan.far.max_counts_per_update),
+                    ),
+                    near=DualPhaseRobustAtanModeConfig(
+                        kp=float(source_v2.atan.near.kp),
+                        max_counts_per_update=float(source_v2.atan.near.max_counts_per_update),
+                    ),
                 ),
             )
         )
@@ -3013,7 +2938,7 @@ class RuntimeService:
         control_now_ts_ns: int,
         trigger_active: bool,
     ) -> tuple[MoveCommand, dict[str, Any]]:
-        algorithm_id = self.config.control.active_algorithm
+        algorithm_id = DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
         config = self._active_dual_phase_config(self.config)
         transform = self._coordinate_transform_for_context(context)
         control_width = float(control_metadata.get("control_width") or 0.0)
@@ -3026,9 +2951,7 @@ class RuntimeService:
             coordinate_transform=transform,
             control_width_px=control_width,
             control_height_px=control_height,
-            source_geometry_trusted=(
-                control_metadata.get("capture_geometry_trusted") is True
-            ),
+            source_geometry_trusted=(control_metadata.get("capture_geometry_trusted") is True),
         )
         if transform is None:
             crosshair_roi_x = 0.0
@@ -3067,11 +2990,6 @@ class RuntimeService:
             if motion.valid and math.isfinite(float(motion.identity_confidence))
             else 0.0
         )
-        observation_type = (
-            DualPhaseAtanRobustPredictiveV2Observation
-            if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
-            else DualPhaseAtanPredictiveV1Observation
-        )
         observation_kwargs = {
             "generation": int(
                 context.frame_id if context.generation is None else context.generation
@@ -3079,9 +2997,7 @@ class RuntimeService:
             "frame_id": int(context.frame_id),
             "target_id": int(target.track_id),
             "capture_ts_ns": int(context.capture_ts_ns or 0),
-            "inference_end_ts_ns": int(
-                context.inference_end_ts_ns or control_now_ts_ns
-            ),
+            "inference_end_ts_ns": int(context.inference_end_ts_ns or control_now_ts_ns),
             "control_now_ns": int(control_now_ts_ns),
             "aim_x": float(raw_aim.aim_roi_x_px),
             "aim_y": float(raw_aim.aim_roi_y_px),
@@ -3108,22 +3024,17 @@ class RuntimeService:
                 and not getattr(target, "is_stale", False)
             ),
         }
-        if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
-            tracker_debug = (
-                selector_debug.get("tracker")
-                if isinstance(selector_debug, dict)
-                else None
-            )
-            if not isinstance(tracker_debug, dict):
-                tracker_debug = {}
-            rebuilt_track_ids = {
-                int(track_id)
-                for key in ("created_track_ids", "restored_track_ids")
-                for track_id in tracker_debug.get(key, [])
-                if isinstance(track_id, int)
-            }
-            observation_kwargs["track_rebuilt"] = int(target.track_id) in rebuilt_track_ids
-        observation = observation_type(**observation_kwargs)
+        tracker_debug = selector_debug.get("tracker") if isinstance(selector_debug, dict) else None
+        if not isinstance(tracker_debug, dict):
+            tracker_debug = {}
+        rebuilt_track_ids = {
+            int(track_id)
+            for key in ("created_track_ids", "restored_track_ids")
+            for track_id in tracker_debug.get(key, [])
+            if isinstance(track_id, int)
+        }
+        observation_kwargs["track_rebuilt"] = int(target.track_id) in rebuilt_track_ids
+        observation = DualPhaseAtanRobustPredictiveV2Observation(**observation_kwargs)
         decision = self.dual_phase_algorithm.calculate(observation)
         telemetry = {
             **decision.telemetry,
@@ -3162,15 +3073,14 @@ class RuntimeService:
             "predicted_error_x_px": float(telemetry.get("error_control_x") or 0.0),
             "predicted_error_y_px": float(telemetry.get("error_control_y") or 0.0),
         }
-        source_prediction_offset_x = float(
-            telemetry.get("prediction_safe_offset_x") or 0.0
-        ) * (roi_width / max(1, int(context.width)))
+        source_prediction_offset_x = float(telemetry.get("prediction_safe_offset_x") or 0.0) * (
+            roi_width / max(1, int(context.width))
+        )
         mouse_observation_debug = {
             "algorithm_id": algorithm_id,
             "observed_x_px": float(raw_aim.aim_control_x_px),
             "observed_y_px": float(raw_aim.aim_control_y_px),
-            "predicted_x_px": float(raw_aim.aim_control_x_px)
-            + source_prediction_offset_x,
+            "predicted_x_px": float(raw_aim.aim_control_x_px) + source_prediction_offset_x,
             "predicted_y_px": float(raw_aim.aim_control_y_px),
             "observed_x_roi_px": observation.aim_x,
             "observed_y_roi_px": observation.aim_y,
@@ -3258,22 +3168,10 @@ class RuntimeService:
             observed_error_control_y,
             float(self.config.control.shared.deadzone_y_px),
         )
-        kalman_position_confidence_x = (
-            base_prediction_confidence
-            * velocity_confidence_x
-        )
-        kalman_position_confidence_y = (
-            base_prediction_confidence
-            * velocity_confidence_y
-        )
-        prediction_confidence_x = (
-            kalman_position_confidence_x
-            * near_target_prediction_gain_x
-        )
-        prediction_confidence_y = (
-            kalman_position_confidence_y
-            * near_target_prediction_gain_y
-        )
+        kalman_position_confidence_x = base_prediction_confidence * velocity_confidence_x
+        kalman_position_confidence_y = base_prediction_confidence * velocity_confidence_y
+        prediction_confidence_x = kalman_position_confidence_x * near_target_prediction_gain_x
+        prediction_confidence_y = kalman_position_confidence_y * near_target_prediction_gain_y
         prediction_scale = max(0.0, min(1.5, float(self.config.control.prediction_strength)))
         prediction_x_enabled = bool(self.config.control.prediction_x_enabled)
         prediction_y_enabled = bool(self.config.control.prediction_y_enabled)
@@ -3285,23 +3183,17 @@ class RuntimeService:
         predicted_roi_y = observed_roi_y
         if prediction_x_enabled and estimate_usable:
             prediction_origin_x += (
-                (float(estimate.x) - observed_roi_x) * kalman_position_confidence_x
-            )
+                float(estimate.x) - observed_roi_x
+            ) * kalman_position_confidence_x
             predicted_roi_x = prediction_origin_x + (
-                float(estimate.vx)
-                * horizon_s
-                * prediction_scale
-                * prediction_confidence_x
+                float(estimate.vx) * horizon_s * prediction_scale * prediction_confidence_x
             )
         if prediction_y_enabled and estimate_usable:
             prediction_origin_y += (
-                (float(estimate.y) - observed_roi_y) * kalman_position_confidence_y
-            )
+                float(estimate.y) - observed_roi_y
+            ) * kalman_position_confidence_y
             predicted_roi_y = prediction_origin_y + (
-                float(estimate.vy)
-                * horizon_s
-                * prediction_scale
-                * prediction_confidence_y
+                float(estimate.vy) * horizon_s * prediction_scale * prediction_confidence_y
             )
         enabled_confidences = [
             confidence
@@ -3399,7 +3291,9 @@ class RuntimeService:
 
     def _control_frame_metadata(self, context: FrameContext) -> dict[str, Any]:
         inference_debug = self.last_inference_status.get("debug", {})
-        preprocess = inference_debug.get("preprocess", {}) if isinstance(inference_debug, dict) else {}
+        preprocess = (
+            inference_debug.get("preprocess", {}) if isinstance(inference_debug, dict) else {}
+        )
         source_width = self._status_int("source_width", 0)
         source_height = self._status_int("source_height", 0)
         source_geometry_trusted = self.last_inference_status.get("source_geometry_trusted")
@@ -3420,7 +3314,9 @@ class RuntimeService:
             "roi_offset_x": roi_offset_x,
             "roi_offset_y": roi_offset_y,
             "model_width": preprocess.get("model_width") if isinstance(preprocess, dict) else None,
-            "model_height": preprocess.get("model_height") if isinstance(preprocess, dict) else None,
+            "model_height": preprocess.get("model_height")
+            if isinstance(preprocess, dict)
+            else None,
             "detections": [
                 {
                     "index": index,
@@ -3467,12 +3363,22 @@ class RuntimeService:
             ),
             "selection_radius_px": selector_debug.get("fov_radius_px"),
             "basic": {
-                "raw_candidates": cls._debug_int(basic_filter, "raw_candidates") if isinstance(basic_filter, dict) else cls._debug_int(selector_debug, "raw_candidates"),
-                "filtered_candidates": cls._debug_int(basic_filter, "filtered_candidates") if isinstance(basic_filter, dict) else cls._debug_int(selector_debug, "filtered_candidates"),
-                "rejected_candidates": cls._debug_int(basic_filter, "rejected_candidates") if isinstance(basic_filter, dict) else cls._debug_int(selector_debug, "rejected_candidates"),
-                "rejected": cls._debug_dict_list(basic_filter.get("rejected")) if isinstance(basic_filter, dict) else cls._debug_dict_list(selector_debug.get("rejected")),
+                "raw_candidates": cls._debug_int(basic_filter, "raw_candidates")
+                if isinstance(basic_filter, dict)
+                else cls._debug_int(selector_debug, "raw_candidates"),
+                "filtered_candidates": cls._debug_int(basic_filter, "filtered_candidates")
+                if isinstance(basic_filter, dict)
+                else cls._debug_int(selector_debug, "filtered_candidates"),
+                "rejected_candidates": cls._debug_int(basic_filter, "rejected_candidates")
+                if isinstance(basic_filter, dict)
+                else cls._debug_int(selector_debug, "rejected_candidates"),
+                "rejected": cls._debug_dict_list(basic_filter.get("rejected"))
+                if isinstance(basic_filter, dict)
+                else cls._debug_dict_list(selector_debug.get("rejected")),
             },
-            "association": dict(association_filter) if isinstance(association_filter, dict) else None,
+            "association": dict(association_filter)
+            if isinstance(association_filter, dict)
+            else None,
             "tracked": dict(tracked_filter) if isinstance(tracked_filter, dict) else None,
         }
 
@@ -3527,12 +3433,16 @@ class RuntimeService:
         )
 
         if inference.get("ran") is not True and inference.get("source") != "detection_batch":
-            code, stage, message = "INFERENCE_NOT_RUN", "inference", str(
-                inference.get("reason") or "inference has not run"
+            code, stage, message = (
+                "INFERENCE_NOT_RUN",
+                "inference",
+                str(inference.get("reason") or "inference has not run"),
             )
         elif inference.get("available") is not True:
-            code, stage, message = "INFERENCE_UNAVAILABLE", "inference", str(
-                inference.get("reason") or "inference result is unavailable"
+            code, stage, message = (
+                "INFERENCE_UNAVAILABLE",
+                "inference",
+                str(inference.get("reason") or "inference result is unavailable"),
             )
         elif counts["mapped_detections"] <= 0:
             if decode and counts["decode_raw_candidates"] <= 0:
@@ -3572,7 +3482,8 @@ class RuntimeService:
             code, stage, message = (
                 "BASIC_CANDIDATE_REJECTED",
                 "basic_filter",
-                selection_reason or "all detections were rejected by class, confidence, or bbox validation",
+                selection_reason
+                or "all detections were rejected by class, confidence, or bbox validation",
             )
         elif counts["association_candidates"] <= 0:
             reason_codes = set(rejection_reasons)
@@ -3584,11 +3495,16 @@ class RuntimeService:
                 code = "BBOX_AREA_REJECTED"
             else:
                 code = "ASSOCIATION_FILTER_REJECTED"
-            stage, message = "association_filter", selection_reason or "all detections were rejected before association"
+            stage, message = (
+                "association_filter",
+                selection_reason or "all detections were rejected before association",
+            )
         elif counts["tracker_active"] <= 0:
             code = "TRACKER_ACQUIRING" if counts["tracker_tentative"] > 0 else "TRACKER_NO_ACTIVE"
             stage = "tracker"
-            message = str(tracker.get("reason") or selection_reason or "tracker produced no CONFIRMED track")
+            message = str(
+                tracker.get("reason") or selection_reason or "tracker produced no CONFIRMED track"
+            )
         elif counts["filtered_candidates"] <= 0 or counts["inside_fov"] <= 0:
             reason_codes = set(rejection_reasons)
             if reason_codes == {"selection_fov"}:
@@ -3604,13 +3520,23 @@ class RuntimeService:
             else:
                 code = "TARGET_FILTER_REJECTED"
             stage, message = "target_filter", selection_reason or "all ACTIVE tracks were rejected"
-        elif self.last_target is not None or (selection is not None and selection.target is not None):
-            code, stage, message = "TARGET_SELECTED", "selected", selection_reason or "target selected"
+        elif self.last_target is not None or (
+            selection is not None and selection.target is not None
+        ):
+            code, stage, message = (
+                "TARGET_SELECTED",
+                "selected",
+                selection_reason or "target selected",
+            )
         else:
             selector_state = str(
                 selection.state if selection is not None else control.get("selector_state") or ""
             )
-            code = "TARGET_SWITCH_PENDING" if selector_state == "switch_pending" else "TARGET_UNAVAILABLE"
+            code = (
+                "TARGET_SWITCH_PENDING"
+                if selector_state == "switch_pending"
+                else "TARGET_UNAVAILABLE"
+            )
             stage, message = "target_selection", selection_reason or "no target selected"
 
         return {
@@ -3653,7 +3579,9 @@ class RuntimeService:
         selected_state = (
             str(selected_track.get("state") or "")
             if selected_track is not None
-            else selection_state if selected_track_id is not None else ""
+            else selection_state
+            if selected_track_id is not None
+            else ""
         )
         return {
             "tracker_state": str(tracker.get("state") or selection_state or ""),
@@ -3685,7 +3613,9 @@ class RuntimeService:
             "switch_committed": bool(switch.get("committed", False)),
             "switch_reason": switch_reason,
             "pending_switch": dict(switch) if switch.get("state") == "pending" else None,
-            "identity_uncertain_tracks": self._debug_int_list(tracker.get("identity_uncertain_tracks")),
+            "identity_uncertain_tracks": self._debug_int_list(
+                tracker.get("identity_uncertain_tracks")
+            ),
             "available_tracks": self._optional_int(tracker.get("available_tracks")),
             "track_count": len(tracks),
             "tracks": tracks,
@@ -3698,7 +3628,9 @@ class RuntimeService:
         return [dict(item) for item in value if isinstance(item, dict)]
 
     @staticmethod
-    def _find_track_debug(tracks: list[dict[str, Any]], track_id: int | None) -> dict[str, Any] | None:
+    def _find_track_debug(
+        tracks: list[dict[str, Any]], track_id: int | None
+    ) -> dict[str, Any] | None:
         if track_id is None:
             return None
         for item in tracks:
@@ -3798,8 +3730,12 @@ class RuntimeService:
         )
         transform = self._coordinate_transform_for_context(context)
         trusted = transform is not None
-        roi_offset_x = int(transform.roi_x) if transform is not None else self._status_int("roi_offset_x", 0)
-        roi_offset_y = int(transform.roi_y) if transform is not None else self._status_int("roi_offset_y", 0)
+        roi_offset_x = (
+            int(transform.roi_x) if transform is not None else self._status_int("roi_offset_x", 0)
+        )
+        roi_offset_y = (
+            int(transform.roi_y) if transform is not None else self._status_int("roi_offset_y", 0)
+        )
         source_width = int(transform.capture_width) if transform is not None else 0
         source_height = int(transform.capture_height) if transform is not None else 0
         capture_box = None
@@ -3853,7 +3789,9 @@ class RuntimeService:
     def _bbox_payload(cls, box: BBox) -> dict[str, float]:
         return cls._box_payload(x=box.x1, y=box.y1, w=box.width, h=box.height)
 
-    def _coordinate_transform_for_context(self, context: FrameContext) -> CoordinateTransform | None:
+    def _coordinate_transform_for_context(
+        self, context: FrameContext
+    ) -> CoordinateTransform | None:
         if self.last_inference_status.get("source_geometry_trusted") is not True:
             return None
         source_width = self._status_int("source_width", 0)
@@ -3875,7 +3813,9 @@ class RuntimeService:
             return None
 
     @staticmethod
-    def _coordinate_transform_payload(transform: CoordinateTransform | None) -> dict[str, float] | None:
+    def _coordinate_transform_payload(
+        transform: CoordinateTransform | None,
+    ) -> dict[str, float] | None:
         if transform is None:
             return None
         return {
@@ -3913,8 +3853,7 @@ class RuntimeService:
             "frame_id": context.frame_id,
             "detections": len(context.detections),
             "detection_items": [
-                self._detection_payload(item, context)
-                for item in context.detections
+                self._detection_payload(item, context) for item in context.detections
             ],
             "tracks": len(context.tracks),
             "classes": list(context.classes),
@@ -3963,32 +3902,82 @@ class RuntimeService:
         detail = ""
         if profile is not None:
             detail = f"{getattr(profile, 'pixel_format', '-')}/{getattr(profile, 'width', 0)}x{getattr(profile, 'height', 0)}@{getattr(profile, 'fps', 0)}"
-        return {"id": "capture", "label": "采集", "status": status, "message": message, "detail": detail}
+        return {
+            "id": "capture",
+            "label": "采集",
+            "status": status,
+            "message": message,
+            "detail": detail,
+        }
 
     @staticmethod
     def _trace_roi_stage(inference: dict[str, Any]) -> dict[str, Any]:
         if not inference:
-            return {"id": "roi", "label": "ROI", "status": "blocked", "message": "等待采集帧", "detail": ""}
+            return {
+                "id": "roi",
+                "label": "ROI",
+                "status": "blocked",
+                "message": "等待采集帧",
+                "detail": "",
+            }
         width = inference.get("input_width")
         height = inference.get("input_height")
         detail = f"{width}x{height}" if width and height else ""
-        return {"id": "roi", "label": "ROI", "status": "ok", "message": "ROI 帧已生成", "detail": detail}
+        return {
+            "id": "roi",
+            "label": "ROI",
+            "status": "ok",
+            "message": "ROI 帧已生成",
+            "detail": detail,
+        }
 
     @staticmethod
     def _trace_inference_stage(inference: dict[str, Any]) -> dict[str, Any]:
         if not inference.get("ran"):
-            return {"id": "inference", "label": "推理", "status": "blocked", "message": inference.get("reason") or "推理尚未执行", "detail": ""}
+            return {
+                "id": "inference",
+                "label": "推理",
+                "status": "blocked",
+                "message": inference.get("reason") or "推理尚未执行",
+                "detail": "",
+            }
         if inference.get("available") is not True:
-            return {"id": "inference", "label": "推理", "status": "failed", "message": inference.get("reason") or "推理失败", "detail": ""}
+            return {
+                "id": "inference",
+                "label": "推理",
+                "status": "failed",
+                "message": inference.get("reason") or "推理失败",
+                "detail": "",
+            }
         mapped = int(inference.get("mapped_detections") or 0)
         if mapped <= 0:
             raw = int(inference.get("raw_detections") or 0)
-            return {"id": "inference", "label": "推理", "status": "blocked", "message": "未检测到可用目标", "detail": f"raw={raw}, mapped={mapped}"}
-        return {"id": "inference", "label": "推理", "status": "ok", "message": "推理有检测结果", "detail": f"mapped={mapped}"}
+            return {
+                "id": "inference",
+                "label": "推理",
+                "status": "blocked",
+                "message": "未检测到可用目标",
+                "detail": f"raw={raw}, mapped={mapped}",
+            }
+        return {
+            "id": "inference",
+            "label": "推理",
+            "status": "ok",
+            "message": "推理有检测结果",
+            "detail": f"mapped={mapped}",
+        }
 
-    def _trace_target_stage(self, context: FrameContext | None, control: dict[str, Any]) -> dict[str, Any]:
+    def _trace_target_stage(
+        self, context: FrameContext | None, control: dict[str, Any]
+    ) -> dict[str, Any]:
         if context is None:
-            return {"id": "target", "label": "目标", "status": "blocked", "message": "等待推理帧", "detail": ""}
+            return {
+                "id": "target",
+                "label": "目标",
+                "status": "blocked",
+                "message": "等待推理帧",
+                "detail": "",
+            }
         detections = len(context.detections)
         if self.last_target is None:
             return {
@@ -4010,7 +3999,13 @@ class RuntimeService:
     @staticmethod
     def _trace_control_stage(control: dict[str, Any]) -> dict[str, Any]:
         if not control:
-            return {"id": "control", "label": "控制量", "status": "blocked", "message": "没有目标，未计算控制量", "detail": ""}
+            return {
+                "id": "control",
+                "label": "控制量",
+                "status": "blocked",
+                "message": "没有目标，未计算控制量",
+                "detail": "",
+            }
         dx = float(control.get("dx") or 0.0)
         dy = float(control.get("dy") or 0.0)
         frame_age_ms = float(control.get("frame_age_ms") or 0.0)
@@ -4038,21 +4033,55 @@ class RuntimeService:
                 "detail": detail,
             }
         if round(dx) == 0 and round(dy) == 0:
-            return {"id": "control", "label": "控制量", "status": "blocked", "message": str(control.get("reason") or "控制量为 0"), "detail": detail}
-        return {"id": "control", "label": "控制量", "status": "ok", "message": str(control.get("reason") or "控制量已生成"), "detail": detail}
+            return {
+                "id": "control",
+                "label": "控制量",
+                "status": "blocked",
+                "message": str(control.get("reason") or "控制量为 0"),
+                "detail": detail,
+            }
+        return {
+            "id": "control",
+            "label": "控制量",
+            "status": "ok",
+            "message": str(control.get("reason") or "控制量已生成"),
+            "detail": detail,
+        }
 
     @staticmethod
     def _trace_execution_stage(execution: dict[str, Any]) -> dict[str, Any]:
         if not execution:
-            return {"id": "execution", "label": "执行", "status": "blocked", "message": "没有控制命令", "detail": ""}
+            return {
+                "id": "execution",
+                "label": "执行",
+                "status": "blocked",
+                "message": "没有控制命令",
+                "detail": "",
+            }
         dx = float(execution.get("output_dx") or 0.0)
         dy = float(execution.get("output_dy") or 0.0)
         detail = f"{execution.get('executor_id') or ''} dx={dx:.0f}, dy={dy:.0f}"
         if execution.get("sent") is True:
-            return {"id": "execution", "label": "执行", "status": "ok", "message": str(execution.get("message") or "已发送"), "detail": detail}
+            return {
+                "id": "execution",
+                "label": "执行",
+                "status": "ok",
+                "message": str(execution.get("message") or "已发送"),
+                "detail": detail,
+            }
         message = str(execution.get("message") or "未发送")
-        status = "failed" if "failed" in message.lower() or "unavailable" in message.lower() else "blocked"
-        return {"id": "execution", "label": "执行", "status": status, "message": message, "detail": detail}
+        status = (
+            "failed"
+            if "failed" in message.lower() or "unavailable" in message.lower()
+            else "blocked"
+        )
+        return {
+            "id": "execution",
+            "label": "执行",
+            "status": status,
+            "message": message,
+            "detail": detail,
+        }
 
     def _record_control_frame(self) -> None:
         if not bool(getattr(getattr(self.config, "consumers", None), "recording", False)):
@@ -4146,15 +4175,15 @@ class RuntimeService:
         if isinstance(driver_dx, (int, float)) and isinstance(driver_dy, (int, float)):
             driver_counts = {"dx": float(driver_dx), "dy": float(driver_dy)}
         payload = {
-                "execution": execution,
-                "execution_sent": bool(execution.get("sent", False)),
-                "execution_executor": str(execution.get("executor_id", "")),
-                "execution_message": str(execution.get("message", "")),
-                "driver_api": str(metadata.get("api_name") or ""),
-                "driver_rc": metadata.get("driver_rc"),
-                "driver_dx": float(driver_dx) if isinstance(driver_dx, (int, float)) else None,
-                "driver_dy": float(driver_dy) if isinstance(driver_dy, (int, float)) else None,
-                "driver_counts": driver_counts,
+            "execution": execution,
+            "execution_sent": bool(execution.get("sent", False)),
+            "execution_executor": str(execution.get("executor_id", "")),
+            "execution_message": str(execution.get("message", "")),
+            "driver_api": str(metadata.get("api_name") or ""),
+            "driver_rc": metadata.get("driver_rc"),
+            "driver_dx": float(driver_dx) if isinstance(driver_dx, (int, float)) else None,
+            "driver_dy": float(driver_dy) if isinstance(driver_dy, (int, float)) else None,
+            "driver_counts": driver_counts,
         }
         execution_global_state = self._global_state_from_execution_metadata(metadata)
         if execution_global_state is not None:
@@ -4181,7 +4210,12 @@ class RuntimeService:
     def _capture_geometry(frame: CapturedFrame) -> tuple[int, int, str, bool]:
         source_width = getattr(frame, "source_width", None)
         source_height = getattr(frame, "source_height", None)
-        if isinstance(source_width, int) and isinstance(source_height, int) and source_width > 0 and source_height > 0:
+        if (
+            isinstance(source_width, int)
+            and isinstance(source_height, int)
+            and source_width > 0
+            and source_height > 0
+        ):
             return source_width, source_height, "source_metadata", True
 
         roi_size = getattr(frame, "roi_size", None)

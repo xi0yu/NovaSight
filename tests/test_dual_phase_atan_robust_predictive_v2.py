@@ -39,9 +39,7 @@ def _observation(
     track_rebuilt: bool = False,
 ) -> DualPhaseAtanRobustPredictiveV2Observation:
     capture_ns = (
-        capture_ts_ns
-        if capture_ts_ns is not None
-        else 1_000_000_000 + generation * 10_000_000
+        capture_ts_ns if capture_ts_ns is not None else 1_000_000_000 + generation * 10_000_000
     )
     now_ns = control_now_ns if control_now_ns is not None else capture_ns + 8_000_000
     crosshair_x = 160.0
@@ -235,9 +233,7 @@ def test_prediction_disabled_is_pure_feedback_while_velocity_runs_in_shadow() ->
 
 
 def test_track_identity_confidence_scales_prediction_to_zero() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     decision = None
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         decision = algorithm.calculate(
@@ -256,37 +252,48 @@ def test_track_identity_confidence_scales_prediction_to_zero() -> None:
     assert decision.telemetry["error_ctrl_x"] == decision.telemetry["error_meas_x"]
 
 
-def test_real_measurement_error_drives_far_near_hysteresis() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+def test_real_measurement_error_drives_single_threshold_far_near_selection() -> None:
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
 
     far = algorithm.calculate(_observation(generation=1, error_x=30.0))
     entered = algorithm.calculate(_observation(generation=2, error_x=10.0))
-    held = algorithm.calculate(_observation(generation=3, error_x=15.0))
-    exited = algorithm.calculate(_observation(generation=4, error_x=19.0))
+    returned_far = algorithm.calculate(_observation(generation=3, error_x=15.0))
+    returned_near = algorithm.calculate(_observation(generation=4, error_x=11.0))
 
     assert ALGORITHM_ID == "dual_phase_atan_robust_predictive_v2"
     assert far.telemetry["mode"] == ControlMode.FAR.value
     assert entered.telemetry["mode"] == ControlMode.NEAR.value
-    assert held.telemetry["mode"] == ControlMode.NEAR.value
-    assert exited.telemetry["mode"] == ControlMode.FAR.value
+    assert returned_far.telemetry["mode"] == ControlMode.FAR.value
+    assert returned_near.telemetry["mode"] == ControlMode.NEAR.value
+    assert returned_far.telemetry["near_threshold_px"] == 12.0
+
+
+def test_tighter_defaults_raise_feedback_and_prediction_authority() -> None:
+    config = DualPhaseAtanRobustPredictiveV2Config()
+
+    assert config.velocity.smoothing_tau_ms == 22.0
+    assert config.prediction.coefficient == 1.20
+    assert config.prediction.far.absolute_cap_px == 10.0
+    assert config.prediction.near.absolute_cap_px == 3.0
+    assert config.atan.scale_counts == 256.0
+    assert config.atan.far.kp == 0.45
+    assert config.atan.near.kp == 0.22
+    assert config.atan.near.max_counts_per_update == 72.0
 
 
 def test_projection_atan_and_control_atan_are_separate_unit_steps() -> None:
     defaults = DualPhaseAtanRobustPredictiveV2Config()
-    far = AtanModeConfig(kp=0.25, scale_counts=256.0, max_counts_per_update=127.0)
+    far = AtanModeConfig(kp=0.25, max_counts_per_update=127.0)
     config = replace(
         defaults,
         projection=ProjectionConfig(fov_x_deg=90.0, counts_per_360=360.0),
-        mode=ModeSelectorConfig(
-            near_enter_min_px=0.01,
-            near_exit_min_px=0.02,
-            near_enter_bbox_h_ratio=0.0,
-            near_exit_bbox_h_ratio=0.0,
-        ),
+        mode=ModeSelectorConfig(near_threshold_px=0.01),
         prediction=replace(defaults.prediction, coefficient=0.0),
-        atan=AtanControllerConfig(far=far, near=defaults.atan.near),
+        atan=AtanControllerConfig(
+            scale_counts=256.0,
+            far=far,
+            near=defaults.atan.near,
+        ),
     )
     decision = DualPhaseAtanRobustPredictiveV2Algorithm(config).calculate(
         _observation(generation=1, error_x=30.0)
@@ -302,15 +309,11 @@ def test_projection_atan_and_control_atan_are_separate_unit_steps() -> None:
 
 
 def test_target_switch_clears_velocity_and_fractional_counts() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
-    switched = algorithm.calculate(
-        _observation(generation=5, target_id=8, error_x=-40.0)
-    )
+    switched = algorithm.calculate(_observation(generation=5, target_id=8, error_x=-40.0))
     fresh = DualPhaseAtanRobustPredictiveV2Algorithm(
         DualPhaseAtanRobustPredictiveV2Config()
     ).calculate(_observation(generation=5, target_id=8, error_x=-40.0))
@@ -328,9 +331,7 @@ def test_target_switch_clears_velocity_and_fractional_counts() -> None:
 
 
 def test_history_gap_restarts_window_from_current_measurement() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
@@ -350,9 +351,7 @@ def test_history_gap_restarts_window_from_current_measurement() -> None:
 
 
 def test_coordinate_space_change_resets_same_target_history() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
@@ -368,9 +367,7 @@ def test_coordinate_space_change_resets_same_target_history() -> None:
 
 
 def test_tracker_rebuild_resets_same_id_history() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
@@ -389,9 +386,7 @@ def test_tracker_rebuild_resets_same_id_history() -> None:
 
 
 def test_capture_timestamp_regression_uses_feedback_and_starts_a_new_epoch() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     algorithm.calculate(
         _observation(
             generation=1,
@@ -427,9 +422,7 @@ def test_capture_timestamp_regression_uses_feedback_and_starts_a_new_epoch() -> 
 
 
 def test_stale_observation_cannot_emit_and_clears_fractional_residual() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
-    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
     algorithm.calculate(_observation(generation=1, error_x=0.2))
     capture_ns = 1_020_000_000
     stale = algorithm.calculate(
@@ -467,9 +460,7 @@ def test_limited_prediction_reduces_closed_loop_lag_against_feedback_baseline() 
         observation_px_per_count = 0.23
         for generation in range(1, 181):
             error_x += 1.0
-            decision = algorithm.calculate(
-                _observation(generation=generation, error_x=error_x)
-            )
+            decision = algorithm.calculate(_observation(generation=generation, error_x=error_x))
             error_x -= decision.dx * observation_px_per_count
             if generation > 30:
                 settled_errors.append(abs(error_x))

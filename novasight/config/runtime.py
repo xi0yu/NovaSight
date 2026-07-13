@@ -67,26 +67,28 @@ class InferenceConfig:
     detection_class_profile: str = "default"
     detection_class_filter: str = "all"
     detection_class_priority: str = "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
-    detection_class_profiles: dict[str, list[str]] = field(default_factory=lambda: {
-        "default": [
-            "0-敌人/身体",
-            "1-头部",
-            "2-队友",
-            "3-小兵",
-            "4-倒地",
-            "5-靶场",
-            "6-靶场头",
-            "7-类别7",
-            "8-类别8",
-            "9-类别9",
-            "10-类别10",
-            "11-类别11",
-            "12-类别12",
-            "13-类别13",
-            "14-类别14",
-            "15-类别15",
-        ]
-    })
+    detection_class_profiles: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "default": [
+                "0-敌人/身体",
+                "1-头部",
+                "2-队友",
+                "3-小兵",
+                "4-倒地",
+                "5-靶场",
+                "6-靶场头",
+                "7-类别7",
+                "8-类别8",
+                "9-类别9",
+                "10-类别10",
+                "11-类别11",
+                "12-类别12",
+                "13-类别13",
+                "14-类别14",
+                "15-类别15",
+            ]
+        }
+    )
     deepstream_io_mode: int = 2
     deepstream_batched_push_timeout_us: int = 0
     deepstream_parser_library: str = "build/deepstream-parser/libnovasight_parser.so"
@@ -152,18 +154,6 @@ class UniversalSaturatedConfig:
 
 
 @dataclass
-class TtboxPidAtanConfig:
-    response_scale_x_px: float = 256.0
-    response_scale_y_px: float = 256.0
-    per_frame_gain_x: float = 0.1
-    per_frame_gain_y: float = 0.1
-    normalize_to_dt: bool = True
-    nominal_dt_s: float = 0.016
-    max_step_x_counts: float = 50.0
-    max_step_y_counts: float = 40.0
-
-
-@dataclass
 class DualPhaseAimConfig:
     y_ratio: float = 0.22
 
@@ -176,96 +166,19 @@ class DualPhaseProjectionConfig:
 
 
 @dataclass
-class DualPhaseModeSelectorConfig:
-    near_enter_min_px: float = 12.0
-    near_exit_min_px: float = 18.0
-    near_enter_bbox_h_ratio: float = 0.45
-    near_exit_bbox_h_ratio: float = 0.60
-
-
-@dataclass
-class DualPhaseControllerModeConfig:
-    kp: float
-    atan_scale_counts: float
-    max_counts_per_update: float
-
-
-def _default_dual_phase_far_config() -> DualPhaseControllerModeConfig:
-    return DualPhaseControllerModeConfig(
-        kp=0.35,
-        atan_scale_counts=256.0,
-        max_counts_per_update=140.0,
-    )
-
-
-def _default_dual_phase_near_config() -> DualPhaseControllerModeConfig:
-    return DualPhaseControllerModeConfig(
-        kp=0.15,
-        atan_scale_counts=256.0,
-        max_counts_per_update=60.0,
-    )
-
-
-@dataclass
-class DualPhaseEstimatorConfig:
-    measurement_std_px: float = 1.5
-    acceleration_std_px_s2: float = 600.0
-    min_dt_ms: float = 3.0
-    reset_dt_ms: float = 80.0
-    innovation_soft_gate_sigma: float = 3.0
-    innovation_hard_gate_sigma: float = 8.0
-    hard_outlier_reset_count: int = 2
-    max_velocity_px_s: float = 3000.0
-    warmup_updates: int = 4
-
-
-@dataclass
-class DualPhasePredictionConfig:
-    enabled_x: bool = True
-    enabled_y: bool = False
-    actuation_delay_ms: float = 5.0
-    max_horizon_ms: float = 35.0
-    far_weight: float = 0.30
-    near_weight: float = 0.12
-    far_abs_cap_px: float = 8.0
-    near_abs_cap_px: float = 2.0
-    far_base_cap_px: float = 1.0
-    near_base_cap_px: float = 0.5
-    far_relative_cap: float = 0.25
-    near_relative_cap: float = 0.15
-    near_cross_allow_px: float = 0.5
-    high_confidence_cross_threshold: float = 0.85
-    overzero_cooldown_frames: int = 2
-
-
-@dataclass
-class DualPhaseQuantizerConfig:
-    min_effective_counts: int = 1
-
-
-@dataclass
-class DualPhaseAtanPredictiveV1Config:
-    schema_version: int = 1
-    freshness_threshold_ms: float = 55.0
-    aim: DualPhaseAimConfig = field(default_factory=DualPhaseAimConfig)
-    projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
-    mode: DualPhaseModeSelectorConfig = field(default_factory=DualPhaseModeSelectorConfig)
-    far: DualPhaseControllerModeConfig = field(default_factory=_default_dual_phase_far_config)
-    near: DualPhaseControllerModeConfig = field(default_factory=_default_dual_phase_near_config)
-    estimator: DualPhaseEstimatorConfig = field(default_factory=DualPhaseEstimatorConfig)
-    prediction: DualPhasePredictionConfig = field(default_factory=DualPhasePredictionConfig)
-    quantizer: DualPhaseQuantizerConfig = field(default_factory=DualPhaseQuantizerConfig)
+class DualPhaseRobustModeSelectorConfig:
+    near_threshold_px: float = 12.0
 
 
 @dataclass
 class DualPhaseRobustVelocityConfig:
     history_size: int = 4
     velocity_sample_count: int = 3
-    smoothing_tau_ms: float = 30.0
+    smoothing_tau_ms: float = 22.0
     history_reset_gap_ms: float = 80.0
-    spread_base_px_ms: float = 0.10
+    spread_base_px_ms: float = 0.12
     spread_relative: float = 0.50
-    change_base_px_ms: float = 0.15
+    change_base_px_ms: float = 0.20
     change_relative: float = 0.75
 
 
@@ -278,17 +191,17 @@ class DualPhaseRobustPredictionModeConfig:
 
 def _default_dual_phase_robust_far_prediction() -> DualPhaseRobustPredictionModeConfig:
     return DualPhaseRobustPredictionModeConfig(
-        absolute_cap_px=8.0,
-        base_cap_px=1.0,
-        relative_cap=0.25,
+        absolute_cap_px=10.0,
+        base_cap_px=1.25,
+        relative_cap=0.30,
     )
 
 
 def _default_dual_phase_robust_near_prediction() -> DualPhaseRobustPredictionModeConfig:
     return DualPhaseRobustPredictionModeConfig(
-        absolute_cap_px=2.0,
-        base_cap_px=0.5,
-        relative_cap=0.15,
+        absolute_cap_px=3.0,
+        base_cap_px=0.75,
+        relative_cap=0.20,
     )
 
 
@@ -296,7 +209,7 @@ def _default_dual_phase_robust_near_prediction() -> DualPhaseRobustPredictionMod
 class DualPhaseRobustPredictionConfig:
     enabled_x: bool = True
     enabled_y: bool = False
-    coefficient: float = 1.0
+    coefficient: float = 1.20
     actuation_delay_ms: float = 5.0
     max_horizon_ms: float = 35.0
     far: DualPhaseRobustPredictionModeConfig = field(
@@ -310,31 +223,27 @@ class DualPhaseRobustPredictionConfig:
 @dataclass
 class DualPhaseRobustAtanModeConfig:
     kp: float
-    scale_counts: float
     max_counts_per_update: float
 
 
 def _default_dual_phase_robust_far_atan() -> DualPhaseRobustAtanModeConfig:
     return DualPhaseRobustAtanModeConfig(
-        kp=0.35,
-        scale_counts=256.0,
+        kp=0.45,
         max_counts_per_update=127.0,
     )
 
 
 def _default_dual_phase_robust_near_atan() -> DualPhaseRobustAtanModeConfig:
     return DualPhaseRobustAtanModeConfig(
-        kp=0.15,
-        scale_counts=256.0,
-        max_counts_per_update=60.0,
+        kp=0.22,
+        max_counts_per_update=72.0,
     )
 
 
 @dataclass
 class DualPhaseRobustAtanConfig:
-    far: DualPhaseRobustAtanModeConfig = field(
-        default_factory=_default_dual_phase_robust_far_atan
-    )
+    scale_counts: float = 256.0
+    far: DualPhaseRobustAtanModeConfig = field(default_factory=_default_dual_phase_robust_far_atan)
     near: DualPhaseRobustAtanModeConfig = field(
         default_factory=_default_dual_phase_robust_near_atan
     )
@@ -342,11 +251,13 @@ class DualPhaseRobustAtanConfig:
 
 @dataclass
 class DualPhaseAtanRobustPredictiveV2Config:
-    schema_version: int = 2
+    schema_version: int = 3
     freshness_threshold_ms: float = 55.0
     aim: DualPhaseAimConfig = field(default_factory=DualPhaseAimConfig)
     projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
-    mode: DualPhaseModeSelectorConfig = field(default_factory=DualPhaseModeSelectorConfig)
+    mode: DualPhaseRobustModeSelectorConfig = field(
+        default_factory=DualPhaseRobustModeSelectorConfig
+    )
     velocity: DualPhaseRobustVelocityConfig = field(default_factory=DualPhaseRobustVelocityConfig)
     prediction: DualPhaseRobustPredictionConfig = field(
         default_factory=DualPhaseRobustPredictionConfig
@@ -358,10 +269,6 @@ class DualPhaseAtanRobustPredictiveV2Config:
 class ControlAlgorithmConfigs:
     calibrated_angular: CalibratedAngularConfig = field(default_factory=CalibratedAngularConfig)
     universal_saturated: UniversalSaturatedConfig = field(default_factory=UniversalSaturatedConfig)
-    ttbox_pid_atan: TtboxPidAtanConfig = field(default_factory=TtboxPidAtanConfig)
-    dual_phase_atan_predictive_v1: DualPhaseAtanPredictiveV1Config = field(
-        default_factory=DualPhaseAtanPredictiveV1Config
-    )
     dual_phase_atan_robust_predictive_v2: DualPhaseAtanRobustPredictiveV2Config = field(
         default_factory=DualPhaseAtanRobustPredictiveV2Config
     )
@@ -443,14 +350,6 @@ class ControlConfig:
     @property
     def universal_saturated(self) -> UniversalSaturatedConfig:
         return self.algorithms.universal_saturated
-
-    @property
-    def ttbox_pid_atan(self) -> TtboxPidAtanConfig:
-        return self.algorithms.ttbox_pid_atan
-
-    @property
-    def dual_phase_atan_predictive_v1(self) -> DualPhaseAtanPredictiveV1Config:
-        return self.algorithms.dual_phase_atan_predictive_v1
 
     @property
     def dual_phase_atan_robust_predictive_v2(
@@ -535,9 +434,7 @@ def _build_dataclass(
     type_hints = get_type_hints(cls)
     unknown_keys = sorted(set(raw) - set(items), key=str)
     if unknown_keys:
-        key_names = ", ".join(
-            f"{section}.{key}" if section else str(key) for key in unknown_keys
-        )
+        key_names = ", ".join(f"{section}.{key}" if section else str(key) for key in unknown_keys)
         raise ValueError(f"unknown config key(s): {key_names}")
 
     values: dict[str, Any] = {}
@@ -706,9 +603,7 @@ def _migrate_legacy_mouse_control(
     )
     legacy_strategy = control.get("strategy")
     if legacy_strategy is not None and legacy_strategy != "experimental_angle_pid":
-        raise ValueError(
-            "legacy config key 'control.strategy' must be experimental_angle_pid"
-        )
+        raise ValueError("legacy config key 'control.strategy' must be experimental_angle_pid")
     if legacy_schema:
         control.setdefault("mode", "calibrated_angular")
 
@@ -727,15 +622,10 @@ def _migrate_legacy_mouse_control(
     legacy_delay_ms = control.pop("configured_extra_prediction_delay_ms", None)
     legacy_estimated_delay_ms = control.pop("latency_estimated_actuation_delay_ms", None)
     if "configured_actuation_delay_s" not in control:
-        delay_ms = (
-            legacy_delay_ms
-            if legacy_delay_ms is not None
-            else legacy_estimated_delay_ms
-        )
+        delay_ms = legacy_delay_ms if legacy_delay_ms is not None else legacy_estimated_delay_ms
         if delay_ms is not None:
             control["configured_actuation_delay_s"] = (
-                _legacy_number(delay_ms, "control.configured_extra_prediction_delay_ms")
-                / 1000.0
+                _legacy_number(delay_ms, "control.configured_extra_prediction_delay_ms") / 1000.0
             )
 
     legacy_prediction_enabled = control.pop("latency_compensation_enabled", None)
@@ -864,8 +754,7 @@ def _migrate_dual_control_modes(
         "d_ema_alpha": "d_ema_alpha",
     }
     legacy_mode_detected = any(key in control for key in legacy_calibrated_fields) or any(
-        key in calibration
-        for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y")
+        key in calibration for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y")
     )
     for old_key, new_key in legacy_calibrated_fields.items():
         value = control.pop(old_key, None)
@@ -899,9 +788,6 @@ def _migrate_dual_control_modes(
         control.setdefault("mode", "calibrated_angular")
     control["calibrated_angular"] = calibrated
     control["universal_saturated"] = universal
-    control.setdefault("ttbox_pid_atan", {})
-    if not isinstance(control["ttbox_pid_atan"], dict):
-        control["ttbox_pid_atan"] = {}
     control["shared"] = shared
 
 
@@ -913,24 +799,70 @@ def _migrate_control_algorithm_namespaces(control: dict[str, Any]) -> None:
     for algorithm_id in (
         "calibrated_angular",
         "universal_saturated",
-        "ttbox_pid_atan",
-        "dual_phase_atan_predictive_v1",
         "dual_phase_atan_robust_predictive_v2",
     ):
         legacy_config = control.pop(algorithm_id, None)
         if legacy_config is not None:
             algorithms.setdefault(algorithm_id, legacy_config)
 
+    removed_algorithm_ids = (
+        "ttbox_pid_atan",
+        "dual_phase_atan_predictive_v1",
+    )
+    for removed_algorithm_id in removed_algorithm_ids:
+        control.pop(removed_algorithm_id, None)
+        algorithms.pop(removed_algorithm_id, None)
+
+    _migrate_dual_phase_robust_v2_namespace(algorithms)
+
     active_algorithm = control.pop("active_algorithm", None)
     legacy_mode = control.pop("mode", None)
-    control["active_algorithm"] = str(
+    selected_algorithm = str(
         active_algorithm
         if active_algorithm is not None
         else legacy_mode
         if legacy_mode is not None
         else "universal_saturated"
     )
+    if selected_algorithm in removed_algorithm_ids:
+        selected_algorithm = "dual_phase_atan_robust_predictive_v2"
+    control["active_algorithm"] = selected_algorithm
     control["algorithms"] = algorithms
+
+
+def _migrate_dual_phase_robust_v2_namespace(
+    algorithms: dict[str, Any],
+) -> None:
+    raw_config = algorithms.get("dual_phase_atan_robust_predictive_v2")
+    if not isinstance(raw_config, dict):
+        return
+
+    config = dict(raw_config)
+    mode = config.get("mode")
+    if isinstance(mode, dict):
+        mode = dict(mode)
+        threshold = mode.get("near_threshold_px", mode.get("near_enter_min_px", 12.0))
+        config["mode"] = {"near_threshold_px": threshold}
+
+    atan = config.get("atan")
+    if isinstance(atan, dict):
+        atan = dict(atan)
+        far = dict(atan.get("far", {})) if isinstance(atan.get("far"), dict) else {}
+        near = dict(atan.get("near", {})) if isinstance(atan.get("near"), dict) else {}
+        shared_scale = atan.get(
+            "scale_counts",
+            far.get("scale_counts", near.get("scale_counts", 256.0)),
+        )
+        far.pop("scale_counts", None)
+        near.pop("scale_counts", None)
+        atan["scale_counts"] = shared_scale
+        atan["far"] = far
+        atan["near"] = near
+        config["atan"] = atan
+
+    if int(config.get("schema_version", 2)) == 2:
+        config["schema_version"] = 3
+    algorithms["dual_phase_atan_robust_predictive_v2"] = config
 
 
 _REMOVED_LEGACY_CONTROL_KEYS = frozenset(
@@ -1010,158 +942,6 @@ def _legacy_number(value: Any, key: str) -> float:
     return numeric
 
 
-def _validate_dual_phase_algorithm(cfg: DualPhaseAtanPredictiveV1Config) -> None:
-    prefix = "control.algorithms.dual_phase_atan_predictive_v1"
-
-    def finite(name: str, value: float) -> float:
-        numeric = float(value)
-        if not math.isfinite(numeric):
-            raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
-        return numeric
-
-    if int(cfg.schema_version) != 1:
-        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 1")
-    freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
-    if freshness_ms <= 0.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0"
-        )
-
-    aim_ratio = finite("aim.y_ratio", cfg.aim.y_ratio)
-    if not 0.0 <= aim_ratio <= 1.0:
-        raise ValueError(f"runtime config key '{prefix}.aim.y_ratio' must be in [0, 1]")
-    cfg.aim.y_ratio = round(aim_ratio, 2)
-
-    fov_x_deg = finite("projection.fov_x_deg", cfg.projection.fov_x_deg)
-    if not 30.0 <= fov_x_deg <= 179.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.projection.fov_x_deg' must be in [30, 179]"
-        )
-    if finite("projection.counts_per_360", cfg.projection.counts_per_360) <= 0.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.projection.counts_per_360' must be > 0"
-        )
-
-    selector = cfg.mode
-    enter_min = finite("mode.near_enter_min_px", selector.near_enter_min_px)
-    exit_min = finite("mode.near_exit_min_px", selector.near_exit_min_px)
-    enter_ratio = finite(
-        "mode.near_enter_bbox_h_ratio",
-        selector.near_enter_bbox_h_ratio,
-    )
-    exit_ratio = finite(
-        "mode.near_exit_bbox_h_ratio",
-        selector.near_exit_bbox_h_ratio,
-    )
-    if enter_min < 0.0 or enter_min >= exit_min:
-        raise ValueError(
-            f"runtime config key '{prefix}.mode' requires "
-            "0 <= near_enter_min_px < near_exit_min_px"
-        )
-    if enter_ratio < 0.0 or enter_ratio >= exit_ratio:
-        raise ValueError(
-            f"runtime config key '{prefix}.mode' requires "
-            "0 <= near_enter_bbox_h_ratio < near_exit_bbox_h_ratio"
-        )
-
-    far = cfg.far
-    near = cfg.near
-    far_kp = finite("far.kp", far.kp)
-    near_kp = finite("near.kp", near.kp)
-    if not 0.0 < near_kp < far_kp < 1.0:
-        raise ValueError(
-            f"runtime config key '{prefix}' requires 0 < near.kp < far.kp < 1"
-        )
-    for mode_name, mode_cfg in (("far", far), ("near", near)):
-        for key in ("atan_scale_counts", "max_counts_per_update"):
-            if finite(f"{mode_name}.{key}", getattr(mode_cfg, key)) <= 0.0:
-                raise ValueError(
-                    f"runtime config key '{prefix}.{mode_name}.{key}' must be > 0"
-                )
-    if near.max_counts_per_update > far.max_counts_per_update:
-        raise ValueError(
-            f"runtime config key '{prefix}' requires near.max_counts_per_update "
-            "<= far.max_counts_per_update"
-        )
-    estimator = cfg.estimator
-    for key in (
-        "measurement_std_px",
-        "acceleration_std_px_s2",
-        "min_dt_ms",
-        "reset_dt_ms",
-        "innovation_soft_gate_sigma",
-        "innovation_hard_gate_sigma",
-        "max_velocity_px_s",
-    ):
-        if finite(f"estimator.{key}", getattr(estimator, key)) <= 0.0:
-            raise ValueError(f"runtime config key '{prefix}.estimator.{key}' must be > 0")
-    if estimator.min_dt_ms >= estimator.reset_dt_ms:
-        raise ValueError(
-            f"runtime config key '{prefix}.estimator' requires min_dt_ms < reset_dt_ms"
-        )
-    if estimator.innovation_soft_gate_sigma >= estimator.innovation_hard_gate_sigma:
-        raise ValueError(
-            f"runtime config key '{prefix}.estimator' requires "
-            "innovation_soft_gate_sigma < innovation_hard_gate_sigma"
-        )
-    if estimator.hard_outlier_reset_count < 1 or estimator.warmup_updates < 1:
-        raise ValueError(
-            f"runtime config key '{prefix}.estimator' count fields must be >= 1"
-        )
-
-    prediction = cfg.prediction
-    if prediction.enabled_y:
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction.enabled_y' must be false for v1"
-        )
-    actuation_ms = finite("prediction.actuation_delay_ms", prediction.actuation_delay_ms)
-    horizon_ms = finite("prediction.max_horizon_ms", prediction.max_horizon_ms)
-    if actuation_ms < 0.0 or actuation_ms > horizon_ms or horizon_ms > freshness_ms:
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction' requires "
-            "0 <= actuation_delay_ms <= max_horizon_ms <= freshness_threshold_ms"
-        )
-    for key in (
-        "far_weight",
-        "near_weight",
-        "far_relative_cap",
-        "near_relative_cap",
-        "high_confidence_cross_threshold",
-    ):
-        value = finite(f"prediction.{key}", getattr(prediction, key))
-        if not 0.0 <= value <= 1.0:
-            raise ValueError(
-                f"runtime config key '{prefix}.prediction.{key}' must be in [0, 1]"
-            )
-    for key in (
-        "far_abs_cap_px",
-        "near_abs_cap_px",
-        "far_base_cap_px",
-        "near_base_cap_px",
-        "near_cross_allow_px",
-    ):
-        if finite(f"prediction.{key}", getattr(prediction, key)) < 0.0:
-            raise ValueError(f"runtime config key '{prefix}.prediction.{key}' must be >= 0")
-    if (
-        prediction.near_weight > prediction.far_weight
-        or prediction.near_abs_cap_px > prediction.far_abs_cap_px
-        or prediction.near_base_cap_px > prediction.far_base_cap_px
-        or prediction.near_relative_cap > prediction.far_relative_cap
-    ):
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction' requires NEAR limits <= FAR limits"
-        )
-    if prediction.overzero_cooldown_frames < 0:
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction.overzero_cooldown_frames' must be >= 0"
-        )
-
-    if cfg.quantizer.min_effective_counts < 1:
-        raise ValueError(
-            f"runtime config key '{prefix}.quantizer.min_effective_counts' must be >= 1"
-        )
-
-
 def _validate_dual_phase_robust_v2_algorithm(
     cfg: DualPhaseAtanRobustPredictiveV2Config,
 ) -> None:
@@ -1173,13 +953,11 @@ def _validate_dual_phase_robust_v2_algorithm(
             raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
         return numeric
 
-    if int(cfg.schema_version) != 2:
-        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 2")
+    if int(cfg.schema_version) != 3:
+        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 3")
     freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
     if freshness_ms <= 0.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0"
-        )
+        raise ValueError(f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0")
 
     aim_ratio = finite("aim.y_ratio", cfg.aim.y_ratio)
     if not 0.0 <= aim_ratio <= 1.0:
@@ -1188,39 +966,13 @@ def _validate_dual_phase_robust_v2_algorithm(
 
     fov_x_deg = finite("projection.fov_x_deg", cfg.projection.fov_x_deg)
     if not 30.0 <= fov_x_deg <= 179.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.projection.fov_x_deg' must be in [30, 179]"
-        )
+        raise ValueError(f"runtime config key '{prefix}.projection.fov_x_deg' must be in [30, 179]")
     if finite("projection.counts_per_360", cfg.projection.counts_per_360) <= 0.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.projection.counts_per_360' must be > 0"
-        )
+        raise ValueError(f"runtime config key '{prefix}.projection.counts_per_360' must be > 0")
 
-    selector = cfg.mode
-    enter_min = finite("mode.near_enter_min_px", selector.near_enter_min_px)
-    exit_min = finite("mode.near_exit_min_px", selector.near_exit_min_px)
-    enter_ratio = finite(
-        "mode.near_enter_bbox_h_ratio",
-        selector.near_enter_bbox_h_ratio,
-    )
-    exit_ratio = finite(
-        "mode.near_exit_bbox_h_ratio",
-        selector.near_exit_bbox_h_ratio,
-    )
-    if enter_min < 0.0 or enter_min >= exit_min:
-        raise ValueError(
-            f"runtime config key '{prefix}.mode' requires "
-            "0 <= near_enter_min_px < near_exit_min_px"
-        )
-    ratios_are_valid = (0.0 <= enter_ratio < exit_ratio) or (
-        enter_ratio == 0.0 and exit_ratio == 0.0
-    )
-    if not ratios_are_valid:
-        raise ValueError(
-            f"runtime config key '{prefix}.mode' requires "
-            "both bbox ratios disabled at 0 or "
-            "0 <= near_enter_bbox_h_ratio < near_exit_bbox_h_ratio"
-        )
+    near_threshold = finite("mode.near_threshold_px", cfg.mode.near_threshold_px)
+    if near_threshold < 0.0:
+        raise ValueError(f"runtime config key '{prefix}.mode.near_threshold_px' must be >= 0")
 
     velocity = cfg.velocity
     if velocity.history_size != 4 or velocity.velocity_sample_count != 3:
@@ -1242,14 +994,10 @@ def _validate_dual_phase_robust_v2_algorithm(
 
     prediction = cfg.prediction
     if prediction.enabled_y:
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction.enabled_y' must be false for v2"
-        )
+        raise ValueError(f"runtime config key '{prefix}.prediction.enabled_y' must be false for v2")
     coefficient = finite("prediction.coefficient", prediction.coefficient)
     if not 0.0 <= coefficient <= 2.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction.coefficient' must be in [0, 2]"
-        )
+        raise ValueError(f"runtime config key '{prefix}.prediction.coefficient' must be in [0, 2]")
     actuation_ms = finite("prediction.actuation_delay_ms", prediction.actuation_delay_ms)
     horizon_ms = finite("prediction.max_horizon_ms", prediction.max_horizon_ms)
     if actuation_ms < 0.0 or actuation_ms > horizon_ms or horizon_ms > freshness_ms:
@@ -1261,8 +1009,7 @@ def _validate_dual_phase_robust_v2_algorithm(
         for key in ("absolute_cap_px", "base_cap_px", "relative_cap"):
             if finite(f"prediction.{mode_name}.{key}", getattr(mode_cfg, key)) < 0.0:
                 raise ValueError(
-                    f"runtime config key '{prefix}.prediction.{mode_name}.{key}' "
-                    "must be >= 0"
+                    f"runtime config key '{prefix}.prediction.{mode_name}.{key}' must be >= 0"
                 )
     if (
         prediction.near.absolute_cap_px > prediction.far.absolute_cap_px
@@ -1275,18 +1022,23 @@ def _validate_dual_phase_robust_v2_algorithm(
 
     far = cfg.atan.far
     near = cfg.atan.near
+    if finite("atan.scale_counts", cfg.atan.scale_counts) <= 0.0:
+        raise ValueError(f"runtime config key '{prefix}.atan.scale_counts' must be > 0")
     far_kp = finite("atan.far.kp", far.kp)
     near_kp = finite("atan.near.kp", near.kp)
     if not 0.0 < near_kp < far_kp < 1.0:
-        raise ValueError(
-            f"runtime config key '{prefix}.atan' requires 0 < near.kp < far.kp < 1"
-        )
+        raise ValueError(f"runtime config key '{prefix}.atan' requires 0 < near.kp < far.kp < 1")
     for mode_name, mode_cfg in (("far", far), ("near", near)):
-        for key in ("scale_counts", "max_counts_per_update"):
-            if finite(f"atan.{mode_name}.{key}", getattr(mode_cfg, key)) <= 0.0:
-                raise ValueError(
-                    f"runtime config key '{prefix}.atan.{mode_name}.{key}' must be > 0"
-                )
+        if (
+            finite(
+                f"atan.{mode_name}.max_counts_per_update",
+                mode_cfg.max_counts_per_update,
+            )
+            <= 0.0
+        ):
+            raise ValueError(
+                f"runtime config key '{prefix}.atan.{mode_name}.max_counts_per_update' must be > 0"
+            )
         if mode_cfg.max_counts_per_update > 127.0:
             raise ValueError(
                 f"runtime config key '{prefix}.atan.{mode_name}.max_counts_per_update' "
@@ -1300,8 +1052,12 @@ def _validate_dual_phase_robust_v2_algorithm(
 
 
 def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
-    if cfg.source.default not in {"null", "capture", "image"} and not cfg.source.default.startswith("image:"):
-        raise ValueError("runtime config key 'source.default' must be one of null, capture, image, or image:<path>")
+    if cfg.source.default not in {"null", "capture", "image"} and not cfg.source.default.startswith(
+        "image:"
+    ):
+        raise ValueError(
+            "runtime config key 'source.default' must be one of null, capture, image, or image:<path>"
+        )
     if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
         raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
     if cfg.capture.backend not in {"gst_cpu_latest", "nvmm_latest", "deepstream_nvinfer"}:
@@ -1313,7 +1069,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'capture.memory' must be system or nvmm")
     if cfg.capture.backend == "gst_cpu_latest" and cfg.capture.memory != "system":
         raise ValueError("runtime config key 'capture.memory' must be system for gst_cpu_latest")
-    if cfg.capture.backend in {"nvmm_latest", "deepstream_nvinfer"} and cfg.capture.memory != "nvmm":
+    if (
+        cfg.capture.backend in {"nvmm_latest", "deepstream_nvinfer"}
+        and cfg.capture.memory != "nvmm"
+    ):
         raise ValueError(
             "runtime config key 'capture.memory' must be nvmm for GPU capture backends"
         )
@@ -1360,7 +1119,9 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.inference.inference_input_deadline_ms < 0:
         raise ValueError("runtime config key 'inference.inference_input_deadline_ms' must be >= 0")
     if cfg.inference.confidence_threshold < 0 or cfg.inference.confidence_threshold > 1:
-        raise ValueError("runtime config key 'inference.confidence_threshold' must be >= 0 and <= 1")
+        raise ValueError(
+            "runtime config key 'inference.confidence_threshold' must be >= 0 and <= 1"
+        )
     if cfg.inference.nms_threshold < 0 or cfg.inference.nms_threshold > 1:
         raise ValueError("runtime config key 'inference.nms_threshold' must be >= 0 and <= 1")
     if cfg.inference.deepstream_io_mode < 0:
@@ -1386,23 +1147,29 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         try:
             class_index = int(cfg.inference.detection_class_filter)
         except ValueError as exc:
-            raise ValueError("runtime config key 'inference.detection_class_filter' must be all or a class index") from exc
+            raise ValueError(
+                "runtime config key 'inference.detection_class_filter' must be all or a class index"
+            ) from exc
         if class_index < 0 or class_index > 255:
-            raise ValueError("runtime config key 'inference.detection_class_filter' must be between 0 and 255")
+            raise ValueError(
+                "runtime config key 'inference.detection_class_filter' must be between 0 and 255"
+            )
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
-        raise ValueError("runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles")
+        raise ValueError(
+            "runtime config key 'inference.detection_class_profile' must exist in detection_class_profiles"
+        )
     if not cfg.calibration.profile_id.strip():
         raise ValueError("runtime config key 'calibration.profile_id' must be non-empty")
     if cfg.calibration.profile_version < 1:
         raise ValueError("runtime config key 'calibration.profile_version' must be >= 1")
     if not cfg.calibration.game_sensitivity_fingerprint.strip():
-        raise ValueError("runtime config key 'calibration.game_sensitivity_fingerprint' must be non-empty")
+        raise ValueError(
+            "runtime config key 'calibration.game_sensitivity_fingerprint' must be non-empty"
+        )
     if cfg.control.active_algorithm not in {
         "calibrated_angular",
         "universal_saturated",
-        "ttbox_pid_atan",
-        "dual_phase_atan_predictive_v1",
         "dual_phase_atan_robust_predictive_v2",
     }:
         raise ValueError(
@@ -1424,7 +1191,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
                 f"runtime config key 'control.{key}' must be >= {minimum} and <= {maximum}"
             )
     for key in ("target_fov_radius_px",):
-        if not math.isfinite(float(getattr(cfg.control, key))) or float(getattr(cfg.control, key)) <= 0.0:
+        if (
+            not math.isfinite(float(getattr(cfg.control, key)))
+            or float(getattr(cfg.control, key)) <= 0.0
+        ):
             raise ValueError(f"runtime config key 'control.{key}' must be finite and > 0")
     calibrated = cfg.control.calibrated_angular
     calibrated_bounds = {
@@ -1464,47 +1234,16 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(
                 f"runtime config key 'control.universal_saturated.{key}' must be finite and > 0"
             )
-    ttbox = cfg.control.ttbox_pid_atan
-    for key in (
-        "response_scale_x_px",
-        "response_scale_y_px",
-        "max_step_x_counts",
-        "max_step_y_counts",
-    ):
-        value = float(getattr(ttbox, key))
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValueError(
-                f"runtime config key 'control.ttbox_pid_atan.{key}' must be finite and > 0"
-            )
-    for key in ("per_frame_gain_x", "per_frame_gain_y"):
-        value = float(getattr(ttbox, key))
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValueError(
-                f"runtime config key 'control.ttbox_pid_atan.{key}' must be finite and > 0"
-            )
-    nominal_dt_s = float(ttbox.nominal_dt_s)
-    if not math.isfinite(nominal_dt_s) or nominal_dt_s <= 0.0 or nominal_dt_s > 0.2:
-        raise ValueError(
-            "runtime config key 'control.algorithms.ttbox_pid_atan.nominal_dt_s' "
-            "must be finite and in (0, 0.2]"
-        )
-    _validate_dual_phase_algorithm(cfg.control.dual_phase_atan_predictive_v1)
-    _validate_dual_phase_robust_v2_algorithm(
-        cfg.control.dual_phase_atan_robust_predictive_v2
-    )
+    _validate_dual_phase_robust_v2_algorithm(cfg.control.dual_phase_atan_robust_predictive_v2)
     shared = cfg.control.shared
     for key in ("deadzone_x_px", "deadzone_y_px"):
         value = float(getattr(shared, key))
         if not math.isfinite(value) or value < 0.0 or value > 10.0:
-            raise ValueError(
-                f"runtime config key 'control.shared.{key}' must be >= 0 and <= 10"
-            )
+            raise ValueError(f"runtime config key 'control.shared.{key}' must be >= 0 and <= 10")
     for key in ("max_count_slew_x", "max_count_slew_y"):
         value = float(getattr(shared, key))
         if not math.isfinite(value) or value <= 0.0:
-            raise ValueError(
-                f"runtime config key 'control.shared.{key}' must be finite and > 0"
-            )
+            raise ValueError(f"runtime config key 'control.shared.{key}' must be finite and > 0")
     shared_bounds = {
         "trigger_activation_delay_ms": (0.0, 1000.0),
         "recoil_start_delay_ms": (0.0, 1000.0),
@@ -1535,13 +1274,25 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.control.tracker_iou_cost_weight < 0:
         raise ValueError("runtime config key 'control.tracker_iou_cost_weight' must be >= 0")
     if cfg.control.tracker_position_cost_weight + cfg.control.tracker_iou_cost_weight <= 0:
-        raise ValueError("runtime config key 'control.tracker_position_cost_weight' and 'control.tracker_iou_cost_weight' must have a positive sum")
+        raise ValueError(
+            "runtime config key 'control.tracker_position_cost_weight' and 'control.tracker_iou_cost_weight' must have a positive sum"
+        )
     if cfg.control.tracker_max_missed_frames < 0:
         raise ValueError("runtime config key 'control.tracker_max_missed_frames' must be >= 0")
-    if cfg.control.target_switch_min_preference_advantage < 0 or cfg.control.target_switch_min_preference_advantage > 1:
-        raise ValueError("runtime config key 'control.target_switch_min_preference_advantage' must be >= 0 and <= 1")
-    if cfg.control.target_switch_min_continuity_score < 0 or cfg.control.target_switch_min_continuity_score > 1:
-        raise ValueError("runtime config key 'control.target_switch_min_continuity_score' must be >= 0 and <= 1")
+    if (
+        cfg.control.target_switch_min_preference_advantage < 0
+        or cfg.control.target_switch_min_preference_advantage > 1
+    ):
+        raise ValueError(
+            "runtime config key 'control.target_switch_min_preference_advantage' must be >= 0 and <= 1"
+        )
+    if (
+        cfg.control.target_switch_min_continuity_score < 0
+        or cfg.control.target_switch_min_continuity_score > 1
+    ):
+        raise ValueError(
+            "runtime config key 'control.target_switch_min_continuity_score' must be >= 0 and <= 1"
+        )
     for key in (
         "kalman_acceleration_noise",
         "kalman_measurement_noise_x",
@@ -1566,7 +1317,10 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         if value < 0 or value > 1:
             raise ValueError(f"runtime config key 'control.{key}' must be >= 0 and <= 1")
     if cfg.control.kalman_nis_hard_reject < cfg.control.kalman_nis_threshold:
-        raise ValueError("runtime config key 'control.kalman_nis_hard_reject' must be >= control.kalman_nis_threshold")
+        raise ValueError(
+            "runtime config key 'control.kalman_nis_hard_reject' must be >= control.kalman_nis_threshold"
+        )
+
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     cfg_path = Path(path)

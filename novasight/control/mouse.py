@@ -7,8 +7,7 @@ from typing import Any, Protocol
 
 CALIBRATED_ANGULAR = "calibrated_angular"
 UNIVERSAL_SATURATED = "universal_saturated"
-TTBOX_PID_ATAN = "ttbox_pid_atan"
-CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED, TTBOX_PID_ATAN})
+CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED})
 ARRIVAL_CONFIRM_FRAMES = 2
 DEPARTURE_CONFIRM_FRAMES = 2
 
@@ -96,18 +95,6 @@ class UniversalSaturatedControllerConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class TtboxPidAtanControllerConfig:
-    response_scale_x_px: float
-    response_scale_y_px: float
-    per_frame_gain_x: float
-    per_frame_gain_y: float
-    normalize_to_dt: bool
-    nominal_dt_s: float
-    max_step_x_counts: float
-    max_step_y_counts: float
-
-
-@dataclass(frozen=True, slots=True)
 class SharedOutputConfig:
     deadzone_x_px: float
     deadzone_y_px: float
@@ -129,17 +116,14 @@ class MouseControllerConfig:
     calibrated_angular: CalibratedAngularControllerConfig
     universal_saturated: UniversalSaturatedControllerConfig
     shared: SharedOutputConfig
-    ttbox_pid_atan: TtboxPidAtanControllerConfig | None = None
 
 
 class ControlController(Protocol):
     mode: str
 
-    def reset(self) -> None:
-        ...
+    def reset(self) -> None: ...
 
-    def compute_counts(self, value: ControllerInput) -> ControllerComputation:
-        ...
+    def compute_counts(self, value: ControllerInput) -> ControllerComputation: ...
 
 
 @dataclass(slots=True)
@@ -296,56 +280,6 @@ class UniversalSaturatedController:
         )
 
 
-
-class TtboxPidAtanController:
-    mode = TTBOX_PID_ATAN
-
-    def __init__(self, config: TtboxPidAtanControllerConfig) -> None:
-        self.config = config
-
-    def reset(self) -> None:
-        return None
-
-    def compute_counts(self, value: ControllerInput) -> ControllerComputation:
-        cfg = self.config
-        scale_x = cfg.response_scale_x_px
-        scale_y = cfg.response_scale_y_px
-        gain_x = cfg.per_frame_gain_x
-        gain_y = cfg.per_frame_gain_y
-        if (
-            cfg.normalize_to_dt
-            and value.dt_s is not None
-            and math.isfinite(value.dt_s)
-            and value.dt_s > 0.0
-            and cfg.nominal_dt_s > 0.0
-        ):
-            factor = value.dt_s / cfg.nominal_dt_s
-            gain_x = gain_x * factor
-            gain_y = gain_y * factor
-        raw_x = gain_x * scale_x * math.atan(value.predicted_error_px.x / scale_x)
-        raw_y = gain_y * scale_y * math.atan(value.predicted_error_px.y / scale_y)
-        limited_x = _clamp_axis(raw_x, cfg.max_step_x_counts)
-        limited_y = _clamp_axis(raw_y, cfg.max_step_y_counts)
-        return ControllerComputation(
-            counts=Vec2(limited_x, limited_y),
-            debug={
-                "response_scale_x_px": scale_x,
-                "response_scale_y_px": scale_y,
-                "per_frame_gain_x": cfg.per_frame_gain_x,
-                "per_frame_gain_y": cfg.per_frame_gain_y,
-                "normalize_to_dt": cfg.normalize_to_dt,
-                "nominal_dt_s": cfg.nominal_dt_s,
-                "applied_gain_x": gain_x,
-                "applied_gain_y": gain_y,
-                "raw_counts_x_float": raw_x,
-                "raw_counts_y_float": raw_y,
-                "theoretical_counts_x_float": raw_x,
-                "theoretical_counts_y_float": raw_y,
-                "mode_limited_counts_x_float": limited_x,
-                "mode_limited_counts_y_float": limited_y,
-            },
-        )
-
 class ControllerFactory:
     @staticmethod
     def create(config: MouseControllerConfig) -> ControlController:
@@ -353,10 +287,6 @@ class ControllerFactory:
             return CalibratedAngularController(config.calibrated_angular)
         if config.mode == UNIVERSAL_SATURATED:
             return UniversalSaturatedController(config.universal_saturated)
-        if config.mode == TTBOX_PID_ATAN:
-            if config.ttbox_pid_atan is None:
-                raise ValueError("ttbox_pid_atan controller config is required")
-            return TtboxPidAtanController(config.ttbox_pid_atan)
         raise ValueError(f"unsupported mouse control mode: {config.mode}")
 
 
@@ -423,7 +353,9 @@ class MouseController:
             self.reset()
             return self._zero("CONTROL_PROJECTION_INVALID")
 
-        switched = self.state.target_id is not None and self.state.target_id != observation.target_id
+        switched = (
+            self.state.target_id is not None and self.state.target_id != observation.target_id
+        )
         if switched:
             self.reset()
 
@@ -437,13 +369,11 @@ class MouseController:
             observation.predicted_x_px - center_x,
             observation.predicted_y_px - center_y,
         )
-        crossed_center_x = (
-            self.state.observed_error_history_valid
-            and _crossed_center(self.state.previous_observed_error.x, observed_error.x)
+        crossed_center_x = self.state.observed_error_history_valid and _crossed_center(
+            self.state.previous_observed_error.x, observed_error.x
         )
-        crossed_center_y = (
-            self.state.observed_error_history_valid
-            and _crossed_center(self.state.previous_observed_error.y, observed_error.y)
+        crossed_center_y = self.state.observed_error_history_valid and _crossed_center(
+            self.state.previous_observed_error.y, observed_error.y
         )
         try:
             computation = self.controller.compute_counts(
@@ -490,12 +420,16 @@ class MouseController:
             enter_px=shared.deadzone_y_px,
             crossed_center=crossed_center_y,
         )
-        hold_x = self.state.settled_x or (
-            shared.deadzone_x_px > 0.0 and abs(observed_error.x) <= shared.deadzone_x_px
-        ) or observation.actuation_pending_x
-        hold_y = self.state.settled_y or (
-            shared.deadzone_y_px > 0.0 and abs(observed_error.y) <= shared.deadzone_y_px
-        ) or observation.actuation_pending_y
+        hold_x = (
+            self.state.settled_x
+            or (shared.deadzone_x_px > 0.0 and abs(observed_error.x) <= shared.deadzone_x_px)
+            or observation.actuation_pending_x
+        )
+        hold_y = (
+            self.state.settled_y
+            or (shared.deadzone_y_px > 0.0 and abs(observed_error.y) <= shared.deadzone_y_px)
+            or observation.actuation_pending_y
+        )
         deadzone_limited = Vec2(
             0.0 if hold_x else computation.counts.x,
             0.0 if hold_y else computation.counts.y,
@@ -516,9 +450,7 @@ class MouseController:
         )
         mixed_counts = Vec2(directed_counts.x, directed_counts.y + recoil_y_counts)
         previous_counts = (
-            self.state.previous_counts
-            if self.state.output_history_valid
-            else Vec2(0.0, 0.0)
+            self.state.previous_counts if self.state.output_history_valid else Vec2(0.0, 0.0)
         )
         slew_limited = Vec2(
             _slew_limit(
@@ -747,7 +679,9 @@ def _update_arrival_axis(
     return False, 0, 0, exit_threshold
 
 
-def _projection_geometry(width: float, height: float, fov_x_deg: float) -> tuple[float, float] | None:
+def _projection_geometry(
+    width: float, height: float, fov_x_deg: float
+) -> tuple[float, float] | None:
     if not _valid_control_space(width, height):
         return None
     if not math.isfinite(fov_x_deg) or not 0.0 < fov_x_deg < 180.0:

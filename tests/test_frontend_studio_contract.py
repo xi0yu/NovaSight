@@ -10,12 +10,7 @@ STUDIO_CONSOLE = (
     / "StudioConsoleView.tsx"
 )
 DEVICES_VIEW = (
-    Path(__file__).resolve().parents[1]
-    / "web"
-    / "src"
-    / "features"
-    / "devices"
-    / "DevicesView.tsx"
+    Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "devices" / "DevicesView.tsx"
 )
 DASHBOARD_VIEW = (
     Path(__file__).resolve().parents[1]
@@ -26,12 +21,7 @@ DASHBOARD_VIEW = (
     / "DashboardView.tsx"
 )
 RUNTIME_STATUS = (
-    Path(__file__).resolve().parents[1]
-    / "web"
-    / "src"
-    / "features"
-    / "shared"
-    / "runtimeStatus.ts"
+    Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "shared" / "runtimeStatus.ts"
 )
 
 
@@ -46,7 +36,9 @@ def test_roi_size_control_commits_once_instead_of_writing_on_every_change() -> N
     roi_card = _roi_card_source()
 
     assert 'onChange={(event) => void updateConfigField("roi", "size"' not in roi_card
-    assert 'onCommit={(value) => updateConfigField("roi", "size", nearestRoiSize(value))}' in roi_card
+    assert (
+        'onCommit={(value) => updateConfigField("roi", "size", nearestRoiSize(value))}' in roi_card
+    )
 
 
 def test_studio_mainline_mode_includes_tensorrt_runtime_backend() -> None:
@@ -62,7 +54,10 @@ def test_runtime_status_does_not_treat_informational_reason_as_failure() -> None
     failure_start = source.index("const failureMessage =")
     failure_end = source.index("const publishedBatches", failure_start)
     failure_logic = source[failure_start:failure_end]
-    assert '(terminalError ? readString(inference.detail) || readString(inference.reason) : "")' in failure_logic
+    assert (
+        '(terminalError ? readString(inference.detail) || readString(inference.reason) : "")'
+        in failure_logic
+    )
     assert "readString(inference.reason) ||" not in failure_logic
     assert "consumedBatches > 0 || controlObservations > 0" in source
 
@@ -81,8 +76,8 @@ def test_studio_preview_holds_one_transient_miss_and_keeps_box_nodes_stable() ->
 
     assert "PREVIEW_OVERLAY_HOLD_MS = 100" in source
     assert "useStablePreviewOverlay" in source
-    assert 'key={`box-${item.index}-${item.className}`}' in source
-    assert 'key={`box-${item.index}-${item.x}-${item.y}`}' not in source
+    assert "key={`box-${item.index}-${item.className}`}" in source
+    assert "key={`box-${item.index}-${item.x}-${item.y}`}" not in source
 
 
 def test_studio_preview_uses_roi_coordinates_for_control_center_and_aim_line() -> None:
@@ -92,8 +87,8 @@ def test_studio_preview_uses_roi_coordinates_for_control_center_and_aim_line() -
     assert "predicted_aim_y_roi_px" in source
     assert "sourceWidth / 2 - roiOffsetX" in source
     assert "sourceHeight / 2 - roiOffsetY" in source
-    assert 'left: percent(centerX, previewWidth)' in source
-    assert 'top: percent(centerY, previewHeight)' in source
+    assert "left: percent(centerX, previewWidth)" in source
+    assert "top: percent(centerY, previewHeight)" in source
     styles = (STUDIO_CONSOLE.parents[2] / "styles.css").read_text(encoding="utf-8")
     assert "aspect-ratio: var(--preview-aspect, 1 / 1);" in styles
     assert "object-fit: contain;" in styles
@@ -147,7 +142,9 @@ def test_studio_refreshes_changed_models_and_can_force_revalidation() -> None:
 def test_studio_can_validate_and_switch_pending_engine() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert 'item.status === "ready" || (item.kind === "engine" && item.status === "pending")' in source
+    assert (
+        'item.status === "ready" || (item.kind === "engine" && item.status === "pending")' in source
+    )
     assert 'selectedSwitchArtifact?.status === "pending"' in source
     assert "getDeepStreamRecommendation" in source
     assert "prepareDeepStreamArtifact" in source
@@ -168,14 +165,12 @@ def test_devices_mainline_mode_includes_tensorrt_runtime_backend() -> None:
     assert 'inferenceSelected === "nvmm_latest"' not in source
     assert 'new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"])' in source
     assert 'disabled={deepstreamNvinferSelected && id === "image"}' in source
-    assert 'DeepStream nvinfer 不支持' in source
+    assert "DeepStream nvinfer 不支持" in source
 
 
 def test_kmnet_panel_has_dedicated_control_test_page() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
-    section_start = source.index(
-        'activePage === "params" || activePage === "control-test"'
-    )
+    section_start = source.index('activePage === "params" || activePage === "control-test"')
     control_page_start = source.index(
         '<Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}',
         section_start,
@@ -192,8 +187,11 @@ def test_kmnet_connection_button_uses_backend_runtime_state() -> None:
 
     assert "const kmnetConnected = kmnetStatus.connected === true;" in source
     assert "const kmnetConnecting = kmnetStatus.connecting === true;" in source
-    assert '{kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}' in source
-    assert 'enabled={kmnetAutoConnect}' in source
+    assert (
+        '{kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}'
+        in source
+    )
+    assert "enabled={kmnetAutoConnect}" in source
     assert 'updateConfigField("hardware", "auto_connect", enabled)' in source
 
 
@@ -210,16 +208,16 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
     assert 'data-layer="capture"' in capture_page
     assert '<SectionTitle title="最新帧状态" />' in capture_page
     assert '<SectionTitle title="采集性能" />' in capture_page
-    assert '模型输入尺寸' not in capture_page
-    assert '理论 counts' not in capture_page
+    assert "模型输入尺寸" not in capture_page
+    assert "理论 counts" not in capture_page
 
     assert 'data-layer="inference"' in inference_page
     assert '<SectionTitle title="推理调度" />' in inference_page
     assert '<SectionTitle title="TensorRT 执行" />' in inference_page
-    assert 'GPU 等待' not in inference_page
-    assert '目标框中心' not in inference_page
-    assert '瞄准点' not in inference_page
-    assert '理论 counts' not in inference_page
+    assert "GPU 等待" not in inference_page
+    assert "目标框中心" not in inference_page
+    assert "瞄准点" not in inference_page
+    assert "理论 counts" not in inference_page
 
     assert 'data-layer="control"' in control_page
     for title in (
@@ -246,8 +244,8 @@ def test_studio_telemetry_uses_explicit_missing_and_capability_states() -> None:
 def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert '<span>关联算法</span><b>Hungarian</b>' in source
-    assert '<span>输出状态</span><b>仅 ACTIVE</b>' in source
+    assert "<span>关联算法</span><b>Hungarian</b>" in source
+    assert "<span>输出状态</span><b>仅 ACTIVE</b>" in source
     assert 'updateConfigField("control", "tracker_max_match_distance", value)' in source
     assert 'updateConfigField("control", "tracker_max_missed_frames", Math.round(value))' in source
     assert "experimental_angle_hungarian_enabled" not in source
@@ -262,8 +260,14 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert '<option value="universal_saturated">通用适配</option>' in studio
     assert '<option value="calibrated_angular">精确标定</option>' in studio
     assert 'updateConfigField("control", "active_algorithm", event.target.value)' in studio
-    assert '<option value="dual_phase_atan_robust_predictive_v2">精确双阶段稳健预测 v2</option>' in studio
-    assert '<option value="dual_phase_atan_predictive_v1">双阶段 Atan 预测闭环 v1</option>' in studio
+    assert (
+        '<option value="dual_phase_atan_robust_predictive_v2">精确双阶段稳健预测 v2</option>'
+        in studio
+    )
+    assert "dual_phase_atan_predictive_v1" not in studio
+    assert "ttbox_pid_atan" not in studio
+    assert 'label="NEAR 阈值 px"' in studio
+    assert 'label="共享 Atan 尺度 counts"' in studio
     assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio
     assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio
     assert 'updateControlGroupField("shared", "max_count_slew_x", value)' in studio
