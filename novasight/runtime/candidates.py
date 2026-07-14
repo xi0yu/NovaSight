@@ -60,14 +60,15 @@ class AssociationCandidateFilter:
         center_y_px: float,
         radius_px: float,
         max_aspect_ratio: float,
-        min_area_px: float = 256.0,
+        min_area_ratio: float = 256.0 / (640.0 * 640.0),
     ) -> AssociationCandidateFilterResult:
         source = list(observations)
         accepted: list[TrackObservation] = []
         rejected: list[dict] = []
         radius = max(0.0, float(radius_px))
         max_aspect = max(1.0, float(max_aspect_ratio))
-        min_area = max(0.0, float(min_area_px))
+        frame_area = max(1.0, float(context.width) * float(context.height))
+        min_area = max(0.0, float(min_area_ratio)) * frame_area
         for observation in source:
             width = float(observation.bbox.width)
             height = float(observation.bbox.height)
@@ -177,6 +178,9 @@ class ScoredTrack:
     distance_px: float
     aim_x: float
     aim_y: float
+    class_score: float
+    distance_score: float
+    selection_score: float
     reason: str = ""
 
 
@@ -207,7 +211,7 @@ class QualityScorer:
     def score(self, track: Track, *, context: FrameContext) -> CandidateQuality:
         conf_score = _clamp01(float(track.score))
         frame_area = max(1.0, float(context.width) * float(context.height))
-        area_score = _clamp01(float(track.area) / frame_area)
+        area_score = _clamp01((float(track.area) / frame_area) ** 0.5)
         confidence_weight = max(0.0, float(self.config.confidence_weight))
         area_weight = max(0.0, float(self.config.area_weight))
         total_weight = confidence_weight + area_weight
@@ -253,6 +257,9 @@ def scored_track_debug(candidate: ScoredTrack) -> dict:
         "conf_score": float(candidate.quality.conf_score),
         "area_score": float(candidate.quality.area_score),
         "quality_score": float(candidate.quality.quality_score),
+        "class_score": float(candidate.class_score),
+        "distance_score": float(candidate.distance_score),
+        "selection_score": float(candidate.selection_score),
     }
 
 

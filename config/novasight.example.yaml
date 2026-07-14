@@ -36,6 +36,8 @@ inference:
   deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so
   input_source: source.default
   inference_input_deadline_ms: 55
+  detection_class_filter: all
+  detection_class_priority: 1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 preprocess:
   backend: cuda
   input_format: auto
@@ -146,6 +148,9 @@ control:
   scheduler_step_counts_y: 8
   scheduler_interval_ms: 4.0
   target_fov_radius_px: 180
+  candidate_selection_class_weight: 0.40
+  candidate_selection_quality_weight: 0.40
+  candidate_selection_distance_weight: 0.20
   target_switch_delay_ms: 50
   trigger_mode: always
 logging:

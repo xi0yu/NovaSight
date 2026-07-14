@@ -696,7 +696,9 @@ export function StudioConsoleView({
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
   const candidateQualityAreaWeight = readNumber(controlConfig.candidate_quality_area_weight, 0.3);
-  const classPriorityQualityMargin = readNumber(controlConfig.class_priority_quality_margin, 0.08);
+  const candidateSelectionClassWeight = readNumber(controlConfig.candidate_selection_class_weight, 0.40);
+  const candidateSelectionQualityWeight = readNumber(controlConfig.candidate_selection_quality_weight, 0.40);
+  const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.20);
   const trackerMaxMatchDistance = readNumber(controlConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(controlConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(controlConfig.tracker_iou_cost_weight, 0.25);
@@ -2577,7 +2579,7 @@ export function StudioConsoleView({
                 value={detectionClassPriority}
                 onCommit={(value) => updateConfigField("inference", "detection_class_priority", value)}
               />
-              <p className="console-field-hint">按 class id 从高到低填写，例如 1,0 表示先选头部，再选身体；未列出的类别会排在后面。</p>
+              <p className="console-field-hint">第一个 class id 的类别分为 1.0，第二个为 0.5，其余类别统一为 0.0；默认 1,0 表示头部优先、身体次优。</p>
               <details className="model-debug-details">
                 <summary>工程调试详情</summary>
                 <label>模型版本</label>
@@ -2760,6 +2762,8 @@ export function StudioConsoleView({
                 <span>目标类别</span><b>{readString(target.class_name, "") || NO_SAMPLE}</b>
                 <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
                 <span>Track quality</span><b>{formatOptionalNumber(selectedTrackDebug.track_quality, 3)}</b>
+                <span>类别 / 质量分</span><b>{formatPoint(control.class_score ?? target.class_score, control.quality_score ?? target.quality_score, 3)}</b>
+                <span>距离 / 综合分</span><b>{formatPoint(control.distance_score ?? target.distance_score, control.selection_score ?? target.selection_score, 3)}</b>
                 <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
                 <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
                 <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1, 1)} -> ${formatPoint(target.x2, target.y2, 1)}` : NO_SAMPLE}</b>
@@ -2976,12 +2980,14 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
-                <NumberControl label="目标选择半径 px" detail="以控制中心为圆心的硬门控半径。目标瞄点超出半径时不参与选择；它不控制鼠标移动速度。" value={targetFovRadiusPx} min={1} max={4000} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
+                <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
                 <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
                 <NumberControl label="质量权重：置信度" detail="候选质量分数中检测置信度的相对权重；会与面积权重归一化后使用。" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
-                <NumberControl label="质量权重：面积" detail="候选质量分数中 bbox 面积占控制画面的相对权重；会与置信度权重归一化后使用。" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
-                <NumberControl label="类别优先质量容忍" detail="质量低于最佳候选不超过此差值时，仍允许按类别优先级和距离参与竞争。0 表示仅保留最高质量层。" value={classPriorityQualityMargin} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "class_priority_quality_margin", value)} />
-                <NumberControl label="切换最小优势" detail="新候选相对当前锁定目标的质量与类别综合优势至少达到此值，才允许进入切换确认。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
+                <NumberControl label="质量权重：可见尺寸" detail="使用 bbox 面积占 ROI 比例的平方根，作为与 ROI 分辨率无关的可见尺寸分；会与置信度权重归一化后使用。" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
+                <NumberControl label="综合分权重：类别" detail="类别优先列表第一项得 1.0，第二项得 0.5，其余类别得 0.0；该值控制类别分在最终选择中的占比。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_class_weight", value)} />
+                <NumberControl label="综合分权重：质量" detail="质量分由检测置信度、ROI 归一化 bbox 面积和 Track 可靠性共同限制。" value={candidateSelectionQualityWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_quality_weight", value)} />
+                <NumberControl label="综合分权重：距离" detail="距离按当前实际选择半径归一化，ROI 从 320 调整到 640 时保持同样的相对含义。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_distance_weight", value)} />
+                <NumberControl label="切换最小优势" detail="新候选的综合分减去当前锁定目标综合分，至少达到此值才允许进入切换确认。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
                 <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认；值越高越不易误切换。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
                 <NumberControl label="目标切换确认延迟 ms" detail="新候选持续同时满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "target_switch_delay_ms", value)} />
               </div>

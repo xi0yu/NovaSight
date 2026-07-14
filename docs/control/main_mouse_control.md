@@ -35,6 +35,27 @@ frame 4 -> move(2, 0)
 
 `Kp + Atan + max_counts_per_update` already implement the incremental closed-loop approach. Splitting that increment again would create a stale open-loop tail and double-slow the response.
 
+## Target Selection Score
+
+Tracker identity remains class-consistent and Hungarian association is unchanged. `TargetSelector` ranks confirmed tracks with one normalized score:
+
+```text
+selection_score =
+    normalized(
+        class_weight * class_score
+      + quality_weight * quality_score
+      + distance_weight * distance_score
+    )
+```
+
+The first class ID in `inference.detection_class_priority` receives `class_score=1.0`, the second receives `0.5`, and every remaining class receives `0.0`. The default `1,0,...` therefore prefers class 1 over class 0 while treating all other classes equally.
+
+`quality_score` combines detection confidence and a square-root ROI area ratio, then is capped by Tracker quality. `distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. The default component weights are `0.40 / 0.40 / 0.20`. A reliable class-1 detection normally beats class 0, while a class-1 detection barely above the confidence threshold cannot unconditionally replace a highly reliable class-0 track.
+
+Model detections are mapped back into ROI coordinates before selection. Selection radius uses 640-ROI reference pixels and the minimum-area gate uses an ROI-area ratio, so equivalent geometry produces the same component scores for ROI sizes from 320 through 640. This cannot prioritize a class-1 object that the model did not detect.
+
+Target switching still requires composite-score advantage, Tracker continuity, and the configured confirmation delay. The score chooses a challenger; it does not bypass target-lock safety.
+
 ## Algorithm And Configuration Isolation
 
 The serialized selector is `control.active_algorithm`; implementation-specific values live under `control.algorithms.<algorithm_id>`.

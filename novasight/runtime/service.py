@@ -1938,6 +1938,9 @@ class RuntimeService:
                 "priority_rank": selection.priority_rank,
                 "distance_px": selection.distance_px,
                 "quality_score": selection.quality_score,
+                "class_score": selection.class_score,
+                "distance_score": selection.distance_score,
+                "selection_score": selection.selection_score,
                 "inside_fov": selection.inside_fov,
                 "candidates": selection.candidates,
                 "capture_ts_ns": context.capture_ts_ns,
@@ -1964,6 +1967,9 @@ class RuntimeService:
                 "priority_rank": selection.priority_rank,
                 "distance_px": selection.distance_px,
                 "quality_score": selection.quality_score,
+                "class_score": selection.class_score,
+                "distance_score": selection.distance_score,
+                "selection_score": selection.selection_score,
                 "inside_fov": selection.inside_fov,
                 "candidates": selection.candidates,
                 "dx": 0.0,
@@ -2161,6 +2167,9 @@ class RuntimeService:
             "priority_rank": selection.priority_rank,
             "distance_px": selection.distance_px,
             "quality_score": selection.quality_score,
+            "class_score": selection.class_score,
+            "distance_score": selection.distance_score,
+            "selection_score": selection.selection_score,
             "inside_fov": selection.inside_fov,
             "candidates": selection.candidates,
             "bbox_age_ms": 0.0,
@@ -2201,6 +2210,9 @@ class RuntimeService:
             "priority_rank": selection.priority_rank,
             "distance_px": selection.distance_px,
             "quality_score": selection.quality_score,
+            "class_score": selection.class_score,
+            "distance_score": selection.distance_score,
+            "selection_score": selection.selection_score,
             "trigger_active": box_input.active,
             "trigger_required": requires_trigger,
             "trigger_mode": trigger_mode,
@@ -2624,10 +2636,9 @@ class RuntimeService:
         )
 
     def _select_control_target(self, context: FrameContext) -> TargetSelection:
-        minimum_dimension = max(1.0, float(min(context.width, context.height)))
         fov_ratio = max(
             0.0,
-            min(1.0, float(self.config.control.target_fov_radius_px) / minimum_dimension),
+            min(1.0, float(self.config.control.target_fov_radius_px) / 640.0),
         )
         control_center_x_px, control_center_y_px = self._control_center_in_roi(context)
         return self.target_selector.select(
@@ -2649,8 +2660,14 @@ class RuntimeService:
             quality_area_weight=float(
                 getattr(self.config.control, "candidate_quality_area_weight", 0.3)
             ),
-            class_priority_quality_margin=float(
-                getattr(self.config.control, "class_priority_quality_margin", 0.08)
+            selection_class_weight=float(
+                getattr(self.config.control, "candidate_selection_class_weight", 0.40)
+            ),
+            selection_quality_weight=float(
+                getattr(self.config.control, "candidate_selection_quality_weight", 0.40)
+            ),
+            selection_distance_weight=float(
+                getattr(self.config.control, "candidate_selection_distance_weight", 0.20)
             ),
             tracker_max_match_distance=float(
                 getattr(self.config.control, "tracker_max_match_distance", 1.5)

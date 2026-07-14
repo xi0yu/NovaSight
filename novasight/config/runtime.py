@@ -300,7 +300,9 @@ class ControlConfig:
     candidate_ratio_max_aspect: float = 6.0
     candidate_quality_confidence_weight: float = 0.7
     candidate_quality_area_weight: float = 0.3
-    class_priority_quality_margin: float = 0.08
+    candidate_selection_class_weight: float = 0.40
+    candidate_selection_quality_weight: float = 0.40
+    candidate_selection_distance_weight: float = 0.20
     tracker_max_match_distance: float = 1.5
     tracker_position_cost_weight: float = 0.75
     tracker_iou_cost_weight: float = 0.25
@@ -531,6 +533,7 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
             "tracker_delete_timeout_ms",
             "tracker_match_threshold",
             "tracker_mahalanobis_gate",
+            "class_priority_quality_margin",
         ):
             control.pop(key, None)
     if isinstance(calibration, dict):
@@ -1265,8 +1268,17 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.trigger_mode' must be hardware or always")
     if cfg.control.candidate_ratio_max_aspect < 1:
         raise ValueError("runtime config key 'control.candidate_ratio_max_aspect' must be >= 1")
-    if cfg.control.class_priority_quality_margin > 1:
-        raise ValueError("runtime config key 'control.class_priority_quality_margin' must be <= 1")
+    selection_weight_keys = (
+        "candidate_selection_class_weight",
+        "candidate_selection_quality_weight",
+        "candidate_selection_distance_weight",
+    )
+    for key in selection_weight_keys:
+        value = float(getattr(cfg.control, key))
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"runtime config key 'control.{key}' must be finite and >= 0")
+    if sum(float(getattr(cfg.control, key)) for key in selection_weight_keys) <= 0.0:
+        raise ValueError("runtime config target selection weights must have a positive sum")
     if cfg.control.tracker_max_match_distance <= 0:
         raise ValueError("runtime config key 'control.tracker_max_match_distance' must be > 0")
     if cfg.control.tracker_position_cost_weight < 0:
