@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -321,11 +322,31 @@ def ensure_engine_manifest(
             existing_manifest_path = manifest_path
         elif legacy_manifest_path.is_file():
             existing_manifest_path = legacy_manifest_path
+        recovered_profile_classes: list[str] = []
         if existing_manifest_path is not None:
-            existing_manifest = read_manifest(existing_manifest_path)
-            validate_manifest_engine_artifact(existing_manifest, path)
+            try:
+                existing_manifest = read_manifest(existing_manifest_path)
+                validate_manifest_engine_artifact(existing_manifest, path)
+            except (KeyError, OSError, TypeError, ValueError) as exc:
+                recovered_profile_classes = _model_profile_class_names(
+                    existing_manifest_path
+                )
+                existing_manifest = None
+                logger.warning(
+                    "replacing unusable model sidecar from TensorRT engine contract "
+                    "path=%s sidecar=%s error=%s",
+                    path,
+                    existing_manifest_path,
+                    exc,
+                )
 
         probe_classes = [str(item) for item in classes if str(item).strip()]
+        if (
+            recovered_profile_classes
+            and _automatic_class_names(probe_classes)
+            and not _automatic_class_names(recovered_profile_classes)
+        ):
+            probe_classes = recovered_profile_classes
         if (
             existing_manifest is not None
             and _automatic_class_names(probe_classes)
@@ -333,9 +354,28 @@ def ensure_engine_manifest(
         ):
             probe_classes = list(existing_manifest.output.class_names)
         if not probe_classes:
-            raise ValueError(
-                "cannot generate DeepStream manifest because the model registry has no classes"
+            probe_classes = ["target"]
+        if existing_manifest is not None and not callable(getattr(inference, "probe", None)):
+            registered_classes_match = (
+                _automatic_class_names(probe_classes)
+                or list(existing_manifest.output.class_names) == probe_classes
             )
+            needs_hint_reconciliation = _manifest_needs_class_hint_reconciliation(
+                existing_manifest,
+                class_count_hint,
+                objectness_hint,
+            )
+            if registered_classes_match and not needs_hint_reconciliation:
+                if existing_manifest_path == legacy_manifest_path:
+                    temporary_path = manifest_path.with_suffix(".json.tmp")
+                    try:
+                        write_manifest(existing_manifest, temporary_path)
+                        temporary_path.replace(manifest_path)
+                    except Exception:
+                        temporary_path.unlink(missing_ok=True)
+                        raise
+                remove_matching_legacy_manifest(path)
+                return existing_manifest, False
         recommendation = recommend_engine_manifest(
             inference,
             artifact_path=path,
@@ -446,6 +486,18 @@ def ensure_engine_manifest(
             raise
         remove_matching_legacy_manifest(path)
         return manifest, True
+
+
+def _model_profile_class_names(path: Path) -> list[str]:
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    profile = raw.get("model_profile") if isinstance(raw, dict) else None
+    labels = profile.get("labels") if isinstance(profile, dict) else None
+    if not isinstance(labels, list):
+        return []
+    return [str(item).strip() for item in labels if str(item).strip()]
 
 
 def remove_matching_legacy_manifest(engine_path: Path) -> bool:

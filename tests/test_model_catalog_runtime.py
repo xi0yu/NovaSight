@@ -8,7 +8,7 @@ from novasight.api import routes_models
 from novasight.api.app import create_app
 from novasight.api.routes_models import PublishRequest
 from novasight.config import RuntimeConfig
-from novasight.model_registry import ModelRegistry
+from novasight.model_registry import ModelRegistry, read_manifest
 from novasight.model_registry import scanner
 from novasight.model_registry.schema import Deployment
 
@@ -373,7 +373,7 @@ def test_deepstream_recommendation_uses_engine_contract_instead_of_ui_shape_gues
     assert result["warnings"]
     assert not artifact_path.with_name("model.manifest.json").exists()
 
-def test_publish_rejects_pending_engine_without_validated_model_profile(
+def test_publish_rejects_non_deepstream_runtime(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -425,7 +425,7 @@ def test_publish_rejects_pending_engine_without_validated_model_profile(
         lambda *_args: None,
     )
 
-    with pytest.raises(HTTPException, match="ModelProfile"):
+    with pytest.raises(HTTPException, match="deepstream_nvinfer"):
         routes_models.publish(
             request,
             project.id,
@@ -435,7 +435,7 @@ def test_publish_rejects_pending_engine_without_validated_model_profile(
     assert registry.get_artifact(artifact.id).status == "pending"
 
 
-def test_publish_deepstream_engine_does_not_guess_missing_model_profile(tmp_path) -> None:
+def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_path) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     project = registry.create_project("demo", "")
     version = registry.create_version(
@@ -485,14 +485,20 @@ def test_publish_deepstream_engine_does_not_guess_missing_model_profile(tmp_path
         )
     )
 
-    with pytest.raises(HTTPException, match="ModelProfile"):
-        routes_models.publish(
-            request,
-            project.id,
-            PublishRequest(artifact_id=artifact.id),
-        )
+    response = routes_models.publish(
+        request,
+        project.id,
+        PublishRequest(artifact_id=artifact.id),
+    )
 
-    assert not artifact_path.with_name("model.manifest.json").exists()
+    manifest_path = artifact_path.with_name(f"{artifact_path.name}.manifest.json")
+    manifest = read_manifest(manifest_path)
+    assert response["report"]["applied"] is True
+    assert response["report"]["input_shape"] == "1x3x256x256"
+    assert manifest.input.shape == [1, 3, 256, 256]
+    assert manifest.output.shape == [1, 6, 1344]
+    assert manifest.output.class_names == ["body", "head"]
+    assert registry.get_artifact(artifact.id).status == "ready"
 
 
 def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatch) -> None:

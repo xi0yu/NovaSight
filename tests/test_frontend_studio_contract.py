@@ -181,18 +181,18 @@ def test_studio_registers_unmanaged_catalog_engine_by_reference() -> None:
     assert "引用原始 Engine" in selection
 
 
-def test_studio_can_validate_and_switch_pending_engine() -> None:
+def test_studio_auto_configures_and_switches_pending_engine() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
     assert 'item.status === "ready" || item.status === "pending" || item.status === "failed"' in source
     assert 'selectedSwitchArtifact?.status === "pending"' in source
-    assert "inspectModelArtifact" in source
-    assert "configureModelProfile" in source
-    assert "probeModelArtifact" in source
-    assert '"检查、诊断并切换模型"' in source
-    assert "无法从 Engine 自动确定的模型语义" in source
+    assert "publishModel(selectedModelProjectId, selectedSwitchArtifact.id)" in source
+    assert "inspectModelArtifact" not in source
+    assert "configureModelProfile" not in source
+    assert "probeModelArtifact" not in source
+    assert '"自动配置并加载模型"' in source
+    assert "自动推导类别契约并生成唯一 DeepStream manifest" in source
     assert "yoloCandidateCount" not in source
-    assert "隔离诊断通过后才允许正式启用" in source
     assert "preferLatestModelVersionRef.current" in source
     assert "模型产物不可切换" in source
 

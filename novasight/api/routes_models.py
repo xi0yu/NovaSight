@@ -26,14 +26,14 @@ from novasight.model_registry import (
 )
 from novasight.inference import parse_tensor_input_shape
 from novasight.deepstream.model_manifest import (
+    ensure_engine_manifest,
     recommend_engine_manifest,
 )
 from novasight.api.routes_model_ingress import (
-    load_validated_profile,
     serialized_model_operation,
     set_profile_activation,
 )
-from novasight.model_ingress import InferenceConfigBuilder, ModelProfileStore
+from novasight.model_ingress import ModelProfileStore
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
@@ -712,22 +712,24 @@ def _load_published_artifact(
     if project is None:
         raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
     artifact_path = registry.resolve_artifact_path(artifact)
-    try:
-        profile = load_validated_profile(artifact_path)
-    except ValueError as exc:
-        raise RegistryValidationError(str(exc)) from exc
     if _deepstream_selected(request):
-        inference_config = request.app.state.config.inference
-        try:
-            runtime_config = InferenceConfigBuilder().build(
-                profile,
-                parser_library_path=Path(inference_config.deepstream_parser_library),
+        _candidate, status = _prepare_runnable_artifact(
+            request,
+            artifact_path=artifact_path,
+            classes=list(version.classes),
+            input_shape=version.input_shape,
+        )
+        resolved_classes = status.get("classes")
+        if isinstance(resolved_classes, list) and resolved_classes:
+            _sync_artifact_version_classes(
+                registry,
+                artifact_id=artifact_id,
+                classes=[str(item) for item in resolved_classes],
             )
-        except ValueError as exc:
-            raise RegistryValidationError(str(exc)) from exc
-        ModelProfileStore().write(
-            profile,
-            runtime_manifest=runtime_config.manifest,
+        _sync_artifact_version_input_shape(
+            registry,
+            artifact_id=artifact_id,
+            input_shape=_actual_runtime_input_shape(status, version.input_shape),
         )
         request.app.state.inference.unload(
             "TensorRT engine ownership delegated to DeepStream nvinfer"
@@ -737,20 +739,8 @@ def _load_published_artifact(
             "DeepStream active model changed",
         )
         return
-    candidate, status = request.app.state.inference.prepare_profile(
-        profile,
-        diagnostic=False,
-    )
-    if status.get("loaded") is not True or status.get("warmed") is not True:
-        _close_candidate(candidate)
-        raise RegistryValidationError(
-            str(status.get("reason") or "validated model failed to load")
-        )
-    request.app.state.inference.commit(
-        candidate,
-        artifact_path=artifact_path,
-        classes=list(profile.labels),
-        input_shape="x".join(str(value) for value in profile.input.runtime_shape),
+    raise RegistryValidationError(
+        "runtime model activation only supports deepstream_nvinfer"
     )
 
 
@@ -763,7 +753,7 @@ def _resolve_runnable_artifact(
     artifact = registry.get_artifact(artifact_id)
     if artifact is None:
         raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
-    if artifact.status not in {"ready", "pending"}:
+    if artifact.status not in {"ready", "pending", "failed"}:
         raise RegistryValidationError(
             f"artifact status does not allow safe validation: {artifact.status}"
         )
@@ -793,24 +783,28 @@ def _prepare_runnable_artifact(
     classes: list[str],
     input_shape: str,
 ) -> tuple[Any, dict[str, Any]]:
-    try:
-        profile = load_validated_profile(artifact_path)
-    except ValueError as exc:
-        raise RegistryValidationError(str(exc)) from exc
     if not _deepstream_selected(request):
         raise RegistryValidationError(
             "runtime model activation only supports deepstream_nvinfer"
         )
     inference_config = request.app.state.config.inference
     try:
-        runtime_config = InferenceConfigBuilder().build(
-            profile,
-            parser_library_path=Path(inference_config.deepstream_parser_library),
+        manifest, generated = ensure_engine_manifest(
+            request.app.state.inference,
+            engine_path=artifact_path,
+            model_id=artifact_path.stem,
+            display_name=artifact_path.stem,
+            classes=classes,
+            registered_input_shape=input_shape,
+            confidence_threshold=float(
+                getattr(inference_config, "confidence_threshold", 0.25)
+            ),
+            nms_iou_threshold=float(getattr(inference_config, "nms_threshold", 0.45)),
         )
-    except ValueError as exc:
-        raise RegistryValidationError(str(exc)) from exc
-    manifest = runtime_config.manifest
-    ModelProfileStore().write(profile, runtime_manifest=manifest)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RegistryValidationError(
+            f"TensorRT Engine 自动配置失败：{exc}"
+        ) from exc
     return None, {
         "selected": "deepstream_nvinfer",
         "available": True,
@@ -818,7 +812,11 @@ def _prepare_runnable_artifact(
         "input_shape": "x".join(str(value) for value in manifest.input.shape),
         "classes": list(manifest.output.class_names),
         "model_fingerprint": manifest.model_fingerprint,
-        "reason": "validated for pipeline-owned nvinfer loading",
+        "reason": (
+            "generated runtime manifest from TensorRT engine contract"
+            if generated
+            else "reused runtime manifest matching TensorRT engine contract"
+        ),
     }
 
 
@@ -848,13 +846,20 @@ def _set_previous_profile_inactive(
             registry,
             previous_artifact_id,
         )
-        set_profile_activation(previous_path, active=False)
+        _set_profile_activation_if_present(previous_path, active=False)
     except (RegistryError, OSError, ValueError) as exc:
         logger.warning(
             "previous ModelProfile activation state could not be cleared artifact_id=%s: %s",
             previous_artifact_id,
             exc,
         )
+
+
+def _set_profile_activation_if_present(engine_path: Path, *, active: bool) -> None:
+    store = ModelProfileStore()
+    profile_path = store.existing_path_for_engine(engine_path)
+    if store.contains_model_profile(profile_path):
+        set_profile_activation(engine_path, active=active)
 
 
 def _sync_artifact_version_input_shape(
@@ -875,6 +880,35 @@ def _sync_artifact_version_input_shape(
         artifact_id,
         version.id,
         input_shape,
+    )
+
+
+def _sync_artifact_version_classes(
+    registry: ModelRegistry,
+    *,
+    artifact_id: int,
+    classes: list[str],
+) -> None:
+    get_artifact = getattr(registry, "get_artifact", None)
+    if not callable(get_artifact):
+        return
+    artifact = get_artifact(artifact_id)
+    if artifact is None:
+        return
+    get_version = getattr(registry, "get_version", None)
+    update_classes = getattr(registry, "update_version_classes", None)
+    if not callable(get_version) or not callable(update_classes):
+        return
+    version = get_version(artifact.version_id)
+    if version is None or list(version.classes) == classes:
+        return
+    update_classes(version.id, classes)
+    logger.info(
+        "model version classes updated from TensorRT engine artifact_id=%s "
+        "version_id=%s classes=%s",
+        artifact_id,
+        version.id,
+        classes,
     )
 
 
@@ -1613,7 +1647,7 @@ def publish(
         input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
         get_artifact = getattr(registry, "get_artifact", None)
         artifact = get_artifact(payload.artifact_id) if callable(get_artifact) else None
-        if artifact is not None and artifact.status == "pending":
+        if artifact is not None and artifact.status in {"pending", "failed"}:
             registry.update_artifact_status(payload.artifact_id, "ready")
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         try:
@@ -1628,6 +1662,11 @@ def publish(
             registry,
             artifact_id=payload.artifact_id,
             input_shape=input_shape,
+        )
+        _sync_artifact_version_classes(
+            registry,
+            artifact_id=payload.artifact_id,
+            classes=classes,
         )
         if candidate is None:
             request.app.state.inference.unload(
@@ -1644,7 +1683,7 @@ def publish(
                 classes=classes,
                 input_shape=input_shape,
             )
-        set_profile_activation(artifact_path, active=True)
+        _set_profile_activation_if_present(artifact_path, active=True)
         _set_previous_profile_inactive(
             registry,
             deployment.previous_artifact_id,
@@ -1701,7 +1740,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                 artifact_id=deployment.artifact_id,
             )
             _load_published_artifact(request, registry, deployment.artifact_id)
-            set_profile_activation(artifact_path, active=True)
+            _set_profile_activation_if_present(artifact_path, active=True)
             _set_previous_profile_inactive(
                 registry,
                 deployment.previous_artifact_id,
@@ -1744,6 +1783,9 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             input_shape=input_shape,
         )
         input_shape = _actual_runtime_input_shape(candidate_status, input_shape)
+        candidate_classes = candidate_status.get("classes")
+        if isinstance(candidate_classes, list) and candidate_classes:
+            classes = [str(item) for item in candidate_classes]
         try:
             deployment = registry.rollback(project_id=project_id)
         except RegistryError:
@@ -1753,6 +1795,11 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             registry,
             artifact_id=current.previous_artifact_id,
             input_shape=input_shape,
+        )
+        _sync_artifact_version_classes(
+            registry,
+            artifact_id=current.previous_artifact_id,
+            classes=classes,
         )
         if candidate is None:
             request.app.state.inference.unload(
@@ -1769,7 +1816,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                 classes=classes,
                 input_shape=input_shape,
             )
-        set_profile_activation(artifact_path, active=True)
+        _set_profile_activation_if_present(artifact_path, active=True)
         _set_previous_profile_inactive(
             registry,
             deployment.previous_artifact_id,

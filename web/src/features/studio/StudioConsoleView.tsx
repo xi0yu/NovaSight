@@ -5,7 +5,6 @@ import {
   CaptureCapability,
   CaptureState,
   CaptureSelectPayload,
-  configureModelProfile,
   connectKmNet,
   diagnosticCircleKmNet,
   diagnosticMoveKmNet,
@@ -15,21 +14,15 @@ import {
   ModelArtifact,
   ModelCatalogDirectory,
   ModelCatalogModel,
-  ModelProfileResponse,
-  ModelProbeResponse,
   ModelProject,
   ModelVersion,
   RuntimeConfig,
   RuntimeConfigValue,
   RuntimeState,
   getCaptureCapabilities,
-  getDeepStreamRecommendation,
   getModelArtifacts,
   getModelCatalog,
-  getModelProfile,
   getModelVersions,
-  inspectModelArtifact,
-  probeModelArtifact,
   publishModel,
   registerCatalogModel,
   selectCaptureProfile,
@@ -440,7 +433,6 @@ export function StudioConsoleView({
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
-  const [modelProbeReport, setModelProbeReport] = useState<ModelProbeResponse["report"] | null>(null);
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
@@ -2059,94 +2051,18 @@ export function StudioConsoleView({
     setBusy("model.switch");
     setLocalError(null);
     setModelSwitchMessage("");
-    setModelProbeReport(null);
     try {
       if (selectedSwitchArtifact.kind !== "engine") {
-        throw new Error("NovaSight 正式主线只允许接入已验证的 TensorRT Engine。");
+        throw new Error("NovaSight DeepStream 主线只支持 TensorRT Engine。");
       }
-      let profileResponse: ModelProfileResponse;
-      try {
-        profileResponse = await getModelProfile(selectedSwitchArtifact.id);
-      } catch {
-        profileResponse = await inspectModelArtifact(selectedSwitchArtifact.id);
-      }
-      if (profileResponse.profile.status === "UNINSPECTED") {
-        profileResponse = await inspectModelArtifact(selectedSwitchArtifact.id);
-      }
-      setModelSwitchMessage(
-        `Engine 检查完成：${profileResponse.profile.input.runtime_shape.join("x")} · ${profileResponse.profile.input.dtype} · ${profileResponse.profile.outputs.length} 个输出`
-      );
-      if (profileResponse.profile.status === "INCOMPATIBLE") {
-        throw new Error("Engine 输入输出结构不在 NovaSight 支持边界内，请查看诊断详情。");
-      }
-      if (
-        profileResponse.profile.status === "NEEDS_CONFIGURATION" ||
-        profileResponse.profile.status === "INVALID"
-      ) {
-        const profile = profileResponse.profile;
-        const recommendation = await getDeepStreamRecommendation(selectedSwitchArtifact.id);
-        const labels = recommendation.class_names.filter((item) => item.trim().length > 0);
-        const hasObjectness = recommendation.output_has_objectness;
-        const parser =
-          profile.parser_candidates.find((candidate) =>
-            hasObjectness
-              ? candidate.parser_type === "yolov5_raw"
-              : candidate.parser_type !== "yolov5_raw"
-          );
-        const parserType =
-          parser?.parser_type ?? (hasObjectness ? "yolov5_raw" : "yolov8_raw");
-        if (labels.length === 0) {
-          throw new Error("无法从 TensorRT 输出确定类别语义，请补充模型 sidecar。");
-        }
-        const confirmed = window.confirm(
-          [
-            `请确认 ${selectedSwitchArtifact.path} 无法从 Engine 自动确定的模型语义：`,
-            `输入：${profile.input.runtime_shape.join("x")} / ${profile.input.name} / ${profile.input.dtype}`,
-            `输出：${profile.outputs.map((item) => `${item.name} ${item.shape.join("x")} ${item.dtype}`).join("；")}`,
-            "颜色与归一化：RGB / 1÷255",
-            "缩放方式：直接缩放",
-            `解析器候选：${parserType}（${parser?.confidence ?? "engine contract"}）`,
-            `类别：${labels.length}（${labels.join(", ")}）`,
-            `objectness：${hasObjectness ? "有" : "无"}`,
-            `输出契约：${recommendation.recommendation.output_shape.join("x")}`,
-            "确认后只会进入诊断推理，不会发送鼠标控制。"
-          ].join("\n")
-        );
-        if (!confirmed) {
-          return;
-        }
-        profileResponse = await configureModelProfile(selectedSwitchArtifact.id, {
-          color_format: "RGB",
-          scale: 1 / 255,
-          resize_mode: "direct",
-          parser_type: parserType,
-          class_count: labels.length,
-          labels,
-          bbox_format: "xywh",
-          has_objectness: hasObjectness,
-          confidence_threshold: confidence,
-          nms_threshold: nms,
-          max_detections: 300
-        });
-        setModelSwitchMessage("模型语义已确认，准备进入隔离诊断推理。控制输出保持关闭。");
-      }
-      if (profileResponse.profile.status === "READY_FOR_PROBE") {
-        const diagnostic = await probeModelArtifact(selectedSwitchArtifact.id);
-        setModelProbeReport(diagnostic.report);
-        if (diagnostic.profile.status !== "VALIDATED") {
-          const details = diagnostic.report.issues
-            .map((item) => `${item.stage}: ${item.message}`)
-            .join("；");
-          throw new Error(details || "模型诊断未通过");
-        }
-      }
+      setModelSwitchMessage("正在读取 TensorRT Engine 契约并自动生成 DeepStream 配置...");
       const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
       if (response.report && !response.report.applied) {
         throw new Error(response.report.message);
       }
       setModelSwitchMessage(
         response.report?.message ??
-          "模型诊断通过，统一运行配置已生成，模型已安全切换。"
+          "Engine 契约读取完成，DeepStream 配置已自动生成并切换。"
       );
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
@@ -2571,20 +2487,6 @@ export function StudioConsoleView({
                   {modelSwitchMessage || `上次切换失败：${lastModelSwitchError}`}
                 </div>
               ) : null}
-              {modelProbeReport ? (
-                <div className={modelProbeReport.status === "validated" ? "model-switch-note good" : "model-switch-note bad"}>
-                  <b>{modelProbeReport.status === "validated" ? "模型诊断通过" : "模型诊断失败"}</b>
-                  <span>
-                    预处理 {modelProbeReport.preprocess_ms > 0 ? `${modelProbeReport.preprocess_ms.toFixed(2)} ms` : "—"} · nvinfer {modelProbeReport.inference_ms > 0 ? `${modelProbeReport.inference_ms.toFixed(2)} ms` : "—"} · Decode {modelProbeReport.decode_ms > 0 ? `${modelProbeReport.decode_ms.toFixed(2)} ms` : "—"} · NMS {modelProbeReport.nms_ms > 0 ? `${modelProbeReport.nms_ms.toFixed(2)} ms` : "—"}
-                  </span>
-                  <span>
-                    Engine {modelProbeReport.engine_execution_ok ? "正常" : "失败"} · Tensor {modelProbeReport.output_tensor_ok ? "正常" : "异常"} · DetectionBatch {modelProbeReport.detection_batch_ok ? "正常" : "异常"}
-                  </span>
-                  {modelProbeReport.issues.length > 0 ? (
-                    <small>{modelProbeReport.issues.map((item) => item.message).join("；")}</small>
-                  ) : null}
-                </div>
-              ) : null}
               <button
                 className="console-button primary console-full-button"
                 disabled={busy !== null || selectedModelProjectId === "" || selectedSwitchArtifact === null}
@@ -2592,14 +2494,14 @@ export function StudioConsoleView({
                 type="button"
               >
                 {busy === "model.switch"
-                  ? "安全切换中..."
+                  ? "自动配置并切换中..."
                   : selectedSwitchArtifact?.status === "pending" || selectedSwitchArtifact?.status === "failed"
-                    ? "检查、诊断并切换模型"
-                    : "安全切换模型"}
+                    ? "自动配置并加载模型"
+                    : "切换模型"}
               </button>
               {selectedSwitchArtifact?.status === "pending" || selectedSwitchArtifact?.status === "failed" ? (
                 <p className="console-field-hint">
-                  切换前会通过 TensorRT API 读取 I/O、Shape、类型和 Profile；预处理与 Parser 需确认，并在隔离诊断通过后才允许正式启用。
+                  后端将直接读取 Engine 的 I/O、Shape 和数据类型，自动推导类别契约并生成唯一 DeepStream manifest。
                 </p>
               ) : null}
               {selectedSwitchArtifact === null && blockedSwitchArtifacts.length > 0 ? (
