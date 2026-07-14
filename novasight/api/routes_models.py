@@ -974,59 +974,29 @@ def _prepare_runnable_artifact(
         profile = load_validated_profile(artifact_path)
     except ValueError as exc:
         raise RegistryValidationError(str(exc)) from exc
-    if _deepstream_selected(request):
-        inference_config = request.app.state.config.inference
-        try:
-            runtime_config = InferenceConfigBuilder().build(
-                profile,
-                parser_library_path=Path(inference_config.deepstream_parser_library),
-            )
-        except ValueError as exc:
-            raise RegistryValidationError(str(exc)) from exc
-        manifest = runtime_config.manifest
-        write_manifest(manifest, artifact_path.with_name("model.manifest.json"))
-        return None, {
-            "selected": "deepstream_nvinfer",
-            "available": True,
-            "loaded": True,
-            "input_shape": "x".join(str(value) for value in manifest.input.shape),
-            "classes": list(manifest.output.class_names),
-            "model_fingerprint": manifest.model_fingerprint,
-            "reason": "validated for pipeline-owned nvinfer loading",
-        }
-    preprocess = profile.preprocess
-    if (
-        str(preprocess.color_format).upper() != "RGB"
-        or abs(float(preprocess.scale or 0.0) - (1.0 / 255.0)) > 1e-12
-        or preprocess.offsets
-        or preprocess.mean
-        or preprocess.std
-        or str(preprocess.resize_mode).lower() != "direct"
-    ):
+    if not _deepstream_selected(request):
         raise RegistryValidationError(
-            "nvmm_latest Jetson CUDA preprocess currently requires RGB, scale=1/255, "
-            "direct resize, and no offsets/mean/std"
+            "runtime model activation only supports deepstream_nvinfer"
         )
-    inference = request.app.state.inference
-    prepare = getattr(inference, "prepare_profile", None)
-    if not callable(prepare):
-        raise RegistryValidationError("inference runtime does not support safe model switching")
+    inference_config = request.app.state.config.inference
     try:
-        candidate, status = prepare(profile, diagnostic=False)
-        if status.get("loaded") is not True or status.get("warmed") is not True:
-            _close_candidate(candidate)
-            reason = status.get("reason") or "candidate runtime did not report loaded+warmed"
-            raise RegistryValidationError(f"model switch rejected: {reason}")
-        return candidate, status
-    except RegistryValidationError:
-        raise
-    except Exception as exc:
-        reason = f"model switch rejected: {exc}"
-        record_switch_error = getattr(inference, "record_switch_error", None)
-        if callable(record_switch_error):
-            record_switch_error(reason)
-        logger.exception("model switch prepare failed artifact=%s", artifact_path)
-        raise RegistryValidationError(reason) from exc
+        runtime_config = InferenceConfigBuilder().build(
+            profile,
+            parser_library_path=Path(inference_config.deepstream_parser_library),
+        )
+    except ValueError as exc:
+        raise RegistryValidationError(str(exc)) from exc
+    manifest = runtime_config.manifest
+    write_manifest(manifest, artifact_path.with_name("model.manifest.json"))
+    return None, {
+        "selected": "deepstream_nvinfer",
+        "available": True,
+        "loaded": True,
+        "input_shape": "x".join(str(value) for value in manifest.input.shape),
+        "classes": list(manifest.output.class_names),
+        "model_fingerprint": manifest.model_fingerprint,
+        "reason": "validated for pipeline-owned nvinfer loading",
+    }
 
 
 def _close_candidate(candidate: Any) -> None:

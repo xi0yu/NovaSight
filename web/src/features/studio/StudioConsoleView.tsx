@@ -106,7 +106,7 @@ const navItems: { id: ConsolePage; index: string; label: string; icon: NovaIconN
   { id: "latency", index: "07", label: "采集延迟", icon: "latency" }
 ];
 
-const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"]);
+const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 
 // Every production backend must prove both DetectionBatch publication and
 // runtime consumption before the launch dialog declares the control path ready.
@@ -154,28 +154,14 @@ function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
 }
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
-type CaptureBackendMode = "gst_cpu_latest" | "nvmm_latest" | "deepstream_nvinfer";
+type CaptureBackendMode = "deepstream_nvinfer";
 const CAPTURE_BACKEND_CHOICES: {
   value: CaptureBackendMode;
   label: string;
-  memory: "system" | "nvmm";
-  inferenceBackend: "tensorrt" | "nvmm_latest" | "deepstream_nvinfer";
-  preprocessBackend: "cpu" | "cuda";
+  memory: "nvmm";
+  inferenceBackend: "deepstream_nvinfer";
+  preprocessBackend: "cuda";
 }[] = [
-  {
-    value: "gst_cpu_latest",
-    label: "CPU latest",
-    memory: "system",
-    inferenceBackend: "tensorrt",
-    preprocessBackend: "cpu"
-  },
-  {
-    value: "nvmm_latest",
-    label: "NVMM latest",
-    memory: "nvmm",
-    inferenceBackend: "nvmm_latest",
-    preprocessBackend: "cuda"
-  },
   {
     value: "deepstream_nvinfer",
     label: "DeepStream nvinfer",
@@ -555,16 +541,8 @@ export function StudioConsoleView({
   const deepstreamStatus = asRecord(pipeline.deepstream);
   const deepstreamMailbox = asRecord(deepstreamStatus.detection_batch_mailbox);
   const deepstreamNvmmOutput = asRecord(deepstreamStatus.nvmm_output);
-  const configuredCaptureBackend = readString(captureConfig.backend, "gst_cpu_latest");
-  const captureBackendMode: CaptureBackendMode =
-    configuredCaptureBackend === "deepstream_nvinfer"
-      ? "deepstream_nvinfer"
-      : configuredCaptureBackend === "nvmm_latest"
-        ? "nvmm_latest"
-        : "gst_cpu_latest";
-  const captureBackendChoice =
-    CAPTURE_BACKEND_CHOICES.find((choice) => choice.value === captureBackendMode) ??
-    CAPTURE_BACKEND_CHOICES[0];
+  const captureBackendMode: CaptureBackendMode = "deepstream_nvinfer";
+  const captureBackendChoice = CAPTURE_BACKEND_CHOICES[0];
   const configuredCaptureMemory = readString(captureConfig.memory, captureBackendChoice.memory);
   const configuredPreprocessBackend = readString(preprocessConfig.backend, captureBackendChoice.preprocessBackend);
   const configuredInferenceBackend = readString(inferenceConfig.backend, captureBackendChoice.inferenceBackend);
@@ -1857,63 +1835,6 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
-  const updateCaptureBackendMode = useCallback(
-    async (mode: CaptureBackendMode) => {
-      const choice =
-        CAPTURE_BACKEND_CHOICES.find((item) => item.value === mode) ??
-        CAPTURE_BACKEND_CHOICES[0];
-      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-      const next = base ? normalizeRuntimeConfig(base) : null;
-      if (!next) {
-        return;
-      }
-      const writeSeq = ++configWriteSeqRef.current;
-      pendingConfigWritesRef.current += 1;
-      setBusy("capture.backend");
-      setLocalError(null);
-      next.capture = {
-        ...asRecord(next.capture),
-        backend: choice.value,
-        memory: choice.memory
-      } as RuntimeConfig[string];
-      next.inference = {
-        ...asRecord(next.inference),
-        backend: choice.inferenceBackend
-      } as RuntimeConfig[string];
-      next.preprocess = {
-        ...asRecord(next.preprocess),
-        backend: choice.preprocessBackend
-      } as RuntimeConfig[string];
-      configDraftRef.current = next;
-      setConfigDraft(next);
-      try {
-        const result = await updateRuntimeConfig(next);
-        if (writeSeq === configWriteSeqRef.current) {
-          const applied = normalizeRuntimeConfig(result.config);
-          configDraftRef.current = applied;
-          setConfigDraft(applied);
-        }
-      } catch (err) {
-        setLocalError(`采集数据通路切换失败：${getErrorMessage(err)}`);
-
-        reportError(err, { source: 'studio', title: '操作失败' });
-        if (writeSeq === configWriteSeqRef.current) {
-          configDraftRef.current = null;
-          setConfigDraft(null);
-        }
-      } finally {
-        pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
-        if (writeSeq === configWriteSeqRef.current) {
-          setBusy(null);
-        }
-        if (pendingConfigWritesRef.current === 0) {
-          await onRefresh();
-        }
-      }
-    },
-    [onRefresh, runtimeConfig]
-  );
-
   const applyKmNetRecommended = useCallback(async () => {
     const next = cloneRuntimeConfig(runtimeConfig);
     if (!next) {
@@ -2435,20 +2356,9 @@ export function StudioConsoleView({
                 <label>视频设备</label>
                 <input value={device} onChange={(event) => setDevice(event.target.value)} />
                 <label>数据通路</label>
-                <div className="mini-segmented capture-backend-segmented" role="group" aria-label="采集数据通路">
-                  {CAPTURE_BACKEND_CHOICES.map((choice) => (
-                    <button
-                      className={captureBackendMode === choice.value ? "active" : ""}
-                      disabled={busy === "capture.backend"}
-                      key={choice.value}
-                      onClick={() => void updateCaptureBackendMode(choice.value)}
-                      title={`${choice.value} / ${choice.memory}`}
-                      type="button"
-                    >
-                      {choice.label}
-                    </button>
-                  ))}
-                </div>
+                <select value="deepstream_nvinfer" disabled aria-label="采集数据通路">
+                  <option value="deepstream_nvinfer">DeepStream nvinfer</option>
+                </select>
                 <div className="console-kv compact-kv">
                   <span>backend</span><b>{captureBackendMode}</b>
                   <span>memory</span><b>{configuredCaptureMemory}</b>

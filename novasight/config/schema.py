@@ -125,7 +125,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "capture.backend",
                         "label": "采集后端",
                         "type": "select",
-                        "options": ["gst_cpu_latest", "nvmm_latest", "deepstream_nvinfer"],
+                        "options": ["deepstream_nvinfer"],
                         "restart_required": True,
                     },
                     {
@@ -139,7 +139,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "capture.memory",
                         "label": "采集内存路径",
                         "type": "select",
-                        "options": ["system", "nvmm"],
+                        "options": ["nvmm"],
                         "restart_required": True,
                     },
                     {
@@ -200,7 +200,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "preprocess.backend",
                         "label": "预处理后端",
                         "type": "select",
-                        "options": ["cpu", "cuda"],
+                        "options": ["cuda"],
                         "restart_required": True,
                     },
                     {
@@ -344,7 +344,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "path": "inference.backend",
                         "label": "推理后端",
                         "type": "select",
-                        "options": ["tensorrt", "nvmm_latest", "deepstream_nvinfer"],
+                        "options": ["deepstream_nvinfer"],
                         "restart_required": True,
                     },
                     {
@@ -357,12 +357,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     {
                         "path": "inference.require_gpu",
                         "label": "必须使用 GPU",
-                        "type": "bool",
-                        "restart_required": True,
-                    },
-                    {
-                        "path": "inference.allow_cpu_fallback",
-                        "label": "允许 CPU 回退",
                         "type": "bool",
                         "restart_required": True,
                     },

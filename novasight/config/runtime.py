@@ -57,7 +57,7 @@ class RoiConfig:
 @dataclass
 class InferenceConfig:
     enabled: bool = True
-    backend: str = "tensorrt"
+    backend: str = "deepstream_nvinfer"
     device: str = "cuda"
     require_gpu: bool = True
     allow_cpu_fallback: bool = False
@@ -97,7 +97,7 @@ class InferenceConfig:
 
 @dataclass
 class PreprocessConfig:
-    backend: str = "cpu"
+    backend: str = "cuda"
     input_format: str = "auto"
     output_dtype: str = "fp16"
     normalize: bool = True
@@ -108,9 +108,9 @@ class PreprocessConfig:
 @dataclass
 class CaptureConfig:
     device: str = "/dev/video0"
-    backend: str = "gst_cpu_latest"
+    backend: str = "deepstream_nvinfer"
     preference: str = "auto_high_fps"
-    memory: str = "system"
+    memory: str = "nvmm"
     latest_only: bool = True
     appsink_max_buffers: int = 1
     queue_leaky: str = "downstream"
@@ -467,14 +467,16 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(inference, dict):
         inference = dict(inference)
         legacy_backend = str(inference.get("backend", "")).lower()
-        if legacy_backend == "deepstream":
-            inference["backend"] = "deepstream_nvinfer"
-        elif legacy_backend in {
+        if legacy_backend in {
+            "deepstream",
+            "tensorrt",
+            "nvmm_latest",
+            "gst_cpu_latest",
             "onnxruntime",
             "legacy_latest",
             "deepstream_uncontrolled",
         }:
-            inference["backend"] = "tensorrt"
+            inference["backend"] = "deepstream_nvinfer"
         for key in (
             "deepstream_manifest_path",
             "deepstream_config_path",
@@ -486,23 +488,27 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(capture, dict):
         capture = dict(capture)
         memory = str(capture.get("memory", "")).lower()
-        if memory == "cpu":
-            capture["memory"] = "system"
-        legacy_capture_backend = str(capture.get("backend", "")).lower()
-        if legacy_capture_backend == "deepstream":
-            capture["backend"] = "deepstream_nvinfer"
+        if memory in {"cpu", "system"}:
             capture["memory"] = "nvmm"
-        elif legacy_capture_backend in {
+        legacy_capture_backend = str(capture.get("backend", "")).lower()
+        if legacy_capture_backend in {
+            "deepstream",
+            "gst_cpu_latest",
+            "nvmm_latest",
             "legacy_latest",
             "deepstream_uncontrolled",
         }:
-            capture["backend"] = "gst_cpu_latest"
+            capture["backend"] = "deepstream_nvinfer"
+            capture["memory"] = "nvmm"
         normalized["capture"] = capture
     if isinstance(inference, dict) and inference.get("backend") == "deepstream_nvinfer":
         capture = dict(normalized.get("capture") or {})
         capture["backend"] = "deepstream_nvinfer"
         capture["memory"] = "nvmm"
         normalized["capture"] = capture
+        preprocess = dict(normalized.get("preprocess") or {})
+        preprocess["backend"] = "cuda"
+        normalized["preprocess"] = preprocess
     hardware = normalized.get("hardware")
     if isinstance(hardware, dict):
         hardware = dict(hardware)
@@ -1057,21 +1063,14 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         )
     if cfg.source.image_fps not in {1, 5, 15, 30, 60}:
         raise ValueError("runtime config key 'source.image_fps' must be one of 1, 5, 15, 30, 60")
-    if cfg.capture.backend not in {"gst_cpu_latest", "nvmm_latest", "deepstream_nvinfer"}:
+    if cfg.capture.backend != "deepstream_nvinfer":
         raise ValueError(
-            "runtime config key 'capture.backend' must be gst_cpu_latest, "
-            "nvmm_latest, or deepstream_nvinfer"
+            "runtime config key 'capture.backend' must be deepstream_nvinfer; "
+            "CPU latest and NVMM latest data paths were removed"
         )
-    if cfg.capture.memory not in {"system", "nvmm"}:
-        raise ValueError("runtime config key 'capture.memory' must be system or nvmm")
-    if cfg.capture.backend == "gst_cpu_latest" and cfg.capture.memory != "system":
-        raise ValueError("runtime config key 'capture.memory' must be system for gst_cpu_latest")
-    if (
-        cfg.capture.backend in {"nvmm_latest", "deepstream_nvinfer"}
-        and cfg.capture.memory != "nvmm"
-    ):
+    if cfg.capture.memory != "nvmm":
         raise ValueError(
-            "runtime config key 'capture.memory' must be nvmm for GPU capture backends"
+            "runtime config key 'capture.memory' must be nvmm for deepstream_nvinfer"
         )
     if not cfg.capture.latest_only:
         raise ValueError("runtime config key 'capture.latest_only' must be true")
@@ -1096,16 +1095,18 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
     if cfg.roi.mode not in {"center", "manual"}:
         raise ValueError("unsupported ROI mode: must be center or manual")
-    if cfg.preprocess.backend not in {"cpu", "cuda"}:
-        raise ValueError("runtime config key 'preprocess.backend' must be cpu or cuda")
+    if cfg.preprocess.backend != "cuda":
+        raise ValueError(
+            "runtime config key 'preprocess.backend' must be cuda for deepstream_nvinfer"
+        )
     if cfg.preprocess.input_format != "auto":
         raise ValueError("runtime config key 'preprocess.input_format' must be auto")
     if cfg.preprocess.output_dtype not in {"fp16", "fp32", "float16", "float32"}:
         raise ValueError("runtime config key 'preprocess.output_dtype' must be fp16 or fp32")
-    if cfg.inference.backend not in {"tensorrt", "nvmm_latest", "deepstream_nvinfer"}:
+    if cfg.inference.backend != "deepstream_nvinfer":
         raise ValueError(
-            "runtime config key 'inference.backend' must be tensorrt, nvmm_latest, "
-            "or deepstream_nvinfer"
+            "runtime config key 'inference.backend' must be deepstream_nvinfer; "
+            "custom TensorRT runtime data paths were removed"
         )
     if cfg.inference.device != "cuda":
         raise ValueError("runtime config key 'inference.device' must be cuda")
@@ -1131,9 +1132,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(
             "runtime config key 'inference.deepstream_parser_library' must be non-empty"
         )
-    if cfg.inference.backend == "deepstream_nvinfer" and (
-        cfg.capture.backend != "deepstream_nvinfer" or cfg.capture.memory != "nvmm"
-    ):
+    if cfg.capture.backend != "deepstream_nvinfer" or cfg.capture.memory != "nvmm":
         raise ValueError(
             "deepstream_nvinfer inference requires capture.backend=deepstream_nvinfer "
             "and capture.memory=nvmm"

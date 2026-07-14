@@ -41,11 +41,12 @@ def test_roi_size_control_commits_once_instead_of_writing_on_every_change() -> N
     )
 
 
-def test_studio_mainline_mode_includes_tensorrt_runtime_backend() -> None:
+def test_studio_exposes_only_deepstream_runtime_backend() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert 'selectedRuntimeBackend === "nvmm_latest"' not in source
-    assert 'new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"])' in source
+    assert 'new Set(["deepstream_nvinfer"])' in source
+    assert 'label: "CPU latest"' not in source
+    assert 'label: "NVMM latest"' not in source
 
 
 def test_runtime_status_does_not_treat_informational_reason_as_failure() -> None:
@@ -155,12 +156,10 @@ def test_studio_can_validate_and_switch_pending_engine() -> None:
     assert "模型产物不可切换" in source
 
 
-def test_devices_mainline_mode_includes_tensorrt_runtime_backend() -> None:
+def test_devices_exposes_only_deepstream_runtime_backend() -> None:
     source = DEVICES_VIEW.read_text(encoding="utf-8")
 
-    assert 'selected === "nvmm_latest"' not in source
-    assert 'inferenceSelected === "nvmm_latest"' not in source
-    assert 'new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"])' in source
+    assert 'new Set(["deepstream_nvinfer"])' in source
     assert 'disabled={deepstreamNvinferSelected && id === "image"}' in source
     assert "DeepStream nvinfer 不支持" in source
 

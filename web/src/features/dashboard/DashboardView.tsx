@@ -326,8 +326,7 @@ export function DashboardView({
   const targetFps = displayCaptureProfile?.fps ?? 120;
   const runtimeInference = asRecord(runtime?.inference);
   const selectedRuntimeBackend = readStringRecord(runtimeInference, "selected");
-  const runtimeMainlineSelected =
-    selectedRuntimeBackend === "nvmm_latest" || selectedRuntimeBackend === "deepstream_nvinfer";
+  const runtimeMainlineSelected = selectedRuntimeBackend === "deepstream_nvinfer";
   const deepstreamNvinferSelected = selectedRuntimeBackend === "deepstream_nvinfer";
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlineRunning =

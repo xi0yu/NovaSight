@@ -308,19 +308,19 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
 def test_runtime_config_defaults_include_inference_settings() -> None:
     cfg = RuntimeConfig()
 
-    assert cfg.capture.backend == "gst_cpu_latest"
-    assert cfg.capture.memory == "system"
+    assert cfg.capture.backend == "deepstream_nvinfer"
+    assert cfg.capture.memory == "nvmm"
     assert cfg.capture.latest_only is True
     assert cfg.capture.appsink_max_buffers == 1
     assert cfg.capture.queue_leaky == "downstream"
-    assert cfg.preprocess.backend == "cpu"
+    assert cfg.preprocess.backend == "cuda"
     assert cfg.preprocess.input_format == "auto"
     assert cfg.preprocess.output_dtype == "fp16"
     assert cfg.preprocess.normalize is True
     assert cfg.preprocess.use_pinned_memory is True
     assert cfg.preprocess.h2d_async is True
     assert cfg.inference.enabled is True
-    assert cfg.inference.backend == "tensorrt"
+    assert cfg.inference.backend == "deepstream_nvinfer"
     assert cfg.inference.device == "cuda"
     assert cfg.inference.require_gpu is True
     assert cfg.inference.allow_cpu_fallback is False
@@ -350,7 +350,7 @@ def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
     assert cfg.source.default == "null"
     assert cfg.capture.backend == "deepstream_nvinfer"
     assert cfg.capture.memory == "nvmm"
-    assert cfg.preprocess.backend == "cpu"
+    assert cfg.preprocess.backend == "cuda"
     assert cfg.inference.backend == "deepstream_nvinfer"
     assert not hasattr(cfg.inference, "deepstream_manifest_path")
     assert not hasattr(cfg.inference, "deepstream_config_path")
@@ -358,10 +358,10 @@ def test_runtime_config_migrates_legacy_full_deepstream_keys() -> None:
     assert cfg.inference.deepstream_batched_push_timeout_us == 12000
 
 
-def test_runtime_config_accepts_tensorrt_and_nvmm_latest_backends() -> None:
+def test_runtime_config_migrates_removed_data_paths_to_deepstream() -> None:
     cfg = parse_runtime_config({"inference": {"backend": "tensorrt"}})
 
-    assert cfg.inference.backend == "tensorrt"
+    assert cfg.inference.backend == "deepstream_nvinfer"
 
     cfg = parse_runtime_config(
         {
@@ -371,7 +371,10 @@ def test_runtime_config_accepts_tensorrt_and_nvmm_latest_backends() -> None:
         }
     )
 
-    assert cfg.inference.backend == "nvmm_latest"
+    assert cfg.capture.backend == "deepstream_nvinfer"
+    assert cfg.capture.memory == "nvmm"
+    assert cfg.preprocess.backend == "cuda"
+    assert cfg.inference.backend == "deepstream_nvinfer"
 
 
 def test_runtime_config_round_trip(tmp_path: Path) -> None:
@@ -806,8 +809,8 @@ def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
 
 
 def test_runtime_config_capture_memory_matches_backend() -> None:
-    assert parse_runtime_config({}).capture.memory == "system"
-    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "system"
+    assert parse_runtime_config({}).capture.memory == "nvmm"
+    assert parse_runtime_config({"capture": {"memory": "cpu"}}).capture.memory == "nvmm"
     assert (
         parse_runtime_config(
             {
@@ -819,7 +822,7 @@ def test_runtime_config_capture_memory_matches_backend() -> None:
         == "nvmm"
     )
 
-    with pytest.raises(ValueError, match="capture.memory.*system or nvmm"):
+    with pytest.raises(ValueError, match="capture.memory.*must be nvmm"):
         parse_runtime_config({"capture": {"memory": "dmabuf"}})
 
 
@@ -848,14 +851,10 @@ def test_runtime_config_schema_exposes_capture_memory() -> None:
         "path": "capture.memory",
         "label": "采集内存路径",
         "type": "select",
-        "options": ["system", "nvmm"],
+        "options": ["nvmm"],
         "restart_required": True,
     }
-    assert fields["capture.backend"]["options"] == [
-        "gst_cpu_latest",
-        "nvmm_latest",
-        "deepstream_nvinfer",
-    ]
+    assert fields["capture.backend"]["options"] == ["deepstream_nvinfer"]
 
 
 def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields() -> None:
@@ -994,7 +993,6 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
         "inference.backend",
         "inference.device",
         "inference.require_gpu",
-        "inference.allow_cpu_fallback",
         "inference.inference_input_deadline_ms",
         "inference.confidence_threshold",
         "inference.nms_threshold",
@@ -1003,11 +1001,7 @@ def test_runtime_config_schema_exposes_editable_inference_fields() -> None:
     backend_field = next(
         field for field in inference_section["fields"] if field["path"] == "inference.backend"
     )
-    assert backend_field["options"] == [
-        "tensorrt",
-        "nvmm_latest",
-        "deepstream_nvinfer",
-    ]
+    assert backend_field["options"] == ["deepstream_nvinfer"]
 
 
 def test_runtime_config_schema_exposes_latest_only_runtime_fields() -> None:

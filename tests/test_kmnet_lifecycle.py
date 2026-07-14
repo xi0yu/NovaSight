@@ -84,14 +84,14 @@ class BlockingCapture:
         self.configure_started = threading.Event()
         self.release_configure = threading.Event()
 
-    def configure(self, **_: object) -> SimpleNamespace:
+    def configure_profile_only(self, *_: object, **__: object) -> SimpleNamespace:
         self.configure_started.set()
         self.release_configure.wait(timeout=2.0)
         return SimpleNamespace(available=False)
 
 
 class AvailableCapture:
-    def configure(self, **_: object) -> SimpleNamespace:
+    def configure_profile_only(self, *_: object, **__: object) -> SimpleNamespace:
         return SimpleNamespace(
             available=True,
             profile=SimpleNamespace(pixel_format="MJPG", width=1920, height=1080, fps=120),

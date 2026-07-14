@@ -173,8 +173,7 @@ export function ConfigView({
   const canWriteConfig = Boolean(license?.features.includes("config_write"));
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeSelectedBackend = runtime?.inference?.selected;
-  const runtimeMainlineSelected =
-    runtimeSelectedBackend === "nvmm_latest" || runtimeSelectedBackend === "deepstream_nvinfer";
+  const runtimeMainlineSelected = runtimeSelectedBackend === "deepstream_nvinfer";
   const runtimeStateLabel = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "主链故障"
@@ -193,12 +192,8 @@ export function ConfigView({
       ? runtimeMainlineStatus.failureMessage || "后端报告主链故障。"
       : runtimeMainlineStatus.running
         ? runtimeMainlineStatus.progressSummary
-        : runtimeSelectedBackend === "deepstream_nvinfer"
-          ? "DeepStream NVMM + nvinfer 主链尚未持有采集、推理与控制链路。"
-          : "latest-frame + TensorRT 主链尚未持有采集、推理与控制链路。"
-    : runtime?.running
-      ? "传统 runtime 线程正在运行。"
-      : "传统 runtime 线程未运行。";
+        : "DeepStream NVMM + nvinfer 主链尚未持有采集、推理与控制链路。"
+    : "DeepStream 主链未选择。";
 
   const saveConfig = useCallback(async () => {
     if (!config || !isDirty || !canWriteConfig) {

@@ -296,13 +296,7 @@ class RuntimeService:
         )
         payload.setdefault(
             "reason",
-            (
-                "GStreamer CPU latest bridge + TensorRT GPU inference"
-                if payload["capture_backend"] == "gst_cpu_latest"
-                else "DeepStream NVMM + nvinfer + C++ object-meta parser"
-                if backend == "deepstream_nvinfer"
-                else "NVMM latest bridge + NovaSight TensorRT GPU inference"
-            ),
+            "DeepStream NVMM + nvinfer + C++ object-meta parser",
         )
         return {
             **payload,

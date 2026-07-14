@@ -46,7 +46,7 @@ type CaptureInputSource = "capture" | "image";
 type ReadinessTone = "ready" | "warn" | "blocked";
 
 const ROI_SIZE_CHOICES = [640, 480, 320, 256];
-const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer", "nvmm_latest", "tensorrt"]);
+const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -61,12 +61,6 @@ function getNestedRecord(value: unknown, key: string): Record<string, unknown> |
 function formatBackendLabel(value: string): string {
   if (value === "deepstream_nvinfer") {
     return "DeepStream NVMM + nvinfer";
-  }
-  if (value === "nvmm_latest") {
-    return "DeepStream采集 + 自定义推理";
-  }
-  if (value === "tensorrt") {
-    return "GStreamer latest + TensorRT";
   }
   return value || "未选择";
 }
@@ -507,7 +501,7 @@ export function DevicesView({
   const inferenceLoaded = inferenceStatus.loaded === true;
   const inferenceSupportsExecution = inferenceStatus.supports_execution !== false;
   const inferenceReason = typeof inferenceStatus.reason === "string" ? inferenceStatus.reason : "";
-  const inferredBackend = activeArtifact === "engine" ? "tensorrt" : "";
+  const inferredBackend = activeArtifact === "engine" ? "deepstream_nvinfer" : "";
   const inferenceSelected =
     typeof inferenceStatus.selected === "string" ? inferenceStatus.selected : inferredBackend;
   const deepstreamNvinferSelected = inferenceSelected === "deepstream_nvinfer";

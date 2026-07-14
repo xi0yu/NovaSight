@@ -226,24 +226,14 @@ def _start_auto_restore_capture(
     device = str(getattr(capture_cfg, "device", "") or "").strip()
     if source_default != "capture" or not device:
         return None
-    if str(config.inference.backend).lower() == "deepstream_nvinfer":
-        thread = threading.Thread(
-            target=_auto_start_deepstream_runtime,
-            args=(capture, runtime),
-            name="novasight-deepstream-auto-start",
-            daemon=True,
-        )
-        thread.start()
-        logger.info("DeepStream runtime auto-start scheduled device=%s", device)
-        return thread
     thread = threading.Thread(
         target=_auto_restore_capture,
         args=(capture, config, runtime),
-        name="novasight-capture-auto-restore",
+        name="novasight-deepstream-auto-start",
         daemon=True,
     )
     thread.start()
-    logger.info("capture auto-restore scheduled in background device=%s", device)
+    logger.info("DeepStream runtime auto-start scheduled device=%s", device)
     return thread
 
 
@@ -252,11 +242,6 @@ def _auto_restore_capture(
     config: RuntimeConfig,
     runtime: RuntimeService | None = None,
 ) -> None:
-    # Reopen the last selected capture device so the user does not have
-    # to re-issue /api/capture/select on every backend boot. The runtime
-    # config persists the last successful profile to YAML; if the user
-    # then deliberately stops capture, source.default becomes "null" so
-    # auto-restore is skipped.
     source_default = str(getattr(getattr(config, "source", None), "default", "") or "").strip()
     if source_default != "capture":
         return
@@ -264,10 +249,10 @@ def _auto_restore_capture(
     device = str(getattr(capture_cfg, "device", "") or "").strip()
     if not device:
         return
-    logger.info("capture auto-restore starting device=%s", device)
+    logger.info("DeepStream runtime auto-start beginning device=%s", device)
     try:
-        state = capture.configure(
-            device=device,
+        state = capture.configure_profile_only(
+            device,
             preference=str(getattr(capture_cfg, "preference", "manual") or "manual"),
             pixel_format=getattr(capture_cfg, "pixel_format", None),
             width=getattr(capture_cfg, "width", None),
@@ -275,72 +260,38 @@ def _auto_restore_capture(
             fps=getattr(capture_cfg, "fps", None),
         )
     except Exception as exc:
-        logger.warning("capture auto-restore failed device=%s error=%s", device, exc)
+        logger.warning("DeepStream capture profile selection failed device=%s error=%s", device, exc)
         return
     if getattr(state, "available", False) is True:
         logger.info(
-            "capture auto-restore applied device=%s profile=%s",
+            "DeepStream capture profile selected device=%s profile=%s",
             device,
             f"{state.profile.pixel_format} {state.profile.width}x{state.profile.height}@{state.profile.fps}"
             if getattr(state, "profile", None) is not None
             else "<unknown>",
         )
-        _start_runtime_after_capture_restore(capture, runtime)
+        if runtime is None:
+            return
+        pipeline = runtime.pipeline
+        if pipeline is None:
+            pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
+            runtime.pipeline = pipeline
+        if pipeline.running:
+            return
+        try:
+            pipeline.start()
+        except Exception as exc:
+            runtime.pipeline = None
+            runtime.running = False
+            logger.warning("DeepStream runtime auto-start failed: %s", exc)
+            return
+        logger.info("DeepStream runtime auto-started")
     else:
         logger.info(
-            "capture auto-restore unavailable device=%s reason=%s",
+            "DeepStream capture profile unavailable device=%s reason=%s",
             device,
             getattr(state, "last_error", "unknown"),
         )
-
-
-def _start_runtime_after_capture_restore(
-    capture: CaptureService,
-    runtime: RuntimeService | None,
-) -> None:
-    if runtime is None:
-        return
-    pipeline = runtime.pipeline
-    if pipeline is None:
-        pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
-        runtime.pipeline = pipeline
-    if pipeline.running:
-        return
-    try:
-        pipeline.start()
-    except RuntimeError as exc:
-        logger.warning("runtime auto-start after capture restore failed: %s", exc)
-        return
-    logger.info("runtime auto-started after capture restore")
-
-
-def _auto_start_deepstream_runtime(
-    capture: CaptureService,
-    runtime: RuntimeService | None,
-) -> None:
-    if runtime is None:
-        return
-    try:
-        config = runtime.config.capture
-        capture_state = capture.configure_profile_only(
-            config.device,
-            preference=config.preference,
-            pixel_format=config.pixel_format or None,
-            width=config.width or None,
-            height=config.height or None,
-            fps=config.fps or None,
-        )
-        if capture_state.available is not True:
-            raise RuntimeError(capture_state.last_error or "DeepStream capture profile unavailable")
-        runtime.pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
-        runtime.pipeline.start()
-    except Exception as exc:
-        runtime.pipeline = None
-        runtime.running = False
-        logger.warning("DeepStream runtime auto-start failed: %s", exc)
-        return
-    logger.info("DeepStream runtime auto-started")
-
 
 def _install_studio_cors(app: FastAPI, config: RuntimeConfig) -> None:
     studio_port = int(getattr(getattr(config, "web", None), "port", 5174))

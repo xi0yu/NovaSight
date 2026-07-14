@@ -14,7 +14,7 @@ def test_auto_restore_skips_when_source_default_is_null() -> None:
     called = []
 
     class FakeCapture:
-        def configure(self, *args, **kwargs):
+        def configure_profile_only(self, *args, **kwargs):
             called.append((args, kwargs))
             return SimpleNamespace(available=False, last_error="not invoked", profile=None)
 
@@ -30,7 +30,7 @@ def test_auto_restore_skips_when_no_device() -> None:
     called = []
 
     class FakeCapture:
-        def configure(self, *args, **kwargs):
+        def configure_profile_only(self, *args, **kwargs):
             called.append((args, kwargs))
             return SimpleNamespace(available=False, last_error="", profile=None)
 
@@ -51,8 +51,8 @@ def test_auto_restore_opens_capture_when_source_is_capture() -> None:
     captured_kwargs = []
 
     class FakeCapture:
-        def configure(self, **kwargs):
-            captured_kwargs.append(kwargs)
+        def configure_profile_only(self, device, **kwargs):
+            captured_kwargs.append({"device": device, **kwargs})
             profile = SimpleNamespace(
                 pixel_format="MJPG", width=2560, height=1440, fps=120
             )
