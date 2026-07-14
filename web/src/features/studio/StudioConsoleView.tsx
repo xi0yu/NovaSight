@@ -23,6 +23,7 @@ import {
   RuntimeConfigValue,
   RuntimeState,
   getCaptureCapabilities,
+  getDeepStreamRecommendation,
   getModelArtifacts,
   getModelCatalog,
   getModelProfile,
@@ -2130,13 +2131,20 @@ export function StudioConsoleView({
         profileResponse.profile.status === "INVALID"
       ) {
         const profile = profileResponse.profile;
-        const parser = profile.parser_candidates[0];
-        const selectedVersion = modelVersions.find((item) => item.id === selectedModelVersionId);
-        const labels = selectedVersion?.classes?.filter((item) => item.trim().length > 0) ?? [];
-        if (!parser || labels.length === 0) {
-          throw new Error("无法自动确定 Parser 或类别语义，请先补全模型描述。");
+        const recommendation = await getDeepStreamRecommendation(selectedSwitchArtifact.id);
+        const labels = recommendation.class_names.filter((item) => item.trim().length > 0);
+        const hasObjectness = recommendation.output_has_objectness;
+        const parser =
+          profile.parser_candidates.find((candidate) =>
+            hasObjectness
+              ? candidate.parser_type === "yolov5_raw"
+              : candidate.parser_type !== "yolov5_raw"
+          );
+        const parserType =
+          parser?.parser_type ?? (hasObjectness ? "yolov5_raw" : "yolov8_raw");
+        if (labels.length === 0) {
+          throw new Error("无法从 TensorRT 输出确定类别语义，请补充模型 sidecar。");
         }
-        const hasObjectness = parser.parser_type === "yolov5_raw";
         const confirmed = window.confirm(
           [
             `请确认 ${selectedSwitchArtifact.path} 无法从 Engine 自动确定的模型语义：`,
@@ -2144,9 +2152,10 @@ export function StudioConsoleView({
             `输出：${profile.outputs.map((item) => `${item.name} ${item.shape.join("x")} ${item.dtype}`).join("；")}`,
             "颜色与归一化：RGB / 1÷255",
             "缩放方式：直接缩放",
-            `解析器候选：${parser.parser_type}（${parser.confidence}）`,
+            `解析器候选：${parserType}（${parser?.confidence ?? "engine contract"}）`,
             `类别：${labels.length}（${labels.join(", ")}）`,
             `objectness：${hasObjectness ? "有" : "无"}`,
+            `输出契约：${recommendation.recommendation.output_shape.join("x")}`,
             "确认后只会进入诊断推理，不会发送鼠标控制。"
           ].join("\n")
         );
@@ -2157,7 +2166,7 @@ export function StudioConsoleView({
           color_format: "RGB",
           scale: 1 / 255,
           resize_mode: "direct",
-          parser_type: parser.parser_type,
+          parser_type: parserType,
           class_count: labels.length,
           labels,
           bbox_format: "xywh",
