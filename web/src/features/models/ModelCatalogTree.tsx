@@ -104,9 +104,7 @@ function CatalogNodes({
             <NovaIcon name="models" size={17} />
             <div className="model-catalog-copy">
               <strong>{node.name}</strong>
-              <span>
-                {node.kind.toUpperCase()} · {formatModelSizeMb(node.size_bytes)}
-              </span>
+              <span className="model-catalog-size">{formatModelSizeMb(node.size_bytes)}</span>
             </div>
             <aside>
               {active ? <Badge tone="good">当前使用</Badge> : null}

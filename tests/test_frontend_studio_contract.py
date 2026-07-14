@@ -103,9 +103,16 @@ def test_studio_preview_uses_roi_coordinates_for_control_center_and_aim_line() -
 def test_model_file_lists_show_size_in_megabytes() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
     models = (STUDIO_CONSOLE.parents[1] / "models" / "ModelsView.tsx").read_text(encoding="utf-8")
+    catalog_tree = (
+        STUDIO_CONSOLE.parents[1] / "models" / "ModelCatalogTree.tsx"
+    ).read_text(encoding="utf-8")
+    styles = (STUDIO_CONSOLE.parents[2] / "styles.css").read_text(encoding="utf-8")
 
     assert "formatModelSizeMb(item.size_bytes)" in studio
     assert "formatModelSizeMb(artifact.size_bytes)" in models
+    assert '<span className="model-catalog-size">{formatModelSizeMb(node.size_bytes)}</span>' in catalog_tree
+    assert "grid-template-columns: minmax(0, 1fr) auto;" in styles
+    assert "font-variant-numeric: tabular-nums;" in styles
 
 
 def test_dashboard_deepstream_preview_uses_hardware_jpeg_branch() -> None:

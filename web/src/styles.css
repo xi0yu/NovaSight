@@ -3069,7 +3069,15 @@ tbody tr:hover {
 .model-catalog-copy {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.model-catalog-size {
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .model-catalog-row aside {
