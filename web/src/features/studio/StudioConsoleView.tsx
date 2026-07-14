@@ -526,6 +526,7 @@ export function StudioConsoleView({
   const configuredCaptureHeight = readNumber(captureConfig.height, 0);
   const configuredCaptureFps = readNumber(captureConfig.fps, 0);
   const roiConfig = nestedRecord(config, "roi");
+  const limitsConfig = nestedRecord(config, "limits");
   const inferenceConfig = nestedRecord(config, "inference");
   const preprocessConfig = nestedRecord(config, "preprocess");
   const controlConfig = nestedRecord(config, "control");
@@ -633,14 +634,11 @@ export function StudioConsoleView({
     choices.find((choice) => choiceId(choice) === runningChoiceId) ??
     choices[0];
   const roiSize = readNumber(roiConfig.size, 640);
-  const roiOffsetX = readNumber(roiConfig.offset_x, 0);
-  const roiOffsetY = readNumber(roiConfig.offset_y, 0);
+  const previewFps = readNumber(limitsConfig.stream_fps, 30);
   const sourceWidth = selectedProfile?.width ?? readNumber(inferenceTrace.source_width, 0);
   const sourceHeight = selectedProfile?.height ?? readNumber(inferenceTrace.source_height, 0);
-  const roiBaseX = sourceWidth > 0 ? Math.max(0, Math.floor((sourceWidth - roiSize) / 2)) : 0;
-  const roiBaseY = sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
-  const roiX = sourceWidth > 0 ? clampNumber(roiBaseX + roiOffsetX, 0, Math.max(0, sourceWidth - roiSize)) : roiOffsetX;
-  const roiY = sourceHeight > 0 ? clampNumber(roiBaseY + roiOffsetY, 0, Math.max(0, sourceHeight - roiSize)) : roiOffsetY;
+  const roiX = sourceWidth > 0 ? Math.max(0, Math.floor((sourceWidth - roiSize) / 2)) : 0;
+  const roiY = sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
   const confidence = readNumber(inferenceConfig.confidence_threshold, 0.25);
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
   const detectionProfiles = recordList(inferenceConfig.detection_class_profiles);
@@ -2399,9 +2397,19 @@ export function StudioConsoleView({
                 <select value="latest-frame" disabled>
                   <option value="latest-frame">最新帧优先 / 单槽覆盖</option>
                 </select>
-                <div className="console-row">
-                  <label>目标帧率</label>
-                  <input value={selectedChoice?.fps ?? displayCaptureProfile?.fps ?? ""} readOnly />
+                <label>推理画面预览</label>
+                <div className="mini-segmented" role="group" aria-label="推理画面预览帧率">
+                  {[15, 30].map((fps) => (
+                    <button
+                      className={previewFps === fps ? "active" : ""}
+                      disabled={busy === "limits.stream_fps"}
+                      key={fps}
+                      onClick={() => void updateConfigField("limits", "stream_fps", fps)}
+                      type="button"
+                    >
+                      {fps}fps
+                    </button>
+                  ))}
                 </div>
                 <button className="console-button primary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
                   {busy === "caps" ? "检测中..." : "检测设备能力"}
@@ -2410,11 +2418,6 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title="ROI 裁剪" />
-                <label>ROI 模式</label>
-                <select value={roiOffsetX === 0 && roiOffsetY === 0 ? "center" : "manual"} disabled>
-                  <option value="center">中心正方形</option>
-                  <option value="manual">手动偏移</option>
-                </select>
                 <label>ROI 尺寸</label>
                 <CommitNumberControl
                   value={roiSize}
@@ -2437,8 +2440,6 @@ export function StudioConsoleView({
                     </button>
                   ))}
                 </div>
-                <NumberControl label="水平偏移" value={roiOffsetX} min={-1280} max={1280} step={16} onCommit={(value) => updateConfigField("roi", "offset_x", Math.round(value))} />
-                <NumberControl label="垂直偏移" value={roiOffsetY} min={-720} max={720} step={16} onCommit={(value) => updateConfigField("roi", "offset_y", Math.round(value))} />
                 <div className="console-kv compact-kv">
                   <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : NO_SAMPLE}</b>
                   <span>ROI 区域</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}` : NO_SAMPLE}</b>

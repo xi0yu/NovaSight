@@ -49,9 +49,6 @@ class RuntimeBehaviorConfig:
 @dataclass
 class RoiConfig:
     size: int = 640
-    mode: str = "center"
-    offset_x: int = 0
-    offset_y: int = 0
 
 
 @dataclass
@@ -463,6 +460,14 @@ def _build_dataclass(
 
 def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(raw)
+    roi = normalized.get("roi")
+    if isinstance(roi, dict):
+        roi = dict(roi)
+        # ROI is always centered. Keep accepting old files during migration,
+        # but never carry the former mode/offset controls into runtime state.
+        for key in ("mode", "offset_x", "offset_y"):
+            roi.pop(key, None)
+        normalized["roi"] = roi
     inference = normalized.get("inference")
     if isinstance(inference, dict):
         inference = dict(inference)
@@ -1078,8 +1083,8 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'capture.appsink_max_buffers' must be 1")
     if cfg.capture.queue_leaky != "downstream":
         raise ValueError("runtime config key 'capture.queue_leaky' must be downstream")
-    if cfg.limits.stream_fps not in {15, 30, 60}:
-        raise ValueError("runtime config key 'limits.stream_fps' must be one of 15, 30, 60")
+    if cfg.limits.stream_fps not in {15, 30}:
+        raise ValueError("runtime config key 'limits.stream_fps' must be one of 15 or 30")
     if cfg.runtime.freshness_threshold_ms < 0:
         raise ValueError("runtime config key 'runtime.freshness_threshold_ms' must be >= 0")
     if not cfg.runtime.drop_stale_batches:
@@ -1093,8 +1098,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     except ValueError as exc:
         allowed = ", ".join(str(size) for size in ROI_SIZE_CHOICES)
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
-    if cfg.roi.mode not in {"center", "manual"}:
-        raise ValueError("unsupported ROI mode: must be center or manual")
     if cfg.preprocess.backend != "cuda":
         raise ValueError(
             "runtime config key 'preprocess.backend' must be cuda for deepstream_nvinfer"

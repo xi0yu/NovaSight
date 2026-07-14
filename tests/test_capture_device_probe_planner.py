@@ -95,7 +95,7 @@ def test_pipeline_planner_prefers_raw_nv12_when_available() -> None:
         target_fps=Fraction(60, 1),
         model_input_size=(640, 640),
         model_hash="abc123",
-        roi_config=RoiConfig(size=640, offset_x=0, offset_y=0),
+        roi_config=RoiConfig(size=640),
         validator=lambda _plan: True,
         cache_dir=None,
     )
@@ -124,7 +124,7 @@ def test_pipeline_planner_falls_back_when_candidate_validation_fails() -> None:
         target_fps=Fraction(60, 1),
         model_input_size=(640, 640),
         model_hash="abc123",
-        roi_config=RoiConfig(size=640, offset_x=0, offset_y=0),
+        roi_config=RoiConfig(size=640),
         validator=validator,
         cache_dir=None,
     )
@@ -142,7 +142,7 @@ def test_pipeline_planner_reuses_cached_plan_for_identical_inputs(tmp_path) -> N
         target_fps=Fraction(60, 1),
         model_input_size=(640, 640),
         model_hash="abc123",
-        roi_config=RoiConfig(size=640, offset_x=0, offset_y=0),
+        roi_config=RoiConfig(size=640),
         cache_dir=tmp_path,
     )
 
@@ -153,7 +153,7 @@ def test_pipeline_planner_reuses_cached_plan_for_identical_inputs(tmp_path) -> N
         target_fps=Fraction(60, 1),
         model_input_size=(640, 640),
         model_hash="abc123",
-        roi_config=RoiConfig(size=640, offset_x=0, offset_y=0),
+        roi_config=RoiConfig(size=640),
         cache_dir=tmp_path,
     )
 
@@ -170,7 +170,7 @@ def test_pipeline_planner_raises_for_unavailable_target() -> None:
             target_fps=Fraction(60, 1),
             model_input_size=(640, 640),
             model_hash="abc123",
-            roi_config=RoiConfig(size=640, offset_x=0, offset_y=0),
+            roi_config=RoiConfig(size=640),
             cache_dir=None,
         )
 

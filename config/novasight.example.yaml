@@ -20,9 +20,6 @@ runtime:
   consume_latest_only: true
 roi:
   size: 640
-  mode: center
-  offset_x: 0
-  offset_y: 0
 inference:
   enabled: true
   backend: deepstream_nvinfer

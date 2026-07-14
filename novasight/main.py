@@ -54,8 +54,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     doctor_jetson_smoke.add_argument("--height", type=int, default=None)
     doctor_jetson_smoke.add_argument("--fps", type=int, default=None)
     doctor_jetson_smoke.add_argument("--roi-size", type=int, default=None)
-    doctor_jetson_smoke.add_argument("--roi-offset-x", type=int, default=None)
-    doctor_jetson_smoke.add_argument("--roi-offset-y", type=int, default=None)
     doctor_jetson_smoke.add_argument("--input-shape", default=None)
     doctor_jetson_smoke.add_argument("--dtype", default=None)
     doctor_jetson_smoke.add_argument("--timeout", type=float, default=5.0)
@@ -74,8 +72,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     doctor_jetson_zero_copy.add_argument("--height", type=int, default=None)
     doctor_jetson_zero_copy.add_argument("--fps", type=int, default=None)
     doctor_jetson_zero_copy.add_argument("--roi-size", type=int, default=None)
-    doctor_jetson_zero_copy.add_argument("--roi-offset-x", type=int, default=None)
-    doctor_jetson_zero_copy.add_argument("--roi-offset-y", type=int, default=None)
     doctor_jetson_zero_copy.add_argument("--input-shape", default=None)
     doctor_jetson_zero_copy.add_argument("--dtype", default=None)
     doctor_jetson_zero_copy.add_argument("--timeout", type=float, default=5.0)
@@ -479,8 +475,6 @@ def _doctor_jetson_zero_copy(args: argparse.Namespace, cfg: object) -> int:
             height=args.height,
             fps=args.fps,
             roi_size=args.roi_size,
-            roi_offset_x=args.roi_offset_x,
-            roi_offset_y=args.roi_offset_y,
             input_shape=args.input_shape,
             dtype=args.dtype,
             timeout=args.timeout,
@@ -531,12 +525,6 @@ def _jetson_zero_copy_report(
     library: Path,
 ) -> dict[str, object]:
     roi_size = int(args.roi_size or cfg.roi.size)
-    roi_offset_x = int(
-        args.roi_offset_x if args.roi_offset_x is not None else cfg.roi.offset_x
-    )
-    roi_offset_y = int(
-        args.roi_offset_y if args.roi_offset_y is not None else cfg.roi.offset_y
-    )
     input_shape = _doctor_tensor_input_shape(
         args.input_shape,
         dtype=args.dtype,
@@ -561,8 +549,6 @@ def _jetson_zero_copy_report(
             "height": args.height,
             "fps": args.fps,
             "roi_size": roi_size,
-            "roi_offset_x": roi_offset_x,
-            "roi_offset_y": roi_offset_y,
             "input_shape": str(input_shape),
             "dtype": input_shape.dtype,
             "timeout": args.timeout,
@@ -2236,7 +2222,6 @@ def _validate_zero_copy_smoke_values(
         "smoke",
     )
     _validate_source_timestamp_diagnostics(fields, failures)
-    _validate_zero_copy_roi_offset(fields, parameters, failures)
     capture_backend = fields.get("capture_backend", "")
     if not capture_backend.startswith("gst-resource:"):
         failures.append(
@@ -2486,43 +2471,6 @@ def _validate_capture_device(
         failures.append(
             "phases.smoke.stdout capture_device must match parameters.device "
             f"({expected}), got {actual}"
-        )
-
-
-def _validate_zero_copy_roi_offset(
-    fields: dict[str, str],
-    parameters: dict[str, object],
-    failures: list[str],
-) -> None:
-    expected_x = _parameter_int_allow_zero(parameters, "roi_offset_x")
-    expected_y = _parameter_int_allow_zero(parameters, "roi_offset_y")
-    if expected_x is None:
-        expected_x = 0
-    if expected_y is None:
-        expected_y = 0
-    expected = f"{expected_x},{expected_y}"
-    actual = fields.get("roi_offset")
-    if actual is None:
-        failures.append("phases.smoke.stdout missing roi_offset:")
-        return
-    parts = actual.split(",")
-    if len(parts) != 2:
-        failures.append(
-            f"phases.smoke.stdout roi_offset must be two integers x,y, got {actual}"
-        )
-        return
-    try:
-        actual_x = int(parts[0].strip())
-        actual_y = int(parts[1].strip())
-    except ValueError:
-        failures.append(
-            f"phases.smoke.stdout roi_offset must be two integers x,y, got {actual}"
-        )
-        return
-    if f"{actual_x},{actual_y}" != expected:
-        failures.append(
-            "phases.smoke.stdout roi_offset must match parameters.roi_offset_x/y "
-            f"({expected}), got {actual_x},{actual_y}"
         )
 
 
@@ -3080,16 +3028,6 @@ def _parameter_int(parameters: dict[str, object], key: str) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _parameter_int_allow_zero(parameters: dict[str, object], key: str) -> int | None:
-    value = parameters.get(key)
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _expected_tensor_shape(
     parameters: dict[str, object],
     failures: list[str],
@@ -3189,8 +3127,6 @@ def _doctor_jetson_native_smoke(args: argparse.Namespace, cfg: object) -> int:
     service = CaptureService(
         config=cfg.capture,
         roi_size=int(args.roi_size or cfg.roi.size),
-        roi_offset_x=int(args.roi_offset_x if args.roi_offset_x is not None else cfg.roi.offset_x),
-        roi_offset_y=int(args.roi_offset_y if args.roi_offset_y is not None else cfg.roi.offset_y),
     )
     previous_library = None
     if library_path is not None:

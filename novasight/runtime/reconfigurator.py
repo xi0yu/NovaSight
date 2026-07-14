@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -12,6 +13,7 @@ from novasight.runtime.pipeline_factory import create_runtime_pipeline
 
 
 logger = logging.getLogger("novasight.runtime.reconfigurator")
+PIPELINE_READY_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -44,8 +46,17 @@ class RuntimeReconfigurator:
 
     def __init__(self, app: Any) -> None:
         self.app = app
+        lock = getattr(app.state, "runtime_reconfiguration_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            app.state.runtime_reconfiguration_lock = lock
+        self._lock = lock
 
     def apply(self, config: RuntimeConfig) -> ConfigApplyReport:
+        with self._lock:
+            return self._apply(config)
+
+    def _apply(self, config: RuntimeConfig) -> ConfigApplyReport:
         previous_config = getattr(self.app.state, "config", None)
         previous_kmnet_status = self._kmnet_status()
         sections: list[ConfigSectionApplyResult] = []
@@ -57,7 +68,6 @@ class RuntimeReconfigurator:
             getattr(pipeline, "running", False)
         )
 
-        self._install_config(config)
         if pipeline_changed:
             self._reset_runtime_pipeline("runtime pipeline source configuration changed")
             sections.append(
@@ -65,9 +75,19 @@ class RuntimeReconfigurator:
                     section="runtime_pipeline",
                     impact="pipeline_rebuild",
                     status="stopped" if was_running else "cleared",
-                    message="backend/capture/roi/model pipeline config changed",
+                    message="DeepStream pipeline-affecting config changed",
                 )
             )
+        try:
+            self._install_config(config)
+        except Exception as exc:
+            if previous_config is not None:
+                self._rollback(previous_config, previous_kmnet_status)
+                if was_running:
+                    self._ensure_runtime_pipeline_for_live_capture(required=False)
+            raise ValueError(
+                f"runtime config rejected; previous config restored: {exc}"
+            ) from exc
         self._restore_live_executor_connection(previous_kmnet_status)
         sections.append(
             ConfigSectionApplyResult(
@@ -98,7 +118,7 @@ class RuntimeReconfigurator:
                     section="roi",
                     impact="live_capture_rebuild",
                     status="applied",
-                    message=f"roi={config.roi.size} offset=({config.roi.offset_x},{config.roi.offset_y})",
+                    message=f"center roi={config.roi.size}x{config.roi.size}",
                 )
             )
 
@@ -123,19 +143,47 @@ class RuntimeReconfigurator:
                 raise ValueError(
                     f"runtime config rejected; previous config restored: {exc}"
                 ) from exc
+            if pipeline_changed:
+                sections.append(
+                    ConfigSectionApplyResult(
+                        section="runtime_pipeline",
+                        impact="pipeline_rebuild",
+                        status="ready",
+                        message="new DeepStream pipeline published its first valid DetectionBatch",
+                    )
+                )
         if config_path is not None:
             save_runtime_config(config, config_path)
-        running = bool(getattr(getattr(self.app.state, "runtime", None), "running", False))
         return ConfigApplyReport(
             config=asdict(config),
             schema=runtime_config_schema(config),
-            restart_required=running,
+            restart_required=False,
             applied=True,
             sections=sections,
             message="配置已应用到运行态",
         )
 
     def select_capture(
+        self,
+        *,
+        device: str,
+        preference: str | None = None,
+        pixel_format: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        fps: int | None = None,
+    ) -> ConfigApplyReport:
+        with self._lock:
+            return self._select_capture(
+                device=device,
+                preference=preference,
+                pixel_format=pixel_format,
+                width=width,
+                height=height,
+                fps=fps,
+            )
+
+    def _select_capture(
         self,
         *,
         device: str,
@@ -209,8 +257,6 @@ class RuntimeReconfigurator:
             config.capture.height = state.profile.height
             config.capture.fps = state.profile.fps
         self.app.state.capture.roi_size = config.roi.size
-        self.app.state.capture.roi_offset_x = config.roi.offset_x
-        self.app.state.capture.roi_offset_y = config.roi.offset_y
         self.app.state.runtime.update_config(config)
         config_path = getattr(self.app.state, "config_path", None)
         if config_path is not None:
@@ -286,8 +332,6 @@ class RuntimeReconfigurator:
             )
         self.app.state.capture.config = config.capture
         self.app.state.capture.roi_size = config.roi.size
-        self.app.state.capture.roi_offset_x = config.roi.offset_x
-        self.app.state.capture.roi_offset_y = config.roi.offset_y
         self.app.state.executors = next_executors
         self.app.state.inference.configure(
             confidence_threshold=config.inference.confidence_threshold,
@@ -334,11 +378,7 @@ class RuntimeReconfigurator:
     def _roi_changed(previous_config: RuntimeConfig | None, config: RuntimeConfig) -> bool:
         if previous_config is None:
             return False
-        return (
-            previous_config.roi.size != config.roi.size
-            or previous_config.roi.offset_x != config.roi.offset_x
-            or previous_config.roi.offset_y != config.roi.offset_y
-        )
+        return previous_config.roi.size != config.roi.size
 
     @staticmethod
     def _hardware_changed(previous_config: RuntimeConfig | None, config: RuntimeConfig) -> bool:
@@ -411,6 +451,29 @@ class RuntimeReconfigurator:
             if getattr(runtime.pipeline, "running", False):
                 return
             runtime.pipeline.start()
+            wait_until_ready = getattr(runtime.pipeline, "wait_until_ready", None)
+            if callable(wait_until_ready) and not bool(
+                wait_until_ready(PIPELINE_READY_TIMEOUT_S)
+            ):
+                status = runtime.pipeline.status() if callable(
+                    getattr(runtime.pipeline, "status", None)
+                ) else {}
+                deepstream_status = (
+                    status.get("deepstream") if isinstance(status, dict) else None
+                )
+                detail = str(
+                    (status.get("last_error") if isinstance(status, dict) else "")
+                    or (
+                        deepstream_status.get("last_error")
+                        if isinstance(deepstream_status, dict)
+                        else ""
+                    )
+                    or "first valid DetectionBatch timed out"
+                )
+                raise RuntimeError(
+                    "DeepStream pipeline did not become ready within "
+                    f"{PIPELINE_READY_TIMEOUT_S:.1f}s: {detail}"
+                )
         except Exception as exc:
             self._reset_runtime_pipeline("runtime pipeline restart failed")
             if required:
@@ -449,6 +512,10 @@ class RuntimeReconfigurator:
         next_runtime = config.runtime
         previous_roi = previous_config.roi
         next_roi = config.roi
+        previous_limits = previous_config.limits
+        next_limits = config.limits
+        previous_consumers = previous_config.consumers
+        next_consumers = config.consumers
         return (
             previous_inference.backend != next_inference.backend
             or previous_inference.device != next_inference.device
@@ -475,6 +542,6 @@ class RuntimeReconfigurator:
             or previous_runtime.drop_stale_batches != next_runtime.drop_stale_batches
             or previous_runtime.consume_latest_only != next_runtime.consume_latest_only
             or previous_roi.size != next_roi.size
-            or previous_roi.offset_x != next_roi.offset_x
-            or previous_roi.offset_y != next_roi.offset_y
+            or previous_limits.stream_fps != next_limits.stream_fps
+            or previous_consumers.preview != next_consumers.preview
         )

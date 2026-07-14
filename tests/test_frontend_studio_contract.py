@@ -28,7 +28,7 @@ RUNTIME_STATUS = (
 def _roi_card_source() -> str:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     start = source.index('<SectionTitle title="ROI 裁剪" />')
-    end = source.index('<NumberControl label="水平偏移"', start)
+    end = source.index('<div className="console-kv compact-kv">', start)
     return source[start:end]
 
 
@@ -39,6 +39,17 @@ def test_roi_size_control_commits_once_instead_of_writing_on_every_change() -> N
     assert (
         'onCommit={(value) => updateConfigField("roi", "size", nearestRoiSize(value))}' in roi_card
     )
+    assert "ROI 模式" not in roi_card
+    assert "水平偏移" not in roi_card
+    assert "垂直偏移" not in roi_card
+
+
+def test_studio_exposes_only_15_or_30_fps_for_inference_preview() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'aria-label="推理画面预览帧率"' in source
+    assert "{[15, 30].map((fps)" in source
+    assert "目标帧率" not in source
 
 
 def test_studio_exposes_only_deepstream_runtime_backend() -> None:

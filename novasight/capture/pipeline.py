@@ -96,8 +96,6 @@ def build_appsink_candidates(
     profile: CaptureProfile,
     *,
     roi_size: int | None = None,
-    roi_offset_x: int = 0,
-    roi_offset_y: int = 0,
 ) -> list[CaptureCandidate]:
     device = profile.device
     width = profile.width
@@ -115,8 +113,6 @@ def build_appsink_candidates(
             source_width=width,
             source_height=height,
             requested_size=roi_size,
-            offset_x=roi_offset_x,
-            offset_y=roi_offset_y,
         )
         output_width = crop_size
         output_height = crop_size
@@ -218,8 +214,6 @@ def build_resource_appsink_candidates(
     profile: CaptureProfile,
     *,
     roi_size: int | None = None,
-    roi_offset_x: int = 0,
-    roi_offset_y: int = 0,
 ) -> list[CaptureCandidate]:
     device = profile.device
     width = profile.width
@@ -237,8 +231,6 @@ def build_resource_appsink_candidates(
             source_width=width,
             source_height=height,
             requested_size=roi_size,
-            offset_x=roi_offset_x,
-            offset_y=roi_offset_y,
         )
         output_width = crop_size
         output_height = crop_size

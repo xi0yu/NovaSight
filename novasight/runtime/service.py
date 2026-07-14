@@ -410,9 +410,6 @@ class RuntimeService:
             int(capture.width),
             int(capture.height),
             int(roi.size),
-            str(roi.mode).strip(),
-            int(roi.offset_x),
-            int(roi.offset_y),
         )
         if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
             calibration = config.calibration
@@ -910,10 +907,6 @@ class RuntimeService:
             source_geometry_trusted=source_geometry_trusted,
             roi_offset_x=resolved_roi_offset_x,
             roi_offset_y=resolved_roi_offset_y,
-            extra={
-                "configured_roi_offset_x": int(getattr(self.config.roi, "offset_x", 0)),
-                "configured_roi_offset_y": int(getattr(self.config.roi, "offset_y", 0)),
-            },
         )
         context = detection_batch_to_frame_context(
             detection_batch,
@@ -1253,14 +1246,11 @@ class RuntimeService:
         config_source_height = int(getattr(capture_config, "height", 0) or 0)
         if config_source_width <= 0 or config_source_height <= 0:
             return 0, 0, 0, 0, False, "missing_source_geometry"
-        roi_config = getattr(self.config, "roi", None)
         requested_size = max(1, min(int(width), int(height)))
         roi_x, roi_y, _roi_size = center_roi_region(
             source_width=config_source_width,
             source_height=config_source_height,
             requested_size=requested_size,
-            offset_x=int(getattr(roi_config, "offset_x", 0) or 0),
-            offset_y=int(getattr(roi_config, "offset_y", 0) or 0),
         )
         return (
             config_source_width,
@@ -1414,8 +1404,6 @@ class RuntimeService:
             roi_frame = center_roi_frame(
                 frame,
                 requested_size=self.config.roi.size,
-                offset_x=self.config.roi.offset_x,
-                offset_y=self.config.roi.offset_y,
             )
             infer_start_ns = time.monotonic_ns()
             inference_result = infer(roi_frame)
@@ -1850,8 +1838,6 @@ class RuntimeService:
                 "w": int(getattr(roi_frame, "width", frame.width)),
                 "h": int(getattr(roi_frame, "height", frame.height)),
             },
-            "configured_roi_offset_x": int(getattr(self.config.roi, "offset_x", 0)),
-            "configured_roi_offset_y": int(getattr(self.config.roi, "offset_y", 0)),
             "debug": debug_payload,
         }
         if extra:

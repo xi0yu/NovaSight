@@ -80,6 +80,9 @@ class DeepStreamRuntimePipeline:
                 thread.join(timeout=1.0)
         self.stats.stopped_at = time.time()
 
+    def wait_until_ready(self, timeout_s: float = 5.0) -> bool:
+        return self.backend.wait_until_ready(timeout_s)
+
     def status(self) -> dict[str, object]:
         self.stats.threads = {thread.name: thread.is_alive() for thread in self._threads}
         return {
@@ -277,8 +280,6 @@ def _create_deepstream_backend(
         source_width=capture_width,
         source_height=capture_height,
         requested_size=int(config.roi.size),
-        offset_x=int(config.roi.offset_x),
-        offset_y=int(config.roi.offset_y),
     )
     parser_library = Path(config.inference.deepstream_parser_library)
     runtime_dir = Path(models.data_dir).parent / "runtime" / "deepstream"

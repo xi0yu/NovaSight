@@ -229,47 +229,12 @@ def test_runtime_reconfigurator_restarts_running_pipeline_after_roi_change_with_
     monkeypatch,
 ) -> None:
     cfg = RuntimeConfig()
-    cfg.inference.enabled = True
-    cfg.inference.backend = "nvmm_latest"
-    cfg.capture.backend = "nvmm_latest"
-    cfg.capture.memory = "nvmm"
+    cfg.source.default = "capture"
     app = create_app(
         data_dir=tmp_path / "data",
         config_path=tmp_path / "missing.yaml",
         config=cfg,
     )
-    profile = CaptureProfile(
-        device="/dev/video0",
-        pixel_format="MJPG",
-        width=2560,
-        height=1440,
-        fps=120,
-        preference="manual",
-        selection_reason="manual profile matched device capabilities",
-    )
-    state = CaptureRuntimeState(
-        available=True,
-        device="/dev/video0",
-        profile=profile,
-        backend="gst-resource:nvmm-mjpg-iomode2",
-    )
-    configure_calls: list[tuple[tuple[object, ...], dict[str, object], int]] = []
-
-    class Capture:
-        def __init__(self) -> None:
-            self.config = cfg.capture
-            self.roi_size = cfg.roi.size
-            self.roi_offset_x = cfg.roi.offset_x
-            self.roi_offset_y = cfg.roi.offset_y
-            self.source = object()
-            self.session = SimpleNamespace(running=True)
-            self.state = state
-            self.last_config_error = None
-
-        def configure(self, *args, **kwargs):
-            configure_calls.append((args, kwargs, self.roi_size))
-            return self.state
-
     stopped: list[str] = []
 
     class ExistingPipeline:
@@ -279,21 +244,32 @@ def test_runtime_reconfigurator_restarts_running_pipeline_after_roi_change_with_
             stopped.append("stopped")
 
     starts: list[str] = []
+    waits: list[float] = []
 
-    def start_pipeline(self):
-        starts.append("started")
-        self.runtime.running = True
+    class ReplacementPipeline:
+        running = False
 
-    app.state.capture = Capture()
+        def start(self) -> None:
+            starts.append("started")
+            self.running = True
+            app.state.runtime.running = True
+
+        def wait_until_ready(self, timeout_s: float) -> bool:
+            waits.append(timeout_s)
+            return True
+
+        def stop(self) -> None:
+            self.running = False
+
     app.state.runtime.pipeline = ExistingPipeline()
     app.state.runtime.running = False
-    monkeypatch.setattr("novasight.runtime.pipeline.RuntimePipeline.start", start_pipeline)
+    replacement = ReplacementPipeline()
+    monkeypatch.setattr(
+        "novasight.runtime.reconfigurator.create_runtime_pipeline",
+        lambda **_kwargs: replacement,
+    )
 
-    next_cfg = RuntimeConfig()
-    next_cfg.inference.enabled = True
-    next_cfg.inference.backend = "nvmm_latest"
-    next_cfg.capture.backend = "nvmm_latest"
-    next_cfg.capture.memory = "nvmm"
+    next_cfg = copy.deepcopy(cfg)
     next_cfg.roi.size = 320
 
     report = RuntimeReconfigurator(app).apply(next_cfg)
@@ -301,12 +277,12 @@ def test_runtime_reconfigurator_restarts_running_pipeline_after_roi_change_with_
     assert report.applied is True
     assert stopped == ["stopped"]
     assert starts == ["started"]
-    assert configure_calls[0][2] == 320
+    assert waits == [5.0]
     assert app.state.capture.roi_size == 320
     assert app.state.runtime.config.roi.size == 320
     assert app.state.runtime.config_store.status()["roi"]["size"] == 320
     assert app.state.runtime.running is True
-    assert report.restart_required is True
+    assert report.restart_required is False
 
 
 def test_runtime_reconfigurator_rolls_back_when_pipeline_construction_fails(
@@ -354,6 +330,75 @@ def test_runtime_reconfigurator_rolls_back_when_pipeline_construction_fails(
     assert app.state.runtime.config_store.snapshot().roi.size == cfg.roi.size
     assert app.state.runtime.pipeline is None
     assert app.state.runtime.running is False
+
+
+def test_runtime_reconfigurator_rolls_back_when_rebuilt_pipeline_never_becomes_ready(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.source.default = "capture"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+
+    class ExistingPipeline:
+        running = True
+
+        def stop(self) -> None:
+            self.running = False
+
+    class CandidatePipeline:
+        def __init__(self, *, ready: bool) -> None:
+            self.running = False
+            self.ready = ready
+            self.stopped = False
+
+        def start(self) -> None:
+            self.running = True
+            app.state.runtime.running = True
+
+        def wait_until_ready(self, _timeout_s: float) -> bool:
+            return self.ready
+
+        def status(self) -> dict[str, object]:
+            return {"last_error": "first batch missing"}
+
+        def stop(self) -> None:
+            self.stopped = True
+            self.running = False
+
+    rejected = CandidatePipeline(ready=False)
+    restored = CandidatePipeline(ready=True)
+    candidates = iter((rejected, restored))
+    monkeypatch.setattr(
+        "novasight.runtime.reconfigurator.create_runtime_pipeline",
+        lambda **_kwargs: next(candidates),
+    )
+    app.state.runtime.pipeline = ExistingPipeline()
+    app.state.runtime.running = True
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.roi.size = 320
+
+    with pytest.raises(ValueError, match="previous config restored"):
+        RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert rejected.stopped is True
+    assert restored.ready is True
+    assert app.state.runtime.pipeline is restored
+    assert app.state.runtime.config.roi.size == cfg.roi.size
+    assert app.state.runtime.running is True
+
+
+def test_preview_rate_change_requires_a_deepstream_pipeline_rebuild() -> None:
+    cfg = RuntimeConfig()
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.limits.stream_fps = 15
+
+    assert RuntimeReconfigurator._pipeline_config_changed(cfg, next_cfg) is True
+    assert RuntimeReconfigurator._roi_changed(cfg, next_cfg) is False
 
 
 def test_runtime_service_update_config_rewires_gpu_preprocessor() -> None:
@@ -415,13 +460,11 @@ def test_capture_select_does_not_auto_start_stopped_nvmm_runtime(
     app.state.capture = SimpleNamespace(
         config=cfg.capture,
         roi_size=cfg.roi.size,
-        roi_offset_x=cfg.roi.offset_x,
-        roi_offset_y=cfg.roi.offset_y,
         source=object(),
         session=SimpleNamespace(running=True),
         state=state,
         last_config_error=None,
-        configure=lambda *args, **kwargs: state,
+        configure_profile_only=lambda *args, **kwargs: state,
     )
 
     def fail_if_started(*args, **kwargs):
@@ -448,9 +491,8 @@ def test_capture_select_reports_runtime_restart_failure_when_pipeline_was_runnin
     monkeypatch,
 ) -> None:
     cfg = RuntimeConfig()
+    cfg.source.default = "capture"
     cfg.inference.enabled = True
-    cfg.inference.backend = "nvmm_latest"
-    cfg.capture.memory = "nvmm"
     cfg.capture.width = 1920
     cfg.capture.height = 1080
     cfg.capture.fps = 60
@@ -482,19 +524,20 @@ def test_capture_select_reports_runtime_restart_failure_when_pipeline_was_runnin
     app.state.capture = SimpleNamespace(
         config=cfg.capture,
         roi_size=cfg.roi.size,
-        roi_offset_x=cfg.roi.offset_x,
-        roi_offset_y=cfg.roi.offset_y,
         source=object(),
         session=SimpleNamespace(running=True),
         state=state,
         last_config_error=None,
-        configure=lambda *args, **kwargs: state,
+        configure_profile_only=lambda *args, **kwargs: state,
     )
 
-    def fail_start(*args, **kwargs):
+    def fail_create(*args, **kwargs):
         raise RuntimeError("native bridge unavailable")
 
-    monkeypatch.setattr("novasight.runtime.pipeline.RuntimePipeline.start", fail_start)
+    monkeypatch.setattr(
+        "novasight.runtime.reconfigurator.create_runtime_pipeline",
+        fail_create,
+    )
 
     report = RuntimeReconfigurator(app).select_capture(
         device="/dev/video0",

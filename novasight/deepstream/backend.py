@@ -113,6 +113,7 @@ class DeepStreamObjectBackend:
         self._terminal_error = False
         self._last_error = ""
         self._bus_stop = threading.Event()
+        self._first_batch_event = threading.Event()
         self._bus_thread: threading.Thread | None = None
         self._dependency_status: DeepStreamDependencyStatus | None = None
         self._parser_telemetry = _ParserTelemetry(self.parser_library_path)
@@ -178,6 +179,19 @@ class DeepStreamObjectBackend:
         with self._lock:
             return self._running and not self._terminal_error
 
+    def wait_until_ready(self, timeout_s: float) -> bool:
+        """Wait until this pipeline has published its first valid DetectionBatch."""
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            if not self.running:
+                return False
+            if self._first_batch_event.is_set():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return False
+            self._first_batch_event.wait(timeout=min(0.05, remaining))
+
     def start(self) -> None:
         self.stop()
         self._ensure_parser_library()
@@ -239,6 +253,7 @@ class DeepStreamObjectBackend:
             self._pipeline = None
             self._running = False
             self._inference_start_by_pts.clear()
+            self._first_batch_event.clear()
             self.detection_batch_mailbox.clear()
             self._preview_condition.notify_all()
         if pipeline is None:
@@ -448,6 +463,7 @@ class DeepStreamObjectBackend:
 
     def _reset_state_locked(self) -> None:
         self.detection_batch_mailbox.clear()
+        self._first_batch_event.clear()
         self._terminal_error = False
         self._last_error = ""
         self._inference_start_by_pts.clear()
@@ -731,6 +747,7 @@ class DeepStreamObjectBackend:
             self._last_frame_id = frame_id
             self._last_capture_ts_ns = capture_ts_ns
             self._published_batches += 1
+            self._first_batch_event.set()
             self._object_meta_frames += 1
             self._last_batch_age_ms = batch_age_ms
             self._publish_samples.append((publish_ts_ns, batch_age_ms))

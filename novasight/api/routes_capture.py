@@ -18,7 +18,7 @@ from novasight.roi import normalize_roi_size
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 logger = logging.getLogger("novasight.api.capture")
-PREVIEW_FPS_CHOICES = (15, 30, 60)
+PREVIEW_FPS_CHOICES = (15, 30)
 
 
 class CaptureSelectRequest(BaseModel):
@@ -136,8 +136,6 @@ def stream(request: Request):
         getattr(config, "roi", None)
         and config.roi.size
     )
-    roi_offset_x = int(getattr(getattr(config, "roi", None), "offset_x", 0))
-    roi_offset_y = int(getattr(getattr(config, "roi", None), "offset_y", 0))
     capture.state.preview_target_fps = preview_fps
     return StreamingResponse(
         _mjpeg_frames(
@@ -145,8 +143,6 @@ def stream(request: Request):
             runtime=getattr(request.app.state, "runtime", None),
             preview_fps=preview_fps,
             roi_size=roi_size,
-            roi_offset_x=roi_offset_x,
-            roi_offset_y=roi_offset_y,
             config_getter=lambda: getattr(request.app.state, "config", None),
         ),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -219,8 +215,6 @@ def image_source(request: Request, payload: ImageSourceRequest):
         config.source.image_path = payload.path
         config.source.image_fps = fps
         capture.roi_size = config.roi.size
-        capture.roi_offset_x = config.roi.offset_x
-        capture.roi_offset_y = config.roi.offset_y
         runtime = getattr(request.app.state, "runtime", None)
         if runtime is not None:
             runtime.update_config(config)
@@ -336,8 +330,6 @@ def _mjpeg_frames(
     runtime=None,
     preview_fps: int = 30,
     roi_size: int = 640,
-    roi_offset_x: int = 0,
-    roi_offset_y: int = 0,
     config_getter=None,
     max_frames: int | None = None,
     max_attempts: int | None = None,
@@ -378,8 +370,6 @@ def _mjpeg_frames(
             frame,
             runtime=runtime,
             roi_size=roi_size,
-            roi_offset_x=roi_offset_x,
-            roi_offset_y=roi_offset_y,
         )
         payload = _encode_jpeg(preview)
         if payload is None:

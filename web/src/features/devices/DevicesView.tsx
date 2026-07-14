@@ -314,7 +314,6 @@ export function DevicesView({
   const [activeSection, setActiveSection] = useState<SettingsSection>("capture");
   const [selectedSource, setSelectedSource] = useState<CaptureInputSource>("capture");
   const [imagePath, setImagePath] = useState("");
-  const [imageFps, setImageFps] = useState(15);
   const [configBusy, setConfigBusy] = useState<string | null>(null);
   const capabilityRequestId = useRef(0);
 
@@ -427,14 +426,14 @@ export function DevicesView({
     setApplying("image-source");
     setCaptureError(undefined);
     try {
-      await selectImageSource(imagePath.trim(), imageFps);
+      await selectImageSource(imagePath.trim(), 15);
     } catch (err) {
       setCaptureError(`图片输入源切换失败：${getErrorMessage(err)}`);
       reportError(err, { source: "capture-image", title: "图片输入源切换失败" });
       await onRuntimeRefresh();
     } finally {
     }
-  }, [imageFps, imagePath, onRuntimeRefresh]);
+  }, [imagePath, onRuntimeRefresh]);
 
   const updateRuntimeField = useCallback(
     async (section: string, key: string, value: string | number | boolean) => {
@@ -947,24 +946,6 @@ export function DevicesView({
                         onChange={(event) => setImagePath(event.target.value)}
                       />
                     </label>
-                    <div className="control-block inline">
-                      <div className="control-block-head">
-                        <strong>循环帧率</strong>
-                        <span>仅用于测试源节奏。</span>
-                      </div>
-                      <div className="home-chips">
-                        {[1, 5, 15, 30, 60].map((fps) => (
-                          <button
-                            className={imageFps === fps ? "home-chip active" : "home-chip"}
-                            key={fps}
-                            type="button"
-                            onClick={() => setImageFps(fps)}
-                          >
-                            {fps}fps
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                     <button
                       className="button"
                       type="button"

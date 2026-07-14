@@ -288,6 +288,7 @@ def test_deepstream_publishes_batch_with_monotonic_pts_offset_fallback(tmp_path:
     backend._inference_start_by_pts[pts_ns] = now_ns - 2_000_000
     backend._capture_ts_from_pts = lambda *_args, **_kwargs: now_ns - 4_000_000
     backend._timestamp_source = "first_probe_offset_pts"
+    assert backend.wait_until_ready(0.0) is False
     frame_meta = SimpleNamespace(
         buf_pts=pts_ns,
         frame_num=1,
@@ -297,6 +298,7 @@ def test_deepstream_publishes_batch_with_monotonic_pts_offset_fallback(tmp_path:
     backend._publish_frame_meta(SimpleNamespace(), frame_meta, SimpleNamespace(pts=pts_ns))
 
     assert backend._published_batches == 1
+    assert backend.wait_until_ready(0.0) is True
     assert backend._non_monotonic_dropped_batches == 0
     batch = backend.detection_batch_mailbox.acquire_latest(
         after_generation=-1,

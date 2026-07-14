@@ -81,8 +81,6 @@ class RuntimeConfigStore:
                 },
                 "roi": {
                     "size": config.roi.size,
-                    "offset_x": config.roi.offset_x,
-                    "offset_y": config.roi.offset_y,
                 },
                 "roi_size": config.roi.size,
                 "calibration": {

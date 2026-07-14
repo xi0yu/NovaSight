@@ -71,8 +71,6 @@ def create_app(
     capture = CaptureService(
         config.capture,
         roi_size=config.roi.size,
-        roi_offset_x=config.roi.offset_x,
-        roi_offset_y=config.roi.offset_y,
     )
     inference = InferenceRuntime(
         gpu_preprocessor=create_gpu_resource_preprocessor(config),
@@ -103,6 +101,7 @@ def create_app(
     app.state.runtime = runtime
     app.state.systemd_notifier = systemd_notifier
     app.state.instance_lock = instance_lock
+    app.state.runtime_reconfiguration_lock = threading.RLock()
     app.state.kmnet_auto_connect_thread = None
     app.state.capture_auto_restore_thread = None
 

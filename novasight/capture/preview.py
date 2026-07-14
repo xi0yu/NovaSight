@@ -17,8 +17,6 @@ def render_preview_frame(
     *,
     runtime: Any | None = None,
     roi_size: int = 640,
-    roi_offset_x: int = 0,
-    roi_offset_y: int = 0,
 ) -> Any:
     preview_image = frame.image
     if preview_image is None:
@@ -36,8 +34,6 @@ def render_preview_frame(
     roi = center_roi_frame(
         preview_frame,
         requested_size=roi_size,
-        offset_x=roi_offset_x,
-        offset_y=roi_offset_y,
     )
     image = roi.image
     detections = _runtime_roi_detections(

@@ -19,8 +19,6 @@ class InfeasibleConfiguration(ValueError):
 @dataclass(frozen=True)
 class RoiConfig:
     size: int | None = None
-    offset_x: int = 0
-    offset_y: int = 0
 
 
 @dataclass(frozen=True)
@@ -188,8 +186,6 @@ def _build_plan(
             source_width=resolution.width,
             source_height=resolution.height,
             requested_size=roi_config.size,
-            offset_x=roi_config.offset_x,
-            offset_y=roi_config.offset_y,
         )
         roi_rect = RoiRect(left=left, top=top, width=size, height=size)
 

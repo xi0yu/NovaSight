@@ -205,7 +205,9 @@ def test_runtime_config_defaults_are_stable() -> None:
     assert cfg.web.port == 5174
     assert cfg.hardware.auto_connect is True
     assert cfg.roi.size == 640
-    assert cfg.roi.mode == "center"
+    assert not hasattr(cfg.roi, "mode")
+    assert not hasattr(cfg.roi, "offset_x")
+    assert not hasattr(cfg.roi, "offset_y")
     assert cfg.calibration.profile_id == "default"
     assert cfg.calibration.profile_version == 1
     assert cfg.calibration.game_sensitivity_fingerprint == "unverified-default"
@@ -787,25 +789,28 @@ def test_runtime_config_rejects_invalid_leaf_types(
 
 
 def test_runtime_config_restricts_preview_fps_to_supported_values() -> None:
-    for fps in (15, 30, 60):
+    for fps in (15, 30):
         cfg = parse_runtime_config({"limits": {"stream_fps": fps}})
         assert cfg.limits.stream_fps == fps
 
-    with pytest.raises(ValueError, match="limits.stream_fps.*15, 30, 60"):
-        parse_runtime_config({"limits": {"stream_fps": 120}})
+    for fps in (60, 120):
+        with pytest.raises(ValueError, match="limits.stream_fps.*15 or 30"):
+            parse_runtime_config({"limits": {"stream_fps": fps}})
 
 
 def test_runtime_config_restricts_roi_to_supported_center_sizes() -> None:
     for size in (640, 480, 320, 256):
         cfg = parse_runtime_config({"roi": {"size": size}})
         assert cfg.roi.size == size
-        assert cfg.roi.mode == "center"
 
     with pytest.raises(ValueError, match="unsupported ROI size"):
         parse_runtime_config({"roi": {"size": 512}})
 
-    cfg = parse_runtime_config({"roi": {"mode": "manual"}})
-    assert cfg.roi.mode == "manual"
+    cfg = parse_runtime_config(
+        {"roi": {"size": 320, "mode": "manual", "offset_x": 12, "offset_y": -8}}
+    )
+    assert cfg.roi.size == 320
+    assert vars(cfg.roi) == {"size": 320}
 
 
 def test_runtime_config_capture_memory_matches_backend() -> None:
@@ -839,7 +844,16 @@ def test_runtime_config_schema_exposes_roi_size() -> None:
         "options": ["640", "480", "320", "256"],
         "restart_required": False,
     }
-    assert {"roi.offset_x", "roi.offset_y"}.issubset(fields)
+    assert set(fields) == {"roi.size"}
+
+
+def test_runtime_config_schema_hides_capture_and_image_rate_controls() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    source_section = next(section for section in schema["sections"] if section["id"] == "source")
+    fields = {field["path"] for field in source_section["fields"]}
+
+    assert "source.target_fps" not in fields
+    assert "source.image_fps" not in fields
 
 
 def test_runtime_config_schema_exposes_capture_memory() -> None:
