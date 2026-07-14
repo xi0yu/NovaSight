@@ -13,6 +13,8 @@ import {
   getRuntimeState,
   HealthResponse,
   ModelArtifact,
+  ModelCatalogDirectory,
+  ModelCatalogModel,
   ModelProfileResponse,
   ModelProbeResponse,
   ModelProject,
@@ -21,8 +23,9 @@ import {
   RuntimeConfigValue,
   RuntimeState,
   getCaptureCapabilities,
-  getModelProfile,
   getModelArtifacts,
+  getModelCatalog,
+  getModelProfile,
   getModelVersions,
   inspectModelArtifact,
   probeModelArtifact,
@@ -40,6 +43,7 @@ import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle, type NovaIconName } from "../../components/visual";
+import { ModelCatalogTree } from "../models/ModelCatalogTree";
 
 type ConsolePage = "capture" | "infer" | "control" | "params" | "control-test" | "stats" | "latency";
 
@@ -410,6 +414,14 @@ export function StudioConsoleView({
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [modelArtifacts, setModelArtifacts] = useState<ModelArtifact[]>([]);
   const [modelCatalogRefreshKey, setModelCatalogRefreshKey] = useState(0);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogDirectory | null>(null);
+  const [modelCatalogModelCount, setModelCatalogModelCount] = useState(0);
+  const [modelCatalogDirectoryCount, setModelCatalogDirectoryCount] = useState(0);
+  const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
+  const [expandedModelDirectories, setExpandedModelDirectories] = useState<Set<string>>(
+    () => new Set([""])
+  );
+  const [selectedModelCatalogPath, setSelectedModelCatalogPath] = useState<string>();
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
   const [kmnetTestMs, setKmnetTestMs] = useState(300);
@@ -438,6 +450,11 @@ export function StudioConsoleView({
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
+  const requestedModelSelectionRef = useRef<{
+    projectId: number;
+    versionId: number;
+    artifactId: number;
+  } | null>(null);
   const preferLatestModelVersionRef = useRef(false);
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
@@ -829,9 +846,9 @@ export function StudioConsoleView({
     return leftRank - rightRank || left.path.localeCompare(right.path);
   });
   const selectedSwitchArtifact =
-    sortedSwitchableArtifacts.find((item) => item.id === selectedModelArtifactId) ??
-    sortedSwitchableArtifacts[0] ??
-    null;
+    typeof selectedModelArtifactId === "number"
+      ? sortedSwitchableArtifacts.find((item) => item.id === selectedModelArtifactId) ?? null
+      : sortedSwitchableArtifacts[0] ?? null;
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const blockedSwitchArtifacts = modelArtifacts.filter(
     (item) =>
@@ -1106,6 +1123,60 @@ export function StudioConsoleView({
   }, [configuredChoiceId, runningChoiceId, selectedChoiceId]);
 
   useEffect(() => {
+    let cancelled = false;
+    setModelCatalogLoading(true);
+    getModelCatalog()
+      .then(async (result) => {
+        if (cancelled) {
+          return;
+        }
+        setModelCatalog(result.root);
+        setModelCatalogModelCount(result.model_count);
+        setModelCatalogDirectoryCount(result.directory_count);
+        setExpandedModelDirectories((current) => {
+          const next = new Set(current);
+          next.add("");
+          for (const child of result.root.children) {
+            if (child.type === "directory") {
+              next.add(child.relative_path);
+            }
+          }
+          return next;
+        });
+        if (result.updated_files > 0) {
+          await onRefresh();
+        }
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        setModelCatalog(null);
+        setModelCatalogModelCount(0);
+        setModelCatalogDirectoryCount(0);
+        setLocalError(`模型目录读取失败：${getErrorMessage(err)}`);
+        reportError(err, { source: "model-catalog", title: "模型目录读取失败" });
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setModelCatalogLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modelCatalogRefreshKey, onRefresh]);
+
+  useEffect(() => {
+    if (!modelCatalog || typeof artifact?.id !== "number") {
+      return;
+    }
+    setSelectedModelCatalogPath((current) =>
+      current ?? findCatalogModelPath(modelCatalog, artifact.id)
+    );
+  }, [artifact?.id, modelCatalog]);
+
+  useEffect(() => {
     if (projects.length === 0) {
       setSelectedModelProjectId("");
       setModelVersions([]);
@@ -1149,6 +1220,13 @@ export function StudioConsoleView({
         const preferLatest = preferLatestModelVersionRef.current;
         preferLatestModelVersionRef.current = false;
         setSelectedModelVersionId((current) => {
+          const requested = requestedModelSelectionRef.current;
+          if (
+            requested?.projectId === selectedModelProjectId &&
+            items.some((item) => item.id === requested.versionId)
+          ) {
+            return requested.versionId;
+          }
           if (preferLatest) {
             return items[items.length - 1]?.id ?? "";
           }
@@ -1209,6 +1287,14 @@ export function StudioConsoleView({
             return leftRank - rightRank || left.path.localeCompare(right.path);
           });
         setSelectedModelArtifactId((current) => {
+          const requested = requestedModelSelectionRef.current;
+          if (
+            requested?.versionId === selectedModelVersionId &&
+            runnable.some((item) => item.id === requested.artifactId)
+          ) {
+            requestedModelSelectionRef.current = null;
+            return requested.artifactId;
+          }
           if (typeof current === "number" && runnable.some((item) => item.id === current)) {
             return current;
           }
@@ -1966,6 +2052,44 @@ export function StudioConsoleView({
     }
   };
 
+  const toggleModelDirectory = (relativePath: string) => {
+    setExpandedModelDirectories((current) => {
+      const next = new Set(current);
+      if (next.has(relativePath)) {
+        next.delete(relativePath);
+      } else {
+        next.add(relativePath);
+      }
+      return next;
+    });
+  };
+
+  const selectModelFromCatalog = (model: ModelCatalogModel) => {
+    setSelectedModelCatalogPath(model.relative_path);
+    if (
+      typeof model.project_id !== "number" ||
+      typeof model.version_id !== "number" ||
+      typeof model.artifact_id !== "number"
+    ) {
+      setLocalError(`${model.relative_path} 尚未登记完成，请重新扫描 models 目录。`);
+      return;
+    }
+    setLocalError(null);
+    requestedModelSelectionRef.current = {
+      projectId: model.project_id,
+      versionId: model.version_id,
+      artifactId: model.artifact_id
+    };
+    setSelectedModelProjectId(model.project_id);
+    if (selectedModelProjectId === model.project_id) {
+      setSelectedModelVersionId(model.version_id);
+      if (selectedModelVersionId === model.version_id) {
+        setSelectedModelArtifactId(model.artifact_id);
+        requestedModelSelectionRef.current = null;
+      }
+    }
+  };
+
   const switchModel = async () => {
     if (selectedModelProjectId === "" || selectedSwitchArtifact === null) {
       setLocalError("请选择 TensorRT engine 产物。");
@@ -2455,28 +2579,26 @@ export function StudioConsoleView({
                 </button>
               </div>
               {modelCatalogMessage ? <div className="model-switch-note good">{modelCatalogMessage}</div> : null}
-              <label>模型文件</label>
-              <select
-                value={selectedModelProjectId}
-                onChange={(event) => {
-                  const nextProjectId =
-                    event.target.value === "" ? "" : Number(event.target.value);
-                  setSelectedModelProjectId(
-                    typeof nextProjectId === "number" && Number.isFinite(nextProjectId)
-                      ? nextProjectId
-                      : ""
-                  );
-                  setSelectedModelVersionId("");
-                  setSelectedModelArtifactId("");
-                  setModelVersions([]);
-                  setModelArtifacts([]);
-                }}
-              >
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>{project.name}</option>
-                ))}
-                {projects.length === 0 ? <option value="">未发现模型</option> : null}
-              </select>
+              <div className="model-catalog-heading">
+                <label>模型目录</label>
+                <span>{modelCatalogDirectoryCount} 个文件夹 · {modelCatalogModelCount} 个模型</span>
+              </div>
+              {modelCatalogLoading ? (
+                <div className="model-catalog-placeholder">正在递归读取 models 目录...</div>
+              ) : modelCatalog && modelCatalog.children.length > 0 ? (
+                <ModelCatalogTree
+                  root={modelCatalog}
+                  expandedDirectories={expandedModelDirectories}
+                  selectedPath={selectedModelCatalogPath}
+                  activeArtifactId={artifact?.id ?? null}
+                  onToggleDirectory={toggleModelDirectory}
+                  onSelectModel={selectModelFromCatalog}
+                />
+              ) : (
+                <div className="model-catalog-placeholder">
+                  models 目录中没有 .onnx 或 .engine 模型。
+                </div>
+              )}
               <div className="model-primary-summary">
                 <span>{readString(runtime?.inference?.selected, "按模型后缀自动选择")}</span>
                 <span>{displayedInputShape ? `运行输入 ${displayedInputShape}` : "等待模型输入信息"}</span>
@@ -3923,6 +4045,25 @@ function formatModelSizeMb(value: unknown): string {
     return "大小不可用";
   }
   return `${(sizeBytes / 1_000_000).toFixed(2)} MB`;
+}
+
+function findCatalogModelPath(
+  directory: ModelCatalogDirectory,
+  artifactId: number
+): string | undefined {
+  for (const child of directory.children) {
+    if (child.type === "model") {
+      if (child.artifact_id === artifactId) {
+        return child.relative_path;
+      }
+      continue;
+    }
+    const nested = findCatalogModelPath(child, artifactId);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
 }
 
 function PreviewFrame({

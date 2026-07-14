@@ -212,7 +212,10 @@ def _checksum_token(checksum: str) -> str:
 
 def _immutable_artifact_filename(filename: str, checksum: str) -> str:
     path = Path(filename)
-    return f"{path.stem}.{_checksum_token(checksum)}{path.suffix.lower()}"
+    immutable_name = f"{path.stem}.{_checksum_token(checksum)}{path.suffix.lower()}"
+    if path.parent == Path("."):
+        return immutable_name
+    return (path.parent / immutable_name).as_posix()
 
 
 def _version_content_token(
@@ -543,7 +546,11 @@ def _sync_model_file(
         if len(relative.parts) >= 3:
             project_name = _safe_component(relative.parts[0], model_file.stem)
             version_name = _safe_component(relative.parts[1], "default")
-            filename = Path(*relative.parts[2:]).name
+            filename = Path(*relative.parts[2:]).as_posix()
+        elif len(relative.parts) == 2:
+            project_name = _safe_component(relative.parts[0], model_file.stem)
+            version_name = "default"
+            filename = relative.parts[1]
         else:
             project_name = _safe_component(model_file.stem, "model")
             version_name = "default"
@@ -710,6 +717,115 @@ def _artifact_scan_counts(results: list[ModelArtifactScanResult]) -> dict[str, i
     for result in results:
         counts[result.status] = counts.get(result.status, 0) + 1
     return counts
+
+
+def _model_catalog_registry_indexes(
+    registry: ModelRegistry,
+) -> tuple[dict[Path, dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+    by_path: dict[Path, dict[str, Any]] = {}
+    by_content: dict[tuple[str, str], dict[str, Any]] = {}
+    registry_root = Path(registry.data_dir)
+    for project in registry.list_projects():
+        for version in registry.list_versions(project.id):
+            asset_dir = registry_root / project.name / version.version
+            for artifact in registry.list_artifacts(version.id):
+                entry = {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "version_id": version.id,
+                    "version_name": version.version,
+                    "artifact_id": artifact.id,
+                    "artifact_status": artifact.status,
+                }
+                by_path[(asset_dir / artifact.path).resolve(strict=False)] = entry
+                by_content.setdefault((artifact.kind, artifact.checksum), entry)
+    return by_path, by_content
+
+
+def _model_catalog_payload(
+    registry: ModelRegistry,
+    results: list[ModelArtifactScanResult],
+) -> dict[str, Any]:
+    registry_root = Path(registry.data_dir).resolve(strict=False)
+    registry_by_path, registry_by_content = _model_catalog_registry_indexes(registry)
+    root: dict[str, Any] = {
+        "type": "directory",
+        "name": "models",
+        "relative_path": "",
+        "children": [],
+    }
+    directories: dict[str, dict[str, Any]] = {"": root}
+    model_count = 0
+    seen_artifact_ids: set[int] = set()
+
+    for result in sorted(
+        results,
+        key=lambda item: (
+            len(item.path.resolve(strict=False).parts),
+            item.path.as_posix().lower(),
+        ),
+    ):
+        try:
+            relative = result.path.resolve(strict=False).relative_to(registry_root)
+        except ValueError:
+            continue
+        registry_entry = registry_by_path.get(result.path.resolve(strict=False))
+        if registry_entry is None:
+            registry_entry = registry_by_content.get((result.kind, result.sha256))
+        artifact_id = registry_entry.get("artifact_id") if registry_entry else None
+        if isinstance(artifact_id, int):
+            if artifact_id in seen_artifact_ids:
+                continue
+            seen_artifact_ids.add(artifact_id)
+        parent = root
+        parent_parts: list[str] = []
+        for part in relative.parts[:-1]:
+            parent_parts.append(part)
+            directory_path = Path(*parent_parts).as_posix()
+            directory = directories.get(directory_path)
+            if directory is None:
+                directory = {
+                    "type": "directory",
+                    "name": part,
+                    "relative_path": directory_path,
+                    "children": [],
+                }
+                directories[directory_path] = directory
+                parent["children"].append(directory)
+            parent = directory
+
+        parent["children"].append(
+            {
+                "type": "model",
+                "name": relative.name,
+                "relative_path": relative.as_posix(),
+                "kind": result.kind,
+                "size_bytes": result.size_bytes,
+                "scan_status": result.status,
+                "scan_reason": result.reason,
+                **(registry_entry or {}),
+            }
+        )
+        model_count += 1
+
+    def sort_children(node: dict[str, Any]) -> None:
+        children = node.get("children", [])
+        children.sort(
+            key=lambda child: (
+                0 if child.get("type") == "directory" else 1,
+                str(child.get("name", "")).lower(),
+            )
+        )
+        for child in children:
+            if child.get("type") == "directory":
+                sort_children(child)
+
+    sort_children(root)
+    return {
+        "root": root,
+        "directory_count": max(0, len(directories) - 1),
+        "model_count": model_count,
+    }
 
 
 def _artifact_asset_context(
@@ -1231,6 +1347,20 @@ def _model_switch_report(
 def list_projects(request: Request) -> list[dict[str, Any]]:
     registry = _registry(request)
     return [asdict(project) for project in registry.list_projects()]
+
+
+@router.get("/catalog")
+def get_model_catalog(request: Request, force: bool = False) -> dict[str, Any]:
+    registry = _registry(request)
+    sync_result = _sync_models_directory(registry, force=force)
+    artifacts = scan_model_artifacts(Path(registry.data_dir), force=force)
+    return {
+        **_model_catalog_payload(registry, artifacts),
+        "discovered_files": sync_result.discovered_files,
+        "updated_files": sync_result.updated_files,
+        "cache_hits": sync_result.cache_hits,
+        "force": force,
+    }
 
 
 @router.get("/scan")

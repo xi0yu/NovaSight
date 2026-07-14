@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getConversionJobs,
   getModelArtifacts,
+  getModelCatalog,
   getModelVersions,
   prepareYolov8nExample,
   publishModel,
@@ -11,12 +12,15 @@ import {
   uploadModelFile,
   type ActiveModel,
   type ModelArtifact,
+  type ModelCatalogDirectory,
+  type ModelCatalogModel,
   type ModelProject
 } from "../../api";
 import { Badge, EmptyState, InlineError, Panel, StatusIndicator } from "../../components/ui";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { Field } from "../shared/Field";
+import { ModelCatalogTree } from "./ModelCatalogTree";
 
 type PublishFeedback = {
   projectId: number;
@@ -105,6 +109,15 @@ export function ModelsView({
   const [versionsError, setVersionsError] = useState<string>();
   const [artifactsError, setArtifactsError] = useState<string>();
   const [jobsError, setJobsError] = useState<string>();
+  const [catalog, setCatalog] = useState<ModelCatalogDirectory | null>(null);
+  const [catalogModelCount, setCatalogModelCount] = useState(0);
+  const [catalogDirectoryCount, setCatalogDirectoryCount] = useState(0);
+  const [catalogError, setCatalogError] = useState<string>();
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(
+    () => new Set([""])
+  );
+  const [selectedCatalogPath, setSelectedCatalogPath] = useState<string>();
   const [publishFeedback, setPublishFeedback] = useState<PublishFeedback | null>(null);
   const [rollbackFeedback, setRollbackFeedback] = useState<RollbackFeedback | null>(null);
   const [publishingArtifactId, setPublishingArtifactId] = useState<number | null>(null);
@@ -122,6 +135,7 @@ export function ModelsView({
   const [uploadInputShape, setUploadInputShape] = useState("");
   const [registryRefreshKey, setRegistryRefreshKey] = useState(0);
   const previousProjectId = useRef<number | null>(null);
+  const requestedCatalogVersionId = useRef<number | null>(null);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -139,13 +153,58 @@ export function ModelsView({
       : null;
   const visibleRollbackFeedback =
     rollbackFeedback && rollbackFeedback.projectId === selectedProjectId ? rollbackFeedback : null;
-  const activeProjectId = activeModel?.project?.id ?? null;
   const publishableArtifacts = artifacts.filter(
     (artifact) =>
       (artifact.status === "ready" ||
         (artifact.kind === "engine" && artifact.status === "pending")) &&
       (artifact.kind === "engine" || artifact.kind === "onnx")
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingCatalog(true);
+    setCatalogError(undefined);
+    getModelCatalog()
+      .then(async (result) => {
+        if (cancelled) {
+          return;
+        }
+        setCatalog(result.root);
+        setCatalogModelCount(result.model_count);
+        setCatalogDirectoryCount(result.directory_count);
+        setExpandedDirectories((current) => {
+          const next = new Set(current);
+          next.add("");
+          for (const child of result.root.children) {
+            if (child.type === "directory") {
+              next.add(child.relative_path);
+            }
+          }
+          return next;
+        });
+        if (result.updated_files > 0) {
+          await onRuntimeRefresh();
+        }
+      })
+      .catch((requestError) => {
+        if (cancelled) {
+          return;
+        }
+        setCatalog(null);
+        setCatalogModelCount(0);
+        setCatalogDirectoryCount(0);
+        setCatalogError(getErrorMessage(requestError));
+        reportError(requestError, { source: "model-catalog", title: "模型目录读取失败" });
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingCatalog(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onRuntimeRefresh, registryRefreshKey]);
 
   useEffect(() => {
     if (projects.length === 0) {
@@ -211,10 +270,14 @@ export function ModelsView({
       return;
     }
     setSelectedVersionId((current) =>
-      current !== null && versions.some((version) => version.id === current)
-        ? current
-        : versions[0].id
+      requestedCatalogVersionId.current !== null &&
+      versions.some((version) => version.id === requestedCatalogVersionId.current)
+        ? requestedCatalogVersionId.current
+        : current !== null && versions.some((version) => version.id === current)
+          ? current
+          : versions[0].id
     );
+    requestedCatalogVersionId.current = null;
   }, [versions]);
 
   useEffect(() => {
@@ -283,6 +346,37 @@ export function ModelsView({
     };
   }, [registryRefreshKey, selectedVersionId]);
 
+  function toggleCatalogDirectory(relativePath: string) {
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      if (next.has(relativePath)) {
+        next.delete(relativePath);
+      } else {
+        next.add(relativePath);
+      }
+      return next;
+    });
+  }
+
+  function selectCatalogModel(model: ModelCatalogModel) {
+    setSelectedCatalogPath(model.relative_path);
+    if (
+      typeof model.project_id !== "number" ||
+      typeof model.version_id !== "number"
+    ) {
+      setModelActionError(
+        `${model.relative_path} 尚未登记完成，请重新扫描 models 目录。`
+      );
+      return;
+    }
+    setModelActionError(undefined);
+    requestedCatalogVersionId.current = model.version_id;
+    setSelectedProjectId(model.project_id);
+    if (selectedProjectId === model.project_id) {
+      setSelectedVersionId(model.version_id);
+    }
+  }
+
   async function handlePublish(artifact: ModelArtifact) {
     if (!selectedProject || selectedVersionId === null) {
       return;
@@ -333,6 +427,7 @@ export function ModelsView({
       });
       reportError(requestError, { source: "model-publish", title: "模型发布失败" });
     } finally {
+      setPublishingArtifactId(null);
     }
   }
 
@@ -372,6 +467,7 @@ export function ModelsView({
       });
       reportError(requestError, { source: "model-rollback", title: "模型回滚失败" });
     } finally {
+      setRollingBack(false);
     }
   }
 
@@ -561,36 +657,30 @@ export function ModelsView({
       </Panel>
 
       <Panel
-        title="模型方案"
-        eyebrow="面向使用场景"
-        action={<Badge tone={projects.length > 0 ? "good" : "idle"}>{projects.length} 个方案</Badge>}
+        title="模型目录"
+        eyebrow="models 下的文件夹与模型"
+        action={
+          <Badge tone={catalogModelCount > 0 ? "good" : "idle"}>
+            {catalogDirectoryCount} 个文件夹 · {catalogModelCount} 个模型
+          </Badge>
+        }
       >
-        <InlineError message={error} />
-        {projects.length > 0 ? (
-          <div className="model-panel-list">
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                type="button"
-                className={`selectable-row ${project.id === selectedProjectId ? "selected" : ""}`}
-                aria-pressed={project.id === selectedProjectId}
-                onClick={() => setSelectedProjectId(project.id)}
-              >
-                <div>
-                  <strong>{project.name}</strong>
-                  <span>{project.description || "直接选择这个模型方案用于推理。"}</span>
-                </div>
-                <aside className="panel-actions">
-                  {activeProjectId === project.id ? <Badge tone="good">当前使用</Badge> : null}
-                  <code>#{project.id}</code>
-                </aside>
-              </button>
-            ))}
-          </div>
+        <InlineError message={catalogError ?? error} />
+        {loadingCatalog ? (
+          <EmptyState title="正在读取模型目录" detail="递归检索 models 下的文件夹和模型文件。" />
+        ) : catalog && catalog.children.length > 0 ? (
+          <ModelCatalogTree
+            root={catalog}
+            expandedDirectories={expandedDirectories}
+            selectedPath={selectedCatalogPath}
+            activeArtifactId={activeModel?.artifact?.id ?? null}
+            onToggleDirectory={toggleCatalogDirectory}
+            onSelectModel={selectCatalogModel}
+          />
         ) : (
           <EmptyState
-            title="还没有可选模型"
-            detail="后端模型仓库为空。添加模型后，这里会以使用场景展示，而不是展示开发目录。"
+            title="models 目录中没有模型"
+            detail="支持任意层级文件夹；放入 .onnx 或 .engine 后扫描即可显示。"
           />
         )}
       </Panel>

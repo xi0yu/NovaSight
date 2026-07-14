@@ -3000,6 +3000,115 @@ tbody tr:hover {
   gap: 10px;
 }
 
+.model-catalog {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-inner);
+  background: var(--surface-2);
+}
+
+.model-catalog-level,
+.model-catalog-branch {
+  display: grid;
+}
+
+.model-catalog-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.model-catalog-row.directory {
+  display: grid;
+  grid-template-columns: 16px 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-catalog-row.model {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-catalog-row:hover,
+.model-catalog-row:focus-visible {
+  background: color-mix(in srgb, var(--primary) 7%, var(--surface-2));
+}
+
+.model-catalog-row.selected {
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface-2));
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.model-catalog-row > strong,
+.model-catalog-copy strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.84rem;
+}
+
+.model-catalog-row > span,
+.model-catalog-copy span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.model-catalog-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.model-catalog-row aside {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-catalog-chevron {
+  transition: transform 140ms ease;
+}
+
+.model-catalog-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.model-catalog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-catalog-heading label {
+  margin: 0;
+}
+
+.model-catalog-heading span,
+.model-catalog-placeholder {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.model-catalog-placeholder {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-inner);
+  text-align: center;
+}
+
 .model-workbench {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
@@ -3765,6 +3874,21 @@ tbody tr:hover {
 
   .command-metric-grid {
     grid-template-columns: 1fr;
+  }
+
+  .model-catalog-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .model-catalog-row.model {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .model-catalog-row.model aside {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .capability-group summary {

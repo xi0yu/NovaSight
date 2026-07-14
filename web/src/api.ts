@@ -33,6 +33,39 @@ export type ModelArtifact = {
   size_bytes?: number | null;
 };
 
+export type ModelCatalogModel = {
+  type: "model";
+  name: string;
+  relative_path: string;
+  kind: "onnx" | "engine" | (string & {});
+  size_bytes: number;
+  scan_status: "ready" | "need_confirm" | "invalid" | "unsupported" | (string & {});
+  scan_reason: string;
+  project_id?: number;
+  project_name?: string;
+  version_id?: number;
+  version_name?: string;
+  artifact_id?: number;
+  artifact_status?: ModelArtifact["status"];
+};
+
+export type ModelCatalogDirectory = {
+  type: "directory";
+  name: string;
+  relative_path: string;
+  children: Array<ModelCatalogDirectory | ModelCatalogModel>;
+};
+
+export type ModelCatalogResponse = {
+  root: ModelCatalogDirectory;
+  directory_count: number;
+  model_count: number;
+  discovered_files: number;
+  updated_files: number;
+  cache_hits: number;
+  force: boolean;
+};
+
 export type Deployment = {
   id: number;
   project_id: number;
@@ -460,6 +493,7 @@ export const API_PATHS = {
   kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
   kmnetDiagnosticCircle: "/api/executors/kmnet/diagnostic-circle",
   modelProjects: "/api/models/projects",
+  modelCatalog: "/api/models/catalog",
   modelJobs: "/api/models/jobs",
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
@@ -691,6 +725,12 @@ export function stopCapture(reason = "用户停止采集"): Promise<CaptureState
 
 export function getModelProjects(): Promise<ModelProject[]> {
   return requestJson<ModelProject[]>(API_PATHS.modelProjects);
+}
+
+export function getModelCatalog(force = false): Promise<ModelCatalogResponse> {
+  return requestJson<ModelCatalogResponse>(
+    `${API_PATHS.modelCatalog}?force=${force ? "true" : "false"}`
+  );
 }
 
 export function getModelVersions(projectId: number): Promise<ModelVersion[]> {
