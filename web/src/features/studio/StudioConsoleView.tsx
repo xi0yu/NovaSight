@@ -51,6 +51,25 @@ type ConsolePage = "capture" | "infer" | "control" | "params" | "control-test" |
 const DEFAULT_CONSOLE_PAGE: ConsolePage = "capture";
 const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "control", "params", "control-test", "stats", "latency"]);
 
+const CONTROL_ALGORITHM_OPTIONS = [
+  {
+    id: "universal_saturated",
+    label: "通用控制",
+    description: "无需精确游戏参数，适合快速适配。"
+  },
+  {
+    id: "calibrated_angular",
+    label: "精确角度控制",
+    description: "依赖 FOV 和 counts_per_360 标定。"
+  },
+  {
+    id: "dual_phase_atan_robust_predictive_v2",
+    label: "稳健预测控制",
+    description: "在精确标定上增加同目标短窗受限预测。"
+  }
+] as const;
+const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
+
 type StudioConsoleViewProps = {
   health: HealthResponse | null;
   runtime: RuntimeState | null;
@@ -682,7 +701,7 @@ export function StudioConsoleView({
     runtimeInferenceReason,
     runtimeMainlineRunning
   ]);
-  const controlMode = readString(controlConfig.active_algorithm ?? controlConfig.mode, "universal_saturated");
+  const controlMode = readString(controlConfig.active_algorithm ?? controlConfig.mode, DEFAULT_CONTROL_ALGORITHM);
   const algorithmConfigs = nestedRecord(controlConfig, "algorithms");
   const algorithmConfig = (algorithmId: string): Record<string, unknown> => {
     const namespaced = nestedRecord(algorithmConfigs, algorithmId);
@@ -706,10 +725,6 @@ export function StudioConsoleView({
   const dualPhasePredictionNearConfig = nestedRecord(dualPhasePredictionConfig, "near");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
-  const configuredActuationDelay = readNumber(controlConfig.configured_actuation_delay_s, 0.004);
-  const predictionStrength = readNumber(controlConfig.prediction_strength, 1.0);
-  const predictionXEnabled = readBoolean(controlConfig.prediction_x_enabled, true);
-  const predictionYEnabled = readBoolean(controlConfig.prediction_y_enabled, true);
   const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
@@ -759,6 +774,7 @@ export function StudioConsoleView({
   const dualPhaseHistoryResetGapMs = readNumber(dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
   const dualPhaseFarPredictionCap = readNumber(dualPhasePredictionFarConfig.absolute_cap_px, 10.0);
   const dualPhaseNearPredictionCap = readNumber(dualPhasePredictionNearConfig.absolute_cap_px, 3.0);
+  const dualPhaseInvertY = readBoolean(dualPhaseProjectionConfig.invert_y, false);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -781,11 +797,9 @@ export function StudioConsoleView({
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
   const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
   const dualPhaseActive = controlMode === "dual_phase_atan_robust_predictive_v2";
-  const controlModeLabel = dualPhaseActive
-    ? "精确双阶段稳健预测 v2"
-    : controlMode === "calibrated_angular"
-      ? "精确标定"
-      : "通用适配";
+  const activeControlAlgorithm = CONTROL_ALGORITHM_OPTIONS.find((item) => item.id === controlMode)
+    ?? CONTROL_ALGORITHM_OPTIONS[2];
+  const controlModeLabel = activeControlAlgorithm.label;
 
   useEffect(() => {
     if (!runtimeConfig || pendingConfigWritesRef.current > 0) {
@@ -2914,15 +2928,24 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, 1, "px")}</b>
                 <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
-                <span>Kalman filtered aim</span><b>{formatPoint(selectedTrackDebug.filtered_x ?? selectedTrackEstimate.x, selectedTrackDebug.filtered_y ?? selectedTrackEstimate.y, 1, "px")}</b>
-                <span>目标估计速度</span><b>{formatPoint(selectedTrackDebug.velocity_x ?? selectedTrackEstimate.vx, selectedTrackDebug.velocity_y ?? selectedTrackEstimate.vy, 1, "px/s")}</b>
-                <span>速度有效</span><b>{selectedTrackDebug.velocity_valid === true ? "是" : selectedTrackDebug.velocity_valid === false ? "否" : NO_SAMPLE}</b>
-                <span>预测时长</span><b>{controlPredictionHorizonS === null ? NO_SAMPLE : `${(controlPredictionHorizonS * 1000).toFixed(2)} ms`}</b>
-                <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
-                <span>预测置信度</span><b>{formatPercent(mouseObservation.prediction_confidence, 1)}</b>
-                <span>预测来源</span><b>{readString(mouseObservation.prediction_source, "") || NO_SAMPLE}</b>
-                <span>X 预测</span><b>{readBoolean(controlConfig.prediction_x_enabled, true) ? "启用" : "禁用"}</b>
-                <span>Y 预测</span><b>{readBoolean(controlConfig.prediction_y_enabled, true) ? "启用" : "禁用"}</b>
+                {dualPhaseActive ? (
+                  <>
+                    <span>短窗位置数</span><b>{formatOptionalInteger(controlPipeline.history_position_count)}</b>
+                    <span>三段速度 px/ms</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)}`}</b>
+                    <span>中位 / EMA 速度</span><b>{formatPoint(controlPipeline.median_velocity, controlPipeline.filtered_velocity, 3, "px/ms")}</b>
+                    <span>速度离散度</span><b>{formatOptionalNumber(controlPipeline.velocity_spread, 3, "px/ms")}</b>
+                    <span>运动可信度</span><b>{formatPercent(controlPipeline.motion_confidence, 1)}</b>
+                    <span>预测时域</span><b>{formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms")}</b>
+                    <span>原始 / 安全预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_safe_offset_x, 2, "px")}</b>
+                    <span>预测允许上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
+                    <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
+                  </>
+                ) : (
+                  <>
+                    <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
+                    <span>位置预测</span><b>不参与当前控制算法</b>
+                  </>
+                )}
               </div>
             </div>
             <div className="console-card">
@@ -2943,29 +2966,34 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>控制模式</span><b>{controlModeLabel}</b>
                 <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
-                <span>Kp X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKpX, calibratedKpY, 2) : NO_SAMPLE}</b>
-                <span>Kd X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKdX, calibratedKdY, 2) : NO_SAMPLE}</b>
-                <span>D 原始值</span><b>{formatPoint(controlPipeline.d_raw_x_rad_s, controlPipeline.d_raw_y_rad_s, 5, "rad/s")}</b>
-                <span>D EMA 值</span><b>{formatPoint(controlPipeline.d_ema_x_rad_s, controlPipeline.d_ema_y_rad_s, 5, "rad/s")}</b>
-                <span>P 项输出</span><b>{formatPoint(controlPipeline.p_x_rad, controlPipeline.p_y_rad, 6, "rad")}</b>
-                <span>D 项输出</span><b>{formatPoint(controlPipeline.d_x_rad, controlPipeline.d_y_rad, 6, "rad")}</b>
-                <span>角度控制量</span><b>{formatPoint(controlPipeline.requested_output_x_rad, controlPipeline.requested_output_y_rad, 6, "rad")}</b>
-                <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
-                <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
-                <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
+                {dualPhaseActive ? (
+                  <>
+                    <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, readString(controlPipeline.control_mode, "")) || NO_SAMPLE}</b>
+                    <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
+                    <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
+                    <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
+                    <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
+                  </>
+                ) : (
+                  <>
+                    <span>Kp X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKpX, calibratedKpY, 2) : NO_SAMPLE}</b>
+                    <span>Kd X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKdX, calibratedKdY, 2) : NO_SAMPLE}</b>
+                    <span>D 原始值</span><b>{formatPoint(controlPipeline.d_raw_x_rad_s, controlPipeline.d_raw_y_rad_s, 5, "rad/s")}</b>
+                    <span>D EMA 值</span><b>{formatPoint(controlPipeline.d_ema_x_rad_s, controlPipeline.d_ema_y_rad_s, 5, "rad/s")}</b>
+                    <span>P 项输出</span><b>{formatPoint(controlPipeline.p_x_rad, controlPipeline.p_y_rad, 6, "rad")}</b>
+                    <span>D 项输出</span><b>{formatPoint(controlPipeline.d_x_rad, controlPipeline.d_y_rad, 6, "rad")}</b>
+                    <span>角度控制量</span><b>{formatPoint(controlPipeline.requested_output_x_rad, controlPipeline.requested_output_y_rad, 6, "rad")}</b>
+                    <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
+                    <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
+                    <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
+                    <span>压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? "等待左键或延迟" : "关闭"}</b>
+                    <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
+                    <span>到位限制后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
+                    <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
+                    <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
+                  </>
+                )}
                 <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, 1, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, 1, "ms")}`}</b>
-                <span>压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? "等待左键或延迟" : "关闭"}</b>
-                <span>压枪 Y 前馈</span><b>{formatOptionalNumber(controlPipeline.recoil_y_counts_float, 2, "counts")}</b>
-                <span>压枪渐入</span><b>{formatOptionalNumber(controlPipeline.recoil_ramp, 2)}</b>
-                <span>执行反馈等待 X / Y</span><b>{`${controlPipeline.actuation_pending_x === true ? "等待" : "就绪"} / ${controlPipeline.actuation_pending_y === true ? "等待" : "就绪"}`}</b>
-                <span>反馈保护窗口</span><b>{formatOptionalNumber(mouseObservation.actuation_feedback_delay_ms, 2, "ms")}</b>
-                <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
-                <span>进入阈值</span><b>{formatPoint(controlPipeline.arrival_enter_x_px, controlPipeline.arrival_enter_y_px, 1, "px")}</b>
-                <span>退出阈值</span><b>{formatPoint(controlPipeline.arrival_exit_x_px, controlPipeline.arrival_exit_y_px, 1, "px")}</b>
-                <span>到位限制后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
-                <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
-                <span>可行预算 counts</span><b>{formatPoint(controlPipeline.feasible_counts_x_float, controlPipeline.feasible_counts_y_float, 2)}</b>
-                <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>
@@ -2994,21 +3022,28 @@ export function StudioConsoleView({
           {activePage === "params" ? (
           <>
             <div className="console-metrics">
-              <Metric title="控制模式" value={controlModeLabel} small={controlMode} />
+              <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="瞄点 Y" value={(dualPhaseActive ? dualPhaseAimYRatio : aimYRatio).toFixed(2)} small="bbox ratio" />
-              <Metric title="预测强度" value={dualPhaseActive ? dualPhasePredictionCoefficient.toFixed(2) : predictionStrength.toFixed(2)} small={dualPhaseActive ? "coefficient" : "Kalman"} />
+              <Metric title="位置预测" value={dualPhaseActive ? dualPhasePredictionCoefficient.toFixed(2) : "不使用"} small={dualPhaseActive ? "短窗受限预测" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "单观测单命令" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? "MouseCommandExecutor" : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
-            <div className="console-grid2">
+            <div className="console-grid2" data-algorithm-page={controlMode}>
               <div className="console-card">
-                <SectionTitle title="控制算法 · 通用参数" />
-                <label>控制模式</label>
-                <select value={controlMode} onChange={(event) => void updateConfigField("control", "active_algorithm", event.target.value)}>
-                  <option value="dual_phase_atan_robust_predictive_v2">精确双阶段稳健预测 v2</option>
-                  <option value="universal_saturated">通用适配</option>
-                  <option value="calibrated_angular">精确标定</option>
-                </select>
+                <SectionTitle title="控制模式" />
+                <div className="mini-segmented control-algorithm-segmented" role="group" aria-label="控制模式">
+                  {CONTROL_ALGORITHM_OPTIONS.map((algorithm) => (
+                    <button
+                      className={controlMode === algorithm.id ? "active" : ""}
+                      key={algorithm.id}
+                      onClick={() => void updateConfigField("control", "active_algorithm", algorithm.id)}
+                      type="button"
+                    >
+                      {algorithm.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="console-section-note">{activeControlAlgorithm.description}</p>
                 <label>触发方式</label>
                 <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
                   <option value="hardware">kmNet 硬件按键触发</option>
@@ -3025,6 +3060,24 @@ export function StudioConsoleView({
                     onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)}
                   />
                 ) : null}
+                <NumberControl
+                  label="瞄点垂直比例"
+                  value={dualPhaseActive ? dualPhaseAimYRatio : aimYRatio}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onCommit={(value) => dualPhaseActive
+                    ? updateDualPhasePath(["aim", "y_ratio"], value)
+                    : updateControlGroupField("aim", "y_ratio", value)}
+                />
+                <ModuleSwitch
+                  label="反转 Y 轴"
+                  detail="只改变当前算法输出到设备的 Y 方向。"
+                  enabled={dualPhaseActive ? dualPhaseInvertY : sharedInvertY}
+                  onToggle={(enabled) => dualPhaseActive
+                    ? updateDualPhasePath(["projection", "invert_y"], enabled)
+                    : updateControlGroupField("shared", "invert_y", enabled)}
+                />
                 {dualPhaseActive ? (
                   <div className="console-kv compact-kv">
                     <span>输出执行器</span><b>MouseCommandExecutor</b>
@@ -3034,16 +3087,10 @@ export function StudioConsoleView({
                   </div>
                 ) : (
                   <>
-                    <NumberControl label="瞄点垂直比例" value={aimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)} />
-                    <NumberControl label="估计执行延迟 s" value={configuredActuationDelay} min={0} max={0.1} step={0.001} onCommit={(value) => updateConfigField("control", "configured_actuation_delay_s", value)} />
-                    <NumberControl label="预测强度" value={predictionStrength} min={0} max={1.5} step={0.01} onCommit={(value) => updateConfigField("control", "prediction_strength", value)} />
-                    <ModuleSwitch label="预测 X" detail="使用 Tracker Kalman 未来 X 位置" enabled={predictionXEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_x_enabled", enabled)} />
-                    <ModuleSwitch label="预测 Y" detail="使用 Tracker Kalman 未来 Y 位置" enabled={predictionYEnabled} onToggle={(enabled) => updateConfigField("control", "prediction_y_enabled", enabled)} />
                     <NumberControl label="X 到位阈值" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
                     <NumberControl label="Y 到位阈值" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
                     <NumberControl label="X counts 增长限制" detail="限制相邻观测中 X 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
                     <NumberControl label="Y counts 增长限制" detail="限制相邻观测中 Y 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
-                    <ModuleSwitch label="反转 Y 轴" detail="在共享 CountMapper 中反转设备 Y 方向" enabled={sharedInvertY} onToggle={(enabled) => updateControlGroupField("shared", "invert_y", enabled)} />
                     <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
                     <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
                     <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
@@ -3056,7 +3103,6 @@ export function StudioConsoleView({
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
                 {dualPhaseActive ? (
                   <>
-                    <NumberControl label="瞄点垂直比例" value={dualPhaseAimYRatio} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhasePath(["aim", "y_ratio"], value)} />
                     <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhasePath(["projection", "fov_x_deg"], value)} />
                     <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhasePath(["projection", "counts_per_360"], value)} />
                     <NumberControl label="NEAR 阈值 px" detail="测量误差距离不大于该值时使用 NEAR，否则直接使用 FAR。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhasePath(["mode", "near_threshold_px"], value)} />
@@ -3096,18 +3142,20 @@ export function StudioConsoleView({
                 )}
               </div>
 
-              <div className="console-card">
-                <SectionTitle title="Y 轴压枪 · 通用参数" />
-                <ModuleSwitch label="启用 Y 轴压枪" detail="左键持续按下且控制链存在有效目标时，在当前控制输出上叠加时间域 Y counts 前馈。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
-                {recoilEnabled ? (
-                  <>
-                    <NumberControl label="压枪启动延迟 ms" detail="左键持续按下达到此时间后才开始压枪；与硬件触发启动延迟相互独立。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
-                    <NumberControl label="Y 压枪速率 counts/s" detail="持续按压时每秒追加的 Y 轴设备 counts；最终方向仍受反转 Y 轴设置影响。" value={recoilYRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_rate_counts_s", value)} />
-                    <NumberControl label="压枪渐入 ms" detail="从 0 平滑增长到完整压枪速率所需时间，避免按下瞬间产生突跳。" value={recoilRampUpMs} min={0} max={2000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_ramp_up_ms", value)} />
-                    <NumberControl label="单观测最大压枪 counts" detail="每个新观测最多允许叠加的压枪量，防止异常观测间隔产生大步输出。" value={recoilMaxCounts} min={0.1} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_max_counts_per_observation", value)} />
-                  </>
-                ) : null}
-              </div>
+              {!dualPhaseActive ? (
+                <div className="console-card">
+                  <SectionTitle title="Y 轴压枪 · 通用/精确输出" />
+                  <ModuleSwitch label="启用 Y 轴压枪" detail="左键持续按下且控制链存在有效目标时，在当前控制输出上叠加时间域 Y counts 前馈。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+                  {recoilEnabled ? (
+                    <>
+                      <NumberControl label="压枪启动延迟 ms" detail="左键持续按下达到此时间后才开始压枪；与硬件触发启动延迟相互独立。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
+                      <NumberControl label="Y 压枪速率 counts/s" detail="持续按压时每秒追加的 Y 轴设备 counts；最终方向仍受反转 Y 轴设置影响。" value={recoilYRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_rate_counts_s", value)} />
+                      <NumberControl label="压枪渐入 ms" detail="从 0 平滑增长到完整压枪速率所需时间，避免按下瞬间产生突跳。" value={recoilRampUpMs} min={0} max={2000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_ramp_up_ms", value)} />
+                      <NumberControl label="单观测最大压枪 counts" detail="每个新观测最多允许叠加的压枪量，防止异常观测间隔产生大步输出。" value={recoilMaxCounts} min={0.1} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_max_counts_per_observation", value)} />
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
@@ -3124,18 +3172,20 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title="Tracker / Kalman · 通用参数" />
+                <SectionTitle title={dualPhaseActive ? "Tracker · 公共参数" : "Tracker / Kalman · 公共参数"} />
                 <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
                 <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
                 <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
                 <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
                 <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
-                <details className="model-debug-details">
-                  <summary>Kalman 高级参数</summary>
-                  <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
-                  <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
-                  <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
-                </details>
+                {!dualPhaseActive ? (
+                  <details className="model-debug-details">
+                    <summary>Kalman 高级参数</summary>
+                    <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
+                    <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
+                    <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
+                  </details>
+                ) : null}
               </div>
             </div>
           </>

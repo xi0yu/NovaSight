@@ -138,9 +138,6 @@ control:
     recoil_ramp_up_ms: 120.0
     recoil_max_counts_per_observation: 8.0
   configured_actuation_delay_s: 0.004
-  prediction_strength: 1.0
-  prediction_x_enabled: true
-  prediction_y_enabled: true
   # The precise V2 algorithm always uses one immediate MouseCommandExecutor
   # call per accepted observation; it never creates a cross-frame move plan.
   scheduler_enabled: true

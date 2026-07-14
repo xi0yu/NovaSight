@@ -66,19 +66,9 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
         "s",
         "从控制计算到输入预计产生画面效果的配置估计。",
     ),
-    "control.prediction_strength": _spec(
-        "control.prediction_strength",
-        "预测强度",
-        1.0,
-        0.0,
-        1.5,
-        0.01,
-        "ratio",
-        "Kalman 速度外推位移的应用比例。",
-    ),
     "control.calibrated_angular.kp_x": _spec(
         "control.calibrated_angular.kp_x",
-        "精确标定 Kp X",
+        "精确角度控制 Kp X",
         1.0,
         0.0,
         2.0,
@@ -88,7 +78,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     ),
     "control.calibrated_angular.kp_y": _spec(
         "control.calibrated_angular.kp_y",
-        "精确标定 Kp Y",
+        "精确角度控制 Kp Y",
         1.0,
         0.0,
         2.0,
@@ -98,7 +88,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     ),
     "control.calibrated_angular.kd_x": _spec(
         "control.calibrated_angular.kd_x",
-        "精确标定 Kd X",
+        "精确角度控制 Kd X",
         0.0,
         0.0,
         1.0,
@@ -108,7 +98,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     ),
     "control.calibrated_angular.kd_y": _spec(
         "control.calibrated_angular.kd_y",
-        "精确标定 Kd Y",
+        "精确角度控制 Kd Y",
         0.0,
         0.0,
         1.0,
@@ -118,7 +108,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     ),
     "control.calibrated_angular.d_ema_alpha": _spec(
         "control.calibrated_angular.d_ema_alpha",
-        "精确标定 D 项 EMA",
+        "精确角度控制 D 项 EMA",
         0.30,
         0.01,
         1.0,
@@ -128,7 +118,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     ),
     "control.calibrated_angular.max_angle_step_x_deg": _spec(
         "control.calibrated_angular.max_angle_step_x_deg",
-        "精确标定 X 最大角度步长",
+        "精确角度控制 X 最大角度步长",
         2.0,
         0.0001,
         180.0,
@@ -138,7 +128,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     ),
     "control.calibrated_angular.max_angle_step_y_deg": _spec(
         "control.calibrated_angular.max_angle_step_y_deg",
-        "精确标定 Y 最大角度步长",
+        "精确角度控制 Y 最大角度步长",
         1.5,
         0.0001,
         180.0,
@@ -403,7 +393,7 @@ CONTROL_PARAM_SPECS.update(
     {
         "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio",
-            "精确 v2 瞄点高度",
+            "稳健预测控制瞄点高度",
             0.22,
             0.0,
             1.0,
@@ -413,7 +403,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg",
-            "精确 v2 水平 FOVX",
+            "稳健预测控制水平 FOVX",
             105.0,
             30.0,
             179.0,
@@ -423,7 +413,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360",
-            "精确 v2 每圈 counts",
+            "稳健预测控制每圈 counts",
             9980.0,
             1.0,
             100000.0,
@@ -433,7 +423,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
-            "精确 v2 预测强度",
+            "稳健预测控制预测强度",
             1.20,
             0.0,
             2.0,
@@ -443,7 +433,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
-            "精确 v2 NEAR 阈值",
+            "稳健预测控制 NEAR 阈值",
             12.0,
             0.0,
             1000.0,
@@ -453,7 +443,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts",
-            "精确 v2 Atan 共享尺度",
+            "稳健预测控制 Atan 共享尺度",
             256.0,
             0.1,
             10000.0,
@@ -463,7 +453,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
-            "精确 v2 远距离跟进强度",
+            "稳健预测控制远距离跟进强度",
             0.45,
             0.001,
             0.999,
@@ -473,7 +463,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
-            "精确 v2 近距离跟随强度",
+            "稳健预测控制近距离跟随强度",
             0.22,
             0.001,
             0.999,
@@ -483,7 +473,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
-            "精确 v2 速度平滑时间常数",
+            "稳健预测控制速度平滑时间常数",
             22.0,
             0.1,
             200.0,

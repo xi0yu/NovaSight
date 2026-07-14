@@ -12,6 +12,10 @@ from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.coordinates import CoordinateTransform
 from novasight.control import (
+    CALIBRATED_ANGULAR,
+    DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
+    UNIVERSAL_SATURATED,
+    AlgorithmRegistry,
     CalibratedAngularControllerConfig,
     MoveCommand,
     MouseControllerConfig,
@@ -24,7 +28,6 @@ from novasight.control import (
     target_motion_estimate_from_debug,
 )
 from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
-    ALGORITHM_ID as DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
     AtanControllerConfig as DualPhaseRobustAtanControllerConfig,
     AtanModeConfig as DualPhaseRobustAtanModeConfig,
     DualPhaseAtanRobustPredictiveV2Algorithm,
@@ -54,12 +57,6 @@ from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
 
-DUAL_PHASE_ALGORITHM_IDS = frozenset(
-    {
-        DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
-    }
-)
-
 
 def _status_statistic(
     status: dict[str, Any],
@@ -73,18 +70,6 @@ def _status_statistic(
         return float(values.get(key) or 0.0)
     except (TypeError, ValueError):
         return 0.0
-
-
-def _near_target_prediction_gain(error_px: float, deadzone_px: float) -> float:
-    if not math.isfinite(error_px):
-        return 0.0
-    deadzone = max(0.0, float(deadzone_px))
-    exit_threshold = max(deadzone + 1.0, deadzone * 1.5) if deadzone > 0.0 else 0.0
-    transition_width = max(4.0, deadzone * 2.0)
-    return max(
-        0.0,
-        min(1.0, (abs(float(error_px)) - exit_threshold) / transition_width),
-    )
 
 
 class RuntimeService:
@@ -126,8 +111,7 @@ class RuntimeService:
         self._executed_control_samples: deque[tuple[int, int, int]] = deque()
         self.control_timing = ControlTimingModel()
         self.last_control_timing: dict[str, Any] = {}
-        self.mouse_controller = self._create_mouse_controller(config)
-        self.dual_phase_algorithm = self._create_dual_phase_algorithm(config)
+        self.control_algorithms = self._create_control_algorithm_registry(config)
         self.target_selector = RuntimeTargetSelector()
         self.raw_aim_projector = RawAimPointProjector()
         self._runtime_calibration_signature = self._config_calibration_signature(config)
@@ -346,8 +330,8 @@ class RuntimeService:
             self.config = config
             self.control_timing.reset()
             self.last_control_timing = {}
-            self.mouse_controller = self._create_mouse_controller(config)
-            self.dual_phase_algorithm = self._create_dual_phase_algorithm(config)
+            self.control_algorithms.reset()
+            self.control_algorithms = self._create_control_algorithm_registry(config)
             self._clear_pending_commands(reset_reason)
             self.executors.update_runtime_config(config)
             if calibration_changed:
@@ -405,26 +389,30 @@ class RuntimeService:
     def _active_dual_phase_config(config: RuntimeConfig) -> Any:
         return config.control.dual_phase_atan_robust_predictive_v2
 
+    def _is_robust_predictive_active(self) -> bool:
+        return self.control_algorithms.is_active(DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2)
+
+    def _active_mouse_controller(self) -> MouseController:
+        controller = self.control_algorithms.active_controller
+        if not isinstance(controller, MouseController):
+            raise RuntimeError("active control algorithm is not a mouse controller")
+        return controller
+
+    def _active_robust_predictive_controller(
+        self,
+    ) -> DualPhaseAtanRobustPredictiveV2Algorithm:
+        controller = self.control_algorithms.active_controller
+        if not isinstance(controller, DualPhaseAtanRobustPredictiveV2Algorithm):
+            raise RuntimeError("active control algorithm is not robust predictive v2")
+        return controller
+
     @staticmethod
     def _config_calibration_signature(config: RuntimeConfig) -> tuple[Any, ...]:
-        calibration = config.calibration
-        calibrated = config.control.calibrated_angular
-        dual_phase = RuntimeService._active_dual_phase_config(config)
-        shared = config.control.shared
+        algorithm_id = str(config.control.active_algorithm)
         capture = config.capture
         roi = config.roi
-        return (
-            str(config.control.active_algorithm),
-            str(calibration.profile_id).strip(),
-            int(calibration.profile_version),
-            float(calibrated.fov_x_deg),
-            float(calibrated.counts_per_360_x),
-            float(calibrated.counts_per_360_y),
-            bool(shared.invert_y),
-            float(dual_phase.projection.fov_x_deg),
-            float(dual_phase.projection.counts_per_360),
-            bool(dual_phase.projection.invert_y),
-            str(calibration.game_sensitivity_fingerprint).strip(),
+        geometry_signature: tuple[Any, ...] = (
+            algorithm_id,
             int(capture.width),
             int(capture.height),
             int(roi.size),
@@ -432,6 +420,30 @@ class RuntimeService:
             int(roi.offset_x),
             int(roi.offset_y),
         )
+        if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
+            calibration = config.calibration
+            projection = config.control.dual_phase_atan_robust_predictive_v2.projection
+            return geometry_signature + (
+                str(calibration.profile_id).strip(),
+                int(calibration.profile_version),
+                str(calibration.game_sensitivity_fingerprint).strip(),
+                float(projection.fov_x_deg),
+                float(projection.counts_per_360),
+                bool(projection.invert_y),
+            )
+        if algorithm_id == CALIBRATED_ANGULAR:
+            calibration = config.calibration
+            calibrated = config.control.calibrated_angular
+            return geometry_signature + (
+                str(calibration.profile_id).strip(),
+                int(calibration.profile_version),
+                str(calibration.game_sensitivity_fingerprint).strip(),
+                float(calibrated.fov_x_deg),
+                float(calibrated.counts_per_360_x),
+                float(calibrated.counts_per_360_y),
+                bool(config.control.shared.invert_y),
+            )
+        return geometry_signature
 
     def _reset_runtime_control_state(self, reason: str) -> None:
         self._last_runtime_reset_reason = reason
@@ -469,21 +481,26 @@ class RuntimeService:
                 )
 
     def _log_production_control_chain(self, event: str) -> None:
-        calibration = self.config.calibration
-        calibrated = self.config.control.calibrated_angular
-        dual_phase = self._active_dual_phase_config(self.config)
-        shared = self.config.control.shared
         mode = self.config.control.active_algorithm
         selected_executor = getattr(self.executors, "selected", None) or "kmnet"
-        is_dual_phase = mode in DUAL_PHASE_ALGORITHM_IDS
-        fov_x_deg = dual_phase.projection.fov_x_deg if is_dual_phase else calibrated.fov_x_deg
-        counts_per_360_x = (
-            dual_phase.projection.counts_per_360 if is_dual_phase else calibrated.counts_per_360_x
-        )
-        counts_per_360_y = (
-            dual_phase.projection.counts_per_360 if is_dual_phase else calibrated.counts_per_360_y
-        )
-        invert_y = dual_phase.projection.invert_y if is_dual_phase else shared.invert_y
+        is_dual_phase = self._is_robust_predictive_active()
+        if is_dual_phase:
+            projection = self._active_dual_phase_config(self.config).projection
+            fov_x_deg = projection.fov_x_deg
+            counts_per_360_x = projection.counts_per_360
+            counts_per_360_y = projection.counts_per_360
+            invert_y = projection.invert_y
+        elif mode == CALIBRATED_ANGULAR:
+            calibrated = self.config.control.calibrated_angular
+            fov_x_deg = calibrated.fov_x_deg
+            counts_per_360_x = calibrated.counts_per_360_x
+            counts_per_360_y = calibrated.counts_per_360_y
+            invert_y = self.config.control.shared.invert_y
+        else:
+            fov_x_deg = 0.0
+            counts_per_360_x = 0.0
+            counts_per_360_y = 0.0
+            invert_y = self.config.control.shared.invert_y
         delivery_stage = (
             "MouseCommandExecutor(single-command-per-observation)"
             if is_dual_phase
@@ -504,7 +521,7 @@ class RuntimeService:
             )
         else:
             chain = (
-                "RawBBox+KalmanPrediction->PredictedPixelError->ExclusiveController"
+                "RawAimPoint->MeasuredPixelError->ExclusiveController"
                 f"->SharedCountLimits->{delivery_stage}->kmNet"
             )
         logger.info(
@@ -516,8 +533,8 @@ class RuntimeService:
             mode,
             selected_executor,
             self.config.control.trigger_mode,
-            calibration.profile_id,
-            calibration.profile_version,
+            self.config.calibration.profile_id,
+            self.config.calibration.profile_version,
             float(fov_x_deg),
             float(counts_per_360_x),
             float(counts_per_360_y),
@@ -529,10 +546,7 @@ class RuntimeService:
         observed = str(self._external_sensitivity_fingerprint).strip()
         source = str(self._external_sensitivity_source).strip()
         updated_ts_ns = int(self._external_sensitivity_ts_ns or 0)
-        if self.config.control.active_algorithm not in {
-            "calibrated_angular",
-            *DUAL_PHASE_ALGORITHM_IDS,
-        }:
+        if not self.control_algorithms.active_definition.capabilities.requires_calibration:
             return {
                 "state": "not_required",
                 "control_allowed": True,
@@ -604,12 +618,12 @@ class RuntimeService:
             control_intents = [intent] if intent is not None else []
             execution_results = [self.executors.execute(intent) for intent in control_intents]
             for result in execution_results:
-                if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS and not bool(
+                if self._is_robust_predictive_active() and not bool(
                     getattr(result, "sent", False)
                 ):
                     # A failed or blocked device call must not leave fractional
                     # demand from an unsent observation to a later frame.
-                    self.dual_phase_algorithm.release_trigger()
+                    self._active_robust_predictive_controller().release_trigger()
                 self._record_executed_control(result)
             if execution_results:
                 self.last_execution = self._execution_result_payload(execution_results[-1])
@@ -642,7 +656,7 @@ class RuntimeService:
         )
 
     def process_control_tick(self) -> RuntimeFrameResult:
-        if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS:
+        if self._is_robust_predictive_active():
             # No command is emitted here. The tick only observes release/stop
             # edges so fractional counts cannot survive between inference
             # results.
@@ -655,7 +669,7 @@ class RuntimeService:
                     str(self.config.control.trigger_mode) == "hardware"
                     and not self._box_input_state().active
                 ):
-                    self.dual_phase_algorithm.release_trigger()
+                    self._active_robust_predictive_controller().release_trigger()
                     self._clear_pending_commands("TRIGGER_INACTIVE")
             return self._empty_runtime_frame_result()
         tick_pending = getattr(self.executors, "tick_pending", None)
@@ -1900,9 +1914,14 @@ class RuntimeService:
         if trigger_mode not in {"hardware", "always"}:
             trigger_mode = "hardware"
         shared_control = self.config.control.shared
+        standard_output_effects_enabled = not self._is_robust_predictive_active()
         hardware_input = (
             self._box_input_state()
-            if trigger_mode == "hardware" or bool(shared_control.recoil_enabled)
+            if trigger_mode == "hardware"
+            or (
+                standard_output_effects_enabled
+                and bool(shared_control.recoil_enabled)
+            )
             else BoxInputState(raw={"source": "monitor_not_required"})
         )
         box_input = (
@@ -2025,11 +2044,10 @@ class RuntimeService:
             control_now_ts_ns=control_now_ns,
         )
         measurement_dt_ms = timing_payload.get("measurement_dt_ms")
-        algorithm_id = self.config.control.active_algorithm
         algorithm_trigger_active = bool(
             trigger_activation_ready and (box_input.active or trigger_mode == "always")
         )
-        if algorithm_id in DUAL_PHASE_ALGORITHM_IDS:
+        if self._is_robust_predictive_active():
             command, observation_metadata = self._dual_phase_control_command(
                 context=context,
                 target=target,
@@ -2057,11 +2075,11 @@ class RuntimeService:
                 )
             )
             observation = control_metadata["mouse_observation"]
-            command = self.mouse_controller.calculate(observation)
+            command = self._active_mouse_controller().calculate(observation)
         mouse_observation_debug = dict(control_metadata.get("mouse_observation_debug") or {})
         active_aim_y_ratio = (
             float(self._active_dual_phase_config(self.config).aim.y_ratio)
-            if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
+            if self._is_robust_predictive_active()
             else float(self.config.control.aim.y_ratio)
         )
         aim_x = float(mouse_observation_debug.get("predicted_x_px") or 0.0)
@@ -2078,7 +2096,7 @@ class RuntimeService:
                 float(self._active_dual_phase_config(self.config).freshness_threshold_ms)
                 * 1_000_000.0
             )
-            if algorithm_id in DUAL_PHASE_ALGORITHM_IDS
+            if self._is_robust_predictive_active()
             else None
         )
         intent = ControlIntent(
@@ -2099,10 +2117,10 @@ class RuntimeService:
             predicted_source=predicted_source,
             trajectory_generation=trajectory_generation,
             trigger_required=(
-                requires_trigger if algorithm_id in DUAL_PHASE_ALGORITHM_IDS else None
+                requires_trigger if self._is_robust_predictive_active() else None
             ),
             trigger_active=(
-                algorithm_trigger_active if algorithm_id in DUAL_PHASE_ALGORITHM_IDS else None
+                algorithm_trigger_active if self._is_robust_predictive_active() else None
             ),
             command_expires_ts_ns=command_expires_ts_ns,
         )
@@ -2253,8 +2271,8 @@ class RuntimeService:
             self._clear_pending_commands(clear_reason)
             # The high-frequency algorithm keeps estimator/mode state while the
             # trigger is released; its quantizer clears itself before returning.
-            # Legacy controllers retain their historical full reset behavior.
-            if algorithm_id not in DUAL_PHASE_ALGORITHM_IDS:
+            # The two non-predictive controllers retain their full reset behavior.
+            if not self._is_robust_predictive_active():
                 self._reset_control_motion_state()
             self.last_execution = {
                 "executor_id": str(getattr(self.executors, "selected", "")),
@@ -2739,7 +2757,7 @@ class RuntimeService:
         return context.width * 0.5, context.height * 0.5
 
     def _active_aim_ratio(self) -> float:
-        if self.config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS:
+        if self._is_robust_predictive_active():
             return float(self._active_dual_phase_config(self.config).aim.y_ratio)
         return float(self.config.control.aim.y_ratio)
 
@@ -2812,37 +2830,48 @@ class RuntimeService:
             return 0.0
         return max(0.0, (int(now_ns) - min(starts)) / 1e6)
 
+    def _create_control_algorithm_registry(self, config: RuntimeConfig) -> AlgorithmRegistry:
+        algorithm_id = str(config.control.active_algorithm)
+        controller = (
+            self._create_dual_phase_algorithm(config)
+            if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
+            else self._create_mouse_controller(config)
+        )
+        return AlgorithmRegistry(algorithm_id, controller)
+
     def _create_mouse_controller(self, config: RuntimeConfig) -> MouseController:
         max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
-        calibrated = config.control.calibrated_angular
-        universal = config.control.universal_saturated
         shared = config.control.shared
-        legacy_mode = (
-            "universal_saturated"
-            if config.control.active_algorithm in DUAL_PHASE_ALGORITHM_IDS
-            else str(config.control.active_algorithm)
-        )
+        algorithm_id = str(config.control.active_algorithm)
+        calibrated_config: CalibratedAngularControllerConfig | None = None
+        universal_config: UniversalSaturatedControllerConfig | None = None
+        if algorithm_id == CALIBRATED_ANGULAR:
+            calibrated = config.control.calibrated_angular
+            calibrated_config = CalibratedAngularControllerConfig(
+                fov_x_deg=float(calibrated.fov_x_deg),
+                counts_per_360_x=float(calibrated.counts_per_360_x),
+                counts_per_360_y=float(calibrated.counts_per_360_y),
+                kp_x=float(calibrated.kp_x),
+                kp_y=float(calibrated.kp_y),
+                kd_x=float(calibrated.kd_x),
+                kd_y=float(calibrated.kd_y),
+                d_ema_alpha=float(calibrated.d_ema_alpha),
+                max_angle_step_x_rad=math.radians(float(calibrated.max_angle_step_x_deg)),
+                max_angle_step_y_rad=math.radians(float(calibrated.max_angle_step_y_deg)),
+            )
+        elif algorithm_id == UNIVERSAL_SATURATED:
+            universal = config.control.universal_saturated
+            universal_config = UniversalSaturatedControllerConfig(
+                response_scale_x_px=float(universal.response_scale_x_px),
+                response_scale_y_px=float(universal.response_scale_y_px),
+                max_step_x_counts=float(universal.max_step_x_counts),
+                max_step_y_counts=float(universal.max_step_y_counts),
+            )
+        else:
+            raise ValueError(f"unsupported mouse control algorithm: {algorithm_id}")
         return MouseController(
             MouseControllerConfig(
-                mode=legacy_mode,
-                calibrated_angular=CalibratedAngularControllerConfig(
-                    fov_x_deg=float(calibrated.fov_x_deg),
-                    counts_per_360_x=float(calibrated.counts_per_360_x),
-                    counts_per_360_y=float(calibrated.counts_per_360_y),
-                    kp_x=float(calibrated.kp_x),
-                    kp_y=float(calibrated.kp_y),
-                    kd_x=float(calibrated.kd_x),
-                    kd_y=float(calibrated.kd_y),
-                    d_ema_alpha=float(calibrated.d_ema_alpha),
-                    max_angle_step_x_rad=math.radians(float(calibrated.max_angle_step_x_deg)),
-                    max_angle_step_y_rad=math.radians(float(calibrated.max_angle_step_y_deg)),
-                ),
-                universal_saturated=UniversalSaturatedControllerConfig(
-                    response_scale_x_px=float(universal.response_scale_x_px),
-                    response_scale_y_px=float(universal.response_scale_y_px),
-                    max_step_x_counts=float(universal.max_step_x_counts),
-                    max_step_y_counts=float(universal.max_step_y_counts),
-                ),
+                mode=algorithm_id,
                 shared=SharedOutputConfig(
                     deadzone_x_px=float(shared.deadzone_x_px),
                     deadzone_y_px=float(shared.deadzone_y_px),
@@ -2861,6 +2890,8 @@ class RuntimeService:
                         shared.recoil_max_counts_per_observation
                     ),
                 ),
+                calibrated_angular=calibrated_config,
+                universal_saturated=universal_config,
             )
         )
 
@@ -2922,8 +2953,7 @@ class RuntimeService:
         )
 
     def _reset_control_motion_state(self) -> None:
-        self.mouse_controller.reset()
-        self.dual_phase_algorithm.reset()
+        self.control_algorithms.reset()
 
     @staticmethod
     def _target_detection_index(context: FrameContext, target: Track) -> int | None:
@@ -3052,7 +3082,7 @@ class RuntimeService:
         }
         observation_kwargs["track_rebuilt"] = int(target.track_id) in rebuilt_track_ids
         observation = DualPhaseAtanRobustPredictiveV2Observation(**observation_kwargs)
-        decision = self.dual_phase_algorithm.calculate(observation)
+        decision = self._active_robust_predictive_controller().calculate(observation)
         telemetry = {
             **decision.telemetry,
             "capture_ts_ns": observation.capture_ts_ns,
@@ -3147,100 +3177,20 @@ class RuntimeService:
             control_height_px=control_height,
             source_geometry_trusted=source_geometry_trusted,
         )
-        estimate = target_motion_estimate_from_debug(
-            track=target,
-            capture_ts_ns=context.capture_ts_ns,
-            tracker_debug=selector_debug,
-        )
-        estimate_usable = bool(estimate.valid) and all(
-            math.isfinite(float(value))
-            for value in (estimate.x, estimate.y, estimate.vx, estimate.vy)
-        )
         capture_ts_ns = int(context.capture_ts_ns or 0)
-        horizon_s = max(0.0, (control_now_ts_ns - capture_ts_ns) / 1e9)
-        horizon_s += max(0.0, float(self.config.control.configured_actuation_delay_s))
-        base_prediction_confidence = max(
-            0.0,
-            min(
-                1.0,
-                float(estimate.prediction_confidence) * float(estimate.identity_confidence),
-            ),
-        )
-        if not estimate_usable:
-            base_prediction_confidence = 0.0
         executed_control = self._executed_control_activity(
             control_now_ts_ns=control_now_ts_ns,
             capture_ts_ns=capture_ts_ns,
             measurement_dt_s=measurement_dt_s,
         )
-        velocity_confidence_x = float(executed_control["velocity_confidence_x"])
-        velocity_confidence_y = float(executed_control["velocity_confidence_y"])
-        observed_error_control_x = raw_aim.aim_control_x_px - control_width * 0.5
-        observed_error_control_y = raw_aim.aim_control_y_px - control_height * 0.5
-        near_target_prediction_gain_x = _near_target_prediction_gain(
-            observed_error_control_x,
-            float(self.config.control.shared.deadzone_x_px),
-        )
-        near_target_prediction_gain_y = _near_target_prediction_gain(
-            observed_error_control_y,
-            float(self.config.control.shared.deadzone_y_px),
-        )
-        kalman_position_confidence_x = base_prediction_confidence * velocity_confidence_x
-        kalman_position_confidence_y = base_prediction_confidence * velocity_confidence_y
-        prediction_confidence_x = kalman_position_confidence_x * near_target_prediction_gain_x
-        prediction_confidence_y = kalman_position_confidence_y * near_target_prediction_gain_y
-        prediction_scale = max(0.0, min(1.5, float(self.config.control.prediction_strength)))
-        prediction_x_enabled = bool(self.config.control.prediction_x_enabled)
-        prediction_y_enabled = bool(self.config.control.prediction_y_enabled)
         observed_roi_x = float(raw_aim.aim_roi_x_px)
         observed_roi_y = float(raw_aim.aim_roi_y_px)
-        prediction_origin_x = observed_roi_x
-        prediction_origin_y = observed_roi_y
         predicted_roi_x = observed_roi_x
         predicted_roi_y = observed_roi_y
-        if prediction_x_enabled and estimate_usable:
-            prediction_origin_x += (
-                float(estimate.x) - observed_roi_x
-            ) * kalman_position_confidence_x
-            predicted_roi_x = prediction_origin_x + (
-                float(estimate.vx) * horizon_s * prediction_scale * prediction_confidence_x
-            )
-        if prediction_y_enabled and estimate_usable:
-            prediction_origin_y += (
-                float(estimate.y) - observed_roi_y
-            ) * kalman_position_confidence_y
-            predicted_roi_y = prediction_origin_y + (
-                float(estimate.vy) * horizon_s * prediction_scale * prediction_confidence_y
-            )
-        enabled_confidences = [
-            confidence
-            for enabled, confidence in (
-                (prediction_x_enabled, prediction_confidence_x),
-                (prediction_y_enabled, prediction_confidence_y),
-            )
-            if enabled
-        ]
-        prediction_confidence = min(enabled_confidences) if enabled_confidences else 0.0
-
-        predicted_control_x = 0.0
-        predicted_control_y = 0.0
-        prediction_valid = raw_aim.valid and transform is not None
+        predicted_control_x = float(raw_aim.aim_control_x_px)
+        predicted_control_y = float(raw_aim.aim_control_y_px)
+        prediction_valid = raw_aim.valid
         invalid_reason = raw_aim.invalid_reason
-        if prediction_valid and transform is not None:
-            capture_point = transform.roi_to_capture_point(predicted_roi_x, predicted_roi_y)
-            control_point = transform.capture_to_control_point(capture_point.x, capture_point.y)
-            predicted_control_x = float(control_point.x)
-            predicted_control_y = float(control_point.y)
-            if not (
-                math.isfinite(predicted_control_x)
-                and math.isfinite(predicted_control_y)
-                and 0.0 <= predicted_control_x <= control_width
-                and 0.0 <= predicted_control_y <= control_height
-            ):
-                prediction_valid = False
-                invalid_reason = "PREDICTED_AIM_OUT_OF_CONTROL"
-        elif not invalid_reason:
-            invalid_reason = "CONTROL_TRANSFORM_UNAVAILABLE"
 
         observation = MouseObservation(
             frame_id=context.frame_id,
@@ -3254,9 +3204,9 @@ class RuntimeService:
             observed_y_px=raw_aim.aim_control_y_px,
             predicted_x_px=predicted_control_x,
             predicted_y_px=predicted_control_y,
-            prediction_horizon_s=horizon_s,
+            prediction_horizon_s=0.0,
             target_confidence=max(0.0, min(1.0, float(target.score))),
-            prediction_confidence=prediction_confidence,
+            prediction_confidence=0.0,
             observed_valid=raw_aim.valid and not bool(target.is_predicted),
             actuation_pending_x=bool(executed_control["actuation_pending_x"]),
             actuation_pending_y=bool(executed_control["actuation_pending_y"]),
@@ -3269,37 +3219,13 @@ class RuntimeService:
             "mouse_observation": observation,
             "mouse_observation_debug": {
                 **asdict(observation),
-                "prediction_source": "kalman",
-                "prediction_strength": prediction_scale,
-                "base_prediction_confidence": base_prediction_confidence,
-                "kalman_estimate_usable": estimate_usable,
-                "kalman_position_confidence_x": kalman_position_confidence_x,
-                "kalman_position_confidence_y": kalman_position_confidence_y,
-                "prediction_confidence_x": prediction_confidence_x,
-                "prediction_confidence_y": prediction_confidence_y,
-                "near_target_prediction_gain_x": near_target_prediction_gain_x,
-                "near_target_prediction_gain_y": near_target_prediction_gain_y,
+                "prediction_source": "none",
+                "prediction_strength": 0.0,
                 **executed_control,
-                "kalman_x_px": estimate.x,
-                "kalman_y_px": estimate.y,
-                "kalman_vx_px_s": estimate.vx,
-                "kalman_vy_px_s": estimate.vy,
-                "prediction_origin_x_roi_px": prediction_origin_x,
-                "prediction_origin_y_roi_px": prediction_origin_y,
-                "prediction_origin_source_x": (
-                    "observed_kalman_blend"
-                    if prediction_x_enabled and estimate_usable
-                    else "observed_fallback"
-                    if prediction_x_enabled
-                    else "observed"
-                ),
-                "prediction_origin_source_y": (
-                    "observed_kalman_blend"
-                    if prediction_y_enabled and estimate_usable
-                    else "observed_fallback"
-                    if prediction_y_enabled
-                    else "observed"
-                ),
+                "prediction_origin_x_roi_px": observed_roi_x,
+                "prediction_origin_y_roi_px": observed_roi_y,
+                "prediction_origin_source_x": "observed",
+                "prediction_origin_source_y": "observed",
                 "predicted_aim_x_roi_px": predicted_roi_x,
                 "predicted_aim_y_roi_px": predicted_roi_y,
                 "raw_aim": raw_aim.debug_payload(),
@@ -4210,7 +4136,7 @@ class RuntimeService:
         if (
             isinstance(pipeline, dict)
             and str(pipeline.get("algorithm") or pipeline.get("algorithm_id"))
-            in DUAL_PHASE_ALGORITHM_IDS
+            == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
         ):
             pipeline["executor_success"] = bool(execution.get("sent", False))
             pipeline["executor_block_reason"] = str(metadata.get("block_reason") or "")

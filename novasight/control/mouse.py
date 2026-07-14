@@ -4,9 +4,8 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, Protocol
 
+from novasight.control.registry import CALIBRATED_ANGULAR, UNIVERSAL_SATURATED
 
-CALIBRATED_ANGULAR = "calibrated_angular"
-UNIVERSAL_SATURATED = "universal_saturated"
 CONTROL_MODES = frozenset({CALIBRATED_ANGULAR, UNIVERSAL_SATURATED})
 ARRIVAL_CONFIRM_FRAMES = 2
 DEPARTURE_CONFIRM_FRAMES = 2
@@ -113,9 +112,9 @@ class SharedOutputConfig:
 @dataclass(frozen=True, slots=True)
 class MouseControllerConfig:
     mode: str
-    calibrated_angular: CalibratedAngularControllerConfig
-    universal_saturated: UniversalSaturatedControllerConfig
     shared: SharedOutputConfig
+    calibrated_angular: CalibratedAngularControllerConfig | None = None
+    universal_saturated: UniversalSaturatedControllerConfig | None = None
 
 
 class ControlController(Protocol):
@@ -284,8 +283,12 @@ class ControllerFactory:
     @staticmethod
     def create(config: MouseControllerConfig) -> ControlController:
         if config.mode == CALIBRATED_ANGULAR:
+            if config.calibrated_angular is None:
+                raise ValueError("calibrated angular config is required")
             return CalibratedAngularController(config.calibrated_angular)
         if config.mode == UNIVERSAL_SATURATED:
+            if config.universal_saturated is None:
+                raise ValueError("universal saturated config is required")
             return UniversalSaturatedController(config.universal_saturated)
         raise ValueError(f"unsupported mouse control mode: {config.mode}")
 

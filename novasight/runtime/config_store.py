@@ -4,6 +4,10 @@ import copy
 import threading
 
 from novasight.config import RuntimeConfig
+from novasight.control.registry import (
+    CALIBRATED_ANGULAR,
+    DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
+)
 
 
 class RuntimeConfigStore:
@@ -25,30 +29,24 @@ class RuntimeConfigStore:
     def status(self) -> dict:
         with self._lock:
             config = self._config
-            dual_phase_active = (
-                config.control.active_algorithm == "dual_phase_atan_robust_predictive_v2"
-            )
-            dual_phase = config.control.dual_phase_atan_robust_predictive_v2
-            fov_x_deg = (
-                dual_phase.projection.fov_x_deg
-                if dual_phase_active
-                else config.control.calibrated_angular.fov_x_deg
-            )
-            counts_per_360_x = (
-                dual_phase.projection.counts_per_360
-                if dual_phase_active
-                else config.control.calibrated_angular.counts_per_360_x
-            )
-            counts_per_360_y = (
-                dual_phase.projection.counts_per_360
-                if dual_phase_active
-                else config.control.calibrated_angular.counts_per_360_y
-            )
-            invert_y = (
-                dual_phase.projection.invert_y
-                if dual_phase_active
-                else config.control.shared.invert_y
-            )
+            algorithm_id = str(config.control.active_algorithm)
+            if algorithm_id == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
+                projection = config.control.dual_phase_atan_robust_predictive_v2.projection
+                fov_x_deg = projection.fov_x_deg
+                counts_per_360_x = projection.counts_per_360
+                counts_per_360_y = projection.counts_per_360
+                invert_y = projection.invert_y
+            elif algorithm_id == CALIBRATED_ANGULAR:
+                calibrated = config.control.calibrated_angular
+                fov_x_deg = calibrated.fov_x_deg
+                counts_per_360_x = calibrated.counts_per_360_x
+                counts_per_360_y = calibrated.counts_per_360_y
+                invert_y = config.control.shared.invert_y
+            else:
+                fov_x_deg = None
+                counts_per_360_x = None
+                counts_per_360_y = None
+                invert_y = config.control.shared.invert_y
             return {
                 "version": self.version,
                 "source": {

@@ -265,12 +265,9 @@ def test_nvmm_resource_candidates_include_decoupled_preview_branch() -> None:
 def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings() -> None:
     cfg = RuntimeConfig()
 
-    assert cfg.control.mode == "universal_saturated"
+    assert cfg.control.mode == "dual_phase_atan_robust_predictive_v2"
     assert cfg.control.aim.y_ratio == 0.22
     assert cfg.control.configured_actuation_delay_s == 0.004
-    assert cfg.control.prediction_strength == 1.0
-    assert cfg.control.prediction_x_enabled is True
-    assert cfg.control.prediction_y_enabled is True
     assert cfg.control.calibrated_angular.fov_x_deg == 105.0
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980.0
     assert cfg.control.calibrated_angular.kp_x == 1.0
@@ -281,14 +278,11 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.shared.deadzone_x_px == 4.0
     assert cfg.control.shared.max_count_slew_x == 10.0
     assert cfg.control.shared.invert_y is False
-    assert cfg.control.scheduler_step_counts_x == 32
-    assert cfg.control.scheduler_step_counts_y == 32
+    assert cfg.control.scheduler_step_counts_x == 8
+    assert cfg.control.scheduler_step_counts_y == 8
     assert cfg.control.scheduler_enabled is True
-    assert cfg.hardware.min_effective_move_counts_x == 16
-    assert cfg.hardware.min_effective_move_counts_y == 16
     assert cfg.control.scheduler_interval_ms == 4.0
     assert cfg.control.target_fov_radius_px == 180.0
-    assert cfg.control.min_confidence == 0.25
     assert cfg.control.target_switch_delay_ms == 50.0
     assert cfg.control.tracker_max_match_distance == 1.5
     assert cfg.control.tracker_position_cost_weight == 0.75
@@ -534,10 +528,8 @@ def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
     assert cfg.control.calibrated_angular.counts_per_360_x == pytest.approx(9900.0)
     assert cfg.control.calibrated_angular.counts_per_360_y == pytest.approx(9900.0)
     assert cfg.control.shared.invert_y is True
-    assert cfg.control.min_confidence == pytest.approx(0.10)
     assert cfg.control.aim.y_ratio == pytest.approx(0.40)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.002)
-    assert cfg.control.prediction_strength == pytest.approx(0.7)
     assert cfg.control.calibrated_angular.kp_x == pytest.approx(0.4)
     assert cfg.control.calibrated_angular.kp_y == pytest.approx(0.3)
     assert cfg.control.calibrated_angular.kd_x == pytest.approx(0.02)
@@ -595,7 +587,6 @@ def test_runtime_config_validates_recording_format() -> None:
             {"control": {"configured_actuation_delay_s": -0.001}},
             "control.configured_actuation_delay_s",
         ),
-        ({"control": {"prediction_strength": 1.51}}, "control.prediction_strength"),
         ({"control": {"calibrated_angular": {"kp_x": 2.01}}}, "control.calibrated_angular.kp_x"),
         ({"control": {"calibrated_angular": {"kd_y": -0.01}}}, "control.calibrated_angular.kd_y"),
         (
@@ -617,10 +608,7 @@ def test_runtime_config_validates_recording_format() -> None:
         ({"control": {"shared": {"deadzone_x_px": 10.1}}}, "control.shared.deadzone_x_px"),
         ({"control": {"shared": {"max_count_slew_y": 0.0}}}, "control.shared.max_count_slew_y"),
         ({"control": {"scheduler_interval_ms": 0.1}}, "control.scheduler_interval_ms"),
-        ({"control": {"scheduler_step_counts_x": 0}}, "control.scheduler_step_counts_x"),
-        ({"control": {"scheduler_step_counts_y": 65}}, "control.scheduler_step_counts_y"),
         ({"control": {"target_fov_radius_px": 0}}, "control.target_fov_radius_px"),
-        ({"control": {"min_confidence": 0.09}}, "control.min_confidence"),
         ({"control": {"target_switch_delay_ms": 501}}, "control.target_switch_delay_ms"),
         ({"control": {"tracker_max_match_distance": 0}}, "control.tracker_max_match_distance"),
         (
@@ -872,17 +860,20 @@ def test_runtime_config_schema_exposes_capture_memory() -> None:
 
 def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields() -> None:
     schema = runtime_config_schema(RuntimeConfig())
-    control_section = next(section for section in schema["sections"] if section["id"] == "control")
-    paths = {field["path"] for field in control_section["fields"]}
+    control_sections = [
+        section for section in schema["sections"] if section["id"].startswith("control_")
+    ]
+    paths = {
+        field["path"]
+        for section in control_sections
+        for field in section["fields"]
+    }
 
     assert {
         "control.trigger_mode",
         "control.active_algorithm",
         "control.aim.y_ratio",
         "control.configured_actuation_delay_s",
-        "control.prediction_strength",
-        "control.prediction_x_enabled",
-        "control.prediction_y_enabled",
         "control.algorithms.calibrated_angular.fov_x_deg",
         "control.algorithms.calibrated_angular.counts_per_360_x",
         "control.algorithms.calibrated_angular.counts_per_360_y",

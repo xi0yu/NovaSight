@@ -254,13 +254,13 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
     devices = DEVICES_VIEW.read_text(encoding="utf-8")
 
-    assert '<option value="universal_saturated">通用适配</option>' in studio
-    assert '<option value="calibrated_angular">精确标定</option>' in studio
-    assert 'updateConfigField("control", "active_algorithm", event.target.value)' in studio
-    assert (
-        '<option value="dual_phase_atan_robust_predictive_v2">精确双阶段稳健预测 v2</option>'
-        in studio
-    )
+    assert 'id: "universal_saturated"' in studio
+    assert 'label: "通用控制"' in studio
+    assert 'id: "calibrated_angular"' in studio
+    assert 'label: "精确角度控制"' in studio
+    assert 'id: "dual_phase_atan_robust_predictive_v2"' in studio
+    assert 'label: "稳健预测控制"' in studio
+    assert 'updateConfigField("control", "active_algorithm", algorithm.id)' in studio
     assert "dual_phase_atan_predictive_v1" not in studio
     assert "ttbox_pid_atan" not in studio
     assert 'label="NEAR 阈值 px"' in studio

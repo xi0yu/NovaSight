@@ -1,4 +1,14 @@
 from novasight.control.output import ControlOutput, ControlOutputPolicy
+from novasight.control.registry import (
+    DEFAULT_ACTIVE_ALGORITHM_ID,
+    DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
+    AlgorithmCapabilities,
+    AlgorithmDefinition,
+    AlgorithmRegistry,
+    SchedulerPolicy,
+    algorithm_definition,
+    supported_algorithm_ids,
+)
 from novasight.control.mouse import (
     CALIBRATED_ANGULAR,
     CONTROL_MODES,
@@ -33,6 +43,11 @@ from novasight.control.scheduler import (
 
 __all__ = [
     "CommandScheduler",
+    "DEFAULT_ACTIVE_ALGORITHM_ID",
+    "DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2",
+    "AlgorithmCapabilities",
+    "AlgorithmDefinition",
+    "AlgorithmRegistry",
     "CALIBRATED_ANGULAR",
     "CONTROL_MODES",
     "CalibratedAngularController",
@@ -50,6 +65,7 @@ __all__ = [
     "RawAimPointProjector",
     "TargetMotionEstimate",
     "ScheduleDecision",
+    "SchedulerPolicy",
     "Scheduler",
     "SharedOutputConfig",
     "UNIVERSAL_SATURATED",
@@ -57,6 +73,8 @@ __all__ = [
     "UniversalSaturatedControllerConfig",
     "Vec2",
     "normalize_aim_y_ratio",
+    "algorithm_definition",
     "plan_step_capacity",
+    "supported_algorithm_ids",
     "target_motion_estimate_from_debug",
 ]

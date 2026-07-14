@@ -404,6 +404,7 @@ export type ConfigFieldSchema = {
   label: string;
   type: "string" | "string_list" | "int" | "float" | "select" | "bool";
   options?: string[];
+  option_labels?: Record<string, string>;
   min?: number;
   max?: number;
   default?: number;
@@ -419,6 +420,7 @@ export type ConfigFieldSchema = {
 export type ConfigSectionSchema = {
   id: string;
   label: string;
+  algorithm_scope?: string[];
   fields: ConfigFieldSchema[];
 };
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   type ConfigFieldSchema,
+  type ConfigSectionSchema,
   type ConfigSchemaResponse,
   type LicenseStatus,
   type RuntimeConfig,
@@ -95,6 +96,17 @@ export function formatConfigInputValue(
   return String(value ?? "");
 }
 
+export function isConfigSectionVisible(
+  section: ConfigSectionSchema,
+  activeAlgorithm: string
+): boolean {
+  return (
+    !section.algorithm_scope ||
+    section.algorithm_scope.length === 0 ||
+    section.algorithm_scope.includes(activeAlgorithm)
+  );
+}
+
 export function ConfigView({
   runtime,
   license,
@@ -150,6 +162,14 @@ export function ConfigView({
     .map((field) => field.path);
   const isDirty =
     config && initialConfig ? JSON.stringify(initialConfig) !== JSON.stringify(config) : false;
+  const activeAlgorithmValue = config
+    ? getConfigValue(config, "control.active_algorithm")
+    : "";
+  const activeAlgorithm =
+    typeof activeAlgorithmValue === "string" ? activeAlgorithmValue : "";
+  const visibleSections = schema
+    ? schema.sections.filter((section) => isConfigSectionVisible(section, activeAlgorithm))
+    : [];
   const canWriteConfig = Boolean(license?.features.includes("config_write"));
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeSelectedBackend = runtime?.inference?.selected;
@@ -273,7 +293,7 @@ export function ConfigView({
             </div>
           </div>
           <div className="config-sections">
-            {schema.sections.map((section) => (
+            {visibleSections.map((section) => (
               <section className="config-section" key={section.id}>
                 <h3>{section.label}</h3>
                 <div className="config-grid">
@@ -310,7 +330,7 @@ export function ConfigView({
                           >
                             {(field.options ?? []).map((option) => (
                               <option key={option} value={option}>
-                                {option || "跟随默认"}
+                                {(field.option_labels?.[option] ?? option) || "跟随默认"}
                               </option>
                             ))}
                           </select>

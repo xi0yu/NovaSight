@@ -9,23 +9,30 @@ from typing import Any
 
 from novasight.config import RuntimeConfig
 from novasight.control import (
+    DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
     MAX_PLAN_DURATION_MS,
     CommandScheduler,
     ControlOutput,
     ControlOutputPolicy,
     plan_step_capacity,
 )
+from novasight.control.registry import SchedulerPolicy, algorithm_definition
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.kmnet import KmNetExecutor
 from novasight.executors.mouse_command import MouseCommandExecutor
 from novasight.contracts import ControlIntent
 
 
-SINGLE_COMMAND_ALGORITHM_IDS = frozenset(
-    {
-        "dual_phase_atan_robust_predictive_v2",
-    }
-)
+def _uses_transitional_single_command_delivery(config: RuntimeConfig) -> bool:
+    """Keep current v2 delivery until the latest-replace executor lands in round two."""
+
+    capabilities = algorithm_definition(
+        str(config.control.active_algorithm)
+    ).capabilities
+    return (
+        capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
+        and not capabilities.scheduler_policy_ready
+    )
 
 
 class ExecutorRegistry:
@@ -75,25 +82,21 @@ class ExecutorRegistry:
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
+        single_command = _uses_transitional_single_command_delivery(config)
         return cls.with_builtin_executors(
             config=config,
             default="kmnet",
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
-            direct_output=(
-                config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS
-                or not bool(config.control.scheduler_enabled)
-            ),
-            single_command_per_observation=(
-                config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS
-            ),
+            direct_output=single_command or not bool(config.control.scheduler_enabled),
+            single_command_per_observation=single_command,
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
         selected = "kmnet"
         if selected not in self.executors:
             raise ValueError(f"unknown executor: {selected}")
-        single_command = config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS
+        single_command = _uses_transitional_single_command_delivery(config)
         scheduler = None if single_command else scheduler_from_config(config)
         direct_output = single_command or not bool(config.control.scheduler_enabled)
         policy = policy_from_config(config)
@@ -451,7 +454,7 @@ class ExecutorRegistry:
 
 
 def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
-    if config.control.active_algorithm == "dual_phase_atan_robust_predictive_v2":
+    if config.control.active_algorithm == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
         precise = config.control.dual_phase_atan_robust_predictive_v2
         maximum = int(
             math.ceil(
@@ -476,7 +479,7 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
 
 
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
-    if config.control.active_algorithm in SINGLE_COMMAND_ALGORITHM_IDS:
+    if _uses_transitional_single_command_delivery(config):
         return None
     if not bool(config.control.scheduler_enabled):
         return None

@@ -130,6 +130,7 @@ def test_scheduler_disabled_sends_each_observation_directly_without_splitting() 
             return ExecutionResult(self.executor_id, True, output, "sent")
 
     config = RuntimeConfig()
+    config.control.active_algorithm = "universal_saturated"
     config.control.scheduler_enabled = False
     fake = FakeExecutor()
     registry = ExecutorRegistry.from_config(config)
@@ -140,8 +141,9 @@ def test_scheduler_disabled_sends_each_observation_directly_without_splitting() 
     assert result.sent is True
     assert result.metadata["stage"] == "direct_output"
     assert result.metadata["scheduler_enabled"] is False
-    assert [(output.dx, output.dy) for output in fake.outputs] == [(60, 16)]
-    assert registry.status()["scheduler"] == {"enabled": False, "direct_output": True}
+    assert [(output.dx, output.dy) for output in fake.outputs] == [(56, 16)]
+    assert registry.status()["scheduler"]["enabled"] is False
+    assert registry.status()["scheduler"]["direct_output"] is True
 
 
 def test_new_observation_only_replaces_plan_and_scheduler_tick_owns_send() -> None:
@@ -323,9 +325,10 @@ def test_control_mode_switch_replaces_controller_and_clears_scheduler_state() ->
             return None
 
     config = RuntimeConfig()
+    config.control.active_algorithm = "universal_saturated"
     executors = FakeExecutors()
     service = RuntimeService(config, models=object(), executors=executors)  # type: ignore[arg-type]
-    previous_controller = service.mouse_controller
+    previous_controller = service.control_algorithms.active_controller
     previous_controller.state.residual_x_counts = 0.75
     updated = copy.deepcopy(config)
     updated.control.mode = "calibrated_angular"
@@ -333,9 +336,9 @@ def test_control_mode_switch_replaces_controller_and_clears_scheduler_state() ->
     service.update_config(updated)
 
     assert previous_controller.mode == "universal_saturated"
-    assert service.mouse_controller is not previous_controller
-    assert service.mouse_controller.mode == "calibrated_angular"
-    assert service.mouse_controller.state.residual_x_counts == 0.0
+    assert service.control_algorithms.active_controller is not previous_controller
+    assert service.control_algorithms.active_controller.mode == "calibrated_angular"
+    assert service.control_algorithms.active_controller.state.residual_x_counts == 0.0
     assert "CONTROL_MODE_CHANGED" in executors.scheduler.clear_reasons
 
 
@@ -496,21 +499,20 @@ def test_command_scheduler_splits_axes_independently_without_subminimum_cross_ax
     assert (second.output.dx, second.output.dy) == (32, 0)
 
 
-def test_runtime_scheduler_raises_legacy_step_limit_to_twice_device_minimum() -> None:
+def test_runtime_scheduler_uses_active_algorithm_configured_step_limit() -> None:
     config = RuntimeConfig()
+    config.control.active_algorithm = "universal_saturated"
     config.control.scheduler_step_counts_x = 20
     config.control.scheduler_step_counts_y = 20
-    config.hardware.min_effective_move_counts_x = 16
-    config.hardware.min_effective_move_counts_y = 16
     registry = ExecutorRegistry.from_config(config)
     assert registry.scheduler is not None
 
     ready = registry.scheduler.submit(_output(30, 0, frame_id=1), now_s=1.0)
 
-    assert registry.scheduler.status(now_s=1.0)["max_step_x"] == 32
+    assert registry.scheduler.status(now_s=1.0)["max_step_x"] == 20
     assert ready.output is not None
-    assert ready.output.dx == 30
-    assert ready.metadata["split_steps_total"] == 1
+    assert ready.output.dx == 15
+    assert ready.metadata["split_steps_total"] == 2
 
 
 def test_command_scheduler_holds_full_split_queue_when_throttled() -> None:

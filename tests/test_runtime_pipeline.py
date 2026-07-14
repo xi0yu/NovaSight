@@ -1128,7 +1128,7 @@ def test_detection_batch_with_hardware_trigger_reaches_mouse_controller_schedule
         410.0
     )
     assert service.last_control["pipeline"]["predicted_error_x_px"] == pytest.approx(50.0)
-    assert service.last_control["dx"] == 18
+    assert service.last_control["dx"] == 10
     assert service.last_control["dy"] == 0
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
@@ -1218,7 +1218,7 @@ def test_scheduler_disabled_sends_detection_budget_in_observation_call() -> None
     assert len(result.execution_results) == 1
     assert result.execution_results[0].sent is True
     assert result.execution_results[0].metadata["stage"] == "direct_output"
-    assert [(output.dx, output.dy) for output in kmnet.outputs] == [(18, 0)]
+    assert [(output.dx, output.dy) for output in kmnet.outputs] == [(10, 0)]
     assert executors.scheduler is None
 
 
@@ -1439,13 +1439,14 @@ def test_dual_phase_control_tick_observes_trigger_release_without_sending(
     )
     service.running = True
     release_calls: list[bool] = []
-    original_release = service.dual_phase_algorithm.release_trigger
+    robust_controller = service.control_algorithms.active_controller
+    original_release = robust_controller.release_trigger
 
     def record_release() -> None:
         release_calls.append(True)
         original_release()
 
-    monkeypatch.setattr(service.dual_phase_algorithm, "release_trigger", record_release)
+    monkeypatch.setattr(robust_controller, "release_trigger", record_release)
 
     result = service.process_control_tick()
 
@@ -1511,14 +1512,14 @@ def test_hot_switch_from_calibrated_to_universal_still_sends_to_kmnet() -> None:
     )
     send_result = service.process_control_tick()
 
-    assert service.mouse_controller.mode == "universal_saturated"
+    assert service.control_algorithms.active_controller.mode == "universal_saturated"
     assert service.last_control is not None
     assert service.last_control["pipeline"]["control_mode"] == "universal_saturated"
-    assert service.last_control["dx"] == 18
+    assert service.last_control["dx"] == 10
     assert len(observation_result.control_intents) == 1
     assert len(send_result.execution_results) == 1
     assert send_result.execution_results[0].sent is True
-    assert kmnet.outputs[-1].dx == 18
+    assert kmnet.outputs[-1].dx == 5
 
 
 def test_runtime_service_records_generation_lag_without_rejecting_in_flight_batch() -> None:

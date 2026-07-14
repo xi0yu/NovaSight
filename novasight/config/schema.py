@@ -5,6 +5,13 @@ from typing import Any
 
 from novasight.config.params import param_schema_for
 from novasight.config.runtime import RuntimeConfig
+from novasight.control.registry import (
+    CALIBRATED_ANGULAR,
+    DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
+    UNIVERSAL_SATURATED,
+    algorithm_definition,
+    supported_algorithm_ids,
+)
 
 
 def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]:
@@ -467,30 +474,8 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "restart_required": False,
                     },
                     {
-                        "path": "control.prediction_strength",
-                        "label": "预测强度",
-                        "type": "float",
-                        "min": 0,
-                        "max": 1.5,
-                        "step": 0.01,
-                        "precision": 2,
-                        "restart_required": False,
-                    },
-                    {
-                        "path": "control.prediction_x_enabled",
-                        "label": "预测 X",
-                        "type": "bool",
-                        "restart_required": False,
-                    },
-                    {
-                        "path": "control.prediction_y_enabled",
-                        "label": "预测 Y",
-                        "type": "bool",
-                        "restart_required": False,
-                    },
-                    {
                         "path": "control.algorithms.calibrated_angular.fov_x_deg",
-                        "label": "精确标定：水平 FOVX",
+                        "label": "精确角度控制：水平 FOVX",
                         "type": "float",
                         "min": 30,
                         "max": 179,
@@ -500,7 +485,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.counts_per_360_x",
-                        "label": "精确标定：X 每圈 counts",
+                        "label": "精确角度控制：X 每圈 counts",
                         "type": "float",
                         "min": 1,
                         "step": 1,
@@ -509,7 +494,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.counts_per_360_y",
-                        "label": "精确标定：Y 每圈 counts",
+                        "label": "精确角度控制：Y 每圈 counts",
                         "type": "float",
                         "min": 1,
                         "step": 1,
@@ -518,7 +503,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.kp_x",
-                        "label": "精确标定：Kp X",
+                        "label": "精确角度控制：Kp X",
                         "type": "float",
                         "min": 0,
                         "max": 2,
@@ -528,7 +513,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.kp_y",
-                        "label": "精确标定：Kp Y",
+                        "label": "精确角度控制：Kp Y",
                         "type": "float",
                         "min": 0,
                         "max": 2,
@@ -538,7 +523,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.kd_x",
-                        "label": "精确标定：Kd X",
+                        "label": "精确角度控制：Kd X",
                         "type": "float",
                         "min": 0,
                         "max": 1,
@@ -548,7 +533,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.kd_y",
-                        "label": "精确标定：Kd Y",
+                        "label": "精确角度控制：Kd Y",
                         "type": "float",
                         "min": 0,
                         "max": 1,
@@ -558,7 +543,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.d_ema_alpha",
-                        "label": "精确标定：D 项 EMA",
+                        "label": "精确角度控制：D 项 EMA",
                         "type": "float",
                         "min": 0.01,
                         "max": 1,
@@ -568,7 +553,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.max_angle_step_x_deg",
-                        "label": "精确标定：X 最大角度步长",
+                        "label": "精确角度控制：X 最大角度步长",
                         "type": "float",
                         "min": 0.0001,
                         "step": 0.0001,
@@ -577,7 +562,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.calibrated_angular.max_angle_step_y_deg",
-                        "label": "精确标定：Y 最大角度步长",
+                        "label": "精确角度控制：Y 最大角度步长",
                         "type": "float",
                         "min": 0.0001,
                         "step": 0.0001,
@@ -586,7 +571,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.universal_saturated.response_scale_x_px",
-                        "label": "通用适配：水平响应尺度",
+                        "label": "通用控制：水平响应尺度",
                         "type": "float",
                         "min": 0.1,
                         "step": 0.1,
@@ -595,7 +580,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.universal_saturated.response_scale_y_px",
-                        "label": "通用适配：垂直响应尺度",
+                        "label": "通用控制：垂直响应尺度",
                         "type": "float",
                         "min": 0.1,
                         "step": 0.1,
@@ -604,7 +589,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.universal_saturated.max_step_x_counts",
-                        "label": "通用适配：最大水平移动",
+                        "label": "通用控制：最大水平移动",
                         "type": "float",
                         "min": 0.1,
                         "step": 0.1,
@@ -613,7 +598,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.universal_saturated.max_step_y_counts",
-                        "label": "通用适配：最大垂直移动",
+                        "label": "通用控制：最大垂直移动",
                         "type": "float",
                         "min": 0.1,
                         "step": 0.1,
@@ -622,7 +607,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.freshness_threshold_ms",
-                        "label": "精确 v2：控制新鲜度 ms",
+                        "label": "稳健预测控制：控制新鲜度 ms",
                         "type": "float",
                         "min": 1,
                         "max": 200,
@@ -632,7 +617,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio",
-                        "label": "精确 v2：瞄点纵向比例",
+                        "label": "稳健预测控制：瞄点纵向比例",
                         "type": "float",
                         "min": 0,
                         "max": 1,
@@ -642,7 +627,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg",
-                        "label": "精确 v2：水平 FOVX",
+                        "label": "稳健预测控制：水平 FOVX",
                         "type": "float",
                         "min": 30,
                         "max": 179,
@@ -652,7 +637,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360",
-                        "label": "精确 v2：每圈 counts",
+                        "label": "稳健预测控制：每圈 counts",
                         "type": "float",
                         "min": 1,
                         "step": 1,
@@ -661,13 +646,13 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.invert_y",
-                        "label": "精确 v2：反转 Y",
+                        "label": "稳健预测控制：反转 Y",
                         "type": "bool",
                         "restart_required": False,
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
-                        "label": "精确 v2：NEAR 阈值 px",
+                        "label": "稳健预测控制：NEAR 阈值 px",
                         "type": "float",
                         "min": 0,
                         "step": 0.1,
@@ -676,7 +661,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
-                        "label": "精确 v2：速度 EMA 时间常数 ms",
+                        "label": "稳健预测控制：速度 EMA 时间常数 ms",
                         "type": "float",
                         "min": 0.1,
                         "step": 0.1,
@@ -685,7 +670,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.history_reset_gap_ms",
-                        "label": "精确 v2：历史中断重置 ms",
+                        "label": "稳健预测控制：历史中断重置 ms",
                         "type": "float",
                         "min": 0.1,
                         "max": 500,
@@ -695,7 +680,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.spread_base_px_ms",
-                        "label": "精确 v2：速度离散基础容许 px/ms",
+                        "label": "稳健预测控制：速度离散基础容许 px/ms",
                         "type": "float",
                         "min": 0.001,
                         "step": 0.001,
@@ -704,7 +689,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.spread_relative",
-                        "label": "精确 v2：速度离散相对容许",
+                        "label": "稳健预测控制：速度离散相对容许",
                         "type": "float",
                         "min": 0,
                         "step": 0.01,
@@ -713,7 +698,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.change_base_px_ms",
-                        "label": "精确 v2：趋势变化基础容许 px/ms",
+                        "label": "稳健预测控制：趋势变化基础容许 px/ms",
                         "type": "float",
                         "min": 0.001,
                         "step": 0.001,
@@ -722,7 +707,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.change_relative",
-                        "label": "精确 v2：趋势变化相对容许",
+                        "label": "稳健预测控制：趋势变化相对容许",
                         "type": "float",
                         "min": 0,
                         "step": 0.01,
@@ -731,19 +716,19 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.enabled_x",
-                        "label": "精确 v2：启用 X 预测",
+                        "label": "稳健预测控制：启用 X 预测",
                         "type": "bool",
                         "restart_required": False,
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.enabled_y",
-                        "label": "精确 v2：启用 Y 预测（固定关闭）",
+                        "label": "稳健预测控制：启用 Y 预测（固定关闭）",
                         "type": "bool",
                         "restart_required": False,
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
-                        "label": "精确 v2：预测强度",
+                        "label": "稳健预测控制：预测强度",
                         "type": "float",
                         "min": 0,
                         "max": 2,
@@ -753,7 +738,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.actuation_delay_ms",
-                        "label": "精确 v2：执行延迟 ms",
+                        "label": "稳健预测控制：执行延迟 ms",
                         "type": "float",
                         "min": 0,
                         "step": 0.1,
@@ -762,7 +747,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.max_horizon_ms",
-                        "label": "精确 v2：最大预测时域 ms",
+                        "label": "稳健预测控制：最大预测时域 ms",
                         "type": "float",
                         "min": 0,
                         "step": 0.1,
@@ -771,7 +756,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.absolute_cap_px",
-                        "label": "精确 v2：FAR 预测绝对上限",
+                        "label": "稳健预测控制：FAR 预测绝对上限",
                         "type": "float",
                         "min": 0,
                         "max": 100,
@@ -781,7 +766,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.base_cap_px",
-                        "label": "精确 v2：FAR 预测基础上限",
+                        "label": "稳健预测控制：FAR 预测基础上限",
                         "type": "float",
                         "min": 0,
                         "max": 100,
@@ -791,7 +776,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.relative_cap",
-                        "label": "精确 v2：FAR 预测相对上限",
+                        "label": "稳健预测控制：FAR 预测相对上限",
                         "type": "float",
                         "min": 0,
                         "max": 2,
@@ -801,7 +786,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.absolute_cap_px",
-                        "label": "精确 v2：NEAR 预测绝对上限",
+                        "label": "稳健预测控制：NEAR 预测绝对上限",
                         "type": "float",
                         "min": 0,
                         "max": 100,
@@ -811,7 +796,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.base_cap_px",
-                        "label": "精确 v2：NEAR 预测基础上限",
+                        "label": "稳健预测控制：NEAR 预测基础上限",
                         "type": "float",
                         "min": 0,
                         "max": 100,
@@ -821,7 +806,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.near.relative_cap",
-                        "label": "精确 v2：NEAR 预测相对上限",
+                        "label": "稳健预测控制：NEAR 预测相对上限",
                         "type": "float",
                         "min": 0,
                         "max": 2,
@@ -831,7 +816,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
-                        "label": "精确 v2：FAR Kp",
+                        "label": "稳健预测控制：FAR Kp",
                         "type": "float",
                         "min": 0.001,
                         "max": 0.999,
@@ -841,7 +826,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
-                        "label": "精确 v2：NEAR Kp",
+                        "label": "稳健预测控制：NEAR Kp",
                         "type": "float",
                         "min": 0.001,
                         "max": 0.999,
@@ -851,7 +836,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts",
-                        "label": "精确 v2：共享 Atan 尺度",
+                        "label": "稳健预测控制：共享 Atan 尺度",
                         "type": "float",
                         "min": 0.1,
                         "step": 0.1,
@@ -860,7 +845,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.max_counts_per_update",
-                        "label": "精确 v2：FAR 单次上限",
+                        "label": "稳健预测控制：FAR 单次上限",
                         "type": "float",
                         "min": 0.1,
                         "max": 127,
@@ -870,7 +855,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                     },
                     {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.max_counts_per_update",
-                        "label": "精确 v2：NEAR 单次上限",
+                        "label": "稳健预测控制：NEAR 单次上限",
                         "type": "float",
                         "min": 0.1,
                         "max": 127,
@@ -1128,22 +1113,131 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
             },
         ],
     }
+    schema["sections"] = _split_control_sections(schema["sections"])
     for section in schema["sections"]:
         for field in section["fields"]:
             spec = param_schema_for(str(field.get("path", "")))
-            if not spec:
-                continue
-            field["label"] = spec["label"]
-            field["default"] = spec["default"]
-            field["min"] = spec["minimum"]
-            field["max"] = spec["maximum"]
-            field["recommended_min"] = spec["recommended_min"]
-            field["recommended_max"] = spec["recommended_max"]
-            field["step"] = spec["step"]
-            field["unit"] = spec["unit"]
-            field["description"] = spec["description"]
+            if spec:
+                field["label"] = spec["label"]
+                field["default"] = spec["default"]
+                field["min"] = spec["minimum"]
+                field["max"] = spec["maximum"]
+                field["recommended_min"] = spec["recommended_min"]
+                field["recommended_max"] = spec["recommended_max"]
+                field["step"] = spec["step"]
+                field["unit"] = spec["unit"]
+                field["description"] = spec["description"]
     schema["values"] = _visible_values(asdict(cfg), schema["sections"])
     return schema
+
+
+def _split_control_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for section in sections:
+        if section.get("id") != "control":
+            result.append(section)
+            continue
+
+        fields = list(section.get("fields", []))
+        by_path = {str(field.get("path", "")): field for field in fields}
+        selector = by_path.get("control.active_algorithm")
+        if selector is not None:
+            selector["option_labels"] = {
+                algorithm_id: algorithm_definition(algorithm_id).product_name
+                for algorithm_id in supported_algorithm_ids()
+            }
+
+        prefixes = {
+            UNIVERSAL_SATURATED: "control.algorithms.universal_saturated.",
+            CALIBRATED_ANGULAR: "control.algorithms.calibrated_angular.",
+            DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2: (
+                "control.algorithms.dual_phase_atan_robust_predictive_v2."
+            ),
+        }
+        algorithm_fields = {
+            algorithm_id: [
+                field
+                for field in fields
+                if str(field.get("path", "")).startswith(prefix)
+            ]
+            for algorithm_id, prefix in prefixes.items()
+        }
+        algorithm_paths = {
+            str(field.get("path", ""))
+            for scoped_fields in algorithm_fields.values()
+            for field in scoped_fields
+        }
+        common_control_paths = {
+            "control.shared.trigger_activation_delay_ms",
+        }
+        non_predictive_common_paths = {
+            "control.aim.y_ratio",
+            "control.configured_actuation_delay_s",
+        }
+        non_predictive_common_fields = [
+            field
+            for field in fields
+            if str(field.get("path", "")) in non_predictive_common_paths
+        ]
+        standard_output_prefixes = ("control.shared.", "control.scheduler_")
+        standard_output_fields = [
+            field
+            for field in fields
+            if str(field.get("path", "")).startswith(standard_output_prefixes)
+            and str(field.get("path", "")) not in common_control_paths
+        ]
+        standard_output_paths = {
+            str(field.get("path", "")) for field in standard_output_fields
+        }
+        shared_fields = [
+            field
+            for field in fields
+            if str(field.get("path", "")) not in algorithm_paths
+            and str(field.get("path", "")) not in non_predictive_common_paths
+            and str(field.get("path", "")) not in standard_output_paths
+        ]
+        common_scope = list(supported_algorithm_ids())
+        result.extend(
+            [
+                {
+                    "id": "control_shared",
+                    "label": "控制公共设置",
+                    "algorithm_scope": common_scope,
+                    "fields": shared_fields,
+                },
+                {
+                    "id": "control_universal_saturated",
+                    "label": "通用控制",
+                    "algorithm_scope": [UNIVERSAL_SATURATED],
+                    "fields": algorithm_fields[UNIVERSAL_SATURATED],
+                },
+                {
+                    "id": "control_calibrated_angular",
+                    "label": "精确角度控制",
+                    "algorithm_scope": [CALIBRATED_ANGULAR],
+                    "fields": algorithm_fields[CALIBRATED_ANGULAR],
+                },
+                {
+                    "id": "control_robust_predictive",
+                    "label": "稳健预测控制",
+                    "algorithm_scope": [DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2],
+                    "fields": algorithm_fields[DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2],
+                },
+                {
+                    "id": "control_non_predictive_shared",
+                    "label": "通用/精确公共设置",
+                    "algorithm_scope": [UNIVERSAL_SATURATED, CALIBRATED_ANGULAR],
+                    "fields": non_predictive_common_fields,
+                },
+                {
+                    "id": "control_standard_output",
+                    "label": "通用/精确输出策略",
+                    "algorithm_scope": [UNIVERSAL_SATURATED, CALIBRATED_ANGULAR],
+                    "fields": standard_output_fields,
+                },
+            ]
+        )
+    return result
 
 
 def _visible_values(values: dict[str, Any], sections: list[dict[str, Any]]) -> dict[str, Any]:

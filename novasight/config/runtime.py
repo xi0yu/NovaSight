@@ -7,6 +7,7 @@ from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
 import yaml
 
+from novasight.control.registry import DEFAULT_ACTIVE_ALGORITHM_ID, supported_algorithm_ids
 from novasight.roi import ROI_SIZE_CHOICES, normalize_roi_size
 
 
@@ -292,7 +293,7 @@ class SharedControlConfig:
 
 @dataclass
 class ControlConfig:
-    active_algorithm: str = "universal_saturated"
+    active_algorithm: str = DEFAULT_ACTIVE_ALGORITHM_ID
     target_fov_radius_px: float = 180.0
     target_switch_delay_ms: float = 50.0
     target_lock_enabled: bool = True
@@ -326,9 +327,6 @@ class ControlConfig:
     algorithms: ControlAlgorithmConfigs = field(default_factory=ControlAlgorithmConfigs)
     shared: SharedControlConfig = field(default_factory=SharedControlConfig)
     configured_actuation_delay_s: float = 0.004
-    prediction_strength: float = 1.0
-    prediction_x_enabled: bool = True
-    prediction_y_enabled: bool = True
     scheduler_enabled: bool = True
     scheduler_step_counts_x: int = 8
     scheduler_step_counts_y: int = 8
@@ -631,15 +629,11 @@ def _migrate_legacy_mouse_control(
                 _legacy_number(delay_ms, "control.configured_extra_prediction_delay_ms") / 1000.0
             )
 
-    legacy_prediction_enabled = control.pop("latency_compensation_enabled", None)
-    if legacy_prediction_enabled is False:
-        control.setdefault("prediction_x_enabled", False)
-        control.setdefault("prediction_y_enabled", False)
-    _move_legacy_number(
-        control,
-        "latency_compensation_scale",
-        "prediction_strength",
-    )
+    control.pop("latency_compensation_enabled", None)
+    control.pop("latency_compensation_scale", None)
+    control.pop("prediction_strength", None)
+    control.pop("prediction_x_enabled", None)
+    control.pop("prediction_y_enabled", None)
     _move_legacy_number(control, "experimental_angle_kp_x", "kp_x")
     _move_legacy_number(control, "experimental_angle_kp_y", "kp_y")
 
@@ -825,7 +819,7 @@ def _migrate_control_algorithm_namespaces(control: dict[str, Any]) -> None:
         if active_algorithm is not None
         else legacy_mode
         if legacy_mode is not None
-        else "universal_saturated"
+        else DEFAULT_ACTIVE_ALGORITHM_ID
     )
     if selected_algorithm in removed_algorithm_ids:
         selected_algorithm = "dual_phase_atan_robust_predictive_v2"
@@ -1170,11 +1164,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(
             "runtime config key 'calibration.game_sensitivity_fingerprint' must be non-empty"
         )
-    if cfg.control.active_algorithm not in {
-        "calibrated_angular",
-        "universal_saturated",
-        "dual_phase_atan_robust_predictive_v2",
-    }:
+    if cfg.control.active_algorithm not in supported_algorithm_ids():
         raise ValueError(
             "runtime config key 'control.active_algorithm' must select a configured algorithm"
         )
@@ -1183,7 +1173,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     cfg.control.aim.y_ratio = round(max(0.0, min(1.0, float(cfg.control.aim.y_ratio))), 2)
     bounded_controls = {
         "configured_actuation_delay_s": (0.0, 0.1),
-        "prediction_strength": (0.0, 1.5),
         "scheduler_interval_ms": (1.0, 10.0),
         "target_switch_delay_ms": (0.0, 500.0),
     }
