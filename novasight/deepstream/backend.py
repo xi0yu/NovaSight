@@ -100,6 +100,7 @@ class DeepStreamObjectBackend:
         self.pipeline_config = pipeline_config
         self._preview_requested = bool(pipeline_config.preview_enabled)
         self._preview_disabled_reason = ""
+        self._preview_negotiation_fallback_attempted = False
         self.manifest = manifest
         self.parser_library_path = Path(parser_library_path).expanduser().resolve(strict=False)
         self.max_publish_age_ms = max(0.0, float(max_publish_age_ms))
@@ -203,11 +204,20 @@ class DeepStreamObjectBackend:
             if result == Gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("failed to set DeepStream pipeline to PLAYING")
             logger.info(
-                "DeepStream pipeline start accepted state_change=%s model=%s output=%s classes=%s",
+                "DeepStream pipeline start accepted state_change=%s model=%s output=%s "
+                "classes=%s objectness=%s preview=%s capture=%s:%sx%s@%s format=%s io_mode=%s",
                 result,
                 self.manifest.model_id,
                 self.manifest.output.shape,
                 self.manifest.output.class_count,
+                self.manifest.output.has_objectness,
+                self.pipeline_config.preview_enabled,
+                self.pipeline_config.device,
+                self.pipeline_config.capture_width,
+                self.pipeline_config.capture_height,
+                self.pipeline_config.fps,
+                self.pipeline_config.pixel_format,
+                self.pipeline_config.io_mode,
             )
         except Exception as exc:
             if pipeline is not None:
@@ -280,6 +290,9 @@ class DeepStreamObjectBackend:
                 "object_meta_frames": self._object_meta_frames,
                 "preview_enabled": bool(self.pipeline_config.preview_enabled),
                 "preview_requested": self._preview_requested,
+                "preview_negotiation_fallback_attempted": (
+                    self._preview_negotiation_fallback_attempted
+                ),
                 "preview_available": self._latest_preview_jpeg is not None,
                 "preview_frames": self._preview_frames,
                 "preview_fps": _sample_rate(self._preview_samples, now_ns),
@@ -401,6 +414,11 @@ class DeepStreamObjectBackend:
 
     def _degrade_preview_if_unavailable(self, Gst: Any) -> None:
         if not self._preview_requested:
+            return
+        if self._preview_negotiation_fallback_attempted:
+            if self.pipeline_config.preview_enabled:
+                self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+                self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
             return
         find = getattr(getattr(Gst, "ElementFactory", None), "find", None)
         missing = [
@@ -873,12 +891,47 @@ class DeepStreamObjectBackend:
                     continue
                 if message.type == Gst.MessageType.ERROR:
                     error, debug = message.parse_error()
-                    self._record_terminal_error(f"DeepStream pipeline error: {error}: {debug}")
+                    reason = f"DeepStream pipeline error: {error}: {debug}"
+                    if self._retry_without_preview_after_negotiation_error(reason):
+                        return
+                    self._record_terminal_error(reason)
                 else:
                     self._record_terminal_error("DeepStream pipeline reached EOS")
                 return
         except Exception as exc:
             self._record_terminal_error(f"DeepStream bus monitor failed: {exc}")
+
+    def _retry_without_preview_after_negotiation_error(self, reason: str) -> bool:
+        normalized = str(reason).lower()
+        with self._lock:
+            should_retry = (
+                self._preview_requested
+                and self.pipeline_config.preview_enabled
+                and not self._preview_negotiation_fallback_attempted
+                and self._input_frames == 0
+                and "not-negotiated" in normalized
+            )
+            if not should_retry:
+                return False
+            self._preview_negotiation_fallback_attempted = True
+            self._preview_disabled_reason = (
+                "hardware preview disabled after NVMM preview caps negotiation failed"
+            )
+            self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+            self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
+        logger.warning(
+            "DeepStream preview negotiation failed before nvinfer input; "
+            "retrying inference pipeline without preview reason=%s",
+            reason,
+        )
+        try:
+            self.start()
+        except Exception as exc:
+            self._record_terminal_error(
+                "DeepStream pipeline preview fallback failed: "
+                f"original={reason}; fallback={exc}"
+            )
+        return True
 
     def _record_terminal_error(self, reason: str) -> None:
         with self._preview_condition:
