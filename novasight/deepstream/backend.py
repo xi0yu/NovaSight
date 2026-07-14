@@ -202,7 +202,10 @@ class DeepStreamObjectBackend:
             self._attach_probes(Gst, pipeline)
             result = pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
-                raise RuntimeError("failed to set DeepStream pipeline to PLAYING")
+                detail = _take_pipeline_error(Gst, pipeline, timeout_ns=500_000_000)
+                raise RuntimeError(
+                    detail or "failed to set DeepStream pipeline to PLAYING"
+                )
             logger.info(
                 "DeepStream pipeline start accepted state_change=%s model=%s output=%s "
                 "classes=%s objectness=%s preview=%s capture=%s:%sx%s@%s format=%s io_mode=%s",
@@ -242,7 +245,11 @@ class DeepStreamObjectBackend:
             return
         try:
             Gst = importlib.import_module("gi.repository.Gst")
-            _set_pipeline_null_best_effort(Gst, pipeline)
+            detail = _set_pipeline_null_best_effort(Gst, pipeline)
+            if detail:
+                logger.warning("DeepStream pipeline stop incomplete: %s", detail)
+                with self._lock:
+                    self._last_error = detail
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
@@ -1098,11 +1105,40 @@ def _percentile(values: list[float], fraction: float) -> float:
     return values[index]
 
 
-def _set_pipeline_null_best_effort(Gst: Any, pipeline: Any) -> None:
+def _set_pipeline_null_best_effort(Gst: Any, pipeline: Any) -> str:
     try:
-        pipeline.set_state(Gst.State.NULL)
+        result = pipeline.set_state(Gst.State.NULL)
+        if result == Gst.StateChangeReturn.FAILURE:
+            return _take_pipeline_error(Gst, pipeline, timeout_ns=100_000_000) or (
+                "failed to set DeepStream pipeline to NULL"
+            )
+        get_state = getattr(pipeline, "get_state", None)
+        if not callable(get_state):
+            return ""
+        state_result, current, pending = get_state(3_000_000_000)
+        if state_result == Gst.StateChangeReturn.FAILURE:
+            return _take_pipeline_error(Gst, pipeline, timeout_ns=100_000_000) or (
+                "DeepStream pipeline failed while waiting for NULL"
+            )
+        if current != Gst.State.NULL:
+            return f"DeepStream pipeline did not reach NULL (current={current}, pending={pending})"
+        return ""
+    except Exception as exc:
+        return f"DeepStream pipeline stop failed: {exc}"
+
+
+def _take_pipeline_error(Gst: Any, pipeline: Any, *, timeout_ns: int) -> str:
+    try:
+        bus = pipeline.get_bus()
+        if bus is None:
+            return ""
+        message = bus.timed_pop_filtered(timeout_ns, Gst.MessageType.ERROR)
+        if message is None:
+            return ""
+        error, debug = message.parse_error()
+        return f"DeepStream pipeline error: {error}: {debug}"
     except Exception:
-        pass
+        return ""
 
 
 __all__ = [

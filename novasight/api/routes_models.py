@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import tempfile
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from novasight.model_ingress import InferenceConfigBuilder, ModelProfileStore
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
 _ENGINE_INPUT_SHAPE_PENDING = "engine-probe-required"
+MODEL_SWITCH_READY_TIMEOUT_S = 5.0
 
 
 YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
@@ -880,7 +882,11 @@ def _pause_runtime_pipeline_for_model_switch(request: Request) -> bool:
     runtime = getattr(request.app.state, "runtime", None)
     pipeline = getattr(runtime, "pipeline", None)
     was_running = bool(pipeline is not None and getattr(pipeline, "running", False) is True)
-    if was_running:
+    resume_requested = bool(
+        runtime is not None and getattr(runtime, "model_switch_resume_requested", False)
+    )
+    should_resume = was_running or resume_requested
+    if pipeline is not None and should_resume:
         logger.info("pausing runtime pipeline for model switch")
         pipeline.stop()
     elif runtime is not None:
@@ -892,12 +898,14 @@ def _pause_runtime_pipeline_for_model_switch(request: Request) -> bool:
     clear_latest = getattr(latest, "clear", None)
     if callable(clear_latest):
         clear_latest()
-    return was_running
+    if runtime is not None:
+        runtime.model_switch_resume_requested = False
+    return should_resume
 
 
-def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume: bool) -> None:
+def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume: bool) -> str:
     if not should_resume:
-        return
+        return ""
     runtime = getattr(request.app.state, "runtime", None)
     pipeline = getattr(runtime, "pipeline", None)
     if pipeline is None:
@@ -911,12 +919,63 @@ def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume:
             runtime.pipeline = pipeline
         except Exception as exc:
             logger.warning("runtime pipeline rebuild after model switch failed: %s", exc)
-            return
+            runtime.pipeline = None
+            runtime.running = False
+            runtime.model_switch_resume_requested = True
+            return str(exc)
     try:
         pipeline.start()
+        if not _wait_for_model_switch_pipeline(pipeline, MODEL_SWITCH_READY_TIMEOUT_S):
+            status = pipeline.status() if callable(getattr(pipeline, "status", None)) else {}
+            deepstream = status.get("deepstream", {}) if isinstance(status, dict) else {}
+            detail = str(
+                status.get("last_error")
+                or (deepstream.get("last_error") if isinstance(deepstream, dict) else "")
+                or "first valid DetectionBatch timed out"
+            )
+            raise RuntimeError(
+                "DeepStream model switch did not become ready within "
+                f"{MODEL_SWITCH_READY_TIMEOUT_S:.1f}s: {detail}"
+            )
+        runtime.model_switch_resume_requested = False
         logger.info("runtime pipeline resumed after model switch")
+        return ""
     except Exception as exc:
         logger.warning("runtime pipeline resume after model switch failed: %s", exc)
+        try:
+            pipeline.stop()
+        except Exception:
+            pass
+        runtime.pipeline = None
+        runtime.running = False
+        runtime.model_switch_resume_requested = True
+        record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
+        if callable(record_switch_error):
+            record_switch_error(str(exc))
+        return str(exc)
+
+
+def _wait_for_model_switch_pipeline(pipeline: Any, timeout_s: float) -> bool:
+    wait_until_ready = getattr(pipeline, "wait_until_ready", None)
+    if callable(wait_until_ready):
+        return bool(wait_until_ready(timeout_s))
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        status_reader = getattr(pipeline, "status", None)
+        if not callable(status_reader):
+            return bool(getattr(pipeline, "running", True))
+        status = status_reader()
+        deepstream = status.get("deepstream", {}) if isinstance(status, dict) else {}
+        if not isinstance(deepstream, dict) or not deepstream:
+            return bool(status.get("running", getattr(pipeline, "running", True)))
+        if int(deepstream.get("published_batches") or 0) > 0:
+            return True
+        if deepstream.get("terminal_error") is True:
+            return False
+        if status.get("running") is False:
+            return False
+        time.sleep(0.05)
+    return False
 
 
 def _clear_runtime_pipeline_after_model_switch(request: Request, reason: str) -> None:
@@ -984,23 +1043,29 @@ def _model_switch_report(
     classes: list[str],
     input_shape: str,
     inference_status: dict[str, Any],
+    runtime_required: bool = False,
+    runtime_error: str = "",
 ) -> dict[str, Any]:
     loaded = inference_status.get("loaded") is True
     selected = str(inference_status.get("selected") or inference_status.get("engine") or "auto")
     configured_for_deepstream = (
         selected == "deepstream_nvinfer" and inference_status.get("configured") is True
     )
-    applied = loaded or configured_for_deepstream
-    message = (
-        f"模型已切换：{artifact_path.name} · {selected} · {input_shape}"
-        if applied
-        else f"模型登记完成，但推理运行态未加载：{artifact_path.name}"
+    applied = not runtime_error and (
+        loaded if runtime_required else (loaded or configured_for_deepstream)
     )
+    if runtime_error:
+        message = f"模型配置已切换，但 DeepStream 运行态启动失败：{runtime_error}"
+    elif applied:
+        message = f"模型已切换：{artifact_path.name} · {selected} · {input_shape}"
+    else:
+        message = f"模型登记完成，但推理运行态未加载：{artifact_path.name}"
     return {
         "action": action,
         "applied": applied,
         "rolled_back": False,
         "message": message,
+        "runtime_error": runtime_error,
         "artifact_id": deployment.artifact_id,
         "previous_artifact_id": deployment.previous_artifact_id,
         "artifact_path": str(artifact_path),
@@ -1600,7 +1665,7 @@ def publish(
     except Exception:
         _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         raise
-    _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
+    resume_error = _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
     inference_status = _inference_status(request)
     return {
         "deployment": asdict(deployment),
@@ -1612,6 +1677,8 @@ def publish(
             classes=classes,
             input_shape=input_shape,
             inference_status=inference_status,
+            runtime_required=paused_for_switch,
+            runtime_error=resume_error,
         ),
     }
 
@@ -1640,7 +1707,10 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                 deployment.previous_artifact_id,
                 deployment.artifact_id,
             )
-            _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
+            resume_error = _resume_runtime_pipeline_after_model_switch(
+                request,
+                paused_for_switch,
+            )
             inference_status = _inference_status(request)
             input_shape = _actual_runtime_input_shape(inference_status, input_shape)
             _sync_artifact_version_input_shape(
@@ -1658,6 +1728,8 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                     classes=classes,
                     input_shape=input_shape,
                     inference_status=inference_status,
+                    runtime_required=paused_for_switch,
+                    runtime_error=resume_error,
                 ),
             }
         artifact_path, classes, input_shape = _resolve_runnable_artifact(
@@ -1713,7 +1785,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
     except Exception:
         _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         raise
-    _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
+    resume_error = _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
     inference_status = _inference_status(request)
     return {
         "deployment": asdict(deployment),
@@ -1725,5 +1797,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             classes=classes,
             input_shape=input_shape,
             inference_status=inference_status,
+            runtime_required=paused_for_switch,
+            runtime_error=resume_error,
         ),
     }

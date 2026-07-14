@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from functools import wraps
 from pathlib import Path
+import logging
 import threading
 from typing import Any, Iterator, Literal
 
@@ -14,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Strict
 from novasight.model_ingress import (
     EngineInspector,
     InferenceConfigBuilder,
-    ModelProbe,
     ModelProfile,
     ModelProfileResolver,
     ModelProfileStore,
@@ -23,9 +23,11 @@ from novasight.model_ingress import (
     model_profile_validation_fingerprint,
 )
 from novasight.model_registry import ModelRegistry, read_manifest
+from novasight.deepstream.model_probe import probe_deepstream_model
 
 
 router = APIRouter(prefix="/api/models")
+logger = logging.getLogger("novasight.api.model_ingress")
 _MODEL_INGRESS_LOCK = threading.RLock()
 
 
@@ -209,16 +211,16 @@ def probe_engine_artifact(
             status_code=409,
             detail=f"model profile is not ready for diagnostics: {profile.status.value}",
         )
-    input_mode = payload.input_mode if payload is not None else "fixed"
-    validated, report = ModelProbe().run(
+    backend = str(getattr(request.app.state.config.inference, "backend", "")).lower()
+    if backend != "deepstream_nvinfer":
+        raise HTTPException(
+            status_code=409,
+            detail="model diagnostics require the DeepStream nvinfer runtime",
+        )
+    validated, report = probe_deepstream_model(
         profile,
-        inference=request.app.state.inference,
+        runtime=request.app.state.runtime,
         isolation=_diagnostic_isolation(request),
-        frame_supplier=(
-            (lambda: _latest_diagnostic_frame(request))
-            if input_mode == "latest"
-            else None
-        ),
     )
     runtime_manifest = None
     if validated.status is ModelStatus.VALIDATED:
@@ -335,21 +337,21 @@ def _diagnostic_isolation(request: Request) -> Iterator[None]:
         yield
     finally:
         if was_running:
-            pipeline.start()
-
-
-def _latest_diagnostic_frame(request: Request) -> Any:
-    capture = getattr(request.app.state, "capture", None)
-    latest_frame = getattr(capture, "get_latest_preview_frame", None)
-    if callable(latest_frame):
-        frame = latest_frame()
-    else:
-        session = getattr(capture, "session", None)
-        latest_frame = getattr(session, "latest_frame", None)
-        frame = latest_frame(timeout_s=0.0) if callable(latest_frame) else None
-    if frame is None:
-        raise RuntimeError("latest ROI diagnostic requested but capture has no current frame")
-    return frame
+            try:
+                pipeline.start()
+                setattr(runtime, "model_switch_resume_requested", False)
+            except Exception as exc:
+                setattr(runtime, "model_switch_resume_requested", True)
+                runtime.running = False
+                runtime.fatal_error = {
+                    "type": "MODEL_DIAGNOSTIC_RESTORE_FAILED",
+                    "thread": "api.models.probe",
+                    "message": str(exc),
+                    "crash_log": "",
+                }
+                logger.exception(
+                    "DeepStream runtime restore after model diagnostics failed"
+                )
 
 
 def _artifact_context(

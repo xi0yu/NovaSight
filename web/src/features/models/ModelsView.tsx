@@ -420,6 +420,9 @@ export function ModelsView({
 
     try {
       const result = await publishModel(requestProjectId, artifact.id);
+      if (result.report && !result.report.applied) {
+        throw new Error(result.report.message);
+      }
       const nextInferenceFeedback = readInferenceFeedback(result.inference);
       setInferenceFeedback(nextInferenceFeedback);
       await onRuntimeRefresh();

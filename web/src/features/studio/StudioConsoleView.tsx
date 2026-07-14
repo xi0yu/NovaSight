@@ -2143,6 +2143,9 @@ export function StudioConsoleView({
         }
       }
       const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
+      if (response.report && !response.report.applied) {
+        throw new Error(response.report.message);
+      }
       setModelSwitchMessage(
         response.report?.message ??
           "模型诊断通过，统一运行配置已生成，模型已安全切换。"
@@ -2150,7 +2153,7 @@ export function StudioConsoleView({
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
     } catch (err) {
-      setLocalError(`模型切换失败，当前运行模型已保留：${getErrorMessage(err)}`);
+      setLocalError(`模型切换未生效：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
@@ -2571,7 +2574,7 @@ export function StudioConsoleView({
                 <div className={modelProbeReport.status === "validated" ? "model-switch-note good" : "model-switch-note bad"}>
                   <b>{modelProbeReport.status === "validated" ? "模型诊断通过" : "模型诊断失败"}</b>
                   <span>
-                    预处理 {modelProbeReport.preprocess_ms.toFixed(2)} ms · TensorRT {modelProbeReport.inference_ms.toFixed(2)} ms · Decode {modelProbeReport.decode_ms.toFixed(2)} ms · NMS {modelProbeReport.nms_ms.toFixed(2)} ms
+                    预处理 {modelProbeReport.preprocess_ms > 0 ? `${modelProbeReport.preprocess_ms.toFixed(2)} ms` : "—"} · nvinfer {modelProbeReport.inference_ms > 0 ? `${modelProbeReport.inference_ms.toFixed(2)} ms` : "—"} · Decode {modelProbeReport.decode_ms > 0 ? `${modelProbeReport.decode_ms.toFixed(2)} ms` : "—"} · NMS {modelProbeReport.nms_ms > 0 ? `${modelProbeReport.nms_ms.toFixed(2)} ms` : "—"}
                   </span>
                   <span>
                     Engine {modelProbeReport.engine_execution_ok ? "正常" : "失败"} · Tensor {modelProbeReport.output_tensor_ok ? "正常" : "异常"} · DetectionBatch {modelProbeReport.detection_batch_ok ? "正常" : "异常"}

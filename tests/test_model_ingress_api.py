@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,12 +9,13 @@ import pytest
 
 from novasight.api import routes_model_ingress, routes_models
 from novasight.api.routes_models import PublishRequest
-from novasight.contracts import BBox
-from novasight.inference.contracts import InferenceDetection, InferenceResult
 from novasight.model_ingress import (
     EngineInspectionResult,
+    ModelValidationReport,
     ModelStatus,
+    ProfileValidation,
     TensorDescriptor,
+    model_profile_validation_fingerprint,
 )
 from novasight.model_registry import ModelRegistry, inspect_model_artifact
 
@@ -155,46 +157,41 @@ def test_probe_isolates_control_and_persists_validated_profile(
         ),
     )
     events: list[str] = []
-
-    class Candidate:
-        def infer(self, _frame):
-            events.append("infer")
-            return InferenceResult(
-                available=True,
-                detections=[
-                    InferenceDetection(
-                        cls=0,
-                        score=0.9,
-                        box=BBox.from_xyxy(10, 10, 20, 20),
-                    )
-                ],
-                classes=["player"],
-                debug={
-                    "tensor_statistics": [
-                        {
-                            "name": "output0",
-                            "shape": [1, 5, 8400],
-                            "dtype": "float16",
-                            "minimum": 0,
-                            "maximum": 1,
-                            "mean": 0.1,
-                            "nan_count": 0,
-                            "inf_count": 0,
-                        }
-                    ],
-                    "decode": {"nms_detections": 1},
-                    "timings": {"execute_total_ms": 1.0},
-                },
-            )
-
-        def close(self):
-            events.append("close")
-
     request.app.state.inference = SimpleNamespace(
-        prepare_profile=lambda _profile, diagnostic: (
-            events.append(f"prepare:{diagnostic}") or Candidate(),
-            {"loaded": True, "warmed": True},
+        prepare_profile=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("DeepStream diagnostics must not use the legacy TensorRT runtime")
         )
+    )
+
+    def deepstream_probe(profile, *, runtime, isolation):
+        assert runtime is request.app.state.runtime
+        with isolation:
+            events.append("deepstream:nvinfer")
+        validated = replace(
+            profile,
+            status=ModelStatus.VALIDATED,
+            validation=ProfileValidation(
+                status="validated",
+                engine_execution_ok=True,
+                decoder_ok=True,
+                nms_ok=True,
+                detection_batch_ok=True,
+                profile_fingerprint=model_profile_validation_fingerprint(profile),
+            ),
+        )
+        return validated, ModelValidationReport(
+            status="validated",
+            engine_execution_ok=True,
+            output_tensor_ok=True,
+            decoder_ok=True,
+            nms_ok=True,
+            detection_batch_ok=True,
+        )
+
+    monkeypatch.setattr(
+        routes_model_ingress,
+        "probe_deepstream_model",
+        deepstream_probe,
     )
     request.app.state.runtime = SimpleNamespace(
         pipeline=None,
@@ -206,7 +203,7 @@ def test_probe_isolates_control_and_persists_validated_profile(
     assert response["profile"]["status"] == ModelStatus.VALIDATED.value
     assert response["report"]["detection_batch_ok"] is True
     assert events[0] == "cancel:MODEL_DIAGNOSTIC"
-    assert events[1:] == ["prepare:True", "infer", "close"]
+    assert events[1:] == ["deepstream:nvinfer"]
     unified_manifest_path = routes_model_ingress.ModelProfileStore().path_for_engine(
         engine_path
     )
@@ -247,99 +244,3 @@ def test_probe_isolates_control_and_persists_validated_profile(
 
     with pytest.raises(ValueError, match="not validated"):
         routes_model_ingress.load_validated_profile(engine_path)
-
-
-def test_probe_latest_input_is_acquired_after_control_isolation(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    request, artifact, _engine_path = _request(tmp_path)
-    monkeypatch.setattr(
-        routes_model_ingress,
-        "EngineInspector",
-        lambda: SimpleNamespace(inspect=lambda _path: _inspection()),
-    )
-    routes_model_ingress.inspect_engine_artifact(request, artifact.id)
-    routes_model_ingress.configure_engine_artifact(
-        request,
-        artifact.id,
-        routes_model_ingress.ModelProfileConfigureRequest(
-            color_format="RGB",
-            scale=1.0 / 255.0,
-            resize_mode="direct",
-            parser_type="yolov8_raw",
-            class_count=1,
-            labels=["player"],
-            bbox_format="xywh",
-            has_objectness=False,
-        ),
-    )
-    events: list[str] = []
-    live_frame = SimpleNamespace(
-        image=object(),
-        width=640,
-        height=640,
-        pixel_format="RGB",
-        frame_id=7,
-        capture_ts_ns=123,
-    )
-
-    class Candidate:
-        def infer(self, frame):
-            assert frame is live_frame
-            events.append("infer:latest")
-            return InferenceResult(
-                available=True,
-                detections=[],
-                classes=["player"],
-                debug={
-                    "tensor_statistics": [
-                        {
-                            "name": "output0",
-                            "shape": [1, 5, 8400],
-                            "dtype": "float16",
-                            "minimum": 0,
-                            "maximum": 0,
-                            "mean": 0,
-                            "nan_count": 0,
-                            "inf_count": 0,
-                        }
-                    ],
-                    "decode": {"nms_detections": 0},
-                    "timings": {"execute_total_ms": 1.0},
-                },
-            )
-
-        def close(self):
-            events.append("close")
-
-    request.app.state.inference = SimpleNamespace(
-        prepare_profile=lambda _profile, diagnostic: (
-            events.append(f"prepare:{diagnostic}") or Candidate(),
-            {"loaded": True, "warmed": True},
-        )
-    )
-    request.app.state.runtime = SimpleNamespace(
-        pipeline=None,
-        cancel_control=lambda reason: events.append(f"cancel:{reason}"),
-    )
-    request.app.state.capture = SimpleNamespace(
-        get_latest_preview_frame=lambda: (
-            events.append("capture:latest") or live_frame
-        )
-    )
-
-    response = routes_model_ingress.probe_engine_artifact(
-        request,
-        artifact.id,
-        routes_model_ingress.ModelProbeRequest(input_mode="latest"),
-    )
-
-    assert response["profile"]["status"] == ModelStatus.VALIDATED.value
-    assert events == [
-        "cancel:MODEL_DIAGNOSTIC",
-        "prepare:True",
-        "capture:latest",
-        "infer:latest",
-        "close",
-    ]

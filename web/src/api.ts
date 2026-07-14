@@ -123,6 +123,7 @@ export type ModelSwitchReport = {
   applied: boolean;
   rolled_back: boolean;
   message: string;
+  runtime_error?: string;
   artifact_id: number;
   previous_artifact_id: number | null;
   artifact_path: string;

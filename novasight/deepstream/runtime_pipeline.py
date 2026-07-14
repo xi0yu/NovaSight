@@ -226,6 +226,42 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
             engine_path,
             manifest.model_fingerprint,
         )
+    backend = _create_deepstream_backend(
+        runtime=runtime,
+        manifest=manifest,
+        engine_path=engine_path,
+        nvinfer_config_name="active-nvinfer.ini",
+        preview_enabled=bool(getattr(config.consumers, "preview", True)),
+    )
+    return DeepStreamRuntimePipeline(backend=backend, runtime=runtime)
+
+
+def create_deepstream_probe_backend(*, runtime: Any, profile: Any) -> DeepStreamObjectBackend:
+    engine_path = Path(profile.engine.path).expanduser().resolve(strict=False)
+    runtime_config = InferenceConfigBuilder().build(
+        profile,
+        parser_library_path=Path(runtime.config.inference.deepstream_parser_library),
+    )
+    fingerprint = str(runtime_config.manifest.model_fingerprint).replace("sha256:", "")[:16]
+    return _create_deepstream_backend(
+        runtime=runtime,
+        manifest=runtime_config.manifest,
+        engine_path=engine_path,
+        nvinfer_config_name=f"probe-{fingerprint or 'candidate'}.ini",
+        preview_enabled=False,
+    )
+
+
+def _create_deepstream_backend(
+    *,
+    runtime: Any,
+    manifest: Any,
+    engine_path: Path,
+    nvinfer_config_name: str,
+    preview_enabled: bool,
+) -> DeepStreamObjectBackend:
+    config = runtime.config
+    models = runtime.models
     if len(manifest.input.shape) != 4 or str(manifest.input.layout).upper() != "NCHW":
         raise RuntimeError("DeepStream model input must be NCHW [N,C,H,W]")
     model_height = int(manifest.input.shape[2])
@@ -247,7 +283,7 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
     parser_library = Path(config.inference.deepstream_parser_library)
     runtime_dir = Path(models.data_dir).parent / "runtime" / "deepstream"
     nvinfer_config_path = write_nvinfer_config(
-        runtime_dir / "active-nvinfer.ini",
+        runtime_dir / nvinfer_config_name,
         manifest,
         engine_path=engine_path,
         parser_library_path=parser_library,
@@ -269,10 +305,10 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
         pixel_format=config.capture.pixel_format,
         io_mode=config.inference.deepstream_io_mode,
         batched_push_timeout_us=config.inference.deepstream_batched_push_timeout_us,
-        preview_enabled=bool(getattr(config.consumers, "preview", True)),
+        preview_enabled=preview_enabled,
         preview_fps=int(getattr(config.limits, "stream_fps", 30)),
     )
-    backend = DeepStreamObjectBackend(
+    return DeepStreamObjectBackend(
         pipeline_config=pipeline_config,
         manifest=manifest,
         parser_library_path=parser_library,
@@ -281,7 +317,6 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
             config.inference.inference_input_deadline_ms,
         ),
     )
-    return DeepStreamRuntimePipeline(backend=backend, runtime=runtime)
 
 
 def _strictest_positive_ms(*values: object) -> float:
@@ -289,4 +324,8 @@ def _strictest_positive_ms(*values: object) -> float:
     return min(parsed) if parsed else 0.0
 
 
-__all__ = ["DeepStreamRuntimePipeline", "create_deepstream_runtime_pipeline"]
+__all__ = [
+    "DeepStreamRuntimePipeline",
+    "create_deepstream_probe_backend",
+    "create_deepstream_runtime_pipeline",
+]
