@@ -737,16 +737,21 @@ def _model_catalog_registry_indexes(
                     "artifact_id": artifact.id,
                     "artifact_status": artifact.status,
                 }
-                by_path[(asset_dir / artifact.path).resolve(strict=False)] = entry
-                by_content.setdefault((artifact.kind, artifact.checksum), entry)
+                artifact_path = (asset_dir / artifact.path).resolve(strict=False)
+                by_path[artifact_path] = entry
+                if artifact_path.is_file():
+                    by_content.setdefault((artifact.kind, artifact.checksum), entry)
     return by_path, by_content
 
 
 def _model_catalog_payload(
     registry: ModelRegistry,
     results: list[ModelArtifactScanResult],
+    *,
+    catalog_roots: tuple[Path, ...] | None = None,
 ) -> dict[str, Any]:
-    registry_root = Path(registry.data_dir).resolve(strict=False)
+    roots = catalog_roots or (Path(registry.data_dir),)
+    resolved_roots = tuple(Path(root).resolve(strict=False) for root in roots)
     registry_by_path, registry_by_content = _model_catalog_registry_indexes(registry)
     root: dict[str, Any] = {
         "type": "directory",
@@ -761,13 +766,15 @@ def _model_catalog_payload(
     for result in sorted(
         results,
         key=lambda item: (
+            0
+            if item.path.resolve(strict=False) in registry_by_path
+            else 1,
             len(item.path.resolve(strict=False).parts),
             item.path.as_posix().lower(),
         ),
     ):
-        try:
-            relative = result.path.resolve(strict=False).relative_to(registry_root)
-        except ValueError:
+        relative = _catalog_relative_path(result.path, resolved_roots)
+        if relative is None:
             continue
         registry_entry = registry_by_path.get(result.path.resolve(strict=False))
         if registry_entry is None:
@@ -826,6 +833,16 @@ def _model_catalog_payload(
         "directory_count": max(0, len(directories) - 1),
         "model_count": model_count,
     }
+
+
+def _catalog_relative_path(path: Path, roots: tuple[Path, ...]) -> Path | None:
+    resolved = Path(path).resolve(strict=False)
+    for root in roots:
+        try:
+            return resolved.relative_to(root)
+        except ValueError:
+            continue
+    return None
 
 
 def _artifact_asset_context(
@@ -1322,13 +1339,25 @@ def list_projects(request: Request) -> list[dict[str, Any]]:
 @router.get("/catalog")
 def get_model_catalog(request: Request, force: bool = False) -> dict[str, Any]:
     registry = _registry(request)
-    sync_result = _sync_models_directory(registry, force=force)
-    artifacts = scan_model_artifacts(Path(registry.data_dir), force=force)
+    catalog_roots = (Path(registry.data_dir), Path("models"))
+    artifacts_by_relative_path: dict[str, ModelArtifactScanResult] = {}
+    for root in catalog_roots:
+        resolved_root = root.resolve(strict=False)
+        for artifact in scan_model_artifacts(root, force=force):
+            relative_path = _catalog_relative_path(artifact.path, (resolved_root,))
+            if relative_path is None:
+                continue
+            artifacts_by_relative_path.setdefault(relative_path.as_posix(), artifact)
+    artifacts = list(artifacts_by_relative_path.values())
     return {
-        **_model_catalog_payload(registry, artifacts),
-        "discovered_files": sync_result.discovered_files,
-        "updated_files": sync_result.updated_files,
-        "cache_hits": sync_result.cache_hits,
+        **_model_catalog_payload(
+            registry,
+            artifacts,
+            catalog_roots=catalog_roots,
+        ),
+        "discovered_files": len(artifacts),
+        "updated_files": 0,
+        "cache_hits": 0,
         "force": force,
     }
 

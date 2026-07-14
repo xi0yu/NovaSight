@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from novasight.model_registry.manifest import ModelManifest
@@ -75,7 +76,23 @@ def write_nvinfer_config(
         nms_threshold=nms_threshold,
     )
     if not target.exists() or target.read_text(encoding="utf-8") != text:
-        target.write_text(text, encoding="utf-8")
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                handle.write(text)
+                handle.flush()
+                temporary = Path(handle.name)
+            temporary.replace(target)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
     return target
 
 

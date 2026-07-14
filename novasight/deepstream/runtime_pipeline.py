@@ -234,7 +234,7 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
     parser_library = Path(config.inference.deepstream_parser_library)
     runtime_dir = Path(models.data_dir).parent / "runtime" / "deepstream"
     nvinfer_config_path = write_nvinfer_config(
-        runtime_dir / f"{manifest.model_fingerprint}.ini",
+        runtime_dir / "active-nvinfer.ini",
         manifest,
         engine_path=engine_path,
         parser_library_path=parser_library,

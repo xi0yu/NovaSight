@@ -496,6 +496,7 @@ def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_pat
 
     manifest_path = engine_path.with_name("model.manifest.json")
     manifest = read_manifest(manifest_path)
+    assert pipeline.backend.pipeline_config.nvinfer_config_path.name == "active-nvinfer.ini"
     assert pipeline.backend.manifest.model_fingerprint == manifest.model_fingerprint
     assert manifest.input.shape == [1, 3, 256, 256]
     assert manifest.output.shape == [1, 6, 1344]

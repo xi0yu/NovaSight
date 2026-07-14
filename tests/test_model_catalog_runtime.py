@@ -38,6 +38,118 @@ def test_project_listing_reads_registry_without_scanning_disk(tmp_path, monkeypa
     assert [project["name"] for project in projects] == ["cached"]
 
 
+def test_model_catalog_read_does_not_import_or_copy_discovered_engine(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    source_path = source_root / "demo.engine"
+    source_path.write_bytes(b"engine")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+
+    catalog = routes_models.get_model_catalog(_request_with_registry(registry))
+
+    assert catalog["updated_files"] == 0
+    assert catalog["model_count"] == 1
+    assert catalog["root"]["children"][0]["relative_path"] == "demo.engine"
+    assert registry.list_projects() == []
+    assert list(registry.data_dir.rglob("*.engine")) == []
+
+
+def test_model_catalog_deduplicates_same_relative_path_across_roots(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    (source_root / "same.engine").write_bytes(b"source")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+    (registry.data_dir / "same.engine").write_bytes(b"managed")
+
+    catalog = routes_models.get_model_catalog(_request_with_registry(registry))
+
+    assert catalog["model_count"] == 1
+    assert catalog["root"]["children"][0]["relative_path"] == "same.engine"
+    assert catalog["root"]["children"][0]["size_bytes"] == len(b"managed")
+
+
+def test_model_catalog_prefers_registered_path_over_same_content_source(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    (source_root / "same.engine").write_bytes(b"engine")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "same.engine",
+        ["target"],
+        "engine-probe-required",
+    )
+    managed_path = registry.data_dir / project.name / version.version / "same.engine"
+    managed_path.write_bytes(b"engine")
+    inspection = scanner.inspect_model_artifact(managed_path, force=True)
+    artifact = registry.create_artifact(
+        version.id,
+        "engine",
+        managed_path.name,
+        inspection.sha256,
+        "pending",
+    )
+
+    catalog = routes_models.get_model_catalog(_request_with_registry(registry))
+
+    assert catalog["root"]["children"][0]["relative_path"] == "demo"
+    model = catalog["root"]["children"][0]["children"][0]["children"][0]
+    assert catalog["model_count"] == 1
+    assert model["relative_path"] == "demo/v1/same.engine"
+    assert model["artifact_id"] == artifact.id
+
+
+def test_model_catalog_does_not_bind_source_to_missing_registered_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    source_path = source_root / "external.engine"
+    source_path.write_bytes(b"engine")
+    checksum = scanner.inspect_model_artifact(source_path, force=True).sha256
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+    project = registry.create_project("demo", "")
+    version = registry.create_version(
+        project.id,
+        "v1",
+        "onnx",
+        "missing.engine",
+        ["target"],
+        "engine-probe-required",
+    )
+    registry.create_artifact(
+        version.id,
+        "engine",
+        "missing.engine",
+        checksum,
+        "ready",
+    )
+
+    catalog = routes_models.get_model_catalog(_request_with_registry(registry))
+
+    model = catalog["root"]["children"][0]
+    assert model["relative_path"] == "external.engine"
+    assert "artifact_id" not in model
+    assert "artifact_status" not in model
+
+
 def test_model_directory_sync_skips_unchanged_files(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
