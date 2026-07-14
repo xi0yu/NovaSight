@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from novasight.inference.contracts import InferenceDetection
@@ -121,6 +122,7 @@ def decode_nx6_detections(
         max_score=float(best_stats.get("max_score", 0.0)),
         threshold_candidates=int(best_stats.get("threshold_candidates", 0)),
         nms_detections=int(best_stats.get("nms_detections", 0)),
+        nms_ms=float(best_stats.get("nms_ms", 0.0)),
         variants=[stats for _, stats in variants],
     )
     return best_detections
@@ -164,7 +166,9 @@ def _decode_xyxy_score_cls(
                 y2=y2,
             )
         )
+    nms_start_ns = time.monotonic_ns()
     kept = _nms(candidates, nms_threshold)
+    stats["nms_ms"] = max(0.0, (time.monotonic_ns() - nms_start_ns) / 1e6)
     stats["threshold_candidates"] = int(threshold_candidates)
     stats["nms_input_candidates"] = int(len(candidates))
     stats["nms_detections"] = int(len(kept))
@@ -219,7 +223,9 @@ def _decode_yolo_scores(
                 h=h,
             )
         )
+    nms_start_ns = time.monotonic_ns()
     kept = _nms(candidates, nms_threshold)
+    stats["nms_ms"] = max(0.0, (time.monotonic_ns() - nms_start_ns) / 1e6)
     stats["nms_input_candidates"] = int(len(candidates))
     stats["nms_detections"] = int(len(kept))
     return kept, stats

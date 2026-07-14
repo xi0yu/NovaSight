@@ -5,6 +5,7 @@ import {
   CaptureCapability,
   CaptureState,
   CaptureSelectPayload,
+  configureModelProfile,
   connectKmNet,
   diagnosticCircleKmNet,
   diagnosticMoveKmNet,
@@ -12,16 +13,19 @@ import {
   getRuntimeState,
   HealthResponse,
   ModelArtifact,
+  ModelProfileResponse,
+  ModelProbeResponse,
   ModelProject,
   ModelVersion,
   RuntimeConfig,
   RuntimeConfigValue,
   RuntimeState,
   getCaptureCapabilities,
-  getDeepStreamRecommendation,
+  getModelProfile,
   getModelArtifacts,
   getModelVersions,
-  prepareDeepStreamArtifact,
+  inspectModelArtifact,
+  probeModelArtifact,
   publishModel,
   scanModelDirectory,
   selectCaptureProfile,
@@ -418,6 +422,7 @@ export function StudioConsoleView({
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
+  const [modelProbeReport, setModelProbeReport] = useState<ModelProbeResponse["report"] | null>(null);
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
@@ -812,8 +817,8 @@ export function StudioConsoleView({
     );
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
-      (item.status === "ready" || (item.kind === "engine" && item.status === "pending")) &&
-      (item.kind === "onnx" || item.kind === "engine") &&
+      item.kind === "engine" &&
+      (item.status === "ready" || item.status === "pending" || item.status === "failed") &&
       (selectedModelVersionId === "" || item.version_id === selectedModelVersionId)
   );
   const sortedSwitchableArtifacts = [...switchableArtifacts].sort((left, right) => {
@@ -828,9 +833,8 @@ export function StudioConsoleView({
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const blockedSwitchArtifacts = modelArtifacts.filter(
     (item) =>
-      (item.kind === "onnx" || item.kind === "engine") &&
-      item.status !== "ready" &&
-      !(item.kind === "engine" && item.status === "pending")
+      item.kind === "engine" &&
+      !["ready", "pending", "failed"].includes(item.status)
   );
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
@@ -1962,7 +1966,7 @@ export function StudioConsoleView({
 
   const switchModel = async () => {
     if (selectedModelProjectId === "" || selectedSwitchArtifact === null) {
-      setLocalError("请选择可推理的 ONNX 或 TensorRT engine 产物。");
+      setLocalError("请选择 TensorRT engine 产物。");
       return;
     }
     if (
@@ -1975,44 +1979,83 @@ export function StudioConsoleView({
     setBusy("model.switch");
     setLocalError(null);
     setModelSwitchMessage("");
+    setModelProbeReport(null);
     try {
-      let preparedDeepStream = false;
-      if (deepstreamNvinferSelected && selectedSwitchArtifact.status === "pending") {
-        const probe = await getDeepStreamRecommendation(selectedSwitchArtifact.id);
-        const recommendation = probe.recommendation;
-        const sourceSummary = [
-          `输入契约：${probe.sources.input_contract}`,
-          `输出契约：${probe.sources.output_contract}`,
-          `预处理：${probe.sources.input_color_format}`
-        ].join(" / ");
-        const tensorSummary = probe.io_tensors
-          .map((tensor) => `${tensor.mode.toUpperCase()} ${tensor.name} ${tensor.shape.join("x")} ${tensor.dtype}`)
-          .join("\n");
+      if (selectedSwitchArtifact.kind !== "engine") {
+        throw new Error("NovaSight 正式主线只允许接入已验证的 TensorRT Engine。");
+      }
+      let profileResponse: ModelProfileResponse;
+      try {
+        profileResponse = await getModelProfile(selectedSwitchArtifact.id);
+      } catch {
+        profileResponse = await inspectModelArtifact(selectedSwitchArtifact.id);
+      }
+      if (profileResponse.profile.status === "UNINSPECTED") {
+        profileResponse = await inspectModelArtifact(selectedSwitchArtifact.id);
+      }
+      setModelSwitchMessage(
+        `Engine 检查完成：${profileResponse.profile.input.runtime_shape.join("x")} · ${profileResponse.profile.input.dtype} · ${profileResponse.profile.outputs.length} 个输出`
+      );
+      if (profileResponse.profile.status === "INCOMPATIBLE") {
+        throw new Error("Engine 输入输出结构不在 NovaSight 支持边界内，请查看诊断详情。");
+      }
+      if (
+        profileResponse.profile.status === "NEEDS_CONFIGURATION" ||
+        profileResponse.profile.status === "INVALID"
+      ) {
+        const profile = profileResponse.profile;
+        const parser = profile.parser_candidates[0];
+        const selectedVersion = modelVersions.find((item) => item.id === selectedModelVersionId);
+        const labels = selectedVersion?.classes?.filter((item) => item.trim().length > 0) ?? [];
+        if (!parser || labels.length === 0) {
+          throw new Error("无法自动确定 Parser 或类别语义，请先补全模型描述。");
+        }
+        const hasObjectness = parser.parser_type === "yolov5_raw";
         const confirmed = window.confirm(
           [
-            `已读取 ${selectedSwitchArtifact.path} 的 TensorRT 契约：`,
-            tensorSummary,
-            `输入：${recommendation.input_shape.join("x")} / ${recommendation.input_name} / ${recommendation.input_dtype}`,
-            `输出：${recommendation.output_shape.join("x")} / ${recommendation.output_name} / ${recommendation.output_dtype}`,
-            `类别：${recommendation.class_count}（${probe.class_names.join(", ")}）`,
-            `objectness：${probe.output_has_objectness ? "有" : "无"}`,
-            `预处理：${recommendation.input_color_format} / scale=${recommendation.input_scale_factor}`,
-            sourceSummary,
-            ...probe.warnings
+            `请确认 ${selectedSwitchArtifact.path} 无法从 Engine 自动确定的模型语义：`,
+            `输入：${profile.input.runtime_shape.join("x")} / ${profile.input.name} / ${profile.input.dtype}`,
+            `输出：${profile.outputs.map((item) => `${item.name} ${item.shape.join("x")} ${item.dtype}`).join("；")}`,
+            "颜色与归一化：RGB / 1÷255",
+            "缩放方式：直接缩放",
+            `解析器候选：${parser.parser_type}（${parser.confidence}）`,
+            `类别：${labels.length}（${labels.join(", ")}）`,
+            `objectness：${hasObjectness ? "有" : "无"}`,
+            "确认后只会进入诊断推理，不会发送鼠标控制。"
           ].join("\n")
         );
         if (!confirmed) {
           return;
         }
-        await prepareDeepStreamArtifact(selectedSwitchArtifact.id, recommendation);
-        preparedDeepStream = true;
+        profileResponse = await configureModelProfile(selectedSwitchArtifact.id, {
+          color_format: "RGB",
+          scale: 1 / 255,
+          resize_mode: "direct",
+          parser_type: parser.parser_type,
+          class_count: labels.length,
+          labels,
+          bbox_format: "xywh",
+          has_objectness: hasObjectness,
+          confidence_threshold: confidence,
+          nms_threshold: nms,
+          max_detections: 300
+        });
+        setModelSwitchMessage("模型语义已确认，准备进入隔离诊断推理。控制输出保持关闭。");
+      }
+      if (profileResponse.profile.status === "READY_FOR_PROBE") {
+        const diagnostic = await probeModelArtifact(selectedSwitchArtifact.id);
+        setModelProbeReport(diagnostic.report);
+        if (diagnostic.profile.status !== "VALIDATED") {
+          const details = diagnostic.report.issues
+            .map((item) => `${item.stage}: ${item.message}`)
+            .join("；");
+          throw new Error(details || "模型诊断未通过");
+        }
       }
       const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
       setModelSwitchMessage(
         response.report?.message ??
-          (preparedDeepStream
-            ? "DeepStream 模型契约已生成，模型已安全切换。"
-            : "模型已切换，推理运行态已刷新。")
+          "模型诊断通过，统一运行配置已生成，模型已安全切换。"
       );
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
@@ -2447,6 +2490,20 @@ export function StudioConsoleView({
                   {modelSwitchMessage || `上次切换失败：${lastModelSwitchError}`}
                 </div>
               ) : null}
+              {modelProbeReport ? (
+                <div className={modelProbeReport.status === "validated" ? "model-switch-note good" : "model-switch-note bad"}>
+                  <b>{modelProbeReport.status === "validated" ? "模型诊断通过" : "模型诊断失败"}</b>
+                  <span>
+                    预处理 {modelProbeReport.preprocess_ms.toFixed(2)} ms · TensorRT {modelProbeReport.inference_ms.toFixed(2)} ms · Decode {modelProbeReport.decode_ms.toFixed(2)} ms · NMS {modelProbeReport.nms_ms.toFixed(2)} ms
+                  </span>
+                  <span>
+                    Engine {modelProbeReport.engine_execution_ok ? "正常" : "失败"} · Tensor {modelProbeReport.output_tensor_ok ? "正常" : "异常"} · DetectionBatch {modelProbeReport.detection_batch_ok ? "正常" : "异常"}
+                  </span>
+                  {modelProbeReport.issues.length > 0 ? (
+                    <small>{modelProbeReport.issues.map((item) => item.message).join("；")}</small>
+                  ) : null}
+                </div>
+              ) : null}
               <button
                 className="console-button primary console-full-button"
                 disabled={busy !== null || selectedModelProjectId === "" || selectedSwitchArtifact === null}
@@ -2455,17 +2512,13 @@ export function StudioConsoleView({
               >
                 {busy === "model.switch"
                   ? "安全切换中..."
-                  : selectedSwitchArtifact?.status === "pending" && deepstreamNvinferSelected
-                    ? "准备并切换 DeepStream 模型"
-                    : selectedSwitchArtifact?.status === "pending"
-                      ? "验证并切换模型"
+                  : selectedSwitchArtifact?.status === "pending" || selectedSwitchArtifact?.status === "failed"
+                    ? "检查、诊断并切换模型"
                     : "安全切换模型"}
               </button>
-              {selectedSwitchArtifact?.status === "pending" ? (
+              {selectedSwitchArtifact?.status === "pending" || selectedSwitchArtifact?.status === "failed" ? (
                 <p className="console-field-hint">
-                  {deepstreamNvinferSelected
-                    ? "切换前由后端读取 TensorRT engine 的 binding、shape 和 dtype，再生成 model.manifest.json；无法从 engine 反推的预处理字段会明确标记来源。"
-                    : "未验证，可在切换时安全加载验证；验证失败不会替换当前运行模型。"}
+                  切换前会通过 TensorRT API 读取 I/O、Shape、类型和 Profile；预处理与 Parser 需确认，并在隔离诊断通过后才允许正式启用。
                 </p>
               ) : null}
               {selectedSwitchArtifact === null && blockedSwitchArtifacts.length > 0 ? (

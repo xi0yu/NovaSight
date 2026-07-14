@@ -7,7 +7,10 @@ from novasight.inference.decoders.yolo_v8 import YoloV8Decoder, YoloV8EndToEndDe
 
 PARSER_REGISTRY: dict[str, type[BaseDecoder]] = {
     "yolov5": YoloV5Decoder,
+    "yolov5_raw": YoloV5Decoder,
     "yolov8": YoloV8Decoder,
+    "yolov8_raw": YoloV8Decoder,
+    "yolo11_raw": YoloV8Decoder,
     "yolo": YoloV8Decoder,
     "yolov8_e2e": YoloV8EndToEndDecoder,
     "yolov8_efficientnms": YoloV8EndToEndDecoder,

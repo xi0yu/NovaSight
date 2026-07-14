@@ -34,6 +34,12 @@ from novasight.deepstream.model_manifest import (
     infer_yolo_output_contract,
     recommend_engine_manifest,
 )
+from novasight.api.routes_model_ingress import (
+    load_validated_profile,
+    serialized_model_operation,
+    set_profile_activation,
+)
+from novasight.model_ingress import InferenceConfigBuilder, ModelProfileStore
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
@@ -767,11 +773,22 @@ def _load_published_artifact(
     artifact_path = (
         Path(registry.data_dir) / project.name / version.version / artifact.path
     )
+    try:
+        profile = load_validated_profile(artifact_path)
+    except ValueError as exc:
+        raise RegistryValidationError(str(exc)) from exc
     if _deepstream_selected(request):
-        _ensure_registered_deepstream_manifest(
-            request,
-            artifact_id=artifact.id,
-            artifact_path=artifact_path,
+        inference_config = request.app.state.config.inference
+        try:
+            runtime_config = InferenceConfigBuilder().build(
+                profile,
+                parser_library_path=Path(inference_config.deepstream_parser_library),
+            )
+        except ValueError as exc:
+            raise RegistryValidationError(str(exc)) from exc
+        write_manifest(
+            runtime_config.manifest,
+            artifact_path.with_name("model.manifest.json"),
         )
         request.app.state.inference.unload(
             "TensorRT engine ownership delegated to DeepStream nvinfer"
@@ -781,10 +798,20 @@ def _load_published_artifact(
             "DeepStream active model changed",
         )
         return
-    request.app.state.inference.load(
-        artifact_path,
-        list(version.classes),
-        version.input_shape,
+    candidate, status = request.app.state.inference.prepare_profile(
+        profile,
+        diagnostic=False,
+    )
+    if status.get("loaded") is not True or status.get("warmed") is not True:
+        _close_candidate(candidate)
+        raise RegistryValidationError(
+            str(status.get("reason") or "validated model failed to load")
+        )
+    request.app.state.inference.commit(
+        candidate,
+        artifact_path=artifact_path,
+        classes=list(profile.labels),
+        input_shape="x".join(str(value) for value in profile.input.runtime_shape),
     )
 
 
@@ -820,38 +847,28 @@ def _resolve_runnable_artifact(
     )
 
 
-def _probe_runnable_artifact(
-    request: Request,
-    *,
-    artifact_path: Path,
-    classes: list[str],
-    input_shape: str,
-) -> dict[str, Any]:
-    inference = request.app.state.inference
-    probe = getattr(inference, "probe", None)
-    if not callable(probe):
-        raise RegistryValidationError("inference runtime does not support safe model switching")
-    status = dict(probe(artifact_path, classes, input_shape))
-    if status.get("loaded") is not True:
-        reason = status.get("reason") or "model probe failed"
-        raise RegistryValidationError(f"model switch rejected: {reason}")
-    return status
-
-
 def _prepare_runnable_artifact(
     request: Request,
     *,
-    artifact_id: int,
     artifact_path: Path,
     classes: list[str],
     input_shape: str,
 ) -> tuple[Any, dict[str, Any]]:
+    try:
+        profile = load_validated_profile(artifact_path)
+    except ValueError as exc:
+        raise RegistryValidationError(str(exc)) from exc
     if _deepstream_selected(request):
-        manifest = _ensure_registered_deepstream_manifest(
-            request,
-            artifact_id=artifact_id,
-            artifact_path=artifact_path,
-        )
+        inference_config = request.app.state.config.inference
+        try:
+            runtime_config = InferenceConfigBuilder().build(
+                profile,
+                parser_library_path=Path(inference_config.deepstream_parser_library),
+            )
+        except ValueError as exc:
+            raise RegistryValidationError(str(exc)) from exc
+        manifest = runtime_config.manifest
+        write_manifest(manifest, artifact_path.with_name("model.manifest.json"))
         return None, {
             "selected": "deepstream_nvinfer",
             "available": True,
@@ -861,15 +878,28 @@ def _prepare_runnable_artifact(
             "model_fingerprint": manifest.model_fingerprint,
             "reason": "validated for pipeline-owned nvinfer loading",
         }
+    preprocess = profile.preprocess
+    if (
+        str(preprocess.color_format).upper() != "RGB"
+        or abs(float(preprocess.scale or 0.0) - (1.0 / 255.0)) > 1e-12
+        or preprocess.offsets
+        or preprocess.mean
+        or preprocess.std
+        or str(preprocess.resize_mode).lower() != "direct"
+    ):
+        raise RegistryValidationError(
+            "nvmm_latest Jetson CUDA preprocess currently requires RGB, scale=1/255, "
+            "direct resize, and no offsets/mean/std"
+        )
     inference = request.app.state.inference
-    prepare = getattr(inference, "prepare", None)
+    prepare = getattr(inference, "prepare_profile", None)
     if not callable(prepare):
         raise RegistryValidationError("inference runtime does not support safe model switching")
     try:
-        candidate, status = prepare(artifact_path, classes, input_shape)
-        if status.get("loaded") is not True:
+        candidate, status = prepare(profile, diagnostic=False)
+        if status.get("loaded") is not True or status.get("warmed") is not True:
             _close_candidate(candidate)
-            reason = status.get("reason") or "candidate runtime did not report loaded=true"
+            reason = status.get("reason") or "candidate runtime did not report loaded+warmed"
             raise RegistryValidationError(f"model switch rejected: {reason}")
         return candidate, status
     except RegistryValidationError:
@@ -897,6 +927,27 @@ def _actual_runtime_input_shape(status: dict[str, Any], fallback: str) -> str:
     return str(actual).strip() if isinstance(actual, str) and actual.strip() else fallback
 
 
+def _set_previous_profile_inactive(
+    registry: ModelRegistry,
+    previous_artifact_id: int | None,
+    active_artifact_id: int,
+) -> None:
+    if previous_artifact_id is None or previous_artifact_id == active_artifact_id:
+        return
+    try:
+        _artifact, _version, _project, previous_path = _artifact_asset_context(
+            registry,
+            previous_artifact_id,
+        )
+        set_profile_activation(previous_path, active=False)
+    except (RegistryError, OSError, ValueError) as exc:
+        logger.warning(
+            "previous ModelProfile activation state could not be cleared artifact_id=%s: %s",
+            previous_artifact_id,
+            exc,
+        )
+
+
 def _sync_artifact_version_input_shape(
     registry: ModelRegistry,
     *,
@@ -921,11 +972,20 @@ def _sync_artifact_version_input_shape(
 def _pause_runtime_pipeline_for_model_switch(request: Request) -> bool:
     runtime = getattr(request.app.state, "runtime", None)
     pipeline = getattr(runtime, "pipeline", None)
-    if pipeline is None or getattr(pipeline, "running", False) is not True:
-        return False
-    logger.info("pausing runtime pipeline for model switch")
-    pipeline.stop()
-    return True
+    was_running = bool(pipeline is not None and getattr(pipeline, "running", False) is True)
+    if was_running:
+        logger.info("pausing runtime pipeline for model switch")
+        pipeline.stop()
+    elif runtime is not None:
+        cancel_control = getattr(runtime, "cancel_control", None)
+        if callable(cancel_control):
+            cancel_control("MODEL_SWITCH")
+    capture = getattr(request.app.state, "capture", None)
+    latest = getattr(capture, "latest_frame_broker", None)
+    clear_latest = getattr(latest, "clear", None)
+    if callable(clear_latest):
+        clear_latest()
+    return was_running
 
 
 def _resume_runtime_pipeline_after_model_switch(request: Request, should_resume: bool) -> None:
@@ -994,6 +1054,19 @@ def _deepstream_selected(request: Request) -> bool:
     config = getattr(request.app.state, "config", None)
     inference = getattr(config, "inference", None)
     return str(getattr(inference, "backend", "")).lower() == "deepstream_nvinfer"
+
+
+def _require_control_inference_policy(request: Request) -> None:
+    config = getattr(request.app.state, "config", None)
+    inference = getattr(config, "inference", None)
+    if inference is None:
+        return
+    if not bool(getattr(inference, "require_gpu", True)):
+        raise RegistryValidationError("formal model activation requires inference.require_gpu=true")
+    if bool(getattr(inference, "allow_cpu_fallback", False)):
+        raise RegistryValidationError(
+            "formal model activation requires inference.allow_cpu_fallback=false"
+        )
 
 
 def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> bool:
@@ -1261,6 +1334,7 @@ def recommend_deepstream_artifact(request: Request, artifact_id: int) -> dict[st
 
 
 @router.post("/artifacts/{artifact_id}/deepstream/prepare")
+@serialized_model_operation
 def prepare_deepstream_artifact(
     request: Request,
     artifact_id: int,
@@ -1278,6 +1352,11 @@ def prepare_deepstream_artifact(
             )
         if not artifact_path.is_file():
             raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
+        if ModelProfileStore().path_for_engine(artifact_path).is_file():
+            raise RegistryValidationError(
+                "legacy DeepStream prepare is disabled after ModelProfile inspection; "
+                "use the inspect, profile, and probe endpoints"
+            )
         resolved = recommend_engine_manifest(
             request.app.state.inference,
             artifact_path=artifact_path,
@@ -1663,6 +1742,7 @@ def finish_conversion_job(
 
 
 @router.post("/projects/{project_id}/publish")
+@serialized_model_operation
 def publish(
     request: Request,
     project_id: int,
@@ -1672,6 +1752,7 @@ def publish(
     paused_for_switch = False
     try:
         _require_project(registry, project_id)
+        _require_control_inference_policy(request)
         artifact_path, classes, input_shape = _resolve_runnable_artifact(
             registry,
             project_id=project_id,
@@ -1679,7 +1760,6 @@ def publish(
         )
         candidate, candidate_status = _prepare_runnable_artifact(
             request,
-            artifact_id=payload.artifact_id,
             artifact_path=artifact_path,
             classes=classes,
             input_shape=input_shape,
@@ -1721,6 +1801,12 @@ def publish(
                 classes=classes,
                 input_shape=input_shape,
             )
+        set_profile_activation(artifact_path, active=True)
+        _set_previous_profile_inactive(
+            registry,
+            deployment.previous_artifact_id,
+            deployment.artifact_id,
+        )
     except RegistryError as exc:
         _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)
@@ -1753,11 +1839,13 @@ def publish(
 
 
 @router.post("/projects/{project_id}/rollback")
+@serialized_model_operation
 def rollback(request: Request, project_id: int) -> dict[str, Any]:
     registry = _registry(request)
     paused_for_switch = False
     try:
         _require_project(registry, project_id)
+        _require_control_inference_policy(request)
         current = registry.get_deployment(project_id)
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         if current is None or current.previous_artifact_id is None:
@@ -1768,6 +1856,12 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                 artifact_id=deployment.artifact_id,
             )
             _load_published_artifact(request, registry, deployment.artifact_id)
+            set_profile_activation(artifact_path, active=True)
+            _set_previous_profile_inactive(
+                registry,
+                deployment.previous_artifact_id,
+                deployment.artifact_id,
+            )
             _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
             inference_status = _inference_status(request)
             input_shape = _actual_runtime_input_shape(inference_status, input_shape)
@@ -1825,6 +1919,12 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
                 classes=classes,
                 input_shape=input_shape,
             )
+        set_profile_activation(artifact_path, active=True)
+        _set_previous_profile_inactive(
+            registry,
+            deployment.previous_artifact_id,
+            deployment.artifact_id,
+        )
     except RegistryError as exc:
         _resume_runtime_pipeline_after_model_switch(request, paused_for_switch)
         record_switch_error = getattr(request.app.state.inference, "record_switch_error", None)

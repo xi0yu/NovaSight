@@ -67,8 +67,14 @@ class CpuPreprocessor:
         self,
         prepared: PreparedTensorInput,
         shape: TensorInputShape,
+        *,
+        model_preprocess: Any | None = None,
     ) -> TensorPreprocessResult:
-        return prepare_host_tensor(prepared, shape)
+        return prepare_host_tensor(
+            prepared,
+            shape,
+            model_preprocess=model_preprocess,
+        )
 
     def status(self) -> dict[str, Any]:
         return {
@@ -84,11 +90,19 @@ def prepare_tensor(
     shape: TensorInputShape,
     *,
     gpu_preprocessor: GpuResourcePreprocessor | None = None,
+    model_preprocess: Any | None = None,
 ) -> TensorPreprocessResult:
     if prepared.mode == "host_frame":
-        return prepare_host_tensor(prepared, shape)
+        return prepare_host_tensor(
+            prepared,
+            shape,
+            model_preprocess=model_preprocess,
+        )
     if prepared.mode != "gpu_buffer" or gpu_preprocessor is None:
         raise_gpu_resource_preprocess_not_implemented(prepared)
+    configure = getattr(gpu_preprocessor, "configure_model_preprocess", None)
+    if callable(configure):
+        configure(model_preprocess)
     result = gpu_preprocessor.prepare(prepared, shape)
     _validate_device_preprocess_result(result, shape)
     return result
@@ -97,6 +111,8 @@ def prepare_tensor(
 def prepare_host_tensor(
     prepared: PreparedTensorInput,
     shape: TensorInputShape,
+    *,
+    model_preprocess: Any | None = None,
 ) -> TensorPreprocessResult:
     if prepared.mode != "host_frame":
         raise TensorPreprocessError(
@@ -117,18 +133,51 @@ def prepare_host_tensor(
     rgb = _host_frame_to_rgb(prepared, np=np)
     convert_done_ns = time.monotonic_ns()
     resize_start_ns = convert_done_ns
-    rgb, resize_metadata = _resize_or_letterbox_rgb(
-        rgb,
+    color_format = str(
+        getattr(model_preprocess, "color_format", "RGB") or "RGB"
+    ).upper()
+    if color_format not in {"RGB", "BGR"}:
+        raise TensorPreprocessError(
+            "CPU_PREPROCESS_UNSUPPORTED_COLOR_FORMAT",
+            f"CPU preprocess supports RGB or BGR model input, got {color_format}",
+        )
+    model_pixels = rgb if color_format == "RGB" else np.ascontiguousarray(rgb[:, :, ::-1])
+    model_pixels, resize_metadata = _resize_for_profile(
+        model_pixels,
         width=int(shape.width),
         height=int(shape.height),
         np=np,
+        model_preprocess=model_preprocess,
     )
     resize_done_ns = time.monotonic_ns()
     layout_start_ns = resize_done_ns
     dtype = np.float16 if normalize_tensor_dtype(shape.dtype) == "float16" else np.float32
-    tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None, :, :, :], dtype=dtype)
+    tensor = np.ascontiguousarray(
+        model_pixels.transpose(2, 0, 1)[None, :, :, :],
+        dtype=dtype,
+    )
     if np.issubdtype(tensor.dtype, np.floating):
-        tensor = tensor / dtype(255.0)
+        scale = float(getattr(model_preprocess, "scale", 1.0 / 255.0) or 0.0)
+        if scale <= 0.0:
+            raise TensorPreprocessError(
+                "CPU_PREPROCESS_INVALID_SCALE",
+                f"model preprocess scale must be positive, got {scale}",
+            )
+        offsets = _channel_values(model_preprocess, "offsets", np=np, dtype=dtype)
+        mean = _channel_values(model_preprocess, "mean", np=np, dtype=dtype)
+        std = _channel_values(model_preprocess, "std", np=np, dtype=dtype)
+        if offsets is not None:
+            tensor = tensor - offsets
+        tensor = tensor * dtype(scale)
+        if mean is not None:
+            tensor = tensor - mean
+        if std is not None:
+            if bool(np.any(std == 0)):
+                raise TensorPreprocessError(
+                    "CPU_PREPROCESS_INVALID_STD",
+                    "model preprocess std values must be non-zero",
+                )
+            tensor = tensor / std
         tensor = np.ascontiguousarray(tensor, dtype=dtype)
     layout_done_ns = time.monotonic_ns()
     timings = {
@@ -147,7 +196,13 @@ def prepare_host_tensor(
         zero_copy=False,
         reason="cpu_host_bridge",
         timings=timings,
-        metadata=resize_metadata,
+        metadata={
+            **resize_metadata,
+            "model_color_format": color_format,
+            "model_scale": float(
+                getattr(model_preprocess, "scale", 1.0 / 255.0) or 0.0
+            ),
+        },
     )
 
 
@@ -259,6 +314,7 @@ def _resize_or_letterbox_rgb(
     width: int,
     height: int,
     np: Any,
+    pad_value: int = 114,
 ) -> tuple[Any, dict[str, Any]]:
     src_h, src_w = image.shape[:2]
     target_w = int(width)
@@ -291,7 +347,6 @@ def _resize_or_letterbox_rgb(
     resized = _resize_rgb(image, width=content_w, height=content_h, np=np)
     pad_x = max(0, (target_w - content_w) // 2)
     pad_y = max(0, (target_h - content_h) // 2)
-    pad_value = 114
     canvas = np.full((target_h, target_w, 3), pad_value, dtype=np.uint8)
     canvas[pad_y : pad_y + content_h, pad_x : pad_x + content_w, :] = resized
     return np.ascontiguousarray(canvas), {
@@ -302,6 +357,73 @@ def _resize_or_letterbox_rgb(
         "pad_y": pad_y,
         "pad_value": pad_value,
     }
+
+
+def _resize_for_profile(
+    image: Any,
+    *,
+    width: int,
+    height: int,
+    np: Any,
+    model_preprocess: Any | None,
+) -> tuple[Any, dict[str, Any]]:
+    mode = str(getattr(model_preprocess, "resize_mode", "") or "auto").lower()
+    if mode not in {"auto", "direct", "letterbox"}:
+        raise TensorPreprocessError(
+            "CPU_PREPROCESS_UNSUPPORTED_RESIZE_MODE",
+            f"unsupported model resize mode: {mode}",
+        )
+    src_h, src_w = image.shape[:2]
+    target_w = int(width)
+    target_h = int(height)
+    if src_w == target_w and src_h == target_h:
+        return np.ascontiguousarray(image), {
+            "resize_mode": "none",
+            "model_content_width": target_w,
+            "model_content_height": target_h,
+            "pad_x": 0,
+            "pad_y": 0,
+            "pad_value": 0,
+        }
+    if mode == "direct":
+        return _resize_rgb(image, width=target_w, height=target_h, np=np), {
+            "resize_mode": "resize",
+            "model_content_width": target_w,
+            "model_content_height": target_h,
+            "pad_x": 0,
+            "pad_y": 0,
+            "pad_value": 0,
+        }
+    padding_value = int(
+        max(0, min(255, round(float(getattr(model_preprocess, "padding_value", 114.0)))))
+    )
+    return _resize_or_letterbox_rgb(
+        image,
+        width=target_w,
+        height=target_h,
+        np=np,
+        pad_value=padding_value,
+    )
+
+
+def _channel_values(
+    model_preprocess: Any | None,
+    name: str,
+    *,
+    np: Any,
+    dtype: Any,
+) -> Any | None:
+    values = tuple(float(value) for value in (getattr(model_preprocess, name, ()) or ()))
+    if not values:
+        return None
+    if len(values) == 1:
+        values = values * 3
+    if len(values) != 3:
+        raise TensorPreprocessError(
+            "CPU_PREPROCESS_INVALID_CHANNEL_VALUES",
+            f"model preprocess {name} must contain one or three values",
+        )
+    return np.asarray(values, dtype=dtype).reshape((1, 3, 1, 1))
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> float:

@@ -31,6 +31,7 @@ from .routes_device import router as device_router
 from .routes_executors import router as executors_router
 from .routes_health import router as health_router
 from .routes_model_import import router as model_import_router
+from .routes_model_ingress import load_validated_profile, router as model_ingress_router
 from .routes_models import router as models_router
 from .routes_runtime import router as runtime_router
 from .routes_status import router as status_router
@@ -150,6 +151,7 @@ def create_app(
     app.include_router(runtime_router)
     app.include_router(status_router)
     app.include_router(models_router)
+    app.include_router(model_ingress_router)
     app.include_router(model_import_router)
     app.include_router(executors_router)
     app.include_router(system_router)
@@ -384,11 +386,10 @@ def _load_active_model(
     inference: InferenceRuntime,
     config: RuntimeConfig,
 ) -> None:
-    if str(config.inference.backend).lower() == "deepstream_nvinfer":
-        inference.unload("TensorRT engine ownership delegated to DeepStream nvinfer")
-        return
     deployment = models.get_active_deployment()
     if deployment is None:
+        if str(config.inference.backend).lower() == "deepstream_nvinfer":
+            inference.unload("TensorRT engine ownership delegated to DeepStream nvinfer")
         return
     artifact = models.get_artifact(deployment.artifact_id)
     if artifact is None:
@@ -409,7 +410,35 @@ def _load_active_model(
         inference.disable(f"active artifact project not found: {version.project_id}")
         return
     artifact_path = Path(models.data_dir) / project.name / version.version / artifact.path
-    inference.load(artifact_path, list(version.classes), version.input_shape)
+    try:
+        profile = load_validated_profile(artifact_path)
+        if str(config.inference.backend).lower() == "deepstream_nvinfer":
+            inference.unload("TensorRT engine ownership delegated to DeepStream nvinfer")
+            logger.info("validated DeepStream model contract loaded artifact=%s", artifact_path)
+            return
+        candidate, candidate_status = inference.prepare_profile(
+            profile,
+            diagnostic=False,
+        )
+        if (
+            candidate_status.get("loaded") is not True
+            or candidate_status.get("warmed") is not True
+        ):
+            close = getattr(candidate, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError(
+                str(candidate_status.get("reason") or "validated model failed to load")
+            )
+        inference.commit(
+            candidate,
+            artifact_path=artifact_path,
+            classes=list(profile.labels),
+            input_shape="x".join(str(value) for value in profile.input.runtime_shape),
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        inference.disable(f"active TensorRT ModelProfile rejected: {exc}")
+        return
     status = inference.status()
     if status.get("loaded"):
         logger.info("active model loaded artifact=%s", artifact_path)

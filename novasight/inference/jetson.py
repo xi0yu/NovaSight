@@ -98,6 +98,7 @@ class JetsonGpuResourcePreprocessor:
     _capabilities: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _native_ready: bool = field(default=False, init=False, repr=False)
     _native_status: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    _model_preprocess: Any | None = field(default=None, init=False, repr=False)
 
     @property
     def backend(self) -> str:
@@ -120,17 +121,26 @@ class JetsonGpuResourcePreprocessor:
             "contract": jetson_gpu_resource_bridge_contract(),
             "reason": "" if bridge is not None else self._load_reason,
             "detail": "" if bridge is not None else self._load_error,
+            "model_preprocess": _model_preprocess_payload(self._model_preprocess),
         }
+
+    def configure_model_preprocess(self, model_preprocess: Any | None) -> None:
+        self._model_preprocess = model_preprocess
 
     def prepare(
         self,
         prepared: PreparedTensorInput,
         shape: TensorInputShape,
     ) -> TensorPreprocessResult:
+        _validate_native_model_preprocess(self._model_preprocess)
         bridge = self._load_bridge()
         if bridge is None:
             self._raise_unavailable(prepared, shape)
-        payload = _native_bridge_payload(prepared, shape)
+        payload = _native_bridge_payload(
+            prepared,
+            shape,
+            model_preprocess=self._model_preprocess,
+        )
         _validate_native_bridge_payload(
             self._capabilities,
             payload,
@@ -751,6 +761,8 @@ def _call_native_bridge(bridge: Any, payload: dict[str, Any]) -> Any:
 def _native_bridge_payload(
     prepared: PreparedTensorInput,
     shape: TensorInputShape,
+    *,
+    model_preprocess: Any | None = None,
 ) -> dict[str, Any]:
     resource_metadata = dict(prepared.resource_metadata)
     return {
@@ -782,7 +794,58 @@ def _native_bridge_payload(
         },
         "nchw": (int(shape.batch), int(shape.channels), int(shape.height), int(shape.width)),
         "dtype": normalize_tensor_dtype(shape.dtype),
+        "model_preprocess": _model_preprocess_payload(model_preprocess),
     }
+
+
+def _model_preprocess_payload(model_preprocess: Any | None) -> dict[str, Any]:
+    if model_preprocess is None:
+        return {
+            "color_format": "RGB",
+            "scale": 1.0 / 255.0,
+            "offsets": [],
+            "mean": [],
+            "std": [],
+            "resize_mode": "direct",
+            "symmetric_padding": False,
+            "padding_value": 0.0,
+        }
+    return {
+        "color_format": str(getattr(model_preprocess, "color_format", "") or "").upper(),
+        "scale": float(getattr(model_preprocess, "scale", 0.0) or 0.0),
+        "offsets": [float(value) for value in getattr(model_preprocess, "offsets", ())],
+        "mean": [float(value) for value in getattr(model_preprocess, "mean", ())],
+        "std": [float(value) for value in getattr(model_preprocess, "std", ())],
+        "resize_mode": str(getattr(model_preprocess, "resize_mode", "") or "").lower(),
+        "symmetric_padding": bool(
+            getattr(model_preprocess, "symmetric_padding", False)
+        ),
+        "padding_value": float(getattr(model_preprocess, "padding_value", 0.0) or 0.0),
+    }
+
+
+def _validate_native_model_preprocess(model_preprocess: Any | None) -> None:
+    payload = _model_preprocess_payload(model_preprocess)
+    if payload["color_format"] != "RGB":
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_FAILED,
+            "Jetson native preprocess currently only supports RGB model input",
+        )
+    if abs(float(payload["scale"]) - (1.0 / 255.0)) > 1e-12:
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_FAILED,
+            "Jetson native preprocess currently only supports scale=1/255",
+        )
+    if payload["offsets"] or payload["mean"] or payload["std"]:
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_FAILED,
+            "Jetson native preprocess does not support offsets/mean/std",
+        )
+    if payload["resize_mode"] != "direct":
+        raise TensorPreprocessError(
+            JETSON_GPU_RESOURCE_BRIDGE_FAILED,
+            "Jetson native preprocess currently only supports direct resize",
+        )
 
 
 def _tensor_result_from_native(

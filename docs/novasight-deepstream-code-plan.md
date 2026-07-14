@@ -79,6 +79,12 @@ This constraint is owned by `DeepStreamPipelineConfig` / `build_deepstream_pipel
 
 ## Phase P0: Model Configuration Foundation
 
+> July 2026 update: the legacy `deepstream/recommendation → deepstream/prepare`
+> workflow below is retained for historical context. Formal activation now uses the
+> `inspect → ModelProfile confirm → isolated probe → publish` flow documented in
+> [model-ingress.md](model-ingress.md). A generated manifest alone no longer grants
+> control-chain admission.
+
 Completed:
 
 - Shared parser at `novasight/inference/postprocess/yolo.py`.

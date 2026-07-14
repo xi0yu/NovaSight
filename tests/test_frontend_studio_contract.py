@@ -142,18 +142,15 @@ def test_studio_refreshes_changed_models_and_can_force_revalidation() -> None:
 def test_studio_can_validate_and_switch_pending_engine() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert (
-        'item.status === "ready" || (item.kind === "engine" && item.status === "pending")' in source
-    )
+    assert 'item.status === "ready" || item.status === "pending" || item.status === "failed"' in source
     assert 'selectedSwitchArtifact?.status === "pending"' in source
-    assert "getDeepStreamRecommendation" in source
-    assert "prepareDeepStreamArtifact" in source
-    assert '"准备并切换 DeepStream 模型"' in source
-    assert "tensorrt_engine_probe" not in source
-    assert "已读取 ${selectedSwitchArtifact.path} 的 TensorRT 契约" in source
+    assert "inspectModelArtifact" in source
+    assert "configureModelProfile" in source
+    assert "probeModelArtifact" in source
+    assert '"检查、诊断并切换模型"' in source
+    assert "无法从 Engine 自动确定的模型语义" in source
     assert "yoloCandidateCount" not in source
-    assert '"验证并切换模型"' in source
-    assert "未验证，可在切换时安全加载验证" in source
+    assert "隔离诊断通过后才允许正式启用" in source
     assert "preferLatestModelVersionRef.current" in source
     assert "模型产物不可切换" in source
 

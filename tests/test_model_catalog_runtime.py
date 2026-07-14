@@ -1,6 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from novasight.api import routes_models
 from novasight.api.routes_models import DeepStreamPrepareRequest, PublishRequest
 from novasight.config import RuntimeConfig
@@ -409,7 +412,10 @@ def test_engine_replacement_inherits_classes_but_requires_a_fresh_shape_probe(tm
     assert replacement_version.input_shape == "engine-probe-required"
 
 
-def test_publish_validates_pending_engine_before_marking_it_ready(tmp_path, monkeypatch) -> None:
+def test_publish_rejects_pending_engine_without_validated_model_profile(
+    tmp_path,
+    monkeypatch,
+) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     project = registry.create_project("demo", "")
     version = registry.create_version(
@@ -458,13 +464,17 @@ def test_publish_validates_pending_engine_before_marking_it_ready(tmp_path, monk
         lambda *_args: None,
     )
 
-    response = routes_models.publish(request, project.id, PublishRequest(artifact_id=artifact.id))
+    with pytest.raises(HTTPException, match="ModelProfile"):
+        routes_models.publish(
+            request,
+            project.id,
+            PublishRequest(artifact_id=artifact.id),
+        )
 
-    assert response["deployment"]["artifact_id"] == artifact.id
-    assert registry.get_artifact(artifact.id).status == "ready"
+    assert registry.get_artifact(artifact.id).status == "pending"
 
 
-def test_publish_deepstream_engine_generates_missing_manifest(tmp_path) -> None:
+def test_publish_deepstream_engine_does_not_guess_missing_model_profile(tmp_path) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     project = registry.create_project("demo", "")
     version = registry.create_version(
@@ -514,20 +524,14 @@ def test_publish_deepstream_engine_generates_missing_manifest(tmp_path) -> None:
         )
     )
 
-    response = routes_models.publish(
-        request,
-        project.id,
-        PublishRequest(artifact_id=artifact.id),
-    )
+    with pytest.raises(HTTPException, match="ModelProfile"):
+        routes_models.publish(
+            request,
+            project.id,
+            PublishRequest(artifact_id=artifact.id),
+        )
 
-    manifest = read_manifest(artifact_path.with_name("model.manifest.json"))
-    updated_artifact = registry.get_artifact(artifact.id)
-    assert response["deployment"]["artifact_id"] == artifact.id
-    assert updated_artifact.status == "ready"
-    assert updated_artifact.checksum == manifest.artifact.sha256
-    assert manifest.input.name == "images"
-    assert manifest.output.name == "output0"
-    assert manifest.output.class_names == ["body", "head"]
+    assert not artifact_path.with_name("model.manifest.json").exists()
 
 
 def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatch) -> None:
@@ -568,7 +572,11 @@ def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatc
 
     def prepare(*_args, **_kwargs):
         events.append("prepare")
-        return "candidate", {"loaded": True, "input_shape": "1x3x640x640"}
+        return "candidate", {
+            "loaded": True,
+            "warmed": True,
+            "input_shape": "1x3x640x640",
+        }
 
     def pause(_request):
         events.append("pause")
@@ -590,6 +598,11 @@ def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatc
         routes_models,
         "_inference_status",
         lambda _request: {"loaded": True, "selected": "tensorrt"},
+    )
+    monkeypatch.setattr(
+        routes_models,
+        "set_profile_activation",
+        lambda *_args, **_kwargs: None,
     )
 
     response = routes_models.publish(request, 3, PublishRequest(artifact_id=7))

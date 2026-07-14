@@ -192,6 +192,47 @@ class InferenceRuntime:
                     pass
             raise
 
+    def prepare_profile(
+        self,
+        profile: Any,
+        *,
+        diagnostic: bool = False,
+    ) -> tuple[InferenceEngine, dict]:
+        artifact_path = Path(profile.engine.path).expanduser().resolve(strict=False)
+        candidate = self._engine_for_artifact(artifact_path)
+        for name, value in (
+            ("confidence_threshold", float(profile.postprocess.confidence_threshold)),
+            ("nms_threshold", float(profile.postprocess.nms_threshold)),
+        ):
+            if hasattr(candidate, name):
+                setattr(candidate, name, value)
+        configure_profile = getattr(candidate, "configure_model_profile", None)
+        if not callable(configure_profile):
+            raise RuntimeError(
+                f"inference engine {candidate.engine_id} does not support ModelProfile"
+            )
+        set_diagnostic_mode = getattr(candidate, "set_diagnostic_mode", None)
+        try:
+            configure_profile(profile)
+            if callable(set_diagnostic_mode):
+                set_diagnostic_mode(bool(diagnostic))
+            input_shape = "x".join(str(value) for value in profile.input.runtime_shape)
+            with self._prepare_lock:
+                candidate.load(artifact_path, list(profile.labels), input_shape)
+                status = dict(candidate.status())
+            status["loaded"] = status.get("loaded") is True
+            status["diagnostic"] = bool(diagnostic)
+            status["model_id"] = str(profile.model_id)
+            return candidate, status
+        except Exception:
+            close = getattr(candidate, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            raise
+
     def commit(
         self,
         candidate: InferenceEngine,

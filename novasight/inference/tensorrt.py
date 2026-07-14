@@ -15,7 +15,8 @@ from .input import (
     prepare_tensor_input,
 )
 from .geometry import map_model_detections_to_roi_frame, preprocess_debug
-from .postprocess.yolo import decode_nx6_detections
+from novasight.model_ingress.parser_registry import get_parser_definition
+from .decoders import create_decoder
 from .preprocess import DeviceTensor, GpuResourcePreprocessor, prepare_tensor
 
 
@@ -99,6 +100,11 @@ class TensorRtInferenceEngine:
         self._last_preprocess_backend = ""
         self._last_preprocess_reason = ""
         self._last_preprocess_timings: dict[str, float] = {}
+        self._model_profile: Any | None = None
+        self._parser_type = ""
+        self._runtime_decoder = "yolov8"
+        self._decoder = create_decoder(self._runtime_decoder)
+        self._diagnostic_mode = False
 
     def available(self) -> bool:
         try:
@@ -195,6 +201,38 @@ class TensorRtInferenceEngine:
             "last_preprocess_reason": self._last_preprocess_reason,
             "last_preprocess_timings": dict(self._last_preprocess_timings),
             "gpu_preprocessor": self._gpu_preprocessor_status(),
+            "model_profile_id": str(getattr(self._model_profile, "model_id", "") or ""),
+            "parser": self._parser_type,
+            "runtime_decoder": self._runtime_decoder,
+            "preprocess": self._model_preprocess_payload(),
+            "diagnostic": self._diagnostic_mode,
+        }
+
+    def configure_model_profile(self, profile: Any) -> None:
+        parser = get_parser_definition(profile.decoder.parser_type)
+        self._model_profile = profile
+        self._parser_type = parser.parser_type
+        self._runtime_decoder = parser.runtime_decoder
+        self._decoder = create_decoder(parser.runtime_decoder)
+        self.confidence_threshold = float(profile.postprocess.confidence_threshold)
+        self.nms_threshold = float(profile.postprocess.nms_threshold)
+
+    def set_diagnostic_mode(self, enabled: bool) -> None:
+        self._diagnostic_mode = bool(enabled)
+
+    def _model_preprocess_payload(self) -> dict[str, Any]:
+        preprocess = getattr(self._model_profile, "preprocess", None)
+        if preprocess is None:
+            return {}
+        return {
+            "color_format": str(preprocess.color_format),
+            "scale": float(preprocess.scale),
+            "offsets": list(preprocess.offsets),
+            "mean": list(preprocess.mean),
+            "std": list(preprocess.std),
+            "resize_mode": str(preprocess.resize_mode),
+            "symmetric_padding": bool(preprocess.symmetric_padding),
+            "padding_value": float(preprocess.padding_value),
         }
 
     def set_gpu_preprocessor(self, gpu_preprocessor: GpuResourcePreprocessor | None) -> None:
@@ -230,6 +268,7 @@ class TensorRtInferenceEngine:
         self._last_preprocess_reason = ""
         self._last_preprocess_timings = {}
         self._load_engine(artifact_path, requested_shape=None)
+        self._validate_loaded_profile_contract()
         self._loaded = True
         self._warmup()
 
@@ -244,11 +283,20 @@ class TensorRtInferenceEngine:
             prepare_start_ns = time.monotonic_ns()
             self._last_input = prepare_tensor_input(frame, self._input_shape)
             tensor_start_ns = time.monotonic_ns()
-            preprocess_result = prepare_tensor(
-                self._last_input,
-                self._input_shape,
-                gpu_preprocessor=self._gpu_preprocessor,
-            )
+            model_preprocess = getattr(self._model_profile, "preprocess", None)
+            if model_preprocess is None:
+                preprocess_result = prepare_tensor(
+                    self._last_input,
+                    self._input_shape,
+                    gpu_preprocessor=self._gpu_preprocessor,
+                )
+            else:
+                preprocess_result = prepare_tensor(
+                    self._last_input,
+                    self._input_shape,
+                    gpu_preprocessor=self._gpu_preprocessor,
+                    model_preprocess=model_preprocess,
+                )
             self._last_preprocess_backend = preprocess_result.backend
             self._last_preprocess_reason = preprocess_result.reason
             self._last_preprocess_timings = dict(preprocess_result.timings or {})
@@ -303,11 +351,59 @@ class TensorRtInferenceEngine:
                 "output_shape": list(self._output_shape),
                 "output_dtype": self._output_dtype,
                 "decoded_detections": len(detections),
-                    "preprocess": preprocess_debug_payload,
+                "preprocess": preprocess_debug_payload,
                 "decode": decode_debug,
+                "tensor_statistics": list(decode_debug.get("tensor_statistics", [])),
                 "timings": timings,
             },
         )
+
+    def _validate_loaded_profile_contract(self) -> None:
+        profile = self._model_profile
+        if profile is None:
+            return
+        actual_input_shape = (
+            self._input_shape.batch,
+            self._input_shape.channels,
+            self._input_shape.height,
+            self._input_shape.width,
+        ) if self._input_shape is not None else ()
+        if self._input_name != profile.input.name:
+            raise RuntimeError(
+                "ModelProfile input name does not match TensorRT engine "
+                f"(profile={profile.input.name}, engine={self._input_name})"
+            )
+        if actual_input_shape != tuple(profile.input.runtime_shape):
+            raise RuntimeError(
+                "ModelProfile input shape does not match TensorRT execution context "
+                f"(profile={profile.input.runtime_shape}, engine={actual_input_shape})"
+            )
+        if normalize_tensor_dtype(profile.input.dtype) != normalize_tensor_dtype(
+            self._input_dtype
+        ):
+            raise RuntimeError(
+                "ModelProfile input dtype does not match TensorRT engine "
+                f"(profile={profile.input.dtype}, engine={self._input_dtype})"
+            )
+        expected_outputs = {output.name: output for output in profile.outputs}
+        if set(expected_outputs) != set(self._output_shapes):
+            raise RuntimeError(
+                "ModelProfile output names do not match TensorRT engine "
+                f"(profile={sorted(expected_outputs)}, engine={sorted(self._output_shapes)})"
+            )
+        for name, output in expected_outputs.items():
+            actual_shape = tuple(self._output_shapes[name])
+            if actual_shape != tuple(output.shape):
+                raise RuntimeError(
+                    f"ModelProfile output shape mismatch for {name}: "
+                    f"profile={output.shape}, engine={actual_shape}"
+                )
+            actual_dtype = self._output_dtypes.get(name, "")
+            if normalize_tensor_dtype(output.dtype) != normalize_tensor_dtype(actual_dtype):
+                raise RuntimeError(
+                    f"ModelProfile output dtype mismatch for {name}: "
+                    f"profile={output.dtype}, engine={actual_dtype}"
+                )
 
     def _warmup(self) -> None:
         if self._input_shape is None:
@@ -452,6 +548,30 @@ class TensorRtInferenceEngine:
             self._output_shapes,
             class_count=len(self._classes),
         )
+        expected_output_names = tuple(
+            str(output.name)
+            for output in getattr(self._model_profile, "outputs", ())
+        )
+        if expected_output_names:
+            if len(expected_output_names) != 1:
+                raise RuntimeError(
+                    "NovaSight TensorRT runtime currently supports exactly one decoded "
+                    f"output tensor, got {expected_output_names}"
+                )
+            expected_output_name = expected_output_names[0]
+            if expected_output_name not in self._output_shapes:
+                raise RuntimeError(
+                    f"ModelProfile output {expected_output_name!r} is missing from TensorRT engine"
+                )
+            expected_columns = _decoder_candidate_columns(
+                self._output_shapes[expected_output_name]
+            )
+            if expected_columns is None:
+                raise RuntimeError(
+                    f"ModelProfile output {expected_output_name!r} is not a detection tensor"
+                )
+            self._output_name = expected_output_name
+            self._output_candidate_columns = expected_columns
         if self._output_name is None:
             raise RuntimeError(
                 "unsupported TensorRT detection output contract; "
@@ -565,8 +685,16 @@ class TensorRtInferenceEngine:
         decode_start_ns = time.monotonic_ns()
         output = host_output.reshape(self._output_shape).astype(np.float32, copy=False)
         decode_debug: dict[str, Any] = {}
-        detections = decode_nx6_detections(
-            output,
+        if self._diagnostic_mode:
+            decode_debug["tensor_statistics"] = [
+                _tensor_statistics_payload(
+                    self._output_name,
+                    output,
+                    dtype=self._output_dtype,
+                )
+            ]
+        detections = self._decoder.decode(
+            [output],
             confidence_threshold=self.confidence_threshold,
             nms_threshold=self.nms_threshold,
             class_count=len(self._classes),
@@ -585,6 +713,7 @@ class TensorRtInferenceEngine:
                 "total_ms": _elapsed_ms(prepare_host_start_ns, done_ns),
             }
         )
+        decode_debug["decode_ms"] = timings["decode_ms"]
         decode_debug["timings"] = timings
         return detections, decode_debug
 
@@ -679,8 +808,16 @@ class TensorRtInferenceEngine:
         decode_start_ns = time.monotonic_ns()
         output = host_output.reshape(self._output_shape).astype(np.float32, copy=False)
         decode_debug: dict[str, Any] = {}
-        detections = decode_nx6_detections(
-            output,
+        if self._diagnostic_mode:
+            decode_debug["tensor_statistics"] = [
+                _tensor_statistics_payload(
+                    self._output_name,
+                    output,
+                    dtype=self._output_dtype,
+                )
+            ]
+        detections = self._decoder.decode(
+            [output],
             confidence_threshold=self.confidence_threshold,
             nms_threshold=self.nms_threshold,
             class_count=len(self._classes),
@@ -694,6 +831,7 @@ class TensorRtInferenceEngine:
             "decode_ms": _elapsed_ms(decode_start_ns, done_ns),
             "total_ms": _elapsed_ms(start_ns, done_ns),
         }
+        decode_debug["decode_ms"] = timings["decode_ms"]
         decode_debug["timings"] = timings
         return detections, decode_debug
 
@@ -951,6 +1089,23 @@ def _shape_tuple(value: Any) -> tuple[int, ...]:
 
 def _shape_is_static(shape: tuple[int, ...]) -> bool:
     return bool(shape) and all(int(item) > 0 for item in shape)
+
+
+def _tensor_statistics_payload(name: str, value: Any, *, dtype: str) -> dict[str, Any]:
+    import numpy as np
+
+    array = np.asarray(value)
+    finite = array[np.isfinite(array)]
+    return {
+        "name": str(name),
+        "shape": [int(item) for item in array.shape],
+        "dtype": str(dtype or array.dtype),
+        "minimum": float(np.min(finite)) if finite.size else 0.0,
+        "maximum": float(np.max(finite)) if finite.size else 0.0,
+        "mean": float(np.mean(finite)) if finite.size else 0.0,
+        "nan_count": int(np.count_nonzero(np.isnan(array))),
+        "inf_count": int(np.count_nonzero(np.isinf(array))),
+    }
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> float:

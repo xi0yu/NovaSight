@@ -141,6 +141,102 @@ export type DeepStreamRecommendationResponse = {
   warnings: string[];
 };
 
+export type ModelProfile = {
+  schema_version: number;
+  model_id: string;
+  display_name: string;
+  status:
+    | "UNINSPECTED"
+    | "INSPECTING"
+    | "NEEDS_CONFIGURATION"
+    | "READY_FOR_PROBE"
+    | "PROBING"
+    | "VALIDATED"
+    | "INVALID"
+    | "INCOMPATIBLE"
+    | "ACTIVE";
+  input: {
+    name: string;
+    runtime_shape: number[];
+    engine_shape: number[];
+    dtype: string;
+    layout: string;
+  };
+  outputs: Array<{
+    name: string;
+    shape: number[];
+    engine_shape: number[];
+    dtype: string;
+  }>;
+  preprocess: {
+    color_format: string;
+    scale: number | null;
+    resize_mode: string;
+  };
+  decoder: {
+    parser_type: string;
+    class_count: number;
+    bbox_format: string;
+    has_objectness: boolean | null;
+  };
+  labels: string[];
+  parser_candidates: Array<{
+    parser_type: string;
+    confidence: string;
+    reason: string;
+    requires_confirmation: boolean;
+  }>;
+  validation: {
+    status: string;
+    engine_execution_ok: boolean;
+    decoder_ok: boolean;
+    nms_ok: boolean;
+    detection_batch_ok: boolean;
+    issues: string[];
+  };
+};
+
+export type ModelProfileResponse = {
+  artifact_id: number;
+  profile_path: string;
+  profile: ModelProfile;
+};
+
+export type ModelProfileConfigurePayload = {
+  color_format: "RGB" | "BGR";
+  scale: number;
+  offsets?: number[];
+  mean?: number[];
+  std?: number[];
+  resize_mode: "direct" | "letterbox";
+  symmetric_padding?: boolean;
+  padding_value?: number;
+  parser_type: string;
+  class_count: number;
+  labels: string[];
+  bbox_format: "xywh" | "xyxy";
+  has_objectness: boolean;
+  confidence_threshold?: number;
+  nms_threshold?: number;
+  max_detections?: number;
+};
+
+export type ModelProbeResponse = ModelProfileResponse & {
+  report: {
+    status: string;
+    engine_execution_ok: boolean;
+    output_tensor_ok: boolean;
+    decoder_ok: boolean;
+    nms_ok: boolean;
+    detection_batch_ok: boolean;
+    preprocess_ms: number;
+    inference_ms: number;
+    decode_ms: number;
+    nms_ms: number;
+    issues: Array<{ code: string; stage: string; message: string }>;
+  };
+};
+
 export type CaptureState = {
   available: boolean;
   device: string;
@@ -647,6 +743,42 @@ export function getDeepStreamRecommendation(
   return requestJson<DeepStreamRecommendationResponse>(
     `/api/models/artifacts/${artifactId}/deepstream/recommendation`
   );
+}
+
+export function inspectModelArtifact(artifactId: number): Promise<ModelProfileResponse> {
+  return requestJson<ModelProfileResponse>(`/api/models/artifacts/${artifactId}/inspect`, {
+    method: "POST"
+  });
+}
+
+export function getModelProfile(artifactId: number): Promise<ModelProfileResponse> {
+  return requestJson<ModelProfileResponse>(`/api/models/artifacts/${artifactId}/profile`);
+}
+
+export function configureModelProfile(
+  artifactId: number,
+  payload: ModelProfileConfigurePayload
+): Promise<ModelProfileResponse> {
+  return requestJson<ModelProfileResponse>(`/api/models/artifacts/${artifactId}/profile`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+export function probeModelArtifact(
+  artifactId: number,
+  inputMode: "fixed" | "latest" = "fixed"
+): Promise<ModelProbeResponse> {
+  return requestJson<ModelProbeResponse>(`/api/models/artifacts/${artifactId}/probe`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ input_mode: inputMode })
+  });
 }
 
 export function rollbackModel(projectId: number): Promise<ModelPublishResponse> {
