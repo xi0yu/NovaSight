@@ -7,8 +7,8 @@ import {
   getModelVersions,
   prepareYolov8nExample,
   publishModel,
+  registerCatalogModel,
   rollbackModel,
-  scanModelDirectory,
   uploadModelFile,
   type ActiveModel,
   type ModelArtifact,
@@ -358,22 +358,38 @@ export function ModelsView({
     });
   }
 
-  function selectCatalogModel(model: ModelCatalogModel) {
+  async function selectCatalogModel(model: ModelCatalogModel) {
     setSelectedCatalogPath(model.relative_path);
-    if (
-      typeof model.project_id !== "number" ||
-      typeof model.version_id !== "number"
-    ) {
-      setModelActionError(
-        `${model.relative_path} 尚未登记完成，请重新扫描 models 目录。`
-      );
-      return;
+    let projectId = model.project_id;
+    let versionId = model.version_id;
+    if (typeof projectId !== "number" || typeof versionId !== "number") {
+      if (model.kind !== "engine") {
+        setModelActionError("当前运行主线只允许选择 TensorRT .engine 模型。");
+        return;
+      }
+      setScanningModels(true);
+      setModelActionError(undefined);
+      try {
+        const registered = await registerCatalogModel(model.relative_path);
+        projectId = registered.project.id;
+        versionId = registered.version.id;
+        setModelActionMessage(
+          `已引用原始 Engine：${model.relative_path}；未复制模型文件。`
+        );
+        setRegistryRefreshKey((current) => current + 1);
+      } catch (requestError) {
+        setModelActionError(getErrorMessage(requestError));
+        reportError(requestError, { source: "model-register", title: "模型引用登记失败" });
+        return;
+      } finally {
+        setScanningModels(false);
+      }
     }
     setModelActionError(undefined);
-    requestedCatalogVersionId.current = model.version_id;
-    setSelectedProjectId(model.project_id);
-    if (selectedProjectId === model.project_id) {
-      setSelectedVersionId(model.version_id);
+    requestedCatalogVersionId.current = versionId;
+    setSelectedProjectId(projectId);
+    if (selectedProjectId === projectId) {
+      setSelectedVersionId(versionId);
     }
   }
 
@@ -499,11 +515,10 @@ export function ModelsView({
     setModelActionError(undefined);
     setModelActionMessage(undefined);
     try {
-      const result = await scanModelDirectory();
-      await onRuntimeRefresh();
+      const result = await getModelCatalog(true);
       setRegistryRefreshKey((current) => current + 1);
       setModelActionMessage(
-        `已扫描服务端 models 目录，当前发现 ${result.project_count} 个模型方案。`
+        `已刷新服务端 models 目录，当前发现 ${result.model_count} 个模型文件；未复制模型。`
       );
     } catch (requestError) {
       setModelActionError(getErrorMessage(requestError));
@@ -552,7 +567,7 @@ export function ModelsView({
           <article className="model-workbench-card">
             <div>
               <strong>服务端 models 目录</strong>
-              <p>把 .onnx / .engine 放进服务端 models 目录后，点击扫描即可同步到模型仓库。</p>
+              <p>把 .onnx / .engine 放进服务端 models 目录后即可直接读取原文件，不会复制到模型仓库。</p>
             </div>
             <button
               className="button compact-button"
@@ -560,7 +575,7 @@ export function ModelsView({
               onClick={handleScanModels}
               disabled={scanningModels || preparingExample || uploadingModel}
             >
-              {scanningModels ? "扫描中..." : "扫描 models 目录"}
+              {scanningModels ? "刷新中..." : "刷新 models 目录"}
             </button>
           </article>
 

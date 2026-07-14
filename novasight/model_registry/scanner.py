@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,8 +77,9 @@ def _inspect_model_artifact_uncached(path: Path) -> ModelArtifactScanResult:
         )
     artifact_sha256 = sha256_file(path)
     size_bytes = path.stat().st_size
-    manifest_path = path.with_name("model.manifest.json")
-    if not manifest_path.exists():
+    manifest_path = _existing_manifest_path(path)
+    if manifest_path is None:
+        expected_manifest_path = path.with_name(f"{path.name}.manifest.json")
         return ModelArtifactScanResult(
             path=path,
             kind=suffix.lstrip("."),
@@ -85,11 +87,40 @@ def _inspect_model_artifact_uncached(path: Path) -> ModelArtifactScanResult:
             reason="model manifest is missing",
             sha256=artifact_sha256,
             size_bytes=size_bytes,
+            manifest_path=expected_manifest_path,
+        )
+    profile_status = _unified_profile_status(manifest_path)
+    if profile_status is not None and profile_status not in {"VALIDATED", "ACTIVE"}:
+        return ModelArtifactScanResult(
+            path=path,
+            kind=suffix.lstrip("."),
+            status="need_confirm",
+            reason="model manifest is awaiting configuration or diagnostics",
+            sha256=artifact_sha256,
+            size_bytes=size_bytes,
             manifest_path=manifest_path,
         )
     try:
         manifest = read_manifest(manifest_path)
     except Exception as exc:
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = None
+        profile = raw.get("model_profile") if isinstance(raw, dict) else None
+        if isinstance(profile, dict) and str(profile.get("status")) not in {
+            "VALIDATED",
+            "ACTIVE",
+        }:
+            return ModelArtifactScanResult(
+                path=path,
+                kind=suffix.lstrip("."),
+                status="need_confirm",
+                reason="model manifest is awaiting configuration or diagnostics",
+                sha256=artifact_sha256,
+                size_bytes=size_bytes,
+                manifest_path=manifest_path,
+            )
         return ModelArtifactScanResult(
             path=path,
             kind=suffix.lstrip("."),
@@ -138,8 +169,27 @@ def _inspect_model_artifact_uncached(path: Path) -> ModelArtifactScanResult:
 
 def _artifact_signature(path: Path) -> tuple[int, ...]:
     artifact = _stat_signature(path)
-    manifest = _stat_signature(path.with_name("model.manifest.json"))
-    return (*artifact, *manifest)
+    unified_manifest = _stat_signature(path.with_name(f"{path.name}.manifest.json"))
+    legacy_manifest = _stat_signature(path.with_name("model.manifest.json"))
+    return (*artifact, *unified_manifest, *legacy_manifest)
+
+
+def _existing_manifest_path(path: Path) -> Path | None:
+    unified = path.with_name(f"{path.name}.manifest.json")
+    if unified.is_file():
+        return unified
+    legacy = path.with_name("model.manifest.json")
+    return legacy if legacy.is_file() else None
+
+
+def _unified_profile_status(path: Path) -> str | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("model_profile"), dict):
+        return None
+    return str(raw["model_profile"].get("status", ""))
 
 
 def _stat_signature(path: Path) -> tuple[int, int]:

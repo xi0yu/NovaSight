@@ -210,7 +210,13 @@ class ModelRegistry:
             raise RegistryValidationError("deployment sequence is not initialized")
         return int(row["value"])
 
-    def create_project(self, name: str, description: str) -> ModelProject:
+    def create_project(
+        self,
+        name: str,
+        description: str,
+        *,
+        create_asset_dir: bool = True,
+    ) -> ModelProject:
         _validate_path_component(name, "project name")
         with self._connect() as conn:
             existing = conn.execute(
@@ -226,7 +232,8 @@ class ModelRegistry:
             except sqlite3.IntegrityError as exc:
                 raise RegistryConflictError(f"project already exists: {name}") from exc
             project = ModelProject(int(cursor.lastrowid), name, description)
-            (self.data_dir / name).mkdir(parents=True, exist_ok=True)
+            if create_asset_dir:
+                (self.data_dir / name).mkdir(parents=True, exist_ok=True)
             return project
 
     def create_version(
@@ -237,6 +244,8 @@ class ModelRegistry:
         source_path: str,
         classes: list[str],
         input_shape: str,
+        *,
+        create_asset_dir: bool = True,
     ) -> ModelVersion:
         _validate_path_component(version, "version")
         _validate_choice(source_kind, get_args(SourceKind), "source kind")
@@ -292,9 +301,10 @@ class ModelRegistry:
                 input_shape,
             )
             project_name = str(project["name"])
-            (self.data_dir / project_name / version).mkdir(
-                parents=True, exist_ok=True
-            )
+            if create_asset_dir:
+                (self.data_dir / project_name / version).mkdir(
+                    parents=True, exist_ok=True
+                )
             return model_version
 
     def update_version_input_shape(
@@ -351,12 +361,18 @@ class ModelRegistry:
         path: str,
         checksum: str,
         status: str,
+        *,
+        allow_external: bool = False,
     ) -> ModelArtifact:
         _validate_choice(kind, get_args(ArtifactKind), "artifact kind")
         _validate_choice(status, get_args(ArtifactStatus), "artifact status")
         with self._connect() as conn:
             asset_dir = self._version_asset_dir(conn, version_id)
-            normalized_path = self._normalize_artifact_path(path, asset_dir)
+            normalized_path = self._normalize_artifact_path(
+                path,
+                asset_dir,
+                allow_external=allow_external,
+            )
             cursor = conn.execute(
                 """
                 INSERT INTO model_artifacts (version_id, kind, path, checksum, status)
@@ -640,6 +656,14 @@ class ModelRegistry:
             ).fetchall()
         return [self._artifact_from_row(row) for row in rows]
 
+    def resolve_artifact_path(self, artifact: ModelArtifact) -> Path:
+        raw_path = Path(artifact.path).expanduser()
+        if raw_path.is_absolute():
+            return raw_path.resolve(strict=False)
+        with self._connect() as conn:
+            asset_dir = self._version_asset_dir(conn, artifact.version_id)
+        return (asset_dir / raw_path).resolve(strict=False)
+
     def _project_from_row(self, row: sqlite3.Row) -> ModelProject:
         return ModelProject(int(row["id"]), str(row["name"]), str(row["description"]))
 
@@ -666,12 +690,20 @@ class ModelRegistry:
         if row is None:
             raise RegistryNotFoundError(f"unknown version id: {version_id}")
 
-    def _normalize_artifact_path(self, path: str, asset_dir: Path) -> str:
+    def _normalize_artifact_path(
+        self,
+        path: str,
+        asset_dir: Path,
+        *,
+        allow_external: bool = False,
+    ) -> str:
         if not path.strip():
             raise RegistryValidationError("artifact path must not be empty")
         raw_path = Path(path)
         if raw_path.is_absolute():
-            raise RegistryValidationError("artifact path must be relative")
+            if not allow_external:
+                raise RegistryValidationError("artifact path must be relative")
+            return raw_path.expanduser().resolve(strict=False).as_posix()
         artifact_path = (asset_dir / raw_path).resolve(strict=False)
         asset_dir_path = asset_dir.resolve(strict=False)
         try:

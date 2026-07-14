@@ -141,10 +141,33 @@ def test_studio_refreshes_changed_models_and_can_force_revalidation() -> None:
     rescan_start = source.index("const rescanModelCatalog", refresh_start)
     handlers_end = source.index("const launchStages", rescan_start)
 
-    assert "scanModelDirectory(false)" in source[refresh_start:rescan_start]
-    assert "scanModelDirectory(true)" in source[rescan_start:handlers_end]
+    assert "getModelCatalog(false)" in source[refresh_start:rescan_start]
+    assert "getModelCatalog(true)" in source[rescan_start:handlers_end]
+    assert "scanModelDirectory" not in source
     assert '"刷新模型"' in source
     assert '"强制重新校验"' in source
+
+
+def test_models_page_refreshes_catalog_without_importing_files() -> None:
+    source = (STUDIO_CONSOLE.parents[1] / "models" / "ModelsView.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "getModelCatalog(true)" in source
+    assert "registerCatalogModel(model.relative_path)" in source
+    assert "scanModelDirectory" not in source
+    assert "直接读取原文件" in source
+
+
+def test_studio_registers_unmanaged_catalog_engine_by_reference() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    selection_start = source.index("const selectModelFromCatalog")
+    selection_end = source.index("const switchModel", selection_start)
+    selection = source[selection_start:selection_end]
+
+    assert "registerCatalogModel(model.relative_path)" in selection
+    assert "尚未登记完成，请重新扫描" not in selection
+    assert "引用原始 Engine" in selection
 
 
 def test_studio_can_validate_and_switch_pending_engine() -> None:

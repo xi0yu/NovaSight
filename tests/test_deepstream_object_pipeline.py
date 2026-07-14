@@ -9,6 +9,7 @@ from novasight.config import RuntimeConfig
 from novasight.deepstream.backend import DeepStreamDependencyStatus, DeepStreamObjectBackend
 from novasight.deepstream.model_manifest import (
     ensure_engine_manifest,
+    remove_matching_legacy_manifest,
     resolve_yolo_class_contract,
 )
 from novasight.deepstream.nvinfer_config import generate_nvinfer_config
@@ -494,10 +495,13 @@ def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_pat
 
     pipeline = create_deepstream_runtime_pipeline(runtime=runtime)
 
-    manifest_path = engine_path.with_name("model.manifest.json")
+    manifest_path = engine_path.with_name(f"{engine_path.name}.manifest.json")
     manifest = read_manifest(manifest_path)
+    restarted_pipeline = create_deepstream_runtime_pipeline(runtime=runtime)
     assert pipeline.backend.pipeline_config.nvinfer_config_path.name == "active-nvinfer.ini"
     assert pipeline.backend.manifest.model_fingerprint == manifest.model_fingerprint
+    assert restarted_pipeline.backend.manifest.model_fingerprint == manifest.model_fingerprint
+    assert not engine_path.with_name("model.manifest.json").exists()
     assert manifest.input.shape == [1, 3, 256, 256]
     assert manifest.output.shape == [1, 6, 1344]
     assert manifest.output.class_names == ["body", "head"]
@@ -523,6 +527,10 @@ def test_existing_manifest_is_rebuilt_when_engine_tensor_contract_changed(
         validated=True,
     )
     write_manifest(stale_manifest, engine_path.with_name("model.manifest.json"))
+    write_manifest(
+        stale_manifest,
+        engine_path.with_name(f"{engine_path.name}.manifest.json"),
+    )
     inference = SimpleNamespace(
         probe=lambda *_args: {
             "loaded": True,
@@ -556,6 +564,18 @@ def test_existing_manifest_is_rebuilt_when_engine_tensor_contract_changed(
     assert manifest.input.name == "input_tensor"
     assert manifest.input.shape == [1, 3, 320, 512]
     assert manifest.input.dtype == "float16"
+    assert engine_path.with_name(f"{engine_path.name}.manifest.json").is_file()
+    assert not engine_path.with_name("model.manifest.json").exists()
+
+
+def test_invalid_legacy_manifest_is_ignored_and_preserved(tmp_path: Path) -> None:
+    engine_path = tmp_path / "demo.engine"
+    engine_path.write_bytes(b"engine")
+    legacy_manifest_path = engine_path.with_name("model.manifest.json")
+    legacy_manifest_path.write_text("{}", encoding="utf-8")
+
+    assert remove_matching_legacy_manifest(engine_path) is False
+    assert legacy_manifest_path.is_file()
 
 
 def test_deepstream_runtime_replaces_placeholder_classes_from_raw_yolo_output(
@@ -611,6 +631,8 @@ def test_deepstream_runtime_replaces_placeholder_classes_from_raw_yolo_output(
     assert manifest.output.class_count == 4
     assert manifest.output.class_names == ["class_0", "class_1", "class_2", "class_3"]
     assert manifest.output.has_objectness is False
+    assert engine_path.with_name(f"{engine_path.name}.manifest.json").is_file()
+    assert not engine_path.with_name("model.manifest.json").exists()
     assert registry.get_version(version.id).classes == manifest.output.class_names
 
 
@@ -658,6 +680,8 @@ def test_existing_v8_manifest_ignores_ambiguous_class_count_in_filename(
     assert manifest.output.class_count == 4
     assert manifest.output.class_names == ["class_0", "class_1", "class_2", "class_3"]
     assert manifest.output.has_objectness is False
+    assert engine_path.with_name(f"{engine_path.name}.manifest.json").is_file()
+    assert not engine_path.with_name("model.manifest.json").exists()
     config_text = generate_nvinfer_config(
         manifest,
         engine_path=engine_path,
@@ -704,6 +728,7 @@ def test_missing_manifest_is_not_generated_for_builtin_nms_output(tmp_path: Path
         )
 
     assert not engine_path.with_name("model.manifest.json").exists()
+    assert not engine_path.with_name(f"{engine_path.name}.manifest.json").exists()
 
 
 def test_missing_manifest_is_not_generated_for_multi_output_engine(tmp_path: Path) -> None:
@@ -738,3 +763,4 @@ def test_missing_manifest_is_not_generated_for_multi_output_engine(tmp_path: Pat
         )
 
     assert not engine_path.with_name("model.manifest.json").exists()
+    assert not engine_path.with_name(f"{engine_path.name}.manifest.json").exists()

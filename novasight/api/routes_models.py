@@ -4,10 +4,8 @@ import hashlib
 import json
 import logging
 import re
-import shutil
-import threading
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from urllib.request import urlretrieve
@@ -22,16 +20,11 @@ from novasight.model_registry import (
     RegistryError,
     RegistryNotFoundError,
     RegistryValidationError,
-    TensorSpec,
-    build_engine_manifest,
     inspect_model_artifact,
     scan_model_artifacts,
-    write_manifest,
 )
 from novasight.inference import parse_tensor_input_shape
 from novasight.deepstream.model_manifest import (
-    ensure_engine_manifest,
-    infer_yolo_output_contract,
     recommend_engine_manifest,
 )
 from novasight.api.routes_model_ingress import (
@@ -43,16 +36,7 @@ from novasight.model_ingress import InferenceConfigBuilder, ModelProfileStore
 
 router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
-_MODEL_SYNC_LOCK = threading.RLock()
-_MODEL_SYNC_CACHE: dict[tuple[str, str], tuple[int, ...]] = {}
 _ENGINE_INPUT_SHAPE_PENDING = "engine-probe-required"
-
-
-@dataclass(frozen=True)
-class ModelDirectorySyncResult:
-    discovered_files: int
-    updated_files: int
-    cache_hits: int
 
 
 YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
@@ -98,6 +82,12 @@ class ArtifactCreateRequest(BaseModel):
     status: StrictStr
 
 
+class CatalogRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: StrictStr
+
+
 class ConversionJobCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -122,27 +112,6 @@ class PublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: StrictInt
-
-
-class DeepStreamPrepareRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    model_id: StrictStr
-    display_name: StrictStr
-    runtime_precision: StrictStr = "fp16"
-    input_name: StrictStr = "images"
-    input_shape: list[StrictInt]
-    input_dtype: StrictStr = "float32"
-    input_color_format: StrictStr = "RGB"
-    input_scale_factor: float = 1.0 / 255.0
-    maintain_aspect_ratio: bool = False
-    symmetric_padding: bool = False
-    output_name: StrictStr = "output0"
-    output_shape: list[StrictInt]
-    output_dtype: StrictStr = "float32"
-    class_count: StrictInt
-    confidence_threshold: float = 0.25
-    nms_iou_threshold: float = 0.45
 
 
 def _download_file(url: str, path: Path) -> None:
@@ -474,198 +443,6 @@ def _deepstream_model_defaults(
     return defaults, sources, warnings
 
 
-def _classes_from_sidecar(sidecar: dict[str, Any]) -> list[str]:
-    classes_value = sidecar.get("classes", sidecar.get("names", ["target"]))
-    if isinstance(classes_value, dict):
-        ordered = sorted(
-            ((int(key), value) for key, value in classes_value.items() if str(key).isdigit()),
-            key=lambda item: item[0],
-        )
-        classes_value = [value for _key, value in ordered]
-    if not isinstance(classes_value, list):
-        return ["target"]
-    return [str(item) for item in classes_value if str(item).strip()] or ["target"]
-
-
-def _sync_models_directory(
-    registry: ModelRegistry,
-    *,
-    force: bool = False,
-) -> ModelDirectorySyncResult:
-    with _MODEL_SYNC_LOCK:
-        roots = [Path(registry.data_dir), Path("models")]
-        seen: set[Path] = set()
-        seen_cache_keys: set[tuple[str, str]] = set()
-        updated_files = 0
-        cache_hits = 0
-        registry_key = str(Path(registry.db_path).resolve(strict=False))
-        for root in roots:
-            if not root.exists() or not root.is_dir():
-                continue
-            root = root.resolve(strict=False)
-            for model_file in sorted(root.rglob("*")):
-                if not model_file.is_file() or model_file.suffix.lower() not in {".onnx", ".engine"}:
-                    continue
-                resolved = model_file.resolve(strict=False)
-                if resolved in seen:
-                    continue
-                seen.add(resolved)
-                cache_key = (registry_key, str(resolved))
-                seen_cache_keys.add(cache_key)
-                signature = _model_file_signature(resolved)
-                if not force and _MODEL_SYNC_CACHE.get(cache_key) == signature:
-                    cache_hits += 1
-                    continue
-                if _sync_model_file(registry, root, resolved, force=force):
-                    _MODEL_SYNC_CACHE[cache_key] = signature
-                    updated_files += 1
-        stale_keys = [
-            key
-            for key in _MODEL_SYNC_CACHE
-            if key[0] == registry_key and key not in seen_cache_keys
-        ]
-        for key in stale_keys:
-            _MODEL_SYNC_CACHE.pop(key, None)
-        return ModelDirectorySyncResult(
-            discovered_files=len(seen),
-            updated_files=updated_files,
-            cache_hits=cache_hits,
-        )
-
-
-def _sync_model_file(
-    registry: ModelRegistry,
-    root: Path,
-    model_file: Path,
-    *,
-    force: bool = False,
-) -> bool:
-    try:
-        kind = _artifact_kind_from_filename(model_file.name)
-        relative = model_file.relative_to(root)
-        if len(relative.parts) >= 3:
-            project_name = _safe_component(relative.parts[0], model_file.stem)
-            version_name = _safe_component(relative.parts[1], "default")
-            filename = Path(*relative.parts[2:]).as_posix()
-        elif len(relative.parts) == 2:
-            project_name = _safe_component(relative.parts[0], model_file.stem)
-            version_name = "default"
-            filename = relative.parts[1]
-        else:
-            project_name = _safe_component(model_file.stem, "model")
-            version_name = "default"
-            filename = model_file.name
-        sidecar = _model_sidecar(model_file)
-        classes = _classes_from_sidecar(sidecar)
-        input_shape = _detect_input_shape(model_file, sidecar)
-        existing_project = _find_project_by_name(registry, project_name)
-        existing_version = (
-            _find_version(registry, existing_project.id, version_name)
-            if existing_project is not None
-            else None
-        )
-        if existing_version is not None:
-            if "classes" not in sidecar and "names" not in sidecar:
-                classes = list(existing_version.classes)
-        inspection = inspect_model_artifact(model_file, force=force)
-        checksum = inspection.sha256
-        project = existing_project
-        if project is None:
-            project = registry.create_project(
-                name=project_name,
-                description="从服务端 models 目录自动发现的模型。",
-            )
-        requested_version = _find_version(registry, project.id, version_name)
-        managed_artifact = (
-            _find_artifact(registry, requested_version.id, filename)
-            if requested_version is not None
-            else None
-        )
-        if (
-            managed_artifact is not None
-            and managed_artifact.checksum == checksum
-            and model_file.resolve(strict=False).is_relative_to(
-                Path(registry.data_dir).resolve(strict=False)
-            )
-        ):
-            artifact_status = (
-                _registry_status_from_scan(inspection.status)
-                if kind == "engine"
-                else "ready"
-            )
-            if managed_artifact.status != artifact_status:
-                registry.update_artifact_status(
-                    managed_artifact.id,
-                    artifact_status,
-                )
-            return True
-        version, existing_artifact = _select_artifact_version(
-            registry,
-            project=project,
-            requested_version_name=version_name,
-            kind=kind,
-            source_path=model_file.as_posix(),
-            classes=classes,
-            input_shape=input_shape,
-            checksum=checksum,
-        )
-        asset_filename = (
-            existing_artifact.path
-            if existing_artifact is not None
-            else _immutable_artifact_filename(filename, checksum)
-        )
-        asset_path = Path(registry.data_dir) / project.name / version.version / asset_filename
-        if (
-            model_file.resolve(strict=False) != asset_path.resolve(strict=False)
-            and (existing_artifact is None or not asset_path.is_file())
-        ):
-            asset_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(model_file, asset_path)
-        artifact_status = (
-            _registry_status_from_scan(inspection.status)
-            if kind == "engine"
-            else "ready"
-        )
-        if existing_artifact is None:
-            registry.create_artifact(
-                version_id=version.id,
-                kind=kind,
-                path=asset_filename,
-                checksum=checksum,
-                status=artifact_status,
-            )
-        elif existing_artifact.status != artifact_status:
-            registry.update_artifact_status(
-                existing_artifact.id,
-                artifact_status,
-            )
-        asset_cache_key = (
-            str(Path(registry.db_path).resolve(strict=False)),
-            str(asset_path.resolve(strict=False)),
-        )
-        _MODEL_SYNC_CACHE[asset_cache_key] = _model_file_signature(asset_path)
-        return True
-    except (OSError, RegistryError) as exc:
-        logger.warning("model directory sync skipped path=%s error=%s", model_file, exc)
-        return False
-
-
-def _model_file_signature(path: Path) -> tuple[int, ...]:
-    return (
-        *_path_stat_signature(path),
-        *_path_stat_signature(path.with_suffix(".json")),
-        *_path_stat_signature(path.with_name("model.manifest.json")),
-    )
-
-
-def _path_stat_signature(path: Path) -> tuple[int, int]:
-    try:
-        stat = path.stat()
-    except OSError:
-        return (-1, -1)
-    return (int(stat.st_size), int(stat.st_mtime_ns))
-
-
 def _relative_registry_path(registry: ModelRegistry, path: Path | None) -> str:
     if path is None:
         return ""
@@ -721,13 +498,10 @@ def _artifact_scan_counts(results: list[ModelArtifactScanResult]) -> dict[str, i
 
 def _model_catalog_registry_indexes(
     registry: ModelRegistry,
-) -> tuple[dict[Path, dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+) -> dict[Path, dict[str, Any]]:
     by_path: dict[Path, dict[str, Any]] = {}
-    by_content: dict[tuple[str, str], dict[str, Any]] = {}
-    registry_root = Path(registry.data_dir)
     for project in registry.list_projects():
         for version in registry.list_versions(project.id):
-            asset_dir = registry_root / project.name / version.version
             for artifact in registry.list_artifacts(version.id):
                 entry = {
                     "project_id": project.id,
@@ -737,11 +511,9 @@ def _model_catalog_registry_indexes(
                     "artifact_id": artifact.id,
                     "artifact_status": artifact.status,
                 }
-                artifact_path = (asset_dir / artifact.path).resolve(strict=False)
+                artifact_path = registry.resolve_artifact_path(artifact)
                 by_path[artifact_path] = entry
-                if artifact_path.is_file():
-                    by_content.setdefault((artifact.kind, artifact.checksum), entry)
-    return by_path, by_content
+    return by_path
 
 
 def _model_catalog_payload(
@@ -752,7 +524,7 @@ def _model_catalog_payload(
 ) -> dict[str, Any]:
     roots = catalog_roots or (Path(registry.data_dir),)
     resolved_roots = tuple(Path(root).resolve(strict=False) for root in roots)
-    registry_by_path, registry_by_content = _model_catalog_registry_indexes(registry)
+    registry_by_path = _model_catalog_registry_indexes(registry)
     root: dict[str, Any] = {
         "type": "directory",
         "name": "models",
@@ -777,8 +549,6 @@ def _model_catalog_payload(
         if relative is None:
             continue
         registry_entry = registry_by_path.get(result.path.resolve(strict=False))
-        if registry_entry is None:
-            registry_entry = registry_by_content.get((result.kind, result.sha256))
         artifact_id = registry_entry.get("artifact_id") if registry_entry else None
         if isinstance(artifact_id, int):
             if artifact_id in seen_artifact_ids:
@@ -845,6 +615,42 @@ def _catalog_relative_path(path: Path, roots: tuple[Path, ...]) -> Path | None:
     return None
 
 
+def _resolve_catalog_engine_path(
+    registry: ModelRegistry,
+    relative_path: str,
+) -> Path:
+    requested = Path(str(relative_path).strip())
+    if not requested.parts or requested.is_absolute() or ".." in requested.parts:
+        raise RegistryValidationError("catalog model path must be a relative path")
+    for root in (Path("models"), Path(registry.data_dir)):
+        resolved_root = root.resolve(strict=False)
+        candidate = (resolved_root / requested).resolve(strict=False)
+        try:
+            candidate.relative_to(resolved_root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            if candidate.suffix.lower() != ".engine":
+                raise RegistryValidationError(
+                    "catalog registration currently supports TensorRT .engine files only"
+                )
+            return candidate
+    raise RegistryNotFoundError(f"catalog model does not exist: {relative_path}")
+
+
+def _find_registered_artifact_by_path(
+    registry: ModelRegistry,
+    engine_path: Path,
+):
+    expected = engine_path.resolve(strict=False)
+    for project in registry.list_projects():
+        for version in registry.list_versions(project.id):
+            for artifact in registry.list_artifacts(version.id):
+                if registry.resolve_artifact_path(artifact) == expected:
+                    return project, version, artifact
+    return None
+
+
 def _artifact_asset_context(
     registry: ModelRegistry,
     artifact_id: int,
@@ -858,7 +664,7 @@ def _artifact_asset_context(
     project = registry.get_project(version.project_id)
     if project is None:
         raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
-    artifact_path = Path(registry.data_dir) / project.name / version.version / artifact.path
+    artifact_path = registry.resolve_artifact_path(artifact)
     return artifact, version, project, artifact_path
 
 
@@ -903,9 +709,7 @@ def _load_published_artifact(
     project = registry.get_project(version.project_id)
     if project is None:
         raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
-    artifact_path = (
-        Path(registry.data_dir) / project.name / version.version / artifact.path
-    )
+    artifact_path = registry.resolve_artifact_path(artifact)
     try:
         profile = load_validated_profile(artifact_path)
     except ValueError as exc:
@@ -919,9 +723,9 @@ def _load_published_artifact(
             )
         except ValueError as exc:
             raise RegistryValidationError(str(exc)) from exc
-        write_manifest(
-            runtime_config.manifest,
-            artifact_path.with_name("model.manifest.json"),
+        ModelProfileStore().write(
+            profile,
+            runtime_manifest=runtime_config.manifest,
         )
         request.app.state.inference.unload(
             "TensorRT engine ownership delegated to DeepStream nvinfer"
@@ -974,7 +778,7 @@ def _resolve_runnable_artifact(
     if project is None:
         raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
     return (
-        Path(registry.data_dir) / project.name / version.version / artifact.path,
+        registry.resolve_artifact_path(artifact),
         list(version.classes),
         version.input_shape,
     )
@@ -1004,7 +808,7 @@ def _prepare_runnable_artifact(
     except ValueError as exc:
         raise RegistryValidationError(str(exc)) from exc
     manifest = runtime_config.manifest
-    write_manifest(manifest, artifact_path.with_name("model.manifest.json"))
+    ModelProfileStore().write(profile, runtime_manifest=manifest)
     return None, {
         "selected": "deepstream_nvinfer",
         "available": True,
@@ -1172,110 +976,6 @@ def _require_control_inference_policy(request: Request) -> None:
         )
 
 
-def _validate_deepstream_prepare_payload(payload: DeepStreamPrepareRequest) -> bool:
-    input_shape = [int(item) for item in payload.input_shape]
-    output_shape = [int(item) for item in payload.output_shape]
-    class_count = int(payload.class_count)
-    precision = payload.runtime_precision.strip().lower()
-    if precision not in {"fp32", "fp16", "int8"}:
-        raise ValueError(
-            "DeepStream runtime_precision must be fp32, fp16, or int8 "
-            f"(got {payload.runtime_precision})"
-        )
-    if len(input_shape) != 4 or input_shape[0] != 1 or input_shape[1] != 3:
-        raise ValueError(
-            f"DeepStream input_shape must be [1, 3, H, W], got {input_shape}"
-        )
-    if len(output_shape) != 3 or output_shape[0] != 1:
-        raise ValueError(
-            "DeepStream YOLO output_shape must be [1, channels, candidates] "
-            f"or [1, candidates, channels], got {output_shape}"
-        )
-    if class_count <= 0:
-        raise ValueError(f"DeepStream class_count must be positive, got {class_count}")
-    color_format = payload.input_color_format.strip().upper()
-    if color_format not in {"RGB", "BGR", "GRAY", "GREY"}:
-        raise ValueError(
-            "DeepStream input_color_format must be RGB, BGR, or GRAY "
-            f"(got {payload.input_color_format})"
-        )
-    if float(payload.input_scale_factor) <= 0.0:
-        raise ValueError(
-            "DeepStream input_scale_factor must be positive "
-            f"(got {payload.input_scale_factor})"
-        )
-    return infer_yolo_output_contract(output_shape, class_count)
-
-
-def _ensure_registered_deepstream_manifest(
-    request: Request,
-    *,
-    artifact_id: int,
-    artifact_path: Path,
-):
-    registry = _registry(request)
-    artifact = registry.get_artifact(artifact_id)
-    if artifact is None:
-        raise RegistryNotFoundError(f"unknown artifact id: {artifact_id}")
-    if artifact.kind != "engine" or artifact_path.suffix.lower() != ".engine":
-        raise RegistryValidationError(
-            "deepstream_nvinfer requires a TensorRT .engine artifact"
-        )
-    version = registry.get_version(artifact.version_id)
-    if version is None:
-        raise RegistryNotFoundError(f"unknown version id: {artifact.version_id}")
-    project = registry.get_project(version.project_id)
-    if project is None:
-        raise RegistryNotFoundError(f"unknown project id: {version.project_id}")
-    inference_config = getattr(getattr(request.app.state, "config", None), "inference", None)
-    try:
-        manifest, generated = ensure_engine_manifest(
-            request.app.state.inference,
-            engine_path=artifact_path,
-            model_id=project.name,
-            display_name=project.name,
-            classes=list(version.classes),
-            registered_input_shape=version.input_shape,
-            confidence_threshold=float(
-                getattr(inference_config, "confidence_threshold", 0.25)
-            ),
-            nms_iou_threshold=float(getattr(inference_config, "nms_threshold", 0.45)),
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise RegistryValidationError(str(exc)) from exc
-    resolved_classes = list(manifest.output.class_names)
-    if list(version.classes) != resolved_classes:
-        registry.update_version_classes(version.id, resolved_classes)
-        logger.warning(
-            "synchronized model classes from DeepStream manifest path=%s classes=%s",
-            artifact_path,
-            resolved_classes,
-        )
-    resolved_input_shape = "x".join(str(value) for value in manifest.input.shape)
-    if version.input_shape != resolved_input_shape:
-        registry.update_version_input_shape(version.id, resolved_input_shape)
-        logger.warning(
-            "synchronized model input shape from TensorRT engine path=%s "
-            "registered=%s engine=%s",
-            artifact_path,
-            version.input_shape,
-            resolved_input_shape,
-        )
-    if generated or artifact.status != "ready" or artifact.checksum != manifest.artifact.sha256:
-        registry.update_artifact_status(
-            artifact.id,
-            "ready",
-            checksum=manifest.artifact.sha256,
-        )
-    if generated:
-        logger.info(
-            "generated DeepStream model manifest during model validation path=%s fingerprint=%s",
-            artifact_path,
-            manifest.model_fingerprint,
-        )
-    return manifest
-
-
 def _model_switch_report(
     *,
     action: str,
@@ -1336,10 +1036,12 @@ def list_projects(request: Request) -> list[dict[str, Any]]:
     return [asdict(project) for project in registry.list_projects()]
 
 
-@router.get("/catalog")
-def get_model_catalog(request: Request, force: bool = False) -> dict[str, Any]:
-    registry = _registry(request)
-    catalog_roots = (Path(registry.data_dir), Path("models"))
+def _read_model_catalog(
+    registry: ModelRegistry,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    catalog_roots = (Path("models"), Path(registry.data_dir))
     artifacts_by_relative_path: dict[str, ModelArtifactScanResult] = {}
     for root in catalog_roots:
         resolved_root = root.resolve(strict=False)
@@ -1362,27 +1064,81 @@ def get_model_catalog(request: Request, force: bool = False) -> dict[str, Any]:
     }
 
 
+@router.get("/catalog")
+def get_model_catalog(request: Request, force: bool = False) -> dict[str, Any]:
+    return _read_model_catalog(_registry(request), force=force)
+
+
+@router.post("/catalog/register")
+@serialized_model_operation
+def register_catalog_model(
+    request: Request,
+    payload: CatalogRegisterRequest,
+) -> dict[str, Any]:
+    registry = _registry(request)
+    try:
+        engine_path = _resolve_catalog_engine_path(registry, payload.relative_path)
+        existing = _find_registered_artifact_by_path(registry, engine_path)
+        if existing is not None:
+            project, version, artifact = existing
+            return {
+                "project": asdict(project),
+                "version": asdict(version),
+                "artifact": asdict(artifact),
+                "engine_path": str(engine_path),
+                "created": False,
+            }
+
+        inspection = inspect_model_artifact(engine_path, force=True)
+        project_name = _safe_component(engine_path.stem, "model")
+        project = _find_project_by_name(registry, project_name)
+        if project is None:
+            project = registry.create_project(
+                name=project_name,
+                description="引用服务端 models 目录中的原始 TensorRT Engine。",
+                create_asset_dir=False,
+            )
+        version_name = f"external-{_checksum_token(inspection.sha256)}"
+        version = _find_version(registry, project.id, version_name)
+        if version is None:
+            version = registry.create_version(
+                project_id=project.id,
+                version=version_name,
+                source_kind="onnx",
+                source_path=str(engine_path),
+                classes=["target"],
+                input_shape=_ENGINE_INPUT_SHAPE_PENDING,
+                create_asset_dir=False,
+            )
+        artifact = registry.create_artifact(
+            version_id=version.id,
+            kind="engine",
+            path=str(engine_path),
+            checksum=inspection.sha256,
+            status=_registry_status_from_scan(inspection.status),
+            allow_external=True,
+        )
+    except RegistryError as exc:
+        raise _as_http_error(exc) from exc
+    return {
+        "project": asdict(project),
+        "version": asdict(version),
+        "artifact": asdict(artifact),
+        "engine_path": str(engine_path),
+        "created": True,
+    }
+
+
 @router.get("/scan")
 @router.post("/scan")
 def scan_models(request: Request, force: bool = False) -> dict[str, Any]:
     registry = _registry(request)
-    before = len(registry.list_projects())
-    sync_result = _sync_models_directory(registry, force=force)
     projects = registry.list_projects()
-    artifacts = scan_model_artifacts(Path(registry.data_dir), force=force)
     return {
+        **_read_model_catalog(registry, force=force),
         "projects": [asdict(project) for project in projects],
         "project_count": len(projects),
-        "previous_project_count": before,
-        "discovered_files": sync_result.discovered_files,
-        "updated_files": sync_result.updated_files,
-        "cache_hits": sync_result.cache_hits,
-        "force": force,
-        "artifacts": [
-            _artifact_scan_payload(registry, artifact)
-            for artifact in artifacts
-        ],
-        "artifact_status_counts": _artifact_scan_counts(artifacts),
+        "previous_project_count": len(projects),
     }
 
 
@@ -1459,112 +1215,6 @@ def recommend_deepstream_artifact(request: Request, artifact_id: int) -> dict[st
             **default_sources,
         },
         "warnings": warnings,
-    }
-
-
-@router.post("/artifacts/{artifact_id}/deepstream/prepare")
-@serialized_model_operation
-def prepare_deepstream_artifact(
-    request: Request,
-    artifact_id: int,
-    payload: DeepStreamPrepareRequest,
-) -> dict[str, Any]:
-    registry = _registry(request)
-    try:
-        artifact, version, _project, artifact_path = _artifact_asset_context(
-            registry,
-            artifact_id,
-        )
-        if artifact.kind != "engine":
-            raise RegistryValidationError(
-                "DeepStream prepare requires a TensorRT .engine artifact"
-            )
-        if not artifact_path.is_file():
-            raise RegistryValidationError(f"artifact file does not exist: {artifact.path}")
-        if ModelProfileStore().path_for_engine(artifact_path).is_file():
-            raise RegistryValidationError(
-                "legacy DeepStream prepare is disabled after ModelProfile inspection; "
-                "use the inspect, profile, and probe endpoints"
-            )
-        resolved = recommend_engine_manifest(
-            request.app.state.inference,
-            artifact_path=artifact_path,
-            registered_classes=list(version.classes),
-            registered_input_shape=version.input_shape,
-        )
-        class_names = list(resolved.class_names)
-        if int(payload.class_count) != len(class_names):
-            raise RegistryValidationError(
-                "confirmed DeepStream class_count does not match the TensorRT output contract "
-                f"(confirmed={payload.class_count}, engine={len(class_names)})"
-            )
-        engine_contract = resolved.contract
-        requested_input_shape = [int(item) for item in payload.input_shape]
-        requested_output_shape = [int(item) for item in payload.output_shape]
-        if requested_input_shape != engine_contract.input_shape:
-            raise RegistryValidationError(
-                "confirmed DeepStream input shape does not match TensorRT engine "
-                f"(confirmed={requested_input_shape}, engine={engine_contract.input_shape})"
-            )
-        if requested_output_shape != engine_contract.output_shape:
-            raise RegistryValidationError(
-                "confirmed DeepStream output shape does not match TensorRT engine "
-                f"(confirmed={requested_output_shape}, engine={engine_contract.output_shape})"
-            )
-        output_has_objectness = _validate_deepstream_prepare_payload(payload)
-        manifest = build_engine_manifest(
-            model_id=payload.model_id,
-            display_name=payload.display_name,
-            engine_path=artifact_path,
-            input_spec=TensorSpec(
-                name=engine_contract.input_name,
-                shape=engine_contract.input_shape,
-                dtype=engine_contract.input_dtype,
-                layout="NCHW",
-            ),
-            output_spec=TensorSpec(
-                name=engine_contract.output_name,
-                shape=engine_contract.output_shape,
-                dtype=engine_contract.output_dtype,
-                layout="NCHW",
-            ),
-            class_count=int(payload.class_count),
-            class_names=class_names,
-            confidence_threshold=float(payload.confidence_threshold),
-            nms_iou_threshold=float(payload.nms_iou_threshold),
-            runtime_precision=payload.runtime_precision,
-            input_color_format=payload.input_color_format,
-            input_scale_factor=float(payload.input_scale_factor),
-            maintain_aspect_ratio=bool(payload.maintain_aspect_ratio),
-            symmetric_padding=bool(payload.symmetric_padding),
-            output_has_objectness=output_has_objectness,
-            validated=True,
-        )
-        manifest_path = artifact_path.with_name("model.manifest.json")
-        write_manifest(manifest, manifest_path)
-        result = inspect_model_artifact(artifact_path, force=True)
-        if result.status != "ready":
-            raise RegistryValidationError(
-                f"generated DeepStream manifest did not validate: {result.reason}"
-            )
-        updated_artifact = registry.update_artifact_status(
-            artifact.id,
-            "ready",
-            checksum=result.sha256,
-        )
-        if list(version.classes) != class_names:
-            registry.update_version_classes(version.id, class_names)
-    except RegistryError as exc:
-        raise _as_http_error(exc) from exc
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
-        "status": result.status,
-        "reason": result.reason,
-        "artifact": asdict(updated_artifact),
-        "manifest_path": _relative_registry_path(registry, manifest_path),
-        "model_fingerprint": result.model_fingerprint,
-        "nvinfer_config_owner": "runtime",
     }
 
 
@@ -1758,11 +1408,10 @@ def list_artifacts(request: Request, version_id: int) -> list[dict[str, Any]]:
     project = registry.get_project(version.project_id)
     if project is None:
         raise _as_http_error(RegistryNotFoundError(f"unknown project id: {version.project_id}"))
-    asset_dir = Path(registry.data_dir) / project.name / version.version
     return [
         {
             **asdict(artifact),
-            "size_bytes": _file_size_bytes(asset_dir / artifact.path),
+            "size_bytes": _file_size_bytes(registry.resolve_artifact_path(artifact)),
         }
         for artifact in registry.list_artifacts(version_id)
     ]

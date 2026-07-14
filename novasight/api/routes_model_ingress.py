@@ -22,7 +22,7 @@ from novasight.model_ingress import (
     PostprocessProfile,
     model_profile_validation_fingerprint,
 )
-from novasight.model_registry import ModelRegistry, write_manifest
+from novasight.model_registry import ModelRegistry, read_manifest
 
 
 router = APIRouter(prefix="/api/models")
@@ -102,10 +102,11 @@ def get_engine_profile(request: Request, artifact_id: int) -> dict[str, Any]:
         request,
         artifact_id,
     )
-    profile_path = ModelProfileStore().path_for_engine(engine_path)
-    if not profile_path.is_file():
+    store = ModelProfileStore()
+    profile_path = store.existing_path_for_engine(engine_path)
+    if not store.contains_model_profile(profile_path):
         raise HTTPException(status_code=404, detail="model profile has not been inspected")
-    profile = ModelProfileStore().load(profile_path)
+    profile = store.load(profile_path)
     return {
         "artifact_id": artifact.id,
         "profile_path": _profile_path_payload(registry, profile_path),
@@ -125,8 +126,8 @@ def configure_engine_artifact(
         artifact_id,
     )
     store = ModelProfileStore()
-    profile_path = store.path_for_engine(engine_path)
-    if not profile_path.is_file():
+    profile_path = store.existing_path_for_engine(engine_path)
+    if not store.contains_model_profile(profile_path):
         raise HTTPException(status_code=409, detail="inspect the TensorRT engine first")
     profile = store.load(profile_path)
     if profile.status is ModelStatus.UNINSPECTED:
@@ -166,7 +167,10 @@ def configure_engine_artifact(
             max_detections=int(payload.max_detections),
         ),
     )
-    store.write(configured, profile_path)
+    written_path = store.write(configured)
+    if profile_path != written_path:
+        profile_path.unlink(missing_ok=True)
+    profile_path = written_path
     registry.update_version_classes(version.id, list(configured.labels))
     registry.update_version_input_shape(
         version.id,
@@ -196,8 +200,8 @@ def probe_engine_artifact(
         artifact_id,
     )
     store = ModelProfileStore()
-    profile_path = store.path_for_engine(engine_path)
-    if not profile_path.is_file():
+    profile_path = store.existing_path_for_engine(engine_path)
+    if not store.contains_model_profile(profile_path):
         raise HTTPException(status_code=409, detail="inspect and configure the model first")
     profile = store.load(profile_path)
     if profile.status is not ModelStatus.READY_FOR_PROBE:
@@ -216,6 +220,7 @@ def probe_engine_artifact(
             else None
         ),
     )
+    runtime_manifest = None
     if validated.status is ModelStatus.VALIDATED:
         try:
             runtime_config = InferenceConfigBuilder().build(
@@ -243,11 +248,14 @@ def probe_engine_artifact(
                 ),
             )
         else:
-            write_manifest(
-                runtime_config.manifest,
-                engine_path.with_name("model.manifest.json"),
-            )
-    store.write(validated, profile_path)
+            runtime_manifest = runtime_config.manifest
+    written_path = store.write(
+        validated,
+        runtime_manifest=runtime_manifest,
+    )
+    if profile_path != written_path:
+        profile_path.unlink(missing_ok=True)
+    profile_path = written_path
     registry.update_artifact_status(
         artifact.id,
         "ready" if validated.status is ModelStatus.VALIDATED else "failed",
@@ -263,8 +271,8 @@ def probe_engine_artifact(
 
 def load_validated_profile(engine_path: Path) -> ModelProfile:
     store = ModelProfileStore()
-    profile_path = store.path_for_engine(engine_path)
-    if not profile_path.is_file():
+    profile_path = store.existing_path_for_engine(engine_path)
+    if not store.contains_model_profile(profile_path):
         raise ValueError("TensorRT engine has no ModelProfile; inspect and diagnose it first")
     profile = store.load(profile_path)
     if profile.status not in {ModelStatus.VALIDATED, ModelStatus.ACTIVE}:
@@ -295,7 +303,20 @@ def set_profile_activation(engine_path: Path, *, active: bool) -> ModelProfile:
         profile,
         status=ModelStatus.ACTIVE if active else ModelStatus.VALIDATED,
     )
-    store.write(updated, store.path_for_engine(engine_path))
+    existing_path = store.existing_path_for_engine(engine_path)
+    runtime_manifest = None
+    if existing_path == store.legacy_path_for_engine(engine_path):
+        legacy_runtime_path = Path(engine_path).with_name("model.manifest.json")
+        if legacy_runtime_path.is_file():
+            try:
+                runtime_manifest = read_manifest(legacy_runtime_path)
+            except (OSError, ValueError):
+                runtime_manifest = None
+    written_path = store.write(updated, runtime_manifest=runtime_manifest)
+    if existing_path != written_path:
+        existing_path.unlink(missing_ok=True)
+    if runtime_manifest is not None:
+        Path(engine_path).with_name("model.manifest.json").unlink(missing_ok=True)
     return updated
 
 
@@ -347,7 +368,7 @@ def _artifact_context(
     project = registry.get_project(version.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="model project is missing")
-    engine_path = Path(registry.data_dir) / project.name / version.version / artifact.path
+    engine_path = registry.resolve_artifact_path(artifact)
     return registry, artifact, version, project, engine_path
 
 

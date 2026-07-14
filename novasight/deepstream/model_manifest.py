@@ -310,13 +310,19 @@ def ensure_engine_manifest(
     runtime_precision: str = "fp16",
 ) -> tuple[ModelManifest, bool]:
     path = Path(engine_path)
-    manifest_path = path.with_name("model.manifest.json")
+    manifest_path = path.with_name(f"{path.name}.manifest.json")
+    legacy_manifest_path = path.with_name("model.manifest.json")
     class_count_hint = infer_class_count_hint_from_name(path.name)
     objectness_hint = infer_yolo_objectness_hint_from_name(path.name)
     with _MANIFEST_LOCK:
         existing_manifest: ModelManifest | None = None
+        existing_manifest_path: Path | None = None
         if manifest_path.is_file():
-            existing_manifest = read_manifest(manifest_path)
+            existing_manifest_path = manifest_path
+        elif legacy_manifest_path.is_file():
+            existing_manifest_path = legacy_manifest_path
+        if existing_manifest_path is not None:
+            existing_manifest = read_manifest(existing_manifest_path)
             validate_manifest_engine_artifact(existing_manifest, path)
 
         probe_classes = [str(item) for item in classes if str(item).strip()]
@@ -358,6 +364,15 @@ def ensure_engine_manifest(
                 and class_contract_matches
                 and not needs_hint_reconciliation
             ):
+                if existing_manifest_path == legacy_manifest_path:
+                    temporary_path = manifest_path.with_suffix(".json.tmp")
+                    try:
+                        write_manifest(existing_manifest, temporary_path)
+                        temporary_path.replace(manifest_path)
+                    except Exception:
+                        temporary_path.unlink(missing_ok=True)
+                        raise
+                remove_matching_legacy_manifest(path)
                 return existing_manifest, False
             logger.warning(
                 "regenerating DeepStream manifest from TensorRT engine contract "
@@ -429,7 +444,28 @@ def ensure_engine_manifest(
         except Exception:
             temporary_path.unlink(missing_ok=True)
             raise
+        remove_matching_legacy_manifest(path)
         return manifest, True
+
+
+def remove_matching_legacy_manifest(engine_path: Path) -> bool:
+    path = Path(engine_path)
+    legacy_manifest_path = path.with_name("model.manifest.json")
+    if not legacy_manifest_path.is_file():
+        return False
+    try:
+        legacy_manifest = read_manifest(legacy_manifest_path)
+        validate_manifest_engine_artifact(legacy_manifest, path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logger.warning(
+            "preserving unmatched legacy DeepStream manifest path=%s engine=%s error=%s",
+            legacy_manifest_path,
+            path,
+            exc,
+        )
+        return False
+    legacy_manifest_path.unlink(missing_ok=True)
+    return True
 
 
 def _manifest_matches_engine_contract(
@@ -464,6 +500,7 @@ __all__ = [
     "EngineManifestRecommendation",
     "EngineTensorContract",
     "ensure_engine_manifest",
+    "remove_matching_legacy_manifest",
     "infer_yolo_output_contract",
     "infer_class_count_hint_from_name",
     "infer_yolo_objectness_hint_from_name",

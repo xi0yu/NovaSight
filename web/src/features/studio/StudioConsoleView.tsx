@@ -31,7 +31,7 @@ import {
   inspectModelArtifact,
   probeModelArtifact,
   publishModel,
-  scanModelDirectory,
+  registerCatalogModel,
   selectCaptureProfile,
   startRuntimePipeline,
   stopCapture,
@@ -2000,27 +2000,47 @@ export function StudioConsoleView({
     });
   };
 
-  const selectModelFromCatalog = (model: ModelCatalogModel) => {
+  const selectModelFromCatalog = async (model: ModelCatalogModel) => {
     setSelectedModelCatalogPath(model.relative_path);
-    if (
-      typeof model.project_id !== "number" ||
-      typeof model.version_id !== "number" ||
-      typeof model.artifact_id !== "number"
-    ) {
-      setLocalError(`${model.relative_path} 尚未登记完成，请重新扫描 models 目录。`);
-      return;
+    let projectId = model.project_id;
+    let versionId = model.version_id;
+    let artifactId = model.artifact_id;
+    if (typeof projectId !== "number" || typeof versionId !== "number" || typeof artifactId !== "number") {
+      if (model.kind !== "engine") {
+        setLocalError("当前运行主线只允许选择 TensorRT .engine 模型。");
+        return;
+      }
+      setBusy("model.register");
+      setLocalError(null);
+      try {
+        const registered = await registerCatalogModel(model.relative_path);
+        projectId = registered.project.id;
+        versionId = registered.version.id;
+        artifactId = registered.artifact.id;
+        setModelCatalogMessage(
+          `已引用原始 Engine：${model.relative_path}；未复制模型文件。`
+        );
+        await onRefresh();
+        setModelCatalogRefreshKey((current) => current + 1);
+      } catch (err) {
+        setLocalError(`模型引用登记失败：${getErrorMessage(err)}`);
+        reportError(err, { source: "model-register", title: "模型引用登记失败" });
+        return;
+      } finally {
+        setBusy(null);
+      }
     }
     setLocalError(null);
     requestedModelSelectionRef.current = {
-      projectId: model.project_id,
-      versionId: model.version_id,
-      artifactId: model.artifact_id
+      projectId,
+      versionId,
+      artifactId
     };
-    setSelectedModelProjectId(model.project_id);
-    if (selectedModelProjectId === model.project_id) {
-      setSelectedModelVersionId(model.version_id);
-      if (selectedModelVersionId === model.version_id) {
-        setSelectedModelArtifactId(model.artifact_id);
+    setSelectedModelProjectId(projectId);
+    if (selectedModelProjectId === projectId) {
+      setSelectedModelVersionId(versionId);
+      if (selectedModelVersionId === versionId) {
+        setSelectedModelArtifactId(artifactId);
         requestedModelSelectionRef.current = null;
       }
     }
@@ -2145,11 +2165,11 @@ export function StudioConsoleView({
     setModelCatalogMessage("");
     preferLatestModelVersionRef.current = true;
     try {
-      const result = await scanModelDirectory(false);
+      const result = await getModelCatalog(false);
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
       setModelCatalogMessage(
-        `刷新完成：发现 ${result.discovered_files} 个文件，更新 ${result.updated_files} 个，缓存命中 ${result.cache_hits} 个。`
+        `刷新完成：发现 ${result.model_count} 个模型文件；列表直接读取原文件，未复制模型。`
       );
     } catch (err) {
       preferLatestModelVersionRef.current = false;
@@ -2167,11 +2187,11 @@ export function StudioConsoleView({
     setModelCatalogMessage("");
     preferLatestModelVersionRef.current = true;
     try {
-      const result = await scanModelDirectory(true);
+      const result = await getModelCatalog(true);
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
       setModelCatalogMessage(
-        `扫描完成：发现 ${result.discovered_files} 个文件，更新 ${result.updated_files} 个，缓存命中 ${result.cache_hits} 个。`
+        `重新校验完成：发现 ${result.model_count} 个模型文件；未生成模型副本。`
       );
     } catch (err) {
       preferLatestModelVersionRef.current = false;

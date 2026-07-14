@@ -66,6 +66,14 @@ export type ModelCatalogResponse = {
   force: boolean;
 };
 
+export type ModelCatalogRegisterResponse = {
+  project: ModelProject;
+  version: ModelVersion;
+  artifact: ModelArtifact;
+  engine_path: string;
+  created: boolean;
+};
+
 export type Deployment = {
   id: number;
   project_id: number;
@@ -130,7 +138,7 @@ export type ModelPublishResponse = {
   report?: ModelSwitchReport;
 };
 
-export type DeepStreamPreparePayload = {
+export type DeepStreamManifestRecommendation = {
   model_id: string;
   display_name: string;
   runtime_precision?: string;
@@ -149,19 +157,10 @@ export type DeepStreamPreparePayload = {
   nms_iou_threshold?: number;
 };
 
-export type DeepStreamPrepareResponse = {
-  status: string;
-  reason: string;
-  artifact: ModelArtifact;
-  manifest_path: string;
-  model_fingerprint: string;
-  nvinfer_config_owner: "runtime" | (string & {});
-};
-
 export type DeepStreamRecommendationResponse = {
   artifact_id: number;
   artifact_path: string;
-  recommendation: DeepStreamPreparePayload;
+  recommendation: DeepStreamManifestRecommendation;
   io_tensors: Array<{
     name: string;
     shape: number[];
@@ -735,6 +734,18 @@ export function getModelCatalog(force = false): Promise<ModelCatalogResponse> {
   );
 }
 
+export function registerCatalogModel(
+  relativePath: string
+): Promise<ModelCatalogRegisterResponse> {
+  return requestJson<ModelCatalogRegisterResponse>("/api/models/catalog/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ relative_path: relativePath })
+  });
+}
+
 export function getModelVersions(projectId: number): Promise<ModelVersion[]> {
   return requestJson<ModelVersion[]>(`${API_PATHS.modelProjects}/${projectId}/versions`);
 }
@@ -763,19 +774,6 @@ export function publishModel(projectId: number, artifactId: number): Promise<Mod
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ artifact_id: artifactId })
-  });
-}
-
-export function prepareDeepStreamArtifact(
-  artifactId: number,
-  payload: DeepStreamPreparePayload
-): Promise<DeepStreamPrepareResponse> {
-  return requestJson<DeepStreamPrepareResponse>(`/api/models/artifacts/${artifactId}/deepstream/prepare`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
   });
 }
 
@@ -831,21 +829,6 @@ export function rollbackModel(projectId: number): Promise<ModelPublishResponse> 
 
 export function prepareYolov8nExample(): Promise<ModelPrepareResponse> {
   return requestJson<ModelPrepareResponse>("/api/models/examples/yolov8n/prepare", {
-    method: "POST"
-  });
-}
-
-export type ModelScanResponse = {
-  project_count: number;
-  previous_project_count: number;
-  discovered_files: number;
-  updated_files: number;
-  cache_hits: number;
-  force: boolean;
-};
-
-export function scanModelDirectory(force = false): Promise<ModelScanResponse> {
-  return requestJson<ModelScanResponse>(`/api/models/scan?force=${force ? "true" : "false"}`, {
     method: "POST"
   });
 }

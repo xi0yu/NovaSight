@@ -15,7 +15,7 @@ from novasight.model_ingress import (
     ModelStatus,
     TensorDescriptor,
 )
-from novasight.model_registry import ModelRegistry
+from novasight.model_registry import ModelRegistry, inspect_model_artifact
 
 
 def _inspection() -> EngineInspectionResult:
@@ -83,6 +83,7 @@ def _request(tmp_path: Path):
         runtime=SimpleNamespace(pipeline=None, cancel_control=lambda _reason: None),
         config=SimpleNamespace(
             inference=SimpleNamespace(
+                backend="deepstream_nvinfer",
                 deepstream_parser_library="build/libnovasight_parser.so",
             )
         ),
@@ -106,7 +107,7 @@ def test_inspect_and_configure_model_profile_use_engine_contract(
     assert inspected["profile"]["status"] == ModelStatus.NEEDS_CONFIGURATION.value
     assert inspected["profile"]["input"]["runtime_shape"] == [1, 3, 640, 640]
     assert inspected["profile"]["outputs"][0]["name"] == "output0"
-    assert Path(inspected["profile_path"]).name == "player.engine.profile.json"
+    assert Path(inspected["profile_path"]).name == "player.engine.manifest.json"
 
     configured = routes_model_ingress.configure_engine_artifact(
         request,
@@ -132,7 +133,7 @@ def test_probe_isolates_control_and_persists_validated_profile(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    request, artifact, _engine_path = _request(tmp_path)
+    request, artifact, engine_path = _request(tmp_path)
     monkeypatch.setattr(
         routes_model_ingress,
         "EngineInspector",
@@ -206,30 +207,23 @@ def test_probe_isolates_control_and_persists_validated_profile(
     assert response["report"]["detection_batch_ok"] is True
     assert events[0] == "cancel:MODEL_DIAGNOSTIC"
     assert events[1:] == ["prepare:True", "infer", "close"]
-
-    class ActiveCandidate:
-        pass
-
-    active_candidate = ActiveCandidate()
+    unified_manifest_path = routes_model_ingress.ModelProfileStore().path_for_engine(
+        engine_path
+    )
+    unified_manifest = json.loads(unified_manifest_path.read_text(encoding="utf-8"))
+    assert unified_manifest["model_profile"]["status"] == ModelStatus.VALIDATED.value
+    assert unified_manifest["artifact"]["engine_path"] == engine_path.name
+    assert not engine_path.with_name("model.manifest.json").exists()
+    scanned = inspect_model_artifact(engine_path, force=True)
+    assert scanned.status == "ready"
+    assert scanned.manifest_path == unified_manifest_path
 
     class ActivationInference:
-        def prepare_profile(self, profile, *, diagnostic: bool):
-            assert profile.status is ModelStatus.VALIDATED
-            assert diagnostic is False
-            events.append("prepare:False")
-            return active_candidate, {
-                "loaded": True,
-                "warmed": True,
-                "classes": ["player"],
-                "input_shape": "1x3x640x640",
-            }
-
-        def commit(self, candidate, **_kwargs):
-            assert candidate is active_candidate
-            events.append("commit")
+        def unload(self, _reason):
+            events.append("unload")
 
         def status(self):
-            return {"loaded": True, "warmed": True, "selected": "tensorrt"}
+            return {"loaded": False, "selected": "deepstream_nvinfer"}
 
     request.app.state.inference = ActivationInference()
     project_id = request.app.state.models.get_version(artifact.version_id).project_id
@@ -241,18 +235,18 @@ def test_probe_isolates_control_and_persists_validated_profile(
     )
 
     assert published["deployment"]["artifact_id"] == artifact.id
-    assert published["inference"]["loaded"] is True
-    assert events[-3:] == ["prepare:False", "cancel:MODEL_SWITCH", "commit"]
+    assert published["inference"]["selected"] == "deepstream_nvinfer"
+    assert events[-2:] == ["cancel:MODEL_SWITCH", "unload"]
     active_profile = routes_model_ingress.get_engine_profile(request, artifact.id)
     assert active_profile["profile"]["status"] == ModelStatus.ACTIVE.value
 
-    profile_path = routes_model_ingress.ModelProfileStore().path_for_engine(_engine_path)
+    profile_path = routes_model_ingress.ModelProfileStore().path_for_engine(engine_path)
     raw_profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    raw_profile["preprocess"]["color_format"] = "BGR"
+    raw_profile["model_profile"]["preprocess"]["color_format"] = "BGR"
     profile_path.write_text(json.dumps(raw_profile), encoding="utf-8")
 
     with pytest.raises(ValueError, match="not validated"):
-        routes_model_ingress.load_validated_profile(_engine_path)
+        routes_model_ingress.load_validated_profile(engine_path)
 
 
 def test_probe_latest_input_is_acquired_after_control_isolation(

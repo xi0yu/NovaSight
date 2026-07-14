@@ -92,34 +92,67 @@ def run_bad_model_probe(
     model_id: str,
     source_path: str,
 ) -> ProbeResult:
-    invalid_path = Path(source_path) if source_path else _write_invalid_onnx()
-    payload = {
-        "source_path": str(invalid_path),
-        "model_id": model_id,
-    }
-    import_response = _request_json(
-        base_url,
-        "/api/v1/models/import",
-        method="POST",
-        headers={**headers, "Content-Type": "application/json"},
-        body=payload,
-        allow_http_error=True,
+    created_fixture = not source_path
+    invalid_path = (
+        Path(source_path)
+        if source_path
+        else _write_invalid_onnx(model_id=model_id)
     )
-    health_response = _request_json(base_url, "/healthz", headers=headers, allow_http_error=True)
-    runtime_response = _request_json(base_url, "/api/runtime/state", headers=headers, allow_http_error=True)
-    import_rejected = int(import_response.get("status_code", 0)) >= 400
+    try:
+        models_root = Path("models").resolve(strict=False)
+        try:
+            relative_path = invalid_path.resolve(strict=False).relative_to(models_root).as_posix()
+        except ValueError:
+            relative_path = str(invalid_path)
+        registration_response = _request_json(
+            base_url,
+            "/api/models/catalog/register",
+            method="POST",
+            headers={**headers, "Content-Type": "application/json"},
+            body={"relative_path": relative_path},
+            allow_http_error=True,
+        )
+        health_response = _request_json(
+            base_url,
+            "/healthz",
+            headers=headers,
+            allow_http_error=True,
+        )
+        runtime_response = _request_json(
+            base_url,
+            "/api/runtime/state",
+            headers=headers,
+            allow_http_error=True,
+        )
+    finally:
+        if created_fixture:
+            invalid_path.unlink(missing_ok=True)
+
+    registration_body = registration_response.get("body") or {}
+    registration_detail = (
+        str(registration_body.get("detail", ""))
+        if isinstance(registration_body, dict)
+        else str(registration_body)
+    )
+    model_rejected = (
+        int(registration_response.get("status_code", 0)) == 400
+        and "TensorRT .engine files only" in registration_detail
+    )
     health_ok = bool((health_response.get("body") or {}).get("ok")) and int(health_response.get("status_code", 0)) == 200
     runtime_serving = int(runtime_response.get("status_code", 0)) in {200, 401}
     return ProbeResult(
         name="bad_model_isolated_failure",
-        passed=import_rejected and health_ok and runtime_serving,
+        passed=model_rejected and health_ok and runtime_serving,
         detail={
             "invalid_source_path": str(invalid_path),
-            "import_status_code": import_response.get("status_code"),
-            "import_body": import_response.get("body"),
+            "registration_status_code": registration_response.get("status_code"),
+            "registration_body": registration_response.get("body"),
             "health_status_code": health_response.get("status_code"),
             "runtime_status_code": runtime_response.get("status_code"),
-            "expectation": "invalid model import is rejected while health/runtime endpoints still serve",
+            "expectation": (
+                "unsupported model registration returns the expected 400 validation error "
+                "while health/runtime endpoints still serve"
+            ),
         },
     )
 
@@ -289,9 +322,21 @@ def _decode_json(raw: bytes) -> Any:
         return text
 
 
-def _write_invalid_onnx() -> Path:
-    path = Path(tempfile.gettempdir()) / "novasight_fault_invalid.onnx"
-    path.write_bytes(b"not an onnx model\n")
+def _write_invalid_onnx(*, model_id: str) -> Path:
+    models_root = Path("models")
+    models_root.mkdir(parents=True, exist_ok=True)
+    safe_model_id = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_"
+        for character in model_id
+    ).strip("_") or "fault_bad_model"
+    handle, raw_path = tempfile.mkstemp(
+        prefix=f"{safe_model_id}.",
+        suffix=".onnx",
+        dir=models_root,
+    )
+    path = Path(raw_path)
+    with open(handle, "wb", closefd=True) as output:
+        output.write(b"not an onnx model\n")
     return path
 
 

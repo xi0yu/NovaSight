@@ -8,6 +8,7 @@ import tempfile
 from typing import Any
 
 from novasight.model_registry.fingerprint import sha256_file
+from novasight.model_registry.manifest import ModelManifest
 
 from .contracts import (
     EngineInspectionErrorCode,
@@ -35,12 +36,61 @@ from .profile import (
 class ModelProfileStore:
     def path_for_engine(self, engine_path: Path) -> Path:
         path = Path(engine_path)
+        return path.with_name(f"{path.name}.manifest.json")
+
+    def legacy_path_for_engine(self, engine_path: Path) -> Path:
+        path = Path(engine_path)
         return path.with_name(f"{path.name}.profile.json")
 
-    def write(self, profile: ModelProfile, path: Path | None = None) -> Path:
+    def existing_path_for_engine(self, engine_path: Path) -> Path:
+        current = self.path_for_engine(engine_path)
+        if current.is_file():
+            return current
+        legacy = self.legacy_path_for_engine(engine_path)
+        return legacy if legacy.is_file() else current
+
+    def contains_model_profile(self, path: Path) -> bool:
+        candidate = Path(path)
+        if not candidate.is_file():
+            return False
+        if candidate.name.endswith(".profile.json"):
+            return True
+        try:
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return isinstance(raw, dict) and isinstance(raw.get("model_profile"), dict)
+
+    def write(
+        self,
+        profile: ModelProfile,
+        path: Path | None = None,
+        *,
+        runtime_manifest: ModelManifest | None = None,
+    ) -> Path:
         target = Path(path) if path is not None else self.path_for_engine(Path(profile.engine.path))
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = _json_value(asdict(profile))
+        existing: dict[str, Any] = {}
+        if target.is_file():
+            try:
+                loaded = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                existing = loaded
+        if runtime_manifest is not None:
+            payload = runtime_manifest.to_dict()
+        elif profile.status in {ModelStatus.VALIDATED, ModelStatus.ACTIVE}:
+            payload = {
+                key: value
+                for key, value in existing.items()
+                if key != "model_profile"
+            }
+        else:
+            payload = {}
+        payload.setdefault("schema_version", MODEL_PROFILE_SCHEMA_VERSION)
+        payload["manifest_kind"] = "novasight_model"
+        payload["model_profile"] = _json_value(asdict(profile))
         text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         temporary: Path | None = None
         try:
@@ -62,7 +112,18 @@ class ModelProfileStore:
         return target
 
     def load(self, path: Path) -> ModelProfile:
-        profile = _profile_from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("model manifest must contain a JSON object")
+        if "model_profile" in raw and int(raw.get("schema_version", 0)) != MODEL_PROFILE_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported unified model manifest schema_version "
+                f"{raw.get('schema_version')}; expected {MODEL_PROFILE_SCHEMA_VERSION}"
+            )
+        profile_raw = raw.get("model_profile", raw)
+        if not isinstance(profile_raw, dict):
+            raise ValueError("model manifest model_profile must contain a JSON object")
+        profile = _profile_from_dict(profile_raw)
         engine_path = Path(profile.engine.path)
         try:
             content_matches = (

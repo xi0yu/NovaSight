@@ -233,8 +233,15 @@ def test_confirmed_profile_is_persisted_and_engine_change_invalidates_it(
     profile_path = store.write(confirmed)
 
     assert confirmed.status is ModelStatus.READY_FOR_PROBE
-    assert profile_path.name == "player.engine.profile.json"
+    assert profile_path.name == "player.engine.manifest.json"
     assert store.load(profile_path).decoder.parser_type == "yolov8_raw"
+
+    stale_payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    stale_payload["artifact"] = {"engine_path": engine_path.name}
+    profile_path.write_text(json.dumps(stale_payload), encoding="utf-8")
+    store.write(confirmed)
+    rewritten = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert "artifact" not in rewritten
 
     engine_path.write_bytes(b"replaced-engine")
     invalidated = store.load(profile_path)

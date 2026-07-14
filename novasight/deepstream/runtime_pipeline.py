@@ -7,12 +7,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from novasight.model_ingress import InferenceConfigBuilder, ModelProfileStore
 from novasight.roi import center_roi_region
 
 from .backend import DeepStreamObjectBackend
 from .nvinfer_config import write_nvinfer_config
 from .pipeline_builder import DeepStreamPipelineConfig
-from .model_manifest import ensure_engine_manifest
+from .model_manifest import ensure_engine_manifest, remove_matching_legacy_manifest
 
 
 logger = logging.getLogger("novasight.deepstream.runtime")
@@ -173,17 +174,29 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
     project = models.get_project(version.project_id) if version is not None else None
     if version is None or project is None:
         raise RuntimeError("active DeepStream model registry references are incomplete")
-    engine_path = Path(models.data_dir) / project.name / version.version / artifact.path
-    manifest, generated_manifest = ensure_engine_manifest(
-        runtime.inference,
-        engine_path=engine_path,
-        model_id=project.name,
-        display_name=project.name,
-        classes=list(version.classes),
-        registered_input_shape=version.input_shape,
-        confidence_threshold=config.inference.confidence_threshold,
-        nms_iou_threshold=config.inference.nms_threshold,
-    )
+    engine_path = models.resolve_artifact_path(artifact)
+    profile_store = ModelProfileStore()
+    profile_path = profile_store.existing_path_for_engine(engine_path)
+    if profile_store.contains_model_profile(profile_path):
+        profile = profile_store.load(profile_path)
+        runtime_config = InferenceConfigBuilder().build(
+            profile,
+            parser_library_path=Path(config.inference.deepstream_parser_library),
+        )
+        manifest = runtime_config.manifest
+        generated_manifest = False
+    else:
+        manifest, generated_manifest = ensure_engine_manifest(
+            runtime.inference,
+            engine_path=engine_path,
+            model_id=project.name,
+            display_name=project.name,
+            classes=list(version.classes),
+            registered_input_shape=version.input_shape,
+            confidence_threshold=config.inference.confidence_threshold,
+            nms_iou_threshold=config.inference.nms_threshold,
+        )
+    remove_matching_legacy_manifest(engine_path)
     resolved_classes = list(manifest.output.class_names)
     if list(version.classes) != resolved_classes:
         models.update_version_classes(version.id, resolved_classes)

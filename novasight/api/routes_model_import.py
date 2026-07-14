@@ -141,7 +141,7 @@ def build_model_engine(
             raise RegistryNotFoundError(f"unknown project id: {project_id}")
         version = _select_build_version(registry, project_id, payload.version_id)
         source_artifact = _select_build_source_artifact(registry, version.id, payload.artifact_id)
-        source_path = Path(registry.data_dir) / project.name / version.version / source_artifact.path
+        source_path = registry.resolve_artifact_path(source_artifact)
         manifest_path = source_path.with_name("model.manifest.json")
         if not manifest_path.is_file():
             raise RegistryValidationError(f"model manifest missing: {manifest_path}")
@@ -220,7 +220,7 @@ def get_model_manifest(
             raise RegistryNotFoundError(f"unknown project id: {project_id}")
         version = _select_build_version(registry, project_id, version_id)
         artifact = _select_manifest_artifact(registry, version.id, artifact_id)
-        artifact_path = Path(registry.data_dir) / project.name / version.version / artifact.path
+        artifact_path = registry.resolve_artifact_path(artifact)
         manifest_path = artifact_path.with_name("model.manifest.json")
         if not manifest_path.is_file():
             raise RegistryValidationError(f"model manifest missing: {manifest_path}")

@@ -30,7 +30,6 @@ from .routes_control import router as control_router
 from .routes_device import router as device_router
 from .routes_executors import router as executors_router
 from .routes_health import router as health_router
-from .routes_model_import import router as model_import_router
 from .routes_model_ingress import load_validated_profile, router as model_ingress_router
 from .routes_models import router as models_router
 from .routes_runtime import router as runtime_router
@@ -152,7 +151,6 @@ def create_app(
     app.include_router(status_router)
     app.include_router(models_router)
     app.include_router(model_ingress_router)
-    app.include_router(model_import_router)
     app.include_router(executors_router)
     app.include_router(system_router)
     app.include_router(websocket_router)
@@ -360,7 +358,7 @@ def _load_active_model(
     if project is None:
         inference.disable(f"active artifact project not found: {version.project_id}")
         return
-    artifact_path = Path(models.data_dir) / project.name / version.version / artifact.path
+    artifact_path = models.resolve_artifact_path(artifact)
     try:
         profile = load_validated_profile(artifact_path)
         if str(config.inference.backend).lower() == "deepstream_nvinfer":

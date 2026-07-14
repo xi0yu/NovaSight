@@ -5,10 +5,10 @@ import pytest
 from fastapi import HTTPException
 
 from novasight.api import routes_models
-from novasight.api.routes_models import DeepStreamPrepareRequest, PublishRequest
+from novasight.api.app import create_app
+from novasight.api.routes_models import PublishRequest
 from novasight.config import RuntimeConfig
 from novasight.model_registry import ModelRegistry
-from novasight.model_registry import read_manifest
 from novasight.model_registry import scanner
 from novasight.model_registry.schema import Deployment
 
@@ -28,10 +28,10 @@ def test_project_listing_reads_registry_without_scanning_disk(tmp_path, monkeypa
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     registry.create_project("cached", "cached project")
 
-    def fail_sync(_registry, **_kwargs):
+    def fail_scan(_root, **_kwargs):
         raise AssertionError("project listing must not scan model files")
 
-    monkeypatch.setattr(routes_models, "_sync_models_directory", fail_sync)
+    monkeypatch.setattr(routes_models, "scan_model_artifacts", fail_scan)
 
     projects = routes_models.list_projects(_request_with_registry(registry))
 
@@ -58,6 +58,99 @@ def test_model_catalog_read_does_not_import_or_copy_discovered_engine(
     assert list(registry.data_dir.rglob("*.engine")) == []
 
 
+def test_model_scan_is_read_only_and_does_not_import_or_copy_engine(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    source_path = source_root / "demo.engine"
+    source_path.write_bytes(b"engine")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+
+    result = routes_models.scan_models(
+        _request_with_registry(registry),
+        force=True,
+    )
+
+    assert result["discovered_files"] == 1
+    assert result["updated_files"] == 0
+    assert result["model_count"] == 1
+    assert registry.list_projects() == []
+    assert list(registry.data_dir.rglob("*.engine")) == []
+
+
+def test_catalog_engine_registration_references_original_without_asset_directories(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    source_path = source_root / "demo.engine"
+    source_path.write_bytes(b"engine")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+
+    result = routes_models.register_catalog_model(
+        _request_with_registry(registry),
+        routes_models.CatalogRegisterRequest(relative_path="demo.engine"),
+    )
+
+    artifact = registry.get_artifact(result["artifact"]["id"])
+    assert artifact is not None
+    assert Path(artifact.path) == source_path.resolve()
+    assert registry.resolve_artifact_path(artifact) == source_path.resolve()
+    assert list(registry.data_dir.rglob("*.engine")) == []
+    assert not (registry.data_dir / "demo").exists()
+
+    catalog = routes_models.get_model_catalog(_request_with_registry(registry))
+    model = catalog["root"]["children"][0]
+    assert model["relative_path"] == "demo.engine"
+    assert model["artifact_id"] == artifact.id
+
+    repeated = routes_models.register_catalog_model(
+        _request_with_registry(registry),
+        routes_models.CatalogRegisterRequest(relative_path="demo.engine"),
+    )
+    assert repeated["created"] is False
+    assert repeated["artifact"]["id"] == artifact.id
+    assert len(registry.list_projects()) == 1
+
+
+def test_catalog_engine_registration_rejects_path_escape(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "outside.engine").write_bytes(b"engine")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+
+    with pytest.raises(HTTPException) as error:
+        routes_models.register_catalog_model(
+            _request_with_registry(registry),
+            routes_models.CatalogRegisterRequest(relative_path="../outside.engine"),
+        )
+
+    assert error.value.status_code == 400
+    assert registry.list_projects() == []
+
+
+def test_legacy_model_import_and_build_routes_are_not_registered(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data", config=RuntimeConfig())
+    paths: set[str] = set()
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            paths.add(str(path))
+        included = getattr(route, "original_router", None)
+        for child in getattr(included, "routes", ()):
+            child_path = getattr(child, "path", None)
+            if child_path is not None:
+                paths.add(str(child_path))
+
+    assert not any(path.startswith("/api/v1/models") for path in paths)
+    assert "/api/models/artifacts/{artifact_id}/deepstream/prepare" not in paths
+
+
 def test_model_catalog_deduplicates_same_relative_path_across_roots(
     tmp_path,
     monkeypatch,
@@ -73,10 +166,10 @@ def test_model_catalog_deduplicates_same_relative_path_across_roots(
 
     assert catalog["model_count"] == 1
     assert catalog["root"]["children"][0]["relative_path"] == "same.engine"
-    assert catalog["root"]["children"][0]["size_bytes"] == len(b"managed")
+    assert catalog["root"]["children"][0]["size_bytes"] == len(b"source")
 
 
-def test_model_catalog_prefers_registered_path_over_same_content_source(
+def test_model_catalog_keeps_same_content_external_engine_selectable_by_path(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -107,11 +200,13 @@ def test_model_catalog_prefers_registered_path_over_same_content_source(
 
     catalog = routes_models.get_model_catalog(_request_with_registry(registry))
 
-    assert catalog["root"]["children"][0]["relative_path"] == "demo"
-    model = catalog["root"]["children"][0]["children"][0]["children"][0]
-    assert catalog["model_count"] == 1
-    assert model["relative_path"] == "demo/v1/same.engine"
-    assert model["artifact_id"] == artifact.id
+    assert catalog["model_count"] == 2
+    managed = catalog["root"]["children"][0]["children"][0]["children"][0]
+    external = catalog["root"]["children"][1]
+    assert managed["relative_path"] == "demo/v1/same.engine"
+    assert managed["artifact_id"] == artifact.id
+    assert external["relative_path"] == "same.engine"
+    assert "artifact_id" not in external
 
 
 def test_model_catalog_does_not_bind_source_to_missing_registered_file(
@@ -148,30 +243,6 @@ def test_model_catalog_does_not_bind_source_to_missing_registered_file(
     assert model["relative_path"] == "external.engine"
     assert "artifact_id" not in model
     assert "artifact_status" not in model
-
-
-def test_model_directory_sync_skips_unchanged_files(tmp_path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
-    model_path = registry.data_dir / "demo.onnx"
-    model_path.write_bytes(b"model")
-    calls: list[Path] = []
-
-    cache = getattr(routes_models, "_MODEL_SYNC_CACHE", None)
-    if cache is not None:
-        cache.clear()
-
-    def record_sync(_registry, _root, path, *, force=False):
-        del force
-        calls.append(path)
-        return True
-
-    monkeypatch.setattr(routes_models, "_sync_model_file", record_sync)
-
-    routes_models._sync_models_directory(registry)
-    routes_models._sync_models_directory(registry)
-
-    assert calls == [model_path.resolve()]
 
 
 def test_artifact_inspection_reuses_hash_until_file_changes(tmp_path, monkeypatch) -> None:
@@ -220,94 +291,6 @@ def test_artifact_listing_includes_real_file_size(tmp_path) -> None:
     artifacts = routes_models.list_artifacts(_request_with_registry(registry), version.id)
 
     assert artifacts[0]["size_bytes"] == 1_500_000
-
-
-def test_managed_engine_without_manifest_is_downgraded_to_pending(tmp_path) -> None:
-    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
-    project = registry.create_project("demo", "")
-    version = registry.create_version(
-        project.id,
-        "v1",
-        "onnx",
-        "demo.engine",
-        ["body", "head"],
-        "1x3x256x256",
-    )
-    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_bytes(b"engine")
-    inspection = scanner.inspect_model_artifact(artifact_path, force=True)
-    artifact = registry.create_artifact(
-        version.id,
-        "engine",
-        artifact_path.name,
-        inspection.sha256,
-        "ready",
-    )
-
-    assert routes_models._sync_model_file(
-        registry,
-        Path(registry.data_dir),
-        artifact_path,
-        force=True,
-    )
-
-    assert registry.get_artifact(artifact.id).status == "pending"
-
-
-def test_prepare_deepstream_engine_writes_confirmed_manifest(tmp_path) -> None:
-    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
-    project = registry.create_project("demo", "")
-    version = registry.create_version(
-        project.id,
-        "v1",
-        "onnx",
-        "demo.engine",
-        ["body", "head"],
-        "1x3x256x256",
-    )
-    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_bytes(b"engine")
-    artifact = registry.create_artifact(
-        version.id,
-        "engine",
-        artifact_path.name,
-        "pending",
-        "pending",
-    )
-
-    request = _request_with_registry(registry)
-    request.app.state.inference.probe = lambda *_args: {
-        "loaded": True,
-        "input_name": "images",
-        "input_shape": "1x3x256x256",
-        "input_dtype": "float32",
-        "output_name": "output0",
-        "output_shape": "1x6x1344",
-        "output_dtype": "float32",
-    }
-
-    result = routes_models.prepare_deepstream_artifact(
-        request,
-        artifact.id,
-        DeepStreamPrepareRequest(
-            model_id=project.name,
-            display_name=project.name,
-            input_shape=[1, 3, 256, 256],
-            output_shape=[1, 6, 1344],
-            class_count=2,
-        ),
-    )
-
-    manifest = read_manifest(artifact_path.with_name("model.manifest.json"))
-    assert result["status"] == "ready"
-    assert result["nvinfer_config_owner"] == "runtime"
-    assert registry.get_artifact(artifact.id).status == "ready"
-    assert manifest.input.shape == [1, 3, 256, 256]
-    assert manifest.output.shape == [1, 6, 1344]
-    assert manifest.output.class_names == ["body", "head"]
-    assert manifest.output.has_objectness is False
 
 
 def test_deepstream_recommendation_uses_engine_contract_instead_of_ui_shape_guess(
@@ -389,140 +372,6 @@ def test_deepstream_recommendation_uses_engine_contract_instead_of_ui_shape_gues
     assert result["sources"]["input_contract"] == "tensorrt_engine_probe"
     assert result["warnings"]
     assert not artifact_path.with_name("model.manifest.json").exists()
-
-    prepared = routes_models.prepare_deepstream_artifact(
-        request,
-        artifact.id,
-        DeepStreamPrepareRequest(**recommendation),
-    )
-
-    assert prepared["status"] == "ready"
-    assert registry.get_version(version.id).classes == ["class_0", "class_1", "class_2"]
-    assert read_manifest(artifact_path.with_name("model.manifest.json")).output.shape == [
-        1,
-        8400,
-        7,
-    ]
-
-
-def test_prepare_deepstream_engine_rejects_confirmed_shape_that_differs_from_engine(
-    tmp_path,
-) -> None:
-    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
-    project = registry.create_project("demo", "")
-    version = registry.create_version(
-        project.id,
-        "v1",
-        "onnx",
-        "demo.engine",
-        ["body", "head"],
-        "1x3x256x256",
-    )
-    artifact_path = registry.data_dir / project.name / version.version / "demo.engine"
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_bytes(b"engine")
-    artifact = registry.create_artifact(
-        version.id,
-        "engine",
-        artifact_path.name,
-        "pending",
-        "pending",
-    )
-    request = _request_with_registry(registry)
-    request.app.state.inference.probe = lambda *_args: {
-        "loaded": True,
-        "input_name": "images",
-        "input_shape": "1x3x256x256",
-        "input_dtype": "float32",
-        "output_name": "output0",
-        "output_shape": "1x6x1344",
-        "output_dtype": "float32",
-    }
-
-    try:
-        routes_models.prepare_deepstream_artifact(
-            request,
-            artifact.id,
-            DeepStreamPrepareRequest(
-                model_id=project.name,
-                display_name=project.name,
-                input_shape=[1, 3, 320, 320],
-                output_shape=[1, 6, 2100],
-                class_count=2,
-            ),
-        )
-    except Exception as exc:
-        assert getattr(exc, "status_code", None) == 400
-        assert "does not match TensorRT engine" in str(getattr(exc, "detail", exc))
-    else:
-        raise AssertionError("mismatched confirmed contract must be rejected")
-
-    assert not artifact_path.with_name("model.manifest.json").exists()
-
-
-def test_model_replacement_keeps_deployed_artifact_file_immutable(tmp_path) -> None:
-    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
-    source_root = tmp_path / "models"
-    source_root.mkdir()
-    source_path = source_root / "demo.engine"
-    source_path.write_bytes(b"first-engine")
-
-    assert routes_models._sync_model_file(registry, source_root, source_path)
-    project = registry.list_projects()[0]
-    version = registry.list_versions(project.id)[0]
-    first_artifact = registry.list_artifacts(version.id)[0]
-    registry.update_artifact_status(first_artifact.id, "ready")
-    registry.publish(project.id, first_artifact.id)
-    first_asset = registry.data_dir / project.name / version.version / first_artifact.path
-
-    source_path.write_bytes(b"replacement-engine")
-    assert routes_models._sync_model_file(registry, source_root, source_path)
-
-    versions = registry.list_versions(project.id)
-    artifacts = [
-        artifact
-        for item in versions
-        for artifact in registry.list_artifacts(item.id)
-    ]
-    active = registry.get_active_deployment()
-    assert active is not None
-    assert active.artifact_id == first_artifact.id
-    assert first_asset.read_bytes() == b"first-engine"
-    assert len(artifacts) == 2
-    assert artifacts[-1].id != first_artifact.id
-    assert artifacts[-1].checksum != first_artifact.checksum
-    assert len(versions) == 2
-    assert versions[-1].input_shape == version.input_shape
-    assert versions[-1].classes == version.classes
-
-
-def test_engine_replacement_inherits_classes_but_requires_a_fresh_shape_probe(tmp_path) -> None:
-    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
-    source_root = tmp_path / "models"
-    source_root.mkdir()
-    source_path = source_root / "demo.engine"
-    sidecar_path = source_root / "demo.json"
-    source_path.write_bytes(b"first-engine")
-    sidecar_path.write_text(
-        '{"classes": ["person", "head"], "input_shape": "1x3x320x320"}',
-        encoding="utf-8",
-    )
-
-    assert routes_models._sync_model_file(registry, source_root, source_path)
-    project = registry.list_projects()[0]
-    first_version = registry.list_versions(project.id)[0]
-    assert first_version.classes == ["person", "head"]
-    assert first_version.input_shape == "engine-probe-required"
-
-    sidecar_path.unlink()
-    source_path.write_bytes(b"replacement-engine")
-    assert routes_models._sync_model_file(registry, source_root, source_path)
-
-    replacement_version = registry.list_versions(project.id)[-1]
-    assert replacement_version.id != first_version.id
-    assert replacement_version.classes == ["person", "head"]
-    assert replacement_version.input_shape == "engine-probe-required"
-
 
 def test_publish_rejects_pending_engine_without_validated_model_profile(
     tmp_path,
