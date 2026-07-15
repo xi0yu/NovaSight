@@ -768,10 +768,8 @@ export function StudioConsoleView({
   const dualPhaseAtanScale = readNumber(dualPhaseAtanConfig.scale_counts, 256);
   const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(dualPhaseNearConfig.max_counts_per_update, 72);
-  const dualPhaseActuationDelayMs = readNumber(dualPhasePredictionConfig.actuation_delay_ms, 5);
-  const dualPhaseMaxHorizonMs = readNumber(dualPhasePredictionConfig.max_horizon_ms, 35);
-  const dualPhasePredictionCoefficient = readNumber(dualPhasePredictionConfig.coefficient, 1.20);
-  const dualPhaseVelocityTauMs = readNumber(dualPhaseVelocityConfig.smoothing_tau_ms, 22.0);
+  const dualPhaseLeadFrames = readNumber(dualPhasePredictionConfig.lead_frames, 1.0);
+  const dualPhaseVelocitySmoothingFrames = readNumber(dualPhaseVelocityConfig.smoothing_frames, 3.0);
   const dualPhaseHistoryResetGapMs = readNumber(dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
   const dualPhaseFarPredictionCap = readNumber(dualPhasePredictionFarConfig.absolute_cap_px, 10.0);
   const dualPhaseNearPredictionCap = readNumber(dualPhasePredictionNearConfig.absolute_cap_px, 3.0);
@@ -2931,7 +2929,8 @@ export function StudioConsoleView({
                     <span>中位 / EMA 速度</span><b>{formatPoint(controlPipeline.median_velocity, controlPipeline.filtered_velocity, 3, "px/ms")}</b>
                     <span>速度离散度</span><b>{formatOptionalNumber(controlPipeline.velocity_spread, 3, "px/ms")}</b>
                     <span>运动可信度</span><b>{formatPercent(controlPipeline.motion_confidence, 1)}</b>
-                    <span>预测时域</span><b>{formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms")}</b>
+                    <span>平均帧间隔</span><b>{formatOptionalNumber(controlPipeline.reference_dt_ms, 2, "ms")}</b>
+                    <span>前瞻帧数</span><b>{formatOptionalNumber(controlPipeline.prediction_lead_frames, 2, " 帧")}</b>
                     <span>原始 / 安全预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_safe_offset_x, 2, "px")}</b>
                     <span>预测允许上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
                     <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
@@ -3021,7 +3020,7 @@ export function StudioConsoleView({
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="默认瞄点 Y" value={aimYRatio.toFixed(2)} small={`${Object.keys(activeClassAimRatios).length} 个类别覆盖`} />
-              <Metric title="位置预测" value={dualPhaseActive ? dualPhasePredictionCoefficient.toFixed(2) : "不使用"} small={dualPhaseActive ? "短窗受限预测" : "反馈控制"} />
+              <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "单观测单命令" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? "MouseCommandExecutor" : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
             <div className="console-grid2" data-algorithm-page={controlMode}>
@@ -3106,10 +3105,8 @@ export function StudioConsoleView({
                     <NumberControl label="共享 Atan 尺度 counts" detail="FAR 与 NEAR 使用同一个非线性压缩尺度。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
                     <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
                     <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
-                    <NumberControl label="执行延迟 ms" value={dualPhaseActuationDelayMs} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "actuation_delay_ms"], value)} />
-                    <NumberControl label="最大预测时域 ms" value={dualPhaseMaxHorizonMs} min={0} max={200} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "max_horizon_ms"], value)} />
-                    <NumberControl label="预测强度" detail="0 关闭预测，1 为标准预测，最高 2；安全上限始终生效。" value={dualPhasePredictionCoefficient} min={0} max={2} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "coefficient"], value)} />
-                    <NumberControl label="速度 EMA 时间常数 ms" value={dualPhaseVelocityTauMs} min={0.1} max={200} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_tau_ms"], value)} />
+                    <NumberControl label="前瞻帧数" detail="预测量 = 平滑目标速度 × 最近三段捕获间隔的平均 dt × 前瞻帧数；0 完全关闭位置预测。" value={dualPhaseLeadFrames} min={0} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
+                    <NumberControl label="速度平滑帧数" detail="越大越稳但转向越慢；内部仍使用真实 capture timestamp 处理变帧率。" value={dualPhaseVelocitySmoothingFrames} min={0.1} max={20} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_frames"], value)} />
                     <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />
                     <NumberControl label="FAR 预测绝对上限 px" value={dualPhaseFarPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far", "absolute_cap_px"], value)} />
                     <NumberControl label="NEAR 预测绝对上限 px" value={dualPhaseNearPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near", "absolute_cap_px"], value)} />
@@ -3137,10 +3134,9 @@ export function StudioConsoleView({
                 )}
               </div>
 
-              {!dualPhaseActive ? (
-                <div className="console-card">
-                  <SectionTitle title="Y 轴压枪 · 通用/精确输出" />
-                  <ModuleSwitch label="启用 Y 轴压枪" detail="左键持续按下且控制链存在有效目标时，在当前控制输出上叠加时间域 Y counts 前馈。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+              <div className="console-card">
+                  <SectionTitle title="Y 轴后坐力前馈 · 所有控制算法" />
+                  <ModuleSwitch label="启用 Y 轴压枪" detail="只在检测到真实左键持续按下且存在有效目标时，将设备 counts 前馈叠加到视觉 Y 误差反馈；不会开启目标 Y 速度预测。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
                   {recoilEnabled ? (
                     <>
                       <NumberControl label="压枪启动延迟 ms" detail="左键持续按下达到此时间后才开始压枪；与硬件触发启动延迟相互独立。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
@@ -3150,7 +3146,6 @@ export function StudioConsoleView({
                     </>
                   ) : null}
                 </div>
-              ) : null}
 
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />

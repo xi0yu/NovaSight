@@ -120,14 +120,15 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 ## algorithm_decision
 
-版本 3 新增专用算法决策块。版本 4 为 `dual_phase_atan_robust_predictive_v2` 增加 measured error、四点短窗速度和预测系数。V2 至少记录：
+版本 3 新增专用算法决策块。版本 4 为 `dual_phase_atan_robust_predictive_v2` 增加 measured error 和四点短窗速度；当前 V2 进一步记录帧单位前瞻与后坐力前馈。V2 至少记录：
 
 ```text
 algorithm_id / phase / measurement_dt_ms
 aim_px / bbox
 error_measured_px / error_control_px
 history position count / three segment velocities / median / EMA / spread / detection and track confidence
-prediction horizon / coefficient / coefficient offset / weighted offset / cap / safe offset
+prediction reference dt / configured lead frames / raw and weighted offset / cap / safe offset
+recoil enabled / active / left hold / ramp / Y counts
 full_error_counts / float_demand / integer_command / quantizer_residual
 overzero_detected / will_emit / block_reason / executor_success
 delivery_mode / scheduler_used

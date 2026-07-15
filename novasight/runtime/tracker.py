@@ -106,6 +106,7 @@ class _AssociationEdge:
     iou: float
     scale_cost: float
     mahalanobis_distance_sq: float
+    prediction_used: bool
 
 
 class RuntimeTracker:
@@ -251,6 +252,7 @@ class RuntimeTracker:
                 "iou": edge.iou,
                 "scale_cost": edge.scale_cost,
                 "mahalanobis_distance_sq": edge.mahalanobis_distance_sq,
+                "prediction_used": edge.prediction_used,
             }
             for track_id, observation_index, edge in matches
         ]
@@ -345,9 +347,12 @@ class RuntimeTracker:
                 identity_confidence=track.identity_confidence,
             )
             track.estimate = estimate
-            if isfinite(estimate.x) and isfinite(estimate.y):
+            if estimate.valid and isfinite(estimate.x) and isfinite(estimate.y):
                 track.filtered_x = float(estimate.x)
                 track.filtered_y = float(estimate.y)
+            else:
+                track.filtered_x = float(track.observed_aim_x)
+                track.filtered_y = float(track.observed_aim_y)
             if isfinite(estimate.vx) and isfinite(estimate.vy):
                 track.velocity_x = float(estimate.vx)
                 track.velocity_y = float(estimate.vy)
@@ -416,11 +421,20 @@ class RuntimeTracker:
         if association_dt_ms > max(0.0, float(self.config.max_association_dt_ms)):
             return None
         mahalanobis_distance_sq = 0.0
+        prediction_used = bool(track.estimate is not None and track.estimate.valid)
         if track.estimator is not None:
-            mahalanobis_distance_sq = track.estimator.measurement_nis_current(
-                observation.aim_x,
-                observation.aim_y,
-            )
+            if prediction_used:
+                mahalanobis_distance_sq = track.estimator.measurement_nis_current(
+                    observation.aim_x,
+                    observation.aim_y,
+                )
+            else:
+                mahalanobis_distance_sq = track.estimator.measurement_nis_from_position(
+                    x=observation.aim_x,
+                    y=observation.aim_y,
+                    reference_x=track.observed_aim_x,
+                    reference_y=track.observed_aim_y,
+                )
             if (
                 not isfinite(mahalanobis_distance_sq)
                 or mahalanobis_distance_sq > float(self.config.kalman.nis_hard_reject)
@@ -468,6 +482,7 @@ class RuntimeTracker:
             iou=float(iou),
             scale_cost=float(scale_cost),
             mahalanobis_distance_sq=float(mahalanobis_distance_sq),
+            prediction_used=prediction_used,
         )
 
     @staticmethod
@@ -513,23 +528,42 @@ class RuntimeTracker:
                 ts_ns=capture_ts_ns,
                 identity_confidence=track.identity_confidence,
             )
+            if estimate.reason in {"NIS_REJECT", "SINGULAR_INNOVATION"}:
+                track.estimator = self._new_estimator(
+                    track_id=track.track_id,
+                    x=observation.aim_x,
+                    y=observation.aim_y,
+                    capture_ts_ns=capture_ts_ns,
+                    identity_confidence=track.identity_confidence,
+                )
+                estimate = track.estimator.last_estimate
         track.estimate = estimate
         track.class_id = observation.class_id
         track.confidence = observation.confidence
         track.bbox = observation.bbox
         track.observed_aim_x = observation.aim_x
         track.observed_aim_y = observation.aim_y
-        track.filtered_x = estimate.x
-        track.filtered_y = estimate.y
-        track.velocity_x = estimate.vx
-        track.velocity_y = estimate.vy
+        if estimate.valid and isfinite(estimate.x) and isfinite(estimate.y):
+            track.filtered_x = estimate.x
+            track.filtered_y = estimate.y
+            track.velocity_x = estimate.vx
+            track.velocity_y = estimate.vy
+        else:
+            track.filtered_x = observation.aim_x
+            track.filtered_y = observation.aim_y
+            track.velocity_x = estimate.vx if isfinite(estimate.vx) else 0.0
+            track.velocity_y = estimate.vy if isfinite(estimate.vy) else 0.0
         track.last_capture_ts_ns = capture_ts_ns
         track.hit_count += 1
         track.missed_count = 0
         track.confirmed = track.confirmed or track.hit_count >= TRACK_CONFIRM_HITS
         track.status = "CONFIRMED" if track.confirmed else "TENTATIVE"
         track.lost_since_ts_ns = None
-        track.velocity_valid = capture_ts_ns > previous_capture_ts_ns and track.hit_count >= 2
+        track.velocity_valid = (
+            estimate.reason in {"updated", "kalman disabled"}
+            and capture_ts_ns > previous_capture_ts_ns
+            and track.hit_count >= 2
+        )
         track.last_match_cost = edge.cost
         track.last_normalized_distance = edge.normalized_distance
         track.last_iou = edge.iou
@@ -752,6 +786,9 @@ class RuntimeTracker:
             "iou": track.last_iou,
             "scale_cost": track.last_scale_cost,
             "mahalanobis_distance_sq": track.last_mahalanobis_distance_sq,
+            "prediction_used_for_association": bool(
+                track.estimate is not None and track.estimate.valid
+            ),
             "bbox": {
                 "x1": track.bbox.x1,
                 "y1": track.bbox.y1,

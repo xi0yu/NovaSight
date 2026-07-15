@@ -38,6 +38,7 @@ from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
     PredictionConfig as DualPhaseRobustPredictionConfig,
     PredictionModeConfig as DualPhaseRobustPredictionModeConfig,
     ProjectionConfig as DualPhaseRobustProjectionConfig,
+    RecoilConfig as DualPhaseRobustRecoilConfig,
     VelocityConfig as DualPhaseRobustVelocityConfig,
 )
 from novasight.executors import BoxInputState, ExecutorRegistry
@@ -1895,14 +1896,10 @@ class RuntimeService:
         if trigger_mode not in {"hardware", "always"}:
             trigger_mode = "hardware"
         shared_control = self.config.control.shared
-        standard_output_effects_enabled = not self._is_robust_predictive_active()
         hardware_input = (
             self._box_input_state()
             if trigger_mode == "hardware"
-            or (
-                standard_output_effects_enabled
-                and bool(shared_control.recoil_enabled)
-            )
+            or bool(shared_control.recoil_enabled)
             else BoxInputState(raw={"source": "monitor_not_required"})
         )
         box_input = (
@@ -2036,6 +2033,13 @@ class RuntimeService:
                 selector_debug=selector_debug,
                 control_now_ts_ns=control_now_ns,
                 trigger_active=algorithm_trigger_active,
+                left_trigger_active=bool(hardware_input.left),
+                left_trigger_hold_ms=left_trigger_hold_ms,
+                measurement_dt_ms=(
+                    float(measurement_dt_ms)
+                    if isinstance(measurement_dt_ms, (int, float))
+                    else None
+                ),
             )
             control_metadata.update(observation_metadata)
         else:
@@ -2910,7 +2914,7 @@ class RuntimeService:
                 velocity=DualPhaseRobustVelocityConfig(
                     history_size=int(source_v2.velocity.history_size),
                     velocity_sample_count=int(source_v2.velocity.velocity_sample_count),
-                    smoothing_tau_ms=float(source_v2.velocity.smoothing_tau_ms),
+                    smoothing_frames=float(source_v2.velocity.smoothing_frames),
                     history_reset_gap_ms=float(source_v2.velocity.history_reset_gap_ms),
                     spread_base_px_ms=float(source_v2.velocity.spread_base_px_ms),
                     spread_relative=float(source_v2.velocity.spread_relative),
@@ -2918,11 +2922,7 @@ class RuntimeService:
                     change_relative=float(source_v2.velocity.change_relative),
                 ),
                 prediction=DualPhaseRobustPredictionConfig(
-                    enabled_x=bool(source_v2.prediction.enabled_x),
-                    enabled_y=bool(source_v2.prediction.enabled_y),
-                    coefficient=float(source_v2.prediction.coefficient),
-                    actuation_delay_ms=float(source_v2.prediction.actuation_delay_ms),
-                    max_horizon_ms=float(source_v2.prediction.max_horizon_ms),
+                    lead_frames=float(source_v2.prediction.lead_frames),
                     far=DualPhaseRobustPredictionModeConfig(
                         absolute_cap_px=float(source_v2.prediction.far.absolute_cap_px),
                         base_cap_px=float(source_v2.prediction.far.base_cap_px),
@@ -2932,6 +2932,15 @@ class RuntimeService:
                         absolute_cap_px=float(source_v2.prediction.near.absolute_cap_px),
                         base_cap_px=float(source_v2.prediction.near.base_cap_px),
                         relative_cap=float(source_v2.prediction.near.relative_cap),
+                    ),
+                ),
+                recoil=DualPhaseRobustRecoilConfig(
+                    enabled=bool(config.control.shared.recoil_enabled),
+                    start_delay_ms=float(config.control.shared.recoil_start_delay_ms),
+                    y_rate_counts_s=float(config.control.shared.recoil_y_rate_counts_s),
+                    ramp_up_ms=float(config.control.shared.recoil_ramp_up_ms),
+                    max_counts_per_observation=float(
+                        config.control.shared.recoil_max_counts_per_observation
                     ),
                 ),
                 atan=DualPhaseRobustAtanControllerConfig(
@@ -2980,6 +2989,9 @@ class RuntimeService:
         selector_debug: dict[str, Any],
         control_now_ts_ns: int,
         trigger_active: bool,
+        left_trigger_active: bool,
+        left_trigger_hold_ms: float,
+        measurement_dt_ms: float | None,
     ) -> tuple[MoveCommand, dict[str, Any]]:
         algorithm_id = DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
         transform = self._coordinate_transform_for_context(context)
@@ -3060,6 +3072,9 @@ class RuntimeService:
             "detection_confidence": float(target.score),
             "track_confidence": max(0.0, min(1.0, track_confidence)),
             "trigger_active": bool(trigger_active),
+            "left_trigger_active": bool(left_trigger_active),
+            "left_trigger_hold_ms": float(left_trigger_hold_ms),
+            "measurement_dt_ms": measurement_dt_ms,
             "target_valid": bool(
                 raw_aim.valid
                 and not getattr(target, "is_predicted", False)

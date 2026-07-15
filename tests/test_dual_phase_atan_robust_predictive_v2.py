@@ -18,6 +18,7 @@ from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
     PredictionConfig,
     PredictionModeConfig,
     ProjectionConfig,
+    RecoilConfig,
     RobustVelocityEstimator,
     VelocityConfig,
 )
@@ -37,6 +38,9 @@ def _observation(
     detection_confidence: float = 0.95,
     track_confidence: float = 0.90,
     track_rebuilt: bool = False,
+    left_trigger_active: bool = False,
+    left_trigger_hold_ms: float = 0.0,
+    measurement_dt_ms: float | None = 10.0,
 ) -> DualPhaseAtanRobustPredictiveV2Observation:
     capture_ns = (
         capture_ts_ns if capture_ts_ns is not None else 1_000_000_000 + generation * 10_000_000
@@ -71,6 +75,9 @@ def _observation(
         track_confidence=track_confidence,
         trigger_active=trigger_active,
         target_valid=target_valid,
+        left_trigger_active=left_trigger_active,
+        left_trigger_hold_ms=left_trigger_hold_ms,
+        measurement_dt_ms=measurement_dt_ms,
         track_rebuilt=track_rebuilt,
     )
 
@@ -112,10 +119,11 @@ def test_variable_capture_intervals_preserve_px_per_ms_velocity() -> None:
     assert estimate.raw_velocities == pytest.approx((0.5, 0.5, 0.5))
     assert estimate.median_velocity == pytest.approx(0.5)
     assert estimate.filtered_velocity == pytest.approx(0.5)
+    assert estimate.reference_dt_ms == pytest.approx((8.0 + 12.0 + 9.0) / 3.0)
 
 
 def test_stationary_samples_decay_ema_without_forced_zero() -> None:
-    config = VelocityConfig(smoothing_tau_ms=30.0)
+    config = VelocityConfig(smoothing_frames=3.0)
     estimator = RobustVelocityEstimator(config)
     positions = (100.0, 105.0, 110.0, 115.0, 115.0, 115.0, 115.0)
     estimates = []
@@ -133,7 +141,7 @@ def test_stationary_samples_decay_ema_without_forced_zero() -> None:
     assert estimates[-1].median_velocity == 0.0
     # Once two of the three rolling segments are zero, the median is zero;
     # this sequence therefore applies two 10 ms EMA decay updates.
-    expected = 0.5 * math.exp(-20.0 / 30.0)
+    expected = 0.5 * math.exp(-2.0 / 3.0)
     assert estimates[-1].filtered_velocity == pytest.approx(expected)
     assert estimates[-1].filtered_velocity > 0.0
 
@@ -160,7 +168,7 @@ def test_sustained_new_speed_recovers_confidence_after_transition() -> None:
 
 
 def test_reversal_changes_ema_direction_gradually() -> None:
-    estimator = RobustVelocityEstimator(VelocityConfig(smoothing_tau_ms=30.0))
+    estimator = RobustVelocityEstimator(VelocityConfig(smoothing_frames=3.0))
     positions = (100.0, 105.0, 110.0, 115.0, 120.0, 115.0, 110.0, 105.0, 100.0, 95.0)
     estimates = []
     for index, position in enumerate(positions):
@@ -178,14 +186,12 @@ def test_reversal_changes_ema_direction_gradually() -> None:
     assert estimates[-1].filtered_velocity < 0.0
 
 
-def test_prediction_coefficient_is_confidence_weighted_and_cannot_bypass_cap() -> None:
+def test_prediction_uses_average_dt_times_lead_frames_and_cannot_bypass_cap() -> None:
     defaults = DualPhaseAtanRobustPredictiveV2Config()
     config = replace(
         defaults,
         prediction=PredictionConfig(
-            coefficient=2.0,
-            actuation_delay_ms=5.0,
-            max_horizon_ms=35.0,
+            lead_frames=2.0,
             far=PredictionModeConfig(
                 absolute_cap_px=3.0,
                 base_cap_px=0.0,
@@ -203,9 +209,9 @@ def test_prediction_coefficient_is_confidence_weighted_and_cannot_bypass_cap() -
     decision = decisions[-1]
 
     assert decision.telemetry["filtered_velocity"] == pytest.approx(0.4)
-    assert decision.telemetry["prediction_horizon_ms"] == pytest.approx(13.0)
-    assert decision.telemetry["prediction_raw_offset_x"] == pytest.approx(5.2)
-    assert decision.telemetry["prediction_coefficient_offset_x"] == pytest.approx(10.4)
+    assert decision.telemetry["reference_dt_ms"] == pytest.approx(10.0)
+    assert decision.telemetry["prediction_lead_frames"] == pytest.approx(2.0)
+    assert decision.telemetry["prediction_raw_offset_x"] == pytest.approx(8.0)
     assert decision.telemetry["prediction_weighted_offset_x"] > 2.6
     assert decision.telemetry["prediction_allowed_cap_x"] == pytest.approx(2.6)
     assert decision.telemetry["prediction_safe_offset_x"] == pytest.approx(2.6)
@@ -216,7 +222,7 @@ def test_prediction_disabled_is_pure_feedback_while_velocity_runs_in_shadow() ->
     defaults = DualPhaseAtanRobustPredictiveV2Config()
     config = replace(
         defaults,
-        prediction=replace(defaults.prediction, coefficient=0.0),
+        prediction=replace(defaults.prediction, lead_frames=0.0),
     )
     algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(config)
     decision = None
@@ -271,8 +277,8 @@ def test_real_measurement_error_drives_single_threshold_far_near_selection() -> 
 def test_tighter_defaults_raise_feedback_and_prediction_authority() -> None:
     config = DualPhaseAtanRobustPredictiveV2Config()
 
-    assert config.velocity.smoothing_tau_ms == 22.0
-    assert config.prediction.coefficient == 1.20
+    assert config.velocity.smoothing_frames == 3.0
+    assert config.prediction.lead_frames == 1.0
     assert config.prediction.far.absolute_cap_px == 10.0
     assert config.prediction.near.absolute_cap_px == 3.0
     assert config.atan.scale_counts == 256.0
@@ -288,7 +294,7 @@ def test_projection_atan_and_control_atan_are_separate_unit_steps() -> None:
         defaults,
         projection=ProjectionConfig(fov_x_deg=90.0, counts_per_360=360.0),
         mode=ModeSelectorConfig(near_threshold_px=0.01),
-        prediction=replace(defaults.prediction, coefficient=0.0),
+        prediction=replace(defaults.prediction, lead_frames=0.0),
         atan=AtanControllerConfig(
             scale_counts=256.0,
             far=far,
@@ -441,15 +447,15 @@ def test_stale_observation_cannot_emit_and_clears_fractional_residual() -> None:
     assert stale.telemetry["quantizer_residual_x"] == 0.0
 
 
-def test_limited_prediction_reduces_closed_loop_lag_against_feedback_baseline() -> None:
-    def simulate(prediction_coefficient: float) -> float:
+def test_frame_lead_prediction_reduces_closed_loop_lag_against_feedback_baseline() -> None:
+    def simulate(lead_frames: float) -> float:
         defaults = DualPhaseAtanRobustPredictiveV2Config()
         algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
             replace(
                 defaults,
                 prediction=replace(
                     defaults.prediction,
-                    coefficient=prediction_coefficient,
+                    lead_frames=lead_frames,
                 ),
             )
         )
@@ -470,3 +476,56 @@ def test_limited_prediction_reduces_closed_loop_lag_against_feedback_baseline() 
     predictive_error = simulate(1.0)
 
     assert predictive_error < feedback_error
+
+
+def test_v2_recoil_feedforward_requires_real_left_trigger_and_uses_measurement_dt() -> None:
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    config = replace(
+        defaults,
+        prediction=replace(defaults.prediction, lead_frames=0.0),
+        recoil=RecoilConfig(
+            enabled=True,
+            start_delay_ms=20.0,
+            y_rate_counts_s=100.0,
+            ramp_up_ms=0.0,
+            max_counts_per_observation=8.0,
+        ),
+    )
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(config)
+
+    idle = algorithm.calculate(
+        _observation(generation=1, error_x=0.0, error_y=0.0)
+    )
+    firing = algorithm.calculate(
+        _observation(
+            generation=2,
+            error_x=0.0,
+            error_y=0.0,
+            left_trigger_active=True,
+            left_trigger_hold_ms=50.0,
+            measurement_dt_ms=10.0,
+        )
+    )
+
+    assert idle.dy == 0
+    assert idle.telemetry["recoil_active"] is False
+    assert firing.dy == 1
+    assert firing.telemetry["recoil_active"] is True
+    assert firing.telemetry["feedback_demand_y"] == 0.0
+    assert firing.telemetry["recoil_y_counts_float"] == pytest.approx(1.0)
+
+    inverted_algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(config, projection=replace(config.projection, invert_y=True))
+    )
+    inverted = inverted_algorithm.calculate(
+        _observation(
+            generation=3,
+            error_x=0.0,
+            error_y=0.0,
+            left_trigger_active=True,
+            left_trigger_hold_ms=50.0,
+            measurement_dt_ms=10.0,
+        )
+    )
+    assert inverted.dy == 1
+    assert inverted.telemetry["recoil_y_counts_float"] == pytest.approx(1.0)

@@ -46,7 +46,7 @@ The same observation call invokes the selected hardware executor once. `RuntimeS
 - Capture age below zero, inference completion outside `[capture, control_now]`, stale age, or generation/frame rollback blocks the whole decision. A non-increasing capture timestamp resets prediction history and uses pure measured-position feedback for that otherwise valid observation.
 - Global observation cursors survive target switches; target-local estimator/mode/quantizer state does not.
 - Motion-estimator `dt_ms` is the adjacent same-target capture timestamp difference divided by `1_000_000`.
-- Prediction horizon is current frame age plus configured actuation delay, capped by `max_horizon_ms`.
+- Prediction uses the arithmetic mean of the three capture intervals as one reference frame, then multiplies filtered X velocity by that dt and configured `lead_frames`. Frame age only participates in stale-observation rejection.
 
 ## Coordinate Contract
 
@@ -62,7 +62,7 @@ The new algorithm alone owns:
 - four-position same-target history;
 - three-segment median and time-adaptive EMA;
 - spread/trend/detection/track-identity prediction confidence;
-- prediction coefficient, horizon, relative and absolute caps;
+- reference dt, configured/effective lead frames, relative and absolute caps;
 - measured-error zero-cross history;
 - per-axis sub-count quantizer residual.
 
@@ -98,7 +98,7 @@ Implementation owners:
 - `novasight/executors/runtime.py::ExecutorRegistry._execute_direct`
 - `novasight/config/runtime.py::ControlAlgorithmConfigs`
 
-Focused integration tests prove that a DetectionBatch produces one hardware call during observation processing, the executor reports `mouse_command_executor`, no Scheduler exists even if the legacy switch is true, and a subsequent control tick emits nothing. A deterministic closed-loop regression also requires limited prediction to reduce post-warmup mean absolute lag versus the coefficient-zero feedback baseline.
+Focused integration tests prove that a DetectionBatch produces one hardware call during observation processing, the executor reports `mouse_command_executor`, no Scheduler exists even if the legacy switch is true, and a subsequent control tick emits nothing. A deterministic closed-loop regression also requires limited prediction to reduce post-warmup mean absolute lag versus the `lead_frames=0` feedback baseline.
 
 ## Remaining Blind Spots
 

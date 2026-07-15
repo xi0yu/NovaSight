@@ -85,7 +85,7 @@ control:
       max_step_x_counts: 50.0
       max_step_y_counts: 40.0
     dual_phase_atan_robust_predictive_v2:
-      schema_version: 3
+      schema_version: 4
       freshness_threshold_ms: 55.0
       projection:
         fov_x_deg: 105.0
@@ -96,18 +96,14 @@ control:
       velocity:
         history_size: 4
         velocity_sample_count: 3
-        smoothing_tau_ms: 22.0
+        smoothing_frames: 3.0
         history_reset_gap_ms: 80.0
         spread_base_px_ms: 0.12
         spread_relative: 0.50
         change_base_px_ms: 0.20
         change_relative: 0.75
       prediction:
-        enabled_x: true
-        enabled_y: false
-        coefficient: 1.20
-        actuation_delay_ms: 5.0
-        max_horizon_ms: 35.0
+        lead_frames: 1.0
         far:
           absolute_cap_px: 10.0
           base_cap_px: 1.25

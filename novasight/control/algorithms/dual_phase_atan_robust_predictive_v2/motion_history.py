@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from math import exp, isfinite
-from statistics import median
+from statistics import fmean, median
 from typing import Deque
 
 from .models import PositionSample, VelocityConfig, VelocityEstimate
@@ -18,8 +18,8 @@ class RobustVelocityEstimator:
     def __init__(self, config: VelocityConfig) -> None:
         if config.history_size != 4 or config.velocity_sample_count != 3:
             raise ValueError("robust velocity requires four positions and three segments")
-        if config.smoothing_tau_ms <= 0.0:
-            raise ValueError("smoothing_tau_ms must be > 0")
+        if config.smoothing_frames <= 0.0:
+            raise ValueError("smoothing_frames must be > 0")
         if config.history_reset_gap_ms <= 0.0:
             raise ValueError("history_reset_gap_ms must be > 0")
         if config.spread_base_px_ms <= 0.0 or config.change_base_px_ms <= 0.0:
@@ -85,6 +85,7 @@ class RobustVelocityEstimator:
         median_velocity = float(median(velocities))
         spread = float(median(abs(value - median_velocity) for value in velocities))
         latest_dt_ms = intervals_ms[-1]
+        reference_dt_ms = float(fmean(intervals_ms))
 
         if not self.initialized_velocity:
             previous_filtered = median_velocity
@@ -92,7 +93,8 @@ class RobustVelocityEstimator:
             self.initialized_velocity = True
         else:
             previous_filtered = self.filtered_velocity
-            alpha = 1.0 - exp(-latest_dt_ms / self.config.smoothing_tau_ms)
+            smoothing_window_ms = max(1e-9, reference_dt_ms * self.config.smoothing_frames)
+            alpha = 1.0 - exp(-latest_dt_ms / smoothing_window_ms)
             self.filtered_velocity = (
                 previous_filtered * (1.0 - alpha) + median_velocity * alpha
             )
@@ -129,6 +131,7 @@ class RobustVelocityEstimator:
             spread=spread,
             motion_confidence=motion_confidence,
             measurement_dt_ms=latest_dt_ms,
+            reference_dt_ms=reference_dt_ms,
             history_position_count=len(self.samples),
             history_quality=history_quality,
             spread_quality=spread_quality,

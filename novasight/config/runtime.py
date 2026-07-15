@@ -168,7 +168,7 @@ class DualPhaseRobustModeSelectorConfig:
 class DualPhaseRobustVelocityConfig:
     history_size: int = 4
     velocity_sample_count: int = 3
-    smoothing_tau_ms: float = 22.0
+    smoothing_frames: float = 3.0
     history_reset_gap_ms: float = 80.0
     spread_base_px_ms: float = 0.12
     spread_relative: float = 0.50
@@ -201,11 +201,7 @@ def _default_dual_phase_robust_near_prediction() -> DualPhaseRobustPredictionMod
 
 @dataclass
 class DualPhaseRobustPredictionConfig:
-    enabled_x: bool = True
-    enabled_y: bool = False
-    coefficient: float = 1.20
-    actuation_delay_ms: float = 5.0
-    max_horizon_ms: float = 35.0
+    lead_frames: float = 1.0
     far: DualPhaseRobustPredictionModeConfig = field(
         default_factory=_default_dual_phase_robust_far_prediction
     )
@@ -245,7 +241,7 @@ class DualPhaseRobustAtanConfig:
 
 @dataclass
 class DualPhaseAtanRobustPredictiveV2Config:
-    schema_version: int = 3
+    schema_version: int = 4
     freshness_threshold_ms: float = 55.0
     projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
     mode: DualPhaseRobustModeSelectorConfig = field(
@@ -864,8 +860,36 @@ def _migrate_dual_phase_robust_v2_namespace(
         atan["near"] = near
         config["atan"] = atan
 
-    if int(config.get("schema_version", 2)) == 2:
-        config["schema_version"] = 3
+    schema_version = int(config.get("schema_version", 2))
+    if schema_version <= 3:
+        velocity = dict(config.get("velocity") or {})
+        legacy_tau_ms = velocity.pop("smoothing_tau_ms", None)
+        if "smoothing_frames" not in velocity:
+            velocity["smoothing_frames"] = (
+                max(0.1, min(20.0, float(legacy_tau_ms) / (1000.0 / 120.0)))
+                if isinstance(legacy_tau_ms, (int, float)) and not isinstance(legacy_tau_ms, bool)
+                else 3.0
+            )
+        config["velocity"] = velocity
+
+        prediction = dict(config.get("prediction") or {})
+        legacy_enabled_x = prediction.pop("enabled_x", None)
+        prediction.pop("enabled_y", None)
+        legacy_coefficient = prediction.pop("coefficient", None)
+        prediction.pop("max_horizon_ms", None)
+        prediction.pop("max_lead_frames", None)
+        prediction.pop("actuation_delay_ms", None)
+        if "lead_frames" not in prediction:
+            prediction["lead_frames"] = (
+                0.0
+                if legacy_enabled_x is False
+                else legacy_coefficient
+                if isinstance(legacy_coefficient, (int, float))
+                and not isinstance(legacy_coefficient, bool)
+                else 1.0
+            )
+        config["prediction"] = prediction
+        config["schema_version"] = 4
     algorithms["dual_phase_atan_robust_predictive_v2"] = config
 
 
@@ -977,8 +1001,8 @@ def _validate_dual_phase_robust_v2_algorithm(
             raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
         return numeric
 
-    if int(cfg.schema_version) != 3:
-        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 3")
+    if int(cfg.schema_version) != 4:
+        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 4")
     freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
     if freshness_ms <= 0.0:
         raise ValueError(f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0")
@@ -1000,7 +1024,7 @@ def _validate_dual_phase_robust_v2_algorithm(
             "history_size=4 and velocity_sample_count=3"
         )
     for key in (
-        "smoothing_tau_ms",
+        "smoothing_frames",
         "history_reset_gap_ms",
         "spread_base_px_ms",
         "change_base_px_ms",
@@ -1012,18 +1036,9 @@ def _validate_dual_phase_robust_v2_algorithm(
             raise ValueError(f"runtime config key '{prefix}.velocity.{key}' must be >= 0")
 
     prediction = cfg.prediction
-    if prediction.enabled_y:
-        raise ValueError(f"runtime config key '{prefix}.prediction.enabled_y' must be false for v2")
-    coefficient = finite("prediction.coefficient", prediction.coefficient)
-    if not 0.0 <= coefficient <= 2.0:
-        raise ValueError(f"runtime config key '{prefix}.prediction.coefficient' must be in [0, 2]")
-    actuation_ms = finite("prediction.actuation_delay_ms", prediction.actuation_delay_ms)
-    horizon_ms = finite("prediction.max_horizon_ms", prediction.max_horizon_ms)
-    if actuation_ms < 0.0 or actuation_ms > horizon_ms or horizon_ms > freshness_ms:
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction' requires "
-            "0 <= actuation_delay_ms <= max_horizon_ms <= freshness_threshold_ms"
-        )
+    lead_frames = finite("prediction.lead_frames", prediction.lead_frames)
+    if not 0.0 <= lead_frames <= 10.0:
+        raise ValueError(f"runtime config key '{prefix}.prediction.lead_frames' must be in [0, 10]")
     for mode_name, mode_cfg in (("far", prediction.far), ("near", prediction.near)):
         for key in ("absolute_cap_px", "base_cap_px", "relative_cap"):
             if finite(f"prediction.{mode_name}.{key}", getattr(mode_cfg, key)) < 0.0:

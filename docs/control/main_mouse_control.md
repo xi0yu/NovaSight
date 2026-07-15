@@ -70,9 +70,9 @@ control:
       velocity:
         history_size: 4
         velocity_sample_count: 3
-        smoothing_tau_ms: 22.0
+        smoothing_frames: 3.0
       prediction:
-        coefficient: 1.20
+        lead_frames: 1.0
       atan:
         scale_counts: 256.0
         far:
@@ -89,7 +89,7 @@ The source namespace is:
 novasight.control.algorithms.dual_phase_atan_robust_predictive_v2
 ```
 
-Consequently, `prediction.coefficient`, `atan.far.kp`, and similarly named values in other algorithm namespaces are independent.
+Consequently, `prediction.lead_frames`, `atan.far.kp`, and similarly named values in other algorithm namespaces are independent.
 
 ## Algorithm Differences
 
@@ -99,7 +99,7 @@ Consequently, `prediction.coefficient`, `atan.far.kp`, and similarly named value
 | `calibrated_angular` | full-space angular PD | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 | `universal_saturated` | empirical pixel-domain saturated Atan | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 
-The new algorithm bypasses the entire legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and Scheduler capacity cannot alter its result.
+The new algorithm bypasses the legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and Scheduler capacity cannot alter its result. Shared recoil configuration is explicitly copied into the V2 algorithm and is therefore the only shared output effect on this path.
 
 ## Measured And Control Error
 
@@ -114,15 +114,16 @@ e_ctrl.y = e_meas.y
 Prediction is a small reversible addition to the current observation, not the primary controller:
 
 ```text
-h_ms = clamp(frame_age_ms + actuation_delay_ms, 0, max_horizon_ms)
-raw_offset_x = filtered_velocity_x_px_ms * h_ms
-coefficient_offset_x = raw_offset_x * prediction_coefficient
-weighted_offset_x = coefficient_offset_x * motion_confidence
+dt_ref_ms = mean(dt12_ms, dt23_ms, dt34_ms)
+raw_offset_x = filtered_velocity_x_px_ms * dt_ref_ms * lead_frames
+weighted_offset_x = raw_offset_x * motion_confidence
 allowed = min(mode_absolute_cap, mode_base_cap + mode_relative_cap * abs(e_meas.x))
 safe_offset_x = clamp(weighted_offset_x, -allowed, allowed)
 ```
 
-The velocity path is frozen to four current-target samples and three adjacent capture-time velocities. Their median rejects one-position spikes; EMA uses `alpha = 1 - exp(-dt_ms / tau_ms)`. Motion confidence also includes current detection and Tracker identity confidence. Stationary observations decay the previous velocity naturally—there is no forced-zero branch. A measured-error sign crossing clears only the opposite-direction fractional count; it does not damp or overwrite the motion estimate.
+The velocity path uses four current-target samples and three adjacent capture-time velocities. Their velocity median rejects one-position spikes; their capture intervals use the arithmetic mean required by the frame-based prediction contract. EMA uses `alpha = 1 - exp(-latest_dt / (dt_ref * smoothing_frames))`. Motion confidence also includes current detection and Tracker identity confidence. Stationary observations decay the previous velocity naturally—there is no forced-zero branch. A measured-error sign crossing clears only the opposite-direction fractional count; it does not damp or overwrite the motion estimate.
+
+Y target-velocity prediction remains disabled because apparent Y motion mixes target motion, recoil, manual input, and prior NovaSight output. When shared recoil is enabled, V2 instead adds a left-trigger-gated, ramped device-count feedforward term to Y feedback before quantization and per-update clamping.
 
 ## Projection And Control Law
 
@@ -173,7 +174,7 @@ Target loss, runtime restart, algorithm/config/calibration changes, and capture/
 
 ## Telemetry
 
-The decision trace includes identity/timestamps, aim/bbox, measured/control errors, FAR/NEAR state, four-point history count, three `px/ms` velocities, median/EMA/spread/confidence, prediction horizon/coefficient/caps/offset, full correction counts, float demand, integer command, quantizer residual, zero-cross state, and block reason, plus:
+The decision trace includes identity/timestamps, aim/bbox, measured/control errors, FAR/NEAR state, four-point history count, three `px/ms` velocities, median/EMA/spread/confidence, reference dt, configured/effective lead frames, prediction caps/offset, recoil feedforward, full correction counts, float demand, integer command, quantizer residual, zero-cross state, and block reason, plus:
 
 ```text
 delivery_mode: single_command_per_observation
@@ -184,4 +185,4 @@ See `docs/control/dual_phase_atan_robust_predictive_v2.md` for the frozen V2 imp
 
 ## Remaining Physical Uncertainty
 
-`prediction.actuation_delay_ms` still requires Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V2 but do not remove it.
+`prediction.lead_frames`, recoil rate, and caps still require Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V2 but do not remove it.

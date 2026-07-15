@@ -13,6 +13,8 @@ from .models import (
     PredictionModeConfig,
     PredictionResult,
     ProjectionConfig,
+    RecoilConfig,
+    RecoilResult,
     VelocityConfig,
     VelocityEstimate,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "PredictionModeConfig",
     "PredictionResult",
     "ProjectionConfig",
+    "RecoilConfig",
+    "RecoilResult",
     "RobustVelocityEstimator",
     "VelocityConfig",
     "VelocityEstimate",

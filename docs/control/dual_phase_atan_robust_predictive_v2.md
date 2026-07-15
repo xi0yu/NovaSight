@@ -41,7 +41,8 @@ v2 = (P3 - P2) / dt23_ms
 v3 = (P4 - P3) / dt34_ms
 v_median = median(v1, v2, v3)
 
-alpha = 1 - exp(-latest_dt_ms / smoothing_tau_ms)
+dt_ref_ms = mean(dt12_ms, dt23_ms, dt34_ms)
+alpha = 1 - exp(-latest_dt_ms / (dt_ref_ms * smoothing_frames))
 v_filtered = (1 - alpha) * previous_filtered + alpha * v_median
 ```
 
@@ -66,13 +67,12 @@ Fast acceleration, stop, reversal, or segment disagreement reduces prediction co
 
 ## Prediction
 
-All prediction time uses milliseconds and velocity uses pixels per millisecond.
+Prediction configuration uses dimensionless frame units. Capture timestamps still provide the physical dt needed for correct velocity under variable FPS and latest-only drops.
 
 ```text
-h_ms = clamp(frame_age_ms + actuation_delay_ms, 0, max_horizon_ms)
-raw = v_filtered_px_ms * h_ms
-coefficient_offset = raw * prediction_coefficient
-weighted = coefficient_offset * q_motion
+dt_ref_ms = mean(dt12_ms, dt23_ms, dt34_ms)
+raw = v_filtered_px_ms * dt_ref_ms * lead_frames
+weighted = raw * q_motion
 allowed = min(mode.absolute_cap_px,
               mode.base_cap_px + mode.relative_cap * abs(e_meas.x))
 safe = clamp(weighted, -allowed, allowed)
@@ -81,7 +81,11 @@ e_ctrl.x = e_meas.x + safe
 e_ctrl.y = e_meas.y
 ```
 
-`prediction_coefficient` is limited to `[0, 2]`. Zero provides the pure-feedback/shadow baseline. Increasing it cannot bypass confidence, horizon, absolute, relative, freshness, or X-only constraints.
+`lead_frames=0` provides the pure-feedback/shadow baseline. Increasing it cannot bypass confidence, absolute, relative, freshness, or X-only constraints. Frame age remains a freshness/rejection signal and is not a second hidden prediction multiplier.
+
+## Y Feedback And Recoil
+
+V2 does not extrapolate target Y velocity. When `control.shared.recoil_enabled` is true, RuntimeService reads the real left-button state even in target-driven trigger mode and passes its hold duration plus the current measurement dt into V2. The algorithm computes a delayed/ramped `counts/s` feedforward term and adds it after visual Y feedback direction mapping, matching the existing shared recoil semantics. It then clamps the combined demand before quantization. Releasing the real left button immediately removes this term; visual Y feedback remains active throughout.
 
 ## Projection And Control Atan
 
@@ -111,10 +115,10 @@ Opposite demand clears an old-direction fraction. Trigger release, stale blockin
 
 Every accepted observation yields at most one integer `move(dx, dy)`. V2 configuration validation requires each per-update limit to remain in `(0, 127]`; defaults are FAR 127 and NEAR 72 counts. `MouseCommandExecutor` also rejects non-integer counts and values outside its declared device range before the driver call.
 
-The tighter first-pass profile uses FAR Kp `0.45`, NEAR Kp `0.22`, shared Atan scale `256`, prediction coefficient `1.20`, and a `22 ms` velocity EMA time constant. These values increase response authority relative to the original V2 profile while retaining projection, prediction caps, freshness checks, and protocol-safe output limits.
+The frame-normalized profile uses FAR Kp `0.45`, NEAR Kp `0.22`, shared Atan scale `256`, one configured lead frame, and a three-frame velocity smoothing window.
 
-The deterministic closed-loop test compares coefficient `0` against enabled limited prediction for a constant-velocity target and requires the predictive run to have lower post-warmup mean absolute error. This is a regression baseline, not a substitute for real-device A/B calibration.
+The deterministic closed-loop test compares `lead_frames=0` against enabled limited prediction for a constant-velocity target and requires the predictive run to have lower post-warmup mean absolute error. This is a regression baseline, not a substitute for real-device A/B calibration.
 
 ## Main Remaining Calibration
 
-`actuation_delay_ms`, `counts_per_360`, FOV, Kp, Atan scale, prediction caps, and EMA confidence scales require real Jetson/device/game traces. The current estimator intentionally measures apparent target-to-crosshair screen motion and does not yet subtract manual or NovaSight-induced camera motion.
+`lead_frames`, recoil rate, `counts_per_360`, FOV, Kp, Atan scale, prediction caps, and confidence scales require real Jetson/device/game traces. The current estimator intentionally measures apparent target-to-crosshair screen motion and does not yet subtract manual or NovaSight-induced camera motion.

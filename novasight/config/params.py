@@ -411,15 +411,15 @@ CONTROL_PARAM_SPECS.update(
             "counts",
             "设备旋转一整圈所需的标定 counts。",
         ),
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient": _spec(
-            "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
-            "稳健预测控制预测强度",
-            1.20,
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.lead_frames": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.lead_frames",
+            "稳健预测控制前瞻帧数",
+            1.0,
             0.0,
-            2.0,
+            10.0,
             0.01,
-            "ratio",
-            "缩放短窗 EMA 预测量；运动可信度和安全上限仍然生效。",
+            "frames",
+            "与平均捕获 dt 和平滑目标速度相乘；0 完全关闭位置预测。",
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
@@ -461,15 +461,15 @@ CONTROL_PARAM_SPECS.update(
             "ratio",
             "NEAR 阶段无死区小幅持续修正增益。",
         ),
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms": _spec(
-            "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
-            "稳健预测控制速度平滑时间常数",
-            22.0,
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_frames": _spec(
+            "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_frames",
+            "稳健预测控制速度平滑帧数",
+            3.0,
             0.1,
-            200.0,
+            20.0,
             0.1,
-            "ms",
-            "按真实采集 dt 计算 EMA alpha，避免固定 FPS 假设。",
+            "frames",
+            "速度 EMA 的等效帧窗口；内部仍按真实捕获 dt 处理丢帧和抖动。",
         ),
     }
 )

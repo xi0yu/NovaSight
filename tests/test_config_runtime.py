@@ -433,10 +433,10 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     robust = cfg.control.dual_phase_atan_robust_predictive_v2
     assert robust.velocity.history_size == 4
     assert robust.velocity.velocity_sample_count == 3
-    assert robust.schema_version == 3
+    assert robust.schema_version == 4
     assert robust.mode.near_threshold_px == pytest.approx(12.0)
-    assert robust.prediction.coefficient == pytest.approx(1.20)
-    assert robust.prediction.enabled_y is False
+    assert robust.velocity.smoothing_frames == pytest.approx(3.0)
+    assert robust.prediction.lead_frames == pytest.approx(1.0)
     assert robust.atan.scale_counts == pytest.approx(256.0)
     assert robust.atan.far.kp == pytest.approx(0.45)
     assert robust.atan.near.kp == pytest.approx(0.22)
@@ -950,8 +950,8 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.algorithms.universal_saturated.response_scale_y_px",
         "control.algorithms.universal_saturated.max_step_x_counts",
         "control.algorithms.universal_saturated.max_step_y_counts",
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_tau_ms",
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.coefficient",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_frames",
+        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.lead_frames",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.base_cap_px",
         "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.far.relative_cap",

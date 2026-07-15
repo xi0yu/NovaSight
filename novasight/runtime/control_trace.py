@@ -313,17 +313,13 @@ def build_control_trace_record(
                 "motion_confidence": _optional_number(pipeline.get("motion_confidence")),
             },
             "prediction": {
+                "reference_dt_ms": _optional_number(pipeline.get("reference_dt_ms")),
+                "lead_frames": _optional_number(pipeline.get("prediction_lead_frames")),
                 "horizon_ms": _first_number(
                     pipeline.get("prediction_horizon_ms"),
                     _multiply(pipeline.get("prediction_horizon_s"), 1000.0),
                 ),
                 "raw_offset_x": _optional_number(pipeline.get("prediction_raw_offset_x")),
-                "coefficient": _optional_number(
-                    pipeline.get("prediction_coefficient")
-                ),
-                "coefficient_offset_x": _optional_number(
-                    pipeline.get("prediction_coefficient_offset_x")
-                ),
                 "weighted_offset_x": _optional_number(
                     pipeline.get("prediction_weighted_offset_x")
                 ),
@@ -339,6 +335,13 @@ def build_control_trace_record(
                 "crossing_limited": _optional_bool(
                     pipeline.get("prediction_crossing_limited")
                 ),
+            },
+            "recoil": {
+                "enabled": _optional_bool(pipeline.get("recoil_enabled")),
+                "active": _optional_bool(pipeline.get("recoil_active")),
+                "left_hold_ms": _optional_number(pipeline.get("recoil_left_hold_ms")),
+                "ramp": _optional_number(pipeline.get("recoil_ramp")),
+                "y_counts": _optional_number(pipeline.get("recoil_y_counts_float")),
             },
             "full_error_counts": _axis_pair(
                 pipeline.get("full_error_counts_x"),

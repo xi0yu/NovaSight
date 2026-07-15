@@ -10,6 +10,7 @@ from .models import (
     DualPhaseAtanRobustPredictiveV2Config,
     DualPhaseAtanRobustPredictiveV2Observation,
     PredictionResult,
+    RecoilResult,
 )
 from .motion_history import RobustVelocityEstimator
 
@@ -156,7 +157,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
             error_meas_x=error_meas_x,
             filtered_velocity_x=filtered_velocity_x,
             motion_confidence=motion_confidence,
-            frame_age_ms=frame_age_ms,
+            reference_dt_ms=(estimate.reference_dt_ms if estimate is not None else 0.0),
             estimate_available=estimate is not None,
         )
         error_ctrl_x = error_meas_x + prediction.safe_offset_x
@@ -176,7 +177,14 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
 
         atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
         demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)
-        demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
+        feedback_demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
+        recoil = self._calculate_recoil(observation)
+        recoil_demand_y = recoil.counts_y
+        demand_y = _clamp(
+            feedback_demand_y + recoil_demand_y,
+            -atan_mode.max_counts_per_update,
+            atan_mode.max_counts_per_update,
+        )
         if observation.trigger_active:
             dx, residual_direction_reset_x = self._quantizer_x.quantize(demand_x)
             dy, residual_direction_reset_y = self._quantizer_y.quantize(demand_y)
@@ -210,6 +218,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "control_now_ns": observation.control_now_ns,
                 "frame_age_ms": frame_age_ms,
                 "measurement_dt_ms": (estimate.measurement_dt_ms if estimate is not None else None),
+                "reference_dt_ms": prediction.reference_dt_ms,
                 "aim_x": observation.aim_x,
                 "aim_y": observation.aim_y,
                 "bbox_x1": observation.bbox_x1,
@@ -249,10 +258,8 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "track_quality": estimate.track_quality if estimate is not None else 0.0,
                 "motion_confidence": motion_confidence,
                 "prediction_confidence": motion_confidence,
-                "prediction_horizon_ms": prediction.horizon_ms,
-                "prediction_coefficient": self.config.prediction.coefficient,
+                "prediction_lead_frames": prediction.lead_frames,
                 "prediction_raw_offset_x": prediction.raw_offset_x,
-                "prediction_coefficient_offset_x": prediction.coefficient_offset_x,
                 "prediction_weighted_offset_x": prediction.weighted_offset_x,
                 "prediction_weight": motion_confidence,
                 "prediction_allowed_cap_x": prediction.allowed_cap_x,
@@ -266,6 +273,12 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "full_error_counts_y": full_counts_y,
                 "float_demand_x": demand_x,
                 "float_demand_y": demand_y,
+                "feedback_demand_y": feedback_demand_y,
+                "recoil_enabled": self.config.recoil.enabled,
+                "recoil_active": recoil.active,
+                "recoil_left_hold_ms": observation.left_trigger_hold_ms,
+                "recoil_ramp": recoil.ramp,
+                "recoil_y_counts_float": recoil_demand_y,
                 "integer_command_x": dx,
                 "integer_command_y": dy,
                 "quantizer_residual_x": self._quantizer_x.accumulator,
@@ -286,24 +299,19 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         error_meas_x: float,
         filtered_velocity_x: float,
         motion_confidence: float,
-        frame_age_ms: float,
+        reference_dt_ms: float,
         estimate_available: bool,
     ) -> PredictionResult:
         prediction_config = self.config.prediction
-        horizon_ms = _clamp(
-            frame_age_ms + prediction_config.actuation_delay_ms,
-            0.0,
-            prediction_config.max_horizon_ms,
-        )
+        valid_dt = reference_dt_ms if isfinite(reference_dt_ms) and reference_dt_ms > 0.0 else 0.0
         allowed = bool(
-            prediction_config.enabled_x
-            and estimate_available
-            and prediction_config.coefficient > 0.0
+            estimate_available
+            and valid_dt > 0.0
+            and prediction_config.lead_frames > 0.0
         )
         effective_confidence = _clamp(motion_confidence, 0.0, 1.0) if allowed else 0.0
-        raw_offset_x = filtered_velocity_x * horizon_ms
-        coefficient_offset_x = raw_offset_x * prediction_config.coefficient
-        weighted_offset_x = coefficient_offset_x * effective_confidence
+        raw_offset_x = filtered_velocity_x * valid_dt * prediction_config.lead_frames
+        weighted_offset_x = raw_offset_x * effective_confidence
         mode_config = prediction_config.far if mode is ControlMode.FAR else prediction_config.near
         allowed_cap_x = min(
             mode_config.absolute_cap_px,
@@ -315,15 +323,45 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
             allowed_cap_x,
         )
         return PredictionResult(
-            horizon_ms=horizon_ms,
+            reference_dt_ms=valid_dt,
+            lead_frames=prediction_config.lead_frames,
             raw_offset_x=raw_offset_x,
-            coefficient_offset_x=coefficient_offset_x,
             weighted_offset_x=weighted_offset_x,
             safe_offset_x=safe_offset_x,
             allowed_cap_x=allowed_cap_x,
             motion_confidence=effective_confidence,
             allowed=allowed,
         )
+
+    def _calculate_recoil(
+        self,
+        observation: DualPhaseAtanRobustPredictiveV2Observation,
+    ) -> RecoilResult:
+        config = self.config.recoil
+        dt_ms = observation.measurement_dt_ms
+        if (
+            not config.enabled
+            or not observation.left_trigger_active
+            or dt_ms is None
+            or not isfinite(float(dt_ms))
+            or float(dt_ms) <= 0.0
+            or float(dt_ms) > 200.0
+        ):
+            return RecoilResult(counts_y=0.0, ramp=0.0, active=False)
+        active_ms = max(
+            0.0,
+            float(observation.left_trigger_hold_ms) - max(0.0, config.start_delay_ms),
+        )
+        if active_ms <= 0.0 or config.y_rate_counts_s <= 0.0:
+            return RecoilResult(counts_y=0.0, ramp=0.0, active=False)
+        ramp = (
+            1.0
+            if config.ramp_up_ms <= 0.0
+            else min(1.0, active_ms / config.ramp_up_ms)
+        )
+        requested = config.y_rate_counts_s * (float(dt_ms) / 1000.0) * ramp
+        counts_y = min(max(0.0, config.max_counts_per_observation), requested)
+        return RecoilResult(counts_y=counts_y, ramp=ramp, active=counts_y > 0.0)
 
     def _blocked_decision(
         self,
@@ -483,12 +521,8 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
     if not isfinite(config.mode.near_threshold_px) or config.mode.near_threshold_px < 0.0:
         raise ValueError("near_threshold_px must be finite and >= 0")
     prediction = config.prediction
-    if prediction.enabled_y:
-        raise ValueError("V2 predicts X only")
-    if not 0.0 <= prediction.coefficient <= 2.0:
-        raise ValueError("prediction coefficient must be in [0, 2]")
-    if not 0.0 <= prediction.actuation_delay_ms <= prediction.max_horizon_ms:
-        raise ValueError("prediction delay must fit the prediction horizon")
+    if not 0.0 <= prediction.lead_frames <= 10.0:
+        raise ValueError("prediction lead_frames must be in [0, 10]")
     for mode_config in (prediction.far, prediction.near):
         if (
             min(
@@ -499,6 +533,14 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
             < 0.0
         ):
             raise ValueError("prediction caps must be >= 0")
+    recoil = config.recoil
+    if min(
+        recoil.start_delay_ms,
+        recoil.y_rate_counts_s,
+        recoil.ramp_up_ms,
+        recoil.max_counts_per_observation,
+    ) < 0.0:
+        raise ValueError("recoil parameters must be >= 0")
     if not isfinite(config.atan.scale_counts) or config.atan.scale_counts <= 0.0:
         raise ValueError("Atan scale must be finite and > 0")
     for mode_config in (config.atan.far, config.atan.near):

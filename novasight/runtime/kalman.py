@@ -92,9 +92,24 @@ class KalmanEstimator:
         return _mahalanobis_2d(innovation, s00, s01, s10, s11)
 
     def measurement_nis_current(self, x: float, y: float) -> float:
+        return self.measurement_nis_from_position(
+            x=x,
+            y=y,
+            reference_x=self.x[0],
+            reference_y=self.x[1],
+        )
+
+    def measurement_nis_from_position(
+        self,
+        *,
+        x: float,
+        y: float,
+        reference_x: float,
+        reference_y: float,
+    ) -> float:
         if not self.config.enabled:
             return 0.0
-        innovation = [float(x) - self.x[0], float(y) - self.x[1]]
+        innovation = [float(x) - float(reference_x), float(y) - float(reference_y)]
         s00 = self.p[0][0] + max(1e-6, float(self.config.measurement_noise_x))
         s01 = self.p[0][1]
         s10 = self.p[1][0]
@@ -220,37 +235,6 @@ class KalmanEstimator:
             valid=True,
             reason="updated",
             nis=nis,
-        )
-        self.last_estimate = estimate
-        return estimate
-
-    def apply_velocity_hint(
-        self,
-        *,
-        vx: float,
-        vy: float,
-        ts_ns: int,
-        weight: float = 1.0,
-    ) -> EstimatedState:
-        """Blend a timestamp-derived measurement velocity into the state.
-
-        A two-position constant-velocity Kalman filter can take several frames
-        to infer velocity when dt is small. The tracker already has reliable
-        matched bbox centers and capture timestamps, so use that finite
-        difference as a velocity observation without changing position state.
-        """
-        if not self.config.enabled:
-            return self.last_estimate
-        if not all(isfinite(float(value)) for value in (vx, vy)):
-            return self.last_estimate
-        alpha = _clamp01(weight)
-        self.x[2] = self.x[2] * (1.0 - alpha) + float(vx) * alpha
-        self.x[3] = self.x[3] * (1.0 - alpha) + float(vy) * alpha
-        estimate = self._estimate(
-            ts_ns=int(ts_ns),
-            predicted=False,
-            valid=True,
-            reason="updated",
         )
         self.last_estimate = estimate
         return estimate

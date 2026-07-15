@@ -226,11 +226,16 @@ def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
                 "filtered_velocity": 0.45,
                 "velocity_spread": 0.1,
                 "motion_confidence": 0.8,
-                "prediction_coefficient": 1.5,
+                "reference_dt_ms": 8.33,
+                "prediction_lead_frames": 1.5,
                 "prediction_raw_offset_x": 5.0,
-                "prediction_coefficient_offset_x": 7.5,
                 "prediction_weighted_offset_x": 6.0,
                 "prediction_safe_offset_x": 2.0,
+                "recoil_enabled": True,
+                "recoil_active": True,
+                "recoil_left_hold_ms": 120.0,
+                "recoil_ramp": 0.8,
+                "recoil_y_counts_float": 1.25,
                 "executor_success": True,
             },
         },
@@ -245,8 +250,11 @@ def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
     assert decision["robust_velocity"]["unit"] == "px/ms"
     assert decision["robust_velocity"]["segments_px_ms"] == [0.4, 0.5, 0.6]
     assert decision["robust_velocity"]["median_px_ms"] == 0.5
-    assert decision["prediction"]["coefficient"] == 1.5
+    assert decision["prediction"]["reference_dt_ms"] == 8.33
+    assert decision["prediction"]["lead_frames"] == 1.5
     assert decision["prediction"]["weighted_offset_x"] == 6.0
+    assert decision["recoil"]["active"] is True
+    assert decision["recoil"]["y_counts"] == 1.25
     assert decision["executor_success"] is True
 
 

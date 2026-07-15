@@ -105,6 +105,21 @@ class _UnavailableButtonKmNet(_TriggeredKmNet):
         }
 
 
+class _HeldLeftKmNet(_TriggeredKmNet):
+    def read_buttons(self) -> dict[str, object]:
+        now_ns = time.monotonic_ns()
+        return {
+            "available": True,
+            "left": True,
+            "right": False,
+            "reason": "",
+            "left_pressed_since_ts_ns": now_ns - 100_000_000,
+            "right_pressed_since_ts_ns": 0,
+            "sample_ts_ns": now_ns,
+            "poll_ts_ns": now_ns,
+        }
+
+
 def test_latest_frame_exchange_name_is_capacity_one_latest_mailbox() -> None:
     exchange = LatestFrameExchange()
 
@@ -1280,6 +1295,54 @@ def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() ->
     assert service.last_control["pipeline"]["scheduler_used"] is False
     assert service.last_control["pipeline"]["algorithm"] == algorithm_id
     assert service.last_control["pipeline"]["executor_success"] is True
+
+
+def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
+    config.control.trigger_mode = "always"
+    config.control.shared.recoil_enabled = True
+    config.control.shared.recoil_start_delay_ms = 0.0
+    config.control.shared.recoil_y_rate_counts_s = 100.0
+    config.control.shared.recoil_ramp_up_ms = 0.0
+    config.control.shared.recoil_max_counts_per_observation = 8.0
+    kmnet = _HeldLeftKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    base_capture_ts_ns = time.monotonic_ns() - 30_000_000
+
+    for index in range(2):
+        capture_ts_ns = base_capture_ts_ns + index * 10_000_000
+        service.process_detection_batch(
+            DetectionBatch(
+                frame_id=index + 1,
+                generation=index + 1,
+                capture_ts_ns=capture_ts_ns,
+                inference_start_ts_ns=capture_ts_ns + 1_000,
+                inference_end_ts_ns=capture_ts_ns + 2_000,
+                detections=[Detection(cls=0, score=0.95, x=340, y=298, w=40, h=100)],
+                classes=["target"],
+                coordinate_space="roi",
+            ),
+            width=640,
+            height=640,
+            source_width=1920,
+            source_height=1080,
+            roi_offset_x=600,
+            roi_offset_y=220,
+        )
+
+    assert len(kmnet.outputs) == 1
+    assert (kmnet.outputs[0].dx, kmnet.outputs[0].dy) == (0, 1)
+    assert service.last_control is not None
+    assert service.last_control["pipeline"]["recoil_active"] is True
+    assert service.last_control["pipeline"]["recoil_y_counts_float"] == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("terminal_state", ["stopped", "cancelled", "fatal"])

@@ -306,6 +306,50 @@ def test_mahalanobis_gate_rejects_statistically_impossible_match() -> None:
     assert result.lost_track_count == 1
 
 
+def test_invalid_kalman_prediction_falls_back_to_last_observation_for_association() -> None:
+    tracker = RuntimeTracker(
+        TrackerConfig(
+            max_match_distance=1.5,
+            max_association_dt_ms=150.0,
+            kalman=KalmanConfig(
+                acceleration_noise=2.0,
+                measurement_noise_x=4.0,
+                measurement_noise_y=4.0,
+                prediction_decay_tau_ms=10.0,
+                min_prediction_confidence=0.90,
+            ),
+        )
+    )
+    first = _context(
+        1,
+        1_000_000_000,
+        [Detection(0, 0.9, x=100, y=200, w=40, h=100)],
+    )
+    same_target_after_gap = _context(
+        2,
+        1_100_000_000,
+        [Detection(0, 0.9, x=100, y=200, w=40, h=100)],
+    )
+
+    tracker.update(_observations(first).observations, first.capture_ts_ns or 0, frame_id=1)
+    track_before_gap = tracker._tracks[1]
+    assert track_before_gap.estimator is not None
+    track_before_gap.estimator.x[2] = 1_000.0
+    result = tracker.update(
+        _observations(same_target_after_gap).observations,
+        same_target_after_gap.capture_ts_ns or 0,
+        frame_id=2,
+    )
+
+    assert [track.track_id for track in result.active_tracks] == [1]
+    assert result.debug["assignments"][0]["prediction_used"] is False
+    recovered = result.active_tracks[0]
+    assert recovered.filtered_aim_px == pytest.approx(recovered.observed_aim_px)
+    recovered_record = tracker._tracks[1]
+    assert recovered_record.estimator is not None
+    assert recovered_record.estimator.x[0] == pytest.approx(recovered.observed_aim_px[0])
+
+
 def test_hungarian_assignment_finds_global_optimum_where_greedy_fails() -> None:
     matrix = [
         [1.0, 2.0],

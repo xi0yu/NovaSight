@@ -79,10 +79,10 @@ def test_robust_v2_namespace_uses_single_threshold_and_shared_atan_scale() -> No
                     "dual_phase_atan_robust_predictive_v2": {
                         "mode": {"near_threshold_px": 14.0},
                         "velocity": {
-                            "smoothing_tau_ms": 25.0,
+                            "smoothing_frames": 3.0,
                             "spread_base_px_ms": 0.2,
                         },
-                        "prediction": {"coefficient": 1.5},
+                        "prediction": {"lead_frames": 1.5},
                         "atan": {
                             "scale_counts": 300.0,
                             "far": {"kp": 0.4},
@@ -99,8 +99,8 @@ def test_robust_v2_namespace_uses_single_threshold_and_shared_atan_scale() -> No
     assert robust["mode"] == {"near_threshold_px": 14.0}
     assert robust["velocity"]["history_size"] == 4
     assert robust["velocity"]["velocity_sample_count"] == 3
-    assert robust["velocity"]["smoothing_tau_ms"] == 25.0
-    assert robust["prediction"]["coefficient"] == 1.5
+    assert robust["velocity"]["smoothing_frames"] == 3.0
+    assert robust["prediction"]["lead_frames"] == 1.5
     assert robust["atan"]["scale_counts"] == 300.0
     assert "scale_counts" not in robust["atan"]["far"]
     assert "scale_counts" not in robust["atan"]["near"]
@@ -137,9 +137,51 @@ def test_v2_schema_two_migrates_to_single_threshold_and_shared_scale() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 3
+    assert robust.schema_version == 4
     assert robust.mode.near_threshold_px == 13.0
     assert robust.atan.scale_counts == 280.0
+
+
+def test_v2_schema_three_time_prediction_migrates_to_frame_units() -> None:
+    config = parse_runtime_config(
+        {
+            "control": {
+                "algorithms": {
+                    "dual_phase_atan_robust_predictive_v2": {
+                        "schema_version": 3,
+                        "velocity": {"smoothing_tau_ms": 25.0},
+                        "prediction": {
+                            "coefficient": 1.5,
+                            "actuation_delay_ms": 5.0,
+                            "max_horizon_ms": 35.0,
+                        },
+                    }
+                }
+            }
+        }
+    )
+
+    robust = config.control.dual_phase_atan_robust_predictive_v2
+    assert robust.schema_version == 4
+    assert robust.velocity.smoothing_frames == pytest.approx(3.0)
+    assert robust.prediction.lead_frames == pytest.approx(1.5)
+
+
+def test_v2_migration_preserves_explicitly_disabled_prediction() -> None:
+    config = parse_runtime_config(
+        {
+            "control": {
+                "algorithms": {
+                    "dual_phase_atan_robust_predictive_v2": {
+                        "schema_version": 3,
+                        "prediction": {"enabled_x": False, "coefficient": 1.5},
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.control.dual_phase_atan_robust_predictive_v2.prediction.lead_frames == 0.0
 
 
 @pytest.mark.parametrize(
@@ -147,8 +189,7 @@ def test_v2_schema_two_migrates_to_single_threshold_and_shared_scale() -> None:
     [
         ({"velocity": {"history_size": 3}}, "history_size=4"),
         ({"velocity": {"velocity_sample_count": 2}}, "velocity_sample_count=3"),
-        ({"prediction": {"coefficient": 2.1}}, "coefficient"),
-        ({"prediction": {"enabled_y": True}}, "enabled_y"),
+        ({"prediction": {"lead_frames": 10.1}}, "lead_frames"),
         ({"atan": {"far": {"max_counts_per_update": 128}}}, "max_counts_per_update"),
     ],
 )

@@ -318,6 +318,11 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert "ttbox_pid_atan" not in studio
     assert 'label="NEAR 阈值 px"' in studio
     assert 'label="共享 Atan 尺度 counts"' in studio
+    assert 'label="前瞻帧数"' in studio
+    assert 'label="速度平滑帧数"' in studio
+    assert 'title="Y 轴后坐力前馈 · 所有控制算法"' in studio
+    assert 'updateDualPhasePath(["prediction", "coefficient"]' not in studio
+    assert 'updateDualPhasePath(["prediction", "actuation_delay_ms"]' not in studio
     assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio
     assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio
     assert 'updateControlGroupField("shared", "max_count_slew_x", value)' in studio

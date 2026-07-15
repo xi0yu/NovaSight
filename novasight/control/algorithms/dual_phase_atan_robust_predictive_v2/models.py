@@ -29,7 +29,7 @@ class ModeSelectorConfig:
 class VelocityConfig:
     history_size: int = 4
     velocity_sample_count: int = 3
-    smoothing_tau_ms: float = 22.0
+    smoothing_frames: float = 3.0
     history_reset_gap_ms: float = 80.0
     spread_base_px_ms: float = 0.12
     spread_relative: float = 0.50
@@ -62,13 +62,18 @@ def _default_near_prediction() -> PredictionModeConfig:
 
 @dataclass(frozen=True, slots=True)
 class PredictionConfig:
-    coefficient: float = 1.20
-    actuation_delay_ms: float = 5.0
-    max_horizon_ms: float = 35.0
+    lead_frames: float = 1.0
     far: PredictionModeConfig = field(default_factory=_default_far_prediction)
     near: PredictionModeConfig = field(default_factory=_default_near_prediction)
-    enabled_x: bool = True
-    enabled_y: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RecoilConfig:
+    enabled: bool = False
+    start_delay_ms: float = 0.0
+    y_rate_counts_s: float = 0.0
+    ramp_up_ms: float = 120.0
+    max_counts_per_observation: float = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +110,7 @@ class DualPhaseAtanRobustPredictiveV2Config:
     mode: ModeSelectorConfig = field(default_factory=ModeSelectorConfig)
     velocity: VelocityConfig = field(default_factory=VelocityConfig)
     prediction: PredictionConfig = field(default_factory=PredictionConfig)
+    recoil: RecoilConfig = field(default_factory=RecoilConfig)
     atan: AtanControllerConfig = field(default_factory=AtanControllerConfig)
 
 
@@ -136,6 +142,9 @@ class DualPhaseAtanRobustPredictiveV2Observation:
     track_confidence: float
     trigger_active: bool
     target_valid: bool
+    left_trigger_active: bool = False
+    left_trigger_hold_ms: float = 0.0
+    measurement_dt_ms: float | None = None
     track_rebuilt: bool = False
 
 
@@ -153,6 +162,7 @@ class VelocityEstimate:
     spread: float
     motion_confidence: float
     measurement_dt_ms: float
+    reference_dt_ms: float
     history_position_count: int
     history_quality: float
     spread_quality: float
@@ -163,14 +173,21 @@ class VelocityEstimate:
 
 @dataclass(frozen=True, slots=True)
 class PredictionResult:
-    horizon_ms: float
+    reference_dt_ms: float
+    lead_frames: float
     raw_offset_x: float
-    coefficient_offset_x: float
     weighted_offset_x: float
     safe_offset_x: float
     allowed_cap_x: float
     motion_confidence: float
     allowed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RecoilResult:
+    counts_y: float
+    ramp: float
+    active: bool
 
 
 @dataclass(frozen=True, slots=True)
