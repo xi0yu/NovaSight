@@ -3557,13 +3557,20 @@ export function StudioConsoleView({
             </header>
 
             <div className="launch-dialog-body">
-              <div className={`launch-overview ${launchStatus}`}>
+              <div
+                aria-atomic="true"
+                aria-live="polite"
+                className={`launch-overview ${launchStatus}`}
+              >
                 <div className="launch-progress-meta">
                   <span>{launchSummary}</span>
                   <strong>{launchCompletedStages} / {launchStages.length}</strong>
                 </div>
                 <div className="launch-progress-track">
-                  <div className="launch-progress-bar" style={{ width: `${launchProgress}%` }} />
+                  <div
+                    className="launch-progress-bar"
+                    style={{ transform: `scaleX(${launchProgress / 100})` }}
+                  />
                 </div>
               </div>
 

@@ -5472,9 +5472,9 @@ tbody tr:hover {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(17, 21, 31, 0.38);
-  backdrop-filter: blur(10px);
-  animation: launch-fade-in 160ms ease;
+  background: rgba(17, 21, 31, 0.46);
+  backdrop-filter: blur(8px);
+  animation: launch-fade-in var(--duration-normal) var(--ease-standard);
 }
 
 .launch-dialog {
@@ -5484,10 +5484,10 @@ tbody tr:hover {
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border-default);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
-  box-shadow: 0 30px 90px rgba(15, 20, 35, 0.2);
-  animation: launch-dialog-in 220ms cubic-bezier(0.22, 0.8, 0.27, 1);
+  border-radius: var(--radius-6);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-dialog);
+  animation: launch-dialog-in var(--duration-panel) cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .launch-dialog-header {
@@ -5522,22 +5522,24 @@ tbody tr:hover {
 .launch-dialog h2 {
   margin: 1px 0 5px;
   color: var(--text-primary);
-  font-size: 18px;
-  letter-spacing: 0;
+  font-size: var(--text-section-title);
+  font-weight: 720;
+  letter-spacing: -0.01em;
 }
 
 .launch-dialog p {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: var(--text-helper);
+  line-height: var(--leading-helper);
+  text-wrap: pretty;
 }
 
 .launch-dialog-close {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-4);
   background: transparent;
   color: var(--text-secondary);
   font-size: 22px;
@@ -5601,8 +5603,18 @@ tbody tr:hover {
 .launch-progress-bar {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--ns-amber-500), var(--brand-primary));
-  transition: width 420ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  background: var(--ns-amber-500);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--duration-panel) cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.launch-overview.success .launch-progress-bar {
+  background: var(--status-normal-icon);
+}
+
+.launch-overview.failed .launch-progress-bar {
+  background: var(--status-error-icon);
 }
 
 .launch-stage-list {
@@ -5731,20 +5743,20 @@ tbody tr:hover {
 .launch-stage-heading span {
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .launch-stage-heading strong {
   min-width: 0;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .launch-stage-heading em {
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
   font-style: normal;
   font-weight: 650;
 }
@@ -5764,15 +5776,15 @@ tbody tr:hover {
 .launch-stage-copy p {
   margin: 4px 0 0 32px;
   color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .launch-stage-copy small {
   display: block;
   margin: 6px 0 0 32px;
   color: var(--text-primary);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -5808,7 +5820,7 @@ tbody tr:hover {
 
 .launch-toast.show {
   display: flex;
-  animation: launch-toast-in 240ms ease;
+  animation: launch-toast-in var(--duration-panel) cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .launch-toast::before {
@@ -5831,7 +5843,7 @@ tbody tr:hover {
 @keyframes launch-dialog-in {
   from {
     opacity: 0;
-    transform: translateY(16px) scale(0.978);
+    transform: translateY(10px) scale(0.97);
   }
 }
 
