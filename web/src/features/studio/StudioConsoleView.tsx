@@ -37,7 +37,8 @@ import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
-import { ModelCatalogTree } from "../models/ModelCatalogTree";
+import { ModelSelectionPanel } from "../models/ModelSelectionPanel";
+import { formatModelSize } from "../models/modelPresentation";
 import { AdvancedSettingsDialog } from "./AdvancedSettingsDialog";
 import { ClassAimRatioControl, CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
@@ -977,6 +978,20 @@ export function StudioConsoleView({
     typeof selectedModelArtifactId === "number"
       ? sortedSwitchableArtifacts.find((item) => item.id === selectedModelArtifactId) ?? null
       : sortedSwitchableArtifacts[0] ?? null;
+  const selectedCatalogModel = useMemo(
+    () => modelCatalog && selectedModelCatalogPath
+      ? findCatalogModelByPath(modelCatalog, selectedModelCatalogPath)
+      : null,
+    [modelCatalog, selectedModelCatalogPath]
+  );
+  const selectedCatalogArtifactMatches = selectedCatalogModel === null ||
+    selectedCatalogModel.artifact_id === selectedSwitchArtifact?.id;
+  const selectedPreviewArtifact = selectedCatalogArtifactMatches ? selectedSwitchArtifact : null;
+  const selectedPreviewVersion =
+    typeof selectedModelVersionId === "number" &&
+    (selectedCatalogModel === null || selectedCatalogModel.version_id === selectedModelVersionId)
+      ? modelVersions.find((item) => item.id === selectedModelVersionId) ?? null
+      : null;
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const blockedSwitchArtifacts = modelArtifacts.filter(
     (item) =>
@@ -2542,15 +2557,19 @@ export function StudioConsoleView({
               恢复推理线程
             </button>
           ) : null}
-          <button className="console-button" onClick={exportConfig} type="button">
-            <NovaIcon name="export" size={16} />
-            导出配置
-          </button>
-          <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">
-            <NovaIcon name="import" size={16} />
-            导入配置
-          </button>
-          <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
+          {activePage === "params" ? (
+            <>
+              <button className="console-button" onClick={exportConfig} type="button">
+                <NovaIcon name="export" size={16} />
+                导出全部参数
+              </button>
+              <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">
+                <NovaIcon name="import" size={16} />
+                导入全部参数
+              </button>
+              <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
+            </>
+          ) : null}
         </section>
 
         {mainlineLaunchPending ? (
@@ -2701,89 +2720,44 @@ export function StudioConsoleView({
         </section>
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
-          <div className="console-tabs">
-            <div className="console-tab active"><NovaIcon name="model-verify" size={15} />配置1</div>
-            <div className="console-tab"><NovaIcon name="ai-model" size={15} />配置2</div>
-            <div className="console-tab"><NovaIcon name="ai-model" size={15} />配置3</div>
-          </div>
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
             <Metric title="推理状态" value={inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"} small={selectedRuntimeBackend || NO_SAMPLE} />
             <Metric title="推理总耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
             <Metric title="NMS 后检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="detections" />
           </div>
-          <div className="console-grid2">
+          <div className="console-card model-selection-card">
+            <SectionTitle title="模型设置" />
+            <ModelSelectionPanel
+              root={modelCatalog}
+              loading={modelCatalogLoading}
+              directoryCount={modelCatalogDirectoryCount}
+              modelCount={modelCatalogModelCount}
+              expandedDirectories={expandedModelDirectories}
+              selectedPath={selectedModelCatalogPath}
+              selectedModel={selectedCatalogModel}
+              selectedArtifact={selectedPreviewArtifact}
+              selectedVersion={selectedPreviewVersion}
+              activeArtifactId={artifact?.id ?? null}
+              activeModelName={activeModelName}
+              activeArtifactLabel={activeArtifactLabel}
+              runtimeBackend={readString(runtime?.inference?.selected, "")}
+              runtimeInputShape={displayedInputShape}
+              catalogMessage={modelCatalogMessage}
+              switchMessage={modelSwitchMessage}
+              switchError={lastModelSwitchError}
+              blockedArtifacts={blockedSwitchArtifacts}
+              busy={busy}
+              canSwitch={selectedCatalogArtifactMatches && selectedModelProjectId !== "" && selectedSwitchArtifact !== null}
+              onRefresh={() => void refreshModelCatalog()}
+              onToggleDirectory={toggleModelDirectory}
+              onSelectModel={(model) => void selectModelFromCatalog(model)}
+              onSwitch={() => void switchModel()}
+            />
+          </div>
+          <div className="console-grid2 inference-config-grid">
             <div className="console-card">
-              <SectionTitle title="模型设置" />
-              <div className="console-action-row">
-                <button
-                  className="console-button secondary"
-                  disabled={busy !== null}
-                  onClick={() => void refreshModelCatalog()}
-                  type="button"
-                >
-                  <NovaIcon name="refresh" size={15} />
-                  {busy === "model.refresh" ? "刷新中..." : "刷新模型"}
-                </button>
-              </div>
-              {modelCatalogMessage ? <div className="model-switch-note good">{modelCatalogMessage}</div> : null}
-              <div className="model-catalog-heading">
-                <label>模型目录</label>
-                <span>{modelCatalogDirectoryCount} 个文件夹 · {modelCatalogModelCount} 个模型</span>
-              </div>
-              {modelCatalogLoading ? (
-                <div className="model-catalog-placeholder">正在递归读取 models 目录...</div>
-              ) : modelCatalog && modelCatalog.children.length > 0 ? (
-                <ModelCatalogTree
-                  root={modelCatalog}
-                  expandedDirectories={expandedModelDirectories}
-                  selectedPath={selectedModelCatalogPath}
-                  activeArtifactId={artifact?.id ?? null}
-                  onToggleDirectory={toggleModelDirectory}
-                  onSelectModel={selectModelFromCatalog}
-                />
-              ) : (
-                <div className="model-catalog-placeholder">
-                  models 目录中没有 .onnx 或 .engine 模型。
-                </div>
-              )}
-              <div className="model-primary-summary">
-                <span>{readString(runtime?.inference?.selected, "按模型后缀自动选择")}</span>
-                <span>{displayedInputShape ? `运行输入 ${displayedInputShape}` : "等待模型输入信息"}</span>
-                <span>{selectedSwitchArtifact?.kind ? selectedSwitchArtifact.kind.toUpperCase() : "无可用产物"}</span>
-              </div>
-              <div className="model-active-summary">
-                <span>当前运行模型</span>
-                <b>{activeModelName}</b>
-                <small>{activeArtifactLabel}</small>
-              </div>
-              {modelSwitchMessage || lastModelSwitchError ? (
-                <div className={lastModelSwitchError && !modelSwitchMessage ? "model-switch-note bad" : "model-switch-note good"}>
-                  {modelSwitchMessage || `上次切换失败：${lastModelSwitchError}`}
-                </div>
-              ) : null}
-              <button
-                className="console-button primary console-full-button"
-                disabled={busy !== null || selectedModelProjectId === "" || selectedSwitchArtifact === null}
-                onClick={switchModel}
-                type="button"
-              >
-                {busy === "model.switch"
-                  ? "自动配置并切换中..."
-                  : selectedSwitchArtifact?.status === "pending" || selectedSwitchArtifact?.status === "failed"
-                    ? "自动配置并加载模型"
-                    : "切换模型"}
-              </button>
-              {selectedSwitchArtifact?.status === "pending" || selectedSwitchArtifact?.status === "failed" ? (
-                <p className="console-field-hint">
-                  后端将直接读取 Engine 的 I/O、Shape 和数据类型，自动推导类别契约并生成唯一 DeepStream manifest。
-                </p>
-              ) : null}
-              {selectedSwitchArtifact === null && blockedSwitchArtifacts.length > 0 ? (
-                <div className="model-switch-note bad">
-                  模型产物不可切换：{blockedSwitchArtifacts.map((item) => `${item.path} (${item.status})`).join("，")}。请修复模型或 manifest 后刷新模型目录。
-                </div>
-              ) : null}
+              <SectionTitle title="推理参数" />
               <label>置信度阈值</label>
               <CommitNumberControl
                 value={confidence}
@@ -2833,7 +2807,7 @@ export function StudioConsoleView({
                 >
                   {sortedSwitchableArtifacts.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {item.kind} · {item.path} · {formatModelSizeMb(item.size_bytes)}{item.status === "pending" ? " · 待验证" : ""}
+                      {item.kind} · {item.path} · {formatModelSize(item.size_bytes)}{item.status === "pending" ? " · 待验证" : ""}
                     </option>
                   ))}
                   {sortedSwitchableArtifacts.length === 0 ? <option value="">暂无可验证的 ONNX / engine 产物</option> : null}
@@ -4369,14 +4343,6 @@ function percent(value: number, total: number): string {
   return `${clampNumber(total > 0 ? (value / total) * 100 : 0, 0, 100)}%`;
 }
 
-function formatModelSizeMb(value: unknown): string {
-  const sizeBytes = finiteNumber(value);
-  if (sizeBytes === null || sizeBytes < 0) {
-    return "大小不可用";
-  }
-  return `${(sizeBytes / 1_000_000).toFixed(2)} MB`;
-}
-
 function findCatalogModelPath(
   directory: ModelCatalogDirectory,
   artifactId: number
@@ -4394,6 +4360,25 @@ function findCatalogModelPath(
     }
   }
   return undefined;
+}
+
+function findCatalogModelByPath(
+  directory: ModelCatalogDirectory,
+  relativePath: string
+): ModelCatalogModel | null {
+  for (const child of directory.children) {
+    if (child.type === "model") {
+      if (child.relative_path === relativePath) {
+        return child;
+      }
+      continue;
+    }
+    const nested = findCatalogModelByPath(child, relativePath);
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
 }
 
 function PreviewFrame({

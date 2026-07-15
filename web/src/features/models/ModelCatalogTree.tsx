@@ -1,6 +1,7 @@
 import type { ModelCatalogDirectory, ModelCatalogModel } from "../../api";
 import { Badge, StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual/NovaIcon";
+import { formatModelSize, modelStatusLabel, modelStatusTone } from "./modelPresentation";
 
 export function ModelCatalogTree({
   root,
@@ -99,17 +100,21 @@ function CatalogNodes({
             className={`model-catalog-row model ${selected ? "selected" : ""}`}
             style={{ paddingLeft: `${30 + depth * 18}px` }}
             aria-selected={selected}
+            aria-label={`${node.name}，${formatModelSize(node.size_bytes)}，${modelStatusLabel(status)}`}
             onClick={() => onSelectModel(node)}
           >
             <NovaIcon name="models" size={17} />
             <div className="model-catalog-copy">
-              <strong>{node.name}</strong>
-              <span className="model-catalog-size">{formatModelSizeMb(node.size_bytes)}</span>
+              <strong title={node.name}>{node.name}</strong>
+              <span className="model-catalog-meta">
+                <span>{node.kind.toUpperCase()}</span>
+                <span className="model-catalog-size">{formatModelSize(node.size_bytes)}</span>
+              </span>
             </div>
             <aside>
               {active ? <Badge tone="good">当前使用</Badge> : null}
-              <StatusIndicator tone={statusTone(status)}>
-                {node.artifact_id ? statusLabel(status) : "未登记"}
+              <StatusIndicator tone={modelStatusTone(status)}>
+                {node.artifact_id ? modelStatusLabel(status) : "未登记"}
               </StatusIndicator>
             </aside>
           </button>
@@ -124,37 +129,4 @@ function countModels(directory: ModelCatalogDirectory): number {
     (total, child) => total + (child.type === "model" ? 1 : countModels(child)),
     0
   );
-}
-
-function formatModelSizeMb(value: number): string {
-  if (!Number.isFinite(value) || value < 0) {
-    return "大小未知";
-  }
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function statusTone(status: string): "good" | "warn" | "bad" | "idle" {
-  if (status === "ready") {
-    return "good";
-  }
-  if (status === "invalid" || status === "failed" || status === "unsupported") {
-    return "bad";
-  }
-  if (status === "need_confirm" || status === "pending" || status === "running") {
-    return "warn";
-  }
-  return "idle";
-}
-
-function statusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    ready: "可用",
-    pending: "待验证",
-    running: "处理中",
-    need_confirm: "待确认",
-    invalid: "无效",
-    failed: "失败",
-    unsupported: "不支持"
-  };
-  return labels[status] ?? status;
 }
