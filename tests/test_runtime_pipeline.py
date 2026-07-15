@@ -1470,6 +1470,40 @@ def test_dual_phase_rejects_late_batch_after_terminal_runtime_state(
     )
 
 
+def test_runtime_session_reset_clears_observation_telemetry_immediately() -> None:
+    config = RuntimeConfig()
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=ExecutorRegistry.from_config(config),
+    )
+    service.running = True
+    service.last_target = {"track_id": 7}
+    service.last_execution = {"sent": True}
+    service.last_inference_status = {
+        "ran": True,
+        "available": True,
+        "frame_age_ms": 8.0,
+        "inference_ms": 2.0,
+    }
+    service.last_pipeline_timings = {"control_ms": 1.5}
+    service.stale_drop_count = 4
+
+    service.reset_runtime_session("RUNTIME_STOPPED")
+
+    assert service.running is False
+    assert service.last_target is None
+    assert service.last_execution is None
+    assert service.last_pipeline_timings == {}
+    assert service.stale_drop_count == 0
+    assert service.last_inference_status == {
+        "ran": False,
+        "available": False,
+        "reason": "RUNTIME_STOPPED",
+        "terminal_rejected": True,
+    }
+
+
 def test_terminal_state_remains_authoritative_over_concurrent_batch_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -426,6 +426,26 @@ def test_deepstream_runtime_hands_only_detection_batch_to_shared_control() -> No
     assert pipeline.stats.control_observations == 1
 
 
+def test_deepstream_stop_disconnects_backend_before_clearing_runtime_session() -> None:
+    events: list[str] = []
+    backend = SimpleNamespace(
+        stop=lambda: events.append("backend.stop"),
+    )
+    runtime = SimpleNamespace(
+        running=True,
+        reset_runtime_session=lambda reason: events.append(f"runtime.reset:{reason}"),
+    )
+    pipeline = DeepStreamRuntimePipeline(backend=backend, runtime=runtime)
+    pipeline.stats.processed_frames = 12
+    pipeline.stats.control_observations = 9
+
+    pipeline.stop()
+
+    assert events == ["backend.stop", "runtime.reset:RUNTIME_STOPPED"]
+    assert pipeline.stats.processed_frames == 0
+    assert pipeline.stats.control_observations == 0
+
+
 @pytest.mark.parametrize(
     ("source", "inference_enabled", "message"),
     [

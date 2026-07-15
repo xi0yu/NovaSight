@@ -72,6 +72,7 @@ type StudioConsoleViewProps = {
   lastUpdated: Date | null;
   realtimeStatus: "connecting" | "connected" | "stale" | "disconnected";
   onRefresh: () => Promise<void>;
+  onRuntimeStateChange: (runtime: RuntimeState) => void;
 };
 
 type CapabilityChoice = {
@@ -82,9 +83,9 @@ type CapabilityChoice = {
 };
 
 type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
+type LaunchStepState = "pending" | "running" | "success" | "failed";
 
 type LaunchStage = {
-  label: string;
   title: string;
   caption: string;
 };
@@ -105,31 +106,44 @@ const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 // runtime consumption before the launch dialog declares the control path ready.
 const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
-    label: "阶段 1 / 5",
     title: "检查运行环境",
     caption: "确认 Studio 已连接到 Jetson 运行服务。"
   },
   {
-    label: "阶段 2 / 5",
     title: "应用采集配置",
     caption: "按当前设备、格式、分辨率与帧率选择采集配置。"
   },
   {
-    label: "阶段 3 / 5",
     title: "启动主链运行管线",
     caption: "请求后端启动采集、ROI、推理、DetectionBatch 与控制主链。"
   },
   {
-    label: "阶段 4 / 5",
     title: "激活跟踪与控制",
     caption: "runtime 开始消费 DetectionBatch 后，跟踪、预测与控制模块随即激活。"
   },
   {
-    label: "阶段 5 / 5",
     title: "确认设备执行器",
     caption: "刷新执行器状态，确认输出链路由后端持有。"
   }
 ];
+
+function resolveLaunchStepState(
+  index: number,
+  status: LaunchStatus,
+  activeIndex: number,
+  completedStages: number
+): LaunchStepState {
+  if (status === "success" || index < completedStages) {
+    return "success";
+  }
+  if (status === "failed" && index === activeIndex) {
+    return "failed";
+  }
+  if (status === "running" && index === activeIndex) {
+    return "running";
+  }
+  return "pending";
+}
 
 function pageFromUrl(): ConsolePage {
   const raw = new URLSearchParams(window.location.search).get("page");
@@ -430,7 +444,8 @@ export function StudioConsoleView({
   errors,
   lastUpdated,
   realtimeStatus,
-  onRefresh
+  onRefresh,
+  onRuntimeStateChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
   const [device, setDevice] = useState(
@@ -1443,7 +1458,8 @@ export function StudioConsoleView({
     setMainlineLaunchMessage("");
     try {
       if (runtimeMainlineSelected) {
-        await stopRuntimePipeline();
+        const stoppedState = await stopRuntimePipeline();
+        onRuntimeStateChange(stoppedState);
       } else {
         await stopCapture();
       }
@@ -1453,7 +1469,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [runtimeMainlineSelected, onRefresh]);
+  }, [runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
 
   const startInferenceThread = useCallback(async () => {
     setBusy("runtime.start");
@@ -1702,7 +1718,8 @@ export function StudioConsoleView({
 
       reportError(err, { source: "mainline-launch", title: "启动主链失败" });
       try {
-        await stopRuntimePipeline();
+        const stoppedState = await stopRuntimePipeline();
+        onRuntimeStateChange(stoppedState);
       } catch {
         // Keep the original launch error visible; refresh below exposes stop failures if backend reports them.
       }
@@ -1716,6 +1733,7 @@ export function StudioConsoleView({
     buildCapturePayload,
     launchStatus,
     onRefresh,
+    onRuntimeStateChange,
     showLaunchToast,
     waitForLaunchFeedback,
     waitForRuntimeEvidence,
@@ -1743,14 +1761,15 @@ export function StudioConsoleView({
     setMainlineLaunchMessage("");
     setBusy(null);
     try {
-      await stopRuntimePipeline();
+      const stoppedState = await stopRuntimePipeline();
+      onRuntimeStateChange(stoppedState);
       await onRefresh();
     } catch (err) {
       setLocalError(`取消启动失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: "mainline-cancel", title: "取消启动失败" });
     }
-  }, [closeLaunchDialog, launchStatus, onRefresh]);
+  }, [closeLaunchDialog, launchStatus, onRefresh, onRuntimeStateChange]);
 
   const toggleCapture = useCallback(async () => {
     if (captureMainRunning) {
@@ -2219,55 +2238,20 @@ export function StudioConsoleView({
   };
 
   const launchStages = MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT;
-  const activeLaunchStage =
-    launchStages[Math.min(launchStageIndex, launchStages.length - 1)];
-  const launchVisibleCompletedStages =
-    launchStatus === "idle"
-      ? launchCompletedStages
-      : Math.max(
-          launchCompletedStages,
-          Math.min(launchStageIndex + 1, launchStages.length)
-        );
   const launchProgress =
     launchStatus === "success"
       ? 100
-      : Math.round((launchVisibleCompletedStages / launchStages.length) * 100);
-  const launchIndicatorClass =
-    launchStatus === "running"
-      ? "launch-stage-indicator running"
-      : launchStatus === "success"
-        ? "launch-stage-indicator success"
-        : launchStatus === "failed"
-          ? "launch-stage-indicator failed"
-          : "launch-stage-indicator";
-  const launchIndicatorText =
+      : Math.round((launchCompletedStages / launchStages.length) * 100);
+  const launchSummary =
     launchStatus === "success"
-      ? "✓"
+      ? "主链启动完成"
       : launchStatus === "failed"
-        ? "!"
-        : launchStatus === "running"
-          ? ""
-          : `${launchCompletedStages}/${launchStages.length}`;
-  const launchTitle =
-    launchStatus === "success"
-      ? runtimeMainlineRunning
-        ? "视觉处理链路已运行"
-        : "主链启动请求已提交"
-      : launchStatus === "failed"
-        ? "启动主链失败"
+        ? "启动在当前步骤中断"
         : launchStatus === "cancelled"
-          ? "启动流程已停止"
-          : activeLaunchStage.title;
-  const launchCaption =
-    launchStatus === "success"
-      ? runtimeMainlineRunning
-        ? "采集、ROI、推理、跟踪、控制与执行出口已交由后端主链持有。"
-        : "正在等待状态流确认 DetectionBatch 与控制输出，顶部会保持启动确认中。"
-      : launchStatus === "failed"
-        ? launchError || "后端拒绝启动，已保留当前运行态。"
-        : launchStatus === "cancelled"
-          ? "已向后端发送停止请求，前端不执行额外回滚逻辑。"
-          : activeLaunchStage.caption;
+          ? "启动流程已取消"
+          : launchStatus === "running"
+            ? `正在执行第 ${Math.min(launchStageIndex + 1, launchStages.length)} 项`
+            : "等待用户确认启动";
   const realtimeStatusText =
     realtimeStatus === "connected"
       ? "实时推送已连接"
@@ -3558,7 +3542,7 @@ export function StudioConsoleView({
                 </div>
                 <div>
                   <h2 id="launch-dialog-title">启动视觉处理链路</h2>
-                  <p>只展示必要启动阶段，不加载额外运行监控。</p>
+                  <p>所有步骤将按顺序执行；任一项失败都会中断后续流程。</p>
                 </div>
               </div>
               <button
@@ -3573,30 +3557,47 @@ export function StudioConsoleView({
             </header>
 
             <div className="launch-dialog-body">
-              <div className="launch-stage-visual">
-                <div className={launchIndicatorClass}>{launchIndicatorText}</div>
-                <div>
-                  <div className="launch-stage-label">
-                    {launchStatus === "idle" ? "准备启动" : launchStatus === "success" ? "启动完成" : launchStatus === "failed" ? "启动失败" : launchStatus === "cancelled" ? "已取消" : activeLaunchStage.label}
-                  </div>
-                  <div className="launch-stage-title">{launchTitle}</div>
-                  <div className="launch-stage-caption">{launchCaption}</div>
-                </div>
-              </div>
-
-              <div className="launch-progress-block">
+              <div className={`launch-overview ${launchStatus}`}>
                 <div className="launch-progress-meta">
-                  <span>总进度</span>
-                  <span>{launchProgress}%</span>
+                  <span>{launchSummary}</span>
+                  <strong>{launchCompletedStages} / {launchStages.length}</strong>
                 </div>
                 <div className="launch-progress-track">
                   <div className="launch-progress-bar" style={{ width: `${launchProgress}%` }} />
                 </div>
-                <div className="launch-progress-note">
-                  {launchProgressDetail ? <strong>{launchProgressDetail}</strong> : null}
-                  <span>前端仅维护阶段开始、阶段完成、启动失败、启动完成四类低频反馈；不轮询 FPS、温度、显存或后端日志，不进入采集、推理、跟踪、控制线程。</span>
-                </div>
               </div>
+
+              <ol className="launch-stage-list">
+                {launchStages.map((stage, index) => {
+                  const stepState = resolveLaunchStepState(
+                    index,
+                    launchStatus,
+                    launchStageIndex,
+                    launchCompletedStages
+                  );
+                  const stepDetail = stepState === "failed"
+                    ? launchError || "该步骤执行失败。"
+                    : stepState === "running" && launchProgressDetail
+                      ? launchProgressDetail
+                      : "";
+                  return (
+                    <li className={`launch-stage-row ${stepState}`} key={stage.title}>
+                      <div className="launch-stage-marker" aria-hidden="true">
+                        <LaunchStepIndicator state={stepState} />
+                      </div>
+                      <div className="launch-stage-copy">
+                        <div className="launch-stage-heading">
+                          <span>{String(index + 1).padStart(2, "0")}</span>
+                          <strong>{stage.title}</strong>
+                          <em>{launchStepStateLabel(stepState)}</em>
+                        </div>
+                        <p>{stage.caption}</p>
+                        {stepDetail ? <small>{stepDetail}</small> : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
             </div>
 
             <footer className="launch-dialog-footer">
@@ -4035,6 +4036,46 @@ function SectionTitle({ title, icon }: { title: string; icon?: NovaIconName }) {
   );
 }
 
+function launchStepStateLabel(state: LaunchStepState): string {
+  switch (state) {
+    case "running":
+      return "执行中";
+    case "success":
+      return "已完成";
+    case "failed":
+      return "失败";
+    default:
+      return "未执行";
+  }
+}
+
+function LaunchStepIndicator({ state }: { state: LaunchStepState }) {
+  return (
+    <span className={`launch-step-indicator ${state}`}>
+      <svg viewBox="0 0 24 24" focusable="false">
+        {state === "success" ? (
+          <>
+            <circle cx="12" cy="12" r="9" />
+            <path d="m7.8 12.2 2.7 2.7 5.9-6" />
+          </>
+        ) : state === "failed" ? (
+          <>
+            <circle cx="12" cy="12" r="9" />
+            <path d="m8.7 8.7 6.6 6.6m0-6.6-6.6 6.6" />
+          </>
+        ) : state === "running" ? (
+          <>
+            <circle className="launch-step-track" cx="12" cy="12" r="9" />
+            <path className="launch-step-arc" d="M12 3a9 9 0 0 1 9 9" />
+          </>
+        ) : (
+          <circle cx="12" cy="12" r="8" />
+        )}
+      </svg>
+    </span>
+  );
+}
+
 function Metric({
   title,
   value,
@@ -4250,7 +4291,7 @@ function PreviewFrame({
     ?? readNullableNumber(rawAim.aim_roi_y_px)
     ?? targetCy;
   const showImage = enabled && imageAvailable;
-  const showOverlay = enabled && detections.length > 0;
+  const showOverlay = enabled && runtime?.running === true && detections.length > 0;
   const selectedDetection = detections.find((item) => (
     targetDetectionIndex !== null
       ? item.index === targetDetectionIndex

@@ -129,6 +129,16 @@ function StudioApp() {
   );
   const [licenseError, setLicenseError] = useState<string | undefined>();
 
+  const applyRuntimeState = useCallback((runtime: RuntimeState) => {
+    const receivedAt = Date.now();
+    runtimeStateReceivedAtRef.current = receivedAt;
+    setState((current) => ({
+      ...current,
+      runtime,
+      lastUpdated: new Date(receivedAt)
+    }));
+  }, []);
+
   const loadLicense = useCallback(async () => {
     const requestSeq = licenseRequestSeqRef.current + 1;
     licenseRequestSeqRef.current = requestSeq;
@@ -313,12 +323,7 @@ function StudioApp() {
       try {
         const runtime = JSON.parse(String(event.data)) as RuntimeState;
         const receivedAt = Date.now();
-        runtimeStateReceivedAtRef.current = receivedAt;
-        setState((current) => ({
-          ...current,
-          runtime,
-          lastUpdated: new Date()
-        }));
+        applyRuntimeState(runtime);
         setLastWsMessageAt(receivedAt);
         setRealtimeStatus("connected");
       } catch {
@@ -329,7 +334,7 @@ function StudioApp() {
       active = false;
       socket.close();
     };
-  }, [license?.valid]);
+  }, [applyRuntimeState, license?.valid]);
 
   useEffect(() => {
     if (realtimeStatus !== "connected" || lastWsMessageAt === null) {
@@ -408,6 +413,7 @@ function StudioApp() {
           lastUpdated={state.lastUpdated}
           realtimeStatus={realtimeStatus}
           onRefresh={load}
+          onRuntimeStateChange={applyRuntimeState}
         />
       )}
       <QuietErrorsControl />
@@ -437,4 +443,3 @@ function QuietErrorsControl() {
     </label>
   );
 }
-

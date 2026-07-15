@@ -2343,6 +2343,23 @@ class RuntimeService:
             self._reset_detection_batch_cursor()
             self._reset_runtime_control_state(reason)
 
+    def reset_runtime_session(self, reason: str = "RUNTIME_STOPPED") -> None:
+        """Clear all observation-derived state after the data pipeline is disconnected."""
+
+        with self._control_lock:
+            self.running = False
+            self._reset_detection_batch_cursor()
+            self.last_pipeline_timings = {}
+            self.last_inference_reason = reason
+            self.last_inference_status = {
+                "ran": False,
+                "available": False,
+                "reason": reason,
+                "terminal_rejected": True,
+            }
+            self.stale_drop_count = 0
+            self._reset_runtime_control_state(reason)
+
     def _record_executed_control(self, result: Any) -> None:
         if not bool(getattr(result, "sent", False)):
             return

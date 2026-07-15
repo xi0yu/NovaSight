@@ -71,14 +71,19 @@ class DeepStreamRuntimePipeline:
     def stop(self) -> None:
         self._stop.set()
         self.runtime.running = False
-        cancel_control = getattr(self.runtime, "cancel_control", None)
-        if callable(cancel_control):
-            cancel_control("RUNTIME_STOPPED")
         self.backend.stop()
         for thread in self._threads:
             if thread is not threading.current_thread():
                 thread.join(timeout=1.0)
-        self.stats.stopped_at = time.time()
+        stopped_at = time.time()
+        self.stats = DeepStreamPipelineStats(stopped_at=stopped_at)
+        reset_session = getattr(self.runtime, "reset_runtime_session", None)
+        if callable(reset_session):
+            reset_session("RUNTIME_STOPPED")
+            return
+        cancel_control = getattr(self.runtime, "cancel_control", None)
+        if callable(cancel_control):
+            cancel_control("RUNTIME_STOPPED")
 
     def wait_until_ready(self, timeout_s: float = 5.0) -> bool:
         return self.backend.wait_until_ready(timeout_s)

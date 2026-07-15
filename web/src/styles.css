@@ -5478,11 +5478,14 @@ tbody tr:hover {
 }
 
 .launch-dialog {
-  width: min(560px, 100%);
+  width: min(680px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--hairline);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border-default);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
   box-shadow: 0 30px 90px rgba(15, 20, 35, 0.2);
   animation: launch-dialog-in 220ms cubic-bezier(0.22, 0.8, 0.27, 1);
 }
@@ -5492,7 +5495,7 @@ tbody tr:hover {
   justify-content: space-between;
   gap: 16px;
   padding: 22px 22px 18px;
-  border-bottom: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--border-default);
 }
 
 .launch-dialog-title-wrap {
@@ -5508,22 +5511,24 @@ tbody tr:hover {
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  border-radius: 13px;
-  background: #fff1f3;
-  color: var(--accent-red);
+  border: 1px solid var(--brand-border);
+  border-radius: 12px;
+  background: var(--brand-soft);
+  color: var(--brand-primary);
   font-size: 15px;
   font-weight: 900;
 }
 
 .launch-dialog h2 {
   margin: 1px 0 5px;
-  color: var(--ink);
+  color: var(--text-primary);
   font-size: 18px;
   letter-spacing: 0;
 }
 
 .launch-dialog p {
-  color: var(--muted);
+  margin: 0;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -5534,84 +5539,40 @@ tbody tr:hover {
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: var(--muted);
+  color: var(--text-secondary);
   font-size: 22px;
 }
 
 .launch-dialog-close:not(:disabled):hover {
-  background: #f4f6f9;
+  background: var(--bg-hover);
 }
 
 .launch-dialog-body {
-  padding: 28px 22px 26px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px;
 }
 
-.launch-stage-visual {
-  display: flex;
-  align-items: center;
-  gap: 15px;
+.launch-overview {
+  padding: 14px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--bg-subtle);
 }
 
-.launch-stage-indicator {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border-radius: 15px;
-  background: #f4f6f9;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 900;
+.launch-overview.running {
+  border-color: color-mix(in srgb, var(--ns-amber-500) 32%, var(--border-default));
+  background: color-mix(in srgb, var(--ns-amber-50) 58%, var(--bg-surface));
 }
 
-.launch-stage-indicator.running::before {
-  content: "";
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 64, 88, 0.22);
-  border-top-color: var(--accent-red);
-  border-radius: 50%;
-  animation: launch-spin 800ms linear infinite;
+.launch-overview.success {
+  border-color: var(--status-normal-border);
+  background: color-mix(in srgb, var(--status-normal-bg) 72%, var(--bg-surface));
 }
 
-.launch-stage-indicator.success {
-  background: var(--green-soft);
-  color: var(--green);
-  font-size: 19px;
-}
-
-.launch-stage-indicator.failed {
-  background: var(--red-soft);
-  color: var(--red);
-  font-size: 19px;
-}
-
-.launch-stage-label {
-  color: var(--subtle);
-  font-size: 10px;
-  font-weight: 850;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.launch-stage-title {
-  margin-top: 5px;
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.launch-stage-caption {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.launch-progress-block {
-  margin-top: 24px;
+.launch-overview.failed {
+  border-color: var(--status-error-border);
+  background: color-mix(in srgb, var(--status-error-bg) 72%, var(--bg-surface));
 }
 
 .launch-progress-meta {
@@ -5619,45 +5580,202 @@ tbody tr:hover {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 9px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 850;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.launch-progress-meta strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .launch-progress-track {
   height: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e8ebf0;
+  background: var(--border-default);
 }
 
 .launch-progress-bar {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent-red-2), var(--accent-red));
+  background: linear-gradient(90deg, var(--ns-amber-500), var(--brand-primary));
   transition: width 420ms cubic-bezier(0.2, 0.75, 0.25, 1);
 }
 
-.launch-progress-note {
-  margin-top: 12px;
-  padding: 11px 12px;
-  border: 1px solid var(--hairline);
-  border-radius: 11px;
-  background: #f7f8fa;
-  color: var(--muted);
+.launch-stage-list {
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.launch-stage-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 78px;
+}
+
+.launch-stage-marker {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.launch-stage-row:not(:last-child) .launch-stage-marker::after {
+  content: "";
+  position: absolute;
+  top: 32px;
+  bottom: -2px;
+  left: 50%;
+  width: 1px;
+  background: var(--border-default);
+  transform: translateX(-50%);
+}
+
+.launch-stage-row.success:not(:last-child) .launch-stage-marker::after {
+  background: var(--status-normal-border);
+}
+
+.launch-step-indicator {
+  position: relative;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+}
+
+.launch-step-indicator svg {
+  width: 26px;
+  height: 26px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.launch-step-indicator.running {
+  color: var(--ns-amber-500);
+}
+
+.launch-step-indicator.running svg {
+  animation: launch-spin 800ms linear infinite;
+}
+
+.launch-step-track {
+  opacity: 0.22;
+}
+
+.launch-step-arc {
+  stroke-width: 2.4;
+}
+
+.launch-step-indicator.success {
+  color: var(--status-normal-icon);
+}
+
+.launch-step-indicator.success circle,
+.launch-step-indicator.failed circle {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.launch-step-indicator.success path,
+.launch-step-indicator.failed path {
+  stroke: var(--ns-white);
+  stroke-width: 2;
+}
+
+.launch-step-indicator.failed {
+  color: var(--status-error-icon);
+}
+
+.launch-stage-copy {
+  min-width: 0;
+  padding: 3px 12px 14px 0;
+}
+
+.launch-stage-row.running .launch-stage-copy,
+.launch-stage-row.failed .launch-stage-copy {
+  margin: -4px 0 8px;
+  padding: 7px 12px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+}
+
+.launch-stage-row.running .launch-stage-copy {
+  border-color: color-mix(in srgb, var(--ns-amber-500) 28%, var(--border-default));
+}
+
+.launch-stage-row.failed .launch-stage-copy {
+  border-color: var(--status-error-border);
+  background: color-mix(in srgb, var(--status-error-bg) 62%, var(--bg-surface));
+}
+
+.launch-stage-heading {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.launch-stage-heading span {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
   font-size: 10px;
-  line-height: 1.6;
+  font-weight: 600;
 }
 
-.launch-progress-note strong {
-  display: block;
-  margin-bottom: 5px;
-  color: var(--ink);
-  font-weight: 760;
+.launch-stage-heading strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
 }
 
-.launch-progress-note span {
+.launch-stage-heading em {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.launch-stage-row.running .launch-stage-heading em {
+  color: var(--ns-amber-700);
+}
+
+.launch-stage-row.success .launch-stage-heading em {
+  color: var(--status-normal-fg);
+}
+
+.launch-stage-row.failed .launch-stage-heading em {
+  color: var(--status-error-fg);
+}
+
+.launch-stage-copy p {
+  margin: 4px 0 0 32px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.launch-stage-copy small {
   display: block;
+  margin: 6px 0 0 32px;
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .launch-dialog-footer {
@@ -5665,8 +5783,8 @@ tbody tr:hover {
   justify-content: flex-end;
   gap: 9px;
   padding: 15px 22px;
-  border-top: 1px solid var(--hairline);
-  background: rgba(248, 250, 252, 0.92);
+  border-top: 1px solid var(--border-default);
+  background: color-mix(in srgb, var(--bg-subtle) 86%, transparent);
 }
 
 .launch-toast {

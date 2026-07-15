@@ -21,7 +21,6 @@ from novasight.runtime import (
     ControlFrameParquetRecorder,
     RuntimeService,
 )
-from novasight.runtime.pipeline_factory import create_runtime_pipeline
 from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 
 from .routes_capture import router as capture_router
@@ -116,7 +115,6 @@ def create_app(
         app.state.capture_auto_restore_thread = _start_auto_restore_capture(
             capture,
             config,
-            runtime,
         )
         logger.info("application startup: lifecycle ready")
 
@@ -216,7 +214,6 @@ def _disconnect_kmnet(executors: ExecutorRegistry) -> None:
 def _start_auto_restore_capture(
     capture: CaptureService,
     config: RuntimeConfig,
-    runtime: RuntimeService | None = None,
 ) -> threading.Thread | None:
     source_default = str(getattr(getattr(config, "source", None), "default", "") or "").strip()
     capture_cfg = getattr(config, "capture", None)
@@ -225,19 +222,18 @@ def _start_auto_restore_capture(
         return None
     thread = threading.Thread(
         target=_auto_restore_capture,
-        args=(capture, config, runtime),
-        name="novasight-deepstream-auto-start",
+        args=(capture, config),
+        name="novasight-capture-profile-restore",
         daemon=True,
     )
     thread.start()
-    logger.info("DeepStream runtime auto-start scheduled device=%s", device)
+    logger.info("capture profile restore scheduled device=%s", device)
     return thread
 
 
 def _auto_restore_capture(
     capture: CaptureService,
     config: RuntimeConfig,
-    runtime: RuntimeService | None = None,
 ) -> None:
     source_default = str(getattr(getattr(config, "source", None), "default", "") or "").strip()
     if source_default != "capture":
@@ -246,7 +242,7 @@ def _auto_restore_capture(
     device = str(getattr(capture_cfg, "device", "") or "").strip()
     if not device:
         return
-    logger.info("DeepStream runtime auto-start beginning device=%s", device)
+    logger.info("capture profile restore beginning device=%s", device)
     try:
         state = capture.configure_profile_only(
             device,
@@ -267,22 +263,7 @@ def _auto_restore_capture(
             if getattr(state, "profile", None) is not None
             else "<unknown>",
         )
-        if runtime is None:
-            return
-        pipeline = runtime.pipeline
-        if pipeline is None:
-            pipeline = create_runtime_pipeline(capture=capture, runtime=runtime)
-            runtime.pipeline = pipeline
-        if pipeline.running:
-            return
-        try:
-            pipeline.start()
-        except Exception as exc:
-            runtime.pipeline = None
-            runtime.running = False
-            logger.warning("DeepStream runtime auto-start failed: %s", exc)
-            return
-        logger.info("DeepStream runtime auto-started")
+        logger.info("capture profile restored; DeepStream mainline remains idle")
     else:
         logger.info(
             "DeepStream capture profile unavailable device=%s reason=%s",

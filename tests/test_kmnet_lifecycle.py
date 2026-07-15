@@ -91,22 +91,15 @@ class BlockingCapture:
 
 
 class AvailableCapture:
+    def __init__(self) -> None:
+        self.configure_calls = 0
+
     def configure_profile_only(self, *_: object, **__: object) -> SimpleNamespace:
+        self.configure_calls += 1
         return SimpleNamespace(
             available=True,
             profile=SimpleNamespace(pixel_format="MJPG", width=1920, height=1080, fps=120),
         )
-
-
-class FakeRuntimePipeline:
-    running = False
-
-    def __init__(self) -> None:
-        self.start_calls = 0
-
-    def start(self) -> None:
-        self.start_calls += 1
-        self.running = True
 
 
 class BlockingDriver:
@@ -252,16 +245,14 @@ def test_manual_disconnect_invalidates_inflight_connect_result() -> None:
     assert executor.status()["connected"] is False
 
 
-def test_capture_restore_starts_existing_runtime_pipeline() -> None:
+def test_backend_startup_restores_capture_profile_without_starting_mainline() -> None:
     config = RuntimeConfig()
     config.source.default = "capture"
-    pipeline = FakeRuntimePipeline()
-    runtime = SimpleNamespace(pipeline=pipeline)
+    capture = AvailableCapture()
 
-    _auto_restore_capture(AvailableCapture(), config, runtime)  # type: ignore[arg-type]
+    _auto_restore_capture(capture, config)  # type: ignore[arg-type]
 
-    assert pipeline.start_calls == 1
-    assert pipeline.running is True
+    assert capture.configure_calls == 1
 
 
 def test_monitor_failure_does_not_hide_successful_device_connection() -> None:

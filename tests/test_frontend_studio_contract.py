@@ -111,6 +111,17 @@ def test_studio_preview_uses_roi_coordinates_for_control_center_and_aim_line() -
     assert "height: 100%;" in target_lines_rule
 
 
+def test_mainline_launch_dialog_renders_every_step_with_explicit_state_icons() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'className="launch-stage-list"' in source
+    assert "launchStages.map((stage, index)" in source
+    assert 'type LaunchStepState = "pending" | "running" | "success" | "failed"' in source
+    assert "<LaunchStepIndicator state={stepState} />" in source
+    assert 'className="launch-step-arc"' in source
+    assert 'status === "failed" && index === activeIndex' in source
+
+
 def test_model_file_lists_show_size_in_megabytes() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
     models = (STUDIO_CONSOLE.parents[1] / "models" / "ModelsView.tsx").read_text(encoding="utf-8")

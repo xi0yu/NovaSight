@@ -582,8 +582,8 @@ export function startRuntimePipeline(): Promise<Record<string, RuntimeConfigValu
   });
 }
 
-export function stopRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeStop, {
+export function stopRuntimePipeline(): Promise<RuntimeState> {
+  return requestJson<RuntimeState>(API_PATHS.runtimeStop, {
     method: "POST"
   });
 }

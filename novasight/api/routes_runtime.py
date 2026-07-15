@@ -158,14 +158,19 @@ def _clear_failed_runtime_pipeline(runtime: Any) -> None:
 @router.post("/api/runtime/stop")
 def stop_runtime(request: Request) -> dict[str, Any]:
     runtime = request.app.state.runtime
-    if runtime.pipeline is not None:
-        runtime.pipeline.stop()
+    pipeline = runtime.pipeline
+    if pipeline is not None:
+        pipeline.stop()
+        runtime.pipeline = None
         logger.info("runtime pipeline stopped")
-        status = runtime.pipeline.status()
-        return status
-    runtime.running = False
-    logger.info("runtime pipeline stop requested while idle")
-    return {"running": False}
+    else:
+        reset_session = getattr(runtime, "reset_runtime_session", None)
+        if callable(reset_session):
+            reset_session("RUNTIME_STOPPED")
+        else:
+            runtime.running = False
+        logger.info("runtime pipeline stop requested while idle")
+    return asdict(runtime.state())
 
 
 @router.post("/api/runtime/calibration/fingerprint")
