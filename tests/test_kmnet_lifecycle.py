@@ -233,6 +233,7 @@ def test_manual_disconnect_invalidates_inflight_connect_result() -> None:
     status = executor.connect_async()
 
     assert status["connecting"] is True
+    assert status["connection_state"] == "connecting"
     assert driver.init_started.wait(timeout=0.2)
     disconnected = executor.disconnect()
     assert disconnected["connecting"] is False
@@ -265,6 +266,7 @@ def test_monitor_failure_does_not_hide_successful_device_connection() -> None:
     assert status["connected"] is True
     assert status["monitoring"] is False
     assert status["connection_stage"] == "connected_without_monitor"
+    assert status["connection_state"] == "degraded"
     assert status["last_connect_error_stage"] == "monitor"
     assert status["last_connect_error_type"] == "driver_return_code"
     assert status["last_driver_call"] == "monitor"
@@ -355,10 +357,17 @@ def test_init_timeout_reports_exact_connection_failure_stage() -> None:
 
     assert status["connected"] is False
     assert status["connection_stage"] == "failed"
+    assert status["connection_state"] == "failed"
+    assert status["retryable"] is True
     assert status["last_connect_error_stage"] == "init"
     assert status["last_connect_error_type"] == "timeout"
     assert status["last_driver_call"] == "init"
     assert "timed out" in str(status["last_driver_error"])
+
+    executor._driver_process = None
+    retried = executor.connect()
+    assert retried["connection_state"] == "connected"
+    assert retried["retryable"] is False
 
 
 def test_unavailable_driver_reason_survives_connect_attempt(monkeypatch) -> None:
@@ -379,6 +388,8 @@ def test_unavailable_driver_reason_survives_connect_attempt(monkeypatch) -> None
     status = executor.connect()
 
     assert status["connection_stage"] == "driver_unavailable"
+    assert status["connection_state"] == "failed"
+    assert status["retryable"] is False
     assert status["last_connect_error_stage"] == "driver_load"
     assert status["last_connect_error_type"] == "unavailable"
     assert status["last_error"] == "Python ABI mismatch"

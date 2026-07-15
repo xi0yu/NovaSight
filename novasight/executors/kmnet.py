@@ -106,6 +106,7 @@ class KmNetExecutor:
     def status(self, *, refresh_buttons: bool = False) -> dict[str, Any]:
         del refresh_buttons
         buttons = self.read_buttons()
+        connection_state = self._connection_state()
         sample_ts_ns = int(buttons["sample_ts_ns"])
         sample_age_ms = (
             max(0.0, (time.monotonic_ns() - sample_ts_ns) / 1_000_000.0)
@@ -116,6 +117,8 @@ class KmNetExecutor:
             "available": self.available(),
             "connected": self.connected,
             "connecting": self.connecting,
+            "connection_state": connection_state,
+            "retryable": connection_state == "failed" and self.available(),
             "connection_stage": self.connection_stage,
             "last_connect_error_stage": self.last_connect_error_stage,
             "last_connect_error_type": self.last_connect_error_type,
@@ -162,6 +165,15 @@ class KmNetExecutor:
             ),
             "button_poll_interval_ms": self.button_poll_interval_s * 1000.0,
         }
+
+    def _connection_state(self) -> str:
+        if self.connecting:
+            return "connecting"
+        if self.connected:
+            return "degraded" if self.connection_stage == "connected_without_monitor" else "connected"
+        if self.connection_stage in {"failed", "driver_unavailable"}:
+            return "failed"
+        return "disconnected"
 
     def read_buttons(self) -> dict[str, Any]:
         with self._button_state_lock:

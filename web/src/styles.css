@@ -4631,6 +4631,50 @@ tbody tr:hover {
   background: rgba(255, 255, 255, 0.48);
 }
 
+.kmnet-connection-notice {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--status-warning-border);
+  border-radius: var(--radius-4);
+  background: color-mix(in srgb, var(--status-warning-bg) 70%, var(--bg-surface));
+}
+
+.kmnet-connection-notice.failed {
+  border-color: var(--status-error-border);
+  background: color-mix(in srgb, var(--status-error-bg) 68%, var(--bg-surface));
+}
+
+.kmnet-connection-notice div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.kmnet-connection-notice strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.kmnet-connection-notice span,
+.kmnet-connection-notice small,
+.kmnet-connection-actions span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.kmnet-connection-actions {
+  align-items: center;
+  margin: var(--space-3) 0 var(--space-4);
+}
+
+.kmnet-connection-actions span {
+  flex: 1 1 220px;
+}
+
 .kmnet-test-panel {
   display: grid;
   gap: 12px;
@@ -4739,8 +4783,7 @@ tbody tr:hover {
   align-items: center;
 }
 
-.kmnet-test-message,
-.kmnet-error {
+.kmnet-test-message {
   padding: 10px 12px;
   border-radius: 10px;
   font-size: 12px;
@@ -4752,14 +4795,6 @@ tbody tr:hover {
   border: 1px solid rgba(25, 198, 74, 0.22);
   background: rgba(25, 198, 74, 0.08);
   color: #176a2d;
-}
-
-.kmnet-error {
-  margin-top: 12px;
-  border: 1px solid #ff9aa6;
-  background: #fff1f3;
-  color: var(--accent-red);
-  word-break: break-word;
 }
 
 .console-class-list {

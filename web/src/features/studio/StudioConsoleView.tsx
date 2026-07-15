@@ -94,8 +94,8 @@ type LaunchStage = {
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 
-// Every production backend must prove both DetectionBatch publication and
-// runtime consumption before the launch dialog declares the control path ready.
+// Output delivery is configured and connected independently. Mainline launch
+// only proves capture, inference and mouse-algorithm consumption are ready.
 const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   {
     title: "检查运行环境",
@@ -107,15 +107,11 @@ const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   },
   {
     title: "启动主链运行管线",
-    caption: "请求后端启动采集、ROI、推理、DetectionBatch 与控制主链。"
+    caption: "请求后端启动采集、ROI、推理与 DetectionBatch 数据通路。"
   },
   {
-    title: "激活跟踪与控制",
-    caption: "runtime 开始消费 DetectionBatch 后，跟踪、预测与控制模块随即激活。"
-  },
-  {
-    title: "确认设备执行器",
-    caption: "刷新执行器状态，确认输出链路由后端持有。"
+    title: "激活鼠标算法",
+    caption: "确认目标选择、跟踪、预测与鼠标算法已开始消费 DetectionBatch；输出设备不影响本步骤。"
   }
 ];
 
@@ -906,6 +902,29 @@ export function StudioConsoleView({
   const kmnetConnected = kmnetStatus.connected === true;
   const kmnetConnecting = kmnetStatus.connecting === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
+  const kmnetConnectionState = readString(
+    kmnetStatus.connection_state,
+    kmnetConnected ? "connected" : kmnetConnecting ? "connecting" : "disconnected"
+  );
+  const kmnetConnectionFailed = kmnetConnectionState === "failed";
+  const kmnetConnectionDegraded = kmnetConnectionState === "degraded";
+  const kmnetRetryable = kmnetStatus.retryable === true;
+  const kmnetLastError = readString(kmnetStatus.last_error, "");
+  const kmnetConnectionLabel = kmnetConnected
+    ? kmnetConnectionDegraded ? "已连接，监听异常" : "已连接"
+    : kmnetConnecting
+      ? "连接中"
+      : kmnetConnectionFailed
+        ? "连接失败"
+        : "未连接";
+  const kmnetConnectionActionLabel = kmnetConnected
+    ? "断开 kmNet"
+    : kmnetConnecting
+      ? "取消连接"
+      : kmnetConnectionFailed
+        ? kmnetRetryable ? "重新连接" : "驱动不可用"
+        : "连接 kmNet";
+  const kmnetDiagnosticDisabled = !kmnetConnected || busy === "kmnet.diagnostic" || busy === "kmnet.circle";
   const kmnetButtonLeft = kmnetStatus.button_left === true;
   const kmnetButtonRight = kmnetStatus.button_right === true;
   const previewEnabled = consumersConfig.preview !== false;
@@ -1645,13 +1664,6 @@ export function StudioConsoleView({
     }
   }, [captureLaunchFailureMessage]);
 
-  const assertRuntimeLaunchState = useCallback((state: RuntimeState, stageTitle: string) => {
-    const status = getRuntimeMainlineStatus(state);
-    if (status.failed || !status.running) {
-      throw new Error(`${stageTitle}失败：${status.failureMessage || "后端运行态未确认。"}`);
-    }
-  }, []);
-
   const waitForRuntimeMainlineReady = useCallback(async (
     stageTitle: string,
     timeoutMs = 6000,
@@ -1775,15 +1787,10 @@ export function StudioConsoleView({
       });
       await runStage(3, async () => {
         await waitForRuntimeEvidence(
-          "激活跟踪与控制",
+          "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "runtime 尚未消费 DetectionBatch，跟踪与控制没有输入。"
+          "runtime 尚未消费 DetectionBatch，目标选择、跟踪、预测与鼠标算法没有输入。"
         );
-      });
-      await runStage(4, async () => {
-        const state = await waitForRuntimeMainlineReady("确认设备执行器", 1600);
-        assertRuntimeLaunchState(state, "确认设备执行器");
-        await onRefresh();
       });
       setLaunchStatus("success");
       setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT.length);
@@ -1816,7 +1823,6 @@ export function StudioConsoleView({
     }
   }, [
     assertCaptureLaunchState,
-    assertRuntimeLaunchState,
     buildCapturePayload,
     launchStatus,
     onRefresh,
@@ -2201,7 +2207,7 @@ export function StudioConsoleView({
       }
       await onRefresh();
     } catch (err) {
-      setLocalError(`kmNet ${kmnetConnected || kmnetConnecting ? "断开" : "连接"}失败：${getErrorMessage(err)}`);
+      setLocalError(`kmNet ${kmnetConnected ? "断开" : kmnetConnecting ? "取消连接" : "连接"}失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
@@ -3080,7 +3086,7 @@ export function StudioConsoleView({
                 <span>设备发送耗时</span><b>{controlSendDuration}</b>
                 <span>最后发送时间</span><b>{formatOptionalInteger(execution.device_send_end_ts_ns ?? executionMeta.device_send_end_ts_ns)}</b>
                 {!dualPhaseActive ? <><span>旧计划截断次数</span><b>{formatOptionalInteger(schedulerStatus.cancelled_pending)}</b><span>最近取消原因</span><b>{readString(schedulerStatus.last_cancel_reason, "") || NO_SAMPLE}</b></> : null}
-                <span>设备连接</span><b>{kmnetConnected ? "已连接" : "未连接"}</b>
+                <span>设备连接</span><b>{kmnetConnectionLabel}</b>
               </div>
             </div>
           </div>
@@ -3284,7 +3290,7 @@ export function StudioConsoleView({
           ) : (
           <>
           <div className="console-metrics">
-            <Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"} small={kmnetConnected ? "online" : kmnetConnecting ? "connecting" : "offline"} />
+            <Metric title="连接状态" value={kmnetConnectionLabel} small={kmnetConnected ? "online" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "offline"} />
             <Metric title="驱动状态" value={kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
             <Metric title="自动连接" value={kmnetAutoConnect ? "已启用" : "已关闭"} small="startup" />
@@ -3295,9 +3301,9 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="kmNet 控制面板" />
               <div className="kmnet-status-grid">
-                <div className={kmnetConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                <div className={kmnetConnected ? "kmnet-status-tile good" : kmnetConnectionFailed ? "kmnet-status-tile bad" : "kmnet-status-tile idle"}>
                   <span>连接</span>
-                  <b>{kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}</b>
+                  <b>{kmnetConnectionLabel}</b>
                 </div>
                 <div className={kmnetStatus.monitoring === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>按键</span>
@@ -3348,13 +3354,34 @@ export function StudioConsoleView({
                 <span>{compactDriverSource(kmnetStatus.driver_source)}</span>
                 <span>{readString(kmnetStatus.driver_python, "-")}</span>
               </div>
+              {kmnetLastError || kmnetConnectionFailed || kmnetConnectionDegraded ? (
+                <div className={kmnetConnectionFailed ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
+                  <div>
+                    <strong>{kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "输出已连接，但按键监听不可用" : "最近一次输出失败"}</strong>
+                    <span>{kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口和驱动后重新连接。" : "不依赖硬件按键的控制仍可继续使用。")}</span>
+                  </div>
+                  {kmnetRetryable ? <small>修改配置后点击“重新连接”，无需重启主链。</small> : null}
+                </div>
+              ) : null}
+              <div className="console-action-row kmnet-connection-actions">
+                <button
+                  className={kmnetConnected ? "console-button danger" : kmnetConnecting ? "console-button" : "console-button primary"}
+                  aria-pressed={kmnetConnected}
+                  disabled={busy === "kmnet.toggle" || (!kmnetDriverAvailable && !kmnetConnected && !kmnetConnecting)}
+                  onClick={() => void toggleHardwareConnection()}
+                  type="button"
+                >
+                  {busy === "kmnet.toggle" ? "处理中…" : kmnetConnectionActionLabel}
+                </button>
+                <span>{kmnetConnected ? "输出命令可发送" : kmnetConnecting ? "正在初始化驱动与网络连接" : kmnetConnectionFailed ? "主链可继续运行，输出暂不可用" : "连接后才会发送控制输出"}</span>
+              </div>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
               <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
               <ModuleSwitch
-                label="服务启动自动连接"
-                detail="后端启动完成后按当前地址连接 kmNet"
+                label="后端服务启动时自动连接"
+                detail="独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
               />
@@ -3387,15 +3414,6 @@ export function StudioConsoleView({
                 </>
               )}
               <div className="console-action-row">
-                <button
-                  className={kmnetConnected || kmnetConnecting ? "console-button danger" : "console-button primary"}
-                  aria-pressed={kmnetConnected || kmnetConnecting}
-                  disabled={busy === "kmnet.toggle"}
-                  onClick={() => void toggleHardwareConnection()}
-                  type="button"
-                >
-                  {kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}
-                </button>
                 <button
                   className="console-button"
                   disabled={busy === "kmnet.defaults"}
@@ -3433,11 +3451,11 @@ export function StudioConsoleView({
                   </label>
                 </div>
                 <div className="kmnet-pad">
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, -10, 1, 0, "raw", 0)}>↑</button>
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(-10, 0, 1, 0, "raw", 0)}>←</button>
-                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)} disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}>发送</button>
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(10, 0, 1, 0, "raw", 0)}>→</button>
-                  <button type="button" disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"} onClick={() => void diagnosticMoveHardware(0, 10, 1, 0, "raw", 0)}>↓</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, -10, 1, 0, "raw", 0)}>↑</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(-10, 0, 1, 0, "raw", 0)}>←</button>
+                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)} disabled={kmnetDiagnosticDisabled}>发送</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(10, 0, 1, 0, "raw", 0)}>→</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10, 1, 0, "raw", 0)}>↓</button>
                 </div>
                 <div className="kmnet-test-section">
                   <h3>最快直移</h3>
@@ -3445,7 +3463,7 @@ export function StudioConsoleView({
                   <div className="console-action-row">
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)}
                       type="button"
                     >
@@ -3453,7 +3471,7 @@ export function StudioConsoleView({
                     </button>
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_raw", 0)}
                       type="button"
                     >
@@ -3467,7 +3485,7 @@ export function StudioConsoleView({
                   <div className="console-action-row">
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "auto", kmnetTestMs)}
                       type="button"
                     >
@@ -3475,7 +3493,7 @@ export function StudioConsoleView({
                     </button>
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_auto", kmnetTestMs)}
                       type="button"
                     >
@@ -3495,7 +3513,7 @@ export function StudioConsoleView({
                   <div className="console-action-row">
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "bezier", kmnetTestMs, { x1: kmnetBezierX1, y1: kmnetBezierY1, x2: kmnetBezierX2, y2: kmnetBezierY2 })}
                       type="button"
                     >
@@ -3503,7 +3521,7 @@ export function StudioConsoleView({
                     </button>
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_bezier", kmnetTestMs, { x1: kmnetBezierX1, y1: kmnetBezierY1, x2: kmnetBezierX2, y2: kmnetBezierY2 })}
                       type="button"
                     >
@@ -3517,7 +3535,7 @@ export function StudioConsoleView({
                   <div className="console-action-row">
                     <button
                       className="console-button"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 3, 4, "raw", 0)}
                       type="button"
                     >
@@ -3525,7 +3543,7 @@ export function StudioConsoleView({
                     </button>
                     <button
                       className="console-button primary"
-                      disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                      disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "raw", 0)}
                       type="button"
                     >
@@ -3534,7 +3552,7 @@ export function StudioConsoleView({
                   </div>
                   <button
                     className="kmnet-circle-button"
-                    disabled={busy === "kmnet.diagnostic" || busy === "kmnet.circle"}
+                    disabled={kmnetDiagnosticDisabled}
                     onClick={() => void diagnosticCircleHardware()}
                     type="button"
                   >
@@ -3547,11 +3565,6 @@ export function StudioConsoleView({
                 </div>
                 {kmnetTestMessage ? <div className="kmnet-test-message">{kmnetTestMessage}</div> : null}
               </div>
-              {readString(kmnetStatus.last_error, "") ? (
-                <div className="kmnet-error">
-                  {`[${readString(kmnetStatus.last_connect_error_stage, "unknown")}/${readString(kmnetStatus.last_connect_error_type, "unknown")}] ${readString(kmnetStatus.last_error, "")}`}
-                </div>
-              ) : null}
             </div>
           </div>
           </>

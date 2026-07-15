@@ -133,6 +133,9 @@ def test_mainline_launch_dialog_renders_every_step_with_explicit_state_icons() -
     assert "<LaunchStepIndicator state={stepState} />" in source
     assert 'className="launch-step-arc"' in source
     assert 'status === "failed" && index === activeIndex' in source
+    assert 'title: "激活鼠标算法"' in source
+    assert "输出设备不影响本步骤" in source
+    assert "确认设备执行器" not in source
 
 
 def test_model_file_lists_show_size_in_megabytes() -> None:
@@ -200,27 +203,19 @@ def test_kmnet_panel_has_dedicated_control_test_page() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     navigation = STUDIO_NAVIGATION.read_text(encoding="utf-8")
     section_start = source.index('activePage === "params" || activePage === "control-test"')
-    control_page_start = source.index(
-        '<Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}',
-        section_start,
-    )
+    control_page_start = source.index('<SectionTitle title="kmNet 控制面板" />', section_start)
     section_end = source.index("</section>", control_page_start)
 
     assert 'label: "诊断工具"' in navigation
     assert '{ id: "control-test", label: "控制测试", detail: "硬件输出实验", icon: "kmbox" }' in navigation
-    assert '<SectionTitle title="kmNet 控制面板" />' not in source[section_start:control_page_start]
     assert '<SectionTitle title="kmNet 控制面板" />' in source[control_page_start:section_end]
-
-
-def test_kmnet_connection_button_uses_backend_runtime_state() -> None:
-    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
-
     assert "const kmnetConnected = kmnetStatus.connected === true;" in source
     assert "const kmnetConnecting = kmnetStatus.connecting === true;" in source
-    assert (
-        '{kmnetConnected ? "断开 kmNet" : kmnetConnecting ? "取消连接 kmNet" : "连接 kmNet"}'
-        in source
-    )
+    assert "kmnetStatus.connection_state" in source
+    assert "kmnetStatus.retryable" in source
+    assert '? "重新连接"' in source
+    assert 'aria-pressed={kmnetConnected}' in source
+    assert "主链可继续运行，输出暂不可用" in source
     assert "enabled={kmnetAutoConnect}" in source
     assert 'updateConfigField("hardware", "auto_connect", enabled)' in source
 
