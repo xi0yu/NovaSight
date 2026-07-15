@@ -22,7 +22,7 @@ export function NumberControl({
   onCommit: (value: number) => Promise<void> | void;
 }) {
   return (
-    <>
+    <div className="number-control-field">
       <label title={detail}>{label}</label>
       <CommitNumberControl
         value={value}
@@ -32,7 +32,7 @@ export function NumberControl({
         digits={step >= 1 ? 0 : 2}
         onCommit={onCommit}
       />
-    </>
+    </div>
   );
 }
 
@@ -213,31 +213,46 @@ export function ClassAimRatioControl({
   }, [custom, draft, onCommit, overrideRatio]);
 
   return (
-    <div className="class-aim-control">
-      <button
-        className={custom ? "class-aim-mode custom" : "class-aim-mode"}
-        type="button"
-        onClick={() => void onCommit(custom ? null : defaultRatio)}
-      >
-        {custom ? "单独设置" : "使用默认"}
-      </button>
-      <input
-        aria-label={`cls ${classId} 瞄点高度`}
-        disabled={!custom}
-        min={0}
-        max={1}
-        step={0.01}
-        type="number"
-        value={draft.toFixed(2)}
-        onBlur={commit}
-        onChange={(event) => {
-          const next = Number(event.target.value);
-          if (Number.isFinite(next)) {
-            setDraft(clampNumber(next, 0, 1));
-          }
-        }}
-        onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
-      />
+    <div className={custom ? "class-aim-control custom" : "class-aim-control inherited"}>
+      <div className="class-aim-mode-group" role="group" aria-label={`cls ${classId} 垂直瞄点模式`}>
+        <button
+          aria-pressed={!custom}
+          className={!custom ? "active" : ""}
+          type="button"
+          onClick={() => custom && void onCommit(null)}
+        >
+          跟随默认
+        </button>
+        <button
+          aria-pressed={custom}
+          className={custom ? "active" : ""}
+          type="button"
+          onClick={() => !custom && void onCommit(defaultRatio)}
+        >
+          独立设置
+        </button>
+      </div>
+      <label className="class-aim-value">
+        <span className="visually-hidden">cls {classId} 垂直瞄点百分比</span>
+        <input
+          aria-label={`cls ${classId} 垂直瞄点百分比`}
+          disabled={!custom}
+          min={0}
+          max={100}
+          step={1}
+          type="number"
+          value={Math.round(draft * 100)}
+          onBlur={commit}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (Number.isFinite(next)) {
+              setDraft(clampNumber(next / 100, 0, 1));
+            }
+          }}
+          onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+        />
+        <span aria-hidden="true">%</span>
+      </label>
       <div className="class-aim-preview" aria-hidden="true">
         <i style={{ top: `${effectiveRatio * 100}%` }} />
       </div>

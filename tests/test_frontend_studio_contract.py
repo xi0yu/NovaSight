@@ -17,6 +17,14 @@ STUDIO_NAVIGATION = (
     / "studio"
     / "StudioNavigation.tsx"
 )
+STUDIO_CONTROLS = (
+    Path(__file__).resolve().parents[1]
+    / "web"
+    / "src"
+    / "features"
+    / "studio"
+    / "StudioControls.tsx"
+)
 RUNTIME_STATUS = (
     Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "shared" / "runtimeStatus.ts"
 )
@@ -140,17 +148,17 @@ def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
     assert "[modelCatalogRefreshKey, selectedModelVersionId]" in source
 
 
-def test_studio_refreshes_changed_models_and_can_force_revalidation() -> None:
+def test_studio_refreshes_changed_models_without_exposing_force_revalidation() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     refresh_start = source.index("const refreshModelCatalog")
-    rescan_start = source.index("const rescanModelCatalog", refresh_start)
-    handlers_end = source.index("const launchStages", rescan_start)
+    handlers_end = source.index("const launchStages", refresh_start)
 
-    assert "getModelCatalog(false)" in source[refresh_start:rescan_start]
-    assert "getModelCatalog(true)" in source[rescan_start:handlers_end]
+    assert "getModelCatalog(false)" in source[refresh_start:handlers_end]
+    assert "getModelCatalog(true)" not in source
+    assert "rescanModelCatalog" not in source
     assert "scanModelDirectory" not in source
     assert '"刷新模型"' in source
-    assert '"强制重新校验"' in source
+    assert '"强制重新校验"' not in source
 
 
 def test_studio_registers_unmanaged_catalog_engine_by_reference() -> None:
@@ -271,14 +279,23 @@ def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
 
 def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overrides() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    controls = STUDIO_CONTROLS.read_text(encoding="utf-8")
 
     assert 'aria-label="模型类别与瞄点设置"' in source
-    assert "默认瞄点高度" in source
+    assert "默认垂直瞄点" in source
+    assert "目标框顶部为 0%，底部为 100%" in source
     assert "未知类别（cls ${classId}）" in source
     assert 'updateConfigField("inference", "detection_class_profiles"' in source
     assert 'updateControlGroupField("aim", "class_y_ratios"' in source
     assert "recordArray(vision.detection_items)" in source
     assert 'updateConfigField("inference", "detection_class_priority", current.join(","))' in source
+    assert "setClassPriorityPosition" in source
+    assert 'aria-label="目标类别多选"' in source
+    assert "toggleDetectionClass" in source
+    assert "仅选此类" not in source
+    assert "跟随默认" in controls
+    assert "独立设置" in controls
+    assert "disabled={!custom}" in controls
     assert 'updateDualPhasePath(["aim", "y_ratio"]' not in source
 
 

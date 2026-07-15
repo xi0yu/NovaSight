@@ -43,6 +43,7 @@ import { ClassAimRatioControl, CommitNumberControl, InlineTextControl, NumberCon
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
 import { Bar, Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
+import "./studio-settings.css";
 
 const CONTROL_ALGORITHM_OPTIONS = [
   {
@@ -228,6 +229,15 @@ function parseClassPriority(value: string): number[] {
     seen.add(classId);
     return [classId];
   });
+}
+
+function parseDetectionClassFilter(value: string): Set<number> | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "all") {
+    return null;
+  }
+  const classIds = parseClassPriority(normalized);
+  return classIds.length > 0 ? new Set(classIds) : null;
 }
 
 function recordArray(value: unknown): Record<string, unknown>[] {
@@ -953,6 +963,12 @@ export function StudioConsoleView({
       ? [activeRuntimeClassId]
       : [])
   ])).filter((classId) => classId >= 0 && classId <= 255).sort((left, right) => left - right);
+  const orderedClassEditorIds = [
+    ...classPriorityIds.filter((classId) => classEditorIds.includes(classId)),
+    ...classEditorIds.filter((classId) => !classPriorityIds.includes(classId))
+  ];
+  const configuredDetectionClassIds = parseDetectionClassFilter(activeDetectionClass);
+  const selectedDetectionClassIds = configuredDetectionClassIds ?? new Set(classEditorIds);
   const control = asRecord(vision.control);
   const targetPipeline = asRecord(vision.target_pipeline);
   const targetPipelineCounts = asRecord(targetPipeline.counts);
@@ -1981,20 +1997,39 @@ export function StudioConsoleView({
     ]
   );
 
-  const moveClassPriority = useCallback(
-    async (classId: number, direction: -1 | 1) => {
-      const current = classPriorityIds.includes(classId)
-        ? [...classPriorityIds]
-        : [...classPriorityIds, classId];
+  const setClassPriorityPosition = useCallback(
+    async (classId: number, targetIndex: number) => {
+      const current = [...orderedClassEditorIds];
       const index = current.indexOf(classId);
-      const targetIndex = clampNumber(index + direction, 0, current.length - 1);
-      if (index === targetIndex) {
+      if (index < 0 || index === targetIndex) {
         return;
       }
-      [current[index], current[targetIndex]] = [current[targetIndex], current[index]];
+      current.splice(index, 1);
+      current.splice(clampNumber(targetIndex, 0, current.length), 0, classId);
       await updateConfigField("inference", "detection_class_priority", current.join(","));
     },
-    [classPriorityIds, updateConfigField]
+    [orderedClassEditorIds, updateConfigField]
+  );
+
+  const toggleDetectionClass = useCallback(
+    async (classId: number) => {
+      const selected = parseDetectionClassFilter(activeDetectionClass) ?? new Set(classEditorIds);
+      if (selected.has(classId)) {
+        if (selected.size <= 1) {
+          return;
+        }
+        selected.delete(classId);
+      } else {
+        selected.add(classId);
+      }
+      const orderedSelection = orderedClassEditorIds.filter((id) => selected.has(id));
+      await updateConfigField(
+        "inference",
+        "detection_class_filter",
+        orderedSelection.length === classEditorIds.length ? "all" : orderedSelection.join(",")
+      );
+    },
+    [activeDetectionClass, classEditorIds, orderedClassEditorIds, updateConfigField]
   );
 
   const persistClassProfiles = useCallback(
@@ -2391,28 +2426,6 @@ export function StudioConsoleView({
     }
   };
 
-  const rescanModelCatalog = async () => {
-    setBusy("model.scan");
-    setLocalError(null);
-    setModelCatalogMessage("");
-    preferLatestModelVersionRef.current = true;
-    try {
-      const result = await getModelCatalog(true);
-      await onRefresh();
-      setModelCatalogRefreshKey((current) => current + 1);
-      setModelCatalogMessage(
-        `重新校验完成：发现 ${result.model_count} 个模型文件；未生成模型副本。`
-      );
-    } catch (err) {
-      preferLatestModelVersionRef.current = false;
-      setLocalError(`模型目录扫描失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const launchStages = MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT;
   const launchProgress =
     launchStatus === "success"
@@ -2553,12 +2566,18 @@ export function StudioConsoleView({
                   <span>inference</span><b>{configuredInferenceBackend}</b>
                 </div>
                 <label>采集格式</label>
-                <select value={selectedChoice ? choiceId(selectedChoice) : ""} onChange={(event) => setSelectedChoiceId(event.target.value)}>
-                  {choices.map((choice) => (
-                    <option key={choiceId(choice)} value={choiceId(choice)}>{choiceLabel(choice)}</option>
-                  ))}
-                  {choices.length === 0 ? <option>请先检测设备能力</option> : null}
-                </select>
+                <div className="capture-format-control">
+                  <select value={selectedChoice ? choiceId(selectedChoice) : ""} onChange={(event) => setSelectedChoiceId(event.target.value)}>
+                    {choices.map((choice) => (
+                      <option key={choiceId(choice)} value={choiceId(choice)}>{choiceLabel(choice)}</option>
+                    ))}
+                    {choices.length === 0 ? <option>请先检测设备能力</option> : null}
+                  </select>
+                  <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
+                    <NovaIcon name="refresh" size={15} />
+                    {busy === "caps" ? "检测中..." : "检测设备能力"}
+                  </button>
+                </div>
                 <label>缓冲策略</label>
                 <select value="latest-frame" disabled>
                   <option value="latest-frame">最新帧优先 / 单槽覆盖</option>
@@ -2577,9 +2596,6 @@ export function StudioConsoleView({
                     </button>
                   ))}
                 </div>
-                <button className="console-button primary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
-                  {busy === "caps" ? "检测中..." : "检测设备能力"}
-                </button>
               </div>
 
               <div className="console-card">
@@ -2689,15 +2705,6 @@ export function StudioConsoleView({
                   <NovaIcon name="refresh" size={15} />
                   {busy === "model.refresh" ? "刷新中..." : "刷新模型"}
                 </button>
-                <button
-                  className="console-button"
-                  disabled={busy !== null}
-                  onClick={() => void rescanModelCatalog()}
-                  type="button"
-                >
-                  <NovaIcon name="model-verify" size={15} />
-                  {busy === "model.scan" ? "校验中..." : "强制重新校验"}
-                </button>
               </div>
               {modelCatalogMessage ? <div className="model-switch-note good">{modelCatalogMessage}</div> : null}
               <div className="model-catalog-heading">
@@ -2754,7 +2761,7 @@ export function StudioConsoleView({
               ) : null}
               {selectedSwitchArtifact === null && blockedSwitchArtifacts.length > 0 ? (
                 <div className="model-switch-note bad">
-                  模型产物不可切换：{blockedSwitchArtifacts.map((item) => `${item.path} (${item.status})`).join("，")}。请修复模型或 manifest 后强制重新校验。
+                  模型产物不可切换：{blockedSwitchArtifacts.map((item) => `${item.path} (${item.status})`).join("，")}。请修复模型或 manifest 后刷新模型目录。
                 </div>
               ) : null}
               <label>置信度阈值</label>
@@ -3088,9 +3095,9 @@ export function StudioConsoleView({
               </div>
               <dl className="class-config-summary-stats">
                 <div><dt>已定义类别</dt><dd>{detectionClasses.filter(Boolean).length}</dd></div>
-                <div><dt>默认 aim Y</dt><dd>{aimYRatio.toFixed(2)}</dd></div>
+                <div><dt>默认瞄点</dt><dd>{Math.round(aimYRatio * 100)}%</dd></div>
                 <div><dt>独立覆盖</dt><dd>{Object.keys(activeClassAimRatios).length}</dd></div>
-                <div><dt>目标筛选</dt><dd>{activeDetectionClass === "all" ? "全部类别" : `cls ${activeDetectionClass}`}</dd></div>
+                <div><dt>目标筛选</dt><dd>{selectedDetectionClassIds.size}/{classEditorIds.length} 类</dd></div>
               </dl>
               <button
                 className="console-button primary"
@@ -3822,7 +3829,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 类别配置</span>
                 <h2 id="class-config-dialog-title">管理类别配置</h2>
-                <p>配置模型类别名称、目标选择顺序，以及每个类别独立的框内瞄点高度。</p>
+                <p>配置类别名称、目标优先级、允许参与选择的类别，以及各类别的垂直瞄点。</p>
               </div>
               <button
                 aria-label="关闭类别配置"
@@ -3920,31 +3927,66 @@ export function StudioConsoleView({
 
                 <div className="class-default-aim">
                   <span>
-                    <b>默认瞄点高度</b>
-                    <small>从 bbox 顶部向下的比例；没有独立设置的类别使用该值。</small>
+                    <b>默认垂直瞄点</b>
+                    <small>目标框顶部为 0%，底部为 100%；选择“跟随默认”的类别会实时同步。</small>
                   </span>
                   <CommitNumberControl
-                    value={aimYRatio}
+                    value={aimYRatio * 100}
                     min={0}
-                    max={1}
-                    step={0.01}
-                    digits={2}
-                    onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)}
+                    max={100}
+                    step={1}
+                    digits={0}
+                    onCommit={(value) => updateControlGroupField("aim", "y_ratio", value / 100)}
                   />
                   <div className="class-aim-preview large" aria-hidden="true">
                     <i style={{ top: `${aimYRatio * 100}%` }} />
                   </div>
                 </div>
 
+                <section className="class-filter-section" aria-labelledby="class-filter-title">
+                  <div className="class-filter-heading">
+                    <span>
+                      <b id="class-filter-title">参与目标选择的类别</b>
+                      <small>可同时选择多个类别；高亮卡片会进入候选目标计算。</small>
+                    </span>
+                    <button
+                      className="console-button secondary"
+                      disabled={selectedDetectionClassIds.size === classEditorIds.length}
+                      onClick={() => void updateConfigField("inference", "detection_class_filter", "all")}
+                      type="button"
+                    >
+                      全部选择
+                    </button>
+                  </div>
+                  <div className="class-filter-options" role="group" aria-label="目标类别多选">
+                    {classEditorIds.map((classId) => {
+                      const selected = selectedDetectionClassIds.has(classId);
+                      const configuredName = detectionClasses[classId] ?? "";
+                      return (
+                        <button
+                          aria-pressed={selected}
+                          className={selected ? "selected" : ""}
+                          key={`class-filter-${classId}`}
+                          onClick={() => void toggleDetectionClass(classId)}
+                          type="button"
+                        >
+                          <span className="class-filter-check" aria-hidden="true">{selected ? "✓" : ""}</span>
+                          <b>cls {classId}</b>
+                          <small>{configuredName ? classDisplayName(configuredName, classId) : `未知类别（cls ${classId}）`}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
                 <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
                   <div className="class-editor-head" role="row">
-                    <span>ID</span><span>类别名称</span><span>选择顺序</span><span>独立 aim Y</span><span>目标筛选</span>
+                    <span>ID</span><span>类别名称</span><span>目标优先级</span><span>垂直瞄点</span>
                   </div>
-                  {classEditorIds.map((classId) => {
+                  {orderedClassEditorIds.map((classId) => {
                     const configuredName = detectionClasses[classId] ?? "";
                     const displayName = configuredName ? classDisplayName(configuredName, classId) : "";
-                    const priorityIndex = classPriorityIds.indexOf(classId);
-                    const enabled = activeDetectionClass === "all" || activeDetectionClass === String(classId);
+                    const priorityIndex = orderedClassEditorIds.indexOf(classId);
                     return (
                       <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
                         <b className="class-id">cls {classId}</b>
@@ -3954,42 +3996,24 @@ export function StudioConsoleView({
                           placeholder={`未知类别（cls ${classId}）`}
                           onCommit={(value) => updateDetectionClassName(classId, value)}
                         />
-                        <div className="class-priority-control">
-                          <b>{priorityIndex >= 0 ? priorityIndex + 1 : "—"}</b>
-                          <button
-                            aria-label={`提高 cls ${classId} 选择顺序`}
-                            disabled={priorityIndex === 0}
-                            type="button"
-                            onClick={() => void moveClassPriority(classId, -1)}
-                          >↑</button>
-                          <button
-                            aria-label={`降低 cls ${classId} 选择顺序`}
-                            disabled={priorityIndex < 0 || priorityIndex === classPriorityIds.length - 1}
-                            type="button"
-                            onClick={() => void moveClassPriority(classId, 1)}
-                          >↓</button>
-                        </div>
+                        <label className="class-priority-control">
+                          <span className="visually-hidden">cls {classId} 目标优先级</span>
+                          <select
+                            aria-label={`cls ${classId} 目标优先级`}
+                            value={priorityIndex}
+                            onChange={(event) => void setClassPriorityPosition(classId, Number(event.target.value))}
+                          >
+                            {orderedClassEditorIds.map((_, index) => (
+                              <option key={`priority-${classId}-${index}`} value={index}>第 {index + 1} 位</option>
+                            ))}
+                          </select>
+                        </label>
                         <ClassAimRatioControl
                           classId={classId}
                           defaultRatio={aimYRatio}
                           overrideRatio={activeClassAimRatios[String(classId)]}
                           onCommit={(value) => updateClassAimRatio(classId, value)}
                         />
-                        <button
-                          className={enabled ? "class-enable active" : "class-enable"}
-                          type="button"
-                          onClick={() => void updateConfigField(
-                            "inference",
-                            "detection_class_filter",
-                            activeDetectionClass === String(classId) ? "all" : String(classId)
-                          )}
-                        >
-                          {activeDetectionClass === "all"
-                            ? "仅选此类"
-                            : activeDetectionClass === String(classId)
-                              ? "恢复全部"
-                              : "切换此类"}
-                        </button>
                       </div>
                     );
                   })}

@@ -242,13 +242,21 @@ class QualityScorer:
 
 
 def parse_allowed_class_ids(value: str) -> set[int] | None:
-    selected = str(value or "all").strip()
+    selected = str(value or "all").strip().lower()
     if selected == "all":
         return None
-    try:
-        return {int(selected)}
-    except ValueError:
+    allowed: set[int] = set()
+    for part in selected.split(","):
+        try:
+            class_id = int(part.strip())
+        except ValueError:
+            return None
+        if class_id < 0 or class_id > 255:
+            return None
+        allowed.add(class_id)
+    if not allowed:
         return None
+    return allowed
 
 
 def scored_track_debug(candidate: ScoredTrack) -> dict:

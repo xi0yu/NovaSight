@@ -48,13 +48,14 @@ from novasight.model_registry import ModelRegistry
 from novasight.contracts import BBox, ControlIntent, Detection, DetectionBatch, FrameContext, Track
 from novasight.roi import center_roi_frame, center_roi_region
 
+from .candidates import parse_allowed_class_ids
 from .config_store import RuntimeConfigStore
 from .control_timing import ControlTimingModel
-from .state import RuntimeFrameResult, RuntimeState
+from .control_trace import build_control_trace_record
 from .detection_batch import detection_batch_to_frame_context
 from .freshness import FreshnessGate
 from .recorder import build_control_frame_record
-from .control_trace import build_control_trace_record
+from .state import RuntimeFrameResult, RuntimeState
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
@@ -2784,14 +2785,12 @@ class RuntimeService:
         )
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
-        selected = str(getattr(self.config.inference, "detection_class_filter", "all"))
-        if selected == "all":
+        allowed = parse_allowed_class_ids(
+            str(getattr(self.config.inference, "detection_class_filter", "all"))
+        )
+        if allowed is None:
             return detections
-        try:
-            class_id = int(selected)
-        except ValueError:
-            return detections
-        return [item for item in detections if int(item.cls) == class_id]
+        return [item for item in detections if int(item.cls) in allowed]
 
     def _class_priority(self) -> list[int]:
         raw = str(getattr(self.config.inference, "detection_class_priority", ""))

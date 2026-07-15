@@ -1169,16 +1169,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if cfg.inference.input_source != "source.default":
         raise ValueError("runtime config key 'inference.input_source' must be source.default")
     if cfg.inference.detection_class_filter != "all":
-        try:
-            class_index = int(cfg.inference.detection_class_filter)
-        except ValueError as exc:
-            raise ValueError(
-                "runtime config key 'inference.detection_class_filter' must be all or a class index"
-            ) from exc
-        if class_index < 0 or class_index > 255:
-            raise ValueError(
-                "runtime config key 'inference.detection_class_filter' must be between 0 and 255"
-            )
+        _parse_detection_class_filter(cfg.inference.detection_class_filter)
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:
         raise ValueError(
@@ -1426,6 +1417,28 @@ def _parse_class_priority(value: str) -> list[int]:
         if class_id not in seen:
             seen.add(class_id)
             result.append(class_id)
+    return result
+
+
+def _parse_detection_class_filter(value: str) -> set[int]:
+    if not value.strip():
+        raise ValueError(
+            "runtime config key 'inference.detection_class_filter' must be all or comma-separated class indexes"
+        )
+    result: set[int] = set()
+    for part in value.split(","):
+        text = part.strip()
+        try:
+            class_id = int(text)
+        except ValueError as exc:
+            raise ValueError(
+                "runtime config key 'inference.detection_class_filter' must be all or comma-separated class indexes"
+            ) from exc
+        if class_id < 0 or class_id > 255:
+            raise ValueError(
+                "runtime config key 'inference.detection_class_filter' must contain class indexes between 0 and 255"
+            )
+        result.add(class_id)
     return result
 
 
