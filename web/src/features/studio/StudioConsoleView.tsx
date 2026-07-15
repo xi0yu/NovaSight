@@ -1030,6 +1030,20 @@ export function StudioConsoleView({
     : "";
   const selectorDebug = asRecord(control.selector_debug);
   const controlCandidateFilter = asRecord(control.candidate_filter);
+  const basicCandidateFilter = asRecord(controlCandidateFilter.basic);
+  const effectiveClassFilter = readString(controlCandidateFilter.effective_class_filter, activeDetectionClass);
+  const rejectedBasicClassIds = Array.isArray(basicCandidateFilter.rejected_class_ids)
+    ? basicCandidateFilter.rejected_class_ids
+        .map((item) => Number(item))
+        .filter((item) => Number.isInteger(item) && item >= 0 && item <= 255)
+    : [];
+  const recoveryClassIdSet = new Set([
+    ...(configuredDetectionClassIds ?? []),
+    ...runtimeDetectionClassIds
+  ]);
+  const detectedClassFilterValue = orderedClassEditorIds
+    .filter((classId) => recoveryClassIdSet.has(classId))
+    .join(",");
   const selectionCenter = asRecord(controlCandidateFilter.selection_center_px);
   const rejectedControlCandidates = recordArray(controlCandidateFilter.rejected);
   const firstRejectedControlCandidate = rejectedControlCandidates[0] ?? {};
@@ -2949,6 +2963,8 @@ export function StudioConsoleView({
                 <span>解码 / 阈值 / NMS</span><b>{`${formatOptionalInteger(targetPipelineCounts.decode_raw_candidates)} / ${formatOptionalInteger(targetPipelineCounts.threshold_candidates)} / ${formatOptionalInteger(targetPipelineCounts.nms_detections)}`}</b>
                 <span>基础 / 关联 / CONFIRMED / FOV 内</span><b>{`${formatOptionalInteger(targetPipelineCounts.basic_candidates)} / ${formatOptionalInteger(targetPipelineCounts.association_candidates)} / ${formatOptionalInteger(targetPipelineCounts.tracker_active)} / ${formatOptionalInteger(targetPipelineCounts.inside_fov)}`}</b>
                 <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
+                <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
+                <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
                 <span>选择 FOV 中心</span><b>{formatPoint(selectionCenter.x, selectionCenter.y, 1, "px")}</b>
                 <span>选择 FOV 半径</span><b>{formatOptionalNumber(controlCandidateFilter.selection_radius_px, 1, "px")}</b>
                 <span>被拒绝瞄点</span><b>{formatPoint(firstRejectedControlCandidate.aim_x, firstRejectedControlCandidate.aim_y, 1, "px")}</b>
@@ -2974,6 +2990,19 @@ export function StudioConsoleView({
                 <span>Hungarian / Update</span><b>{formatPoint(trackerTiming.hungarian_us, trackerTiming.tracker_update_us, 2, "us")}</b>
                 <span>Tracker total</span><b>{formatOptionalNumber(trackerTiming.tracker_total_us, 2, "us")}</b>
               </div>
+              {targetPipelineCode === "BASIC_CANDIDATE_REJECTED" && targetPipelineRejections.includes("class_filter") && detectedClassFilterValue ? (
+                <div className="control-filter-recovery">
+                  <button
+                    className="console-button primary"
+                    disabled={busy !== null}
+                    onClick={() => void updateConfigField("inference", "detection_class_filter", detectedClassFilterValue)}
+                    type="button"
+                  >
+                    允许当前检测类别
+                  </button>
+                  <small>保留已有选择，并加入本帧检测到的 cls；保存后立即热更新。</small>
+                </div>
+              ) : null}
             </div>
             <div className="console-card">
               <SectionTitle title="瞄准点与预测" />

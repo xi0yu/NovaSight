@@ -3344,7 +3344,21 @@ class RuntimeService:
         candidates = effective.get("candidates")
         rejected = effective.get("rejected")
         selected = selector_debug.get("selected")
+        basic_rejected = (
+            cls._debug_dict_list(basic_filter.get("rejected"))
+            if isinstance(basic_filter, dict)
+            else cls._debug_dict_list(selector_debug.get("rejected"))
+        )
+        rejected_class_ids = sorted(
+            {
+                int(item["class_id"])
+                for item in basic_rejected
+                if item.get("reason") == "class_filter"
+                and isinstance(item.get("class_id"), int)
+            }
+        )
         return {
+            "effective_class_filter": str(selector_debug.get("class_filter") or "all"),
             "raw_candidates": cls._debug_int(selector_debug, "raw_candidates"),
             "basic_filtered_candidates": cls._debug_int(selector_debug, "filtered_candidates"),
             "filtered_candidates": cls._debug_int(effective, "filtered_candidates"),
@@ -3370,9 +3384,8 @@ class RuntimeService:
                 "rejected_candidates": cls._debug_int(basic_filter, "rejected_candidates")
                 if isinstance(basic_filter, dict)
                 else cls._debug_int(selector_debug, "rejected_candidates"),
-                "rejected": cls._debug_dict_list(basic_filter.get("rejected"))
-                if isinstance(basic_filter, dict)
-                else cls._debug_dict_list(selector_debug.get("rejected")),
+                "rejected": basic_rejected,
+                "rejected_class_ids": rejected_class_ids,
             },
             "association": dict(association_filter)
             if isinstance(association_filter, dict)
@@ -3541,6 +3554,8 @@ class RuntimeService:
             "message": message,
             "selection_reason": selection_reason,
             "rejection_reasons": rejection_reasons,
+            "effective_class_filter": candidate["effective_class_filter"],
+            "rejected_class_ids": candidate["basic"]["rejected_class_ids"],
             "counts": counts,
         }
 

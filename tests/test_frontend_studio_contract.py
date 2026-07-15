@@ -302,6 +302,9 @@ def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overr
     assert "全部选择" in source
     assert "全部取消" in source
     assert '"detection_class_filter", "none"' in source
+    assert "允许当前检测类别" in source
+    assert "effective_class_filter" in source
+    assert "rejected_class_ids" in source
     assert "仅选此类" not in source
     assert "跟随默认" in controls
     assert "独立设置" in controls

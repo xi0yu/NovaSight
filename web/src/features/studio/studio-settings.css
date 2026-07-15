@@ -92,6 +92,22 @@
   white-space: nowrap;
 }
 
+.control-filter-recovery {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-red) 28%, var(--hairline));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-red) 7%, var(--surface));
+}
+
+.control-filter-recovery small {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 .class-profile-create-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

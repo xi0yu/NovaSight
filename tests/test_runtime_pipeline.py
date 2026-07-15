@@ -1016,6 +1016,52 @@ def test_target_pipeline_diagnostics_explain_selection_fov_rejection() -> None:
     assert rejected["distance_px"] == pytest.approx(math.hypot(300.0, 18.0))
 
 
+def test_target_pipeline_diagnostics_expose_effective_class_filter_and_rejected_classes() -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.detection_class_filter = "1"
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+            execute=lambda _intent: pytest.fail("class-filtered target must not execute"),
+        ),
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns()
+    service.process_detection_batch(
+        DetectionBatch(
+            frame_id=1,
+            generation=1,
+            capture_ts_ns=capture_ts_ns,
+            inference_start_ts_ns=capture_ts_ns + 1_000,
+            inference_end_ts_ns=capture_ts_ns + 2_000,
+            detections=[
+                Detection(cls=0, score=0.90, x1=260, y1=250, x2=320, y2=390),
+                Detection(cls=2, score=0.85, x1=330, y1=250, x2=390, y2=390),
+            ],
+            classes=["body", "head", "other"],
+            coordinate_space="roi",
+        ),
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=640,
+        roi_offset_y=220,
+    )
+
+    vision = service.state().vision
+    candidate_filter = vision["control"]["candidate_filter"]
+    diagnostics = vision["target_pipeline"]
+
+    assert diagnostics["code"] == "BASIC_CANDIDATE_REJECTED"
+    assert candidate_filter["effective_class_filter"] == "1"
+    assert candidate_filter["basic"]["rejected_class_ids"] == [0, 2]
+
+
 def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, monkeypatch) -> None:
     monotonic_s = [100.0]
     monkeypatch.setattr("novasight.runtime.service.time.monotonic", lambda: monotonic_s[0])
