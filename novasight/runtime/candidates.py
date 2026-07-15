@@ -5,6 +5,7 @@ from math import isfinite
 from typing import Iterable
 
 from novasight.contracts import BBox, Detection, FrameContext, Track
+from novasight.control.observation import resolve_aim_y_ratio
 
 
 @dataclass(frozen=True)
@@ -115,10 +116,10 @@ class BasicCandidateFilter:
         allowed_class_ids: set[int] | None,
         min_confidence: float,
         aim_y_ratio: float,
+        class_aim_y_ratios: dict[int, float] | None = None,
     ) -> BasicCandidateFilterResult:
         observations: list[TrackObservation] = []
         rejected: list[dict] = []
-        ratio = max(0.0, min(1.0, float(aim_y_ratio)))
         capture_ts_ns = int(context.capture_ts_ns or 0)
         for detection_index, detection in enumerate(context.detections):
             reason = ""
@@ -145,7 +146,15 @@ class BasicCandidateFilter:
                     confidence=float(detection.score),
                     bbox=detection.box,
                     aim_x=float(detection.box.center_x),
-                    aim_y=float(detection.box.y1 + detection.box.height * ratio),
+                    aim_y=float(
+                        detection.box.y1
+                        + detection.box.height
+                        * resolve_aim_y_ratio(
+                            aim_y_ratio,
+                            class_aim_y_ratios,
+                            int(detection.cls),
+                        )
+                    ),
                     capture_ts_ns=capture_ts_ns,
                 )
             )
@@ -208,10 +217,21 @@ class QualityScorer:
     def __init__(self, config: QualityScoreConfig | None = None) -> None:
         self.config = config or QualityScoreConfig()
 
-    def score(self, track: Track, *, context: FrameContext) -> CandidateQuality:
+    def score(
+        self,
+        track: Track,
+        *,
+        context: FrameContext,
+        class_reference_area: float | None = None,
+    ) -> CandidateQuality:
         conf_score = _clamp01(float(track.score))
         frame_area = max(1.0, float(context.width) * float(context.height))
-        area_score = _clamp01((float(track.area) / frame_area) ** 0.5)
+        reference_area = (
+            max(1.0, float(class_reference_area))
+            if class_reference_area is not None
+            else frame_area
+        )
+        area_score = _clamp01((float(track.area) / reference_area) ** 0.5)
         confidence_weight = max(0.0, float(self.config.confidence_weight))
         area_weight = max(0.0, float(self.config.area_weight))
         total_weight = confidence_weight + area_weight

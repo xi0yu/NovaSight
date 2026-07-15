@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from novasight.contracts import Detection, FrameContext
@@ -80,6 +82,28 @@ def test_basic_candidate_filter_only_applies_class_confidence_and_bbox_validity(
         "class_filter",
         "confidence_filter",
     }
+
+
+def test_candidate_aim_uses_default_ratio_with_per_class_override() -> None:
+    context = _context(
+        1,
+        1_000_000_000,
+        [
+            Detection(0, 0.9, x=100, y=200, w=40, h=100),
+            Detection(1, 0.9, x=200, y=200, w=40, h=100),
+        ],
+    )
+
+    result = BasicCandidateFilter().apply(
+        context,
+        allowed_class_ids=None,
+        min_confidence=0.25,
+        aim_y_ratio=0.22,
+        class_aim_y_ratios={1: 0.50},
+    )
+
+    assert result.observations[0].aim_y == pytest.approx(222.0)
+    assert result.observations[1].aim_y == pytest.approx(250.0)
 
 
 def test_single_high_confidence_track_is_confirmed_immediately() -> None:
@@ -322,8 +346,11 @@ def test_tracker_caps_association_work_and_reports_timing_and_quality() -> None:
     assert result.debug["association_candidates_dropped"] == 4
     assert result.debug["max_active_tracks"] == 16
     assert result.debug["max_detections_for_association"] == 16
-    assert result.debug["tracks"][0]["track_quality"] == pytest.approx(0.99)
-    assert result.active_tracks[0].quality_score == pytest.approx(0.99)
+    first_track = result.debug["tracks"][0]
+    sigma = first_track["estimate"]["position_sigma_px"]
+    expected_quality = 0.99 / (1.0 + sigma / math.sqrt(16.0 * 80.0))
+    assert first_track["track_quality"] == pytest.approx(expected_quality)
+    assert result.active_tracks[0].quality_score == pytest.approx(expected_quality)
     for key in (
         "tracker_predict_us",
         "association_matrix_us",
@@ -474,6 +501,70 @@ def test_target_selector_uses_explicit_control_center_inside_shifted_roi() -> No
     assert selection.target is not None
     assert selection.target.cx == pytest.approx(360.0)
     assert selector.last_debug["control_center_roi_px"] == {"x": 360.0, "y": 320.0}
+
+
+def test_same_class_fallback_prefers_nearest_candidate_over_larger_bbox() -> None:
+    selector = RuntimeTargetSelector()
+    detections = [
+        Detection(0, 0.90, x=310, y=270, w=20, h=50),
+        Detection(0, 0.90, x=500, y=180, w=100, h=200),
+    ]
+    first = _context(1, 1_000_000_000, detections)
+    second = _context(2, 1_050_000_000, detections)
+
+    selector.select(
+        first,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        class_priority=[1, 0],
+        target_switch_delay_ms=0,
+    )
+    selected = selector.select(
+        second,
+        min_confidence=0.25,
+        fov_ratio=1.0,
+        aim_ratio=0.22,
+        class_priority=[1, 0],
+        target_switch_delay_ms=0,
+    )
+
+    assert selected.target is not None
+    assert selected.target.box == detections[0].box
+    candidates = selector.last_debug["tracked_filter"]["candidates"]
+    near = next(item for item in candidates if item["x"] == 310.0)
+    far = next(item for item in candidates if item["x"] == 500.0)
+    assert near["distance_score"] > far["distance_score"]
+    assert near["selection_score"] > far["selection_score"]
+
+
+def test_lost_preferred_head_falls_back_to_nearest_body() -> None:
+    selector = RuntimeTargetSelector()
+    with_head = [
+        Detection(1, 0.90, x=300, y=240, w=40, h=100),
+        Detection(0, 0.72, x=310, y=270, w=20, h=50),
+        Detection(0, 0.99, x=470, y=170, w=110, h=220),
+    ]
+    bodies_only = with_head[1:]
+    common = {
+        "min_confidence": 0.25,
+        "fov_ratio": 1.0,
+        "aim_ratio": 0.22,
+        "class_priority": [1, 0],
+        "lost_grace_frames": 0,
+        "tracker_max_missed_frames": 0,
+        "target_switch_delay_ms": 0,
+    }
+
+    selector.select(_context(1, 1_000_000_000, with_head), **common)
+    head_selection = selector.select(_context(2, 1_050_000_000, with_head), **common)
+    fallback = selector.select(_context(3, 1_100_000_000, bodies_only), **common)
+
+    assert head_selection.target is not None
+    assert head_selection.target.cls == 1
+    assert fallback.target is not None
+    assert fallback.target.cls == 0
+    assert fallback.target.box == bodies_only[0].box
 
 
 def test_switch_debounce_keeps_valid_locked_target_until_challenger_commits() -> None:

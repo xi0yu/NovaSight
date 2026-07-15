@@ -62,6 +62,11 @@ control:
   active_algorithm: dual_phase_atan_robust_predictive_v2
   aim:
     y_ratio: 0.22
+    # Optional overrides are scoped to a detection class profile.
+    # class_y_ratios:
+    #   default:
+    #     "1": 0.35
+    class_y_ratios: {}
   algorithms:
     calibrated_angular:
       fov_x_deg: 105.0
@@ -82,8 +87,6 @@ control:
     dual_phase_atan_robust_predictive_v2:
       schema_version: 3
       freshness_threshold_ms: 55.0
-      aim:
-        y_ratio: 0.22
       projection:
         fov_x_deg: 105.0
         counts_per_360: 9980.0
@@ -143,8 +146,8 @@ control:
   scheduler_interval_ms: 4.0
   target_fov_radius_px: 180
   candidate_selection_class_weight: 0.40
-  candidate_selection_quality_weight: 0.40
-  candidate_selection_distance_weight: 0.20
+  candidate_selection_quality_weight: 0.05
+  candidate_selection_distance_weight: 0.55
   target_switch_delay_ms: 50
   trigger_mode: always
 logging:

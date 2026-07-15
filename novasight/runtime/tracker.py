@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import isfinite, log
+from math import isfinite, log, sqrt
 from time import perf_counter_ns
 from typing import Literal
 
@@ -847,7 +847,18 @@ def _symmetric_ratio(left: float, right: float) -> float:
 
 
 def _track_quality(track: TrackRecord) -> float:
-    return _clamp01(float(track.confidence) * float(track.identity_confidence))
+    estimate = track.estimate
+    if estimate is None or not isfinite(float(estimate.position_sigma_px)):
+        stability = 1.0
+    else:
+        characteristic_size = max(1.0, sqrt(max(1.0, float(track.bbox.area))))
+        relative_sigma = max(0.0, float(estimate.position_sigma_px)) / characteristic_size
+        stability = 1.0 / (1.0 + relative_sigma)
+    return _clamp01(
+        float(track.confidence)
+        * float(track.identity_confidence)
+        * stability
+    )
 
 
 def _elapsed_us(start_ns: int, end_ns: int) -> float:

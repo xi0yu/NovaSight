@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from statistics import median
 import time
 from typing import Iterable
 
@@ -81,6 +82,7 @@ class RuntimeTargetSelector:
         min_confidence: float,
         fov_ratio: float,
         aim_ratio: float = 0.5,
+        class_aim_y_ratios: dict[int, float] | None = None,
         control_center_x_px: float | None = None,
         control_center_y_px: float | None = None,
         class_filter: str = "all",
@@ -92,8 +94,8 @@ class RuntimeTargetSelector:
         quality_confidence_weight: float = 0.7,
         quality_area_weight: float = 0.3,
         selection_class_weight: float = 0.40,
-        selection_quality_weight: float = 0.40,
-        selection_distance_weight: float = 0.20,
+        selection_quality_weight: float = 0.05,
+        selection_distance_weight: float = 0.55,
         tracker_max_match_distance: float = 1.5,
         tracker_position_cost_weight: float = 0.75,
         tracker_iou_cost_weight: float = 0.25,
@@ -159,6 +161,7 @@ class RuntimeTargetSelector:
             allowed_class_ids=parse_allowed_class_ids(class_filter),
             min_confidence=max(0.0, min(1.0, float(min_confidence))),
             aim_y_ratio=max(0.0, min(1.0, float(aim_ratio))),
+            class_aim_y_ratios=class_aim_y_ratios,
         )
         basic_filter_debug = filter_result.debug_payload()
         center_x = (
@@ -531,10 +534,21 @@ class RuntimeTargetSelector:
             quality_weight = 1.0
             total_weight = 1.0
         radius = max(1e-6, float(fov_radius_px))
+        class_areas: dict[int, list[float]] = {}
+        for track in candidates:
+            class_areas.setdefault(int(track.cls), []).append(max(1.0, float(track.area)))
+        class_reference_areas = {
+            class_id: float(median(areas))
+            for class_id, areas in class_areas.items()
+        }
         scored: list[ScoredTrack] = []
         for track in candidates:
             aim_x, aim_y = track.filtered_aim_px
-            base_quality = quality.score(track, context=context)
+            base_quality = quality.score(
+                track,
+                context=context,
+                class_reference_area=class_reference_areas.get(int(track.cls)),
+            )
             candidate_quality = CandidateQuality(
                 conf_score=base_quality.conf_score,
                 area_score=base_quality.area_score,

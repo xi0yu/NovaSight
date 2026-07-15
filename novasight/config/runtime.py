@@ -127,6 +127,7 @@ class CalibrationConfig:
 @dataclass
 class AimConfig:
     y_ratio: float = 0.22
+    class_y_ratios: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -149,11 +150,6 @@ class UniversalSaturatedConfig:
     response_scale_y_px: float = 60.0
     max_step_x_counts: float = 50.0
     max_step_y_counts: float = 40.0
-
-
-@dataclass
-class DualPhaseAimConfig:
-    y_ratio: float = 0.22
 
 
 @dataclass
@@ -251,7 +247,6 @@ class DualPhaseRobustAtanConfig:
 class DualPhaseAtanRobustPredictiveV2Config:
     schema_version: int = 3
     freshness_threshold_ms: float = 55.0
-    aim: DualPhaseAimConfig = field(default_factory=DualPhaseAimConfig)
     projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
     mode: DualPhaseRobustModeSelectorConfig = field(
         default_factory=DualPhaseRobustModeSelectorConfig
@@ -299,8 +294,8 @@ class ControlConfig:
     candidate_quality_confidence_weight: float = 0.7
     candidate_quality_area_weight: float = 0.3
     candidate_selection_class_weight: float = 0.40
-    candidate_selection_quality_weight: float = 0.40
-    candidate_selection_distance_weight: float = 0.20
+    candidate_selection_quality_weight: float = 0.05
+    candidate_selection_distance_weight: float = 0.55
     tracker_max_match_distance: float = 1.5
     tracker_position_cost_weight: float = 0.75
     tracker_iou_cost_weight: float = 0.25
@@ -562,6 +557,7 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         if isinstance(calibration, dict):
             _migrate_dual_control_modes(control, calibration)
         _migrate_control_algorithm_namespaces(control)
+        _migrate_shared_aim_config(control)
         normalized["control"] = control
     if isinstance(calibration, dict):
         normalized["calibration"] = calibration
@@ -873,6 +869,26 @@ def _migrate_dual_phase_robust_v2_namespace(
     algorithms["dual_phase_atan_robust_predictive_v2"] = config
 
 
+def _migrate_shared_aim_config(control: dict[str, Any]) -> None:
+    algorithms = control.get("algorithms")
+    if not isinstance(algorithms, dict):
+        return
+    robust = algorithms.get("dual_phase_atan_robust_predictive_v2")
+    if not isinstance(robust, dict):
+        return
+
+    robust = dict(robust)
+    legacy_aim = robust.pop("aim", None)
+    if isinstance(legacy_aim, dict):
+        aim = dict(control.get("aim") or {})
+        if "y_ratio" not in aim and "y_ratio" in legacy_aim:
+            aim["y_ratio"] = legacy_aim["y_ratio"]
+        control["aim"] = aim
+    algorithms = dict(algorithms)
+    algorithms["dual_phase_atan_robust_predictive_v2"] = robust
+    control["algorithms"] = algorithms
+
+
 _REMOVED_LEGACY_CONTROL_KEYS = frozenset(
     {
         "max_abs_dx",
@@ -966,11 +982,6 @@ def _validate_dual_phase_robust_v2_algorithm(
     freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
     if freshness_ms <= 0.0:
         raise ValueError(f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0")
-
-    aim_ratio = finite("aim.y_ratio", cfg.aim.y_ratio)
-    if not 0.0 <= aim_ratio <= 1.0:
-        raise ValueError(f"runtime config key '{prefix}.aim.y_ratio' must be in [0, 1]")
-    cfg.aim.y_ratio = round(aim_ratio, 2)
 
     fov_x_deg = finite("projection.fov_x_deg", cfg.projection.fov_x_deg)
     if not 30.0 <= fov_x_deg <= 179.0:
@@ -1173,6 +1184,35 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     if not math.isfinite(float(cfg.control.aim.y_ratio)):
         raise ValueError("runtime config key 'control.aim.y_ratio' must be finite")
     cfg.control.aim.y_ratio = round(max(0.0, min(1.0, float(cfg.control.aim.y_ratio))), 2)
+    normalized_class_y_ratios: dict[str, dict[str, float]] = {}
+    for profile_name, raw_overrides in cfg.control.aim.class_y_ratios.items():
+        if profile_name not in cfg.inference.detection_class_profiles:
+            raise ValueError(
+                "runtime config key 'control.aim.class_y_ratios' references unknown "
+                f"detection profile: {profile_name}"
+            )
+        if not isinstance(raw_overrides, dict):
+            raise ValueError(
+                f"runtime config key 'control.aim.class_y_ratios.{profile_name}' must be a mapping"
+            )
+        overrides: dict[str, float] = {}
+        for raw_class_id, raw_ratio in raw_overrides.items():
+            try:
+                class_id = int(raw_class_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "runtime config class aim override keys must be class indexes"
+                ) from exc
+            if class_id < 0 or class_id > 255:
+                raise ValueError("runtime config class aim override indexes must be in [0, 255]")
+            if not isinstance(raw_ratio, int | float) or isinstance(raw_ratio, bool):
+                raise ValueError("runtime config class aim override values must be numbers")
+            ratio = float(raw_ratio)
+            if not math.isfinite(ratio) or ratio < 0.0 or ratio > 1.0:
+                raise ValueError("runtime config class aim override values must be in [0, 1]")
+            overrides[str(class_id)] = round(ratio, 2)
+        normalized_class_y_ratios[str(profile_name)] = overrides
+    cfg.control.aim.class_y_ratios = normalized_class_y_ratios
     bounded_controls = {
         "configured_actuation_delay_s": (0.0, 0.1),
         "scheduler_interval_ms": (1.0, 10.0),

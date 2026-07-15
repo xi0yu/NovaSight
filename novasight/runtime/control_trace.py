@@ -245,6 +245,12 @@ def build_control_trace_record(
         },
         "algorithm_decision": {
             "algorithm_id": _text(pipeline.get("algorithm") or pipeline.get("algorithm_id")),
+            "class_id": _first_int(pipeline.get("class_id"), target_payload.get("cls")),
+            "effective_aim_y_ratio": _first_number(
+                pipeline.get("effective_aim_y_ratio"),
+                control_payload.get("aim_y_ratio"),
+                target_payload.get("aim_y_ratio"),
+            ),
             "phase": _text(pipeline.get("mode") or pipeline.get("control_mode")),
             "measurement_dt_ms": _first_number(
                 pipeline.get("measurement_dt_ms"),

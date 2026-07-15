@@ -140,7 +140,7 @@ def test_runtime_schema_exposes_separate_algorithm_sections_and_product_labels()
     assert sections["control_shared"]["algorithm_scope"] == list(supported_algorithm_ids())
     shared_paths = {field["path"] for field in sections["control_shared"]["fields"]}
     assert "control.shared.trigger_activation_delay_ms" in shared_paths
-    assert "control.aim.y_ratio" not in shared_paths
+    assert "control.aim.y_ratio" in shared_paths
     assert "control.configured_actuation_delay_s" not in shared_paths
     assert sections["control_universal_saturated"]["algorithm_scope"] == [
         UNIVERSAL_SATURATED
@@ -182,10 +182,7 @@ def test_runtime_schema_exposes_separate_algorithm_sections_and_product_labels()
         UNIVERSAL_SATURATED,
         CALIBRATED_ANGULAR,
     ]
-    assert non_predictive_paths == {
-        "control.aim.y_ratio",
-        "control.configured_actuation_delay_s",
-    }
+    assert non_predictive_paths == {"control.configured_actuation_delay_s"}
     algorithm_labels = {
         str(field["label"])
         for section_id in (

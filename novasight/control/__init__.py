@@ -31,6 +31,7 @@ from novasight.control.observation import (
     RawAimPointProjector,
     TargetMotionEstimate,
     normalize_aim_y_ratio,
+    resolve_aim_y_ratio,
     target_motion_estimate_from_debug,
 )
 from novasight.control.scheduler import (
@@ -73,6 +74,7 @@ __all__ = [
     "UniversalSaturatedControllerConfig",
     "Vec2",
     "normalize_aim_y_ratio",
+    "resolve_aim_y_ratio",
     "algorithm_definition",
     "plan_step_capacity",
     "supported_algorithm_ids",

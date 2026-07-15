@@ -579,16 +579,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "restart_required": False,
                     },
                     {
-                        "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio",
-                        "label": "稳健预测控制：瞄点纵向比例",
-                        "type": "float",
-                        "min": 0,
-                        "max": 1,
-                        "step": 0.01,
-                        "precision": 2,
-                        "restart_required": False,
-                    },
-                    {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg",
                         "label": "稳健预测控制：水平 FOVX",
                         "type": "float",
@@ -1132,9 +1122,9 @@ def _split_control_sections(sections: list[dict[str, Any]]) -> list[dict[str, An
         }
         common_control_paths = {
             "control.shared.trigger_activation_delay_ms",
+            "control.aim.y_ratio",
         }
         non_predictive_common_paths = {
-            "control.aim.y_ratio",
             "control.configured_actuation_delay_s",
         }
         non_predictive_common_fields = [

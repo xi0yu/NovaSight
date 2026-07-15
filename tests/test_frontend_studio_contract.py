@@ -290,6 +290,19 @@ def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
     assert 'label="Track 匹配距离 px"' not in source
 
 
+def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overrides() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'aria-label="模型类别与瞄点设置"' in source
+    assert "默认瞄点高度" in source
+    assert "未知类别（cls ${classId}）" in source
+    assert 'updateConfigField("inference", "detection_class_profiles"' in source
+    assert 'updateControlGroupField("aim", "class_y_ratios"' in source
+    assert "recordArray(vision.detection_items)" in source
+    assert 'updateConfigField("inference", "detection_class_priority", current.join(","))' in source
+    assert 'updateDualPhasePath(["aim", "y_ratio"]' not in source
+
+
 def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
     devices = DEVICES_VIEW.read_text(encoding="utf-8")

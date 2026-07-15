@@ -10,7 +10,7 @@ Status: `dual_phase_atan_robust_predictive_v2` is the configured precise mainlin
 latest DetectionBatch
 -> freshness and monotonic timestamp checks
 -> TargetSelector / Tracker identity
--> raw bbox aim point
+-> shared bbox aim point (`control.aim`, optional profile/class override)
 -> current measured ROI error
 -> FAR / NEAR selection from one measured-error threshold
 -> four same-target X positions / three segment velocities
@@ -50,7 +50,9 @@ selection_score =
 
 The first class ID in `inference.detection_class_priority` receives `class_score=1.0`, the second receives `0.5`, and every remaining class receives `0.0`. The default `1,0,...` therefore prefers class 1 over class 0 while treating all other classes equally.
 
-`quality_score` combines detection confidence and a square-root ROI area ratio, then is capped by Tracker quality. `distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. The default component weights are `0.40 / 0.40 / 0.20`. A reliable class-1 detection normally beats class 0, while a class-1 detection barely above the confidence threshold cannot unconditionally replace a highly reliable class-0 track.
+`quality_score` combines detection confidence and square-root visible size normalized against the median area of the same class in the current candidate set. Tracker quality additionally includes identity continuity and Kalman position sigma relative to bbox size. This keeps visible-size evidence without comparing a naturally small head box directly against a body box. `distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. The default component weights are `0.40 / 0.05 / 0.55`. Among fallback candidates of the same class, quality can only overturn distance inside roughly 9% of the selection radius; this makes the nearest body the normal result after a preferred head disappears while retaining confidence, size, and stability as close-range tie evidence.
+
+The aim rule is shared by every controller: X is always bbox center and Y is `bbox_top + bbox_height * effective_y_ratio`. `control.aim.y_ratio` defaults to `0.22`; `control.aim.class_y_ratios.<detection_profile>.<class_id>` can override it. Candidate tracking and final control projection resolve the same effective ratio. Legacy V2-local aim configuration is migrated into the shared owner and is not read by the runtime.
 
 Model detections are mapped back into ROI coordinates before selection. Selection radius uses 640-ROI reference pixels and the minimum-area gate uses an ROI-area ratio, so equivalent geometry produces the same component scores for ROI sizes from 320 through 640. This cannot prioritize a class-1 object that the model did not detect.
 

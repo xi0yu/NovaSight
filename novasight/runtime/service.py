@@ -25,6 +25,7 @@ from novasight.control import (
     SharedOutputConfig,
     UniversalSaturatedControllerConfig,
     plan_step_capacity,
+    resolve_aim_y_ratio,
     target_motion_estimate_from_debug,
 )
 from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
@@ -2057,14 +2058,12 @@ class RuntimeService:
             observation = control_metadata["mouse_observation"]
             command = self._active_mouse_controller().calculate(observation)
         mouse_observation_debug = dict(control_metadata.get("mouse_observation_debug") or {})
-        active_aim_y_ratio = (
-            float(self._active_dual_phase_config(self.config).aim.y_ratio)
-            if self._is_robust_predictive_active()
-            else float(self.config.control.aim.y_ratio)
-        )
+        active_aim_y_ratio = self._effective_aim_y_ratio(int(target.cls))
         aim_x = float(mouse_observation_debug.get("predicted_x_px") or 0.0)
         aim_y = float(mouse_observation_debug.get("predicted_y_px") or 0.0)
         pipeline_debug = dict(command.debug)
+        pipeline_debug["class_id"] = int(target.cls)
+        pipeline_debug["effective_aim_y_ratio"] = active_aim_y_ratio
         predicted_source = bool(getattr(target, "is_predicted", False))
         trajectory_generation = int(
             context.frame_id if context.generation is None else context.generation
@@ -2644,6 +2643,7 @@ class RuntimeService:
             min_confidence=float(self.config.inference.confidence_threshold),
             fov_ratio=fov_ratio,
             aim_ratio=self._active_aim_ratio(),
+            class_aim_y_ratios=self._active_class_aim_y_ratios(),
             control_center_x_px=control_center_x_px,
             control_center_y_px=control_center_y_px,
             class_filter=str(getattr(self.config.inference, "detection_class_filter", "all")),
@@ -2662,10 +2662,10 @@ class RuntimeService:
                 getattr(self.config.control, "candidate_selection_class_weight", 0.40)
             ),
             selection_quality_weight=float(
-                getattr(self.config.control, "candidate_selection_quality_weight", 0.40)
+                getattr(self.config.control, "candidate_selection_quality_weight", 0.05)
             ),
             selection_distance_weight=float(
-                getattr(self.config.control, "candidate_selection_distance_weight", 0.20)
+                getattr(self.config.control, "candidate_selection_distance_weight", 0.55)
             ),
             tracker_max_match_distance=float(
                 getattr(self.config.control, "tracker_max_match_distance", 1.5)
@@ -2737,9 +2737,25 @@ class RuntimeService:
         return context.width * 0.5, context.height * 0.5
 
     def _active_aim_ratio(self) -> float:
-        if self._is_robust_predictive_active():
-            return float(self._active_dual_phase_config(self.config).aim.y_ratio)
         return float(self.config.control.aim.y_ratio)
+
+    def _active_class_aim_y_ratios(self) -> dict[int, float]:
+        profile_name = str(
+            getattr(self.config.inference, "detection_class_profile", "default")
+        )
+        by_profile = getattr(self.config.control.aim, "class_y_ratios", {}) or {}
+        raw_overrides = by_profile.get(profile_name, {})
+        return {
+            int(class_id): float(ratio)
+            for class_id, ratio in raw_overrides.items()
+        }
+
+    def _effective_aim_y_ratio(self, class_id: int) -> float:
+        return resolve_aim_y_ratio(
+            self._active_aim_ratio(),
+            self._active_class_aim_y_ratios(),
+            int(class_id),
+        )
 
     def _filter_detections_by_config(self, detections: list[Detection]) -> list[Detection]:
         selected = str(getattr(self.config.inference, "detection_class_filter", "all"))
@@ -2966,7 +2982,6 @@ class RuntimeService:
         trigger_active: bool,
     ) -> tuple[MoveCommand, dict[str, Any]]:
         algorithm_id = DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2
-        config = self._active_dual_phase_config(self.config)
         transform = self._coordinate_transform_for_context(context)
         control_width = float(control_metadata.get("control_width") or 0.0)
         control_height = float(control_metadata.get("control_height") or 0.0)
@@ -2974,7 +2989,7 @@ class RuntimeService:
             track=target,
             frame_id=context.frame_id,
             capture_ts_ns=int(context.capture_ts_ns or 0),
-            y_ratio=float(config.aim.y_ratio),
+            y_ratio=self._effective_aim_y_ratio(int(target.cls)),
             coordinate_transform=transform,
             control_width_px=control_width,
             control_height_px=control_height,
@@ -3146,7 +3161,7 @@ class RuntimeService:
         control_width = float(control_metadata.get("control_width") or 0.0)
         control_height = float(control_metadata.get("control_height") or 0.0)
         source_geometry_trusted = control_metadata.get("capture_geometry_trusted") is True
-        y_ratio = float(self.config.control.aim.y_ratio)
+        y_ratio = self._effective_aim_y_ratio(int(target.cls))
         raw_aim = self.raw_aim_projector.project(
             track=target,
             frame_id=context.frame_id,
@@ -4158,10 +4173,14 @@ class RuntimeService:
         profile_name = str(getattr(self.config.inference, "detection_class_profile", "default"))
         profile = profiles.get(profile_name) or profiles.get("default") or []
         if 0 <= class_id < len(profile):
-            return str(profile[class_id])
+            configured_name = str(profile[class_id]).strip()
+            if configured_name:
+                return configured_name
         if 0 <= class_id < len(context.classes):
-            return context.classes[class_id]
-        return str(class_id)
+            model_name = str(context.classes[class_id]).strip()
+            if model_name:
+                return model_name
+        return f"未知类别（cls {class_id}）"
 
     def _image_width(self, image: Any | None) -> int | None:
         if image is None:

@@ -15,6 +15,7 @@ from novasight.config import (
     parse_runtime_config,
     save_runtime_config,
 )
+from novasight.config.params import CONTROL_PARAM_SPECS
 from novasight.config.schema import runtime_config_schema
 from novasight.capture.pipeline import (
     LATEST_ONLY_QUEUE,
@@ -269,6 +270,11 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
 
     assert cfg.control.mode == "dual_phase_atan_robust_predictive_v2"
     assert cfg.control.aim.y_ratio == 0.22
+    assert cfg.control.aim.class_y_ratios == {}
+    assert cfg.control.candidate_selection_quality_weight == pytest.approx(0.05)
+    assert cfg.control.candidate_selection_distance_weight == pytest.approx(0.55)
+    assert CONTROL_PARAM_SPECS["control.candidate_selection_quality_weight"].default == 0.05
+    assert CONTROL_PARAM_SPECS["control.candidate_selection_distance_weight"].default == 0.55
     assert cfg.control.configured_actuation_delay_s == 0.004
     assert cfg.control.calibrated_angular.fov_x_deg == 105.0
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980.0
@@ -434,12 +440,55 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert robust.atan.scale_counts == pytest.approx(256.0)
     assert robust.atan.far.kp == pytest.approx(0.45)
     assert robust.atan.near.kp == pytest.approx(0.22)
+    assert not hasattr(robust, "aim")
     assert cfg.control.calibrated_angular.fov_x_deg == 105
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980
     assert cfg.control.shared.invert_y is False
     assert cfg.hardware.auto_connect is True
     assert cfg.control.aim.y_ratio == pytest.approx(0.22)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.004)
+
+
+def test_runtime_config_scopes_class_aim_overrides_to_detection_profile() -> None:
+    cfg = parse_runtime_config(
+        {
+            "inference": {
+                "detection_class_profiles": {
+                    "default": ["身体", "头部"],
+                    "alternate": ["目标"],
+                },
+                "detection_class_profile": "default",
+            },
+            "control": {
+                "aim": {
+                    "y_ratio": 0.224,
+                    "class_y_ratios": {
+                        "default": {"1": 0.355},
+                    },
+                },
+            },
+        }
+    )
+
+    assert cfg.control.aim.y_ratio == pytest.approx(0.22)
+    assert cfg.control.aim.class_y_ratios == {"default": {"1": 0.35}}
+
+
+def test_runtime_config_migrates_v2_aim_to_shared_aim_and_removes_legacy_owner() -> None:
+    cfg = parse_runtime_config(
+        {
+            "control": {
+                "algorithms": {
+                    "dual_phase_atan_robust_predictive_v2": {
+                        "aim": {"y_ratio": 0.37},
+                    },
+                },
+            },
+        }
+    )
+
+    assert cfg.control.aim.y_ratio == pytest.approx(0.37)
+    assert not hasattr(cfg.control.dual_phase_atan_robust_predictive_v2, "aim")
 
 
 def test_runtime_config_migrates_legacy_axis_signs() -> None:

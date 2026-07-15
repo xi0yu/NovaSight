@@ -319,7 +319,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     "control.candidate_selection_quality_weight": _spec(
         "control.candidate_selection_quality_weight",
         "目标质量权重",
-        0.40,
+        0.05,
         0.0,
         2.0,
         0.01,
@@ -329,7 +329,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     "control.candidate_selection_distance_weight": _spec(
         "control.candidate_selection_distance_weight",
         "目标距离权重",
-        0.20,
+        0.55,
         0.0,
         2.0,
         0.01,
@@ -391,16 +391,6 @@ for _legacy_prefix, _namespaced_prefix in (
 
 CONTROL_PARAM_SPECS.update(
     {
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio": _spec(
-            "control.algorithms.dual_phase_atan_robust_predictive_v2.aim.y_ratio",
-            "稳健预测控制瞄点高度",
-            0.22,
-            0.0,
-            1.0,
-            0.01,
-            "ratio",
-            "目标框顶部向下的测量瞄点比例。",
-        ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg",
             "稳健预测控制水平 FOVX",

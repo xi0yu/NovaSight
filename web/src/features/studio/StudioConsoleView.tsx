@@ -194,6 +194,38 @@ function recordList(value: unknown): Record<string, string[]> {
   );
 }
 
+function profileNumberRecords(value: unknown): Record<string, Record<string, number>> {
+  return Object.fromEntries(
+    Object.entries(asRecord(value)).map(([profileName, rawValues]) => [
+      profileName,
+      Object.fromEntries(
+        Object.entries(asRecord(rawValues)).flatMap(([classId, ratio]) =>
+          typeof ratio === "number" && Number.isFinite(ratio)
+            ? [[classId, clampNumber(ratio, 0, 1)]]
+            : []
+        )
+      )
+    ])
+  );
+}
+
+function classDisplayName(value: string, classId: number): string {
+  const normalized = value.trim().replace(new RegExp(`^${classId}\\s*[-:：]\\s*`), "");
+  return normalized || `未知类别（cls ${classId}）`;
+}
+
+function parseClassPriority(value: string): number[] {
+  const seen = new Set<number>();
+  return value.split(",").flatMap((part) => {
+    const classId = Number(part.trim());
+    if (!Number.isInteger(classId) || classId < 0 || classId > 255 || seen.has(classId)) {
+      return [];
+    }
+    seen.add(classId);
+    return [classId];
+  });
+}
+
 function recordArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(asRecord) : [];
 }
@@ -639,6 +671,7 @@ export function StudioConsoleView({
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
+  const classPriorityIds = parseClassPriority(detectionClassPriority);
   useEffect(() => {
     if (!runtimeMainlineSelected) {
       setMainlineLaunchAccepted(false);
@@ -681,7 +714,6 @@ export function StudioConsoleView({
   const calibratedAngularConfig = algorithmConfig("calibrated_angular");
   const universalSaturatedConfig = algorithmConfig("universal_saturated");
   const dualPhaseConfig = algorithmConfig("dual_phase_atan_robust_predictive_v2");
-  const dualPhaseAimConfig = nestedRecord(dualPhaseConfig, "aim");
   const dualPhaseProjectionConfig = nestedRecord(dualPhaseConfig, "projection");
   const dualPhaseModeConfig = nestedRecord(dualPhaseConfig, "mode");
   const dualPhaseAtanConfig = nestedRecord(dualPhaseConfig, "atan");
@@ -693,13 +725,15 @@ export function StudioConsoleView({
   const dualPhasePredictionNearConfig = nestedRecord(dualPhasePredictionConfig, "near");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
+  const classAimRatioProfiles = profileNumberRecords(aimConfig.class_y_ratios);
+  const activeClassAimRatios = classAimRatioProfiles[activeDetectionProfile] ?? {};
   const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
   const candidateQualityAreaWeight = readNumber(controlConfig.candidate_quality_area_weight, 0.3);
   const candidateSelectionClassWeight = readNumber(controlConfig.candidate_selection_class_weight, 0.40);
-  const candidateSelectionQualityWeight = readNumber(controlConfig.candidate_selection_quality_weight, 0.40);
-  const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.20);
+  const candidateSelectionQualityWeight = readNumber(controlConfig.candidate_selection_quality_weight, 0.05);
+  const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.55);
   const trackerMaxMatchDistance = readNumber(controlConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(controlConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(controlConfig.tracker_iou_cost_weight, 0.25);
@@ -726,7 +760,6 @@ export function StudioConsoleView({
   const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 60);
   const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 50);
   const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 40);
-  const dualPhaseAimYRatio = readNumber(dualPhaseAimConfig.y_ratio, 0.22);
   const dualPhaseFovX = readNumber(dualPhaseProjectionConfig.fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(dualPhaseProjectionConfig.counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(dualPhaseModeConfig.near_threshold_px, 12);
@@ -840,6 +873,19 @@ export function StudioConsoleView({
   );
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
+  const activeRuntimeClassId = readNullableNumber(target.cls ?? target.class_id);
+  const runtimeDetectionClassIds = recordArray(vision.detection_items).flatMap((item) => {
+    const classId = readNullableNumber(item.cls ?? item.class_id);
+    return classId !== null && Number.isInteger(classId) ? [classId] : [];
+  });
+  const classEditorIds = Array.from(new Set([
+    ...detectionClasses.map((_, classId) => classId),
+    ...classPriorityIds,
+    ...runtimeDetectionClassIds,
+    ...(activeRuntimeClassId !== null && Number.isInteger(activeRuntimeClassId)
+      ? [activeRuntimeClassId]
+      : [])
+  ])).filter((classId) => classId >= 0 && classId <= 255).sort((left, right) => left - right);
   const control = asRecord(vision.control);
   const targetPipeline = asRecord(vision.target_pipeline);
   const targetPipelineCounts = asRecord(targetPipeline.counts);
@@ -1825,6 +1871,61 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
+  const updateDetectionClassName = useCallback(
+    async (classId: number, name: string) => {
+      const nextClasses = [...detectionClasses];
+      while (nextClasses.length <= classId) {
+        nextClasses.push("");
+      }
+      nextClasses[classId] = name.trim();
+      await updateConfigField("inference", "detection_class_profiles", {
+        ...detectionProfiles,
+        [activeDetectionProfile]: nextClasses
+      } as RuntimeConfigValue);
+    },
+    [activeDetectionProfile, detectionClasses, detectionProfiles, updateConfigField]
+  );
+
+  const updateClassAimRatio = useCallback(
+    async (classId: number, ratio: number | null) => {
+      const nextProfileRatios = { ...activeClassAimRatios };
+      if (ratio === null) {
+        delete nextProfileRatios[String(classId)];
+      } else {
+        nextProfileRatios[String(classId)] = clampNumber(Number(ratio.toFixed(2)), 0, 1);
+      }
+      const nextProfiles = { ...classAimRatioProfiles };
+      if (Object.keys(nextProfileRatios).length > 0) {
+        nextProfiles[activeDetectionProfile] = nextProfileRatios;
+      } else {
+        delete nextProfiles[activeDetectionProfile];
+      }
+      await updateControlGroupField("aim", "class_y_ratios", nextProfiles as RuntimeConfigValue);
+    },
+    [
+      activeClassAimRatios,
+      activeDetectionProfile,
+      classAimRatioProfiles,
+      updateControlGroupField
+    ]
+  );
+
+  const moveClassPriority = useCallback(
+    async (classId: number, direction: -1 | 1) => {
+      const current = classPriorityIds.includes(classId)
+        ? [...classPriorityIds]
+        : [...classPriorityIds, classId];
+      const index = current.indexOf(classId);
+      const targetIndex = clampNumber(index + direction, 0, current.length - 1);
+      if (index === targetIndex) {
+        return;
+      }
+      [current[index], current[targetIndex]] = [current[targetIndex], current[index]];
+      await updateConfigField("inference", "detection_class_priority", current.join(","));
+    },
+    [classPriorityIds, updateConfigField]
+  );
+
   const applyKmNetRecommended = useCallback(async () => {
     const next = cloneRuntimeConfig(runtimeConfig);
     if (!next) {
@@ -2527,40 +2628,99 @@ export function StudioConsoleView({
                 digits={2}
                 onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
               />
-              <label>检测类别</label>
-              <select
-                value={activeDetectionProfile}
-                onChange={(event) => void updateConfigField("inference", "detection_class_profile", event.target.value)}
-              >
-                {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-              <div className="console-class-list">
-                <button
-                  className={activeDetectionClass === "all" ? "console-class-row active" : "console-class-row"}
-                  onClick={() => void updateConfigField("inference", "detection_class_filter", "all")}
-                  type="button"
+              <div className="class-profile-toolbar">
+                <span>
+                  <b>类别设置</b>
+                  <small>名称、优先顺序与框内瞄点由当前模型类别表共同管理。</small>
+                </span>
+                <select
+                  aria-label="检测类别配置"
+                  value={activeDetectionProfile}
+                  onChange={(event) => void updateConfigField("inference", "detection_class_profile", event.target.value)}
                 >
-                  全部类别
-                </button>
-                {detectionClasses.map((item, index) => (
-                  <button
-                    className={activeDetectionClass === String(index) ? "console-class-row active" : "console-class-row"}
-                    key={`${index}-${item}`}
-                    onClick={() => void updateConfigField("inference", "detection_class_filter", String(index))}
-                    type="button"
-                  >
-                    {item}
-                  </button>
-                ))}
+                  {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
               </div>
-              <TextControl
-                label="类别优先级"
-                value={detectionClassPriority}
-                onCommit={(value) => updateConfigField("inference", "detection_class_priority", value)}
-              />
-              <p className="console-field-hint">第一个 class id 的类别分为 1.0，第二个为 0.5，其余类别统一为 0.0；默认 1,0 表示头部优先、身体次优。</p>
+              <div className="class-default-aim">
+                <span>
+                  <b>默认瞄点高度</b>
+                  <small>从 bbox 顶部向下的比例；未单独设置的类别都使用此值。</small>
+                </span>
+                <CommitNumberControl
+                  value={aimYRatio}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  digits={2}
+                  onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)}
+                />
+                <div className="class-aim-preview large" aria-hidden="true">
+                  <i style={{ top: `${aimYRatio * 100}%` }} />
+                </div>
+              </div>
+              <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
+                <div className="class-editor-head" role="row">
+                  <span>ID</span><span>类别名称</span><span>优先级</span><span>瞄点高度</span><span>目标筛选</span>
+                </div>
+                {classEditorIds.map((classId) => {
+                  const configuredName = detectionClasses[classId] ?? "";
+                  const displayName = configuredName ? classDisplayName(configuredName, classId) : "";
+                  const priorityIndex = classPriorityIds.indexOf(classId);
+                  const enabled = activeDetectionClass === "all" || activeDetectionClass === String(classId);
+                  return (
+                    <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
+                      <b className="class-id">cls {classId}</b>
+                      <InlineTextControl
+                        ariaLabel={`cls ${classId} 类别名称`}
+                        value={displayName}
+                        placeholder={`未知类别（cls ${classId}）`}
+                        onCommit={(value) => updateDetectionClassName(classId, value)}
+                      />
+                      <div className="class-priority-control">
+                        <b>{priorityIndex >= 0 ? priorityIndex + 1 : "—"}</b>
+                        <button
+                          aria-label={`提高 cls ${classId} 优先级`}
+                          disabled={priorityIndex === 0}
+                          type="button"
+                          onClick={() => void moveClassPriority(classId, -1)}
+                        >↑</button>
+                        <button
+                          aria-label={`降低 cls ${classId} 优先级`}
+                          disabled={priorityIndex < 0 || priorityIndex === classPriorityIds.length - 1}
+                          type="button"
+                          onClick={() => void moveClassPriority(classId, 1)}
+                        >↓</button>
+                      </div>
+                      <ClassAimRatioControl
+                        classId={classId}
+                        defaultRatio={aimYRatio}
+                        overrideRatio={activeClassAimRatios[String(classId)]}
+                        onCommit={(value) => updateClassAimRatio(classId, value)}
+                      />
+                      <button
+                        className={enabled ? "class-enable active" : "class-enable"}
+                        type="button"
+                        onClick={() => void updateConfigField(
+                          "inference",
+                          "detection_class_filter",
+                          activeDetectionClass === String(classId) ? "all" : String(classId)
+                        )}
+                      >
+                        {activeDetectionClass === "all"
+                          ? "仅选此类"
+                          : activeDetectionClass === String(classId)
+                            ? "恢复全部"
+                            : "切换此类"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="console-field-hint">
+                未知 class id 会显示为“未知类别（cls N）”并自动使用默认瞄点；编辑名称后即加入当前类别配置。
+              </p>
               <details className="model-debug-details">
                 <summary>工程调试详情</summary>
                 <label>模型版本</label>
@@ -2860,7 +3020,7 @@ export function StudioConsoleView({
             <div className="console-metrics">
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-              <Metric title="瞄点 Y" value={(dualPhaseActive ? dualPhaseAimYRatio : aimYRatio).toFixed(2)} small="bbox ratio" />
+              <Metric title="默认瞄点 Y" value={aimYRatio.toFixed(2)} small={`${Object.keys(activeClassAimRatios).length} 个类别覆盖`} />
               <Metric title="位置预测" value={dualPhaseActive ? dualPhasePredictionCoefficient.toFixed(2) : "不使用"} small={dualPhaseActive ? "短窗受限预测" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "单观测单命令" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? "MouseCommandExecutor" : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
@@ -2896,16 +3056,15 @@ export function StudioConsoleView({
                     onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)}
                   />
                 ) : null}
-                <NumberControl
-                  label="瞄点垂直比例"
-                  value={dualPhaseActive ? dualPhaseAimYRatio : aimYRatio}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  onCommit={(value) => dualPhaseActive
-                    ? updateDualPhasePath(["aim", "y_ratio"], value)
-                    : updateControlGroupField("aim", "y_ratio", value)}
-                />
+                <div className="control-aim-source-note">
+                  <span>
+                    <b>瞄点规则由模型类别设置统一提供</b>
+                    <small>默认 {aimYRatio.toFixed(2)}；当前配置有 {Object.keys(activeClassAimRatios).length} 个类别使用单独比例。</small>
+                  </span>
+                  <div className="class-aim-preview" aria-hidden="true">
+                    <i style={{ top: `${aimYRatio * 100}%` }} />
+                  </div>
+                </div>
                 <ModuleSwitch
                   label="反转 Y 轴"
                   detail="只改变当前算法输出到设备的 Y 方向。"
@@ -3631,6 +3790,109 @@ function TextControl({
         }}
       />
     </>
+  );
+}
+
+function InlineTextControl({
+  value,
+  placeholder,
+  ariaLabel,
+  onCommit
+}: {
+  value: string;
+  placeholder: string;
+  ariaLabel: string;
+  onCommit: (value: string) => Promise<void> | void;
+}) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => setDraft(value), [value]);
+
+  const commit = useCallback(() => {
+    const next = draft.trim();
+    if (next !== value) {
+      void onCommit(next);
+    }
+  }, [draft, onCommit, value]);
+
+  return (
+    <input
+      aria-label={ariaLabel}
+      value={draft}
+      placeholder={placeholder}
+      onBlur={commit}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+function ClassAimRatioControl({
+  classId,
+  defaultRatio,
+  overrideRatio,
+  onCommit
+}: {
+  classId: number;
+  defaultRatio: number;
+  overrideRatio: number | undefined;
+  onCommit: (value: number | null) => Promise<void> | void;
+}) {
+  const custom = overrideRatio !== undefined;
+  const effectiveRatio = custom ? overrideRatio : defaultRatio;
+  const [draft, setDraft] = useState(effectiveRatio);
+
+  useEffect(() => setDraft(effectiveRatio), [effectiveRatio]);
+
+  const commit = useCallback(() => {
+    if (!custom) {
+      return;
+    }
+    const next = clampNumber(Number(draft.toFixed(2)), 0, 1);
+    setDraft(next);
+    if (next !== overrideRatio) {
+      void onCommit(next);
+    }
+  }, [custom, draft, onCommit, overrideRatio]);
+
+  return (
+    <div className="class-aim-control">
+      <button
+        className={custom ? "class-aim-mode custom" : "class-aim-mode"}
+        type="button"
+        onClick={() => void onCommit(custom ? null : defaultRatio)}
+      >
+        {custom ? "单独设置" : "使用默认"}
+      </button>
+      <input
+        aria-label={`cls ${classId} 瞄点高度`}
+        disabled={!custom}
+        min={0}
+        max={1}
+        step={0.01}
+        type="number"
+        value={draft.toFixed(2)}
+        onBlur={commit}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          if (Number.isFinite(next)) {
+            setDraft(clampNumber(next, 0, 1));
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+      />
+      <div className="class-aim-preview" aria-hidden="true">
+        <i style={{ top: `${effectiveRatio * 100}%` }} />
+      </div>
+    </div>
   );
 }
 

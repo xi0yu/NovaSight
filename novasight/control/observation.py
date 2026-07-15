@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import math
 
@@ -12,6 +13,15 @@ def normalize_aim_y_ratio(value: float) -> float:
     if not math.isfinite(numeric):
         raise ValueError("aim y ratio must be finite")
     return round(max(0.0, min(1.0, numeric)), 2)
+
+
+def resolve_aim_y_ratio(
+    default_ratio: float,
+    class_y_ratios: Mapping[int, float] | None,
+    class_id: int,
+) -> float:
+    overrides = class_y_ratios or {}
+    return normalize_aim_y_ratio(overrides.get(int(class_id), default_ratio))
 
 
 @dataclass(frozen=True, slots=True)
