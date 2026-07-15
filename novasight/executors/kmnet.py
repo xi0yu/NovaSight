@@ -373,7 +373,7 @@ class KmNetExecutor:
             self.last_error = ""
             if output.trace_ms > 0 and self._driver_has("trace"):
                 self._call_driver("trace", 0, int(output.trace_ms))
-            logger.info(
+            logger.debug(
                 "kmNet output sent api=%s action=%s kind=%s dx=%s dy=%s source=%s",
                 api_name,
                 output.action,
@@ -703,7 +703,7 @@ class KmNetExecutor:
             "left",
             "trace",
         }:
-            logger.info("kmNet driver call name=%s args=%s rc=%s", name, args, rc)
+            logger.debug("kmNet driver call name=%s args=%s rc=%s", name, args, rc)
         return rc
 
     @staticmethod

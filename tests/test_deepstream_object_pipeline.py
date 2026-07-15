@@ -379,6 +379,30 @@ def test_deepstream_uses_sink_timing_when_frame_meta_pts_does_not_match(tmp_path
     assert batch.metadata["timestamp_correlation"] == "buffer_pts"
 
 
+def test_deepstream_rejects_unmatched_output_instead_of_pairing_oldest_input(
+    tmp_path: Path,
+) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    backend._inference_start_by_pts[100] = time.monotonic_ns() - 2_000_000
+
+    timing, correlation = backend._take_input_timing(
+        buffer_pts_ns=200,
+        frame_meta_pts_ns=300,
+        observed_ns=time.monotonic_ns(),
+    )
+
+    assert timing is None
+    assert correlation == "missing"
+    assert backend._timestamp_correlation_misses == 1
+    assert 100 in backend._inference_start_by_pts
+
+
 def test_detection_batch_mailbox_replaces_old_generation() -> None:
     mailbox = DetectionBatchMailbox()
 

@@ -799,6 +799,8 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
             "deepstream": {
                 "available": True,
                 "running": True,
+                "capture_frames": 12,
+                "capture_fps": 121.0,
                 "input_frames": 10,
                 "input_fps": 120.0,
                 "output_buffers": 9,
@@ -811,7 +813,7 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
                 "timestamp_source": "first_probe_offset_pts",
                 "latest_frame_age_ms": 6.0,
                 "last_batch_age_ms": 8.0,
-                "nvinfer_total_ms_stats": {"p50": 5.5},
+                "nvinfer_stage_ms_stats": {"p50": 5.5},
                 "batch_age_ms_stats": {"p50": 9.0},
                 "detection_batch_build_ms_stats": {"p50": 0.4},
                 "parser": {"decode_ms": 0.3},
@@ -822,7 +824,10 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
 
     statistics = service.state().statistics
 
-    assert statistics["capture_counter"] == 10
+    assert statistics["capture_counter"] == 12
+    assert statistics["capture_fps"] == 121.0
+    assert statistics["nvinfer_input_counter"] == 10
+    assert statistics["nvinfer_input_fps"] == 120.0
     assert statistics["inference_counter"] == 9
     assert statistics["detection_batch_counter"] == 8
     assert statistics["detection_batch_consumed_counter"] == 8

@@ -1165,7 +1165,7 @@ export function StudioConsoleView({
     ""
   );
   const capturePublishedFrames = readNullableNumber(
-    latestFrameBroker.published_frames ?? deepstreamStatus.input_frames ?? captureStatistics.published_frames
+    latestFrameBroker.published_frames ?? deepstreamStatus.capture_frames ?? captureStatistics.published_frames
   );
   const captureOverwrittenFrames = readNullableNumber(
     latestFrameBroker.overwritten_frames ?? deepstreamMailbox.overwritten_batches ?? captureStatistics.overwritten_frames
@@ -1176,8 +1176,11 @@ export function StudioConsoleView({
   const captureFramePeriodMs = readNullableNumber(
     deepstreamStatus.last_capture_interval_ms ?? capture?.frame_period_ms
   );
-  const captureArrivalFps = readNullableNumber(
-    deepstreamStatus.input_fps ?? capture?.fps_capture ?? captureStatistics.capture_fps
+  const captureSourceFps = readNullableNumber(
+    deepstreamStatus.capture_fps ?? capture?.fps_capture ?? captureStatistics.capture_fps
+  );
+  const nvinferInputFps = readNullableNumber(
+    deepstreamStatus.input_fps ?? captureStatistics.nvinfer_input_fps
   );
   const captureBackendLabel = deepstreamNvinferSelected
     ? "deepstream_nvinfer"
@@ -2583,7 +2586,7 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureMainRunning ? "运行中" : "未运行"} small={captureBackendLabel || NO_SAMPLE} />
-            <Metric title="采集 FPS" value={formatOptionalNumber(captureArrivalFps, 1)} small={deepstreamNvinferSelected ? "nvinfer input" : "appsink arrival"} />
+            <Metric title="采集 FPS" value={formatOptionalNumber(captureSourceFps, 1)} small={deepstreamNvinferSelected ? "v4l2 source" : "appsink arrival"} />
             <Metric title="最新帧龄" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="ms" />
             <Metric title={deepstreamNvinferSelected ? "Batch 覆盖" : "LatestFrame 覆盖"} value={formatOptionalInteger(captureOverwrittenFrames)} small={deepstreamNvinferSelected ? "batches" : "frames"} />
           </div>
@@ -2711,8 +2714,8 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="采集性能" />
               <div className="console-kv">
-                <span>采集 FPS</span><b>{formatOptionalNumber(captureStatistics.capture_fps, 1, "FPS")}</b>
-                <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(captureArrivalFps, 1, "FPS")}</b>
+                <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, 1, "FPS")}</b>
+                <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(deepstreamNvinferSelected ? nvinferInputFps : captureSourceFps, 1, "FPS")}</b>
                 <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
               </div>
             </div>
@@ -2723,7 +2726,7 @@ export function StudioConsoleView({
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
             <Metric title="推理状态" value={inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"} small={selectedRuntimeBackend || NO_SAMPLE} />
-            <Metric title="推理总耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
+            <Metric title="nvinfer 阶段耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
             <Metric title="NMS 后检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="detections" />
           </div>
           <div className="console-card model-selection-card">
@@ -2870,7 +2873,6 @@ export function StudioConsoleView({
                 <span>Parser 错误码</span><b>{formatOptionalInteger(deepstreamParserStatus.last_error_code)}</b>
                 <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
                 <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
-                <span>顺序回退匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_ordered_fallback_matches)}</b>
                 <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
                 <span>当前推理 frame_id</span><b>{formatOptionalInteger(inferenceFrameId)}</b>
                 <span>Acquire generation</span><b>{formatOptionalInteger(inferenceAcquiredGeneration)}</b>
@@ -2897,11 +2899,12 @@ export function StudioConsoleView({
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="TensorRT 执行" />
+              <SectionTitle title="nvinfer 阶段" />
               <div className="console-kv">
                 <span>TensorRT enqueue 耗时</span><b>{formatOptionalNumber(inferenceEnqueueMs, 3, "ms")}</b>
                 <span>CUDA stream 同步等待</span><b>{formatOptionalNumber(inferenceSyncWaitMs, 3, "ms")}</b>
-                <span>推理线程总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 3, "ms")}</b>
+                <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 3, "ms")}</b>
+                <span>计时范围</span><b>预处理 + TensorRT + parser</b>
               </div>
             </div>
             <div className="console-card">
@@ -3586,8 +3589,7 @@ export function StudioConsoleView({
               ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
               ["Batch age", formatNumber(inferenceResultAgeMs, 1)],
               ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
-              ["推理总耗时", formatNumber(statistics?.stage_engine_ms, 1)],
-              ["TRT执行", formatNumber(statistics?.stage_engine_execute_ms, 1)],
+              ["nvinfer 阶段", formatNumber(statistics?.stage_engine_ms, 1)],
               ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],
               ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
@@ -3618,8 +3620,7 @@ export function StudioConsoleView({
                 <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
                 <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
                 <Event label="ROI" value={formatNumber(statistics?.stage_roi_ms, 1)} width={18} />
-                <Event label="推理总耗时" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
-                <Event label="TRT执行" value={formatNumber(statistics?.stage_engine_execute_ms, 1)} width={18} />
+                <Event label="nvinfer" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
                 <Event label="解码/NMS" value={formatNumber(statistics?.stage_decode_ms, 1)} width={34} />
                 <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
                 <Event label="Control" value={formatNumber(statistics?.stage_control_ms, 1)} width={14} />

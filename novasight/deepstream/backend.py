@@ -136,6 +136,7 @@ class DeepStreamObjectBackend:
         self._last_frame_id = -1
         self._last_capture_ts_ns = 0
         self._last_capture_interval_ms = 0.0
+        self._capture_frames = 0
         self._input_frames = 0
         self._output_buffers = 0
         self._batch_meta_buffers = 0
@@ -146,7 +147,6 @@ class DeepStreamObjectBackend:
         self._timestamp_rejected_batches = 0
         self._timestamp_buffer_pts_matches = 0
         self._timestamp_frame_meta_pts_matches = 0
-        self._timestamp_ordered_fallback_matches = 0
         self._timestamp_correlation_misses = 0
         self._object_meta_frames = 0
         self._preview_frames = 0
@@ -155,6 +155,7 @@ class DeepStreamObjectBackend:
         self._last_preview_ts_ns = 0
         self._preview_error = ""
         self._last_batch_age_ms = 0.0
+        self._capture_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._input_frame_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._output_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._publish_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
@@ -301,6 +302,8 @@ class DeepStreamObjectBackend:
                 "pipeline": self.pipeline_description,
                 "timestamp_source": self._timestamp_source,
                 "clock_domain": "monotonic",
+                "capture_frames": self._capture_frames,
+                "capture_fps": _sample_rate(self._capture_samples, now_ns),
                 "input_frames": self._input_frames,
                 "input_fps": _sample_rate(self._input_frame_samples, now_ns),
                 "output_buffers": self._output_buffers,
@@ -315,7 +318,6 @@ class DeepStreamObjectBackend:
                 "timestamp_rejected_batches": self._timestamp_rejected_batches,
                 "timestamp_buffer_pts_matches": self._timestamp_buffer_pts_matches,
                 "timestamp_frame_meta_pts_matches": self._timestamp_frame_meta_pts_matches,
-                "timestamp_ordered_fallback_matches": self._timestamp_ordered_fallback_matches,
                 "timestamp_correlation_misses": self._timestamp_correlation_misses,
                 "object_meta_frames": self._object_meta_frames,
                 "preview_enabled": bool(self.pipeline_config.preview_enabled),
@@ -403,7 +405,8 @@ class DeepStreamObjectBackend:
             payload["inference_reason"] = phase_reason
         payload["batch_age_ms_stats"] = _sample_stats(publish_samples)
         payload["inference_input_age_ms_stats"] = _sample_stats(input_age_samples)
-        payload["nvinfer_total_ms_stats"] = _sample_stats(inference_samples)
+        payload["nvinfer_stage_ms_stats"] = _sample_stats(inference_samples)
+        payload["nvinfer_timing_scope"] = "sink_to_src_including_parser"
         payload["detection_batch_build_ms_stats"] = _sample_stats(build_samples)
         return payload
 
@@ -483,6 +486,7 @@ class DeepStreamObjectBackend:
         self._last_frame_id = -1
         self._last_capture_ts_ns = 0
         self._last_capture_interval_ms = 0.0
+        self._capture_frames = 0
         self._input_frames = 0
         self._output_buffers = 0
         self._batch_meta_buffers = 0
@@ -493,7 +497,6 @@ class DeepStreamObjectBackend:
         self._timestamp_rejected_batches = 0
         self._timestamp_buffer_pts_matches = 0
         self._timestamp_frame_meta_pts_matches = 0
-        self._timestamp_ordered_fallback_matches = 0
         self._timestamp_correlation_misses = 0
         self._object_meta_frames = 0
         self._preview_frames = 0
@@ -502,6 +505,7 @@ class DeepStreamObjectBackend:
         self._last_preview_ts_ns = 0
         self._preview_error = ""
         self._last_batch_age_ms = 0.0
+        self._capture_samples.clear()
         self._input_frame_samples.clear()
         self._output_samples.clear()
         self._publish_samples.clear()
@@ -512,13 +516,20 @@ class DeepStreamObjectBackend:
         self._last_progress_log_ns = 0
 
     def _attach_probes(self, Gst: Any, pipeline: Any) -> None:
+        capture_source = pipeline.get_by_name("capture-source")
         nvinfer = pipeline.get_by_name("primary-infer")
+        if capture_source is None:
+            raise RuntimeError("DeepStream pipeline missing capture-source")
         if nvinfer is None:
             raise RuntimeError("DeepStream pipeline missing primary-infer")
+        capture_pad = capture_source.get_static_pad("src")
         sink_pad = nvinfer.get_static_pad("sink")
         src_pad = nvinfer.get_static_pad("src")
+        if capture_pad is None:
+            raise RuntimeError("DeepStream capture-source src pad is unavailable")
         if sink_pad is None or src_pad is None:
             raise RuntimeError("DeepStream primary-infer pads are unavailable")
+        capture_pad.add_probe(Gst.PadProbeType.BUFFER, self._capture_probe)
         sink_pad.add_probe(Gst.PadProbeType.BUFFER, self._inference_start_probe)
         src_pad.add_probe(Gst.PadProbeType.BUFFER, self._object_meta_probe)
         if self.pipeline_config.preview_enabled:
@@ -529,7 +540,20 @@ class DeepStreamObjectBackend:
             if preview_pad is None:
                 raise RuntimeError("DeepStream preview sink pad is unavailable")
             preview_pad.add_probe(Gst.PadProbeType.BUFFER, self._preview_jpeg_probe)
-        logger.info("DeepStream nvinfer sink/src probes attached")
+        logger.info("DeepStream capture and nvinfer sink/src probes attached")
+
+    def _capture_probe(self, _pad: Any, info: Any) -> Any:
+        Gst = importlib.import_module("gi.repository.Gst")
+        buffer = info.get_buffer()
+        if buffer is None:
+            return Gst.PadProbeReturn.OK
+        now_ns = time.monotonic_ns()
+        with self._lock:
+            if self._terminal_error or not self._running:
+                return Gst.PadProbeReturn.DROP
+            self._capture_frames += 1
+            self._capture_samples.append((now_ns, 0.0))
+        return Gst.PadProbeReturn.OK
 
     def _inference_start_probe(self, _pad: Any, info: Any) -> Any:
         Gst = importlib.import_module("gi.repository.Gst")
@@ -735,7 +759,8 @@ class DeepStreamObjectBackend:
                 "postprocess_owner": "nvinfer_custom_parser_and_cluster_mode_2",
                 "python_nms": False,
                 "parser": parser,
-                "nvinfer_total_ms": inference_ms,
+                "nvinfer_stage_ms": inference_ms,
+                "nvinfer_timing_scope": "sink_to_src_including_parser",
                 "detection_batch_build_ms": build_ms,
                 "roi_offset_x": self.pipeline_config.roi_left,
                 "roi_offset_y": self.pipeline_config.roi_top,
@@ -790,17 +815,6 @@ class DeepStreamObjectBackend:
                 else:
                     self._timestamp_frame_meta_pts_matches += 1
                 return timing, correlation
-            if self._inference_start_by_pts:
-                pts_ns, stored = self._inference_start_by_pts.popitem(last=False)
-                self._timestamp_ordered_fallback_matches += 1
-                return (
-                    self._coerce_input_timing_locked(
-                        stored,
-                        pts_ns=pts_ns,
-                        observed_ns=observed_ns,
-                    ),
-                    "ordered_batch1_fallback",
-                )
             self._timestamp_correlation_misses += 1
             return None, "missing"
 
@@ -982,6 +996,8 @@ class DeepStreamObjectBackend:
             self._last_progress_log_ns = now_ns
             progress = {
                 "input": self._input_frames,
+                "capture": self._capture_frames,
+                "capture_fps": _sample_rate(self._capture_samples, now_ns),
                 "input_fps": _sample_rate(self._input_frame_samples, now_ns),
                 "output": self._output_buffers,
                 "output_fps": _sample_rate(self._output_samples, now_ns),
@@ -995,7 +1011,6 @@ class DeepStreamObjectBackend:
                 "timestamp_rejected": self._timestamp_rejected_batches,
                 "timestamp_buffer_pts": self._timestamp_buffer_pts_matches,
                 "timestamp_frame_meta_pts": self._timestamp_frame_meta_pts_matches,
-                "timestamp_ordered_fallback": self._timestamp_ordered_fallback_matches,
                 "timestamp_correlation_miss": self._timestamp_correlation_misses,
                 "non_monotonic": self._non_monotonic_dropped_batches,
                 "timestamp_source": self._timestamp_source,
@@ -1041,6 +1056,7 @@ class DeepStreamObjectBackend:
     def _prune_samples_locked(self, now_ns: int) -> None:
         threshold = int(now_ns) - 60_000_000_000
         for samples in (
+            self._capture_samples,
             self._input_frame_samples,
             self._output_samples,
             self._publish_samples,

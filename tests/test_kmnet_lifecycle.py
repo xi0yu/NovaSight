@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from novasight.api.app import (
     _auto_restore_capture,
     _auto_connect_kmnet,
+    _create_control_frame_recorder,
     _disconnect_kmnet,
     _start_auto_connect_kmnet,
     _start_auto_restore_capture,
@@ -30,6 +32,13 @@ def _available_kmnet_route(monkeypatch) -> None:
             local_ip="192.0.2.2",
         ),
     )
+
+
+def test_disabled_recording_does_not_create_runtime_recorder(tmp_path: Path) -> None:
+    config = RuntimeConfig()
+    config.consumers.recording = False
+
+    assert _create_control_frame_recorder(config, tmp_path) is None
 
 
 class FakeKmNet:

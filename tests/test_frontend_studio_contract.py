@@ -238,7 +238,8 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
 
     assert 'data-layer="inference"' in inference_page
     assert '<SectionTitle title="推理调度" />' in inference_page
-    assert '<SectionTitle title="TensorRT 执行" />' in inference_page
+    assert '<SectionTitle title="nvinfer 阶段" />' in inference_page
+    assert "预处理 + TensorRT + parser" in inference_page
     assert "GPU 等待" not in inference_page
     assert "目标框中心" not in inference_page
     assert "瞄准点" not in inference_page

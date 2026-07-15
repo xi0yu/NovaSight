@@ -312,13 +312,15 @@ export type Statistics = {
   overwritten_frames?: number;
   acquired_frames?: number;
   capture_fps: number;
+  nvinfer_input_counter?: number;
+  nvinfer_input_fps?: number;
   inference_fps: number;
   queue_latency?: number;
   inference_latency?: number;
   stale_drop_count?: number;
   stage_roi_ms?: number;
   stage_engine_ms?: number;
-  stage_engine_execute_ms?: number;
+  stage_engine_execute_ms?: number | null;
   stage_decode_ms?: number;
   stage_handoff_ms?: number;
   stage_postprocess_ms?: number;

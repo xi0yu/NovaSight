@@ -291,6 +291,8 @@ def _install_studio_cors(app: FastAPI, config: RuntimeConfig) -> None:
 
 def _create_control_frame_recorder(config: RuntimeConfig, data_path: Path):
     consumers = config.consumers
+    if not bool(consumers.recording):
+        return None
     recording_format = str(consumers.recording_format or "csv").lower()
     path = _recording_path(data_path, format=recording_format, configured=consumers.recording_path)
     if recording_format == "csv":

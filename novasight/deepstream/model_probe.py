@@ -122,7 +122,7 @@ def _success_report(
     batch: Any,
 ) -> ModelValidationReport:
     parser = _mapping(status.get("parser"))
-    inference_stats = _mapping(status.get("nvinfer_total_ms_stats"))
+    inference_stats = _mapping(status.get("nvinfer_stage_ms_stats"))
     parser_ok = (
         int(parser.get("parse_failures") or 0) == 0
         and int(status.get("output_buffers") or 0) > 0
@@ -151,7 +151,7 @@ def _failure_report(
 ) -> ModelValidationReport:
     payload = status or {}
     parser = _mapping(payload.get("parser"))
-    inference_stats = _mapping(payload.get("nvinfer_total_ms_stats"))
+    inference_stats = _mapping(payload.get("nvinfer_stage_ms_stats"))
     return ModelValidationReport(
         status="invalid",
         engine_execution_ok=int(payload.get("output_buffers") or 0) > 0,

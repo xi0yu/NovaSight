@@ -173,8 +173,18 @@ class RuntimeService:
             timestamp_rejected = int(deepstream_status.get("timestamp_rejected_batches") or 0)
             non_monotonic_dropped = int(deepstream_status.get("non_monotonic_dropped_batches") or 0)
             mailbox_overwritten = int(mailbox_status.get("overwritten_batches") or 0)
-            statistics["capture_counter"] = int(deepstream_status.get("input_frames") or 0)
-            statistics["capture_fps"] = float(deepstream_status.get("input_fps") or 0.0)
+            statistics["capture_counter"] = int(
+                deepstream_status.get("capture_frames") or 0
+            )
+            statistics["capture_fps"] = float(
+                deepstream_status.get("capture_fps") or 0.0
+            )
+            statistics["nvinfer_input_counter"] = int(
+                deepstream_status.get("input_frames") or 0
+            )
+            statistics["nvinfer_input_fps"] = float(
+                deepstream_status.get("input_fps") or 0.0
+            )
             statistics["inference_counter"] = int(deepstream_status.get("output_buffers") or 0)
             statistics["detection_batch_counter"] = int(
                 deepstream_status.get("published_batches") or 0
@@ -201,7 +211,7 @@ class RuntimeService:
             statistics["batch_age_ms"] = float(deepstream_status.get("last_batch_age_ms") or 0.0)
             nvinfer_ms = _status_statistic(
                 deepstream_status,
-                "nvinfer_total_ms_stats",
+                "nvinfer_stage_ms_stats",
                 "p50",
             )
             batch_age_p50 = _status_statistic(
@@ -644,7 +654,7 @@ class RuntimeService:
             self._record_control_frame()
         if execution_results:
             assert execution_payload is not None
-            logger.info(
+            logger.debug(
                 "control execution result frame=%s executor=%s sent=%s dx=%.1f dy=%.1f message=%s meta=%s",
                 context.frame_id,
                 execution_payload.get("executor_id"),
@@ -957,13 +967,17 @@ class RuntimeService:
         parser = metadata.get("parser")
         parser_payload = parser if isinstance(parser, dict) else {}
         decode_ms = float(parser_payload.get("decode_ms") or 0.0)
-        nvinfer_total_ms = float(
-            metadata.get("nvinfer_total_ms") or detection_batch.inference_latency_ms
+        nvinfer_stage_ms = float(
+            metadata.get("nvinfer_stage_ms")
+            or metadata.get("nvinfer_total_ms")
+            or detection_batch.inference_latency_ms
         )
         self.last_pipeline_timings = {
             "roi_ms": 0.0,
-            "engine_ms": nvinfer_total_ms,
-            "engine_execute_ms": nvinfer_total_ms,
+            "engine_ms": nvinfer_stage_ms,
+            # DeepStream exposes nvinfer sink-to-src elapsed time. It does not
+            # expose isolated TensorRT execution time on this path.
+            "engine_execute_ms": None,
             "decode_ms": decode_ms,
             "nms_ms": None,
             "detection_batch_build_ms": float(metadata.get("detection_batch_build_ms") or 0.0),
@@ -2602,7 +2616,7 @@ class RuntimeService:
             return
         self._last_control_log_signature = signature
         self._last_no_target_log_signature = ""
-        logger.info(
+        logger.debug(
             "control decision frame=%s age_ms=%.1f target_cls=%s score=%.3f dx=%.1f dy=%.1f emit=%s output=%s hardware=%s trigger=%s trigger_source=%s trigger_raw=%s reason=%s",
             context.frame_id,
             self._frame_age_ms(context),
