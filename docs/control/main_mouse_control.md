@@ -76,11 +76,11 @@ control:
       prediction:
         lead_frames: 1.0
       atan:
-        scale_counts: 256.0
+        scale_counts: 1024.0
         far:
-          kp: 0.45
+          kp: 0.90
         near:
-          kp: 0.22
+          kp: 0.30
     calibrated_angular:
       kp_x: 1.0
 ```
@@ -169,7 +169,7 @@ The delivery scheduler retains one complete integer command. A newer observation
 
 An already-running driver call cannot be cancelled; latest-replace governs commands that have not entered that call.
 
-V2 restricts configured per-observation limits to at most 127 counts. The executor additionally rejects non-integer or out-of-device-range values before calling the driver. Any unavoidable transport fragmentation belongs below the control algorithm, must complete promptly, and must remain discardable by newer input.
+V2 restricts configured per-observation limits to the signed 16-bit kmNet move range. The executor additionally rejects non-integer or out-of-device-range values before calling the driver. Any unavoidable transport fragmentation belongs below the control algorithm, must complete promptly, and must remain discardable by newer input.
 
 ## Strict Blocks And Resets
 

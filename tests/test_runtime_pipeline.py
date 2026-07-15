@@ -1319,6 +1319,51 @@ def test_dual_phase_algorithm_delivers_latest_observation_on_control_tick() -> N
     assert service.last_control["pipeline"]["executor_success"] is True
 
 
+def test_dual_phase_far_command_above_127_reaches_kmnet_unchanged() -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
+    precise = config.control.dual_phase_atan_robust_predictive_v2
+    precise.atan.scale_counts = 1024.0
+    precise.atan.far.kp = 0.90
+    precise.atan.far.max_counts_per_update = 600.0
+    kmnet = _UnavailableButtonKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    capture_ts_ns = time.monotonic_ns() - 10_000_000
+    batch = DetectionBatch(
+        frame_id=1,
+        generation=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 1_000,
+        inference_end_ts_ns=capture_ts_ns + 2_000,
+        detections=[Detection(cls=0, score=0.95, x1=390, y1=250, x2=550, y2=568)],
+        classes=["target"],
+        coordinate_space="roi",
+    )
+
+    service.process_detection_batch(
+        batch,
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
+    tick_result = service.process_control_tick()
+
+    assert tick_result.execution_results[0].sent is True
+    assert len(kmnet.outputs) == 1
+    assert kmnet.outputs[0].dx > 127
+    assert kmnet.outputs[0].dx == service.last_control["dx"]
+
+
 def test_latest_replace_discards_popped_command_when_newer_observation_arrives() -> None:
     config = RuntimeConfig()
     config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"

@@ -1,4 +1,4 @@
-from novasight.control.output import ControlOutput, ControlOutputPolicy
+from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT, ControlOutput, ControlOutputPolicy
 from novasight.control.registry import (
     DEFAULT_ACTIVE_ALGORITHM_ID,
     DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
@@ -58,6 +58,7 @@ __all__ = [
     "ControlOutputPolicy",
     "ControllerFactory",
     "MAX_PLAN_DURATION_MS",
+    "MAX_ABS_MOUSE_MOVE_COUNT",
     "MoveCommand",
     "MouseControllerConfig",
     "MouseController",

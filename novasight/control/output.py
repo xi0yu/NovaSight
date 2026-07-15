@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from novasight.contracts import ControlIntent
 
 
+MAX_ABS_MOUSE_MOVE_COUNT = 32_767
+
+
 @dataclass(frozen=True)
 class ControlOutput:
     dx: int

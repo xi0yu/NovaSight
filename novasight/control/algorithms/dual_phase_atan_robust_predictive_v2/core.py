@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from math import atan, hypot, isfinite, pi, tan, trunc
 
+from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT
+
 from .models import (
     ALGORITHM_ID,
     AtanModeConfig,
@@ -547,6 +549,8 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
         if (
             mode_config.kp <= 0.0
             or mode_config.max_counts_per_update <= 0.0
-            or mode_config.max_counts_per_update > 127.0
+            or mode_config.max_counts_per_update > MAX_ABS_MOUSE_MOVE_COUNT
         ):
-            raise ValueError("Atan Kp must be > 0 and output limit must be in (0, 127]")
+            raise ValueError(
+                "Atan Kp must be > 0 and output limit must fit the kmNet move range"
+            )

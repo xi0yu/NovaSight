@@ -84,21 +84,21 @@ class AtanModeConfig:
 
 def _default_far_atan() -> AtanModeConfig:
     return AtanModeConfig(
-        kp=0.45,
-        max_counts_per_update=127.0,
+        kp=0.90,
+        max_counts_per_update=600.0,
     )
 
 
 def _default_near_atan() -> AtanModeConfig:
     return AtanModeConfig(
-        kp=0.22,
-        max_counts_per_update=72.0,
+        kp=0.30,
+        max_counts_per_update=120.0,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class AtanControllerConfig:
-    scale_counts: float = 256.0
+    scale_counts: float = 1024.0
     far: AtanModeConfig = field(default_factory=_default_far_atan)
     near: AtanModeConfig = field(default_factory=_default_near_atan)
 

@@ -855,11 +855,11 @@ export function StudioConsoleView({
   const dualPhaseFovX = readNumber(dualPhaseProjectionConfig.fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(dualPhaseProjectionConfig.counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(dualPhaseModeConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(dualPhaseFarConfig.kp, 0.45);
-  const dualPhaseNearKp = readNumber(dualPhaseNearConfig.kp, 0.22);
-  const dualPhaseAtanScale = readNumber(dualPhaseAtanConfig.scale_counts, 256);
-  const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, 127);
-  const dualPhaseNearMaxCounts = readNumber(dualPhaseNearConfig.max_counts_per_update, 72);
+  const dualPhaseFarKp = readNumber(dualPhaseFarConfig.kp, 0.90);
+  const dualPhaseNearKp = readNumber(dualPhaseNearConfig.kp, 0.30);
+  const dualPhaseAtanScale = readNumber(dualPhaseAtanConfig.scale_counts, 1024);
+  const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, 600);
+  const dualPhaseNearMaxCounts = readNumber(dualPhaseNearConfig.max_counts_per_update, 120);
   const dualPhaseLeadFrames = readNumber(dualPhasePredictionConfig.lead_frames, 1.0);
   const dualPhaseVelocitySmoothingFrames = readNumber(dualPhaseVelocityConfig.smoothing_frames, 3.0);
   const dualPhaseHistoryResetGapMs = readNumber(dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
@@ -3648,8 +3648,8 @@ export function StudioConsoleView({
               <NumberControl label="FAR Kp" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "far", "kp"], value)} />
               <NumberControl label="NEAR Kp" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "near", "kp"], value)} />
               <NumberControl label="共享 Atan 尺度 counts" detail="FAR 与 NEAR 使用同一个非线性压缩尺度。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
-              <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
-              <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
+              <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
+              <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
               <NumberControl label="前瞻帧数" detail="预测量 = 平滑目标速度 × 平均 capture dt × 前瞻帧数；0 完全关闭位置预测。" value={dualPhaseLeadFrames} min={0} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
               <NumberControl label="速度平滑帧数" detail="越大越稳但转向越慢；内部仍使用真实 capture timestamp 处理变帧率。" value={dualPhaseVelocitySmoothingFrames} min={0.1} max={20} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_frames"], value)} />
               <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />

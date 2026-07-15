@@ -281,10 +281,30 @@ def test_tighter_defaults_raise_feedback_and_prediction_authority() -> None:
     assert config.prediction.lead_frames == 1.0
     assert config.prediction.far.absolute_cap_px == 10.0
     assert config.prediction.near.absolute_cap_px == 3.0
-    assert config.atan.scale_counts == 256.0
-    assert config.atan.far.kp == 0.45
-    assert config.atan.near.kp == 0.22
-    assert config.atan.near.max_counts_per_update == 72.0
+    assert config.atan.scale_counts == 1024.0
+    assert config.atan.far.kp == 0.90
+    assert config.atan.near.kp == 0.30
+    assert config.atan.far.max_counts_per_update == 600.0
+    assert config.atan.near.max_counts_per_update == 120.0
+
+
+def test_far_controller_can_use_kmnet_counts_above_legacy_hid8_limit() -> None:
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(
+            defaults,
+            atan=AtanControllerConfig(
+                scale_counts=1024.0,
+                far=AtanModeConfig(kp=0.90, max_counts_per_update=600.0),
+                near=defaults.atan.near,
+            ),
+        )
+    )
+
+    decision = algorithm.calculate(_observation(generation=1, error_x=80.0))
+
+    assert decision.dx > 127
+    assert decision.dx <= 600
 
 
 def test_projection_atan_and_control_atan_are_separate_unit_steps() -> None:

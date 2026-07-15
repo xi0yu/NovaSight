@@ -5,7 +5,7 @@ from dataclasses import replace
 import threading
 import time
 
-from novasight.control import ControlOutput
+from novasight.control import MAX_ABS_MOUSE_MOVE_COUNT, ControlOutput
 from novasight.executors.contracts import ExecutionResult, Executor
 
 
@@ -16,7 +16,7 @@ class MouseCommandExecutor:
     no queue, movement target, trajectory, or cross-frame count debt.
     """
 
-    MAX_ABS_DEVICE_COUNT = 32_767
+    MAX_ABS_DEVICE_COUNT = MAX_ABS_MOUSE_MOVE_COUNT
 
     def __init__(self, lock: LockType | None = None) -> None:
         self._lock = lock or threading.Lock()

@@ -85,7 +85,7 @@ control:
       max_step_x_counts: 50.0
       max_step_y_counts: 40.0
     dual_phase_atan_robust_predictive_v2:
-      schema_version: 4
+      schema_version: 5
       freshness_threshold_ms: 55.0
       projection:
         fov_x_deg: 105.0
@@ -113,13 +113,13 @@ control:
           base_cap_px: 0.75
           relative_cap: 0.20
       atan:
-        scale_counts: 256.0
+        scale_counts: 1024.0
         far:
-          kp: 0.45
-          max_counts_per_update: 127.0
+          kp: 0.90
+          max_counts_per_update: 600.0
         near:
-          kp: 0.22
-          max_counts_per_update: 72.0
+          kp: 0.30
+          max_counts_per_update: 120.0
   shared:
     max_count_slew_x: 10.0
     max_count_slew_y: 8.0
@@ -134,8 +134,8 @@ control:
     recoil_ramp_up_ms: 120.0
     recoil_max_counts_per_observation: 8.0
   configured_actuation_delay_s: 0.004
-  # The precise V2 algorithm always uses one immediate MouseCommandExecutor
-  # call per accepted observation; it never creates a cross-frame move plan.
+  # V2 keeps only the newest complete command. The output tick validates and
+  # sends it once; it never creates a cross-frame move plan.
   scheduler_enabled: true
   scheduler_step_counts_x: 8
   scheduler_step_counts_y: 8
