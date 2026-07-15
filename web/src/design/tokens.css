@@ -41,11 +41,11 @@
   --ns-red-700: #b52e3d;
 
   /* Semantic backgrounds */
-  --bg-app: var(--ns-gray-100);
+  --bg-app: #f2f4f7;
   --bg-surface: var(--ns-white);
   --bg-subtle: var(--ns-gray-50);
   --bg-elevated: rgba(255, 255, 255, 0.88);
-  --bg-sidebar: #f7f8fa;
+  --bg-sidebar: var(--bg-app);
   --bg-hover: #f0f3f8;
   --bg-active: #eaf0ff;
 
@@ -75,20 +75,30 @@
   --border-focus: #8fa3ff;
   --divider: #e9ecf1;
   --shadow-card:
-    0 1px 2px rgba(22, 32, 51, 0.04),
-    0 8px 24px rgba(22, 32, 51, 0.06);
-  --shadow-dialog: 0 18px 50px rgba(25, 35, 55, 0.16);
+    0 0 0 1px rgba(24, 32, 51, 0.025),
+    0 1px 2px rgba(24, 32, 51, 0.035);
+  --shadow-dialog:
+    0 0 0 1px rgba(24, 32, 51, 0.04),
+    0 24px 64px rgba(25, 35, 55, 0.16);
 
   /* Typography */
   --font-ui:
-    Inter,
-    "SF Pro Display",
+    "Avenir Next",
     "SF Pro Text",
+    "Segoe UI Variable",
+    "Noto Sans SC",
     "PingFang SC",
     "Microsoft YaHei",
     system-ui,
     sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --font-heading:
+    "Avenir Next",
+    "SF Pro Display",
+    "Segoe UI Variable Display",
+    "Noto Sans SC",
+    "PingFang SC",
+    sans-serif;
+  --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
   --text-page-title: 28px;
   --leading-page-title: 36px;
   --text-section-title: 18px;
@@ -138,6 +148,10 @@
   --button-secondary-bg: var(--bg-surface);
   --button-secondary-border: var(--border-default);
   --button-secondary-fg: var(--text-primary);
+  --input-bg: color-mix(in srgb, var(--bg-app) 72%, var(--bg-surface));
+  --input-border: var(--border-default);
+  --input-focus-border: var(--border-focus);
+  --input-radius: var(--radius-4);
   --card-bg: var(--bg-surface);
   --card-border: var(--border-default);
   --card-radius: var(--radius-4);
@@ -193,7 +207,7 @@
   --bg-surface: #182033;
   --bg-subtle: #202a3e;
   --bg-elevated: rgba(24, 32, 51, 0.88);
-  --bg-sidebar: #151d2c;
+  --bg-sidebar: var(--bg-app);
   --bg-hover: #24304a;
   --bg-active: rgba(85, 111, 246, 0.18);
   --text-primary: #f4f7fb;
@@ -208,6 +222,8 @@
   --divider: rgba(198, 207, 221, 0.14);
   --card-bg: #182033;
   --card-border: rgba(198, 207, 221, 0.16);
+  --input-bg: #121a2b;
+  --input-border: rgba(198, 207, 221, 0.16);
   --surface-1: var(--bg-elevated);
   --surface-2: var(--bg-surface);
   --surface-3: var(--bg-subtle);

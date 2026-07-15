@@ -2685,13 +2685,13 @@ class RuntimeService:
                 getattr(self.config.control, "candidate_quality_area_weight", 0.3)
             ),
             selection_class_weight=float(
-                getattr(self.config.control, "candidate_selection_class_weight", 0.40)
+                getattr(self.config.control, "candidate_selection_class_weight", 0.55)
             ),
             selection_quality_weight=float(
                 getattr(self.config.control, "candidate_selection_quality_weight", 0.05)
             ),
             selection_distance_weight=float(
-                getattr(self.config.control, "candidate_selection_distance_weight", 0.55)
+                getattr(self.config.control, "candidate_selection_distance_weight", 0.40)
             ),
             tracker_max_match_distance=float(
                 getattr(self.config.control, "tracker_max_match_distance", 1.5)

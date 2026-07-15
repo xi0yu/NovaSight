@@ -289,9 +289,9 @@ class ControlConfig:
     candidate_ratio_max_aspect: float = 6.0
     candidate_quality_confidence_weight: float = 0.7
     candidate_quality_area_weight: float = 0.3
-    candidate_selection_class_weight: float = 0.40
+    candidate_selection_class_weight: float = 0.55
     candidate_selection_quality_weight: float = 0.05
-    candidate_selection_distance_weight: float = 0.55
+    candidate_selection_distance_weight: float = 0.40
     tracker_max_match_distance: float = 1.5
     tracker_position_cost_weight: float = 0.75
     tracker_iou_cost_weight: float = 0.25

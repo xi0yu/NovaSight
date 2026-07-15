@@ -481,6 +481,14 @@ export function StudioConsoleView({
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
+  const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
+  const [targetWeightsDialogOpen, setTargetWeightsDialogOpen] = useState(false);
+  const [algorithmSettingsDialogOpen, setAlgorithmSettingsDialogOpen] = useState(false);
+  const [targetAdvancedDialogOpen, setTargetAdvancedDialogOpen] = useState(false);
+  const [trackerSettingsDialogOpen, setTrackerSettingsDialogOpen] = useState(false);
+  const [newClassProfileName, setNewClassProfileName] = useState("");
+  const [renamedClassProfileName, setRenamedClassProfileName] = useState("");
+  const [classProfileDeleteArmed, setClassProfileDeleteArmed] = useState(false);
   const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
   const [launchStageIndex, setLaunchStageIndex] = useState(0);
   const [launchCompletedStages, setLaunchCompletedStages] = useState(0);
@@ -528,6 +536,42 @@ export function StudioConsoleView({
       document.body.style.overflow = previousOverflow;
     };
   }, [launchDialogOpen]);
+
+  useEffect(() => {
+    if (!classConfigDialogOpen) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setClassConfigDialogOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [classConfigDialogOpen]);
+
+  useEffect(() => {
+    if (!targetWeightsDialogOpen) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setTargetWeightsDialogOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [targetWeightsDialogOpen]);
 
   useEffect(() => {
     if (!launchDialogOpen || launchStatus === "running") {
@@ -687,6 +731,10 @@ export function StudioConsoleView({
   const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
   const classPriorityIds = parseClassPriority(detectionClassPriority);
   useEffect(() => {
+    setRenamedClassProfileName(activeDetectionProfile);
+    setClassProfileDeleteArmed(false);
+  }, [activeDetectionProfile]);
+  useEffect(() => {
     if (!runtimeMainlineSelected) {
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
@@ -745,9 +793,26 @@ export function StudioConsoleView({
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
   const candidateQualityAreaWeight = readNumber(controlConfig.candidate_quality_area_weight, 0.3);
-  const candidateSelectionClassWeight = readNumber(controlConfig.candidate_selection_class_weight, 0.40);
+  const candidateSelectionClassWeight = readNumber(controlConfig.candidate_selection_class_weight, 0.55);
   const candidateSelectionQualityWeight = readNumber(controlConfig.candidate_selection_quality_weight, 0.05);
-  const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.55);
+  const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.40);
+  const candidateQualityWeightTotal = candidateQualityConfidenceWeight + candidateQualityAreaWeight;
+  const candidateSelectionWeightTotal = candidateSelectionClassWeight + candidateSelectionQualityWeight + candidateSelectionDistanceWeight;
+  const normalizedQualityConfidenceWeight = candidateQualityWeightTotal > 0
+    ? candidateQualityConfidenceWeight / candidateQualityWeightTotal
+    : 1;
+  const normalizedQualityAreaWeight = candidateQualityWeightTotal > 0
+    ? candidateQualityAreaWeight / candidateQualityWeightTotal
+    : 0;
+  const normalizedSelectionClassWeight = candidateSelectionWeightTotal > 0
+    ? candidateSelectionClassWeight / candidateSelectionWeightTotal
+    : 0;
+  const normalizedSelectionQualityWeight = candidateSelectionWeightTotal > 0
+    ? candidateSelectionQualityWeight / candidateSelectionWeightTotal
+    : 1;
+  const normalizedSelectionDistanceWeight = candidateSelectionWeightTotal > 0
+    ? candidateSelectionDistanceWeight / candidateSelectionWeightTotal
+    : 0;
   const trackerMaxMatchDistance = readNumber(controlConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(controlConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(controlConfig.tracker_iou_cost_weight, 0.25);
@@ -1942,6 +2007,127 @@ export function StudioConsoleView({
     [classPriorityIds, updateConfigField]
   );
 
+  const persistClassProfiles = useCallback(
+    async (
+      profiles: Record<string, string[]>,
+      ratioProfiles: Record<string, Record<string, number>>,
+      nextActiveProfile: string
+    ) => {
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const next = base ? normalizeRuntimeConfig(base) : null;
+      if (!next) {
+        return;
+      }
+      next.inference = {
+        ...asRecord(next.inference),
+        detection_class_profiles: profiles,
+        detection_class_profile: nextActiveProfile
+      } as RuntimeConfig[string];
+      const control = asRecord(next.control);
+      next.control = {
+        ...control,
+        aim: {
+          ...nestedRecord(control, "aim"),
+          class_y_ratios: ratioProfiles
+        }
+      } as RuntimeConfig[string];
+      setBusy("class-profiles.save");
+      setLocalError(null);
+      configDraftRef.current = next;
+      setConfigDraft(next);
+      try {
+        await updateRuntimeConfig(next);
+        await onRefresh();
+      } catch (err) {
+        configDraftRef.current = null;
+        setConfigDraft(null);
+        setLocalError(`类别配置同步失败：${getErrorMessage(err)}`);
+        reportError(err, { source: "class-profiles", title: "类别配置保存失败" });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [onRefresh, runtimeConfig]
+  );
+
+  const createClassProfile = useCallback(async () => {
+    const profileName = newClassProfileName.trim();
+    if (!profileName) {
+      setLocalError("请输入新的类别配置名称。");
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(detectionProfiles, profileName)) {
+      setLocalError(`类别配置“${profileName}”已存在。`);
+      return;
+    }
+    await persistClassProfiles(
+      { ...detectionProfiles, [profileName]: [...detectionClasses] },
+      {
+        ...classAimRatioProfiles,
+        ...(Object.keys(activeClassAimRatios).length > 0
+          ? { [profileName]: { ...activeClassAimRatios } }
+          : {})
+      },
+      profileName
+    );
+    setNewClassProfileName("");
+  }, [
+    activeClassAimRatios,
+    classAimRatioProfiles,
+    detectionClasses,
+    detectionProfiles,
+    newClassProfileName,
+    persistClassProfiles
+  ]);
+
+  const renameClassProfile = useCallback(async () => {
+    const profileName = renamedClassProfileName.trim();
+    if (!profileName || profileName === activeDetectionProfile) {
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(detectionProfiles, profileName)) {
+      setLocalError(`类别配置“${profileName}”已存在。`);
+      return;
+    }
+    const nextProfiles = Object.fromEntries(
+      Object.entries(detectionProfiles).map(([name, classes]) => [
+        name === activeDetectionProfile ? profileName : name,
+        classes
+      ])
+    );
+    const nextRatioProfiles = { ...classAimRatioProfiles };
+    if (Object.prototype.hasOwnProperty.call(nextRatioProfiles, activeDetectionProfile)) {
+      nextRatioProfiles[profileName] = nextRatioProfiles[activeDetectionProfile];
+      delete nextRatioProfiles[activeDetectionProfile];
+    }
+    await persistClassProfiles(nextProfiles, nextRatioProfiles, profileName);
+  }, [
+    activeDetectionProfile,
+    classAimRatioProfiles,
+    detectionProfiles,
+    persistClassProfiles,
+    renamedClassProfileName
+  ]);
+
+  const deleteClassProfile = useCallback(async () => {
+    if (detectionProfileNames.length <= 1) {
+      setLocalError("至少需要保留一个类别配置。");
+      return;
+    }
+    const nextProfiles = { ...detectionProfiles };
+    delete nextProfiles[activeDetectionProfile];
+    const nextRatioProfiles = { ...classAimRatioProfiles };
+    delete nextRatioProfiles[activeDetectionProfile];
+    const nextActiveProfile = Object.keys(nextProfiles)[0];
+    await persistClassProfiles(nextProfiles, nextRatioProfiles, nextActiveProfile);
+  }, [
+    activeDetectionProfile,
+    classAimRatioProfiles,
+    detectionProfileNames.length,
+    detectionProfiles,
+    persistClassProfiles
+  ]);
+
   const applyKmNetRecommended = useCallback(async () => {
     const next = cloneRuntimeConfig(runtimeConfig);
     if (!next) {
@@ -2607,99 +2793,6 @@ export function StudioConsoleView({
                 digits={2}
                 onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
               />
-              <div className="class-profile-toolbar">
-                <span>
-                  <b>类别设置</b>
-                  <small>名称、优先顺序与框内瞄点由当前模型类别表共同管理。</small>
-                </span>
-                <select
-                  aria-label="检测类别配置"
-                  value={activeDetectionProfile}
-                  onChange={(event) => void updateConfigField("inference", "detection_class_profile", event.target.value)}
-                >
-                  {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="class-default-aim">
-                <span>
-                  <b>默认瞄点高度</b>
-                  <small>从 bbox 顶部向下的比例；未单独设置的类别都使用此值。</small>
-                </span>
-                <CommitNumberControl
-                  value={aimYRatio}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  digits={2}
-                  onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)}
-                />
-                <div className="class-aim-preview large" aria-hidden="true">
-                  <i style={{ top: `${aimYRatio * 100}%` }} />
-                </div>
-              </div>
-              <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
-                <div className="class-editor-head" role="row">
-                  <span>ID</span><span>类别名称</span><span>优先级</span><span>瞄点高度</span><span>目标筛选</span>
-                </div>
-                {classEditorIds.map((classId) => {
-                  const configuredName = detectionClasses[classId] ?? "";
-                  const displayName = configuredName ? classDisplayName(configuredName, classId) : "";
-                  const priorityIndex = classPriorityIds.indexOf(classId);
-                  const enabled = activeDetectionClass === "all" || activeDetectionClass === String(classId);
-                  return (
-                    <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
-                      <b className="class-id">cls {classId}</b>
-                      <InlineTextControl
-                        ariaLabel={`cls ${classId} 类别名称`}
-                        value={displayName}
-                        placeholder={`未知类别（cls ${classId}）`}
-                        onCommit={(value) => updateDetectionClassName(classId, value)}
-                      />
-                      <div className="class-priority-control">
-                        <b>{priorityIndex >= 0 ? priorityIndex + 1 : "—"}</b>
-                        <button
-                          aria-label={`提高 cls ${classId} 优先级`}
-                          disabled={priorityIndex === 0}
-                          type="button"
-                          onClick={() => void moveClassPriority(classId, -1)}
-                        >↑</button>
-                        <button
-                          aria-label={`降低 cls ${classId} 优先级`}
-                          disabled={priorityIndex < 0 || priorityIndex === classPriorityIds.length - 1}
-                          type="button"
-                          onClick={() => void moveClassPriority(classId, 1)}
-                        >↓</button>
-                      </div>
-                      <ClassAimRatioControl
-                        classId={classId}
-                        defaultRatio={aimYRatio}
-                        overrideRatio={activeClassAimRatios[String(classId)]}
-                        onCommit={(value) => updateClassAimRatio(classId, value)}
-                      />
-                      <button
-                        className={enabled ? "class-enable active" : "class-enable"}
-                        type="button"
-                        onClick={() => void updateConfigField(
-                          "inference",
-                          "detection_class_filter",
-                          activeDetectionClass === String(classId) ? "all" : String(classId)
-                        )}
-                      >
-                        {activeDetectionClass === "all"
-                          ? "仅选此类"
-                          : activeDetectionClass === String(classId)
-                            ? "恢复全部"
-                            : "切换此类"}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="console-field-hint">
-                未知 class id 会显示为“未知类别（cls N）”并自动使用默认瞄点；编辑名称后即加入当前类别配置。
-              </p>
               <details className="model-debug-details">
                 <summary>工程调试详情</summary>
                 <label>模型版本</label>
@@ -3000,6 +3093,32 @@ export function StudioConsoleView({
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
+            <div className="console-card class-config-summary-card">
+              <div className="class-config-summary-main">
+                <div className="class-config-summary-icon" aria-hidden="true">
+                  <NovaIcon name="target" size={20} strokeWidth={1.8} />
+                </div>
+                <div>
+                  <span className="class-config-eyebrow">类别配置</span>
+                  <h3>{activeDetectionProfile}</h3>
+                  <p>类别名称、选择顺序与各类别瞄点高度在独立工作区统一管理。</p>
+                </div>
+              </div>
+              <dl className="class-config-summary-stats">
+                <div><dt>已定义类别</dt><dd>{detectionClasses.filter(Boolean).length}</dd></div>
+                <div><dt>默认 aim Y</dt><dd>{aimYRatio.toFixed(2)}</dd></div>
+                <div><dt>独立覆盖</dt><dd>{Object.keys(activeClassAimRatios).length}</dd></div>
+                <div><dt>目标筛选</dt><dd>{activeDetectionClass === "all" ? "全部类别" : `cls ${activeDetectionClass}`}</dd></div>
+              </dl>
+              <button
+                className="console-button primary"
+                onClick={() => setClassConfigDialogOpen(true)}
+                type="button"
+              >
+                <NovaIcon name="settings" size={16} />
+                管理类别配置
+              </button>
+            </div>
             <div className="console-grid2" data-algorithm-page={controlMode}>
               <div className="console-card">
                 <SectionTitle title="控制模式" />
@@ -3073,43 +3192,31 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
-                {dualPhaseActive ? (
-                  <>
-                    <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhasePath(["projection", "fov_x_deg"], value)} />
-                    <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhasePath(["projection", "counts_per_360"], value)} />
-                    <NumberControl label="NEAR 阈值 px" detail="测量误差距离不大于该值时使用 NEAR，否则直接使用 FAR。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhasePath(["mode", "near_threshold_px"], value)} />
-                    <NumberControl label="FAR Kp" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "far", "kp"], value)} />
-                    <NumberControl label="NEAR Kp" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "near", "kp"], value)} />
-                    <NumberControl label="共享 Atan 尺度 counts" detail="FAR 与 NEAR 使用同一个非线性压缩尺度。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
-                    <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
-                    <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
-                    <NumberControl label="前瞻帧数" detail="预测量 = 平滑目标速度 × 最近三段捕获间隔的平均 dt × 前瞻帧数；0 完全关闭位置预测。" value={dualPhaseLeadFrames} min={0} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
-                    <NumberControl label="速度平滑帧数" detail="越大越稳但转向越慢；内部仍使用真实 capture timestamp 处理变帧率。" value={dualPhaseVelocitySmoothingFrames} min={0.1} max={20} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_frames"], value)} />
-                    <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />
-                    <NumberControl label="FAR 预测绝对上限 px" value={dualPhaseFarPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far", "absolute_cap_px"], value)} />
-                    <NumberControl label="NEAR 预测绝对上限 px" value={dualPhaseNearPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near", "absolute_cap_px"], value)} />
-                  </>
-                ) : controlMode === "calibrated_angular" ? (
-                  <>
-                    <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
-                    <NumberControl label="X 每圈 counts" value={calibratedCountsPer360X} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_x", value)} />
-                    <NumberControl label="Y 每圈 counts" value={calibratedCountsPer360Y} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_y", value)} />
-                    <NumberControl label="Kp X" value={calibratedKpX} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_x", value)} />
-                    <NumberControl label="Kp Y" value={calibratedKpY} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_y", value)} />
-                    <NumberControl label="Kd X" value={calibratedKdX} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_x", value)} />
-                    <NumberControl label="Kd Y" value={calibratedKdY} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_y", value)} />
-                    <NumberControl label="D 项 EMA" value={calibratedDEmaAlpha} min={0.01} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "d_ema_alpha", value)} />
-                    <NumberControl label="X 最大角度步长 deg" value={calibratedMaxAngleX} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_x_deg", value)} />
-                    <NumberControl label="Y 最大角度步长 deg" value={calibratedMaxAngleY} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_y_deg", value)} />
-                  </>
-                ) : (
-                  <>
-                    <NumberControl label="水平响应尺度 px" value={universalResponseScaleX} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_x_px", value)} />
-                    <NumberControl label="垂直响应尺度 px" value={universalResponseScaleY} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_y_px", value)} />
-                    <NumberControl label="最大水平移动 counts" value={universalMaxStepX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_x_counts", value)} />
-                    <NumberControl label="最大垂直移动 counts" value={universalMaxStepY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_y_counts", value)} />
-                  </>
-                )}
+                <p className="console-section-note">日常使用只需选择算法；投影、增益、限幅和预测属于工程调校参数。</p>
+                <div className="advanced-settings-summary">
+                  {dualPhaseActive ? (
+                    <>
+                      <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(1)}°</b></div>
+                      <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
+                      <div><span>预测前瞻</span><b>{dualPhaseLeadFrames.toFixed(2)} 帧</b></div>
+                    </>
+                  ) : controlMode === "calibrated_angular" ? (
+                    <>
+                      <div><span>FOVX</span><b>{calibratedFovX.toFixed(1)}°</b></div>
+                      <div><span>Kp X / Y</span><b>{calibratedKpX.toFixed(2)} / {calibratedKpY.toFixed(2)}</b></div>
+                      <div><span>Kd X / Y</span><b>{calibratedKdX.toFixed(2)} / {calibratedKdY.toFixed(2)}</b></div>
+                    </>
+                  ) : (
+                    <>
+                      <div><span>响应尺度 X / Y</span><b>{universalResponseScaleX.toFixed(1)} / {universalResponseScaleY.toFixed(1)} px</b></div>
+                      <div><span>最大移动 X / Y</span><b>{universalMaxStepX.toFixed(1)} / {universalMaxStepY.toFixed(1)}</b></div>
+                    </>
+                  )}
+                </div>
+                <button className="console-button console-full-button" onClick={() => setAlgorithmSettingsDialogOpen(true)} type="button">
+                  <NovaIcon name="settings" size={15} />
+                  调整算法高级参数
+                </button>
               </div>
 
               <div className="console-card">
@@ -3128,32 +3235,46 @@ export function StudioConsoleView({
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
                 <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
-                <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
-                <NumberControl label="质量权重：置信度" detail="候选质量分数中检测置信度的相对权重；会与面积权重归一化后使用。" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
-                <NumberControl label="质量权重：可见尺寸" detail="使用 bbox 面积占 ROI 比例的平方根，作为与 ROI 分辨率无关的可见尺寸分；会与置信度权重归一化后使用。" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
-                <NumberControl label="综合分权重：类别" detail="类别优先列表第一项得 1.0，第二项得 0.5，其余类别得 0.0；该值控制类别分在最终选择中的占比。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_class_weight", value)} />
-                <NumberControl label="综合分权重：质量" detail="质量分由检测置信度、ROI 归一化 bbox 面积和 Track 可靠性共同限制。" value={candidateSelectionQualityWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_quality_weight", value)} />
-                <NumberControl label="综合分权重：距离" detail="距离按当前实际选择半径归一化，ROI 从 320 调整到 640 时保持同样的相对含义。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_distance_weight", value)} />
-                <NumberControl label="切换最小优势" detail="新候选的综合分减去当前锁定目标综合分，至少达到此值才允许进入切换确认。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
-                <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认；值越高越不易误切换。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
-                <NumberControl label="目标切换确认延迟 ms" detail="新候选持续同时满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "target_switch_delay_ms", value)} />
+                <div className="target-weight-summary">
+                  <div>
+                    <span>当前综合分权重</span>
+                    <strong>
+                      类别 {(normalizedSelectionClassWeight * 100).toFixed(0)}%
+                      <i>·</i>
+                      质量 {(normalizedSelectionQualityWeight * 100).toFixed(0)}%
+                      <i>·</i>
+                      距离 {(normalizedSelectionDistanceWeight * 100).toFixed(0)}%
+                    </strong>
+                    <small>类别偏好已提高，距离影响相应降低；原始值会在计算前自动归一化。</small>
+                  </div>
+                  <button className="console-button" onClick={() => setTargetWeightsDialogOpen(true)} type="button">
+                    <NovaIcon name="settings" size={15} />
+                    调整权重
+                  </button>
+                </div>
+                <div className="advanced-settings-summary compact">
+                  <div><span>异常框宽高比</span><b>≤ {candidateRatioMaxAspect.toFixed(1)}</b></div>
+                  <div><span>切换门槛</span><b>{targetSwitchPreferenceAdvantage.toFixed(2)}</b></div>
+                  <div><span>确认延迟</span><b>{targetSwitchDelayMs.toFixed(0)} ms</b></div>
+                </div>
+                <button className="console-button console-full-button" onClick={() => setTargetAdvancedDialogOpen(true)} type="button">
+                  <NovaIcon name="settings" size={15} />
+                  目标切换高级设置
+                </button>
               </div>
 
               <div className="console-card">
                 <SectionTitle title={dualPhaseActive ? "Tracker · 公共参数" : "Tracker / Kalman · 公共参数"} />
                 <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
-                <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
-                <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
-                <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
-                <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
-                {!dualPhaseActive ? (
-                  <details className="model-debug-details">
-                    <summary>Kalman 高级参数</summary>
-                    <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
-                    <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
-                    <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
-                  </details>
-                ) : null}
+                <div className="advanced-settings-summary compact">
+                  <div><span>匹配距离</span><b>{trackerMaxMatchDistance.toFixed(2)}</b></div>
+                  <div><span>位置 / IoU</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)}</b></div>
+                  <div><span>最大漏检</span><b>{trackerMaxMissedFrames} 帧</b></div>
+                </div>
+                <button className="console-button console-full-button" onClick={() => setTrackerSettingsDialogOpen(true)} type="button">
+                  <NovaIcon name="settings" size={15} />
+                  管理 Tracker / Kalman
+                </button>
               </div>
             </div>
           </>
@@ -3519,6 +3640,394 @@ export function StudioConsoleView({
         </section>
       </main>
 
+      <AdvancedSettingsDialog
+        description="这些参数决定投影、响应曲线、限幅与预测行为。日常使用无需频繁调整。"
+        eyebrow="参数设置 / 控制算法"
+        footerNote={`当前算法：${controlModeLabel}`}
+        onClose={() => setAlgorithmSettingsDialogOpen(false)}
+        open={algorithmSettingsDialogOpen}
+        title={`${controlModeLabel} · 高级参数`}
+      >
+        <div className="advanced-settings-grid">
+          {dualPhaseActive ? (
+            <>
+              <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhasePath(["projection", "fov_x_deg"], value)} />
+              <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhasePath(["projection", "counts_per_360"], value)} />
+              <NumberControl label="NEAR 阈值 px" detail="测量误差距离不大于该值时使用 NEAR，否则直接使用 FAR。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhasePath(["mode", "near_threshold_px"], value)} />
+              <NumberControl label="FAR Kp" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "far", "kp"], value)} />
+              <NumberControl label="NEAR Kp" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "near", "kp"], value)} />
+              <NumberControl label="共享 Atan 尺度 counts" detail="FAR 与 NEAR 使用同一个非线性压缩尺度。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
+              <NumberControl label="FAR 单次上限 counts" value={dualPhaseFarMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
+              <NumberControl label="NEAR 单次上限 counts" value={dualPhaseNearMaxCounts} min={1} max={127} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
+              <NumberControl label="前瞻帧数" detail="预测量 = 平滑目标速度 × 平均 capture dt × 前瞻帧数；0 完全关闭位置预测。" value={dualPhaseLeadFrames} min={0} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
+              <NumberControl label="速度平滑帧数" detail="越大越稳但转向越慢；内部仍使用真实 capture timestamp 处理变帧率。" value={dualPhaseVelocitySmoothingFrames} min={0.1} max={20} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_frames"], value)} />
+              <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />
+              <NumberControl label="FAR 预测绝对上限 px" value={dualPhaseFarPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far", "absolute_cap_px"], value)} />
+              <NumberControl label="NEAR 预测绝对上限 px" value={dualPhaseNearPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near", "absolute_cap_px"], value)} />
+            </>
+          ) : controlMode === "calibrated_angular" ? (
+            <>
+              <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
+              <NumberControl label="X 每圈 counts" value={calibratedCountsPer360X} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_x", value)} />
+              <NumberControl label="Y 每圈 counts" value={calibratedCountsPer360Y} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_y", value)} />
+              <NumberControl label="Kp X" value={calibratedKpX} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_x", value)} />
+              <NumberControl label="Kp Y" value={calibratedKpY} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_y", value)} />
+              <NumberControl label="Kd X" value={calibratedKdX} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_x", value)} />
+              <NumberControl label="Kd Y" value={calibratedKdY} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_y", value)} />
+              <NumberControl label="D 项 EMA" value={calibratedDEmaAlpha} min={0.01} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "d_ema_alpha", value)} />
+              <NumberControl label="X 最大角度步长 deg" value={calibratedMaxAngleX} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_x_deg", value)} />
+              <NumberControl label="Y 最大角度步长 deg" value={calibratedMaxAngleY} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_y_deg", value)} />
+            </>
+          ) : (
+            <>
+              <NumberControl label="水平响应尺度 px" value={universalResponseScaleX} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_x_px", value)} />
+              <NumberControl label="垂直响应尺度 px" value={universalResponseScaleY} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_y_px", value)} />
+              <NumberControl label="最大水平移动 counts" value={universalMaxStepX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_x_counts", value)} />
+              <NumberControl label="最大垂直移动 counts" value={universalMaxStepY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_y_counts", value)} />
+            </>
+          )}
+        </div>
+      </AdvancedSettingsDialog>
+
+      <AdvancedSettingsDialog
+        description="控制异常框过滤、候选切换门槛和防抖确认。设置过严会阻止切换，过松会造成目标跳变。"
+        eyebrow="参数设置 / 目标选择"
+        footerNote="这些设置不会改变框内 aim Y，只影响选择与切换。"
+        onClose={() => setTargetAdvancedDialogOpen(false)}
+        open={targetAdvancedDialogOpen}
+        title="目标切换高级设置"
+      >
+        <div className="advanced-settings-grid two-column">
+          <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
+          <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
+          <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
+          <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "target_switch_delay_ms", value)} />
+        </div>
+      </AdvancedSettingsDialog>
+
+      <AdvancedSettingsDialog
+        description="Tracker 负责跨帧身份关联，Kalman 负责位置估计。错误设置可能造成断轨、误关联或位置滞后。"
+        eyebrow="参数设置 / Tracker"
+        footerNote="关联算法固定为 Hungarian；仅输出 ACTIVE Track。"
+        onClose={() => setTrackerSettingsDialogOpen(false)}
+        open={trackerSettingsDialogOpen}
+        title="Tracker / Kalman 高级设置"
+      >
+        <div className="advanced-settings-grid two-column">
+          <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
+          <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
+          <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
+          <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
+        </div>
+        <div className="advanced-settings-divider">
+          <span>Kalman 估计器</span>
+          <small>{dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
+        </div>
+        <div className="advanced-settings-grid two-column">
+          <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
+          <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
+          <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
+        </div>
+      </AdvancedSettingsDialog>
+
+      {targetWeightsDialogOpen ? (
+        <div
+          className="target-weight-dialog-layer"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && busy === null) {
+              setTargetWeightsDialogOpen(false);
+            }
+          }}
+        >
+          <section
+            aria-labelledby="target-weight-dialog-title"
+            aria-modal="true"
+            className="target-weight-dialog"
+            role="dialog"
+          >
+            <header className="target-weight-dialog-header">
+              <div>
+                <span className="class-config-eyebrow">目标选择 / 评分策略</span>
+                <h2 id="target-weight-dialog-title">调整目标选择权重</h2>
+                <p>权重决定多个候选同时出现时，类别偏好、候选可靠性和准星距离各自占多大影响。</p>
+              </div>
+              <button
+                aria-label="关闭权重调整"
+                className="launch-dialog-close"
+                disabled={busy !== null}
+                onClick={() => setTargetWeightsDialogOpen(false)}
+                type="button"
+              >
+                <NovaIcon name="x-circle" size={18} />
+              </button>
+            </header>
+
+            <div className="target-weight-dialog-body">
+              <section className="target-weight-section">
+                <div className="target-weight-section-heading">
+                  <div>
+                    <span>综合目标分数</span>
+                    <small>三项原始值会自动归一化；当前总和为 {candidateSelectionWeightTotal.toFixed(2)}。</small>
+                  </div>
+                  <b>类别优先</b>
+                </div>
+                <div className="target-weight-composition" aria-label="综合目标分数权重占比">
+                  <i className="class" style={{ flexGrow: normalizedSelectionClassWeight }} />
+                  <i className="quality" style={{ flexGrow: normalizedSelectionQualityWeight }} />
+                  <i className="distance" style={{ flexGrow: normalizedSelectionDistanceWeight }} />
+                </div>
+                <div className="target-weight-legend">
+                  <span><i className="class" />类别 <b>{(normalizedSelectionClassWeight * 100).toFixed(0)}%</b></span>
+                  <span><i className="quality" />质量 <b>{(normalizedSelectionQualityWeight * 100).toFixed(0)}%</b></span>
+                  <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
+                </div>
+                <div className="target-weight-controls">
+                  <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_class_weight", value)} />
+                  <NumberControl label="综合分权重：质量" detail="检测置信度、同类别可见尺寸与 Track 可靠性形成的质量分。" value={candidateSelectionQualityWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_quality_weight", value)} />
+                  <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_distance_weight", value)} />
+                </div>
+              </section>
+
+              <section className="target-weight-section secondary">
+                <div className="target-weight-section-heading">
+                  <div>
+                    <span>候选质量内部构成</span>
+                    <small>质量分只占上方综合分的一部分，并且最终还会被 Track 可靠性限制。</small>
+                  </div>
+                  <b>置信度 {(normalizedQualityConfidenceWeight * 100).toFixed(0)}%</b>
+                </div>
+                <div className="target-weight-composition quality-composition" aria-label="候选质量权重占比">
+                  <i className="confidence" style={{ flexGrow: normalizedQualityConfidenceWeight }} />
+                  <i className="area" style={{ flexGrow: normalizedQualityAreaWeight }} />
+                </div>
+                <div className="target-weight-legend">
+                  <span><i className="confidence" />置信度 <b>{(normalizedQualityConfidenceWeight * 100).toFixed(0)}%</b></span>
+                  <span><i className="area" />同类别可见尺寸 <b>{(normalizedQualityAreaWeight * 100).toFixed(0)}%</b></span>
+                </div>
+                <div className="target-weight-controls two-column">
+                  <NumberControl label="质量权重：置信度" detail="检测器输出的类别置信度。与可见尺寸权重归一化后使用。" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
+                  <NumberControl label="质量权重：可见尺寸" detail="bbox 面积相对于当前画面同类别候选面积中位数的平方根；不是相对于整个 ROI。" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
+                </div>
+              </section>
+            </div>
+
+            <footer className="target-weight-dialog-footer">
+              <span>输入提交后立即同步到运行配置，无需重启主链。</span>
+              <button className="console-button primary" onClick={() => setTargetWeightsDialogOpen(false)} type="button">
+                完成
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {classConfigDialogOpen ? (
+        <div
+          className="class-config-dialog-layer"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && busy === null) {
+              setClassConfigDialogOpen(false);
+            }
+          }}
+        >
+          <section
+            aria-labelledby="class-config-dialog-title"
+            aria-modal="true"
+            className="class-config-dialog"
+            role="dialog"
+          >
+            <header className="class-config-dialog-header">
+              <div>
+                <span className="class-config-eyebrow">参数设置 / 类别配置</span>
+                <h2 id="class-config-dialog-title">管理类别配置</h2>
+                <p>配置模型类别名称、目标选择顺序，以及每个类别独立的框内瞄点高度。</p>
+              </div>
+              <button
+                aria-label="关闭类别配置"
+                className="launch-dialog-close"
+                disabled={busy !== null}
+                onClick={() => setClassConfigDialogOpen(false)}
+                type="button"
+              >
+                <NovaIcon name="x-circle" size={18} />
+              </button>
+            </header>
+
+            <div className="class-config-dialog-layout">
+              <aside className="class-profile-rail" aria-label="类别配置文件">
+                <div className="class-profile-rail-heading">
+                  <span>配置文件</span>
+                  <b>{detectionProfileNames.length}</b>
+                </div>
+                <div className="class-profile-list">
+                  {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
+                    <button
+                      aria-current={name === activeDetectionProfile ? "page" : undefined}
+                      className={name === activeDetectionProfile ? "active" : ""}
+                      key={name}
+                      onClick={() => void updateConfigField("inference", "detection_class_profile", name)}
+                      type="button"
+                    >
+                      <span>{name}</span>
+                      <small>{(detectionProfiles[name] ?? []).filter(Boolean).length} 类</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="class-profile-create">
+                  <label htmlFor="new-class-profile">新建配置</label>
+                  <input
+                    id="new-class-profile"
+                    onChange={(event) => setNewClassProfileName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void createClassProfile();
+                      }
+                    }}
+                    placeholder="例如 valorant"
+                    value={newClassProfileName}
+                  />
+                  <button
+                    className="console-button"
+                    disabled={busy !== null || newClassProfileName.trim() === ""}
+                    onClick={() => void createClassProfile()}
+                    type="button"
+                  >
+                    <NovaIcon name="copy" size={15} />
+                    复制当前配置
+                  </button>
+                </div>
+              </aside>
+
+              <div className="class-config-workspace">
+                <div className="class-config-profile-bar">
+                  <div>
+                    <span>当前配置名称</span>
+                    <small>重命名会同步迁移该配置对应的 aim Y 覆盖。</small>
+                  </div>
+                  <input
+                    aria-label="当前类别配置名称"
+                    onChange={(event) => setRenamedClassProfileName(event.target.value)}
+                    value={renamedClassProfileName}
+                  />
+                  <button
+                    className="console-button"
+                    disabled={busy !== null || renamedClassProfileName.trim() === "" || renamedClassProfileName.trim() === activeDetectionProfile}
+                    onClick={() => void renameClassProfile()}
+                    type="button"
+                  >
+                    <NovaIcon name="edit" size={15} />
+                    重命名
+                  </button>
+                  <button
+                    aria-label={`删除类别配置 ${activeDetectionProfile}`}
+                    className="console-button danger"
+                    disabled={busy !== null || detectionProfileNames.length <= 1}
+                    onClick={() => {
+                      if (classProfileDeleteArmed) {
+                        void deleteClassProfile();
+                      } else {
+                        setClassProfileDeleteArmed(true);
+                      }
+                    }}
+                    type="button"
+                  >
+                    <NovaIcon name="delete" size={15} />
+                    {classProfileDeleteArmed ? "确认删除" : "删除"}
+                  </button>
+                </div>
+
+                <div className="class-default-aim">
+                  <span>
+                    <b>默认瞄点高度</b>
+                    <small>从 bbox 顶部向下的比例；没有独立设置的类别使用该值。</small>
+                  </span>
+                  <CommitNumberControl
+                    value={aimYRatio}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    digits={2}
+                    onCommit={(value) => updateControlGroupField("aim", "y_ratio", value)}
+                  />
+                  <div className="class-aim-preview large" aria-hidden="true">
+                    <i style={{ top: `${aimYRatio * 100}%` }} />
+                  </div>
+                </div>
+
+                <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
+                  <div className="class-editor-head" role="row">
+                    <span>ID</span><span>类别名称</span><span>选择顺序</span><span>独立 aim Y</span><span>目标筛选</span>
+                  </div>
+                  {classEditorIds.map((classId) => {
+                    const configuredName = detectionClasses[classId] ?? "";
+                    const displayName = configuredName ? classDisplayName(configuredName, classId) : "";
+                    const priorityIndex = classPriorityIds.indexOf(classId);
+                    const enabled = activeDetectionClass === "all" || activeDetectionClass === String(classId);
+                    return (
+                      <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
+                        <b className="class-id">cls {classId}</b>
+                        <InlineTextControl
+                          ariaLabel={`cls ${classId} 类别名称`}
+                          value={displayName}
+                          placeholder={`未知类别（cls ${classId}）`}
+                          onCommit={(value) => updateDetectionClassName(classId, value)}
+                        />
+                        <div className="class-priority-control">
+                          <b>{priorityIndex >= 0 ? priorityIndex + 1 : "—"}</b>
+                          <button
+                            aria-label={`提高 cls ${classId} 选择顺序`}
+                            disabled={priorityIndex === 0}
+                            type="button"
+                            onClick={() => void moveClassPriority(classId, -1)}
+                          >↑</button>
+                          <button
+                            aria-label={`降低 cls ${classId} 选择顺序`}
+                            disabled={priorityIndex < 0 || priorityIndex === classPriorityIds.length - 1}
+                            type="button"
+                            onClick={() => void moveClassPriority(classId, 1)}
+                          >↓</button>
+                        </div>
+                        <ClassAimRatioControl
+                          classId={classId}
+                          defaultRatio={aimYRatio}
+                          overrideRatio={activeClassAimRatios[String(classId)]}
+                          onCommit={(value) => updateClassAimRatio(classId, value)}
+                        />
+                        <button
+                          className={enabled ? "class-enable active" : "class-enable"}
+                          type="button"
+                          onClick={() => void updateConfigField(
+                            "inference",
+                            "detection_class_filter",
+                            activeDetectionClass === String(classId) ? "all" : String(classId)
+                          )}
+                        >
+                          {activeDetectionClass === "all"
+                            ? "仅选此类"
+                            : activeDetectionClass === String(classId)
+                              ? "恢复全部"
+                              : "切换此类"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="console-field-hint">
+                  未知 class id 会显示为“未知类别（cls N）”并使用默认瞄点；编辑名称后加入当前配置。
+                </p>
+              </div>
+            </div>
+
+            <footer className="class-config-dialog-footer">
+              <span>{busy?.startsWith("class-profiles") ? "正在同步类别配置…" : `当前配置：${activeDetectionProfile}`}</span>
+              <button className="console-button primary" onClick={() => setClassConfigDialogOpen(false)} type="button">
+                完成
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       {launchDialogOpen ? (
         <div
           aria-hidden="false"
@@ -3630,6 +4139,75 @@ export function StudioConsoleView({
         主链启动请求已提交
       </div>
     </section>
+  );
+}
+
+function AdvancedSettingsDialog({
+  open,
+  eyebrow,
+  title,
+  description,
+  footerNote,
+  onClose,
+  children
+}: {
+  open: boolean;
+  eyebrow: string;
+  title: string;
+  description: string;
+  footerNote: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose, open]);
+
+  if (!open) {
+    return null;
+  }
+  const dialogId = `advanced-dialog-${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, "-")}`;
+  return (
+    <div
+      className="advanced-settings-dialog-layer"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section aria-labelledby={dialogId} aria-modal="true" className="advanced-settings-dialog" role="dialog">
+        <header className="advanced-settings-dialog-header">
+          <div>
+            <span className="class-config-eyebrow">{eyebrow}</span>
+            <h2 id={dialogId}>{title}</h2>
+            <p>{description}</p>
+          </div>
+          <button aria-label={`关闭${title}`} className="launch-dialog-close" onClick={onClose} type="button">
+            <NovaIcon name="x-circle" size={18} />
+          </button>
+        </header>
+        <div className="advanced-settings-dialog-body">{children}</div>
+        <footer className="advanced-settings-dialog-footer">
+          <span>{footerNote}</span>
+          <button className="console-button primary" onClick={onClose} type="button">完成</button>
+        </footer>
+      </section>
+    </div>
   );
 }
 

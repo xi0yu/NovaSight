@@ -272,9 +272,11 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.aim.y_ratio == 0.22
     assert cfg.control.aim.class_y_ratios == {}
     assert cfg.control.candidate_selection_quality_weight == pytest.approx(0.05)
-    assert cfg.control.candidate_selection_distance_weight == pytest.approx(0.55)
+    assert cfg.control.candidate_selection_class_weight == pytest.approx(0.55)
+    assert cfg.control.candidate_selection_distance_weight == pytest.approx(0.40)
     assert CONTROL_PARAM_SPECS["control.candidate_selection_quality_weight"].default == 0.05
-    assert CONTROL_PARAM_SPECS["control.candidate_selection_distance_weight"].default == 0.55
+    assert CONTROL_PARAM_SPECS["control.candidate_selection_class_weight"].default == 0.55
+    assert CONTROL_PARAM_SPECS["control.candidate_selection_distance_weight"].default == 0.40
     assert cfg.control.configured_actuation_delay_s == 0.004
     assert cfg.control.calibrated_angular.fov_x_deg == 105.0
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980.0

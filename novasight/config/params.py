@@ -309,7 +309,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     "control.candidate_selection_class_weight": _spec(
         "control.candidate_selection_class_weight",
         "目标类别权重",
-        0.40,
+        0.55,
         0.0,
         2.0,
         0.01,
@@ -329,7 +329,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
     "control.candidate_selection_distance_weight": _spec(
         "control.candidate_selection_distance_weight",
         "目标距离权重",
-        0.55,
+        0.40,
         0.0,
         2.0,
         0.01,
