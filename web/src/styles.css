@@ -959,13 +959,13 @@ tbody tr:hover {
 }
 
 .console-app {
-  width: min(1280px, 96vw);
-  height: min(820px, calc(100vh - 48px));
-  min-height: 720px;
+  width: min(1800px, calc(100vw - 24px));
+  height: calc(100vh - 24px);
+  min-height: 700px;
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
   grid-template-rows: 84px minmax(0, 1fr);
-  margin: 24px auto;
+  margin: 12px auto;
   overflow: hidden;
   border: 1px solid var(--hairline);
   border-radius: 22px;
@@ -4080,7 +4080,8 @@ button:focus-visible {
 
 body {
   background:
-    radial-gradient(circle at 92% -8%, #ffe2e8 0, transparent 28%),
+    linear-gradient(rgba(255, 250, 251, 0.7), rgba(251, 246, 248, 0.8)),
+    url("./assets/atmosphere/sakura-porcelain-workspace.webp") center / cover fixed,
     var(--bg-app);
 }
 
@@ -4098,7 +4099,7 @@ body::before {
 
 .console-app {
   border-color: color-mix(in srgb, var(--brand-primary) 18%, var(--border-default));
-  background: var(--bg-surface);
+  background: color-mix(in srgb, var(--bg-surface) 97%, transparent);
 }
 
 .console-top {
@@ -4118,7 +4119,25 @@ body::before {
 }
 
 .console-sidebar {
-  background: color-mix(in srgb, var(--brand-soft) 32%, var(--bg-app));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg-app) 98%, transparent) 0%,
+      color-mix(in srgb, var(--bg-app) 92%, transparent) 58%,
+      color-mix(in srgb, var(--bg-app) 76%, transparent) 100%
+    ),
+    url("./assets/atmosphere/sakura-crimson-sidebar.webp") center bottom / cover no-repeat,
+    var(--bg-app);
+}
+
+.console-main {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg-app) 93%, transparent),
+      color-mix(in srgb, var(--bg-app) 98%, transparent)
+    ),
+    url("./assets/atmosphere/sakura-porcelain-workspace.webp") center top / cover fixed;
 }
 
 .console-nav.active {
@@ -4239,6 +4258,30 @@ body::before {
 
 [data-theme="dark"] .console-sidebar {
   background: #0d0a0d;
+}
+
+[data-theme="dark"] .console-main {
+  background: var(--bg-app);
+}
+
+@media (min-width: 1500px) {
+  .console-app,
+  .console-top {
+    grid-template-columns: 288px minmax(0, 1fr);
+  }
+
+  .console-main {
+    padding: 32px 40px;
+  }
+
+  .console-page-heading h1 {
+    font-size: 30px;
+    line-height: 38px;
+  }
+
+  .console-card {
+    padding: 30px 28px;
+  }
 }
 
 [data-theme="dark"] .console-nav.active {
