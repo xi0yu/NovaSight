@@ -12,7 +12,7 @@ schema：`novasight.control_trace` version `4`
 DetectionBatch
 -> Tracker / Kalman
 -> control calculation
--> algorithm-specific delivery (MouseCommandExecutor or legacy Scheduler)
+-> algorithm-specific delivery (V2 latest-replace Scheduler or configured legacy delivery)
 -> device send result
 ```
 
@@ -47,7 +47,7 @@ device
 - `DetectionBatch.publish_ts_ns`：monotonic ns。
 - `Tracker/Kalman state_ts_ns`：monotonic ns。
 - `control_now_ts_ns`：monotonic ns。
-- legacy `Scheduler created/expires`：monotonic ns；直发算法保持空值。
+- Scheduler `created/expires`：monotonic ns；仅无 Scheduler 的直发算法保持空值。
 - `device_send_start/end_ts_ns`：monotonic ns。
 
 GStreamer PTS 或 wall clock 不得直接与这些字段相减。
@@ -87,7 +87,7 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 - DetectionBatch generation/frame/capture
 - control calculation
-- legacy Scheduler trajectory_generation / command_id（直发算法为空）
+- Scheduler trajectory_generation / command_id（无 Scheduler 的直发算法为空）
 - device send result
 
 `correlation.capture_ts` 也使用 timestamp 对象格式，不能保存裸 `*_ns` 整数。
@@ -140,20 +140,20 @@ delivery_mode / scheduler_used
 
 ```json
 {
-  "delivery_mode": "single_command_per_observation",
-  "scheduler_used": false
+  "delivery_mode": "latest_replace",
+  "scheduler_used": true
 }
 ```
 
-`scheduler` 顶层仍为兼容结构，但 V1/V2 直发算法只写入 `used=false` 和 delivery mode，不存在 pending steps 或旧计划。
+`scheduler` 顶层仍为兼容结构。V2 写入 `used=true`、`delivery_mode=latest_replace`，并且最多暴露一条完整待发送命令；新观测覆盖旧命令，不形成分步轨迹。
 
 ## 采集位置
 
 - Runtime 在已有 recording hook 中调用 `build_control_trace_record()`。
 - Tracker/Kalman 指标来自 `last_control.pipeline.estimated_target_state` 和 `track_diagnostics`。
 - Angular Controller 指标来自 `last_control.pipeline.angular_controller` 及控制 debug payload。
-- 新算法的完整估计、预测、counts 和直发语义来自 `last_control.pipeline`。
-- legacy Scheduler 指标来自 execution metadata 中的 `scheduler` 或 `scheduler.status()`。
+- 新算法的完整估计、预测、counts 和 latest-replace 语义来自 `last_control.pipeline`。
+- Scheduler 指标来自 execution metadata 中的 `scheduler` 或 `scheduler.status()`。
 - Device send 时间来自 `ExecutorRegistry` 包裹实际 executor 调用时记录的 monotonic start/end。
 
 ## 示例

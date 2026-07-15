@@ -1,6 +1,6 @@
 # NovaSight Current Mouse Control Path Audit
 
-Date: 2026-07-13
+Date: 2026-07-15
 
 Status: live-code audit after promoting `dual_phase_atan_robust_predictive_v2` and retaining V1 as an isolated comparison implementation.
 
@@ -14,6 +14,7 @@ DetectionBatch latest-only gate
 -> RuntimeTargetSelector
 -> RawAimPointProjector using current bbox
 -> dual_phase_atan_robust_predictive_v2
+-> capacity-one latest-replace CommandScheduler
 -> MouseCommandExecutor
 -> KmNetExecutor.move(dx, dy)
 ```
@@ -25,7 +26,7 @@ The active algorithm bypasses:
 ```text
 RuntimeService._mouse_observation_metadata legacy prediction
 MouseController legacy deadzone/arrival/slew/rounding envelope
-CommandScheduler submit/tick/split path
+legacy CommandScheduler trajectory split path
 ```
 
 ## Per-Observation Ownership
@@ -33,12 +34,12 @@ CommandScheduler submit/tick/split path
 `RuntimeService._control_intent_from_context()` determines trigger readiness before quantization, creates a typed algorithm observation, and calls the new algorithm exactly once. The resulting integers are wrapped in one `ControlIntent`. `ExecutorRegistry` forces:
 
 ```text
-scheduler = None
-direct_output = true
-single_command_per_observation = true
+scheduler != None
+direct_output = false
+latest_replace = true
 ```
 
-The same observation call invokes the selected hardware executor once. `RuntimeService.process_control_tick()` is a no-op for this algorithm. Therefore there is no pending plan for a later tick to consume.
+The observation call replaces the single pending complete integer command and never calls hardware. `RuntimeService.process_control_tick()` takes at most that one command and sends it through `MouseCommandExecutor`. A newer observation or clear event increments the delivery epoch, so a command already removed from the slot but still waiting for the device lock is discarded before the device call. Scheduler step limits equal V2's per-update limit, so this path never creates a multi-step trajectory or count debt.
 
 ## Source And Time Contract
 
@@ -66,7 +67,7 @@ The new algorithm alone owns:
 - measured-error zero-cross history;
 - per-axis sub-count quantizer residual.
 
-The runtime owns target selection, initial trigger readiness, algorithm calculation, reset edges, and telemetry publication. `MouseCommandExecutor` rechecks the trigger snapshot, command deadline, and increasing generation under the same lock that serializes the device call. It retains no movement amount or trajectory.
+The runtime owns target selection, initial trigger readiness, algorithm calculation, reset edges, the capacity-one delivery slot, and telemetry publication. Immediately before the serialized device call, the registry verifies that no newer submission superseded the selected command, then `MouseCommandExecutor` rechecks the trigger snapshot, command deadline, and increasing generation. The delivery slot retains at most one complete command and no trajectory.
 
 ## Compatibility Algorithms
 
@@ -95,10 +96,10 @@ Implementation owners:
 - `novasight/control/algorithms/dual_phase_atan_robust_predictive_v2/core.py`
 - `novasight/control/algorithms/dual_phase_atan_robust_predictive_v2/motion_history.py`
 - `novasight/runtime/service.py::_dual_phase_control_command`
-- `novasight/executors/runtime.py::ExecutorRegistry._execute_direct`
+- `novasight/executors/runtime.py::ExecutorRegistry.tick_pending`
 - `novasight/config/runtime.py::ControlAlgorithmConfigs`
 
-Focused integration tests prove that a DetectionBatch produces one hardware call during observation processing, the executor reports `mouse_command_executor`, no Scheduler exists even if the legacy switch is true, and a subsequent control tick emits nothing. A deterministic closed-loop regression also requires limited prediction to reduce post-warmup mean absolute lag versus the `lead_frames=0` feedback baseline.
+Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. A deterministic closed-loop regression also requires limited prediction to reduce post-warmup mean absolute lag versus the `lead_frames=0` feedback baseline.
 
 ## Remaining Blind Spots
 

@@ -547,10 +547,11 @@ def test_target_selector_uses_explicit_control_center_inside_shifted_roi() -> No
     assert selector.last_debug["control_center_roi_px"] == {"x": 360.0, "y": 320.0}
 
 
-def test_same_class_fallback_prefers_nearest_candidate_over_larger_bbox() -> None:
+def test_same_class_fallback_accepts_small_nearest_candidate_over_larger_bbox() -> None:
     selector = RuntimeTargetSelector()
     detections = [
-        Detection(0, 0.90, x=310, y=270, w=20, h=50),
+        # 128 px² was below the removed 256 px² hard area gate.
+        Detection(0, 0.90, x=316, y=304, w=8, h=16),
         Detection(0, 0.90, x=500, y=180, w=100, h=200),
     ]
     first = _context(1, 1_000_000_000, detections)
@@ -576,7 +577,7 @@ def test_same_class_fallback_prefers_nearest_candidate_over_larger_bbox() -> Non
     assert selected.target is not None
     assert selected.target.box == detections[0].box
     candidates = selector.last_debug["tracked_filter"]["candidates"]
-    near = next(item for item in candidates if item["x"] == 310.0)
+    near = next(item for item in candidates if item["x"] == 316.0)
     far = next(item for item in candidates if item["x"] == 500.0)
     assert near["distance_score"] > far["distance_score"]
     assert near["selection_score"] > far["selection_score"]

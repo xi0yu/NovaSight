@@ -52,7 +52,7 @@ def test_supported_control_algorithms_have_product_names_and_capabilities() -> N
     assert robust.capabilities.supports_scheduler is True
     assert robust.capabilities.supports_prediction is True
     assert robust.capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
-    assert robust.capabilities.scheduler_policy_ready is False
+    assert robust.capabilities.scheduler_policy_ready is True
 
 
 def test_python_runtime_default_uses_the_canonical_active_algorithm() -> None:

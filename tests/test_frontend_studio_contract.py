@@ -265,7 +265,7 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
     ):
         assert f'<SectionTitle title="{title}" />' in control_page
     assert (
-        '<SectionTitle title={dualPhaseActive ? "MouseCommandExecutor 与设备发送" '
+        '<SectionTitle title={dualPhaseActive ? "Latest Replace 与设备发送" '
         ': "Scheduler 与设备发送"} />'
     ) in control_page
 
@@ -274,8 +274,10 @@ def test_studio_telemetry_uses_explicit_missing_and_capability_states() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
     assert 'const NO_SAMPLE = "—";' in source
-    assert 'const NOT_INSTRUMENTED = "未接入";' in source
     assert 'const UNAVAILABLE = "不可用";' in source
+    assert 'const NOT_INSTRUMENTED = "未接入";' not in source
+    assert "inflight 估计" not in source
+    assert "发送频率" not in source
 
 
 def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:

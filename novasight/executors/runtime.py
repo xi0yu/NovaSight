@@ -23,18 +23,6 @@ from novasight.executors.mouse_command import MouseCommandExecutor
 from novasight.contracts import ControlIntent
 
 
-def _uses_transitional_single_command_delivery(config: RuntimeConfig) -> bool:
-    """Keep current v2 delivery until the latest-replace executor lands in round two."""
-
-    capabilities = algorithm_definition(
-        str(config.control.active_algorithm)
-    ).capabilities
-    return (
-        capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
-        and not capabilities.scheduler_policy_ready
-    )
-
-
 class ExecutorRegistry:
     def __init__(
         self,
@@ -44,6 +32,7 @@ class ExecutorRegistry:
         scheduler: CommandScheduler | None = None,
         direct_output: bool = False,
         single_command_per_observation: bool = False,
+        latest_replace: bool = False,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
         if default not in self.executors:
@@ -51,9 +40,11 @@ class ExecutorRegistry:
         self.selected = default
         self.policy = policy or ControlOutputPolicy()
         self.single_command_per_observation = bool(single_command_per_observation)
+        self.latest_replace = bool(latest_replace)
         self.scheduler = None if self.single_command_per_observation else scheduler
         self.direct_output = bool(direct_output) or self.single_command_per_observation
         self._config_epoch = 0
+        self._submission_epoch = 0
         self._scheduler_lock = threading.Lock()
         self._executor_lock = threading.Lock()
         self.mouse_command_executor = MouseCommandExecutor(self._executor_lock)
@@ -67,6 +58,7 @@ class ExecutorRegistry:
         scheduler: CommandScheduler | None = None,
         direct_output: bool = False,
         single_command_per_observation: bool = False,
+        latest_replace: bool = False,
     ) -> ExecutorRegistry:
         kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
         return cls(
@@ -78,27 +70,31 @@ class ExecutorRegistry:
             scheduler=scheduler,
             direct_output=direct_output,
             single_command_per_observation=single_command_per_observation,
+            latest_replace=latest_replace,
         )
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
-        single_command = _uses_transitional_single_command_delivery(config)
+        capabilities = algorithm_definition(str(config.control.active_algorithm)).capabilities
+        latest_replace = capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
         return cls.with_builtin_executors(
             config=config,
             default="kmnet",
             policy=policy_from_config(config),
             scheduler=scheduler_from_config(config),
-            direct_output=single_command or not bool(config.control.scheduler_enabled),
-            single_command_per_observation=single_command,
+            direct_output=not latest_replace and not bool(config.control.scheduler_enabled),
+            latest_replace=latest_replace,
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
         selected = "kmnet"
         if selected not in self.executors:
             raise ValueError(f"unknown executor: {selected}")
-        single_command = _uses_transitional_single_command_delivery(config)
-        scheduler = None if single_command else scheduler_from_config(config)
-        direct_output = single_command or not bool(config.control.scheduler_enabled)
+        capabilities = algorithm_definition(str(config.control.active_algorithm)).capabilities
+        latest_replace = capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
+        single_command = False
+        scheduler = scheduler_from_config(config)
+        direct_output = not latest_replace and not bool(config.control.scheduler_enabled)
         policy = policy_from_config(config)
         with self._scheduler_lock:
             self.selected = selected
@@ -106,6 +102,7 @@ class ExecutorRegistry:
             self.scheduler = scheduler
             self.direct_output = direct_output
             self.single_command_per_observation = single_command
+            self.latest_replace = latest_replace
             self._config_epoch += 1
             kmnet = self.executors.get("kmnet")
             if isinstance(kmnet, KmNetExecutor):
@@ -118,11 +115,13 @@ class ExecutorRegistry:
         with self._scheduler_lock:
             bounded = self.policy.apply(intent)
             single_command = self.single_command_per_observation
+            latest_replace = self.latest_replace
             scheduler = None if single_command else self.scheduler
             direct_output = self.direct_output or single_command
             selected = self.selected
             config_epoch = self._config_epoch
             if scheduler is not None:
+                self._submission_epoch += 1
                 decision = scheduler.submit(bounded, emit_immediately=False)
             else:
                 decision = None
@@ -164,6 +163,22 @@ class ExecutorRegistry:
                 metadata={
                     "stage": "scheduler",
                     "selected_executor": selected,
+                    "delivery_mode": "latest_replace" if latest_replace else "scheduler",
+                    "scheduler_enabled": True,
+                    **scheduler_metadata,
+                },
+            )
+        if latest_replace:
+            return ExecutionResult(
+                executor_id=selected,
+                sent=False,
+                intent=decision.output,
+                message="control command rejected before latest-replace delivery",
+                metadata={
+                    "stage": "scheduler",
+                    "selected_executor": selected,
+                    "delivery_mode": "latest_replace",
+                    "scheduler_enabled": True,
                     **scheduler_metadata,
                 },
             )
@@ -306,10 +321,12 @@ class ExecutorRegistry:
     def tick_pending(self, *, now_s: float | None = None) -> ExecutionResult:
         with self._scheduler_lock:
             single_command = self.single_command_per_observation
+            latest_replace = self.latest_replace
             scheduler = None if single_command else self.scheduler
             selected = self.selected
             config_epoch = self._config_epoch
             decision = scheduler.tick(now_s=now_s) if scheduler is not None else None
+            submission_epoch = self._submission_epoch
         if scheduler is None:
             if single_command:
                 return ExecutionResult(
@@ -357,23 +374,43 @@ class ExecutorRegistry:
                     self._config_epoch != config_epoch
                     or self.selected != selected
                     or self.single_command_per_observation
+                    or self.latest_replace != latest_replace
                     or self.scheduler is not scheduler
+                    or (latest_replace and self._submission_epoch != submission_epoch)
                 ):
                     return _scheduler_superseded_result(
                         selected=selected,
                         output=decision.output,
                     )
                 device_send_start_ts_ns = time.monotonic_ns()
-                result = self.executors[selected].execute(decision.output)
-                device_send_end_ts_ns = time.monotonic_ns()
-                scheduler_execution_metadata = scheduler.record_execution_result(
-                    sent=bool(result.sent),
-                    message=str(result.message),
-                    now_s=now_s,
+                executor = self.executors[selected]
+                result = (
+                    self.mouse_command_executor.execute_locked(
+                        executor=executor,
+                        command=decision.output,
+                    )
+                    if latest_replace
+                    else executor.execute(decision.output)
                 )
+                device_send_end_ts_ns = time.monotonic_ns()
+                result_action = str((result.metadata or {}).get("action") or "")
+                if latest_replace and result_action in {"blocked", "zero_output"}:
+                    scheduler_execution_metadata = {
+                        "stage": "scheduler",
+                        "command_status": result_action,
+                        "cooldown": False,
+                    }
+                else:
+                    scheduler_execution_metadata = scheduler.record_execution_result(
+                        sent=bool(result.sent),
+                        message=str(result.message),
+                        now_s=now_s,
+                    )
         metadata = dict(result.metadata or {})
         metadata.update(
             {
+                "delivery_mode": "latest_replace" if latest_replace else "scheduler",
+                "scheduler_enabled": True,
                 "device_send_start_ts_ns": device_send_start_ts_ns,
                 "device_send_end_ts_ns": device_send_end_ts_ns,
                 "device_send_clock_domain": "monotonic",
@@ -403,7 +440,11 @@ class ExecutorRegistry:
             "selected": self.selected,
             "direct_output": self.direct_output,
             "single_command_per_observation": self.single_command_per_observation,
+            "latest_replace": self.latest_replace,
             "delivery_mode": (
+                "latest_replace"
+                if self.latest_replace
+                else
                 "single_command_per_observation"
                 if self.single_command_per_observation
                 else "direct"
@@ -432,6 +473,7 @@ class ExecutorRegistry:
     def clear_scheduler(self, reason: str) -> None:
         with self._scheduler_lock:
             if not self.single_command_per_observation and self.scheduler is not None:
+                self._submission_epoch += 1
                 self.scheduler.clear(reason)
 
     def reset_mouse_command_executor(self) -> None:
@@ -445,7 +487,11 @@ class ExecutorRegistry:
                 "enabled": False,
                 "direct_output": self.direct_output,
                 "single_command_per_observation": self.single_command_per_observation,
+                "latest_replace": self.latest_replace,
                 "delivery_mode": (
+                    "latest_replace"
+                    if self.latest_replace
+                    else
                     "single_command_per_observation"
                     if self.single_command_per_observation
                     else "direct"
@@ -479,11 +525,26 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
 
 
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
-    if _uses_transitional_single_command_delivery(config):
+    latest_replace = (
+        algorithm_definition(str(config.control.active_algorithm)).capabilities.scheduler_policy
+        is SchedulerPolicy.LATEST_REPLACE
+    )
+    if not latest_replace and not bool(config.control.scheduler_enabled):
         return None
-    if not bool(config.control.scheduler_enabled):
-        return None
-    step_x, step_y, configured_interval_ms = _scheduler_delivery_config(config)
+    if latest_replace:
+        precise = config.control.dual_phase_atan_robust_predictive_v2
+        maximum = int(
+            math.ceil(
+                max(
+                    precise.atan.far.max_counts_per_update,
+                    precise.atan.near.max_counts_per_update,
+                )
+            )
+        )
+        step_x, step_y = maximum, maximum
+        configured_interval_ms = float(config.control.scheduler_interval_ms)
+    else:
+        step_x, step_y, configured_interval_ms = _scheduler_delivery_config(config)
     interval_ms = max(1.0, min(10.0, configured_interval_ms))
     interval_s = interval_ms / 1000.0
     capacity = plan_step_capacity(interval_ms)

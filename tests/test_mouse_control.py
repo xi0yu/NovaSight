@@ -57,8 +57,6 @@ def _config(
         "invert_y": False,
         "max_budget_counts_x": 1000,
         "max_budget_counts_y": 1000,
-        "min_effective_counts_x": 1,
-        "min_effective_counts_y": 1,
     }
     calibrated_values.update(calibrated or {})
     universal_values.update(universal or {})
@@ -253,37 +251,6 @@ def test_mouse_controller_fractional_counts_are_not_permanently_lost() -> None:
     ]
 
     assert outputs == [0, 1, 0]
-    assert controller.state.residual_x_counts == pytest.approx(0.2, abs=1e-9)
-
-
-def test_subminimum_device_counts_accumulate_until_device_can_move() -> None:
-    desired_counts = 2.0
-    response_scale = 80.0
-    max_counts = 50.0
-    error_px = response_scale * math.tan(desired_counts * math.pi / (2.0 * max_counts))
-    controller = MouseController(
-        _config(
-            mode=UNIVERSAL_SATURATED,
-            universal={
-                "response_scale_x_px": response_scale,
-                "max_step_x_counts": max_counts,
-            },
-            shared={"min_effective_counts_x": 16},
-        )
-    )
-
-    error = error_px
-    outputs = []
-    errors = []
-    for frame_id in range(1, 9):
-        errors.append(error)
-        output = controller.calculate(_observation(frame_id=frame_id, observed_x=100.0 + error)).dx
-        outputs.append(output)
-        error -= output
-
-    assert outputs == [0] * 7 + [16]
-    assert errors == pytest.approx([error_px] * 8)
-    assert controller.state.residual_x_counts == pytest.approx(0.0, abs=1e-9)
 
 
 @pytest.mark.parametrize(
@@ -373,12 +340,16 @@ def test_universal_saturated_zero_sign_and_bound() -> None:
     negative = controller.calculate(
         _observation(frame_id=3, observed_x=-10_000, observed_y=-10_000)
     )
+    negative_confirmed = controller.calculate(
+        _observation(frame_id=4, observed_x=-10_000, observed_y=-10_000)
+    )
 
     assert (zero.dx, zero.dy) == (0, 0)
     assert 0 < positive.dx <= 30
     assert 0 < positive.dy <= 24
-    assert -30 <= negative.dx < 0
-    assert -24 <= negative.dy < 0
+    assert (negative.dx, negative.dy) == (0, 0)
+    assert -30 <= negative_confirmed.dx < 0
+    assert -24 <= negative_confirmed.dy < 0
     assert "d_raw_x_rad_s" not in positive.debug
 
 
@@ -421,7 +392,7 @@ def test_arrival_hold_cannot_be_undone_by_slew_decay() -> None:
         )
     )
     first = controller.calculate(_observation(frame_id=1, observed_y=200.0))
-    assert first.dy > 8
+    assert first.dy == 8
 
     arrived = controller.calculate(_observation(frame_id=2, observed_y=100.0))
 

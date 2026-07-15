@@ -277,7 +277,6 @@ function clampPercent(value: number): number {
 }
 
 const NO_SAMPLE = "—";
-const NOT_INSTRUMENTED = "未接入";
 const UNAVAILABLE = "不可用";
 
 function formatNumber(value: unknown, digits = 1): string {
@@ -2507,8 +2506,6 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>采集 FPS</span><b>{formatOptionalNumber(captureStatistics.capture_fps, 1, "FPS")}</b>
                 <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(captureArrivalFps, 1, "FPS")}</b>
-                <span>采集抖动</span><b>{NOT_INSTRUMENTED}</b>
-                <span>采集到应用层延迟</span><b>{latestCaptureTimestampSource === "userspace_monotonic_receive" ? UNAVAILABLE : NOT_INSTRUMENTED}</b>
                 <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
               </div>
             </div>
@@ -2834,7 +2831,7 @@ export function StudioConsoleView({
                 <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
                 <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
                 <span>输入数据类型</span><b>{inferenceInputDtype || NO_SAMPLE}</b>
-                <span>输入布局</span><b>{inferenceInputLayout || NOT_INSTRUMENTED}</b>
+                <span>输入布局</span><b>{inferenceInputLayout || UNAVAILABLE}</b>
                 <span>输入准备耗时</span><b>{formatOptionalNumber(inferencePreprocessMs, 3, "ms")}</b>
                 <span>CUDA 上传耗时</span><b>{formatOptionalNumber(inferenceUploadMs, 3, "ms")}</b>
               </div>
@@ -2843,9 +2840,7 @@ export function StudioConsoleView({
               <SectionTitle title="TensorRT 执行" />
               <div className="console-kv">
                 <span>TensorRT enqueue 耗时</span><b>{formatOptionalNumber(inferenceEnqueueMs, 3, "ms")}</b>
-                <span>GPU 核心执行耗时</span><b>{NOT_INSTRUMENTED}</b>
                 <span>CUDA stream 同步等待</span><b>{formatOptionalNumber(inferenceSyncWaitMs, 3, "ms")}</b>
-                <span>推理核心耗时</span><b>{NOT_INSTRUMENTED}</b>
                 <span>推理线程总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 3, "ms")}</b>
               </div>
             </div>
@@ -2993,17 +2988,15 @@ export function StudioConsoleView({
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title={dualPhaseActive ? "MouseCommandExecutor 与设备发送" : "Scheduler 与设备发送"} />
+              <SectionTitle title={dualPhaseActive ? "Latest Replace 与设备发送" : "Scheduler 与设备发送"} />
               <div className="console-kv">
                 <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
                 <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
                 <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
                 <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
-                <span>{dualPhaseActive ? "发送语义" : "待执行 counts"}</span><b>{dualPhaseActive ? "每观测至多一次 move" : formatPoint(schedulerStatus.pending_dx, schedulerStatus.pending_dy, 0, "counts")}</b>
+                <span>{dualPhaseActive ? "发送语义" : "待执行 counts"}</span><b>{dualPhaseActive ? "仅保留最新观测" : formatPoint(schedulerStatus.pending_dx, schedulerStatus.pending_dy, 0, "counts")}</b>
                 <span>本次发送 counts</span><b>{execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0, "counts") : NO_SAMPLE}</b>
-                <span>{dualPhaseActive ? "跨帧剩余计划" : "剩余 pending steps"}</span><b>{dualPhaseActive ? "无" : formatOptionalInteger(schedulerStatus.pending_steps)}</b>
-                <span>inflight 估计</span><b>{NOT_INSTRUMENTED}</b>
-                <span>发送频率</span><b>{NOT_INSTRUMENTED}</b>
+                <span>{dualPhaseActive ? "待发送最新命令" : "剩余 pending steps"}</span><b>{formatOptionalInteger(schedulerStatus.pending_steps)}</b>
                 <span>设备发送耗时</span><b>{controlSendDuration}</b>
                 <span>最后发送时间</span><b>{formatOptionalInteger(execution.device_send_end_ts_ns ?? executionMeta.device_send_end_ts_ns)}</b>
                 {!dualPhaseActive ? <><span>旧计划截断次数</span><b>{formatOptionalInteger(schedulerStatus.cancelled_pending)}</b><span>最近取消原因</span><b>{readString(schedulerStatus.last_cancel_reason, "") || NO_SAMPLE}</b></> : null}
@@ -3021,7 +3014,7 @@ export function StudioConsoleView({
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="默认瞄点 Y" value={aimYRatio.toFixed(2)} small={`${Object.keys(activeClassAimRatios).length} 个类别覆盖`} />
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
-            <Metric title="发送方式" value={dualPhaseActive ? "单观测单命令" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? "MouseCommandExecutor" : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+            <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
             <div className="console-grid2" data-algorithm-page={controlMode}>
               <div className="console-card">
@@ -3074,9 +3067,10 @@ export function StudioConsoleView({
                 />
                 {dualPhaseActive ? (
                   <div className="console-kv compact-kv">
-                    <span>输出执行器</span><b>MouseCommandExecutor</b>
-                    <span>每个推理结果</span><b>至多一次 move(dx, dy)</b>
-                    <span>轨迹 Scheduler</span><b>不参与</b>
+                    <span>输出交付</span><b>Latest Replace</b>
+                    <span>每个推理结果</span><b>覆盖尚未发送的旧命令</b>
+                    <span>待发送容量</span><b>1 条完整命令</b>
+                    <span>设备发送校验</span><b>MouseCommandExecutor</b>
                     <span>误差死区</span><b>不使用</b>
                   </div>
                 ) : (
@@ -3271,9 +3265,10 @@ export function StudioConsoleView({
               <label>命令调度</label>
               {dualPhaseActive ? (
                 <div className="console-kv compact-kv">
-                  <span>执行层</span><b>MouseCommandExecutor</b>
-                  <span>行为</span><b>当前观测整数 counts 直接发送一次</b>
-                  <span>Scheduler</span><b>此算法固定绕过</b>
+                  <span>执行层</span><b>Latest Replace Scheduler</b>
+                  <span>行为</span><b>新观测覆盖未发送的旧命令</b>
+                  <span>待发送容量</span><b>1 条完整命令</b>
+                  <span>最终校验</span><b>MouseCommandExecutor</b>
                 </div>
               ) : (
                 <>

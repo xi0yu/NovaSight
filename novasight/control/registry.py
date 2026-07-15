@@ -68,7 +68,7 @@ _ALGORITHM_DEFINITIONS = (
             supports_scheduler=True,
             supports_prediction=True,
             scheduler_policy=SchedulerPolicy.LATEST_REPLACE,
-            scheduler_policy_ready=False,
+            scheduler_policy_ready=True,
         ),
     ),
 )

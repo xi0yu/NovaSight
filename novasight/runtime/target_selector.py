@@ -608,8 +608,6 @@ class RuntimeTargetSelector:
             return "no candidate inside selection fov"
         if reasons and all(reason == "ratio_check" for reason in reasons):
             return "no candidate after ratio check"
-        if reasons and all(reason == "area_filter" for reason in reasons):
-            return "no candidate after area filter"
         return "no candidate after association candidate filter"
 
     def _lost_or_clear(

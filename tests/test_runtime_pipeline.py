@@ -13,7 +13,7 @@ from novasight.capture.session import CaptureSession
 from novasight.capture.source import CapturedFrame, GstAppSinkFrameSource
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
-from novasight.contracts import Detection, DetectionBatch, FrameContext, Track
+from novasight.contracts import ControlIntent, Detection, DetectionBatch, FrameContext, Track
 from novasight.executors import BoxInputState
 from novasight.executors import ExecutionResult, ExecutorRegistry
 from novasight.inference.contracts import InferenceResult
@@ -1237,13 +1237,12 @@ def test_scheduler_disabled_sends_detection_budget_in_observation_call() -> None
     assert executors.scheduler is None
 
 
-def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() -> None:
+def test_dual_phase_algorithm_delivers_latest_observation_on_control_tick() -> None:
     algorithm_id = "dual_phase_atan_robust_predictive_v2"
     config = RuntimeConfig()
     config.control.active_algorithm = algorithm_id
     config.control.trigger_mode = "always"
-    # This legacy switch is deliberately left enabled: the algorithm contract
-    # must still bypass the trajectory Scheduler unconditionally.
+    # V2 uses latest-replace even when this legacy switch is enabled.
     config.control.scheduler_enabled = True
     kmnet = _UnavailableButtonKmNet()
     executors = ExecutorRegistry.from_config(config)
@@ -1254,7 +1253,7 @@ def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() ->
         executors=executors,
     )
     service.running = True
-    capture_ts_ns = time.monotonic_ns()
+    capture_ts_ns = time.monotonic_ns() - 10_000_000
     batch = DetectionBatch(
         frame_id=1,
         generation=1,
@@ -1275,26 +1274,93 @@ def test_dual_phase_algorithm_sends_exactly_one_command_per_detection_batch() ->
         roi_offset_x=600,
         roi_offset_y=220,
     )
+    latest_result = service.process_detection_batch(
+        DetectionBatch(
+            frame_id=2,
+            generation=2,
+            capture_ts_ns=capture_ts_ns + 5_000_000,
+            inference_start_ts_ns=capture_ts_ns + 5_001_000,
+            inference_end_ts_ns=capture_ts_ns + 5_002_000,
+            detections=[Detection(cls=0, score=0.95, x1=334, y1=250, x2=494, y2=568)],
+            classes=["target"],
+            coordinate_space="roi",
+        ),
+        width=640,
+        height=640,
+        source_width=1920,
+        source_height=1080,
+        roi_offset_x=600,
+        roi_offset_y=220,
+    )
     tick_result = service.process_control_tick()
 
-    assert executors.scheduler is None
-    assert executors.single_command_per_observation is True
+    assert executors.scheduler is not None
+    assert executors.single_command_per_observation is False
+    assert executors.latest_replace is True
     assert len(observation_result.control_intents) == 1
     assert len(observation_result.execution_results) == 1
-    assert observation_result.execution_results[0].sent is True
-    assert observation_result.execution_results[0].metadata["stage"] == "mouse_command_executor"
-    assert (
-        observation_result.execution_results[0].metadata["delivery_mode"]
-        == "single_command_per_observation"
-    )
+    assert observation_result.execution_results[0].sent is False
+    assert observation_result.execution_results[0].metadata["stage"] == "scheduler"
+    assert observation_result.execution_results[0].metadata["action"] == "replace_plan"
+    assert latest_result.execution_results[0].metadata["source_frame_id"] == 2
+    assert len(tick_result.execution_results) == 1
+    assert tick_result.execution_results[0].sent is True
+    assert tick_result.execution_results[0].intent.source_frame_id == 2
     assert len(kmnet.outputs) == 1
     assert int(kmnet.outputs[0].dx) != 0
-    assert tick_result.execution_results == []
-    assert len(kmnet.outputs) == 1
     assert service.last_control is not None
-    assert service.last_control["pipeline"]["scheduler_used"] is False
+    assert service.last_control["pipeline"]["scheduler_used"] is True
     assert service.last_control["pipeline"]["algorithm"] == algorithm_id
     assert service.last_control["pipeline"]["executor_success"] is True
+
+
+def test_latest_replace_discards_popped_command_when_newer_observation_arrives() -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
+    kmnet = _TriggeredKmNet()
+    executors = ExecutorRegistry.from_config(config)
+    executors.executors["kmnet"] = kmnet
+    expires_ts_ns = time.monotonic_ns() + 1_000_000_000
+
+    def intent(frame_id: int, dx: int) -> ControlIntent:
+        return ControlIntent(
+            dx=dx,
+            dy=0,
+            action="move",
+            confidence=1.0,
+            reason="test",
+            source_id="test",
+            source_frame_id=frame_id,
+            source_track_id=1,
+            trajectory_generation=frame_id,
+            trigger_required=True,
+            trigger_active=True,
+            command_expires_ts_ns=expires_ts_ns,
+        )
+
+    executors.execute(intent(1, 10))
+    executors._executor_lock.acquire()
+    tick_results: list[ExecutionResult] = []
+    thread = threading.Thread(target=lambda: tick_results.append(executors.tick_pending()))
+    try:
+        thread.start()
+        deadline = time.monotonic() + 1.0
+        while executors.status()["scheduler"]["has_pending"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        executors.execute(intent(2, 20))
+    finally:
+        executors._executor_lock.release()
+        thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert tick_results[0].sent is False
+    assert tick_results[0].metadata["action"] == "scheduler_superseded"
+    assert kmnet.outputs == []
+
+    latest = executors.tick_pending(now_s=time.monotonic() + 0.010)
+    assert latest.sent is True
+    assert [(output.source_frame_id, output.dx) for output in kmnet.outputs] == [(2, 20)]
 
 
 def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
@@ -1338,6 +1404,10 @@ def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
             roi_offset_y=220,
         )
 
+    tick_result = service.process_control_tick()
+
+    assert len(tick_result.execution_results) == 1
+    assert tick_result.execution_results[0].sent is True
     assert len(kmnet.outputs) == 1
     assert (kmnet.outputs[0].dx, kmnet.outputs[0].dy) == (0, 1)
     assert service.last_control is not None
@@ -1388,7 +1458,6 @@ def test_dual_phase_rejects_late_batch_after_terminal_runtime_state(
         roi_offset_x=600,
         roi_offset_y=220,
     )
-
     assert result.control_intents == []
     assert result.execution_results == []
     assert kmnet.outputs == []
@@ -1442,7 +1511,7 @@ def test_terminal_state_remains_authoritative_over_concurrent_batch_rejection(
     assert service.last_inference_status["reason"] == "RUNTIME_STOPPED"
 
 
-def test_dual_phase_preserves_zero_generation_through_single_command_path() -> None:
+def test_dual_phase_preserves_zero_generation_through_latest_replace_path() -> None:
     config = RuntimeConfig()
     config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     config.control.trigger_mode = "always"
@@ -1476,11 +1545,13 @@ def test_dual_phase_preserves_zero_generation_through_single_command_path() -> N
         roi_offset_x=600,
         roi_offset_y=220,
     )
+    tick_result = service.process_control_tick()
 
     assert service.last_frame_context is not None
     assert service.last_frame_context.generation == 0
     assert result.control_intents[0].trajectory_generation == 0
-    assert result.execution_results[0].metadata["command_generation"] == 0
+    assert result.execution_results[0].metadata["trajectory_generation"] == 0
+    assert tick_result.execution_results[0].intent.trajectory_generation == 0
     assert service.last_control is not None
     assert service.last_control["trajectory_generation"] == 0
     assert service.last_control["pipeline"]["generation"] == 0

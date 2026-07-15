@@ -20,10 +20,11 @@ latest valid DetectionBatch
 -> calibrated full correction counts
 -> counts-domain control atan and per-update clamp
 -> truncating fractional quantizer
--> one MouseCommandExecutor device call
+-> capacity-one latest-replace slot
+-> MouseCommandExecutor validation and device call on output tick
 ```
 
-There is no algorithm-layer trajectory Scheduler. A new inference result never finishes, replaces, or repays an older movement plan because no such plan exists.
+There is no algorithm-layer trajectory plan. The delivery scheduler retains one complete unsent command, and a new inference result replaces the older command without merging or repaying its counts. A command waiting for the device lock is rechecked against the latest submission epoch; a driver call already in progress cannot be cancelled.
 
 ## State Ownership
 
@@ -113,7 +114,7 @@ accumulator -= integer
 
 Opposite demand clears an old-direction fraction. Trigger release, stale blocking, target switch/loss, geometry change, or runtime reset clears unsent fractions. Trigger-inactive observations never bank output counts.
 
-Every accepted observation yields at most one integer `move(dx, dy)`. V2 configuration validation requires each per-update limit to remain in `(0, 127]`; defaults are FAR 127 and NEAR 72 counts. `MouseCommandExecutor` also rejects non-integer counts and values outside its declared device range before the driver call.
+Every accepted observation yields at most one complete integer command for the capacity-one latest-replace slot. An independent output tick takes the newest command; scheduler step limits equal V2's per-update maximum, so it is never split into a trajectory. V2 configuration validation requires each per-update limit to remain in `(0, 127]`; defaults are FAR 127 and NEAR 72 counts. `MouseCommandExecutor` also rejects non-integer counts and values outside its declared device range before the driver call.
 
 The frame-normalized profile uses FAR Kp `0.45`, NEAR Kp `0.22`, shared Atan scale `256`, one configured lead frame, and a three-frame velocity smoothing window.
 

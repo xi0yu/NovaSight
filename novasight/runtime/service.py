@@ -495,7 +495,7 @@ class RuntimeService:
             counts_per_360_y = 0.0
             invert_y = self.config.control.shared.invert_y
         delivery_stage = (
-            "MouseCommandExecutor(single-command-per-observation)"
+            "LatestReplaceScheduler"
             if is_dual_phase
             else "CommandScheduler"
             if bool(self.config.control.scheduler_enabled)
@@ -613,7 +613,7 @@ class RuntimeService:
             for result in execution_results:
                 if self._is_robust_predictive_active() and not bool(
                     getattr(result, "sent", False)
-                ):
+                ) and not self._execution_is_pending_latest_replace(result):
                     # A failed or blocked device call must not leave fractional
                     # demand from an unsent observation to a later frame.
                     self._active_robust_predictive_controller().release_trigger()
@@ -650,9 +650,6 @@ class RuntimeService:
 
     def process_control_tick(self) -> RuntimeFrameResult:
         if self._is_robust_predictive_active():
-            # No command is emitted here. The tick only observes release/stop
-            # edges so fractional counts cannot survive between inference
-            # results.
             with self._control_lock:
                 if not self.running:
                     self._reset_control_motion_state()
@@ -664,7 +661,7 @@ class RuntimeService:
                 ):
                     self._active_robust_predictive_controller().release_trigger()
                     self._clear_pending_commands("TRIGGER_INACTIVE")
-            return self._empty_runtime_frame_result()
+                    return self._empty_runtime_frame_result()
         tick_pending = getattr(self.executors, "tick_pending", None)
         if not callable(tick_pending):
             return self._empty_runtime_frame_result()
@@ -693,6 +690,14 @@ class RuntimeService:
             control_intents=[],
             execution_results=[result],
             observation_updated=False,
+        )
+
+    @staticmethod
+    def _execution_is_pending_latest_replace(result: Any) -> bool:
+        metadata = getattr(result, "metadata", {}) or {}
+        return bool(
+            isinstance(metadata, dict)
+            and metadata.get("action") in {"replace_plan", "hold_latest"}
         )
 
     @staticmethod
@@ -3108,8 +3113,8 @@ class RuntimeService:
             "bbox_height": max(0.0, observation.bbox_y2 - observation.bbox_y1),
             "detection_confidence": observation.detection_confidence,
             "track_confidence": observation.track_confidence,
-            "delivery_mode": "single_command_per_observation",
-            "scheduler_used": False,
+            "delivery_mode": "latest_replace",
+            "scheduler_used": True,
         }
         block_reason = str(decision.block_reason or "")
         control_allowed = block_reason in {"", "TRIGGER_INACTIVE"}
@@ -3444,8 +3449,6 @@ class RuntimeService:
                 code = "OUTSIDE_TARGET_FOV"
             elif reason_codes == {"ratio_check"}:
                 code = "BBOX_RATIO_REJECTED"
-            elif reason_codes == {"area_filter"}:
-                code = "BBOX_AREA_REJECTED"
             else:
                 code = "ASSOCIATION_FILTER_REJECTED"
             stage, message = (
@@ -4097,6 +4100,9 @@ class RuntimeService:
             "output_dy": float(getattr(intent, "dy", 0.0)),
             "move_kind": str(getattr(intent, "move_kind", "")),
             "move_ms": int(getattr(intent, "move_ms", 0)),
+            "source_frame_id": getattr(intent, "source_frame_id", None),
+            "source_track_id": getattr(intent, "source_track_id", None),
+            "trajectory_generation": getattr(intent, "trajectory_generation", None),
             "intent": {
                 "dx": float(getattr(intent, "dx", 0.0)),
                 "dy": float(getattr(intent, "dy", 0.0)),
@@ -4118,6 +4124,14 @@ class RuntimeService:
 
     def _attach_execution_to_last_control(self, execution: dict[str, Any]) -> None:
         if not isinstance(self.last_control, dict):
+            return
+        execution_frame_id = execution.get("source_frame_id")
+        control_frame_id = self.last_control.get("frame_id")
+        if (
+            isinstance(execution_frame_id, int)
+            and isinstance(control_frame_id, int)
+            and execution_frame_id != control_frame_id
+        ):
             return
         metadata = execution.get("metadata") if isinstance(execution, dict) else {}
         if not isinstance(metadata, dict):

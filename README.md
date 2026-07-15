@@ -114,7 +114,8 @@ GC553G2/V4L2 -> nvv4l2decoder -> nvvidconv ROI/resize
 -> C++ YOLO parser -> DeepStream NMS -> NvDsObjectMeta
 -> DetectionBatchMailbox capacity=1 -> DetectionBatch
 -> Tracker/Selector -> isolated control algorithm
--> V2 MouseCommandExecutor direct send (legacy algorithms may use Scheduler)
+-> V2 capacity-one latest-replace delivery (legacy algorithms use configured delivery)
+-> MouseCommandExecutor safety validation
 -> kmNet
 ```
 

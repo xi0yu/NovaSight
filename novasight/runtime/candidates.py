@@ -61,15 +61,12 @@ class AssociationCandidateFilter:
         center_y_px: float,
         radius_px: float,
         max_aspect_ratio: float,
-        min_area_ratio: float = 256.0 / (640.0 * 640.0),
     ) -> AssociationCandidateFilterResult:
         source = list(observations)
         accepted: list[TrackObservation] = []
         rejected: list[dict] = []
         radius = max(0.0, float(radius_px))
         max_aspect = max(1.0, float(max_aspect_ratio))
-        frame_area = max(1.0, float(context.width) * float(context.height))
-        min_area = max(0.0, float(min_area_ratio)) * frame_area
         for observation in source:
             width = float(observation.bbox.width)
             height = float(observation.bbox.height)
@@ -80,8 +77,6 @@ class AssociationCandidateFilter:
             reason = ""
             if radius <= 0.0 or distance > radius:
                 reason = "selection_fov"
-            elif float(observation.bbox.area) < min_area:
-                reason = "area_filter"
             elif min(width, height) <= 0.0 or max(width / height, height / width) > max_aspect:
                 reason = "ratio_check"
             if reason:

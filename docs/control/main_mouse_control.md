@@ -1,6 +1,6 @@
 # NovaSight Main Mouse Control
 
-Date: 2026-07-13
+Date: 2026-07-15
 
 Status: `dual_phase_atan_robust_predictive_v2` is the configured precise mainline. `ttbox_pid_atan` and `dual_phase_atan_predictive_v1` have been removed.
 
@@ -20,17 +20,19 @@ latest DetectionBatch
 -> counts-domain Atan shaping
 -> per-observation output clamp
 -> truncating integer quantizer
+-> capacity-one latest-replace slot
 -> MouseCommandExecutor
--> exactly one move(dx, dy)
+-> at most one move(dx, dy) per output tick
 ```
 
-The algorithm recalculates from the next real observation. It creates no trajectory plan, stores no unexecuted movement target, and has no Scheduler tick.
+The algorithm recalculates from each real observation and creates no trajectory plan. Delivery retains at most one complete unsent command; a newer observation replaces it, and the independent output tick sends only the current command.
 
 ```text
-frame 1 -> move(20, 3)
-frame 2 -> move(14, 2)
-frame 3 -> move(7, 1)
-frame 4 -> move(2, 0)
+frame 1 -> pending(20, 3)
+frame 2 -> replace pending(14, 2)
+output tick -> move(14, 2)
+frame 3 -> pending(7, 1)
+output tick -> move(7, 1)
 ```
 
 `Kp + Atan + max_counts_per_update` already implement the incremental closed-loop approach. Splitting that increment again would create a stale open-loop tail and double-slow the response.
@@ -54,7 +56,7 @@ The first class ID in `inference.detection_class_priority` receives `class_score
 
 The aim rule is shared by every controller: X is always bbox center and Y is `bbox_top + bbox_height * effective_y_ratio`. `control.aim.y_ratio` defaults to `0.22`; `control.aim.class_y_ratios.<detection_profile>.<class_id>` can override it. Candidate tracking and final control projection resolve the same effective ratio. Legacy V2-local aim configuration is migrated into the shared owner and is not read by the runtime.
 
-Model detections are mapped back into ROI coordinates before selection. Selection radius uses 640-ROI reference pixels and the minimum-area gate uses an ROI-area ratio, so equivalent geometry produces the same component scores for ROI sizes from 320 through 640. This cannot prioritize a class-1 object that the model did not detect.
+Model detections are mapped back into ROI coordinates before selection. Selection radius uses 640-ROI reference pixels, while bbox area remains soft quality evidence rather than a hard rejection gate. This cannot prioritize a class-1 object that the model did not detect.
 
 Target switching still requires composite-score advantage, Tracker continuity, and the configured confirmation delay. The score chooses a challenger; it does not bypass target-lock safety.
 
@@ -95,11 +97,11 @@ Consequently, `prediction.lead_frames`, `atan.far.kp`, and similarly named value
 
 | Algorithm ID | Error/units | Prediction | Near behavior | Delivery |
 | --- | --- | --- | --- | --- |
-| `dual_phase_atan_robust_predictive_v2` | measured ROI px -> source px -> radians -> full counts -> counts-domain Atan | four positions, three `px/ms` velocities, median, dynamic EMA, confidence and caps | one NEAR threshold; all other error is FAR; no movement deadzone | one direct integer command per observation |
+| `dual_phase_atan_robust_predictive_v2` | measured ROI px -> source px -> radians -> full counts -> counts-domain Atan | four positions, three `px/ms` velocities, median, dynamic EMA, confidence and caps | one NEAR threshold; all other error is FAR; no movement deadzone | capacity-one latest-replace slot; output tick sends newest |
 | `calibrated_angular` | full-space angular PD | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 | `universal_saturated` | empirical pixel-domain saturated Atan | legacy Tracker prediction | shared legacy deadzone/slew | legacy direct or Scheduler setting |
 
-The new algorithm bypasses the legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and Scheduler capacity cannot alter its result. Shared recoil configuration is explicitly copied into the V2 algorithm and is therefore the only shared output effect on this path.
+The new algorithm bypasses the legacy `MouseController` envelope, so legacy Y prediction, deadzone, arrival state, slew limit, rounding residual, and trajectory splitting cannot alter its result. Shared recoil configuration is explicitly copied into the V2 algorithm and is therefore the only shared output effect on this path.
 
 ## Measured And Control Error
 
@@ -145,7 +147,7 @@ u = clamp(u, -max_counts_per_update, max_counts_per_update)
 
 The motion estimator uses adjacent `capture_ts_ns` deltas converted to milliseconds; controller Kp remains the configured per-observation gain. No D term or velocity feed-forward is added.
 
-## Integer Quantizer And Direct Executor
+## Integer Quantizer And Latest-Replace Delivery
 
 The quantizer retains only sub-count demand:
 
@@ -157,12 +159,15 @@ accumulator -= integer_count
 
 Direction changes clear the opposite-direction residual. Trigger-inactive observations may continue updating the motion estimate, but the quantizer is cleared and cannot bank historical movement.
 
-`MouseCommandExecutor` rechecks the trigger snapshot, freshness deadline, and monotonically increasing generation immediately before its serialized device invocation, then reports timing or failure. It does not:
+The delivery scheduler retains one complete integer command. A newer observation replaces an unsent older command, including one already removed from the slot but still waiting for the device lock. The output tick does not split the command because its step limit equals V2's configured per-update maximum.
+
+`MouseCommandExecutor` then rechecks the trigger snapshot, freshness deadline, and monotonically increasing generation immediately before its serialized device invocation. Together, the delivery path does not:
 
 - split a command into a trajectory;
-- retain pending counts across observations;
-- run an independent send tick;
-- finish an old frame after a newer frame arrives.
+- merge or repay pending counts across observations;
+- send a superseded command that has not entered the driver call.
+
+An already-running driver call cannot be cancelled; latest-replace governs commands that have not entered that call.
 
 V2 restricts configured per-observation limits to at most 127 counts. The executor additionally rejects non-integer or out-of-device-range values before calling the driver. Any unavoidable transport fragmentation belongs below the control algorithm, must complete promptly, and must remain discardable by newer input.
 
@@ -177,8 +182,8 @@ Target loss, runtime restart, algorithm/config/calibration changes, and capture/
 The decision trace includes identity/timestamps, aim/bbox, measured/control errors, FAR/NEAR state, four-point history count, three `px/ms` velocities, median/EMA/spread/confidence, reference dt, configured/effective lead frames, prediction caps/offset, recoil feedforward, full correction counts, float demand, integer command, quantizer residual, zero-cross state, and block reason, plus:
 
 ```text
-delivery_mode: single_command_per_observation
-scheduler_used: false
+delivery_mode: latest_replace
+scheduler_used: true
 ```
 
 See `docs/control/dual_phase_atan_robust_predictive_v2.md` for the frozen V2 implementation contract and tuning boundaries.

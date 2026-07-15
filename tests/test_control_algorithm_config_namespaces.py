@@ -55,7 +55,7 @@ def test_removed_active_algorithms_migrate_to_robust_v2(removed_algorithm: str) 
     assert removed_algorithm not in serialized["algorithms"]
 
 
-def test_robust_v2_never_builds_scheduler() -> None:
+def test_robust_v2_builds_mandatory_latest_replace_scheduler() -> None:
     config = parse_runtime_config(
         {
             "control": {
@@ -64,7 +64,7 @@ def test_robust_v2_never_builds_scheduler() -> None:
             }
         }
     )
-    assert scheduler_from_config(config) is None
+    assert scheduler_from_config(config) is not None
 
 
 def test_robust_v2_namespace_uses_single_threshold_and_shared_atan_scale() -> None:
@@ -105,9 +105,11 @@ def test_robust_v2_namespace_uses_single_threshold_and_shared_atan_scale() -> No
     assert "scale_counts" not in robust["atan"]["far"]
     assert "scale_counts" not in robust["atan"]["near"]
     assert "dual_phase_atan_predictive_v1" not in serialized
-    assert scheduler_from_config(config) is None
+    assert scheduler_from_config(config) is not None
     executors = ExecutorRegistry.from_config(config)
-    assert executors.single_command_per_observation is True
+    assert executors.single_command_per_observation is False
+    assert executors.latest_replace is True
+    assert executors.scheduler is not None
     assert executors.policy.max_abs_dx == 127
     assert executors.policy.max_abs_dy == 127
 
