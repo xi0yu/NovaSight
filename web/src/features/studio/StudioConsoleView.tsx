@@ -1,4 +1,4 @@
-import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
   CaptureCapabilitiesResponse,
@@ -36,13 +36,13 @@ import {
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
-import { NovaIcon, StatusBadge, ThemeToggle, type NovaIconName } from "../../components/visual";
+import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
 import { ModelCatalogTree } from "../models/ModelCatalogTree";
-
-type ConsolePage = "capture" | "infer" | "control" | "params" | "control-test" | "stats" | "latency";
-
-const DEFAULT_CONSOLE_PAGE: ConsolePage = "capture";
-const CONSOLE_PAGES = new Set<ConsolePage>(["capture", "infer", "control", "params", "control-test", "stats", "latency"]);
+import { AdvancedSettingsDialog } from "./AdvancedSettingsDialog";
+import { ClassAimRatioControl, CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
+import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
+import { StudioPageHeader } from "./StudioPageHeader";
+import { Bar, Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
 
 const CONTROL_ALGORITHM_OPTIONS = [
   {
@@ -89,16 +89,6 @@ type LaunchStage = {
   title: string;
   caption: string;
 };
-
-const navItems: { id: ConsolePage; index: string; label: string; icon: NovaIconName }[] = [
-  { id: "capture", index: "01", label: "采集", icon: "capture" },
-  { id: "infer", index: "02", label: "模型推理", icon: "inference" },
-  { id: "control", index: "03", label: "控制", icon: "control" },
-  { id: "params", index: "04", label: "参数设置", icon: "settings" },
-  { id: "control-test", index: "05", label: "控制测试", icon: "kmbox" },
-  { id: "stats", index: "06", label: "统计", icon: "performance" },
-  { id: "latency", index: "07", label: "采集延迟", icon: "latency" }
-];
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 
@@ -2478,29 +2468,21 @@ export function StudioConsoleView({
           <div className="console-group">
             <StatusBadge status={health?.ok ? "normal" : "error"} icon={health?.ok ? "check-circle" : "plug-off"} label={health?.ok ? "后端在线" : "后端离线"} size="sm" />
             <ThemeToggle />
-            <div className="console-pill"><NovaIcon name="account" size={14} />退出</div>
             <div className={realtimeStatusClass}>{realtimeStatusText} · {formatDate(lastUpdated)}</div>
           </div>
         </div>
       </header>
 
       <aside className="console-sidebar">
-        {navItems.map((item) => (
-          <button
-            className={activePage === item.id ? "console-nav active" : "console-nav"}
-            key={item.id}
-            onClick={() => navigatePage(item.id)}
-            type="button"
-          >
-            <span className="console-nav-icon">
-              <NovaIcon name={item.icon} size={19} />
-            </span>
-            <b>{item.label}</b>
-          </button>
-        ))}
+        <StudioNavigation activePage={activePage} onNavigate={navigatePage} />
       </aside>
 
       <main className="console-main">
+        <StudioPageHeader
+          page={activePage}
+          runtimeRunning={runtime?.running === true}
+          realtimeConnected={realtimeStatus === "connected"}
+        />
         <section className="console-process">
           <div className="console-process-state">
             <NovaIcon name="activity-pulse" size={16} />
@@ -4142,485 +4124,6 @@ export function StudioConsoleView({
   );
 }
 
-function AdvancedSettingsDialog({
-  open,
-  eyebrow,
-  title,
-  description,
-  footerNote,
-  onClose,
-  children
-}: {
-  open: boolean;
-  eyebrow: string;
-  title: string;
-  description: string;
-  footerNote: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose, open]);
-
-  if (!open) {
-    return null;
-  }
-  const dialogId = `advanced-dialog-${title.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, "-")}`;
-  return (
-    <div
-      className="advanced-settings-dialog-layer"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <section aria-labelledby={dialogId} aria-modal="true" className="advanced-settings-dialog" role="dialog">
-        <header className="advanced-settings-dialog-header">
-          <div>
-            <span className="class-config-eyebrow">{eyebrow}</span>
-            <h2 id={dialogId}>{title}</h2>
-            <p>{description}</p>
-          </div>
-          <button aria-label={`关闭${title}`} className="launch-dialog-close" onClick={onClose} type="button">
-            <NovaIcon name="x-circle" size={18} />
-          </button>
-        </header>
-        <div className="advanced-settings-dialog-body">{children}</div>
-        <footer className="advanced-settings-dialog-footer">
-          <span>{footerNote}</span>
-          <button className="console-button primary" onClick={onClose} type="button">完成</button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function NumberControl({
-  label,
-  detail,
-  value,
-  min,
-  max,
-  step,
-  onCommit
-}: {
-  label: string;
-  detail?: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onCommit: (value: number) => Promise<void> | void;
-}) {
-  return (
-    <>
-      <label title={detail}>{label}</label>
-      <CommitNumberControl
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        digits={step >= 1 ? 0 : 2}
-        onCommit={onCommit}
-      />
-    </>
-  );
-}
-
-function CommitNumberControl({
-  value,
-  min,
-  max,
-  step,
-  digits,
-  onCommit
-}: {
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  digits: number;
-  onCommit: (value: number) => Promise<void> | void;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [isEditing, setIsEditing] = useState(false);
-  const committingRef = useRef(false);
-
-  useEffect(() => {
-    if (!isEditing) {
-      setDraft(value);
-    }
-  }, [isEditing, value]);
-
-  const commit = useCallback(() => {
-    if (committingRef.current) {
-      return;
-    }
-    const next = clampNumber(Number(draft.toFixed(digits)), min, max);
-    if (Math.abs(next - value) >= step / 2) {
-      committingRef.current = true;
-      setDraft(next);
-      void Promise.resolve(onCommit(next)).finally(() => {
-        committingRef.current = false;
-        setIsEditing(false);
-      });
-    } else {
-      setDraft(value);
-      setIsEditing(false);
-    }
-  }, [draft, digits, max, min, onCommit, step, value]);
-
-  return (
-    <div className="console-row">
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={draft}
-        onBlur={commit}
-        onChange={(event) => {
-          setIsEditing(true);
-          setDraft(clampNumber(Number(event.target.value), min, max));
-        }}
-        onFocus={() => setIsEditing(true)}
-        onPointerDown={() => setIsEditing(true)}
-        onMouseUp={commit}
-        onPointerUp={commit}
-        onTouchEnd={commit}
-      />
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={Number.isInteger(draft) ? String(draft) : draft.toFixed(digits)}
-        onBlur={commit}
-        onFocus={() => setIsEditing(true)}
-        onChange={(event) => {
-          const next = Number(event.target.value);
-          if (Number.isFinite(next)) {
-            setIsEditing(true);
-            setDraft(clampNumber(next, min, max));
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </div>
-  );
-}
-
-function TextControl({
-  label,
-  value,
-  onCommit
-}: {
-  label: string;
-  value: string;
-  onCommit: (value: string) => Promise<void> | void;
-}) {
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-
-  const commit = useCallback(() => {
-    const next = draft.trim();
-    if (next !== value) {
-      void onCommit(next);
-    }
-  }, [draft, onCommit, value]);
-
-  return (
-    <>
-      <label>{label}</label>
-      <input
-        value={draft}
-        onBlur={commit}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </>
-  );
-}
-
-function InlineTextControl({
-  value,
-  placeholder,
-  ariaLabel,
-  onCommit
-}: {
-  value: string;
-  placeholder: string;
-  ariaLabel: string;
-  onCommit: (value: string) => Promise<void> | void;
-}) {
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => setDraft(value), [value]);
-
-  const commit = useCallback(() => {
-    const next = draft.trim();
-    if (next !== value) {
-      void onCommit(next);
-    }
-  }, [draft, onCommit, value]);
-
-  return (
-    <input
-      aria-label={ariaLabel}
-      value={draft}
-      placeholder={placeholder}
-      onBlur={commit}
-      onChange={(event) => setDraft(event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-      }}
-    />
-  );
-}
-
-function ClassAimRatioControl({
-  classId,
-  defaultRatio,
-  overrideRatio,
-  onCommit
-}: {
-  classId: number;
-  defaultRatio: number;
-  overrideRatio: number | undefined;
-  onCommit: (value: number | null) => Promise<void> | void;
-}) {
-  const custom = overrideRatio !== undefined;
-  const effectiveRatio = custom ? overrideRatio : defaultRatio;
-  const [draft, setDraft] = useState(effectiveRatio);
-
-  useEffect(() => setDraft(effectiveRatio), [effectiveRatio]);
-
-  const commit = useCallback(() => {
-    if (!custom) {
-      return;
-    }
-    const next = clampNumber(Number(draft.toFixed(2)), 0, 1);
-    setDraft(next);
-    if (next !== overrideRatio) {
-      void onCommit(next);
-    }
-  }, [custom, draft, onCommit, overrideRatio]);
-
-  return (
-    <div className="class-aim-control">
-      <button
-        className={custom ? "class-aim-mode custom" : "class-aim-mode"}
-        type="button"
-        onClick={() => void onCommit(custom ? null : defaultRatio)}
-      >
-        {custom ? "单独设置" : "使用默认"}
-      </button>
-      <input
-        aria-label={`cls ${classId} 瞄点高度`}
-        disabled={!custom}
-        min={0}
-        max={1}
-        step={0.01}
-        type="number"
-        value={draft.toFixed(2)}
-        onBlur={commit}
-        onChange={(event) => {
-          const next = Number(event.target.value);
-          if (Number.isFinite(next)) {
-            setDraft(clampNumber(next, 0, 1));
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-      <div className="class-aim-preview" aria-hidden="true">
-        <i style={{ top: `${effectiveRatio * 100}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function metricIconForTitle(title: string): NovaIconName {
-  if (title.includes("FPS")) {
-    return "fps";
-  }
-  if (title.includes("延迟") || title.includes("等待") || title.includes("帧间隔") || title.includes("端到端") || title.includes("队列")) {
-    return "latency";
-  }
-  if (title.includes("分辨率")) {
-    return "resolution";
-  }
-  if (title.includes("像素") || title.includes("格式")) {
-    return "frame";
-  }
-  if (title.includes("丢帧") || title.includes("跳过")) {
-    return "signal-lost";
-  }
-  if (title.includes("目标")) {
-    return "target";
-  }
-  if (title.includes("引擎")) {
-    return "engine";
-  }
-  if (title.includes("算法")) {
-    return "pid";
-  }
-  if (title.includes("触发")) {
-    return "activity-pulse";
-  }
-  if (title.includes("Kp")) {
-    return "gain";
-  }
-  if (title.includes("角度") || title.includes("FOV")) {
-    return "fov";
-  }
-  if (title.includes("限幅")) {
-    return "max-step";
-  }
-  if (title.includes("运行时长")) {
-    return "clock";
-  }
-  return "performance";
-}
-
-function cardIconForTitle(title: string): NovaIconName {
-  if (title.includes("采集")) {
-    return "capture";
-  }
-  if (title.includes("推理")) {
-    return "inference";
-  }
-  if (title.includes("系统")) {
-    return "system";
-  }
-  if (title.includes("诊断")) {
-    return "triangle-alert";
-  }
-  return "dashboard";
-}
-
-function sectionIconForTitle(title: string): NovaIconName {
-  if (title.includes("采集设备")) {
-    return "capture-card";
-  }
-  if (title.includes("ROI")) {
-    return "roi";
-  }
-  if (title.includes("模型")) {
-    return "models";
-  }
-  if (title.includes("推理输出")) {
-    return "output-tensor";
-  }
-  if (title.includes("算法")) {
-    return "pid";
-  }
-  if (title.includes("控制量")) {
-    return "output";
-  }
-  if (title.includes("kmNet")) {
-    return "hid";
-  }
-  if (title.includes("性能")) {
-    return "performance";
-  }
-  if (title.includes("延迟")) {
-    return "latency";
-  }
-  return "dashboard";
-}
-
-function sectionDescriptionForTitle(title: string): string {
-  if (title.includes("采集设备")) {
-    return "视频源、后端通路与 latest-frame 策略";
-  }
-  if (title.includes("ROI")) {
-    return "裁剪区域决定推理、预览和控制坐标基准";
-  }
-  if (title.includes("模型设置")) {
-    return "绑定当前运行模型和 TensorRT 引擎";
-  }
-  if (title.includes("推理输出")) {
-    return "查看 DetectionBatch、目标框和新鲜度";
-  }
-  if (title.includes("鼠标移动算法")) {
-    return "PD/PID、滤波、预测和输出限幅";
-  }
-  if (title.includes("控制量反馈")) {
-    return "控制决策、调度器和执行器状态";
-  }
-  if (title.includes("kmNet")) {
-    return "硬件连接、触发键和移动诊断";
-  }
-  if (title.includes("性能占比")) {
-    return "采集、预处理、推理和后处理耗时";
-  }
-  if (title.includes("延迟链路")) {
-    return "按阶段定位实时链路瓶颈";
-  }
-  if (title.includes("采集统计")) {
-    return "最新帧采集吞吐与丢弃情况";
-  }
-  if (title.includes("推理统计")) {
-    return "批次消费、新鲜度和阶段耗时";
-  }
-  if (title.includes("系统状态")) {
-    return "硬件资源和服务状态摘要";
-  }
-  if (title.includes("采集诊断")) {
-    return "队列积压、帧间隔和采集建议";
-  }
-  return "";
-}
-
-function SectionTitle({ title, icon }: { title: string; icon?: NovaIconName }) {
-  const description = sectionDescriptionForTitle(title);
-
-  return (
-    <h2 className="console-title">
-      <span className="console-title-icon">
-        <NovaIcon name={icon ?? sectionIconForTitle(title)} size={18} />
-      </span>
-      <span className="console-title-copy">
-        <span>{title}</span>
-        {description ? <small>{description}</small> : null}
-      </span>
-    </h2>
-  );
-}
-
 function launchStepStateLabel(state: LaunchStepState): string {
   switch (state) {
     case "running":
@@ -4658,33 +4161,6 @@ function LaunchStepIndicator({ state }: { state: LaunchStepState }) {
         )}
       </svg>
     </span>
-  );
-}
-
-function Metric({
-  title,
-  value,
-  small,
-  icon,
-}: {
-  title: string;
-  value: string;
-  small: string;
-  icon?: NovaIconName;
-}) {
-  const resolvedIcon = icon ?? metricIconForTitle(title);
-
-  return (
-    <div className="console-metric" aria-label={`${title}: ${value} ${small}`}>
-      <span className="console-metric-head">
-        <span className="console-metric-icon">
-          <NovaIcon name={resolvedIcon} size={18} />
-        </span>
-        <span>{title}</span>
-      </span>
-      <strong>{value}</strong>
-      <small>{small}</small>
-    </div>
   );
 }
 
@@ -4954,42 +4430,6 @@ function PreviewFrame({
           </div>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function KvCard({ title, rows, notice }: { title: string; rows: [string, string][]; notice?: ReactNode }) {
-  return (
-    <div className="console-card">
-      <SectionTitle icon={cardIconForTitle(title)} title={title} />
-      {notice}
-      <div className="console-kv">
-        {rows.map(([key, value]) => (
-          <Fragment key={key}>
-            <span>{key}</span>
-            <b>{value}</b>
-          </Fragment>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Bar({ label, width }: { label: string; width: number }) {
-  return (
-    <>
-      <label>{label}</label>
-      <div className="console-bar"><i style={{ width: `${width}%` }} /></div>
-    </>
-  );
-}
-
-function Event({ label, value, width }: { label: string; value: string; width: number }) {
-  return (
-    <div className="console-event">
-      <span>{label}</span>
-      <div className="console-bar"><i style={{ width: `${width}%` }} /></div>
-      <b>{value} ms</b>
     </div>
   );
 }

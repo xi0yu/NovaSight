@@ -9,16 +9,13 @@ STUDIO_CONSOLE = (
     / "studio"
     / "StudioConsoleView.tsx"
 )
-DEVICES_VIEW = (
-    Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "devices" / "DevicesView.tsx"
-)
-DASHBOARD_VIEW = (
+STUDIO_NAVIGATION = (
     Path(__file__).resolve().parents[1]
     / "web"
     / "src"
     / "features"
-    / "dashboard"
-    / "DashboardView.tsx"
+    / "studio"
+    / "StudioNavigation.tsx"
 )
 RUNTIME_STATUS = (
     Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "shared" / "runtimeStatus.ts"
@@ -124,29 +121,15 @@ def test_mainline_launch_dialog_renders_every_step_with_explicit_state_icons() -
 
 def test_model_file_lists_show_size_in_megabytes() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
-    models = (STUDIO_CONSOLE.parents[1] / "models" / "ModelsView.tsx").read_text(encoding="utf-8")
     catalog_tree = (
         STUDIO_CONSOLE.parents[1] / "models" / "ModelCatalogTree.tsx"
     ).read_text(encoding="utf-8")
     styles = (STUDIO_CONSOLE.parents[2] / "styles.css").read_text(encoding="utf-8")
 
     assert "formatModelSizeMb(item.size_bytes)" in studio
-    assert "formatModelSizeMb(artifact.size_bytes)" in models
     assert '<span className="model-catalog-size">{formatModelSizeMb(node.size_bytes)}</span>' in catalog_tree
     assert "grid-template-columns: minmax(0, 1fr) auto;" in styles
     assert "font-variant-numeric: tabular-nums;" in styles
-
-
-def test_dashboard_deepstream_preview_uses_hardware_jpeg_branch() -> None:
-    source = DASHBOARD_VIEW.read_text(encoding="utf-8")
-
-    assert "const deepstreamPreviewStreamReady =" in source
-    assert "runtimeInference.preview_enabled === true" in source
-    assert "{previewImageAvailable ? (" in source
-    assert "NVMM ROI · 硬件 JPEG" in source
-    assert "Tensor Overlay" not in source
-    assert 'readNumberRecord(targetMouseObservation, "predicted_aim_x_roi_px")' in source
-    assert 'readNumberRecord(targetMouseObservation, "predicted_aim_y_roi_px")' in source
 
 
 def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
@@ -168,17 +151,6 @@ def test_studio_refreshes_changed_models_and_can_force_revalidation() -> None:
     assert "scanModelDirectory" not in source
     assert '"刷新模型"' in source
     assert '"强制重新校验"' in source
-
-
-def test_models_page_refreshes_catalog_without_importing_files() -> None:
-    source = (STUDIO_CONSOLE.parents[1] / "models" / "ModelsView.tsx").read_text(
-        encoding="utf-8"
-    )
-
-    assert "getModelCatalog(true)" in source
-    assert "registerCatalogModel(model.relative_path)" in source
-    assert "scanModelDirectory" not in source
-    assert "直接读取原文件" in source
 
 
 def test_studio_registers_unmanaged_catalog_engine_by_reference() -> None:
@@ -208,16 +180,9 @@ def test_studio_auto_configures_and_switches_pending_engine() -> None:
     assert "模型产物不可切换" in source
 
 
-def test_devices_exposes_only_deepstream_runtime_backend() -> None:
-    source = DEVICES_VIEW.read_text(encoding="utf-8")
-
-    assert 'new Set(["deepstream_nvinfer"])' in source
-    assert 'disabled={deepstreamNvinferSelected && id === "image"}' in source
-    assert "DeepStream nvinfer 不支持" in source
-
-
 def test_kmnet_panel_has_dedicated_control_test_page() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    navigation = STUDIO_NAVIGATION.read_text(encoding="utf-8")
     section_start = source.index('activePage === "params" || activePage === "control-test"')
     control_page_start = source.index(
         '<Metric title="连接状态" value={kmnetConnected ? "已连接" : kmnetConnecting ? "连接中" : "未连接"}',
@@ -225,7 +190,8 @@ def test_kmnet_panel_has_dedicated_control_test_page() -> None:
     )
     section_end = source.index("</section>", control_page_start)
 
-    assert '{ id: "control-test", index: "05", label: "控制测试", icon: "kmbox" }' in source
+    assert 'label: "诊断工具"' in navigation
+    assert '{ id: "control-test", label: "控制测试", detail: "硬件输出实验", icon: "kmbox" }' in navigation
     assert '<SectionTitle title="kmNet 控制面板" />' not in source[section_start:control_page_start]
     assert '<SectionTitle title="kmNet 控制面板" />' in source[control_page_start:section_end]
 
@@ -318,7 +284,6 @@ def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overr
 
 def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
-    devices = DEVICES_VIEW.read_text(encoding="utf-8")
 
     assert 'id: "universal_saturated"' in studio
     assert 'label: "通用控制"' in studio
@@ -340,5 +305,3 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio
     assert 'updateControlGroupField("shared", "max_count_slew_x", value)' in studio
     assert "experimental_angle" not in studio
-    assert "experimental_angle" not in devices
-    assert 'SettingsSection = "capture" | "inference";' in devices

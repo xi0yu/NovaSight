@@ -217,20 +217,6 @@ def test_studio_uses_product_names_for_three_exclusive_algorithm_pages() -> None
     assert '<option value="calibrated_angular">精确标定</option>' not in source
 
 
-def test_runtime_config_page_filters_sections_by_active_algorithm() -> None:
-    root = Path(__file__).resolve().parents[1]
-    source = (root / "web" / "src" / "features" / "config" / "ConfigView.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_source = (root / "web" / "src" / "api.ts").read_text(encoding="utf-8")
-
-    assert "section.algorithm_scope.includes(activeAlgorithm)" in source
-    assert "visibleSections.map((section)" in source
-    assert "field.option_labels?.[option]" in source
-    assert "algorithm_scope?: string[]" in api_source
-    assert "option_labels?: Record<string, string>" in api_source
-
-
 @pytest.mark.parametrize("algorithm_id", [UNIVERSAL_SATURATED, CALIBRATED_ANGULAR])
 def test_non_predictive_control_uses_measured_aim_without_kalman_prediction(
     algorithm_id: str,

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { type StudioViewId } from "./app/navigation";
 import { StatusIndicator } from "./components/ui";
 import {
   HealthResponse,
@@ -16,10 +15,9 @@ import {
   statusWebSocketUrl,
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
-import { isQuietErrorsEnabled, setQuietErrorsEnabled } from "./lib/api-error";
 import { reportError, reportInfo, reportSuccess } from "./lib/toast";
 import { reportWebSocketFailure } from "./lib/errorGuards";
-import { LicenseGate, LicenseView } from "./features/license/LicenseView";
+import { LicenseGate } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { StudioConsoleView } from "./features/studio/StudioConsoleView";
 import { VisualSystemView } from "./features/visual-system/VisualSystemView";
@@ -27,7 +25,6 @@ import { formatTime, getErrorMessage } from "./features/shared/format";
 
 type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
 type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
-type GuardedViewId = Exclude<StudioViewId, "license">;
 type LoadState = {
   loading: boolean;
   errors: Partial<Record<ErrorKey, string>>;
@@ -46,12 +43,6 @@ const initialState: LoadState = {
   config: null,
   projects: [],
   lastUpdated: null
-};
-
-const viewFeatureMap: Partial<Record<GuardedViewId, LicenseStatus["features"][number]>> = {
-  devices: "capture",
-  models: "models",
-  config: "config_read"
 };
 
 function realtimeTone(status: RealtimeStatus): "good" | "warn" | "bad" | "idle" {
@@ -82,31 +73,6 @@ function realtimeLabel(status: RealtimeStatus): string {
   }
 }
 
-function canAccessView(view: StudioViewId, license: LicenseStatus | null): boolean {
-  if (view === "license") {
-    return true;
-  }
-
-  const requiredFeature = viewFeatureMap[view];
-  if (!requiredFeature) {
-    return true;
-  }
-
-  return license?.features.includes(requiredFeature) ?? false;
-}
-
-function getFallbackView(license: LicenseStatus | null): StudioViewId {
-  const fallbackOrder: StudioViewId[] = [
-    "dashboard",
-    "devices",
-    "models",
-    "config",
-    "license"
-  ];
-
-  return fallbackOrder.find((view) => canAccessView(view, license)) ?? "license";
-}
-
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
 
 export default function App() {
@@ -114,7 +80,6 @@ export default function App() {
 }
 
 function StudioApp() {
-  const [activeView, setActiveView] = useState<StudioViewId>("dashboard");
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
@@ -281,18 +246,6 @@ function StudioApp() {
 
   useEffect(() => {
     if (!license?.valid) {
-      return;
-    }
-
-    if (canAccessView(activeView, license)) {
-      return;
-    }
-
-    setActiveView(getFallbackView(license));
-  }, [activeView, license]);
-
-  useEffect(() => {
-    if (!license?.valid) {
       setRealtimeStatus("disconnected");
       setLastWsMessageAt(null);
       return undefined;
@@ -395,51 +348,19 @@ function StudioApp() {
 
   return (
     <>
-      {activeView === "license" ? (
-        <LicenseView
-          license={license}
-          loading={licenseLoading}
-          error={licenseError}
-          onRefresh={() => void loadLicense()}
-          onLicenseChange={handleLicenseChange}
-        />
-      ) : (
-        <StudioConsoleView
-          health={state.health}
-          runtime={state.runtime}
-          runtimeConfig={state.config}
-          projects={state.projects}
-          errors={state.errors}
-          lastUpdated={state.lastUpdated}
-          realtimeStatus={realtimeStatus}
-          onRefresh={load}
-          onRuntimeStateChange={applyRuntimeState}
-        />
-      )}
-      <QuietErrorsControl />
+      <StudioConsoleView
+        health={state.health}
+        runtime={state.runtime}
+        runtimeConfig={state.config}
+        projects={state.projects}
+        errors={state.errors}
+        lastUpdated={state.lastUpdated}
+        realtimeStatus={realtimeStatus}
+        onRefresh={load}
+        onRuntimeStateChange={applyRuntimeState}
+      />
       <ToastHost />
       <div className="visually-hidden">{consoleStatus}</div>
     </>
-  );
-}
-
-function QuietErrorsControl() {
-  const [quiet, setQuiet] = useState<boolean>(isQuietErrorsEnabled);
-  useEffect(() => {
-    setQuietErrorsEnabled(quiet);
-  }, [quiet]);
-  return (
-    <label className="quiet-errors-toggle" title="开启后只把后端错误写进 console，UI 不弹 toast">
-      <input
-        type="checkbox"
-        checked={quiet}
-        onChange={(event) => setQuiet(event.currentTarget.checked)}
-        aria-label="静默后端错误提示"
-      />
-      <span aria-hidden="true">🔕</span>
-      <span className="quiet-errors-toggle-label">
-        {quiet ? "静默已开启（仅 console）" : "静默关闭"}
-      </span>
-    </label>
   );
 }
