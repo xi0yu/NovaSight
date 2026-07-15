@@ -245,6 +245,8 @@ def parse_allowed_class_ids(value: str) -> set[int] | None:
     selected = str(value or "all").strip().lower()
     if selected == "all":
         return None
+    if selected == "none":
+        return set()
     allowed: set[int] = set()
     for part in selected.split(","):
         try:

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
+import { trapDialogTabKey } from "./dialogFocus";
 
 export function AdvancedSettingsDialog({
   open,
@@ -33,6 +34,8 @@ export function AdvancedSettingsDialog({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         onClose();
+      } else {
+        trapDialogTabKey(event, dialogRef.current);
       }
     };
     document.addEventListener("keydown", onKeyDown);

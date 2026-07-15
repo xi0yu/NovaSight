@@ -10,6 +10,13 @@ def test_detection_class_filter_accepts_multiple_classes() -> None:
     assert cfg.inference.detection_class_filter == "1,0,3"
     assert parse_allowed_class_ids(cfg.inference.detection_class_filter) == {0, 1, 3}
     assert parse_allowed_class_ids("all") is None
+    assert parse_allowed_class_ids("none") == set()
+
+
+def test_detection_class_filter_accepts_explicit_empty_selection() -> None:
+    cfg = parse_runtime_config({"inference": {"detection_class_filter": "none"}})
+
+    assert cfg.inference.detection_class_filter == "none"
 
 
 @pytest.mark.parametrize("value", ["", "1,head", "1,256"])

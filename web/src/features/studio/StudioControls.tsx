@@ -189,11 +189,13 @@ export function ClassAimRatioControl({
   classId,
   defaultRatio,
   overrideRatio,
+  disabled = false,
   onCommit
 }: {
   classId: number;
   defaultRatio: number;
   overrideRatio: number | undefined;
+  disabled?: boolean;
   onCommit: (value: number | null) => Promise<void> | void;
 }) {
   const custom = overrideRatio !== undefined;
@@ -218,6 +220,7 @@ export function ClassAimRatioControl({
         <button
           aria-pressed={!custom}
           className={!custom ? "active" : ""}
+          disabled={disabled}
           type="button"
           onClick={() => custom && void onCommit(null)}
         >
@@ -226,6 +229,7 @@ export function ClassAimRatioControl({
         <button
           aria-pressed={custom}
           className={custom ? "active" : ""}
+          disabled={disabled}
           type="button"
           onClick={() => !custom && void onCommit(defaultRatio)}
         >
@@ -236,7 +240,7 @@ export function ClassAimRatioControl({
         <span className="visually-hidden">cls {classId} 垂直瞄点百分比</span>
         <input
           aria-label={`cls ${classId} 垂直瞄点百分比`}
-          disabled={!custom}
+          disabled={disabled || !custom}
           min={0}
           max={100}
           step={1}

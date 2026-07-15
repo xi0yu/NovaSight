@@ -25,6 +25,14 @@ STUDIO_CONTROLS = (
     / "studio"
     / "StudioControls.tsx"
 )
+STUDIO_SETTINGS = (
+    Path(__file__).resolve().parents[1]
+    / "web"
+    / "src"
+    / "features"
+    / "studio"
+    / "studio-settings.css"
+)
 RUNTIME_STATUS = (
     Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "shared" / "runtimeStatus.ts"
 )
@@ -280,6 +288,7 @@ def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
 def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overrides() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     controls = STUDIO_CONTROLS.read_text(encoding="utf-8")
+    settings = STUDIO_SETTINGS.read_text(encoding="utf-8")
 
     assert 'aria-label="模型类别与瞄点设置"' in source
     assert "默认垂直瞄点" in source
@@ -292,10 +301,19 @@ def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overr
     assert "setClassPriorityPosition" in source
     assert 'aria-label="目标类别多选"' in source
     assert "toggleDetectionClass" in source
+    assert "新建空白" in source
+    assert "复制当前" in source
+    assert "全部选择" in source
+    assert "全部取消" in source
+    assert '"detection_class_filter", "none"' in source
     assert "仅选此类" not in source
     assert "跟随默认" in controls
     assert "独立设置" in controls
-    assert "disabled={!custom}" in controls
+    assert "disabled={disabled || !custom}" in controls
+    assert ".class-config-workspace" in settings
+    assert "overflow-y: auto" in settings
+    assert ".class-config-dialog-footer" in settings
+    assert "z-index: 3" in settings
     assert 'updateDualPhasePath(["aim", "y_ratio"]' not in source
 
 

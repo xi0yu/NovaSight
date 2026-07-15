@@ -1168,7 +1168,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         )
     if cfg.inference.input_source != "source.default":
         raise ValueError("runtime config key 'inference.input_source' must be source.default")
-    if cfg.inference.detection_class_filter != "all":
+    if cfg.inference.detection_class_filter not in {"all", "none"}:
         _parse_detection_class_filter(cfg.inference.detection_class_filter)
     _parse_class_priority(cfg.inference.detection_class_priority)
     if cfg.inference.detection_class_profile not in cfg.inference.detection_class_profiles:

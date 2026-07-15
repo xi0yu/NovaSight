@@ -43,6 +43,7 @@ import { ClassAimRatioControl, CommitNumberControl, InlineTextControl, NumberCon
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
 import { Bar, Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
+import { trapDialogTabKey } from "./dialogFocus";
 import "./studio-settings.css";
 
 const CONTROL_ALGORITHM_OPTIONS = [
@@ -235,6 +236,9 @@ function parseDetectionClassFilter(value: string): Set<number> | null {
   const normalized = value.trim().toLowerCase();
   if (normalized === "all") {
     return null;
+  }
+  if (normalized === "none") {
+    return new Set();
   }
   const classIds = parseClassPriority(normalized);
   return classIds.length > 0 ? new Set(classIds) : null;
@@ -513,6 +517,8 @@ export function StudioConsoleView({
   const launchCancelledRef = useRef(false);
   const launchTimerRef = useRef<number | null>(null);
   const launchTimerResolveRef = useRef<(() => void) | null>(null);
+  const classConfigDialogRef = useRef<HTMLElement | null>(null);
+  const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     writePageToUrl(activePage, "replace");
@@ -542,16 +548,21 @@ export function StudioConsoleView({
       return undefined;
     }
     const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => classConfigDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setClassConfigDialogOpen(false);
+      } else {
+        trapDialogTabKey(event, classConfigDialogRef.current);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
     };
   }, [classConfigDialogOpen]);
 
@@ -560,16 +571,21 @@ export function StudioConsoleView({
       return undefined;
     }
     const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => targetWeightsDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setTargetWeightsDialogOpen(false);
+      } else {
+        trapDialogTabKey(event, targetWeightsDialogRef.current);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
     };
   }, [targetWeightsDialogOpen]);
 
@@ -2015,9 +2031,6 @@ export function StudioConsoleView({
     async (classId: number) => {
       const selected = parseDetectionClassFilter(activeDetectionClass) ?? new Set(classEditorIds);
       if (selected.has(classId)) {
-        if (selected.size <= 1) {
-          return;
-        }
         selected.delete(classId);
       } else {
         selected.add(classId);
@@ -2026,7 +2039,11 @@ export function StudioConsoleView({
       await updateConfigField(
         "inference",
         "detection_class_filter",
-        orderedSelection.length === classEditorIds.length ? "all" : orderedSelection.join(",")
+        orderedSelection.length === classEditorIds.length
+          ? "all"
+          : orderedSelection.length === 0
+            ? "none"
+            : orderedSelection.join(",")
       );
     },
     [activeDetectionClass, classEditorIds, orderedClassEditorIds, updateConfigField]
@@ -2075,7 +2092,7 @@ export function StudioConsoleView({
     [onRefresh, runtimeConfig]
   );
 
-  const createClassProfile = useCallback(async () => {
+  const createClassProfile = useCallback(async (copyCurrent: boolean) => {
     const profileName = newClassProfileName.trim();
     if (!profileName) {
       setLocalError("请输入新的类别配置名称。");
@@ -2086,13 +2103,10 @@ export function StudioConsoleView({
       return;
     }
     await persistClassProfiles(
-      { ...detectionProfiles, [profileName]: [...detectionClasses] },
-      {
-        ...classAimRatioProfiles,
-        ...(Object.keys(activeClassAimRatios).length > 0
-          ? { [profileName]: { ...activeClassAimRatios } }
-          : {})
-      },
+      { ...detectionProfiles, [profileName]: copyCurrent ? [...detectionClasses] : [] },
+      copyCurrent && Object.keys(activeClassAimRatios).length > 0
+        ? { ...classAimRatioProfiles, [profileName]: { ...activeClassAimRatios } }
+        : { ...classAimRatioProfiles },
       profileName
     );
     setNewClassProfileName("");
@@ -3729,10 +3743,13 @@ export function StudioConsoleView({
           }}
         >
           <section
+            aria-busy={busy !== null}
             aria-labelledby="target-weight-dialog-title"
             aria-modal="true"
             className="target-weight-dialog"
+            ref={targetWeightsDialogRef}
             role="dialog"
+            tabIndex={-1}
           >
             <header className="target-weight-dialog-header">
               <div>
@@ -3820,10 +3837,13 @@ export function StudioConsoleView({
           }}
         >
           <section
+            aria-busy={busy !== null}
             aria-labelledby="class-config-dialog-title"
             aria-modal="true"
             className="class-config-dialog"
+            ref={classConfigDialogRef}
             role="dialog"
+            tabIndex={-1}
           >
             <header className="class-config-dialog-header">
               <div>
@@ -3869,21 +3889,31 @@ export function StudioConsoleView({
                     onChange={(event) => setNewClassProfileName(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
-                        void createClassProfile();
+                        void createClassProfile(false);
                       }
                     }}
                     placeholder="例如 valorant"
                     value={newClassProfileName}
                   />
-                  <button
-                    className="console-button"
-                    disabled={busy !== null || newClassProfileName.trim() === ""}
-                    onClick={() => void createClassProfile()}
-                    type="button"
-                  >
-                    <NovaIcon name="copy" size={15} />
-                    复制当前配置
-                  </button>
+                  <div className="class-profile-create-actions">
+                    <button
+                      className="console-button primary"
+                      disabled={busy !== null || newClassProfileName.trim() === ""}
+                      onClick={() => void createClassProfile(false)}
+                      type="button"
+                    >
+                      新建空白
+                    </button>
+                    <button
+                      className="console-button"
+                      disabled={busy !== null || newClassProfileName.trim() === ""}
+                      onClick={() => void createClassProfile(true)}
+                      type="button"
+                    >
+                      <NovaIcon name="copy" size={15} />
+                      复制当前
+                    </button>
+                  </div>
                 </div>
               </aside>
 
@@ -3949,14 +3979,25 @@ export function StudioConsoleView({
                       <b id="class-filter-title">参与目标选择的类别</b>
                       <small>可同时选择多个类别；高亮卡片会进入候选目标计算。</small>
                     </span>
-                    <button
-                      className="console-button secondary"
-                      disabled={selectedDetectionClassIds.size === classEditorIds.length}
-                      onClick={() => void updateConfigField("inference", "detection_class_filter", "all")}
-                      type="button"
-                    >
-                      全部选择
-                    </button>
+                    <div className="class-filter-actions">
+                      <span>{selectedDetectionClassIds.size}/{classEditorIds.length} 已选择</span>
+                      <button
+                        className="console-button secondary"
+                        disabled={busy !== null || selectedDetectionClassIds.size === classEditorIds.length}
+                        onClick={() => void updateConfigField("inference", "detection_class_filter", "all")}
+                        type="button"
+                      >
+                        全部选择
+                      </button>
+                      <button
+                        className="console-button"
+                        disabled={busy !== null || selectedDetectionClassIds.size === 0}
+                        onClick={() => void updateConfigField("inference", "detection_class_filter", "none")}
+                        type="button"
+                      >
+                        全部取消
+                      </button>
+                    </div>
                   </div>
                   <div className="class-filter-options" role="group" aria-label="目标类别多选">
                     {classEditorIds.map((classId) => {
@@ -3966,6 +4007,7 @@ export function StudioConsoleView({
                         <button
                           aria-pressed={selected}
                           className={selected ? "selected" : ""}
+                          disabled={busy !== null}
                           key={`class-filter-${classId}`}
                           onClick={() => void toggleDetectionClass(classId)}
                           type="button"
@@ -4000,6 +4042,7 @@ export function StudioConsoleView({
                           <span className="visually-hidden">cls {classId} 目标优先级</span>
                           <select
                             aria-label={`cls ${classId} 目标优先级`}
+                            disabled={busy !== null}
                             value={priorityIndex}
                             onChange={(event) => void setClassPriorityPosition(classId, Number(event.target.value))}
                           >
@@ -4011,6 +4054,7 @@ export function StudioConsoleView({
                         <ClassAimRatioControl
                           classId={classId}
                           defaultRatio={aimYRatio}
+                          disabled={busy !== null}
                           overrideRatio={activeClassAimRatios[String(classId)]}
                           onCommit={(value) => updateClassAimRatio(classId, value)}
                         />

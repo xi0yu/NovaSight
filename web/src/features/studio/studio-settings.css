@@ -75,6 +75,35 @@
   gap: var(--space-4);
 }
 
+.class-filter-actions,
+.class-profile-create-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.class-filter-actions > span {
+  margin-right: var(--space-1);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.class-profile-create-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.class-profile-create-actions .console-button {
+  min-width: 0;
+  padding-right: var(--space-2);
+  padding-left: var(--space-2);
+  white-space: nowrap;
+}
+
 .class-filter-heading > span {
   min-width: 0;
   display: grid;
@@ -94,7 +123,7 @@
 
 .class-filter-options {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: var(--space-2);
 }
 
@@ -117,6 +146,11 @@
 .class-filter-options > button:hover {
   border-color: var(--brand-border);
   background: var(--bg-hover);
+}
+
+.class-filter-options > button:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .class-filter-options > button.selected {
@@ -221,6 +255,11 @@
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 
+.class-aim-mode-group button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
 .class-aim-value {
   position: relative;
   display: block;
@@ -259,6 +298,32 @@
   opacity: 0.55;
 }
 
+.advanced-settings-dialog-header,
+.advanced-settings-dialog-footer,
+.target-weight-dialog-header,
+.target-weight-dialog-footer,
+.class-config-dialog-header,
+.class-config-dialog-footer {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+}
+
+.class-config-dialog-layout {
+  overflow: hidden;
+}
+
+.class-config-workspace {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.class-config-dialog .class-editor {
+  max-height: 320px;
+  flex: 0 0 auto;
+}
+
 @media (max-width: 860px) {
   .class-filter-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -274,5 +339,14 @@
   .class-filter-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .class-filter-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .class-filter-actions > span {
+    grid-column: 1 / -1;
   }
 }
