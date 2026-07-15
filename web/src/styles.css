@@ -8118,6 +8118,202 @@ button:focus-visible {
   color: var(--status-error-fg);
 }
 
+/* ============================================================
+ * Sakura Signal theme
+ * Sakura-white work surfaces, crimson/black control emphasis and
+ * semantic engineering colors. Decorative art never enters data panes.
+ * ============================================================ */
+
+body {
+  background:
+    radial-gradient(circle at 92% -8%, #ffe2e8 0, transparent 28%),
+    var(--bg-app);
+}
+
+body::before {
+  display: block;
+  z-index: 0;
+  background: url("./assets/patterns/sakura-signal.svg") no-repeat right 34px top 8px / 520px 120px;
+  opacity: 0.38;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+.console-app {
+  border-color: color-mix(in srgb, var(--brand-primary) 18%, var(--border-default));
+  background: var(--bg-surface);
+}
+
+.console-top {
+  background:
+    url("./assets/patterns/sakura-signal.svg") no-repeat right -72px center / 390px 90px,
+    linear-gradient(90deg, var(--bg-surface) 0%, var(--bg-surface) 66%, color-mix(in srgb, var(--brand-soft) 72%, var(--bg-surface)) 100%);
+}
+
+.console-logo {
+  border-color: #2d2228;
+  background: var(--signal-ink);
+  color: var(--signal-target);
+}
+
+.console-logo svg {
+  color: var(--signal-target);
+}
+
+.console-sidebar {
+  background: color-mix(in srgb, var(--brand-soft) 32%, var(--bg-app));
+}
+
+.console-nav.active {
+  border-color: var(--selection-strong-bg);
+  background: var(--selection-strong-bg);
+  color: var(--selection-strong-fg);
+}
+
+.console-nav.active::before {
+  display: none;
+}
+
+.console-nav.active .console-nav-icon {
+  background: color-mix(in srgb, var(--signal-target) 18%, var(--selection-strong-bg));
+  color: #ff6b84;
+}
+
+.console-nav.active .console-nav-copy small {
+  color: var(--selection-strong-muted);
+}
+
+.console-toolbar .console-group:first-child .console-toolbar-item:first-child svg:first-child {
+  color: var(--signal-target);
+}
+
+.console-toolbar .console-group:first-child .console-toolbar-item:nth-child(2) svg:first-child {
+  color: var(--signal-compute);
+}
+
+.console-page-heading > span,
+.class-config-eyebrow {
+  color: var(--signal-target);
+}
+
+.console-button.primary,
+.ui-button-primary,
+.button.primary,
+.ui-button.primary,
+.primary-button {
+  background: linear-gradient(180deg, var(--brand-primary), var(--brand-primary-hover));
+  border-color: var(--brand-primary-hover);
+  color: #fffafb;
+}
+
+.console-button.primary:hover,
+.ui-button-primary:hover,
+.button.primary:hover,
+.ui-button.primary:hover,
+.primary-button:hover {
+  background: var(--brand-primary-hover);
+  border-color: var(--brand-primary-active);
+}
+
+.theme-toggle {
+  border-color: color-mix(in srgb, var(--brand-primary) 22%, var(--border-default));
+  background: color-mix(in srgb, var(--brand-soft) 44%, var(--bg-surface));
+}
+
+.theme-toggle svg {
+  color: var(--signal-target);
+}
+
+.console-metric strong {
+  color: var(--signal-ink);
+}
+
+.console-metric.tone-target strong,
+.console-metric.tone-target .console-metric-icon {
+  color: var(--signal-target);
+}
+
+.console-metric.tone-compute strong,
+.console-metric.tone-compute .console-metric-icon {
+  color: var(--signal-compute);
+}
+
+.console-metric.tone-info strong,
+.console-metric.tone-info .console-metric-icon {
+  color: var(--signal-info);
+}
+
+.console-metric.tone-attention strong,
+.console-metric.tone-attention .console-metric-icon {
+  color: var(--signal-attention);
+}
+
+.target-weight-composition .class,
+.target-weight-legend .class {
+  background: var(--signal-target);
+}
+
+.target-weight-composition .quality,
+.target-weight-legend .quality,
+.target-weight-composition .confidence,
+.target-weight-legend .confidence {
+  background: var(--signal-info);
+}
+
+.target-weight-composition .distance,
+.target-weight-legend .distance {
+  background: var(--signal-attention);
+}
+
+.target-weight-composition .area,
+.target-weight-legend .area {
+  background: var(--signal-ink);
+}
+
+[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 92% -8%, #32111c 0, transparent 30%),
+    var(--bg-app);
+}
+
+[data-theme="dark"] body::before {
+  opacity: 0.18;
+}
+
+[data-theme="dark"] .console-top {
+  background:
+    url("./assets/patterns/sakura-signal.svg") no-repeat right -72px center / 390px 90px,
+    linear-gradient(90deg, var(--bg-surface) 0%, var(--bg-surface) 68%, #211017 100%);
+}
+
+[data-theme="dark"] .console-sidebar {
+  background: #0d0a0d;
+}
+
+[data-theme="dark"] .console-nav.active {
+  border-color: var(--brand-border);
+  background: var(--selection-strong-bg);
+}
+
+@media (max-width: 980px) {
+  .console-top {
+    background-position: 0 0, right -150px center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-nav,
+  .theme-toggle,
+  .console-button,
+  .ui-button,
+  .button {
+    transition-duration: 1ms;
+  }
+}
+
 .visual-system-page {
   width: min(1440px, 100%);
   margin: 0 auto;

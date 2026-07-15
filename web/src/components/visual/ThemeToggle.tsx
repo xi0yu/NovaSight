@@ -22,17 +22,19 @@ export function ThemeToggle() {
   }, [theme]);
 
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const currentLabel = theme === "dark" ? "绯夜红黑" : "樱花白";
+  const nextLabel = nextTheme === "dark" ? "绯夜红黑" : "樱花白";
 
   return (
     <button
-      aria-label={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+      aria-label={`当前为${currentLabel}主题，切换到${nextLabel}主题`}
       className="theme-toggle"
       onClick={() => setTheme(nextTheme)}
-      title={theme === "dark" ? "浅色模式" : "深色模式"}
+      title={`切换到${nextLabel}`}
       type="button"
     >
       <NovaIcon name={theme === "dark" ? "show" : "hide"} size={15} />
-      <span>{theme === "dark" ? "Dark" : "Light"}</span>
+      <span>{currentLabel}</span>
     </button>
   );
 }

@@ -19,6 +19,14 @@ function metricIconForTitle(title: string): NovaIconName {
   return "performance";
 }
 
+function metricToneForTitle(title: string): "target" | "compute" | "info" | "attention" | "neutral" {
+  if (title.includes("目标") || title.includes("触发") || title.includes("控制量")) return "target";
+  if (title.includes("FPS") || title.includes("GPU") || title.includes("推理")) return "compute";
+  if (title.includes("延迟") || title.includes("帧间隔") || title.includes("端到端")) return "info";
+  if (title.includes("丢帧") || title.includes("等待") || title.includes("队列") || title.includes("跳过")) return "attention";
+  return "neutral";
+}
+
 function cardIconForTitle(title: string): NovaIconName {
   if (title.includes("采集")) return "capture";
   if (title.includes("推理")) return "inference";
@@ -84,7 +92,7 @@ export function Metric({
   icon?: NovaIconName;
 }) {
   return (
-    <div className="console-metric" aria-label={`${title}: ${value} ${small}`}>
+    <div className={`console-metric tone-${metricToneForTitle(title)}`} aria-label={`${title}: ${value} ${small}`}>
       <span className="console-metric-head">
         <span className="console-metric-icon">
           <NovaIcon name={icon ?? metricIconForTitle(title)} size={18} />
