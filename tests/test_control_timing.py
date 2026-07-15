@@ -141,3 +141,5 @@ def test_telemetry_summary_exposes_control_timing_snapshot() -> None:
     summary = get_telemetry_summary(SimpleNamespace(runtime=runtime))
 
     assert summary["control_timing"] == timing
+    assert summary["running"] is True
+    assert summary["statistics"] == {}

@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict, deque
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -274,6 +275,13 @@ class DeepStreamObjectBackend:
         now_ns = time.monotonic_ns()
         with self._lock:
             self._prune_samples_locked(now_ns)
+            # Pad probes append to these queues while holding the same lock.
+            # Snapshot them here, then sort the snapshots after releasing the
+            # lock so telemetry cannot stall the DeepStream streaming thread.
+            publish_samples = tuple(self._publish_samples)
+            input_age_samples = tuple(self._input_age_samples)
+            inference_samples = tuple(self._inference_samples)
+            build_samples = tuple(self._build_samples)
             running = self._running and not self._terminal_error
             uptime_ms = (
                 max(0.0, (now_ns - self._started_at_ns) / 1e6)
@@ -382,10 +390,6 @@ class DeepStreamObjectBackend:
                     "nms_threshold": self.manifest.postprocess.nms_iou_threshold,
                 },
                 "model_fingerprint": self.manifest.model_fingerprint,
-                "batch_age_ms_stats": _sample_stats(self._publish_samples),
-                "inference_input_age_ms_stats": _sample_stats(self._input_age_samples),
-                "nvinfer_total_ms_stats": _sample_stats(self._inference_samples),
-                "detection_batch_build_ms_stats": _sample_stats(self._build_samples),
                 "output_sync_copy_ms": None,
                 "output_sync_copy_reason": "nvinfer does not expose per-frame copy timing",
                 "nms_ms": None,
@@ -397,6 +401,10 @@ class DeepStreamObjectBackend:
             phase, phase_reason = self._inference_phase_locked(payload["parser"])
             payload["inference_phase"] = phase
             payload["inference_reason"] = phase_reason
+        payload["batch_age_ms_stats"] = _sample_stats(publish_samples)
+        payload["inference_input_age_ms_stats"] = _sample_stats(input_age_samples)
+        payload["nvinfer_total_ms_stats"] = _sample_stats(inference_samples)
+        payload["detection_batch_build_ms_stats"] = _sample_stats(build_samples)
         return payload
 
     def _ensure_parser_library(self) -> None:
@@ -1098,7 +1106,7 @@ def _next_meta_node(node: Any) -> Any | None:
         return None
 
 
-def _sample_stats(samples: deque[tuple[int, float]]) -> dict[str, float | int]:
+def _sample_stats(samples: Iterable[tuple[int, float]]) -> dict[str, float | int]:
     values = sorted(float(value) for _timestamp, value in samples)
     if not values:
         return {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0}

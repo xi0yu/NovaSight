@@ -257,7 +257,11 @@ class RuntimeService:
             executor=self.executors.status(),
             capture=capture_payload,
             statistics=statistics,
-            inference=self._runtime_inference_status(inference_state, active_model),
+            inference=self._runtime_inference_status(
+                inference_state,
+                active_model,
+                pipeline_payload=pipeline_payload,
+            ),
             config=self.config_store.status(),
             pipeline=pipeline_payload,
             vision=vision,
@@ -268,12 +272,18 @@ class RuntimeService:
         self,
         inference_state: Any,
         active_model: dict | None,
+        *,
+        pipeline_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         backend = str(getattr(self.config.inference, "backend", "")).lower()
         status = inference_state.status() if inference_state is not None else {"available": False}
         payload = dict(status) if isinstance(status, dict) else {"available": False}
         if backend == "deepstream_nvinfer" and self.pipeline is not None:
-            pipeline_status = self.pipeline.status()
+            pipeline_status = (
+                pipeline_payload
+                if isinstance(pipeline_payload, dict)
+                else self.pipeline.status()
+            )
             deepstream_status = (
                 pipeline_status.get("deepstream", {}) if isinstance(pipeline_status, dict) else {}
             )

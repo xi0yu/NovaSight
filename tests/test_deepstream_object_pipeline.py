@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import novasight.deepstream.backend as backend_module
 from novasight.contracts import DetectionBatch
 from novasight.config import RuntimeConfig
 from novasight.deepstream.backend import DeepStreamDependencyStatus, DeepStreamObjectBackend
@@ -217,6 +218,34 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
         "memory": "NVMM",
     }
     assert "preview" not in status
+
+
+def test_deepstream_status_computes_percentiles_outside_stream_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    backend._dependency_status = DeepStreamDependencyStatus(True)
+    now_ns = time.monotonic_ns()
+    backend._publish_samples.append((now_ns, 4.0))
+    lock_states: list[bool] = []
+    real_sample_stats = backend_module._sample_stats
+
+    def observed_sample_stats(samples):
+        lock_states.append(backend._lock.locked())
+        return real_sample_stats(samples)
+
+    monkeypatch.setattr(backend_module, "_sample_stats", observed_sample_stats)
+
+    backend.status()
+
+    assert lock_states == [False, False, False, False]
 
 
 def test_missing_hardware_preview_encoder_does_not_disable_inference(tmp_path: Path) -> None:

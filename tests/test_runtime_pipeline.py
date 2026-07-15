@@ -2254,6 +2254,34 @@ def test_runtime_service_state_exposes_detection_batch_fps_from_pipeline_stats()
     assert state.statistics["skipped_counter"] == 3
 
 
+def test_runtime_service_state_samples_pipeline_once() -> None:
+    cfg = RuntimeConfig()
+    cfg.inference.backend = "deepstream_nvinfer"
+    calls = 0
+
+    def pipeline_status() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"deepstream": {"running": True, "available": True}}
+
+    service = RuntimeService(
+        cfg,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(
+            selected="noop",
+            status=lambda: {},
+            update_runtime_config=lambda _cfg: None,
+        ),
+        inference=SimpleNamespace(status=lambda: {}),
+    )
+    service.pipeline = SimpleNamespace(stats=None, status=pipeline_status)
+
+    state = service.state()
+
+    assert calls == 1
+    assert state.inference["running"] is True
+
+
 def test_runtime_service_rejects_non_roi_detection_batch() -> None:
     cfg = RuntimeConfig()
     service = RuntimeService(
