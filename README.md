@@ -109,7 +109,8 @@ The current GPU-image production candidate keeps decoded frames in NVMM and
 lets DeepStream own TensorRT scheduling:
 
 ```text
-GC553G2/V4L2 -> nvv4l2decoder -> nvvidconv ROI/resize
+GC553G2/V4L2 MJPEG -> nvv4l2decoder -> nvvidconv ROI/resize
+                  or NV12/YUYV raw -> nvvidconv ROI/resize
 -> nvstreammux batch=1 -> nvinfer FP16
 -> C++ YOLO parser -> DeepStream NMS -> NvDsObjectMeta
 -> DetectionBatchMailbox capacity=1 -> DetectionBatch

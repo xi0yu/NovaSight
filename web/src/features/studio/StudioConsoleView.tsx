@@ -17,6 +17,7 @@ import {
   ModelArtifact,
   ModelCatalogDirectory,
   ModelCatalogModel,
+  ModelCatalogResponse,
   ModelProject,
   ModelVersion,
   ParserPresetId,
@@ -87,6 +88,7 @@ type StudioConsoleViewProps = {
   lastUpdated: Date | null;
   realtimeStatus: RuntimeDeliveryStatus;
   onRefresh: () => Promise<void>;
+  onRuntimeConfigChange: (config: RuntimeConfig) => void;
   onRuntimeStateChange: (runtime: RuntimeState) => void;
 };
 
@@ -482,6 +484,7 @@ export function StudioConsoleView({
   lastUpdated,
   realtimeStatus,
   onRefresh,
+  onRuntimeConfigChange,
   onRuntimeStateChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
@@ -497,6 +500,7 @@ export function StudioConsoleView({
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [modelArtifacts, setModelArtifacts] = useState<ModelArtifact[]>([]);
   const [modelCatalogRefreshKey, setModelCatalogRefreshKey] = useState(0);
+  const [modelDetailsRefreshKey, setModelDetailsRefreshKey] = useState(0);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogDirectory | null>(null);
   const [modelCatalogModelCount, setModelCatalogModelCount] = useState(0);
   const [modelCatalogDirectoryCount, setModelCatalogDirectoryCount] = useState(0);
@@ -545,6 +549,8 @@ export function StudioConsoleView({
   const dialogSaving = busy !== null || pendingConfigWriteCount > 0;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
+  const currentModelProjectSelectionRef = useRef<number | "">(selectedModelProjectId);
+  const currentModelVersionSelectionRef = useRef<number | "">(selectedModelVersionId);
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
   const requestedModelSelectionRef = useRef<{
@@ -561,6 +567,8 @@ export function StudioConsoleView({
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
+  currentModelProjectSelectionRef.current = selectedModelProjectId;
+  currentModelVersionSelectionRef.current = selectedModelVersionId;
 
   useEffect(() => {
     dialogSavingRef.current = dialogSaving;
@@ -1506,6 +1514,22 @@ export function StudioConsoleView({
     }
   }, [configuredChoiceId, runningChoiceId, selectedChoiceId]);
 
+  const applyModelCatalogResult = useCallback((result: ModelCatalogResponse) => {
+    setModelCatalog(result.root);
+    setModelCatalogModelCount(result.model_count);
+    setModelCatalogDirectoryCount(result.directory_count);
+    setExpandedModelDirectories((current) => {
+      const next = new Set(current);
+      next.add("");
+      for (const child of result.root.children) {
+        if (child.type === "directory") {
+          next.add(child.relative_path);
+        }
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (activePage !== "infer") {
       return undefined;
@@ -1517,19 +1541,7 @@ export function StudioConsoleView({
         if (cancelled) {
           return;
         }
-        setModelCatalog(result.root);
-        setModelCatalogModelCount(result.model_count);
-        setModelCatalogDirectoryCount(result.directory_count);
-        setExpandedModelDirectories((current) => {
-          const next = new Set(current);
-          next.add("");
-          for (const child of result.root.children) {
-            if (child.type === "directory") {
-              next.add(child.relative_path);
-            }
-          }
-          return next;
-        });
+        applyModelCatalogResult(result);
         if (result.updated_files > 0) {
           await onRefresh();
         }
@@ -1552,7 +1564,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelCatalogRefreshKey, onRefresh]);
+  }, [activePage, applyModelCatalogResult, modelCatalogRefreshKey, onRefresh]);
 
   useEffect(() => {
     if (!modelCatalog || typeof artifact?.id !== "number") {
@@ -1642,7 +1654,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelCatalogRefreshKey, runtime?.active_model?.version?.id, selectedModelProjectId]);
+  }, [activePage, modelDetailsRefreshKey, runtime?.active_model?.version?.id, selectedModelProjectId]);
 
   useEffect(() => {
     if (activePage !== "infer") {
@@ -1707,7 +1719,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelCatalogRefreshKey, selectedModelVersionId]);
+  }, [activePage, modelDetailsRefreshKey, selectedModelVersionId]);
 
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
@@ -2151,7 +2163,10 @@ export function StudioConsoleView({
       pendingConfigWritesRef.current += 1;
       setPendingConfigWriteCount((count) => count + 1);
       setDialogSaveError(null);
-      setBusy(`${section}.${key}`);
+      const keepsEditorInteractive = section === "control" && key === "aim";
+      if (!keepsEditorInteractive) {
+        setBusy(`${section}.${key}`);
+      }
       setLocalError(null);
       const sectionValue = {
         ...asRecord(next[section])
@@ -2166,6 +2181,7 @@ export function StudioConsoleView({
           const applied = normalizeRuntimeConfig(result.config);
           configDraftRef.current = applied;
           setConfigDraft(applied);
+          onRuntimeConfigChange(applied);
         }
       } catch (err) {
         const message = getErrorMessage(err);
@@ -2180,15 +2196,12 @@ export function StudioConsoleView({
       } finally {
         pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
         setPendingConfigWriteCount((count) => Math.max(0, count - 1));
-        if (writeSeq === configWriteSeqRef.current) {
+        if (!keepsEditorInteractive && writeSeq === configWriteSeqRef.current) {
           setBusy(null);
-        }
-        if (pendingConfigWritesRef.current === 0) {
-          await onRefresh();
         }
       }
     },
-    [onRefresh, runtimeConfig]
+    [onRuntimeConfigChange, runtimeConfig]
   );
 
   const updateControlGroupField = useCallback(
@@ -2671,7 +2684,7 @@ export function StudioConsoleView({
     }
   };
 
-  const toggleModelDirectory = (relativePath: string) => {
+  const toggleModelDirectory = useCallback((relativePath: string) => {
     setExpandedModelDirectories((current) => {
       const next = new Set(current);
       if (next.has(relativePath)) {
@@ -2681,9 +2694,9 @@ export function StudioConsoleView({
       }
       return next;
     });
-  };
+  }, []);
 
-  const selectModelFromCatalog = async (model: ModelCatalogModel) => {
+  const selectModelFromCatalog = useCallback(async (model: ModelCatalogModel) => {
     setParserPreset("auto");
     setSelectedModelCatalogPath(model.relative_path);
     let projectId = model.project_id;
@@ -2704,8 +2717,9 @@ export function StudioConsoleView({
         setModelCatalogMessage(
           `已引用原始 Engine：${model.relative_path}；未复制模型文件。`
         );
-        await onRefresh();
         setModelCatalogRefreshKey((current) => current + 1);
+        setModelDetailsRefreshKey((current) => current + 1);
+        await onRefresh();
       } catch (err) {
         setLocalError(`模型引用登记失败：${getErrorMessage(err)}`);
         reportError(err, { source: "model-register", title: "模型引用登记失败" });
@@ -2721,14 +2735,14 @@ export function StudioConsoleView({
       artifactId
     };
     setSelectedModelProjectId(projectId);
-    if (selectedModelProjectId === projectId) {
+    if (currentModelProjectSelectionRef.current === projectId) {
       setSelectedModelVersionId(versionId);
-      if (selectedModelVersionId === versionId) {
+      if (currentModelVersionSelectionRef.current === versionId) {
         setSelectedModelArtifactId(artifactId);
         requestedModelSelectionRef.current = null;
       }
     }
-  };
+  }, [onRefresh]);
 
   const switchModel = async () => {
     if (selectedModelProjectId === "" || selectedSwitchArtifact === null) {
@@ -2771,8 +2785,9 @@ export function StudioConsoleView({
           ? `${switchSummary} · 已验证 ${parserLabel} · NovaSight 内置 parser`
           : switchSummary
       );
-      await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
+      setModelDetailsRefreshKey((current) => current + 1);
+      await onRefresh();
     } catch (err) {
       setLocalError(`模型切换未生效：${getErrorMessage(err)}`);
 
@@ -2790,8 +2805,9 @@ export function StudioConsoleView({
     preferLatestModelVersionRef.current = true;
     try {
       const result = await getModelCatalog(false);
+      applyModelCatalogResult(result);
+      setModelDetailsRefreshKey((current) => current + 1);
       await onRefresh();
-      setModelCatalogRefreshKey((current) => current + 1);
       setModelCatalogMessage(
         `刷新完成：发现 ${result.model_count} 个模型文件；列表直接读取原文件，未复制模型。`
       );
@@ -3189,7 +3205,7 @@ export function StudioConsoleView({
               onParserPresetChange={setParserPreset}
               onRefresh={() => void refreshModelCatalog()}
               onToggleDirectory={toggleModelDirectory}
-              onSelectModel={(model) => void selectModelFromCatalog(model)}
+              onSelectModel={selectModelFromCatalog}
               onSwitch={() => void switchModel()}
             />
           </div>
@@ -3532,7 +3548,7 @@ export function StudioConsoleView({
             <div className="console-metrics">
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-              <Metric title="角色瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头 / 身 / 其他 %" />
+              <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
@@ -3544,12 +3560,12 @@ export function StudioConsoleView({
                 <div>
                   <span className="class-config-eyebrow">类别配置</span>
                   <h3>{activeDetectionProfile}</h3>
-                  <p>类别名称、选择顺序、角色归属与三条共享瞄点线在独立靶场统一管理。</p>
+                  <p>类别名称、选择顺序、瞄点类型与三条共享瞄点线在独立靶场统一管理。</p>
                 </div>
               </div>
               <dl className="class-config-summary-stats">
                 <div><dt>已定义类别</dt><dd>{detectionClasses.filter(Boolean).length}</dd></div>
-                <div><dt>瞄点角色</dt><dd>头 / 身 / 其他</dd></div>
+                <div><dt>瞄点类型</dt><dd>头部 / 身体 / 其他</dd></div>
                 <div><dt>已映射</dt><dd>{Object.keys(activeClassRoles).length}</dd></div>
                 <div><dt>目标筛选</dt><dd>{selectedDetectionClassIds.size}/{classEditorIds.length} 类</dd></div>
               </dl>
@@ -3596,7 +3612,7 @@ export function StudioConsoleView({
                 ) : null}
                 <div className="control-aim-source-note">
                   <span>
-                    <b>瞄点规则由三种角色统一提供</b>
+                    <b>瞄点规则由三种类型统一提供</b>
                     <small>头 {Math.round(aimRoleRatios.head * 100)}%、身体 {Math.round(aimRoleRatios.body * 100)}%、其他 {Math.round(aimRoleRatios.other * 100)}%；未映射类别自动使用“其他”。</small>
                   </span>
                   <div className="role-aim-mini-preview" aria-hidden="true">
@@ -4380,7 +4396,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 类别配置</span>
                 <h2 id="class-config-dialog-title">管理类别配置</h2>
-                <p>把模型类别归入头部、身体或其他角色，再在人物靶上统一标定三条垂直瞄点线。</p>
+                <p>把模型类别归入头部、身体或其他瞄点类型，再在人物靶上统一标定三条垂直瞄点线。</p>
               </div>
               <button
                 aria-label="关闭类别配置"
@@ -4455,7 +4471,7 @@ export function StudioConsoleView({
                 <div className="class-config-profile-bar">
                   <div>
                     <span>当前配置名称</span>
-                    <small>重命名会同步迁移该配置对应的类别角色映射。</small>
+                    <small>重命名会同步迁移该配置对应的类别瞄点类型映射。</small>
                   </div>
                   <input
                     aria-label="当前类别配置名称"
@@ -4545,7 +4561,7 @@ export function StudioConsoleView({
 
                 <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
                   <div className="class-editor-head" role="row">
-                    <span>目标</span><span>类别名称</span><span>目标优先级</span><span>瞄点角色</span>
+                    <span>目标</span><span>类别名称</span><span>目标优先级</span><span>瞄点类型</span>
                   </div>
                   {orderedClassEditorIds.map((classId) => {
                     const configuredName = detectionClasses[classId] ?? "";
@@ -4583,7 +4599,7 @@ export function StudioConsoleView({
                             ))}
                           </select>
                         </label>
-                        <div className="class-role-segmented" role="group" aria-label={`cls ${classId} 瞄点角色`}>
+                        <div className="class-role-segmented" role="group" aria-label={`cls ${classId} 瞄点类型`}>
                           {(["head", "body", "other"] as AimRole[]).map((role) => (
                             <button
                               aria-pressed={(activeClassRoles[String(classId)] ?? "other") === role}
@@ -4593,7 +4609,7 @@ export function StudioConsoleView({
                               onClick={() => void updateClassAimRole(classId, role)}
                               type="button"
                             >
-                              {role === "head" ? "头" : role === "body" ? "身" : "其他"}
+                              {role === "head" ? "头部" : role === "body" ? "身体" : "其他"}
                             </button>
                           ))}
                         </div>
@@ -4602,7 +4618,7 @@ export function StudioConsoleView({
                   })}
                 </div>
                 <p className="console-field-hint">
-                  未知 class id 会显示为“未知类别（cls N）”并使用“其他”角色；人物靶只负责展示比例，实际值仍相对于各自 bbox。
+                  未知 class id 会显示为“未知类别（cls N）”并使用“其他”瞄点类型；人物靶只负责展示比例，实际值仍相对于各自 bbox。
                 </p>
               </div>
             </div>

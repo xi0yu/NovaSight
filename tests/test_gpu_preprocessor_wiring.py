@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -185,6 +186,174 @@ def test_runtime_reconfigurator_switches_algorithm_and_executor_under_runtime_lo
     assert observed_runtime_algorithms == ["universal_saturated"]
     assert app.state.runtime.executors is registry
     assert registry.single_command_per_observation is False
+
+
+def test_runtime_reconfigurator_applies_control_parameters_without_touching_inference(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+    runtime = app.state.runtime
+    pipeline = SimpleNamespace(running=True)
+    runtime.pipeline = pipeline
+    runtime.running = True
+
+    monkeypatch.setattr(
+        app.state.inference,
+        "configure",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("control-only update must not reconfigure inference")
+        ),
+    )
+    monkeypatch.setattr(
+        app.state.inference,
+        "unload",
+        lambda _reason: (_ for _ in ()).throw(
+            AssertionError("control-only update must not unload inference")
+        ),
+    )
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.control.target_fov_radius_px = 320.0
+
+    report = RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert report.applied is True
+    assert report.sections[0].impact == "control_hot_update"
+    assert runtime.pipeline is pipeline
+    assert runtime.running is True
+    assert runtime.config.control.target_fov_radius_px == pytest.approx(320.0)
+
+
+def test_runtime_field_update_does_not_build_unused_config_schema(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+    monkeypatch.setattr(
+        "novasight.runtime.reconfigurator.runtime_config_schema",
+        lambda _config: (_ for _ in ()).throw(
+            AssertionError("field updates must not build the full config schema")
+        ),
+    )
+
+    report = RuntimeReconfigurator(app).apply_field(
+        "runtime",
+        "freshness_threshold_ms",
+        40.0,
+    )
+
+    assert report.applied is True
+    assert "schema" not in report.asdict()
+
+
+def test_runtime_reconfigurator_applies_aim_mapping_without_full_runtime_rebuild(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+    runtime = app.state.runtime
+    resets: list[str] = []
+    clears: list[str] = []
+
+    monkeypatch.setattr(runtime.control_algorithms, "reset", lambda: resets.append("algorithm"))
+    monkeypatch.setattr(
+        runtime,
+        "_clear_pending_commands",
+        lambda reason: clears.append(reason),
+    )
+    monkeypatch.setattr(
+        runtime.target_selector,
+        "reset",
+        lambda: (_ for _ in ()).throw(AssertionError("target tracking must be preserved")),
+    )
+    monkeypatch.setattr(
+        app.state.inference,
+        "configure",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inference must not be reconfigured")
+        ),
+    )
+    monkeypatch.setattr(
+        app.state.executors,
+        "update_runtime_config",
+        lambda _config: (_ for _ in ()).throw(AssertionError("executors must not be rebuilt")),
+    )
+    reconfigurator = RuntimeReconfigurator(app)
+    monkeypatch.setattr(
+        reconfigurator,
+        "_ensure_runtime_pipeline_for_live_capture",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pipeline readiness must not be checked")
+        ),
+    )
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.control.aim.class_roles = {"default": {"0": "body", "1": "head"}}
+
+    report = reconfigurator.apply(next_cfg)
+
+    assert report.applied is True
+    assert report.sections[0].section == "control.aim"
+    assert report.sections[0].impact == "aim_mapping_hot_update"
+    assert "schema" not in report.asdict()
+    assert resets == ["algorithm"]
+    assert clears == ["AIM_MAPPING_UPDATED"]
+    assert runtime.config.control.aim.class_roles == next_cfg.control.aim.class_roles
+    assert (
+        runtime.config_store.snapshot().control.aim.class_roles
+        == next_cfg.control.aim.class_roles
+    )
+
+    selection_cfg = copy.deepcopy(next_cfg)
+    selection_cfg.inference.detection_class_profiles["default"] = ["身体", "头部"]
+    selection_cfg.inference.detection_class_filter = "0,1"
+    selection_cfg.inference.detection_class_priority = "1,0"
+
+    selection_report = reconfigurator.apply(selection_cfg)
+
+    assert selection_report.sections[0].section == "targeting"
+    assert selection_report.sections[0].impact == "targeting_hot_update"
+    assert resets == ["algorithm"]
+    assert clears == ["AIM_MAPPING_UPDATED"]
+    assert runtime.config.inference.detection_class_priority == "1,0"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        updates = (
+            pool.submit(
+                reconfigurator.apply_field,
+                "inference",
+                "detection_class_filter",
+                "1",
+            ),
+            pool.submit(
+                reconfigurator.apply_field,
+                "control",
+                "aim",
+                {
+                    "role_y_ratios": {"head": 0.18, "body": 0.40, "other": 0.22},
+                    "class_roles": {"default": {"0": "body", "1": "head"}},
+                },
+            ),
+        )
+        for update in updates:
+            update.result()
+
+    assert runtime.config.inference.detection_class_filter == "1"
+    assert runtime.config.control.aim.role_y_ratios.head == pytest.approx(0.18)
 
 
 def test_runtime_reconfigurator_disconnects_old_kmnet_before_hardware_replacement(

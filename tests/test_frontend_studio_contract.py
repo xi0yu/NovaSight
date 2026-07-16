@@ -10,6 +10,7 @@ STUDIO_CONSOLE = (
     / "StudioConsoleView.tsx"
 )
 APP = STUDIO_CONSOLE.parents[2] / "App.tsx"
+STYLES = STUDIO_CONSOLE.parents[2] / "styles.css"
 STUDIO_NAVIGATION = (
     Path(__file__).resolve().parents[1]
     / "web"
@@ -36,6 +37,9 @@ STUDIO_SETTINGS = (
 )
 MODEL_SELECTION = (
     STUDIO_CONSOLE.parents[1] / "models" / "ModelSelectionPanel.tsx"
+)
+MODEL_CATALOG_TREE = (
+    STUDIO_CONSOLE.parents[1] / "models" / "ModelCatalogTree.tsx"
 )
 LICENSE_VIEW = (
     STUDIO_CONSOLE.parents[1] / "license" / "LicenseView.tsx"
@@ -166,10 +170,41 @@ def test_model_file_lists_show_human_readable_size() -> None:
 
 def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    refresh_start = source.index("const refreshModelCatalog")
+    refresh_end = source.index("const launchStages", refresh_start)
+    refresh_handler = source[refresh_start:refresh_end]
 
     assert "modelCatalogRefreshKey" in source
+    assert "modelDetailsRefreshKey" in source
     assert "refreshModelCatalog" in source
     assert "selectedModelVersionId" in source
+    assert "applyModelCatalogResult(result)" in refresh_handler
+    assert "setModelCatalogRefreshKey" not in refresh_handler
+
+
+def test_studio_config_field_save_does_not_trigger_full_app_refresh() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    update_start = source.index("const updateConfigField")
+    update_end = source.index("const updateControlGroupField", update_start)
+    update_handler = source[update_start:update_end]
+
+    assert "updateRuntimeConfigField(section, key, value)" in update_handler
+    assert "await onRefresh()" not in update_handler
+
+
+def test_model_catalog_tree_skips_unrelated_runtime_rerenders() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    tree = MODEL_CATALOG_TREE.read_text(encoding="utf-8")
+    selection_start = source.index("const selectModelFromCatalog")
+    selection_end = source.index("const switchModel", selection_start)
+    selection_handler = source[selection_start:selection_end]
+
+    assert "export const ModelCatalogTree = memo(" in tree
+    assert "const toggleModelDirectory = useCallback(" in source
+    assert "const selectModelFromCatalog = useCallback(" in source
+    assert "currentModelProjectSelectionRef.current" in selection_handler
+    assert "currentModelVersionSelectionRef.current" in selection_handler
+    assert "}, [onRefresh]);" in selection_handler
 
 
 def test_studio_defers_non_capture_io_and_uses_launch_specific_status_timeout() -> None:
@@ -369,9 +404,10 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     controls = STUDIO_CONTROLS.read_text(encoding="utf-8")
     settings = STUDIO_SETTINGS.read_text(encoding="utf-8")
+    styles = STYLES.read_text(encoding="utf-8")
 
     assert 'aria-label="模型类别与瞄点设置"' in source
-    assert "头部、身体或其他角色" in source
+    assert "头部、身体或其他瞄点类型" in source
     assert "实际值仍相对于各自 bbox" in source
     assert "未知类别（cls ${classId}）" in source
     assert 'updateConfigField("inference", "detection_class_profiles"' in source
@@ -393,6 +429,18 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     assert "rejected_class_ids" in source
     assert "仅选此类" not in source
     assert "ClassAimRatioControl" not in controls
+    assert "<span>瞄点类型</span>" in source
+    assert 'role === "head" ? "头部" : role === "body" ? "身体" : "其他"' in source
+    assert "grid-template-columns: repeat(3, calc(2em + 16px))" in STYLES.read_text(encoding="utf-8")
+    assert "grid-template-columns: 92px 7em 96px max-content" in STYLES.read_text(encoding="utf-8")
+    guide_start = styles.index(".aim-role-guide {")
+    guide_rule = styles[guide_start:styles.index("}", guide_start)]
+    line_start = styles.index(".aim-role-guide-line {")
+    line_rule = styles[line_start:styles.index("}", line_start)]
+    assert "grid-template-columns: max-content minmax(0, 1fr);" in guide_rule
+    assert "column-gap: var(--space-2);" in guide_rule
+    assert "width: 100%;" in line_rule
+    assert "left: 0;" not in line_rule
     assert ".class-config-workspace" in settings
     assert "overflow-y: auto" in settings
     assert ".class-config-dialog-footer" in settings

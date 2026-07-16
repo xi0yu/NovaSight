@@ -5,7 +5,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from novasight.config import RuntimeConfig, save_runtime_config
+from novasight.config import RuntimeConfig, parse_runtime_config, save_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.executors import ExecutorRegistry
 from novasight.inference.jetson import create_gpu_resource_preprocessor
@@ -25,9 +25,22 @@ class ConfigSectionApplyResult:
 
 
 @dataclass(frozen=True)
+class TargetingConfigPlan:
+    aim_changed: bool
+    profile_changed: bool
+    filter_changed: bool
+    priority_changed: bool
+    labels_changed: bool
+
+    @property
+    def reset_control_history(self) -> bool:
+        return self.aim_changed or self.profile_changed
+
+
+@dataclass(frozen=True)
 class ConfigApplyReport:
     config: dict[str, Any]
-    schema: dict[str, Any]
+    schema: dict[str, Any] | None
     restart_required: bool
     applied: bool
     rolled_back: bool = False
@@ -35,8 +48,10 @@ class ConfigApplyReport:
     message: str = ""
     capture: dict[str, Any] | None = None
 
-    def asdict(self) -> dict[str, Any]:
+    def asdict(self, *, include_schema: bool = True) -> dict[str, Any]:
         payload = asdict(self)
+        if self.schema is None or not include_schema:
+            payload.pop("schema", None)
         payload["sections"] = [asdict(item) for item in self.sections]
         return payload
 
@@ -54,10 +69,46 @@ class RuntimeReconfigurator:
 
     def apply(self, config: RuntimeConfig) -> ConfigApplyReport:
         with self._lock:
-            return self._apply(config)
+            return self._apply(config, include_schema=True)
 
-    def _apply(self, config: RuntimeConfig) -> ConfigApplyReport:
+    def apply_field(
+        self,
+        section: str,
+        key: str,
+        value: Any,
+    ) -> ConfigApplyReport:
+        """Atomically merge, validate, and apply one field against the latest config."""
+
+        with self._lock:
+            current = asdict(self.app.state.runtime.config_store.snapshot())
+            section_value = current.get(str(section))
+            if not isinstance(section_value, dict):
+                raise ValueError(f"unknown runtime config section: {section}")
+            section_value[str(key)] = value
+            return self._apply(
+                parse_runtime_config(current),
+                include_schema=False,
+            )
+
+    def _apply(
+        self,
+        config: RuntimeConfig,
+        *,
+        include_schema: bool,
+    ) -> ConfigApplyReport:
         previous_config = getattr(self.app.state, "config", None)
+        targeting_plan = self._targeting_config_plan(previous_config, config)
+        if targeting_plan is not None:
+            return self._apply_targeting_config(
+                config,
+                previous_config,
+                targeting_plan,
+            )
+        if (
+            self._control_config_only_changed(previous_config, config)
+            and not self._hardware_changed(previous_config, config)
+        ):
+            return self._apply_control_config(config, previous_config)
         previous_kmnet_status = self._kmnet_status()
         sections: list[ConfigSectionApplyResult] = []
         roi_changed = self._roi_changed(previous_config, config)
@@ -156,11 +207,103 @@ class RuntimeReconfigurator:
             save_runtime_config(config, config_path)
         return ConfigApplyReport(
             config=asdict(config),
-            schema=runtime_config_schema(config),
+            schema=runtime_config_schema(config) if include_schema else None,
             restart_required=False,
             applied=True,
             sections=sections,
             message="配置已应用到运行态",
+        )
+
+    def _apply_targeting_config(
+        self,
+        config: RuntimeConfig,
+        previous_config: RuntimeConfig,
+        plan: TargetingConfigPlan,
+    ) -> ConfigApplyReport:
+        runtime = self.app.state.runtime
+        config_path = getattr(self.app.state, "config_path", None)
+        try:
+            runtime.update_targeting_config(
+                config,
+                reset_control_history=plan.reset_control_history,
+            )
+            self.app.state.config = config
+            if config_path is not None:
+                save_runtime_config(config, config_path)
+        except Exception as exc:
+            runtime.update_targeting_config(
+                previous_config,
+                reset_control_history=plan.reset_control_history,
+            )
+            self.app.state.config = previous_config
+            if config_path is not None:
+                save_runtime_config(previous_config, config_path)
+            raise ValueError(
+                f"targeting config rejected; previous config restored: {exc}"
+            ) from exc
+        return ConfigApplyReport(
+            config=asdict(config),
+            schema=None,
+            restart_required=False,
+            applied=True,
+            sections=[
+                ConfigSectionApplyResult(
+                    section="control.aim" if plan.aim_changed else "targeting",
+                    impact=(
+                        "aim_mapping_hot_update"
+                        if plan.aim_changed
+                        else "targeting_hot_update"
+                    ),
+                    status="applied",
+                    message="targeting config updated without rebuilding runtime modules",
+                )
+            ],
+            message="目标配置已热更新",
+        )
+
+    def _apply_control_config(
+        self,
+        config: RuntimeConfig,
+        previous_config: RuntimeConfig,
+    ) -> ConfigApplyReport:
+        runtime = self.app.state.runtime
+        executors = self.app.state.executors
+        config_path = getattr(self.app.state, "config_path", None)
+        try:
+            runtime.update_config(
+                config,
+                executors=executors,
+                reconfigure_inference=False,
+            )
+            self.app.state.config = config
+            if config_path is not None:
+                save_runtime_config(config, config_path)
+        except Exception as exc:
+            runtime.update_config(
+                previous_config,
+                executors=executors,
+                reconfigure_inference=False,
+            )
+            self.app.state.config = previous_config
+            if config_path is not None:
+                save_runtime_config(previous_config, config_path)
+            raise ValueError(
+                f"control config rejected; previous config restored: {exc}"
+            ) from exc
+        return ConfigApplyReport(
+            config=asdict(config),
+            schema=None,
+            restart_required=False,
+            applied=True,
+            sections=[
+                ConfigSectionApplyResult(
+                    section="control",
+                    impact="control_hot_update",
+                    status="applied",
+                    message="control config updated without touching inference or pipeline",
+                )
+            ],
+            message="控制配置已热更新",
         )
 
     def select_capture(
@@ -550,3 +693,65 @@ class RuntimeReconfigurator:
             or previous_limits.stream_fps != next_limits.stream_fps
             or previous_consumers.preview != next_consumers.preview
         )
+
+    @staticmethod
+    def _targeting_config_plan(
+        previous_config: RuntimeConfig | None,
+        config: RuntimeConfig,
+    ) -> TargetingConfigPlan | None:
+        if previous_config is None:
+            return None
+        previous_inference = previous_config.inference
+        next_inference = config.inference
+        plan = TargetingConfigPlan(
+            aim_changed=previous_config.control.aim != config.control.aim,
+            profile_changed=(
+                previous_inference.detection_class_profile
+                != next_inference.detection_class_profile
+            ),
+            filter_changed=(
+                previous_inference.detection_class_filter
+                != next_inference.detection_class_filter
+            ),
+            priority_changed=(
+                previous_inference.detection_class_priority
+                != next_inference.detection_class_priority
+            ),
+            labels_changed=(
+                previous_inference.detection_class_profiles
+                != next_inference.detection_class_profiles
+            ),
+        )
+        if not any(
+            (
+                plan.aim_changed,
+                plan.profile_changed,
+                plan.filter_changed,
+                plan.priority_changed,
+                plan.labels_changed,
+            )
+        ):
+            return None
+        previous_payload = asdict(previous_config)
+        next_payload = asdict(config)
+        previous_payload["control"]["aim"] = next_payload["control"]["aim"]
+        for key in (
+            "detection_class_profile",
+            "detection_class_filter",
+            "detection_class_priority",
+            "detection_class_profiles",
+        ):
+            previous_payload["inference"][key] = next_payload["inference"][key]
+        return plan if previous_payload == next_payload else None
+
+    @staticmethod
+    def _control_config_only_changed(
+        previous_config: RuntimeConfig | None,
+        config: RuntimeConfig,
+    ) -> bool:
+        if previous_config is None or previous_config.control == config.control:
+            return False
+        previous_payload = asdict(previous_config)
+        next_payload = asdict(config)
+        previous_payload["control"] = next_payload["control"]
+        return previous_payload == next_payload

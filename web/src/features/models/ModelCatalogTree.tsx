@@ -1,9 +1,11 @@
+import { memo } from "react";
+
 import type { ModelCatalogDirectory, ModelCatalogModel } from "../../api";
 import { Badge, StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual/NovaIcon";
 import { formatModelSize, modelStatusLabel, modelStatusTone } from "./modelPresentation";
 
-export function ModelCatalogTree({
+export const ModelCatalogTree = memo(function ModelCatalogTree({
   root,
   expandedDirectories,
   selectedPath,
@@ -31,7 +33,7 @@ export function ModelCatalogTree({
       />
     </div>
   );
-}
+});
 
 function CatalogNodes({
   nodes,

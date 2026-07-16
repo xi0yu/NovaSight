@@ -65,7 +65,7 @@ Current default capture is `capture.memory=cpu`, which opens `GstAppSinkFrameSou
 That path maps `Gst.Buffer` into Python, builds a NumPy BGR image, then preprocesses on CPU before TensorRT.
 
 The desired fast path is not merely “appsink”. It is a DeepStream path where large image data stays in NVMM/GPU-side resources and Python only parses the small `output0` tensor.
-The current DeepStream fast path is deliberately scoped to MJPEG capture (`capture.pixel_format` empty, `MJPG`, or `MJPEG`) because the production target is `/dev/video0` MJPEG 1920×1080@120. Other capture formats must be added as explicit DeepStream pipeline variants instead of silently reusing the MJPEG pipeline.
+The DeepStream fast path has explicit source variants for MJPEG (`capture.pixel_format` empty, `MJPG`, or `MJPEG`), native `NV12`, and packed `YUYV`/`YUY2`. MJPEG uses `jpegparse -> nvv4l2decoder`; raw formats enter the Jetson VIC-backed `nvvidconv` directly and are uploaded to NVMM/NV12 while applying the ROI crop. Other capture formats must be added as explicit DeepStream pipeline variants instead of silently reusing either source chain.
 This constraint is owned by `DeepStreamPipelineConfig` / `build_deepstream_pipeline()`, so API, runtime, CLI smoke, and tests share the same MJPEG contract.
 
 ## Non-Negotiable Invariants

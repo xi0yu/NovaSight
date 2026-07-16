@@ -2806,6 +2806,17 @@ tbody tr:hover {
   background: color-mix(in srgb, var(--bg-subtle) 94%, transparent);
 }
 
+.class-config-dialog .class-editor-head,
+.class-config-dialog .class-editor-row {
+  min-width: 620px;
+  grid-template-columns: 92px 7em 96px max-content;
+}
+
+.class-config-dialog .class-editor-row > input {
+  inline-size: 7em;
+  max-inline-size: 7em;
+}
+
 .class-config-dialog-footer {
   min-height: 64px;
   display: flex;
@@ -2965,6 +2976,10 @@ tbody tr:hover {
   right: 7%;
   left: 7%;
   height: 1px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--space-2);
   color: var(--role-color);
 }
 
@@ -2972,9 +2987,6 @@ tbody tr:hover {
 .aim-role-guide-other { --role-color: #4b8df8; }
 
 .aim-role-guide-label {
-  position: absolute;
-  top: 0;
-  left: 0;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -2984,17 +2996,13 @@ tbody tr:hover {
   background: color-mix(in srgb, #17151a 88%, var(--role-color));
   color: #fff;
   box-shadow: 0 5px 16px rgba(0, 0, 0, 0.28);
-  transform: translateY(-50%);
 }
 
 .aim-role-guide-label b { font-size: 11px; }
 .aim-role-guide-label small { color: var(--role-color); font-family: var(--font-mono); font-size: 10px; font-weight: 800; }
 
 .aim-role-guide-line {
-  position: absolute;
-  top: -1px;
-  right: 0;
-  left: 0;
+  width: 100%;
   height: 2px;
   background: var(--role-color);
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--role-color) 66%, transparent));
@@ -3147,7 +3155,7 @@ tbody tr:hover {
 .class-role-segmented {
   min-width: 0;
   display: grid;
-  grid-template-columns: 0.8fr 0.8fr 1.2fr;
+  grid-template-columns: repeat(3, calc(2em + 16px));
   gap: 3px;
   padding: 3px;
   border: 1px solid var(--border-subtle);
@@ -3157,6 +3165,7 @@ tbody tr:hover {
 
 .class-role-segmented button {
   min-width: 0;
+  width: 100%;
   height: 28px;
   padding: 0 5px;
   border: 1px solid transparent;

@@ -46,27 +46,49 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
     nvinfer_config = _gst_property_value(
         Path(config.nvinfer_config_path).expanduser().resolve(strict=False)
     )
+    pixel_format = str(config.pixel_format or "MJPG").strip().upper()
     elements = [
-            (
-                f"v4l2src name=capture-source device={_gst_property_value(config.device)} "
-                f"io-mode={int(config.io_mode)} do-timestamp=true"
-            ),
-            "!",
-            (
-                f"image/jpeg,width={int(config.capture_width)},"
-                f"height={int(config.capture_height)},framerate={int(config.fps)}/1"
-            ),
-            "!",
-            LATEST_ONLY_QUEUE,
-            "!",
-            "jpegparse",
-            "!",
-            "nvv4l2decoder mjpeg=1",
-            "!",
-            "video/x-raw(memory:NVMM),format=I420",
-            "!",
-            LATEST_ONLY_QUEUE,
-            "!",
+        (
+            f"v4l2src name=capture-source device={_gst_property_value(config.device)} "
+            f"io-mode={int(config.io_mode)} do-timestamp=true"
+        ),
+        "!",
+    ]
+    if pixel_format in {"MJPG", "MJPEG"}:
+        elements.extend(
+            [
+                (
+                    f"image/jpeg,width={int(config.capture_width)},"
+                    f"height={int(config.capture_height)},framerate={int(config.fps)}/1"
+                ),
+                "!",
+                LATEST_ONLY_QUEUE,
+                "!",
+                "jpegparse",
+                "!",
+                "nvv4l2decoder mjpeg=1",
+                "!",
+                "video/x-raw(memory:NVMM),format=I420",
+                "!",
+                LATEST_ONLY_QUEUE,
+                "!",
+            ]
+        )
+    else:
+        gst_format = "YUY2" if pixel_format in {"YUYV", "YUY2"} else "NV12"
+        elements.extend(
+            [
+                (
+                    f"video/x-raw,format={gst_format},width={int(config.capture_width)},"
+                    f"height={int(config.capture_height)},framerate={int(config.fps)}/1"
+                ),
+                "!",
+                LATEST_ONLY_QUEUE,
+                "!",
+            ]
+        )
+    elements.extend(
+        [
             (
                 "nvvidconv "
                 f"left={int(config.roi_left)} right={int(config.roi_right)} "
@@ -84,6 +106,7 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             "!",
             LATEST_ONLY_QUEUE,
         ]
+    )
     if (
         int(config.roi_width) != int(config.model_width)
         or int(config.roi_height) != int(config.model_height)
@@ -191,8 +214,10 @@ def _validate_config(config: DeepStreamPipelineConfig) -> None:
         if int(value) <= 0:
             raise ValueError(f"{name} must be positive")
     pixel_format = str(config.pixel_format or "").strip().upper()
-    if pixel_format not in {"", "MJPG", "MJPEG"}:
-        raise ValueError("deepstream_nvinfer currently requires MJPEG capture")
+    if pixel_format not in {"", "MJPG", "MJPEG", "NV12", "YUYV", "YUY2"}:
+        raise ValueError(
+            "deepstream_nvinfer supports MJPEG, NV12, or YUYV capture"
+        )
     if int(config.io_mode) < 0:
         raise ValueError("io_mode must be >= 0")
     if int(config.batched_push_timeout_us) < 0:

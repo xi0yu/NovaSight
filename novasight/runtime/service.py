@@ -340,6 +340,7 @@ class RuntimeService:
         config: RuntimeConfig,
         *,
         executors: ExecutorRegistry | None = None,
+        reconfigure_inference: bool = True,
     ) -> RuntimeConfig:
         mode_changed = str(config.control.mode) != str(self.config.control.mode)
         new_calibration_signature = self._config_calibration_signature(config)
@@ -369,7 +370,7 @@ class RuntimeService:
                 self._reset_detection_batch_cursor()
             self._reset_runtime_control_state(reset_reason)
         configure = getattr(self.inference, "configure", None)
-        if callable(configure):
+        if reconfigure_inference and callable(configure):
             configure(
                 confidence_threshold=config.inference.confidence_threshold,
                 nms_threshold=config.inference.nms_threshold,
@@ -382,6 +383,22 @@ class RuntimeService:
             if calibration_changed
             else "config_updated"
         )
+        return self.config_store.replace(config)
+
+    def update_targeting_config(
+        self,
+        config: RuntimeConfig,
+        *,
+        reset_control_history: bool,
+    ) -> RuntimeConfig:
+        """Apply class selection and aim mappings without rebuilding runtime modules."""
+
+        with self._control_lock:
+            self.config = config
+            if reset_control_history:
+                self.control_algorithms.reset()
+                self._clear_pending_commands("AIM_MAPPING_UPDATED")
+                self._reset_direct_command_executor()
         return self.config_store.replace(config)
 
     def update_external_sensitivity_fingerprint(

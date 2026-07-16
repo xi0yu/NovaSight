@@ -466,7 +466,7 @@ export type ConfigSchemaResponse = {
 
 export type ConfigUpdateResponse = {
   config: RuntimeConfig;
-  schema: ConfigSchemaResponse;
+  schema?: ConfigSchemaResponse;
   restart_required: boolean;
   applied?: boolean;
   rolled_back?: boolean;

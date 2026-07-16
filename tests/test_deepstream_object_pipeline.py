@@ -78,6 +78,30 @@ def test_deepstream_pipeline_is_nvmm_latest_only_with_hardware_jpeg_preview(tmp_
     assert "video/x-raw,format=BGR" not in pipeline
 
 
+def test_deepstream_pipeline_accepts_native_nv12_capture(tmp_path: Path) -> None:
+    config = replace(_pipeline_config(tmp_path), pixel_format="NV12")
+
+    pipeline = build_deepstream_pipeline(config)
+
+    assert "video/x-raw,format=NV12,width=1920,height=1080,framerate=120/1" in pipeline
+    assert "nvvidconv left=720 right=1200 top=300 bottom=780" in pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=480,height=480" in pipeline
+    assert "jpegparse" not in pipeline
+    assert "nvv4l2decoder" not in pipeline
+
+
+def test_deepstream_pipeline_accepts_yuyv_capture_via_vic_conversion(tmp_path: Path) -> None:
+    config = replace(_pipeline_config(tmp_path), pixel_format="YUYV")
+
+    pipeline = build_deepstream_pipeline(config)
+
+    assert "video/x-raw,format=YUY2,width=1920,height=1080,framerate=120/1" in pipeline
+    assert "nvvidconv left=720 right=1200 top=300 bottom=780" in pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=480,height=480" in pipeline
+    assert "jpegparse" not in pipeline
+    assert "nvv4l2decoder" not in pipeline
+
+
 def test_deepstream_pipeline_skips_model_resize_when_roi_already_matches(tmp_path: Path) -> None:
     config = _pipeline_config(tmp_path)
     config = replace(

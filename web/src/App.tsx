@@ -108,6 +108,14 @@ function StudioApp() {
     }));
   }, []);
 
+  const applyRuntimeConfig = useCallback((config: RuntimeConfig) => {
+    setState((current) => ({
+      ...current,
+      errors: withoutError(current.errors, "config"),
+      config
+    }));
+  }, []);
+
   const loadLicense = useCallback(async () => {
     const requestSeq = licenseRequestSeqRef.current + 1;
     licenseRequestSeqRef.current = requestSeq;
@@ -547,6 +555,7 @@ function StudioApp() {
         lastUpdated={state.lastUpdated}
         realtimeStatus={realtimeStatus}
         onRefresh={load}
+        onRuntimeConfigChange={applyRuntimeConfig}
         onRuntimeStateChange={applyRuntimeState}
       />
       <ToastHost />
