@@ -1,5 +1,6 @@
 from .runtime import (
     CrosshairConfig,
+    PowerSavingConfig,
     RuntimeConfig,
     load_runtime_config,
     parse_runtime_config,
@@ -8,6 +9,7 @@ from .runtime import (
 
 __all__ = [
     "CrosshairConfig",
+    "PowerSavingConfig",
     "RuntimeConfig",
     "load_runtime_config",
     "parse_runtime_config",

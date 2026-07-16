@@ -47,6 +47,15 @@ class RuntimeBehaviorConfig:
 
 
 @dataclass
+class PowerSavingConfig:
+    host_presence_enabled: bool = False
+    target_host_id: str = ""
+    heartbeat_timeout_s: float = 6.0
+    offline_grace_s: float = 15.0
+    auto_resume: bool = True
+
+
+@dataclass
 class RoiConfig:
     size: int = 640
 
@@ -387,6 +396,7 @@ class RuntimeConfig:
     consumers: ConsumerConfig = field(default_factory=ConsumerConfig)
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
     runtime: RuntimeBehaviorConfig = field(default_factory=RuntimeBehaviorConfig)
+    power_saving: PowerSavingConfig = field(default_factory=PowerSavingConfig)
     roi: RoiConfig = field(default_factory=RoiConfig)
     crosshair: CrosshairConfig = field(default_factory=CrosshairConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
@@ -1196,6 +1206,27 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'runtime.drop_stale_batches' must be true")
     if not cfg.runtime.consume_latest_only:
         raise ValueError("runtime config key 'runtime.consume_latest_only' must be true")
+    if (
+        not math.isfinite(cfg.power_saving.heartbeat_timeout_s)
+        or not 0 < cfg.power_saving.heartbeat_timeout_s <= 120
+    ):
+        raise ValueError(
+            "runtime config key 'power_saving.heartbeat_timeout_s' must be finite "
+            "and in (0, 120]"
+        )
+    if cfg.power_saving.host_presence_enabled and not cfg.power_saving.target_host_id.strip():
+        raise ValueError(
+            "runtime config key 'power_saving.target_host_id' must be non-empty "
+            "when host presence is enabled"
+        )
+    if (
+        not math.isfinite(cfg.power_saving.offline_grace_s)
+        or not 0 <= cfg.power_saving.offline_grace_s <= 600
+    ):
+        raise ValueError(
+            "runtime config key 'power_saving.offline_grace_s' must be finite "
+            "and in [0, 600]"
+        )
     if cfg.consumers.recording_format not in {"csv", "parquet"}:
         raise ValueError("runtime config key 'consumers.recording_format' must be csv or parquet")
     try:

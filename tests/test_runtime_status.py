@@ -60,3 +60,24 @@ def test_runtime_state_takes_control_snapshot_under_control_lock() -> None:
     service.state()
 
     assert probe.entered is True
+
+
+def test_runtime_state_exposes_power_saving_supervisor_status() -> None:
+    service = RuntimeService(
+        RuntimeConfig(),
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=SimpleNamespace(status=lambda: {}),
+    )
+    service.power_supervisor = SimpleNamespace(
+        status=lambda: {
+            "enabled": True,
+            "mode": "cold_standby",
+            "run_intent": True,
+            "reason": "target host offline; runtime suspended",
+        }
+    )
+
+    state = service.state()
+
+    assert state.power_saving["mode"] == "cold_standby"
+    assert state.power_saving["run_intent"] is True

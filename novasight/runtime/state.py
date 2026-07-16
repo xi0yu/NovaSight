@@ -17,6 +17,7 @@ class RuntimeState:
     inference: dict
     config: dict
     pipeline: dict
+    power_saving: dict
     vision: dict
     fatal_error: dict | None
 

@@ -275,6 +275,14 @@ def test_model_selection_exposes_only_builtin_parser_presets() -> None:
     assert "外部 .so" not in panel
 
 
+def test_studio_treats_host_offline_power_standby_as_accepted_start() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert "readBoolean(status.standby)" in source
+    assert "等待目标主机心跳" in source
+    assert "runtime?.power_saving" in source
+
+
 def test_kmnet_panel_has_dedicated_control_test_page() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     navigation = STUDIO_NAVIGATION.read_text(encoding="utf-8")

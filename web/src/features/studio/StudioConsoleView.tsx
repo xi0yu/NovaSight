@@ -698,6 +698,7 @@ export function StudioConsoleView({
   const preprocessConfig = nestedRecord(config, "preprocess");
   const controlConfig = nestedRecord(config, "control");
   const hardwareConfig = nestedRecord(config, "hardware");
+  const powerSavingConfig = nestedRecord(config, "power_saving");
   const consumersConfig = nestedRecord(config, "consumers");
   const vision = asRecord(runtime?.vision);
   const crosshairStatus = asRecord(vision.crosshair);
@@ -722,6 +723,14 @@ export function StudioConsoleView({
   const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
   const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
+  const runtimePowerSaving = asRecord(runtime?.power_saving);
+  const runtimePowerMode = readString(runtimePowerSaving.mode, "disabled");
+  const runtimePowerRunIntent = readBoolean(runtimePowerSaving.run_intent);
+  const runtimePowerAutoResume = readBoolean(runtimePowerSaving.auto_resume, true);
+  const runtimePowerReason = readString(runtimePowerSaving.reason, "");
+  const hostPresenceStandby = runtimePowerMode === "cold_standby" && runtimePowerRunIntent;
+  const hostPresenceGrace = runtimePowerMode === "grace";
+  const runtimePowerInterrupted = runtimePowerMode === "interrupted";
   const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
@@ -740,6 +749,12 @@ export function StudioConsoleView({
   const captureStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "主链故障"
+      : runtimePowerInterrupted
+        ? "主链意外停止"
+      : hostPresenceStandby
+        ? "主机离线省流待机"
+      : hostPresenceGrace
+        ? "主机心跳中断 · 宽限运行"
       : runtimeMainlineRunning
         ? "采集+TensorRT+控制运行中"
       : mainlineLaunchPending
@@ -755,6 +770,10 @@ export function StudioConsoleView({
   const inferenceStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "管线故障"
+      : runtimePowerInterrupted
+        ? "需要人工处理"
+      : hostPresenceStandby
+        ? "推理已暂停"
       : runtimeMainlineRunning
         ? runtimeMainlineStatus.hasRuntimeConsumption
           ? "runtime 已消费"
@@ -769,6 +788,9 @@ export function StudioConsoleView({
     : runtime?.running
       ? "运行中"
       : "已停止";
+  const runtimeControlRequested = captureMainRunning || (
+    runtimeMainlineSelected && runtimePowerRunIntent
+  );
   const runtimeModelOutput = asRecord(runtimeInference.model_output);
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
   const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
@@ -994,6 +1016,14 @@ export function StudioConsoleView({
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
+  const hostPresencePowerSavingEnabled = readBoolean(
+    powerSavingConfig.host_presence_enabled,
+    false
+  );
+  const targetHostId = readString(powerSavingConfig.target_host_id, "");
+  const hostHeartbeatTimeoutS = readNumber(powerSavingConfig.heartbeat_timeout_s, 6);
+  const hostOfflineGraceS = readNumber(powerSavingConfig.offline_grace_s, 15);
+  const hostAutoResume = readBoolean(powerSavingConfig.auto_resume, true);
   const schedulerEnabled = readBoolean(controlConfig.scheduler_enabled, true);
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
@@ -1959,6 +1989,7 @@ export function StudioConsoleView({
     setLaunchProgressDetail("正在提交启动请求，等待后端阶段反馈。");
     setLaunchStageIndex(0);
     setLaunchCompletedStages(0);
+    let enteredPowerStandby = false;
 
     const ensureNotCancelled = () => {
       if (launchCancelledRef.current) {
@@ -1986,6 +2017,17 @@ export function StudioConsoleView({
       });
       await runStage(2, async () => {
         const status = asRecord(await startRuntimePipeline());
+        if (readBoolean(status.standby)) {
+          const powerSaving = asRecord(status.power_saving);
+          enteredPowerStandby = true;
+          setMainlineLaunchAccepted(false);
+          setMainlineLaunchMessage(
+            readBoolean(powerSaving.auto_resume, true)
+              ? readString(powerSaving.reason, "等待目标主机心跳")
+              : "等待目标主机上线；自动恢复已关闭，请上线后再次点击启动"
+          );
+          return;
+        }
         const accepted = readBoolean(status.running, true);
         if (!accepted) {
           const reason = readString(status.last_error, "后端未确认主链运行。");
@@ -1995,6 +2037,17 @@ export function StudioConsoleView({
         setMainlineLaunchAccepted(true);
         setMainlineLaunchMessage("主链启动请求已提交，正在等待后端状态确认。");
       });
+      if (enteredPowerStandby) {
+        setLaunchStatus("success");
+        setLaunchCompletedStages(3);
+        setLaunchProgressDetail(
+          hostAutoResume
+            ? "启动意图已保存；等待目标主机心跳后自动启动主链。"
+            : "启动意图已保存；目标主机上线后需要再次点击启动。"
+        );
+        await onRefresh();
+        return;
+      }
       await runStage(3, async () => {
         await waitForRuntimeEvidence(
           "激活鼠标算法",
@@ -2034,6 +2087,7 @@ export function StudioConsoleView({
   }, [
     assertCaptureLaunchState,
     buildCapturePayload,
+    hostAutoResume,
     launchStatus,
     onRefresh,
     onRuntimeStateChange,
@@ -2075,7 +2129,7 @@ export function StudioConsoleView({
   }, [closeLaunchDialog, launchStatus, onRefresh, onRuntimeStateChange]);
 
   const toggleCapture = useCallback(async () => {
-    if (captureMainRunning) {
+    if (runtimeControlRequested) {
       await stopCurrentCapture();
       return;
     }
@@ -2084,7 +2138,7 @@ export function StudioConsoleView({
       return;
     }
     await applyCapture();
-  }, [applyCapture, captureMainRunning, runtimeMainlineSelected, openMainlineLaunchDialog, stopCurrentCapture]);
+  }, [applyCapture, runtimeControlRequested, runtimeMainlineSelected, openMainlineLaunchDialog, stopCurrentCapture]);
 
   const updateConfigField = useCallback(
     async (section: string, key: string, value: RuntimeConfigValue) => {
@@ -2859,13 +2913,13 @@ export function StudioConsoleView({
               : `采集：${captureStatusText} · 推理：${inferenceStatusText}`}
           </div>
           <button
-            className={captureMainRunning ? "console-button danger" : "console-button primary"}
+            className={runtimeControlRequested ? "console-button danger" : "console-button primary"}
             disabled={busy === "capture" || busy === "stop" || busy === "runtime.start"}
             onClick={() => void toggleCapture()}
             type="button"
           >
-            <NovaIcon name={captureMainRunning ? "stop" : "start"} size={16} />
-            {captureMainRunning ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
+            <NovaIcon name={runtimeControlRequested ? "stop" : "start"} size={16} />
+            {runtimeControlRequested ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
           </button>
           {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
             <button
@@ -2892,7 +2946,16 @@ export function StudioConsoleView({
           ) : null}
         </section>
 
-        {mainlineLaunchPending ? (
+        {runtimePowerInterrupted ? (
+          <div className="console-error">
+            主链并非由省流策略停止：{runtimePowerReason || "请检查 pipeline 故障后手动重试"}。
+          </div>
+        ) : hostPresenceStandby ? (
+          <div className="console-info">
+            省流待机：{runtimePowerReason || "等待目标主机心跳"}。
+            {runtimePowerAutoResume ? "主机恢复后将按运行意图自动启动。" : "主机上线后需要再次点击启动。"}
+          </div>
+        ) : mainlineLaunchPending ? (
           <div className="console-info">
             {mainlineLaunchMessage || "主链启动请求已提交，正在等待后端状态确认。"}
           </div>
@@ -2906,6 +2969,47 @@ export function StudioConsoleView({
             <Metric title="采集 FPS" value={formatOptionalNumber(captureSourceFps, 1)} small={deepstreamNvinferSelected ? "v4l2 source" : "appsink arrival"} />
             <Metric title="最新帧龄" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="ms" />
             <Metric title={deepstreamNvinferSelected ? "Batch 覆盖" : "LatestFrame 覆盖"} value={formatOptionalInteger(captureOverwrittenFrames)} small={deepstreamNvinferSelected ? "batches" : "frames"} />
+          </div>
+          <div className="console-card">
+            <SectionTitle title="目标主机离线省流" />
+            <p className="console-section-note">
+              目标主机 Agent 心跳超时后停止完整 DeepStream pipeline；配置修改后需要重启 NovaSight 后端。
+            </p>
+            <ModuleSwitch
+              label="启用主机心跳监管"
+              detail="默认关闭；启用前请先在目标主机运行 host_presence_agent.py"
+              enabled={hostPresencePowerSavingEnabled}
+              onToggle={(enabled) => updateConfigField("power_saving", "host_presence_enabled", enabled)}
+            />
+            <TextControl
+              label="目标主机 ID"
+              value={targetHostId}
+              onCommit={(value) => updateConfigField("power_saving", "target_host_id", value.trim())}
+            />
+            <NumberControl
+              label="心跳超时 s"
+              detail="超过该时间未收到心跳后进入离线宽限。"
+              value={hostHeartbeatTimeoutS}
+              min={1}
+              max={120}
+              step={1}
+              onCommit={(value) => updateConfigField("power_saving", "heartbeat_timeout_s", value)}
+            />
+            <NumberControl
+              label="离线宽限 s"
+              detail="宽限结束后停止采集、解码、nvinfer 与预览。"
+              value={hostOfflineGraceS}
+              min={0}
+              max={600}
+              step={1}
+              onCommit={(value) => updateConfigField("power_saving", "offline_grace_s", value)}
+            />
+            <ModuleSwitch
+              label="主机恢复后自动启动"
+              detail="只恢复策略挂起的运行意图；用户主动停止后不会自动启动。"
+              enabled={hostAutoResume}
+              onToggle={(enabled) => updateConfigField("power_saving", "auto_resume", enabled)}
+            />
           </div>
 
           <div className="console-grid1">

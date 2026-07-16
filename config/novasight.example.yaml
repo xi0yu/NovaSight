@@ -18,6 +18,12 @@ runtime:
   freshness_threshold_ms: 55
   drop_stale_batches: true
   consume_latest_only: true
+power_saving:
+  host_presence_enabled: false
+  target_host_id: ""
+  heartbeat_timeout_s: 6.0
+  offline_grace_s: 15.0
+  auto_resume: true
 roi:
   size: 640
 crosshair:

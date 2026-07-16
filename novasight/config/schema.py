@@ -350,6 +350,48 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                 ],
             },
             {
+                "id": "power_saving",
+                "label": "主机离线省流",
+                "fields": [
+                    {
+                        "path": "power_saving.host_presence_enabled",
+                        "label": "启用主机心跳监管",
+                        "type": "bool",
+                        "restart_required": True,
+                    },
+                    {
+                        "path": "power_saving.target_host_id",
+                        "label": "目标主机 ID",
+                        "type": "string",
+                        "restart_required": True,
+                    },
+                    {
+                        "path": "power_saving.heartbeat_timeout_s",
+                        "label": "心跳超时",
+                        "type": "float",
+                        "min": 1,
+                        "max": 120,
+                        "unit": "s",
+                        "restart_required": True,
+                    },
+                    {
+                        "path": "power_saving.offline_grace_s",
+                        "label": "离线宽限",
+                        "type": "float",
+                        "min": 0,
+                        "max": 600,
+                        "unit": "s",
+                        "restart_required": True,
+                    },
+                    {
+                        "path": "power_saving.auto_resume",
+                        "label": "主机恢复后自动启动",
+                        "type": "bool",
+                        "restart_required": True,
+                    },
+                ],
+            },
+            {
                 "id": "roi",
                 "label": "ROI",
                 "fields": [

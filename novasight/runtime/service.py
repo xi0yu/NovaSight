@@ -279,6 +279,11 @@ class RuntimeService:
             ),
             config=self.config_store.status(),
             pipeline=pipeline_payload,
+            power_saving=(
+                dict(self.power_supervisor.status())
+                if getattr(self, "power_supervisor", None) is not None
+                else {}
+            ),
             vision=vision,
             fatal_error=self.fatal_error,
         )

@@ -18,8 +18,10 @@ from novasight.instance_lock import InstanceLock
 from novasight.license import LicenseStore
 from novasight.model_registry import ModelRegistry
 from novasight.runtime import (
+    CallbackRuntimeLifecycle,
     ControlFrameCsvRecorder,
     ControlFrameParquetRecorder,
+    RuntimePowerSupervisor,
     RuntimeService,
     StatusHub,
 )
@@ -34,7 +36,11 @@ from .routes_executors import router as executors_router
 from .routes_health import router as health_router
 from .routes_model_ingress import load_validated_profile, router as model_ingress_router
 from .routes_models import router as models_router
-from .routes_runtime import router as runtime_router
+from .routes_runtime import (
+    _start_runtime_pipeline_core,
+    _stop_runtime_pipeline_core,
+    router as runtime_router,
+)
 from .routes_status import router as status_router
 from .routes_system import router as system_router
 from .routes_websocket import router as websocket_router
@@ -111,6 +117,22 @@ def create_app(
     app.state.runtime_reconfiguration_lock = threading.RLock()
     app.state.kmnet_auto_connect_thread = None
     app.state.capture_auto_restore_thread = None
+    runtime_power = RuntimePowerSupervisor(
+        lifecycle=CallbackRuntimeLifecycle(
+            is_running=lambda: bool(
+                runtime.pipeline is not None and runtime.pipeline.running
+            ),
+            start=lambda _reason: _start_runtime_pipeline_core(app),
+            stop=lambda reason: _stop_runtime_pipeline_core(runtime, reason),
+        ),
+        enabled=config.power_saving.host_presence_enabled,
+        target_host_id=config.power_saving.target_host_id,
+        heartbeat_timeout_s=config.power_saving.heartbeat_timeout_s,
+        offline_grace_s=config.power_saving.offline_grace_s,
+        auto_resume=config.power_saving.auto_resume,
+    )
+    app.state.runtime_power = runtime_power
+    runtime.power_supervisor = runtime_power
 
     @app.on_event("startup")
     def start_process_lifecycle() -> None:
@@ -124,10 +146,12 @@ def create_app(
             capture,
             config,
         )
+        runtime_power.start_monitoring()
         logger.info("application startup: lifecycle ready")
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
+        runtime_power.close()
         app.state.status_hub.close()
         _disconnect_kmnet(app.state.executors)
         systemd_notifier.stop()

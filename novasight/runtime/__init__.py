@@ -7,6 +7,7 @@ from .logging import configure_logging
 from .latest_frame import FrameHandle, LatestFrameBroker, LatestFrameExchange
 from .detection_batch_mailbox import DetectionBatchMailbox
 from .pipeline import RuntimePipeline
+from .power import CallbackRuntimeLifecycle, RuntimeLifecycle, RuntimePowerSupervisor
 from .recorder import (
     CONTROL_FRAME_FIELDS,
     CONTROL_TRACE_FIELD_UNITS,
@@ -43,6 +44,9 @@ __all__ = [
     "detection_batch_to_frame_context",
     "detection_batch_tracks",
     "RuntimePipeline",
+    "CallbackRuntimeLifecycle",
+    "RuntimeLifecycle",
+    "RuntimePowerSupervisor",
     "RuntimeService",
     "RuntimeState",
     "FrameHandle",

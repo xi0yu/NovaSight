@@ -212,9 +212,51 @@ def test_runtime_config_defaults_are_stable() -> None:
     assert cfg.calibration.profile_id == "default"
     assert cfg.calibration.profile_version == 1
     assert cfg.calibration.game_sensitivity_fingerprint == "unverified-default"
+    assert cfg.power_saving.host_presence_enabled is False
+    assert cfg.power_saving.target_host_id == ""
+    assert cfg.power_saving.heartbeat_timeout_s == 6.0
+    assert cfg.power_saving.offline_grace_s == 15.0
+    assert cfg.power_saving.auto_resume is True
     # Old attributes that drove the first prototype must not have leaked back.
     assert not hasattr(cfg, "model_path")
     assert not hasattr(cfg, "plugin_settings")
+
+
+def test_runtime_config_accepts_host_presence_power_saving_policy() -> None:
+    cfg = parse_runtime_config(
+        {
+            "power_saving": {
+                "host_presence_enabled": True,
+                "target_host_id": "gaming-pc",
+                "heartbeat_timeout_s": 8.0,
+                "offline_grace_s": 20.0,
+                "auto_resume": False,
+            }
+        }
+    )
+
+    assert cfg.power_saving.host_presence_enabled is True
+    assert cfg.power_saving.target_host_id == "gaming-pc"
+    assert cfg.power_saving.heartbeat_timeout_s == 8.0
+    assert cfg.power_saving.offline_grace_s == 20.0
+    assert cfg.power_saving.auto_resume is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("heartbeat_timeout_s", float("inf")),
+        ("heartbeat_timeout_s", 121.0),
+        ("offline_grace_s", float("nan")),
+        ("offline_grace_s", 601.0),
+    ],
+)
+def test_runtime_config_rejects_unsafe_power_saving_durations(
+    field: str,
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match=f"power_saving.{field}"):
+        parse_runtime_config({"power_saving": {field: value}})
 
 
 def test_capture_gstreamer_candidates_have_upstream_latest_only_queue() -> None:
@@ -1118,3 +1160,18 @@ def test_runtime_config_schema_exposes_latest_only_runtime_fields() -> None:
         "runtime.drop_stale_batches",
         "runtime.consume_latest_only",
     }.issubset(paths)
+
+
+def test_runtime_config_schema_exposes_host_presence_power_saving() -> None:
+    schema = runtime_config_schema(RuntimeConfig())
+    section = next(
+        section for section in schema["sections"] if section["id"] == "power_saving"
+    )
+
+    assert {field["path"] for field in section["fields"]} == {
+        "power_saving.host_presence_enabled",
+        "power_saving.target_host_id",
+        "power_saving.heartbeat_timeout_s",
+        "power_saving.offline_grace_s",
+        "power_saving.auto_resume",
+    }
