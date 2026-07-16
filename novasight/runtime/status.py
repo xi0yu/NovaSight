@@ -7,7 +7,7 @@ from typing import Any
 
 
 class StatusHub:
-    def __init__(self, runtime: Any, *, interval_s: float = 0.2) -> None:
+    def __init__(self, runtime: Any, *, interval_s: float = 0.5) -> None:
         self.runtime = runtime
         self.interval_s = interval_s
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()

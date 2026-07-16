@@ -592,7 +592,11 @@ async function requestJson<T>(
       });
     } catch (error) {
       if (timedOut) {
-        throw new ApiError("请求超时，请检查后端连接", 408, null);
+        throw new ApiError(
+          `请求超时：${path} 在 ${Math.round((options?.timeoutMs ?? 0) / 1000)} 秒内未响应`,
+          408,
+          { path, timeout_ms: options?.timeoutMs ?? 0 }
+        );
       }
       throw error;
     }
@@ -605,7 +609,11 @@ async function requestJson<T>(
         : await response.text();
     } catch (error) {
       if (timedOut) {
-        throw new ApiError("请求超时，请检查后端连接", 408, null);
+        throw new ApiError(
+          `请求超时：${path} 在 ${Math.round((options?.timeoutMs ?? 0) / 1000)} 秒内未完成响应`,
+          408,
+          { path, timeout_ms: options?.timeoutMs ?? 0 }
+        );
       }
       if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
         throw error;
@@ -649,11 +657,14 @@ export function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   );
 }
 
-export function getRuntimeState(signal?: AbortSignal): Promise<RuntimeState> {
+export function getRuntimeState(
+  signal?: AbortSignal,
+  timeoutMs = STATUS_REQUEST_TIMEOUT_MS
+): Promise<RuntimeState> {
   return requestJson<RuntimeState>(
     API_PATHS.runtimeState,
     { signal },
-    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS }
+    { timeoutMs }
   );
 }
 

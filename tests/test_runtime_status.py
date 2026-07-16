@@ -14,10 +14,10 @@ class EmptyState:
     pass
 
 
-def test_status_hub_updates_interactive_state_at_five_hz() -> None:
+def test_status_hub_updates_interactive_state_at_two_hz() -> None:
     hub = StatusHub(SimpleNamespace(state=lambda: SimpleNamespace()))
 
-    assert hub.interval_s == 0.2
+    assert hub.interval_s == 0.5
 
 
 def test_status_hub_shares_one_pump_across_subscribers() -> None:

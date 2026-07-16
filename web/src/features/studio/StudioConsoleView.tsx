@@ -103,6 +103,7 @@ type LaunchStage = {
 };
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
+const LAUNCH_STATUS_REQUEST_TIMEOUT_MS = 15000;
 
 // Output delivery is configured and connected independently. Mainline launch
 // only proves capture, inference and mouse-algorithm consumption are ready.
@@ -764,7 +765,24 @@ export function StudioConsoleView({
     ? `${selectedProfile.pixel_format.toUpperCase()}:${selectedProfile.width}x${selectedProfile.height}@${selectedProfile.fps}`
     : "";
   const displayCaptureProfile = configuredCaptureProfile ?? selectedProfile ?? null;
-  const choices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
+  const detectedChoices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
+  const choices = useMemo(() => {
+    if (detectedChoices.length > 0) {
+      return detectedChoices;
+    }
+    if (configuredCaptureProfile) {
+      return [configuredCaptureProfile];
+    }
+    if (selectedProfile) {
+      return [{
+        pixel_format: selectedProfile.pixel_format.toUpperCase(),
+        width: selectedProfile.width,
+        height: selectedProfile.height,
+        fps: selectedProfile.fps
+      }];
+    }
+    return [];
+  }, [configuredChoiceId, detectedChoices, runningChoiceId]);
   const selectedChoice =
     choices.find((choice) => choiceId(choice) === selectedChoiceId) ??
     choices.find((choice) => choiceId(choice) === configuredChoiceId) ??
@@ -1413,6 +1431,9 @@ export function StudioConsoleView({
   }, [configuredChoiceId, runningChoiceId, selectedChoiceId]);
 
   useEffect(() => {
+    if (activePage !== "infer") {
+      return undefined;
+    }
     let cancelled = false;
     setModelCatalogLoading(true);
     getModelCatalog()
@@ -1455,7 +1476,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [modelCatalogRefreshKey, onRefresh]);
+  }, [activePage, modelCatalogRefreshKey, onRefresh]);
 
   useEffect(() => {
     if (!modelCatalog || typeof artifact?.id !== "number") {
@@ -1483,6 +1504,9 @@ export function StudioConsoleView({
   }, [projects, runtime?.active_model?.project?.id]);
 
   useEffect(() => {
+    if (activePage !== "infer") {
+      return undefined;
+    }
     if (selectedModelProjectId === "") {
       loadedModelProjectIdRef.current = "";
       setModelVersions([]);
@@ -1542,9 +1566,12 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [modelCatalogRefreshKey, runtime?.active_model?.version?.id, selectedModelProjectId]);
+  }, [activePage, modelCatalogRefreshKey, runtime?.active_model?.version?.id, selectedModelProjectId]);
 
   useEffect(() => {
+    if (activePage !== "infer") {
+      return undefined;
+    }
     if (selectedModelVersionId === "") {
       loadedModelVersionIdRef.current = "";
       setModelArtifacts([]);
@@ -1604,7 +1631,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [modelCatalogRefreshKey, selectedModelVersionId]);
+  }, [activePage, modelCatalogRefreshKey, selectedModelVersionId]);
 
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
@@ -1650,10 +1677,6 @@ export function StudioConsoleView({
     runningPixelFormat,
     runningWidth
   ]);
-
-  useEffect(() => {
-    void refreshCapabilities();
-  }, [refreshCapabilities]);
 
   const buildCapturePayload = useCallback((): CaptureSelectPayload => {
     const choice = selectedChoice;
@@ -1816,7 +1839,7 @@ export function StudioConsoleView({
       if (launchCancelledRef.current) {
         throw new Error("launch cancelled");
       }
-      const state = await getRuntimeState();
+      const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
       const status = getRuntimeMainlineStatus(state);
       setLaunchProgressDetail(
         status.progressSummary ? `当前计数：${status.progressSummary}` : "等待后端运行态确认。"
@@ -1854,7 +1877,7 @@ export function StudioConsoleView({
       if (launchCancelledRef.current) {
         throw new Error("launch cancelled");
       }
-      const state = await getRuntimeState();
+      const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
       const status = getRuntimeMainlineStatus(state);
       lastSummary = status.progressSummary;
       setLaunchProgressDetail(
@@ -2771,7 +2794,14 @@ export function StudioConsoleView({
               <div className="console-card">
                 <SectionTitle title="采集设备" />
                 <label>视频设备</label>
-                <input value={device} onChange={(event) => setDevice(event.target.value)} />
+                <input
+                  value={device}
+                  onChange={(event) => {
+                    setDevice(event.target.value);
+                    setCaps(null);
+                    setSelectedChoiceId("");
+                  }}
+                />
                 <label>数据通路</label>
                 <select value="deepstream_nvinfer" disabled aria-label="采集数据通路">
                   <option value="deepstream_nvinfer">DeepStream nvinfer</option>
@@ -2795,6 +2825,11 @@ export function StudioConsoleView({
                     {busy === "caps" ? "检测中..." : "检测设备能力"}
                   </button>
                 </div>
+                <p className="console-section-note">
+                  {caps
+                    ? `已读取 ${choices.length} 组设备格式；更换采集卡或设备路径后请重新检测。`
+                    : "当前使用已保存的采集格式，不会在打开页面时自动探测设备。"}
+                </p>
                 <label>缓冲策略</label>
                 <select value="latest-frame" disabled>
                   <option value="latest-frame">最新帧优先 / 单槽覆盖</option>

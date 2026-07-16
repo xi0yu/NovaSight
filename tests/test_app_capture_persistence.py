@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from novasight.api.app import _auto_restore_capture
+from novasight.api.app import _auto_restore_capture, _load_active_model
 from novasight.config import RuntimeConfig
 
 
@@ -68,3 +68,32 @@ def test_auto_restore_opens_capture_when_source_is_capture() -> None:
     assert kwargs["width"] == 2560
     assert kwargs["height"] == 1440
     assert kwargs["fps"] == 120
+
+
+def test_active_deepstream_engine_does_not_require_legacy_model_profile(tmp_path) -> None:
+    engine_path = tmp_path / "active.engine"
+    engine_path.write_bytes(b"engine")
+    config = RuntimeConfig()
+    config.inference.backend = "deepstream_nvinfer"
+    events: list[tuple[str, str]] = []
+    deployment = SimpleNamespace(artifact_id=7)
+    artifact = SimpleNamespace(id=7, kind="engine", version_id=11)
+    version = SimpleNamespace(id=11, project_id=13)
+    project = SimpleNamespace(id=13)
+    models = SimpleNamespace(
+        get_active_deployment=lambda: deployment,
+        get_artifact=lambda artifact_id: artifact if artifact_id == 7 else None,
+        get_version=lambda version_id: version if version_id == 11 else None,
+        get_project=lambda project_id: project if project_id == 13 else None,
+        resolve_artifact_path=lambda _artifact: engine_path,
+    )
+    inference = SimpleNamespace(
+        unload=lambda reason: events.append(("unload", reason)),
+        disable=lambda reason: events.append(("disable", reason)),
+    )
+
+    _load_active_model(models, inference, config)
+
+    assert events == [
+        ("unload", "TensorRT engine ownership delegated to DeepStream nvinfer")
+    ]

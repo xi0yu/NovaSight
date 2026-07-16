@@ -344,12 +344,16 @@ def _load_active_model(
         inference.disable(f"active artifact project not found: {version.project_id}")
         return
     artifact_path = models.resolve_artifact_path(artifact)
+    if str(config.inference.backend).lower() == "deepstream_nvinfer":
+        inference.unload("TensorRT engine ownership delegated to DeepStream nvinfer")
+        logger.info(
+            "active DeepStream engine selected; runtime contract will be verified on pipeline start "
+            "artifact=%s",
+            artifact_path,
+        )
+        return
     try:
         profile = load_validated_profile(artifact_path)
-        if str(config.inference.backend).lower() == "deepstream_nvinfer":
-            inference.unload("TensorRT engine ownership delegated to DeepStream nvinfer")
-            logger.info("validated DeepStream model contract loaded artifact=%s", artifact_path)
-            return
         candidate, candidate_status = inference.prepare_profile(
             profile,
             diagnostic=False,

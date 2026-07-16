@@ -169,7 +169,20 @@ def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
 
     assert "modelCatalogRefreshKey" in source
     assert "refreshModelCatalog" in source
-    assert "[modelCatalogRefreshKey, selectedModelVersionId]" in source
+    assert "selectedModelVersionId" in source
+
+
+def test_studio_defers_non_capture_io_and_uses_launch_specific_status_timeout() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    api = (STUDIO_CONSOLE.parents[2] / "api.ts").read_text(encoding="utf-8")
+
+    catalog_effect = source[source.index("setModelCatalogLoading(true)") - 180:]
+    catalog_effect = catalog_effect[:catalog_effect.index("setModelCatalogLoading(false)")]
+    assert 'if (activePage !== "infer")' in catalog_effect
+    assert "void refreshCapabilities();" not in source
+    assert "LAUNCH_STATUS_REQUEST_TIMEOUT_MS" in source
+    assert "getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS)" in source
+    assert "timeoutMs = STATUS_REQUEST_TIMEOUT_MS" in api
 
 
 def test_studio_refreshes_changed_models_without_exposing_force_revalidation() -> None:
