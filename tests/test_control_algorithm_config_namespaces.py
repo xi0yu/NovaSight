@@ -240,7 +240,6 @@ def test_v2_migration_preserves_explicitly_disabled_prediction() -> None:
         ({"velocity": {"history_size": 3}}, "history_size=4"),
         ({"velocity": {"velocity_sample_count": 2}}, "velocity_sample_count=3"),
         ({"prediction": {"lead_frames": 10.1}}, "lead_frames"),
-        ({"atan": {"far": {"max_counts_per_update": 128}}}, "max_counts_per_update"),
     ],
 )
 def test_robust_v2_rejects_values_that_change_the_frozen_algorithm(

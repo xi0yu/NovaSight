@@ -416,16 +416,19 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         ],
                         "restart_required": False,
                     },
-                    {
-                        "path": "control.aim.y_ratio",
-                        "label": "瞄点纵向比例",
-                        "type": "float",
-                        "min": 0,
-                        "max": 1,
-                        "step": 0.01,
-                        "precision": 2,
-                        "restart_required": False,
-                    },
+                    *[
+                        {
+                            "path": f"control.aim.role_y_ratios.{role}",
+                            "label": f"{label}瞄点纵向比例",
+                            "type": "float",
+                            "min": 0,
+                            "max": 1,
+                            "step": 0.01,
+                            "precision": 2,
+                            "restart_required": False,
+                        }
+                        for role, label in (("head", "头部"), ("body", "身体"), ("other", "其他"))
+                    ],
                     {
                         "path": "control.configured_actuation_delay_s",
                         "label": "估计执行延迟 s",
@@ -1093,7 +1096,9 @@ def _split_control_sections(sections: list[dict[str, Any]]) -> list[dict[str, An
         }
         common_control_paths = {
             "control.shared.trigger_activation_delay_ms",
-            "control.aim.y_ratio",
+            "control.aim.role_y_ratios.head",
+            "control.aim.role_y_ratios.body",
+            "control.aim.role_y_ratios.other",
         }
         non_predictive_common_paths = {
             "control.configured_actuation_delay_s",

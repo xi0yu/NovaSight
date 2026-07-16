@@ -21,6 +21,12 @@ class TestDriver:
     def crash(self) -> None:
         os._exit(17)
 
+    def isdown_left(self) -> int:
+        return 1
+
+    def isdown_right(self) -> int:
+        return 0
+
 
 def _load_test_driver() -> KmNetLoadResult:
     return KmNetLoadResult(
@@ -47,6 +53,20 @@ def test_driver_process_returns_successful_call_result() -> None:
     )
     try:
         assert driver.call("move", 3, -2, timeout_s=0.5) == 0
+    finally:
+        driver.abort()
+
+
+def test_driver_process_batches_button_reads_in_one_request() -> None:
+    driver = KmNetDriverProcess(
+        driver_loader=_load_test_driver,
+        context=_spawn_context(),
+    )
+    try:
+        assert driver.call_many(
+            [("isdown_left", ()), ("isdown_right", ())],
+            timeout_s=0.5,
+        ) == [1, 0]
     finally:
         driver.abort()
 

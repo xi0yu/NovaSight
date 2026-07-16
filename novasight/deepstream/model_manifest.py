@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,13 @@ from novasight.model_registry.manifest import (
     build_engine_manifest,
     read_manifest,
     validate_manifest_engine_artifact,
-    write_manifest,
+)
+
+from .parser_presets import (
+    ParserPlan,
+    normalize_parser_preset,
+    parser_preset_objectness_hint,
+    resolve_parser_plan,
 )
 
 
@@ -38,6 +44,31 @@ class EngineManifestRecommendation:
     contract: EngineTensorContract
     class_names: list[str]
     output_has_objectness: bool
+    parser_plan: ParserPlan
+
+
+def _write_manifest_preserving_extensions(
+    manifest: ModelManifest,
+    path: Path,
+    *,
+    source_path: Path | None,
+) -> None:
+    payload = manifest.to_dict()
+    if source_path is not None and Path(source_path).is_file():
+        try:
+            source_payload = json.loads(Path(source_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            source_payload = None
+        if isinstance(source_payload, dict):
+            for key, value in source_payload.items():
+                if key not in payload:
+                    payload[key] = value
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def probe_engine_contract(
@@ -122,6 +153,7 @@ def recommend_engine_manifest(
     artifact_path: Path,
     registered_classes: list[str],
     registered_input_shape: str,
+    parser_preset: object = "auto",
 ) -> EngineManifestRecommendation:
     path = Path(artifact_path)
     contract = probe_engine_contract(
@@ -139,16 +171,29 @@ def recommend_engine_manifest(
             "DeepStream model input must be static NCHW [1,3,H,W], "
             f"got {contract.input_shape}"
         )
+    preset_id = normalize_parser_preset(parser_preset)
+    preset_objectness = parser_preset_objectness_hint(preset_id)
     resolved_classes, output_has_objectness = resolve_yolo_class_contract(
         contract.output_shape,
         registered_classes,
         class_count_hint=infer_class_count_hint_from_name(path.name),
-        objectness_hint=infer_yolo_objectness_hint_from_name(path.name),
+        objectness_hint=(
+            preset_objectness
+            if preset_objectness is not None
+            else infer_yolo_objectness_hint_from_name(path.name)
+        ),
+    )
+    parser_plan = resolve_parser_plan(
+        preset_id,
+        output_shape=contract.output_shape,
+        class_count=len(resolved_classes),
+        inferred_has_objectness=output_has_objectness,
     )
     return EngineManifestRecommendation(
         contract=contract,
         class_names=resolved_classes,
-        output_has_objectness=output_has_objectness,
+        output_has_objectness=parser_plan.has_objectness,
+        parser_plan=parser_plan,
     )
 
 
@@ -309,8 +354,10 @@ def ensure_engine_manifest(
     confidence_threshold: float,
     nms_iou_threshold: float,
     runtime_precision: str = "fp16",
+    parser_preset: object = "auto",
 ) -> tuple[ModelManifest, bool]:
     path = Path(engine_path)
+    preset_id = normalize_parser_preset(parser_preset)
     manifest_path = path.with_name(f"{path.name}.manifest.json")
     legacy_manifest_path = path.with_name("model.manifest.json")
     class_count_hint = infer_class_count_hint_from_name(path.name)
@@ -366,25 +413,60 @@ def ensure_engine_manifest(
                 objectness_hint,
             )
             if registered_classes_match and not needs_hint_reconciliation:
+                parser_plan = resolve_parser_plan(
+                    preset_id,
+                    output_shape=existing_manifest.output.shape,
+                    class_count=existing_manifest.output.class_count,
+                    inferred_has_objectness=existing_manifest.output.has_objectness,
+                )
+                preset_changed = (
+                    str(existing_manifest.postprocess.parser_preset) != preset_id
+                )
+                if preset_changed:
+                    existing_manifest = replace(
+                        existing_manifest,
+                        postprocess=replace(
+                            existing_manifest.postprocess,
+                            parser_preset=parser_plan.requested_preset,
+                        ),
+                    )
                 if existing_manifest_path == legacy_manifest_path:
                     temporary_path = manifest_path.with_suffix(".json.tmp")
                     try:
-                        write_manifest(existing_manifest, temporary_path)
+                        _write_manifest_preserving_extensions(
+                            existing_manifest,
+                            temporary_path,
+                            source_path=existing_manifest_path,
+                        )
+                        temporary_path.replace(manifest_path)
+                    except Exception:
+                        temporary_path.unlink(missing_ok=True)
+                        raise
+                elif preset_changed:
+                    temporary_path = manifest_path.with_suffix(".json.tmp")
+                    try:
+                        _write_manifest_preserving_extensions(
+                            existing_manifest,
+                            temporary_path,
+                            source_path=existing_manifest_path,
+                        )
                         temporary_path.replace(manifest_path)
                     except Exception:
                         temporary_path.unlink(missing_ok=True)
                         raise
                 remove_matching_legacy_manifest(path)
-                return existing_manifest, False
+                return existing_manifest, preset_changed
         recommendation = recommend_engine_manifest(
             inference,
             artifact_path=path,
             registered_classes=probe_classes,
             registered_input_shape=registered_input_shape,
+            parser_preset=preset_id,
         )
         contract = recommendation.contract
         resolved_classes = recommendation.class_names
-        output_has_objectness = recommendation.output_has_objectness
+        parser_plan = recommendation.parser_plan
+        output_has_objectness = parser_plan.has_objectness
         if existing_manifest is not None:
             tensor_contract_matches = _manifest_matches_engine_contract(
                 existing_manifest,
@@ -394,6 +476,10 @@ def ensure_engine_manifest(
                 list(existing_manifest.output.class_names) == resolved_classes
                 and bool(existing_manifest.output.has_objectness) == output_has_objectness
             )
+            parser_preset_matches = (
+                str(existing_manifest.postprocess.parser_preset)
+                == parser_plan.requested_preset
+            )
             needs_hint_reconciliation = _manifest_needs_class_hint_reconciliation(
                 existing_manifest,
                 class_count_hint,
@@ -402,12 +488,17 @@ def ensure_engine_manifest(
             if (
                 tensor_contract_matches
                 and class_contract_matches
+                and parser_preset_matches
                 and not needs_hint_reconciliation
             ):
                 if existing_manifest_path == legacy_manifest_path:
                     temporary_path = manifest_path.with_suffix(".json.tmp")
                     try:
-                        write_manifest(existing_manifest, temporary_path)
+                        _write_manifest_preserving_extensions(
+                            existing_manifest,
+                            temporary_path,
+                            source_path=existing_manifest_path,
+                        )
                         temporary_path.replace(manifest_path)
                     except Exception:
                         temporary_path.unlink(missing_ok=True)
@@ -474,12 +565,17 @@ def ensure_engine_manifest(
             postprocess_parser=(
                 template.postprocess.parser if template is not None else "yolo"
             ),
+            parser_preset=parser_plan.requested_preset,
             validated=True,
         )
         validate_manifest_engine_artifact(manifest, path)
         temporary_path = manifest_path.with_suffix(".json.tmp")
         try:
-            write_manifest(manifest, temporary_path)
+            _write_manifest_preserving_extensions(
+                manifest,
+                temporary_path,
+                source_path=existing_manifest_path,
+            )
             temporary_path.replace(manifest_path)
         except Exception:
             temporary_path.unlink(missing_ok=True)

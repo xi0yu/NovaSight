@@ -16,6 +16,7 @@ import {
   ModelCatalogModel,
   ModelProject,
   ModelVersion,
+  ParserPresetId,
   RuntimeConfig,
   RuntimeConfigValue,
   RuntimeState,
@@ -26,6 +27,7 @@ import {
   publishModel,
   registerCatalogModel,
   selectCaptureProfile,
+  setCapturePreviewEnabled,
   startRuntimePipeline,
   stopCapture,
   stopRuntimePipeline,
@@ -39,11 +41,18 @@ import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
 import { ModelSelectionPanel } from "../models/ModelSelectionPanel";
 import { formatModelSize } from "../models/modelPresentation";
+import {
+  runtimeDeliveryDescription,
+  runtimeDeliveryLabel,
+  runtimeDeliveryTone,
+  type RuntimeDeliveryStatus
+} from "../shared/runtimeDelivery";
 import { AdvancedSettingsDialog } from "./AdvancedSettingsDialog";
-import { ClassAimRatioControl, CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
+import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
+import { CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
-import { Bar, Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
+import { Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
 import { trapDialogTabKey } from "./dialogFocus";
 import "./studio-settings.css";
 
@@ -73,7 +82,7 @@ type StudioConsoleViewProps = {
   projects: ModelProject[];
   errors: Partial<Record<string, string>>;
   lastUpdated: Date | null;
-  realtimeStatus: "connecting" | "connected" | "stale" | "disconnected";
+  realtimeStatus: RuntimeDeliveryStatus;
   onRefresh: () => Promise<void>;
   onRuntimeStateChange: (runtime: RuntimeState) => void;
 };
@@ -197,14 +206,14 @@ function recordList(value: unknown): Record<string, string[]> {
   );
 }
 
-function profileNumberRecords(value: unknown): Record<string, Record<string, number>> {
+function profileRoleRecords(value: unknown): Record<string, Record<string, AimRole>> {
   return Object.fromEntries(
     Object.entries(asRecord(value)).map(([profileName, rawValues]) => [
       profileName,
       Object.fromEntries(
-        Object.entries(asRecord(rawValues)).flatMap(([classId, ratio]) =>
-          typeof ratio === "number" && Number.isFinite(ratio)
-            ? [[classId, clampNumber(ratio, 0, 1)]]
+        Object.entries(asRecord(rawValues)).flatMap(([classId, role]) =>
+          role === "head" || role === "body" || role === "other"
+            ? [[classId, role]]
             : []
         )
       )
@@ -457,6 +466,7 @@ export function StudioConsoleView({
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
   const [selectedModelVersionId, setSelectedModelVersionId] = useState<number | "">("");
   const [selectedModelArtifactId, setSelectedModelArtifactId] = useState<number | "">("");
+  const [parserPreset, setParserPreset] = useState<ParserPresetId>("auto");
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [modelArtifacts, setModelArtifacts] = useState<ModelArtifact[]>([]);
   const [modelCatalogRefreshKey, setModelCatalogRefreshKey] = useState(0);
@@ -498,7 +508,12 @@ export function StudioConsoleView({
   const [launchToastVisible, setLaunchToastVisible] = useState(false);
   const [mainlineLaunchAccepted, setMainlineLaunchAccepted] = useState(false);
   const [mainlineLaunchMessage, setMainlineLaunchMessage] = useState("");
+  const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
+  const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
+  const [pendingConfigWriteCount, setPendingConfigWriteCount] = useState(0);
+  const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
+  const dialogSaving = busy !== null || pendingConfigWriteCount > 0;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const loadedModelProjectIdRef = useRef<number | "">("");
@@ -516,6 +531,29 @@ export function StudioConsoleView({
   const launchTimerResolveRef = useRef<(() => void) | null>(null);
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
+  const dialogSavingRef = useRef(false);
+
+  useEffect(() => {
+    dialogSavingRef.current = dialogSaving;
+  }, [dialogSaving]);
+
+  useEffect(() => {
+    const anyConfigDialogOpen =
+      classConfigDialogOpen ||
+      targetWeightsDialogOpen ||
+      algorithmSettingsDialogOpen ||
+      targetAdvancedDialogOpen ||
+      trackerSettingsDialogOpen;
+    if (!anyConfigDialogOpen) {
+      setDialogSaveError(null);
+    }
+  }, [
+    algorithmSettingsDialogOpen,
+    classConfigDialogOpen,
+    targetAdvancedDialogOpen,
+    targetWeightsDialogOpen,
+    trackerSettingsDialogOpen
+  ]);
 
   useEffect(() => {
     writePageToUrl(activePage, "replace");
@@ -550,7 +588,9 @@ export function StudioConsoleView({
     window.requestAnimationFrame(() => classConfigDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setClassConfigDialogOpen(false);
+        if (!dialogSavingRef.current) {
+          setClassConfigDialogOpen(false);
+        }
       } else {
         trapDialogTabKey(event, classConfigDialogRef.current);
       }
@@ -573,7 +613,9 @@ export function StudioConsoleView({
     window.requestAnimationFrame(() => targetWeightsDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setTargetWeightsDialogOpen(false);
+        if (!dialogSavingRef.current) {
+          setTargetWeightsDialogOpen(false);
+        }
       } else {
         trapDialogTabKey(event, targetWeightsDialogRef.current);
       }
@@ -799,9 +841,14 @@ export function StudioConsoleView({
   const dualPhasePredictionFarConfig = nestedRecord(dualPhasePredictionConfig, "far");
   const dualPhasePredictionNearConfig = nestedRecord(dualPhasePredictionConfig, "near");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
-  const aimYRatio = readNumber(aimConfig.y_ratio, 0.22);
-  const classAimRatioProfiles = profileNumberRecords(aimConfig.class_y_ratios);
-  const activeClassAimRatios = classAimRatioProfiles[activeDetectionProfile] ?? {};
+  const rawAimRoleRatios = nestedRecord(aimConfig, "role_y_ratios");
+  const aimRoleRatios: AimRoleRatios = {
+    head: clampNumber(readNumber(rawAimRoleRatios.head, 0.22), 0, 1),
+    body: clampNumber(readNumber(rawAimRoleRatios.body, 0.22), 0, 1),
+    other: clampNumber(readNumber(rawAimRoleRatios.other, 0.22), 0, 1)
+  };
+  const classRoleProfiles = profileRoleRecords(aimConfig.class_roles);
+  const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
   const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
   const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
@@ -1127,12 +1174,76 @@ export function StudioConsoleView({
     runtimeInference.preview_enabled === true &&
     runtimeInference.loaded === true &&
     runtimeInference.terminal_error !== true;
+  const runtimePreviewActive = runtimeInference.preview_active === true;
+  const previewActive = previewActiveOverride ?? runtimePreviewActive;
   const previewImageAvailable = deepstreamNvinferSelected
-    ? deepstreamPreviewStreamReady
+    ? deepstreamPreviewStreamReady && previewActive
     : runtime?.capture?.available === true;
   const previewUnavailableReason = deepstreamNvinferSelected
     ? readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
     : "预览帧尚不可用";
+
+  useEffect(() => {
+    if (previewActiveOverride === runtimePreviewActive) {
+      setPreviewActiveOverride(null);
+    }
+  }, [previewActiveOverride, runtimePreviewActive]);
+
+  const updatePreviewActive = useCallback(async (
+    enabled: boolean,
+    options?: { quiet?: boolean; keepalive?: boolean }
+  ) => {
+    if (!deepstreamPreviewStreamReady || previewTogglePending) {
+      return;
+    }
+    setPreviewTogglePending(true);
+    setPreviewActiveOverride(enabled);
+    try {
+      const inference = await setCapturePreviewEnabled(enabled, {
+        keepalive: options?.keepalive
+      });
+      if (runtime) {
+        onRuntimeStateChange({
+          ...runtime,
+          inference: {
+            ...runtime.inference,
+            ...inference
+          }
+        });
+      }
+    } catch (error) {
+      setPreviewActiveOverride(null);
+      if (!options?.quiet) {
+        setLocalError(`预览状态切换失败：${getErrorMessage(error)}`);
+        reportError(error, { source: "studio-preview", title: "预览切换失败" });
+      }
+    } finally {
+      setPreviewTogglePending(false);
+    }
+  }, [
+    deepstreamPreviewStreamReady,
+    onRuntimeStateChange,
+    previewTogglePending,
+    runtime
+  ]);
+
+  useEffect(() => {
+    const releasePreview = () => {
+      if (previewActive) {
+        void updatePreviewActive(false, { quiet: true, keepalive: true });
+      }
+    };
+    if (activePage !== "infer") {
+      releasePreview();
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        releasePreview();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [activePage, previewActive, updatePreviewActive]);
   const inferenceBatchGeneration = readNumber(
     inferenceTrace.generation ?? inferenceTrace.detection_batch_generation ?? pipeline.last_generation,
     Number.NaN
@@ -1425,7 +1536,6 @@ export function StudioConsoleView({
           setSelectedModelVersionId("");
           setLocalError(`模型版本读取失败：${getErrorMessage(err)}`);
 
-          reportError(err, { source: 'studio', title: '操作失败' });
           reportError(err, { source: "model-versions", title: "模型版本读取失败" });
         }
       });
@@ -1488,7 +1598,6 @@ export function StudioConsoleView({
           setModelArtifacts([]);
           setLocalError(`模型产物读取失败：${getErrorMessage(err)}`);
 
-          reportError(err, { source: 'studio', title: '操作失败' });
           reportError(err, { source: "model-artifacts", title: "模型产物读取失败" });
         }
       });
@@ -1917,6 +2026,8 @@ export function StudioConsoleView({
       }
       const writeSeq = ++configWriteSeqRef.current;
       pendingConfigWritesRef.current += 1;
+      setPendingConfigWriteCount((count) => count + 1);
+      setDialogSaveError(null);
       setBusy(`${section}.${key}`);
       setLocalError(null);
       const sectionValue = {
@@ -1934,7 +2045,9 @@ export function StudioConsoleView({
           setConfigDraft(applied);
         }
       } catch (err) {
-        setLocalError(`配置同步失败：${getErrorMessage(err)}`);
+        const message = getErrorMessage(err);
+        setLocalError(`配置同步失败：${message}`);
+        setDialogSaveError(message);
 
         reportError(err, { source: 'studio', title: '操作失败' });
         if (writeSeq === configWriteSeqRef.current) {
@@ -1943,6 +2056,7 @@ export function StudioConsoleView({
         }
       } finally {
         pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+        setPendingConfigWriteCount((count) => Math.max(0, count - 1));
         if (writeSeq === configWriteSeqRef.current) {
           setBusy(null);
         }
@@ -2027,28 +2141,28 @@ export function StudioConsoleView({
     [activeDetectionProfile, detectionClasses, detectionProfiles, updateConfigField]
   );
 
-  const updateClassAimRatio = useCallback(
-    async (classId: number, ratio: number | null) => {
-      const nextProfileRatios = { ...activeClassAimRatios };
-      if (ratio === null) {
-        delete nextProfileRatios[String(classId)];
-      } else {
-        nextProfileRatios[String(classId)] = clampNumber(Number(ratio.toFixed(2)), 0, 1);
-      }
-      const nextProfiles = { ...classAimRatioProfiles };
-      if (Object.keys(nextProfileRatios).length > 0) {
-        nextProfiles[activeDetectionProfile] = nextProfileRatios;
-      } else {
-        delete nextProfiles[activeDetectionProfile];
-      }
-      await updateControlGroupField("aim", "class_y_ratios", nextProfiles as RuntimeConfigValue);
+  const updateAimRoleRatio = useCallback(
+    async (role: AimRole, ratio: number) => {
+      await updateControlGroupField("aim", "role_y_ratios", {
+        ...aimRoleRatios,
+        [role]: clampNumber(Number(ratio.toFixed(2)), 0, 1)
+      } as RuntimeConfigValue);
     },
-    [
-      activeClassAimRatios,
-      activeDetectionProfile,
-      classAimRatioProfiles,
-      updateControlGroupField
-    ]
+    [aimRoleRatios, updateControlGroupField]
+  );
+
+  const updateClassAimRole = useCallback(
+    async (classId: number, role: AimRole) => {
+      const nextProfiles = {
+        ...classRoleProfiles,
+        [activeDetectionProfile]: {
+          ...activeClassRoles,
+          [String(classId)]: role
+        }
+      };
+      await updateControlGroupField("aim", "class_roles", nextProfiles as RuntimeConfigValue);
+    },
+    [activeClassRoles, activeDetectionProfile, classRoleProfiles, updateControlGroupField]
   );
 
   const setClassPriorityPosition = useCallback(
@@ -2090,7 +2204,7 @@ export function StudioConsoleView({
   const persistClassProfiles = useCallback(
     async (
       profiles: Record<string, string[]>,
-      ratioProfiles: Record<string, Record<string, number>>,
+      roleProfiles: Record<string, Record<string, AimRole>>,
       nextActiveProfile: string
     ) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
@@ -2108,20 +2222,23 @@ export function StudioConsoleView({
         ...control,
         aim: {
           ...nestedRecord(control, "aim"),
-          class_y_ratios: ratioProfiles
+          class_roles: roleProfiles
         }
       } as RuntimeConfig[string];
       setBusy("class-profiles.save");
       setLocalError(null);
+      setDialogSaveError(null);
       configDraftRef.current = next;
       setConfigDraft(next);
       try {
         await updateRuntimeConfig(next);
         await onRefresh();
       } catch (err) {
+        const message = getErrorMessage(err);
         configDraftRef.current = null;
         setConfigDraft(null);
-        setLocalError(`类别配置同步失败：${getErrorMessage(err)}`);
+        setLocalError(`类别配置同步失败：${message}`);
+        setDialogSaveError(message);
         reportError(err, { source: "class-profiles", title: "类别配置保存失败" });
       } finally {
         setBusy(null);
@@ -2142,15 +2259,15 @@ export function StudioConsoleView({
     }
     await persistClassProfiles(
       { ...detectionProfiles, [profileName]: copyCurrent ? [...detectionClasses] : [] },
-      copyCurrent && Object.keys(activeClassAimRatios).length > 0
-        ? { ...classAimRatioProfiles, [profileName]: { ...activeClassAimRatios } }
-        : { ...classAimRatioProfiles },
+      copyCurrent && Object.keys(activeClassRoles).length > 0
+        ? { ...classRoleProfiles, [profileName]: { ...activeClassRoles } }
+        : { ...classRoleProfiles },
       profileName
     );
     setNewClassProfileName("");
   }, [
-    activeClassAimRatios,
-    classAimRatioProfiles,
+    activeClassRoles,
+    classRoleProfiles,
     detectionClasses,
     detectionProfiles,
     newClassProfileName,
@@ -2172,15 +2289,15 @@ export function StudioConsoleView({
         classes
       ])
     );
-    const nextRatioProfiles = { ...classAimRatioProfiles };
-    if (Object.prototype.hasOwnProperty.call(nextRatioProfiles, activeDetectionProfile)) {
-      nextRatioProfiles[profileName] = nextRatioProfiles[activeDetectionProfile];
-      delete nextRatioProfiles[activeDetectionProfile];
+    const nextRoleProfiles = { ...classRoleProfiles };
+    if (Object.prototype.hasOwnProperty.call(nextRoleProfiles, activeDetectionProfile)) {
+      nextRoleProfiles[profileName] = nextRoleProfiles[activeDetectionProfile];
+      delete nextRoleProfiles[activeDetectionProfile];
     }
-    await persistClassProfiles(nextProfiles, nextRatioProfiles, profileName);
+    await persistClassProfiles(nextProfiles, nextRoleProfiles, profileName);
   }, [
     activeDetectionProfile,
-    classAimRatioProfiles,
+    classRoleProfiles,
     detectionProfiles,
     persistClassProfiles,
     renamedClassProfileName
@@ -2193,13 +2310,13 @@ export function StudioConsoleView({
     }
     const nextProfiles = { ...detectionProfiles };
     delete nextProfiles[activeDetectionProfile];
-    const nextRatioProfiles = { ...classAimRatioProfiles };
-    delete nextRatioProfiles[activeDetectionProfile];
+    const nextRoleProfiles = { ...classRoleProfiles };
+    delete nextRoleProfiles[activeDetectionProfile];
     const nextActiveProfile = Object.keys(nextProfiles)[0];
-    await persistClassProfiles(nextProfiles, nextRatioProfiles, nextActiveProfile);
+    await persistClassProfiles(nextProfiles, nextRoleProfiles, nextActiveProfile);
   }, [
     activeDetectionProfile,
-    classAimRatioProfiles,
+    classRoleProfiles,
     detectionProfileNames.length,
     detectionProfiles,
     persistClassProfiles
@@ -2371,6 +2488,7 @@ export function StudioConsoleView({
   };
 
   const selectModelFromCatalog = async (model: ModelCatalogModel) => {
+    setParserPreset("auto");
     setSelectedModelCatalogPath(model.relative_path);
     let projectId = model.project_id;
     let versionId = model.version_id;
@@ -2436,13 +2554,26 @@ export function StudioConsoleView({
         throw new Error("NovaSight DeepStream 主线只支持 TensorRT Engine。");
       }
       setModelSwitchMessage("正在读取 TensorRT Engine 契约并自动生成 DeepStream 配置...");
-      const response = await publishModel(selectedModelProjectId, selectedSwitchArtifact.id);
+      const response = await publishModel(
+        selectedModelProjectId,
+        selectedSwitchArtifact.id,
+        parserPreset
+      );
       if (response.report && !response.report.applied) {
         throw new Error(response.report.message);
       }
+      const parserContract = response.parser_contract;
+      const parserLabel = parserContract?.compatibility === "yolov5"
+        ? "YOLO v5 兼容"
+        : parserContract?.compatibility === "yolov8_yolo11"
+          ? "YOLO v8 / v11 兼容"
+          : "";
+      const switchSummary = response.report?.message ??
+        "Engine 契约读取完成，DeepStream 配置已自动生成并切换。";
       setModelSwitchMessage(
-        response.report?.message ??
-          "Engine 契约读取完成，DeepStream 配置已自动生成并切换。"
+        parserLabel
+          ? `${switchSummary} · 已验证 ${parserLabel} · NovaSight 内置 parser`
+          : switchSummary
       );
       await onRefresh();
       setModelCatalogRefreshKey((current) => current + 1);
@@ -2493,20 +2624,38 @@ export function StudioConsoleView({
           : launchStatus === "running"
             ? `正在执行第 ${Math.min(launchStageIndex + 1, launchStages.length)} 项`
             : "等待用户确认启动";
-  const realtimeStatusText =
-    realtimeStatus === "connected"
-      ? "实时推送已连接"
-      : realtimeStatus === "stale"
-        ? "实时数据陈旧"
-        : realtimeStatus === "connecting"
-          ? "实时推送连接中"
-          : "实时推送已断开";
-  const realtimeStatusClass =
-    realtimeStatus === "connected"
-      ? "console-live good"
-      : realtimeStatus === "stale" || realtimeStatus === "connecting"
-        ? "console-live warn"
-        : "console-live bad";
+  const realtimeStatusText = runtimeDeliveryLabel(realtimeStatus);
+  const realtimeStatusDescription = runtimeDeliveryDescription(realtimeStatus);
+  const realtimeStatusClass = `console-live ${runtimeDeliveryTone(realtimeStatus)}`;
+  const backendStatus = errors.health
+    ? "error"
+    : health?.ok
+      ? "normal"
+      : health === null
+        ? "waiting"
+        : "error";
+  const backendStatusLabel = errors.health
+    ? "后端不可达"
+    : health?.ok
+      ? "后端在线"
+      : health === null
+        ? "后端检查中"
+        : "后端异常";
+  const hasCaptureLatencySample = runtime?.running === true && readNumber(statistics?.capture_counter, 0) > 0;
+  const hasInferenceLatencySample = runtime?.running === true && readNumber(statistics?.inference_counter, 0) > 0;
+  const latencyStages = [
+    { label: "Capture", value: hasCaptureLatencySample ? readNullableNumber(capture?.capture_wait_ms) : null, digits: 2 },
+    { label: "Queue", value: hasInferenceLatencySample ? readNullableNumber(statistics?.queue_latency) : null, digits: 1 },
+    { label: "ROI", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_roi_ms) : null, digits: 1 },
+    { label: "nvinfer", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_engine_ms) : null, digits: 1 },
+    { label: "解码/NMS", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_decode_ms) : null, digits: 1 },
+    { label: "映射后处理", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_postprocess_ms) : null, digits: 1 },
+    { label: "Control", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_control_ms) : null, digits: 1 }
+  ];
+  const latencyStageTotal = latencyStages.reduce(
+    (total, stage) => total + (stage.value !== null && stage.value > 0 ? stage.value : 0),
+    0
+  );
 
   return (
     <section className="console-app">
@@ -2531,9 +2680,21 @@ export function StudioConsoleView({
             </div>
           </div>
           <div className="console-group">
-            <StatusBadge status={health?.ok ? "normal" : "error"} icon={health?.ok ? "check-circle" : "plug-off"} label={health?.ok ? "后端在线" : "后端离线"} size="sm" />
+            <StatusBadge
+              status={backendStatus}
+              icon={backendStatus === "normal" ? "check-circle" : backendStatus === "waiting" ? "clock" : "plug-off"}
+              label={backendStatusLabel}
+              size="sm"
+            />
             <ThemeToggle />
-            <div className={realtimeStatusClass}>{realtimeStatusText} · {formatDate(lastUpdated)}</div>
+            <div
+              aria-label={`${realtimeStatusText}。${realtimeStatusDescription}运行态 ${formatDate(lastUpdated)}`}
+              className={realtimeStatusClass}
+              role="status"
+              title={realtimeStatusDescription}
+            >
+              {realtimeStatusText} · 运行态 {formatDate(lastUpdated)}
+            </div>
           </div>
         </div>
       </header>
@@ -2766,6 +2927,8 @@ export function StudioConsoleView({
               blockedArtifacts={blockedSwitchArtifacts}
               busy={busy}
               canSwitch={selectedCatalogArtifactMatches && selectedModelProjectId !== "" && selectedSwitchArtifact !== null}
+              parserPreset={parserPreset}
+              onParserPresetChange={setParserPreset}
               onRefresh={() => void refreshModelCatalog()}
               onToggleDirectory={toggleModelDirectory}
               onSelectModel={(model) => void selectModelFromCatalog(model)}
@@ -2850,7 +3013,11 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="ROI 输入预览" />
               <PreviewFrame
-                enabled={activePage === "infer" && previewEnabled}
+                supported={activePage === "infer" && previewEnabled && deepstreamPreviewStreamReady}
+                active={previewActive}
+                togglePending={previewTogglePending}
+                onToggle={(enabled) => void updatePreviewActive(enabled)}
+                onNotVisible={() => void updatePreviewActive(false, { quiet: true, keepalive: true })}
                 imageAvailable={previewImageAvailable}
                 unavailableReason={previewUnavailableReason}
                 runtime={runtime}
@@ -3104,7 +3271,7 @@ export function StudioConsoleView({
             <div className="console-metrics">
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-              <Metric title="默认瞄点 Y" value={aimYRatio.toFixed(2)} small={`${Object.keys(activeClassAimRatios).length} 个类别覆盖`} />
+              <Metric title="角色瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头 / 身 / 其他 %" />
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
@@ -3116,13 +3283,13 @@ export function StudioConsoleView({
                 <div>
                   <span className="class-config-eyebrow">类别配置</span>
                   <h3>{activeDetectionProfile}</h3>
-                  <p>类别名称、选择顺序与各类别瞄点高度在独立工作区统一管理。</p>
+                  <p>类别名称、选择顺序、角色归属与三条共享瞄点线在独立靶场统一管理。</p>
                 </div>
               </div>
               <dl className="class-config-summary-stats">
                 <div><dt>已定义类别</dt><dd>{detectionClasses.filter(Boolean).length}</dd></div>
-                <div><dt>默认瞄点</dt><dd>{Math.round(aimYRatio * 100)}%</dd></div>
-                <div><dt>独立覆盖</dt><dd>{Object.keys(activeClassAimRatios).length}</dd></div>
+                <div><dt>瞄点角色</dt><dd>头 / 身 / 其他</dd></div>
+                <div><dt>已映射</dt><dd>{Object.keys(activeClassRoles).length}</dd></div>
                 <div><dt>目标筛选</dt><dd>{selectedDetectionClassIds.size}/{classEditorIds.length} 类</dd></div>
               </dl>
               <button
@@ -3168,11 +3335,13 @@ export function StudioConsoleView({
                 ) : null}
                 <div className="control-aim-source-note">
                   <span>
-                    <b>瞄点规则由模型类别设置统一提供</b>
-                    <small>默认 {aimYRatio.toFixed(2)}；当前配置有 {Object.keys(activeClassAimRatios).length} 个类别使用单独比例。</small>
+                    <b>瞄点规则由三种角色统一提供</b>
+                    <small>头 {Math.round(aimRoleRatios.head * 100)}%、身体 {Math.round(aimRoleRatios.body * 100)}%、其他 {Math.round(aimRoleRatios.other * 100)}%；未映射类别自动使用“其他”。</small>
                   </span>
-                  <div className="class-aim-preview" aria-hidden="true">
-                    <i style={{ top: `${aimYRatio * 100}%` }} />
+                  <div className="role-aim-mini-preview" aria-hidden="true">
+                    <i className="head" style={{ top: `${aimRoleRatios.head * 100}%` }} />
+                    <i className="body" style={{ top: `${aimRoleRatios.body * 100}%` }} />
+                    <i className="other" style={{ top: `${aimRoleRatios.other * 100}%` }} />
                   </div>
                 </div>
                 <ModuleSwitch
@@ -3581,11 +3750,9 @@ export function StudioConsoleView({
           <div className="console-metrics">
             <Metric title="总 FPS" value={formatNumber(statistics?.capture_fps, 1)} small="FPS" />
             <Metric title="平均延迟" value={formatNumber(statistics?.e2e_latency, 1)} small="ms" />
-            <Metric title="P95 延迟" value="待机" small="ms" />
-            <Metric title="运行时长" value={runtime?.running ? "运行中" : "00:00"} small="time" />
           </div>
-          <div className="console-grid3">
-            <KvCard title="采集统计" rows={[["成功帧", String(statistics?.capture_counter ?? 0)], ["丢弃帧", String(statistics?.dropped_counter ?? 0)], ["抖动", formatNumber(capture?.frame_period_ms, 2)]]} />
+          <div className="console-grid2">
+            <KvCard title="采集统计" rows={[["成功帧", formatOptionalInteger(statistics?.capture_counter)], ["丢弃帧", formatOptionalInteger(statistics?.dropped_counter)], ["抖动", formatOptionalNumber(capture?.frame_period_ms, 2, "ms")]]} />
             <KvCard
               title="推理统计"
               notice={inferenceFreshnessBlocked ? (
@@ -3600,7 +3767,7 @@ export function StudioConsoleView({
                 </div>
               ) : null}
               rows={[
-              ["完成帧", String(statistics?.inference_counter ?? 0)],
+              ["完成帧", formatOptionalInteger(statistics?.inference_counter)],
               ["推理 FPS", formatNumber(statistics?.inference_fps, 1)],
               ["Batch 已发布", formatNumber(statistics?.detection_batch_counter, 0)],
               ["Batch 已消费", formatNumber(statistics?.detection_batch_consumed_counter, 0)],
@@ -3624,14 +3791,6 @@ export function StudioConsoleView({
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
             ]}
             />
-            <KvCard title="系统状态" rows={[["CPU", "待机"], ["GPU", "待机"], ["温度", "-"]]} />
-          </div>
-          <div className="console-card">
-            <SectionTitle title="性能占比" />
-            <Bar label="采集" width={35} />
-            <Bar label="预处理" width={18} />
-            <Bar label="推理" width={52} />
-            <Bar label="后处理" width={24} />
           </div>
         </section>
 
@@ -3645,17 +3804,19 @@ export function StudioConsoleView({
           <div className="console-grid2">
             <div className="console-card">
               <SectionTitle title="延迟链路" />
+              <p className="console-section-note">条形长度按当前已知阶段耗时总和计算；没有运行样本时不绘制比例。</p>
               <div className="console-timeline">
-                <Event label="Capture" value={formatNumber(capture?.capture_wait_ms, 2)} width={30} />
-                <Event label="Queue" value={formatNumber(statistics?.queue_latency, 1)} width={18} />
-                <Event label="ROI" value={formatNumber(statistics?.stage_roi_ms, 1)} width={18} />
-                <Event label="nvinfer" value={formatNumber(statistics?.stage_engine_ms, 1)} width={56} />
-                <Event label="解码/NMS" value={formatNumber(statistics?.stage_decode_ms, 1)} width={34} />
-                <Event label="映射后处理" value={formatNumber(statistics?.stage_postprocess_ms, 1)} width={20} />
-                <Event label="Control" value={formatNumber(statistics?.stage_control_ms, 1)} width={14} />
+                {latencyStages.map((stage) => (
+                  <Event
+                    key={stage.label}
+                    label={stage.label}
+                    value={stage.value === null ? NO_SAMPLE : stage.value.toFixed(stage.digits)}
+                    width={stage.value !== null && latencyStageTotal > 0 ? (Math.max(0, stage.value) / latencyStageTotal) * 100 : null}
+                  />
+                ))}
               </div>
             </div>
-            <KvCard title="采集诊断" rows={[["状态判断", capture?.available ? "采集中" : "等待数据"], ["队列积压", String(readNumber(asRecord(pipeline.queue).size, 0))], ["建议", capture?.available ? "观察队列等待和帧间隔" : "启动后分析"]]} />
+            <KvCard title="采集诊断" rows={[["状态判断", capture?.available ? "采集中" : "等待数据"], ["队列积压", formatOptionalInteger(asRecord(pipeline.queue).size)], ["建议", capture?.available ? "观察队列等待和帧间隔" : "启动后分析"]]} />
           </div>
         </section>
       </main>
@@ -3666,6 +3827,8 @@ export function StudioConsoleView({
         footerNote={`当前算法：${controlModeLabel}`}
         onClose={() => setAlgorithmSettingsDialogOpen(false)}
         open={algorithmSettingsDialogOpen}
+        saveError={dialogSaveError}
+        saving={dialogSaving}
         title={`${controlModeLabel} · 高级参数`}
       >
         <div className="advanced-settings-grid">
@@ -3715,6 +3878,8 @@ export function StudioConsoleView({
         footerNote="这些设置不会改变框内 aim Y，只影响选择与切换。"
         onClose={() => setTargetAdvancedDialogOpen(false)}
         open={targetAdvancedDialogOpen}
+        saveError={dialogSaveError}
+        saving={dialogSaving}
         title="目标切换高级设置"
       >
         <div className="advanced-settings-grid two-column">
@@ -3731,6 +3896,8 @@ export function StudioConsoleView({
         footerNote="关联算法固定为 Hungarian；仅输出 ACTIVE Track。"
         onClose={() => setTrackerSettingsDialogOpen(false)}
         open={trackerSettingsDialogOpen}
+        saveError={dialogSaveError}
+        saving={dialogSaving}
         title="Tracker / Kalman 高级设置"
       >
         <div className="advanced-settings-grid two-column">
@@ -3754,13 +3921,13 @@ export function StudioConsoleView({
         <div
           className="target-weight-dialog-layer"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && busy === null) {
+            if (event.target === event.currentTarget && !dialogSaving) {
               setTargetWeightsDialogOpen(false);
             }
           }}
         >
           <section
-            aria-busy={busy !== null}
+            aria-busy={dialogSaving}
             aria-labelledby="target-weight-dialog-title"
             aria-modal="true"
             className="target-weight-dialog"
@@ -3777,7 +3944,7 @@ export function StudioConsoleView({
               <button
                 aria-label="关闭权重调整"
                 className="launch-dialog-close"
-                disabled={busy !== null}
+                disabled={dialogSaving}
                 onClick={() => setTargetWeightsDialogOpen(false)}
                 type="button"
               >
@@ -3785,7 +3952,10 @@ export function StudioConsoleView({
               </button>
             </header>
 
-            <div className="target-weight-dialog-body">
+            <div
+              className="target-weight-dialog-body"
+              {...({ inert: dialogSaving ? "" : undefined } as { inert?: string })}
+            >
               <section className="target-weight-section">
                 <div className="target-weight-section-heading">
                   <div>
@@ -3835,9 +4005,15 @@ export function StudioConsoleView({
             </div>
 
             <footer className="target-weight-dialog-footer">
-              <span>输入提交后立即同步到运行配置，无需重启主链。</span>
-              <button className="console-button primary" onClick={() => setTargetWeightsDialogOpen(false)} type="button">
-                完成
+              <span className={dialogSaveError ? "dialog-save-status error" : "dialog-save-status"} role="status" aria-live="polite">
+                {dialogSaving
+                  ? "正在自动保存并同步运行配置…"
+                  : dialogSaveError
+                    ? `保存失败 · ${dialogSaveError}`
+                    : "已自动保存 · 修改后立即生效，无需重启主链。"}
+              </span>
+              <button className="console-button primary" disabled={dialogSaving} onClick={() => setTargetWeightsDialogOpen(false)} type="button">
+                关闭
               </button>
             </footer>
           </section>
@@ -3848,13 +4024,13 @@ export function StudioConsoleView({
         <div
           className="class-config-dialog-layer"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && busy === null) {
+            if (event.target === event.currentTarget && !dialogSaving) {
               setClassConfigDialogOpen(false);
             }
           }}
         >
           <section
-            aria-busy={busy !== null}
+            aria-busy={dialogSaving}
             aria-labelledby="class-config-dialog-title"
             aria-modal="true"
             className="class-config-dialog"
@@ -3866,12 +4042,12 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 类别配置</span>
                 <h2 id="class-config-dialog-title">管理类别配置</h2>
-                <p>配置类别名称、目标优先级、允许参与选择的类别，以及各类别的垂直瞄点。</p>
+                <p>把模型类别归入头部、身体或其他角色，再在人物靶上统一标定三条垂直瞄点线。</p>
               </div>
               <button
                 aria-label="关闭类别配置"
                 className="launch-dialog-close"
-                disabled={busy !== null}
+                disabled={dialogSaving}
                 onClick={() => setClassConfigDialogOpen(false)}
                 type="button"
               >
@@ -3879,7 +4055,10 @@ export function StudioConsoleView({
               </button>
             </header>
 
-            <div className="class-config-dialog-layout">
+            <div
+              className="class-config-dialog-layout"
+              {...({ inert: dialogSaving ? "" : undefined } as { inert?: string })}
+            >
               <aside className="class-profile-rail" aria-label="类别配置文件">
                 <div className="class-profile-rail-heading">
                   <span>配置文件</span>
@@ -3938,7 +4117,7 @@ export function StudioConsoleView({
                 <div className="class-config-profile-bar">
                   <div>
                     <span>当前配置名称</span>
-                    <small>重命名会同步迁移该配置对应的 aim Y 覆盖。</small>
+                    <small>重命名会同步迁移该配置对应的类别角色映射。</small>
                   </div>
                   <input
                     aria-label="当前类别配置名称"
@@ -3972,23 +4151,11 @@ export function StudioConsoleView({
                   </button>
                 </div>
 
-                <div className="class-default-aim">
-                  <span>
-                    <b>默认垂直瞄点</b>
-                    <small>目标框顶部为 0%，底部为 100%；选择“跟随默认”的类别会实时同步。</small>
-                  </span>
-                  <CommitNumberControl
-                    value={aimYRatio * 100}
-                    min={0}
-                    max={100}
-                    step={1}
-                    digits={0}
-                    onCommit={(value) => updateControlGroupField("aim", "y_ratio", value / 100)}
-                  />
-                  <div className="class-aim-preview large" aria-hidden="true">
-                    <i style={{ top: `${aimYRatio * 100}%` }} />
-                  </div>
-                </div>
+                <AimTargetRange
+                  disabled={busy !== null}
+                  ratios={aimRoleRatios}
+                  onCommit={updateAimRoleRatio}
+                />
 
                 <section className="class-filter-section" aria-labelledby="class-filter-title">
                   <div className="class-filter-heading">
@@ -4040,7 +4207,7 @@ export function StudioConsoleView({
 
                 <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
                   <div className="class-editor-head" role="row">
-                    <span>ID</span><span>类别名称</span><span>目标优先级</span><span>垂直瞄点</span>
+                    <span>目标</span><span>类别名称</span><span>目标优先级</span><span>瞄点角色</span>
                   </div>
                   {orderedClassEditorIds.map((classId) => {
                     const configuredName = detectionClasses[classId] ?? "";
@@ -4048,7 +4215,17 @@ export function StudioConsoleView({
                     const priorityIndex = orderedClassEditorIds.indexOf(classId);
                     return (
                       <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
-                        <b className="class-id">cls {classId}</b>
+                        <button
+                          aria-label={`${selectedDetectionClassIds.has(classId) ? "取消" : "允许"} cls ${classId} 参与目标选择`}
+                          aria-pressed={selectedDetectionClassIds.has(classId)}
+                          className={`class-role-select ${selectedDetectionClassIds.has(classId) ? "selected" : ""}`}
+                          disabled={busy !== null}
+                          onClick={() => void toggleDetectionClass(classId)}
+                          type="button"
+                        >
+                          <i aria-hidden="true">{selectedDetectionClassIds.has(classId) ? "✓" : ""}</i>
+                          <b>cls {classId}</b>
+                        </button>
                         <InlineTextControl
                           ariaLabel={`cls ${classId} 类别名称`}
                           value={displayName}
@@ -4068,27 +4245,40 @@ export function StudioConsoleView({
                             ))}
                           </select>
                         </label>
-                        <ClassAimRatioControl
-                          classId={classId}
-                          defaultRatio={aimYRatio}
-                          disabled={busy !== null}
-                          overrideRatio={activeClassAimRatios[String(classId)]}
-                          onCommit={(value) => updateClassAimRatio(classId, value)}
-                        />
+                        <div className="class-role-segmented" role="group" aria-label={`cls ${classId} 瞄点角色`}>
+                          {(["head", "body", "other"] as AimRole[]).map((role) => (
+                            <button
+                              aria-pressed={(activeClassRoles[String(classId)] ?? "other") === role}
+                              className={`${role} ${(activeClassRoles[String(classId)] ?? "other") === role ? "active" : ""}`}
+                              disabled={busy !== null}
+                              key={role}
+                              onClick={() => void updateClassAimRole(classId, role)}
+                              type="button"
+                            >
+                              {role === "head" ? "头" : role === "body" ? "身" : "其他"}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
                 <p className="console-field-hint">
-                  未知 class id 会显示为“未知类别（cls N）”并使用默认瞄点；编辑名称后加入当前配置。
+                  未知 class id 会显示为“未知类别（cls N）”并使用“其他”角色；人物靶只负责展示比例，实际值仍相对于各自 bbox。
                 </p>
               </div>
             </div>
 
             <footer className="class-config-dialog-footer">
-              <span>{busy?.startsWith("class-profiles") ? "正在同步类别配置…" : `当前配置：${activeDetectionProfile}`}</span>
-              <button className="console-button primary" onClick={() => setClassConfigDialogOpen(false)} type="button">
-                完成
+              <span className={dialogSaveError ? "dialog-save-status error" : "dialog-save-status"} role="status" aria-live="polite">
+                {dialogSaving
+                  ? "正在自动保存类别配置…"
+                  : dialogSaveError
+                    ? `保存失败 · ${dialogSaveError}`
+                    : `已自动保存 · 当前配置：${activeDetectionProfile}`}
+              </span>
+              <button className="console-button primary" disabled={dialogSaving} onClick={() => setClassConfigDialogOpen(false)} type="button">
+                关闭
               </button>
             </footer>
           </section>
@@ -4412,18 +4602,27 @@ function findCatalogModelByPath(
 }
 
 function PreviewFrame({
-  enabled,
+  supported,
+  active,
+  togglePending,
+  onToggle,
+  onNotVisible,
   imageAvailable,
   unavailableReason,
   runtime,
   roiSize
 }: {
-  enabled: boolean;
+  supported: boolean;
+  active: boolean;
+  togglePending: boolean;
+  onToggle: (enabled: boolean) => void;
+  onNotVisible: () => void;
   imageAvailable: boolean;
   unavailableReason: string;
   runtime: RuntimeState | null;
   roiSize: number;
 }) {
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
@@ -4431,6 +4630,19 @@ function PreviewFrame({
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
+  useEffect(() => {
+    const node = previewRef.current;
+    if (!node || !active || typeof IntersectionObserver === "undefined") {
+      return undefined;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) {
+        onNotVisible();
+      }
+    }, { threshold: 0.05 });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [active, onNotVisible]);
   const liveDetections = readPreviewDetections(vision.detection_items);
   const liveTarget = asRecord(vision.target);
   const overlay = useStablePreviewOverlay(liveDetections, liveTarget);
@@ -4447,8 +4659,8 @@ function PreviewFrame({
   const targetAimY = readNullableNumber(mouseObservation.predicted_aim_y_roi_px)
     ?? readNullableNumber(rawAim.aim_roi_y_px)
     ?? targetCy;
-  const showImage = enabled && imageAvailable;
-  const showOverlay = enabled && runtime?.running === true && detections.length > 0;
+  const showImage = supported && active && imageAvailable;
+  const showOverlay = supported && active && runtime?.running === true && detections.length > 0;
   const selectedDetection = detections.find((item) => (
     targetDetectionIndex !== null
       ? item.index === targetDetectionIndex
@@ -4471,6 +4683,7 @@ function PreviewFrame({
   );
   return (
     <div
+      ref={previewRef}
       className={showOverlay ? "console-preview has-overlay" : "console-preview"}
       style={{
         "--roi-size": `${displaySize}px`,
@@ -4479,7 +4692,25 @@ function PreviewFrame({
     >
       <div className="console-preview-frame">
         {showImage ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
-        {enabled && !showImage ? <div className="console-preview-unavailable">{unavailableReason}</div> : null}
+        {supported && active && !showImage ? <div className="console-preview-unavailable">{unavailableReason}</div> : null}
+        {supported && !active ? (
+          <div className="console-preview-gate" role="status">
+            <span className="console-preview-gate-kicker">性能保护已启用</span>
+            <strong>实时预览已暂停</strong>
+            <p>推理、跟踪与控制继续运行。开启画面会占用 NVJPEG 与内存带宽。</p>
+            <button disabled={togglePending} onClick={() => onToggle(true)} type="button">
+              {togglePending ? "正在开启…" : "开启实时预览"}
+            </button>
+          </div>
+        ) : null}
+        {supported && active ? (
+          <div className="console-preview-live-control">
+            <span>实时预览会占用 Jetson 资源</span>
+            <button disabled={togglePending} onClick={() => onToggle(false)} type="button">
+              {togglePending ? "正在关闭…" : "关闭预览"}
+            </button>
+          </div>
+        ) : null}
         {showOverlay ? (
           <div className="console-detection-layer" aria-hidden="true">
             <svg className="console-target-lines" viewBox={`0 0 ${previewWidth} ${previewHeight}`} preserveAspectRatio="none">

@@ -55,6 +55,7 @@ class OutputSpec(TensorSpec):
 @dataclass(frozen=True)
 class PostprocessSpec:
     parser: str = "yolo"
+    parser_preset: str = "auto"
     confidence_threshold: float = 0.25
     nms_iou_threshold: float = 0.45
     class_aware_nms: bool = True
@@ -101,6 +102,7 @@ def build_engine_manifest(
     output_has_objectness: bool = False,
     output_coordinate_mode: str = "pixel",
     postprocess_parser: str = "yolo",
+    parser_preset: str = "auto",
     validated: bool = False,
 ) -> ModelManifest:
     engine_path = Path(engine_path)
@@ -141,6 +143,7 @@ def build_engine_manifest(
         ),
         postprocess=PostprocessSpec(
             parser=_require_non_empty(postprocess_parser, "postprocess.parser"),
+            parser_preset=_require_non_empty(parser_preset, "postprocess.parser_preset"),
             confidence_threshold=float(confidence_threshold),
             nms_iou_threshold=float(nms_iou_threshold),
         ),

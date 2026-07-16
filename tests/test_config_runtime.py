@@ -269,8 +269,10 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     cfg = RuntimeConfig()
 
     assert cfg.control.mode == "dual_phase_atan_robust_predictive_v2"
-    assert cfg.control.aim.y_ratio == 0.22
-    assert cfg.control.aim.class_y_ratios == {}
+    assert cfg.control.aim.role_y_ratios.head == 0.22
+    assert cfg.control.aim.role_y_ratios.body == 0.22
+    assert cfg.control.aim.role_y_ratios.other == 0.22
+    assert cfg.control.aim.class_roles == {}
     assert cfg.control.candidate_selection_quality_weight == pytest.approx(0.05)
     assert cfg.control.candidate_selection_class_weight == pytest.approx(0.55)
     assert cfg.control.candidate_selection_distance_weight == pytest.approx(0.40)
@@ -447,11 +449,13 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980
     assert cfg.control.shared.invert_y is False
     assert cfg.hardware.auto_connect is True
-    assert cfg.control.aim.y_ratio == pytest.approx(0.22)
+    assert cfg.control.aim.role_y_ratios.head == pytest.approx(0.22)
+    assert cfg.control.aim.role_y_ratios.body == pytest.approx(0.22)
+    assert cfg.control.aim.role_y_ratios.other == pytest.approx(0.22)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.004)
 
 
-def test_runtime_config_scopes_class_aim_overrides_to_detection_profile() -> None:
+def test_runtime_config_scopes_class_aim_roles_to_detection_profile() -> None:
     cfg = parse_runtime_config(
         {
             "inference": {
@@ -463,17 +467,23 @@ def test_runtime_config_scopes_class_aim_overrides_to_detection_profile() -> Non
             },
             "control": {
                 "aim": {
-                    "y_ratio": 0.224,
-                    "class_y_ratios": {
-                        "default": {"1": 0.355},
+                    "role_y_ratios": {
+                        "head": 0.355,
+                        "body": 0.424,
+                        "other": 0.224,
+                    },
+                    "class_roles": {
+                        "default": {"0": "body", "1": "head"},
                     },
                 },
             },
         }
     )
 
-    assert cfg.control.aim.y_ratio == pytest.approx(0.22)
-    assert cfg.control.aim.class_y_ratios == {"default": {"1": 0.35}}
+    assert cfg.control.aim.role_y_ratios.head == pytest.approx(0.35)
+    assert cfg.control.aim.role_y_ratios.body == pytest.approx(0.42)
+    assert cfg.control.aim.role_y_ratios.other == pytest.approx(0.22)
+    assert cfg.control.aim.class_roles == {"default": {"0": "body", "1": "head"}}
 
 
 def test_runtime_config_migrates_v2_aim_to_shared_aim_and_removes_legacy_owner() -> None:
@@ -489,7 +499,9 @@ def test_runtime_config_migrates_v2_aim_to_shared_aim_and_removes_legacy_owner()
         }
     )
 
-    assert cfg.control.aim.y_ratio == pytest.approx(0.37)
+    assert cfg.control.aim.role_y_ratios.head == pytest.approx(0.37)
+    assert cfg.control.aim.role_y_ratios.body == pytest.approx(0.37)
+    assert cfg.control.aim.role_y_ratios.other == pytest.approx(0.37)
     assert not hasattr(cfg.control.dual_phase_atan_robust_predictive_v2, "aim")
 
 
@@ -584,7 +596,9 @@ def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
     assert cfg.control.calibrated_angular.counts_per_360_x == pytest.approx(9900.0)
     assert cfg.control.calibrated_angular.counts_per_360_y == pytest.approx(9900.0)
     assert cfg.control.shared.invert_y is True
-    assert cfg.control.aim.y_ratio == pytest.approx(0.40)
+    assert cfg.control.aim.role_y_ratios.head == pytest.approx(0.40)
+    assert cfg.control.aim.role_y_ratios.body == pytest.approx(0.40)
+    assert cfg.control.aim.role_y_ratios.other == pytest.approx(0.40)
     assert cfg.control.configured_actuation_delay_s == pytest.approx(0.002)
     assert cfg.control.calibrated_angular.kp_x == pytest.approx(0.4)
     assert cfg.control.calibrated_angular.kp_y == pytest.approx(0.3)
@@ -936,7 +950,9 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
     assert {
         "control.trigger_mode",
         "control.active_algorithm",
-        "control.aim.y_ratio",
+        "control.aim.role_y_ratios.head",
+        "control.aim.role_y_ratios.body",
+        "control.aim.role_y_ratios.other",
         "control.configured_actuation_delay_s",
         "control.algorithms.calibrated_angular.fov_x_deg",
         "control.algorithms.calibrated_angular.counts_per_360_x",

@@ -1,9 +1,10 @@
-import { pushToastRaw, reportError } from "./toast";
+import { pushToastRaw, reportError, reportSuccess } from "./toast";
 import { normalizeError } from "./api-error";
 
 let installed = false;
 let lastUnreportedReason: unknown = null;
 let lastReasonAt = 0;
+const activeWebSocketFailures = new Set<string>();
 
 function isAbortReason(reason: unknown): boolean {
   if (reason === null || typeof reason !== "object") {
@@ -71,11 +72,15 @@ export function installGlobalErrorGuards(): void {
   });
 }
 
-export function reportWebSocketFailure(reason: unknown, path: string): void {
+export function reportWebSocketFailure(reason: unknown, path: string): boolean {
   if (isAbortReason(reason)) {
-    return;
+    return false;
   }
   const source = `websocket:${path}`;
+  if (activeWebSocketFailures.has(source)) {
+    return false;
+  }
+  activeWebSocketFailures.add(source);
   const normalized = normalizeError(reason, { source });
   pushToastRaw({
     tone: "warn",
@@ -84,6 +89,19 @@ export function reportWebSocketFailure(reason: unknown, path: string): void {
     source,
     status: normalized.status
   });
+  return true;
+}
+
+export function reportWebSocketRecovered(path: string): void {
+  const source = `websocket:${path}`;
+  if (!activeWebSocketFailures.delete(source)) {
+    return;
+  }
+  reportSuccess("实时更新已恢复", "运行状态已重新切换到实时通道。", source);
+}
+
+export function clearWebSocketFailure(path: string): void {
+  activeWebSocketFailures.delete(`websocket:${path}`);
 }
 
 export function reportNetworkFailure(reason: unknown, path: string): void {

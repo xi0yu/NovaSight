@@ -80,25 +80,34 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             "novasight_roi_split.",
             "!",
             LATEST_ONLY_QUEUE,
-            "!",
-            "nvvidconv",
-            "!",
-            (
-                "video/x-raw(memory:NVMM),format=NV12,"
-                f"width={int(config.model_width)},height={int(config.model_height)},"
-                "pixel-aspect-ratio=1/1"
-            ),
-            "!",
-            LATEST_ONLY_QUEUE,
-            "!",
-            "mux.sink_0",
         ]
+    if (
+        int(config.roi_width) != int(config.model_width)
+        or int(config.roi_height) != int(config.model_height)
+    ):
+        elements.extend(
+            [
+                "!",
+                "nvvidconv",
+                "!",
+                (
+                    "video/x-raw(memory:NVMM),format=NV12,"
+                    f"width={int(config.model_width)},height={int(config.model_height)},"
+                    "pixel-aspect-ratio=1/1"
+                ),
+                "!",
+                LATEST_ONLY_QUEUE,
+            ]
+        )
+    elements.extend(["!", "mux.sink_0"])
     if config.preview_enabled:
         elements.extend(
             [
                 "novasight_roi_split.",
                 "!",
                 LATEST_ONLY_QUEUE,
+                "!",
+                "valve name=preview-valve drop=false",
                 "!",
                 f"videorate drop-only=true max-rate={int(config.preview_fps)}",
                 "!",

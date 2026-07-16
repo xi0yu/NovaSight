@@ -488,7 +488,7 @@ def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_pa
     response = routes_models.publish(
         request,
         project.id,
-        PublishRequest(artifact_id=artifact.id),
+        PublishRequest(artifact_id=artifact.id, parser_preset="yolov8"),
     )
 
     manifest_path = artifact_path.with_name(f"{artifact_path.name}.manifest.json")
@@ -498,6 +498,15 @@ def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_pa
     assert manifest.input.shape == [1, 3, 256, 256]
     assert manifest.output.shape == [1, 6, 1344]
     assert manifest.output.class_names == ["body", "head"]
+    assert manifest.postprocess.parser_preset == "yolov8"
+    assert response["parser_contract"] == {
+        "requested_preset": "yolov8",
+        "compatibility": "yolov8_yolo11",
+        "has_objectness": False,
+        "parser_library": "novasight_builtin",
+        "parser_function": "NvDsInferParseNovaSight",
+        "nms_owner": "deepstream",
+    }
     assert registry.get_artifact(artifact.id).status == "ready"
 
 

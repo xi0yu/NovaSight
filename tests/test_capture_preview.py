@@ -141,3 +141,20 @@ def test_deepstream_hardware_jpeg_reaches_mjpeg_stream_without_reencoding() -> N
     assert len(chunks) == 1
     assert b"Content-Length: 11" in chunks[0]
     assert b"\xff\xd8preview\xff\xd9" in chunks[0]
+
+
+def test_paused_deepstream_preview_stream_stops_without_pulling_jpeg() -> None:
+    backend = _DeepStreamPreviewBackend()
+    backend.preview_active = False
+
+    chunks = list(
+        _deepstream_mjpeg_frames(
+            backend,
+            preview_fps=30,
+            max_frames=1,
+            max_attempts=1,
+        )
+    )
+
+    assert chunks == []
+    assert backend.calls == 0

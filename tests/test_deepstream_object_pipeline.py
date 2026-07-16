@@ -1,4 +1,5 @@
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,9 +72,25 @@ def test_deepstream_pipeline_is_nvmm_latest_only_with_hardware_jpeg_preview(tmp_
     assert "nvinfer name=primary-infer" in pipeline
     assert "tee name=novasight_roi_split" in pipeline
     assert "nvjpegenc name=preview-encoder" in pipeline
+    assert "valve name=preview-valve drop=false" in pipeline
     assert "appsink name=preview_sink" in pipeline
     assert "videoconvert" not in pipeline
     assert "video/x-raw,format=BGR" not in pipeline
+
+
+def test_deepstream_pipeline_skips_model_resize_when_roi_already_matches(tmp_path: Path) -> None:
+    config = _pipeline_config(tmp_path)
+    config = replace(
+        config,
+        roi_width=320,
+        roi_height=320,
+        preview_enabled=False,
+    )
+
+    pipeline = build_deepstream_pipeline(config)
+
+    assert pipeline.count("nvvidconv") == 1
+    assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in pipeline
 
 
 def test_nvinfer_config_uses_native_decode_and_exactly_one_nms(tmp_path: Path) -> None:
@@ -85,7 +102,7 @@ def test_nvinfer_config_uses_native_decode_and_exactly_one_nms(tmp_path: Path) -
     )
 
     assert "network-mode=2" in text
-    assert "output-tensor-meta=1" in text
+    assert "output-tensor-meta=0" in text
     assert "parse-bbox-func-name=NvDsInferParseNovaSight" in text
     assert "cluster-mode=2" in text
     assert "num-detected-classes=2" in text
@@ -217,6 +234,10 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
         "pixel_format": "NV12",
         "memory": "NVMM",
     }
+    assert status["postprocess"]["parser_preset"] == "auto"
+    assert status["postprocess"]["compatibility"] == "yolov8_yolo11"
+    assert status["postprocess"]["parser_function"] == "NvDsInferParseNovaSight"
+    assert status["postprocess"]["nms_owner"] == "deepstream"
     assert "preview" not in status
 
 
@@ -268,6 +289,38 @@ def test_missing_hardware_preview_encoder_does_not_disable_inference(tmp_path: P
     assert "nvjpegenc" not in backend.pipeline_description
     assert "nvinfer name=primary-infer" in backend.pipeline_description
     assert "missing GStreamer element(s): nvjpegenc" in backend._preview_disabled_reason
+
+
+def test_deepstream_preview_valve_pauses_encoding_without_stopping_inference(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+
+    class Valve:
+        drop = False
+
+        def set_property(self, name: str, value: bool) -> None:
+            assert name == "drop"
+            self.drop = value
+
+    valve = Valve()
+    backend._pipeline = SimpleNamespace(
+        get_by_name=lambda name: valve if name == "preview-valve" else None
+    )
+    backend._running = True
+    backend._latest_preview_jpeg = b"jpeg"
+
+    status = backend.set_preview_active(False)
+
+    assert valve.drop is True
+    assert backend.running is True
+    assert status["preview_active"] is False
+    assert status["preview_available"] is False
+    assert "paused" in str(status["preview_reason"])
 
 
 def test_deepstream_backend_auto_builds_missing_parser_before_dependency_check(
@@ -773,6 +826,41 @@ def test_single_target_objectness_contract_is_not_reclassified() -> None:
 
     assert classes == ["target"]
     assert has_objectness is True
+
+
+def test_explicit_v5_preset_derives_single_class_and_persists_contract(tmp_path: Path) -> None:
+    engine_path = tmp_path / "fast-target.engine"
+    engine_path.write_bytes(b"engine")
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "input_name": "images",
+            "input_shape": "1x3x320x320",
+            "input_dtype": "float16",
+            "output_name": "output0",
+            "output_shape": "1x6x2100",
+            "output_dtype": "float32",
+        }
+    )
+
+    manifest, generated = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="fast-target",
+        display_name="fast-target",
+        classes=["target"],
+        registered_input_shape="1x3x320x320",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+        parser_preset="yolov5",
+    )
+
+    assert generated is True
+    assert manifest.output.class_count == 1
+    assert manifest.output.has_objectness is True
+    assert manifest.postprocess.parser_preset == "yolov5"
+    persisted = read_manifest(engine_path.with_name(f"{engine_path.name}.manifest.json"))
+    assert persisted.postprocess.parser_preset == "yolov5"
 
 
 def test_missing_manifest_is_not_generated_for_builtin_nms_output(tmp_path: Path) -> None:

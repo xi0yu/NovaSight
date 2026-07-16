@@ -20,6 +20,7 @@ from novasight.runtime import (
     ControlFrameCsvRecorder,
     ControlFrameParquetRecorder,
     RuntimeService,
+    StatusHub,
 )
 from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 
@@ -98,6 +99,7 @@ def create_app(
     app.state.capture = capture
     app.state.inference = inference
     app.state.runtime = runtime
+    app.state.status_hub = StatusHub(runtime)
     app.state.systemd_notifier = systemd_notifier
     app.state.instance_lock = instance_lock
     app.state.runtime_reconfiguration_lock = threading.RLock()
@@ -120,6 +122,7 @@ def create_app(
 
     @app.on_event("shutdown")
     def stop_process_lifecycle() -> None:
+        app.state.status_hub.close()
         _disconnect_kmnet(app.state.executors)
         systemd_notifier.stop()
         instance_lock.release()

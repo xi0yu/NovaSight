@@ -564,8 +564,7 @@ class KmNetExecutor:
             if not active:
                 return
             try:
-                left_raw = self._read_button_raw("isdown_left")
-                right_raw = self._read_button_raw("isdown_right")
+                left_raw, right_raw = self._read_buttons_raw()
                 with self._connection_lock:
                     if generation != self._connection_generation:
                         return
@@ -722,6 +721,45 @@ class KmNetExecutor:
         if not self._driver_has(name):
             return {"function": name, "exists": False, "value": None, "pressed": False}
         value = self._call_driver(name)
+        return self._button_payload(name, value)
+
+    def _read_buttons_raw(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        names = ("isdown_left", "isdown_right")
+        available_names = [name for name in names if self._driver_has(name)]
+        if self._driver_process is None or len(available_names) < 2:
+            return (
+                self._read_button_raw(names[0]),
+                self._read_button_raw(names[1]),
+            )
+
+        started_ns = time.monotonic_ns()
+        self.last_driver_call = "+".join(available_names)
+        self.last_driver_rc = None
+        self.last_driver_error = ""
+        try:
+            values = self._driver_process.call_many(
+                [(name, ()) for name in available_names],
+                timeout_s=1.0,
+            )
+            for name, value in zip(available_names, values, strict=True):
+                if self._driver_return_code_is_error(name, value):
+                    raise RuntimeError(f"{name} failed rc={value}")
+            self.last_driver_rc = tuple(values)
+        except Exception as exc:
+            self.last_driver_error = str(exc)
+            raise
+        finally:
+            self.last_driver_call_duration_ms = (
+                time.monotonic_ns() - started_ns
+            ) / 1_000_000.0
+        payloads = {
+            name: self._button_payload(name, value)
+            for name, value in zip(available_names, values, strict=True)
+        }
+        return payloads[names[0]], payloads[names[1]]
+
+    @staticmethod
+    def _button_payload(name: str, value: Any) -> dict[str, Any]:
         try:
             pressed = int(value) == 1
         except (TypeError, ValueError):

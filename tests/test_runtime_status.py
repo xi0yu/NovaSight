@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 from novasight.config import RuntimeConfig
@@ -7,10 +9,33 @@ from novasight.runtime.service import RuntimeService
 from novasight.runtime.status import StatusHub
 
 
-def test_status_hub_updates_interactive_state_at_twenty_hz() -> None:
+@dataclass
+class EmptyState:
+    pass
+
+
+def test_status_hub_updates_interactive_state_at_five_hz() -> None:
     hub = StatusHub(SimpleNamespace(state=lambda: SimpleNamespace()))
 
-    assert hub.interval_s == 0.05
+    assert hub.interval_s == 0.2
+
+
+def test_status_hub_shares_one_pump_across_subscribers() -> None:
+    async def scenario() -> None:
+        hub = StatusHub(SimpleNamespace(state=EmptyState))
+        first = await hub.subscribe()
+        pump = hub._pump_task
+        second = await hub.subscribe()
+
+        assert pump is not None
+        assert hub._pump_task is pump
+
+        hub.unsubscribe(first)
+        assert hub._pump_task is pump
+        hub.unsubscribe(second)
+        assert hub._pump_task is None
+
+    asyncio.run(scenario())
 
 
 def test_runtime_state_takes_control_snapshot_under_control_lock() -> None:

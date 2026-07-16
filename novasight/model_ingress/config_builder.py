@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from novasight.deepstream.nvinfer_config import generate_nvinfer_config
+from novasight.deepstream.parser_presets import normalize_parser_preset
 from novasight.model_registry.fingerprint import sha256_file
 from novasight.model_registry.manifest import (
     ModelManifest,
@@ -103,6 +104,7 @@ class InferenceConfigBuilder:
             maintain_aspect_ratio=profile.preprocess.resize_mode == "letterbox",
             symmetric_padding=profile.preprocess.symmetric_padding,
             output_has_objectness=bool(profile.decoder.has_objectness),
+            parser_preset=normalize_parser_preset(parser.parser_type),
             validated=True,
         )
         manifest = replace(

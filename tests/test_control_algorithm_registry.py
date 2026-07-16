@@ -140,7 +140,9 @@ def test_runtime_schema_exposes_separate_algorithm_sections_and_product_labels()
     assert sections["control_shared"]["algorithm_scope"] == list(supported_algorithm_ids())
     shared_paths = {field["path"] for field in sections["control_shared"]["fields"]}
     assert "control.shared.trigger_activation_delay_ms" in shared_paths
-    assert "control.aim.y_ratio" in shared_paths
+    assert "control.aim.role_y_ratios.head" in shared_paths
+    assert "control.aim.role_y_ratios.body" in shared_paths
+    assert "control.aim.role_y_ratios.other" in shared_paths
     assert "control.configured_actuation_delay_s" not in shared_paths
     assert sections["control_universal_saturated"]["algorithm_scope"] == [
         UNIVERSAL_SATURATED

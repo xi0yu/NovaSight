@@ -46,16 +46,19 @@ def _spec(
 
 
 CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
-    "control.aim.y_ratio": _spec(
-        "control.aim.y_ratio",
-        "瞄点纵向比例",
-        0.22,
-        0.0,
-        1.0,
-        0.01,
-        "ratio",
-        "目标框顶部向下的瞄点比例；X 固定为 bbox 中心。",
-    ),
+    **{
+        f"control.aim.role_y_ratios.{role}": _spec(
+            f"control.aim.role_y_ratios.{role}",
+            f"{label}瞄点纵向比例",
+            0.22,
+            0.0,
+            1.0,
+            0.01,
+            "ratio",
+            f"{label}类别检测框顶部向下的瞄点比例；X 固定为 bbox 中心。",
+        )
+        for role, label in (("head", "头部"), ("body", "身体"), ("other", "其他"))
+    },
     "control.configured_actuation_delay_s": _spec(
         "control.configured_actuation_delay_s",
         "估计执行延迟",

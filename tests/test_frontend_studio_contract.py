@@ -9,6 +9,7 @@ STUDIO_CONSOLE = (
     / "studio"
     / "StudioConsoleView.tsx"
 )
+APP = STUDIO_CONSOLE.parents[2] / "App.tsx"
 STUDIO_NAVIGATION = (
     Path(__file__).resolve().parents[1]
     / "web"
@@ -32,6 +33,18 @@ STUDIO_SETTINGS = (
     / "features"
     / "studio"
     / "studio-settings.css"
+)
+MODEL_SELECTION = (
+    STUDIO_CONSOLE.parents[1] / "models" / "ModelSelectionPanel.tsx"
+)
+LICENSE_VIEW = (
+    STUDIO_CONSOLE.parents[1] / "license" / "LicenseView.tsx"
+)
+ADVANCED_SETTINGS_DIALOG = (
+    STUDIO_CONSOLE.parent / "AdvancedSettingsDialog.tsx"
+)
+STUDIO_PRESENTATION = (
+    STUDIO_CONSOLE.parent / "StudioPresentation.tsx"
 )
 RUNTIME_STATUS = (
     Path(__file__).resolve().parents[1] / "web" / "src" / "features" / "shared" / "runtimeStatus.ts"
@@ -138,15 +151,15 @@ def test_mainline_launch_dialog_renders_every_step_with_explicit_state_icons() -
     assert "确认设备执行器" not in source
 
 
-def test_model_file_lists_show_size_in_megabytes() -> None:
-    studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
+def test_model_file_lists_show_human_readable_size() -> None:
+    panel = MODEL_SELECTION.read_text(encoding="utf-8")
     catalog_tree = (
         STUDIO_CONSOLE.parents[1] / "models" / "ModelCatalogTree.tsx"
     ).read_text(encoding="utf-8")
     styles = (STUDIO_CONSOLE.parents[2] / "styles.css").read_text(encoding="utf-8")
 
-    assert "formatModelSizeMb(item.size_bytes)" in studio
-    assert '<span className="model-catalog-size">{formatModelSizeMb(node.size_bytes)}</span>' in catalog_tree
+    assert "formatModelSize(selectedModel?.size_bytes ?? selectedArtifact?.size_bytes)" in panel
+    assert '<span className="model-catalog-size">{formatModelSize(node.size_bytes)}</span>' in catalog_tree
     assert "grid-template-columns: minmax(0, 1fr) auto;" in styles
     assert "font-variant-numeric: tabular-nums;" in styles
 
@@ -161,6 +174,7 @@ def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
 
 def test_studio_refreshes_changed_models_without_exposing_force_revalidation() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    panel = MODEL_SELECTION.read_text(encoding="utf-8")
     refresh_start = source.index("const refreshModelCatalog")
     handlers_end = source.index("const launchStages", refresh_start)
 
@@ -168,7 +182,7 @@ def test_studio_refreshes_changed_models_without_exposing_force_revalidation() -
     assert "getModelCatalog(true)" not in source
     assert "rescanModelCatalog" not in source
     assert "scanModelDirectory" not in source
-    assert '"刷新模型"' in source
+    assert '"刷新模型"' in panel
     assert '"强制重新校验"' not in source
 
 
@@ -185,18 +199,67 @@ def test_studio_registers_unmanaged_catalog_engine_by_reference() -> None:
 
 def test_studio_auto_configures_and_switches_pending_engine() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    panel = MODEL_SELECTION.read_text(encoding="utf-8")
 
     assert 'item.status === "ready" || item.status === "pending" || item.status === "failed"' in source
-    assert 'selectedSwitchArtifact?.status === "pending"' in source
-    assert "publishModel(selectedModelProjectId, selectedSwitchArtifact.id)" in source
+    assert 'selectedArtifact?.status === "pending" || selectedArtifact?.status === "failed"' in panel
+    assert "publishModel(" in source
+    assert "parserPreset" in source
     assert "inspectModelArtifact" not in source
     assert "configureModelProfile" not in source
     assert "probeModelArtifact" not in source
-    assert '"自动配置并加载模型"' in source
-    assert "自动推导类别契约并生成唯一 DeepStream manifest" in source
+    assert '"自动配置并加载模型"' in panel
+    assert "自动生成唯一 DeepStream manifest" in panel
     assert "yoloCandidateCount" not in source
     assert "preferLatestModelVersionRef.current" in source
-    assert "模型产物不可切换" in source
+    assert "模型产物不可切换" in panel
+
+
+def test_studio_uses_truthful_runtime_metrics_and_explicit_auto_save_copy() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8")
+    license_view = LICENSE_VIEW.read_text(encoding="utf-8")
+    advanced_dialog = ADVANCED_SETTINGS_DIALOG.read_text(encoding="utf-8")
+    presentation = STUDIO_PRESENTATION.read_text(encoding="utf-8")
+
+    assert '<Metric title="P95 延迟" value="待机"' not in source
+    assert '<Metric title="运行时长"' not in source
+    assert '<KvCard title="系统状态"' not in source
+    assert "<Bar " not in source
+    assert "latencyStages.map((stage)" in source
+    assert 'width={30}' not in source
+    assert '"暂无样本"' in presentation
+
+    assert "serviceUnavailable" in license_view
+    assert "无法读取 NovaSight 后端" in license_view
+    assert "这里不是卡密错误" in license_view
+    assert "正在连接 NovaSight 后端" in license_view
+    assert "确认结果前不会显示卡密输入" in license_view
+    assert "useState(true)" in app
+
+    assert "正在自动保存并同步运行配置" in advanced_dialog
+    assert "已自动保存" in advanced_dialog
+    assert '>关闭</button>' in advanced_dialog
+    assert "已自动保存 · 修改后立即生效" in source
+    assert "已自动保存 · 当前配置" in source
+    assert "pendingConfigWriteCount" in source
+    assert "dialogSavingRef" in source
+    assert "保存失败 · ${dialogSaveError}" in source
+    assert 'inert: dialogSaving ? "" : undefined' in source
+
+
+def test_model_selection_exposes_only_builtin_parser_presets() -> None:
+    panel = (
+        STUDIO_CONSOLE.parents[1] / "models" / "ModelSelectionPanel.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'value="auto"' in panel
+    assert 'value="yolov5"' in panel
+    assert 'value="yolov8"' in panel
+    assert 'value="yolo11"' in panel
+    assert 'value="novasight_generic"' in panel
+    assert "NovaSight 通用解析器（内置）" in panel
+    assert "外部 .so" not in panel
 
 
 def test_kmnet_panel_has_dedicated_control_test_page() -> None:
@@ -281,21 +344,23 @@ def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
     assert 'label="Track 匹配距离 px"' not in source
 
 
-def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overrides() -> None:
+def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_range() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     controls = STUDIO_CONTROLS.read_text(encoding="utf-8")
     settings = STUDIO_SETTINGS.read_text(encoding="utf-8")
 
     assert 'aria-label="模型类别与瞄点设置"' in source
-    assert "默认垂直瞄点" in source
-    assert "目标框顶部为 0%，底部为 100%" in source
+    assert "头部、身体或其他角色" in source
+    assert "实际值仍相对于各自 bbox" in source
     assert "未知类别（cls ${classId}）" in source
     assert 'updateConfigField("inference", "detection_class_profiles"' in source
-    assert 'updateControlGroupField("aim", "class_y_ratios"' in source
+    assert 'updateControlGroupField("aim", "class_roles"' in source
+    assert 'updateControlGroupField("aim", "role_y_ratios"' in source
+    assert "<AimTargetRange" in source
     assert "recordArray(vision.detection_items)" in source
     assert 'updateConfigField("inference", "detection_class_priority", current.join(","))' in source
     assert "setClassPriorityPosition" in source
-    assert 'aria-label="目标类别多选"' in source
+    assert "参与目标选择的类别" in source
     assert "toggleDetectionClass" in source
     assert "新建空白" in source
     assert "复制当前" in source
@@ -306,9 +371,7 @@ def test_studio_class_editor_exposes_names_priority_and_profile_scoped_aim_overr
     assert "effective_class_filter" in source
     assert "rejected_class_ids" in source
     assert "仅选此类" not in source
-    assert "跟随默认" in controls
-    assert "独立设置" in controls
-    assert "disabled={disabled || !custom}" in controls
+    assert "ClassAimRatioControl" not in controls
     assert ".class-config-workspace" in settings
     assert "overflow-y: auto" in settings
     assert ".class-config-dialog-footer" in settings

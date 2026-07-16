@@ -27,8 +27,12 @@ def _run_kmnet_driver_worker(connection: Connection, driver_loader: DriverLoader
                 connection.send((request_id, False, None, result.reason or "kmNet driver unavailable"))
                 continue
             try:
-                function = getattr(driver, name)
-                value = function(*args)
+                if name == "__batch__":
+                    calls = args[0]
+                    value = [getattr(driver, call_name)(*call_args) for call_name, call_args in calls]
+                else:
+                    function = getattr(driver, name)
+                    value = function(*args)
             except Exception as exc:
                 connection.send((request_id, False, None, f"{type(exc).__name__}: {exc}"))
             else:
@@ -79,6 +83,17 @@ class KmNetDriverProcess:
             if not succeeded:
                 raise RuntimeError(str(error or f"kmNet driver call failed: {name}"))
             return value
+
+    def call_many(
+        self,
+        calls: list[tuple[str, tuple[Any, ...]]],
+        *,
+        timeout_s: float,
+    ) -> list[Any]:
+        values = self.call("__batch__", calls, timeout_s=timeout_s)
+        if not isinstance(values, list) or len(values) != len(calls):
+            raise RuntimeError("kmNet driver batch response has an invalid shape")
+        return values
 
     def abort(self) -> None:
         with self._lifecycle_lock:

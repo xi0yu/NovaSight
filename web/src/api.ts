@@ -136,7 +136,24 @@ export type ModelSwitchReport = {
 export type ModelPublishResponse = {
   deployment: Deployment;
   inference: Record<string, unknown>;
+  parser_contract?: ParserContract;
   report?: ModelSwitchReport;
+};
+
+export type ParserPresetId =
+  | "auto"
+  | "yolov5"
+  | "yolov8"
+  | "yolo11"
+  | "novasight_generic";
+
+export type ParserContract = {
+  requested_preset: ParserPresetId;
+  compatibility: "yolov5" | "yolov8_yolo11";
+  has_objectness: boolean;
+  parser_library: "novasight_builtin";
+  parser_function: "NvDsInferParseNovaSight";
+  nms_owner: "deepstream";
 };
 
 export type DeepStreamManifestRecommendation = {
@@ -490,6 +507,7 @@ export const API_PATHS = {
   captureSelect: "/api/capture/select",
   captureImage: "/api/capture/image",
   captureStop: "/api/capture/stop",
+  capturePreview: "/api/capture/preview",
   captureStream: "/api/capture/stream.mjpg",
   executors: "/api/executors",
   kmnetConnect: "/api/executors/kmnet/connect",
@@ -527,55 +545,116 @@ export function statusWebSocketUrl(): string {
   return `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = {
+  timeoutMs?: number;
+};
+
+const STATUS_REQUEST_TIMEOUT_MS = 5000;
+const STANDARD_READ_TIMEOUT_MS = 10000;
+
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit,
+  options?: RequestOptions
+): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
 
-  const response = await fetch(apiUrl(path), {
-    ...init,
-    headers: {
-      ...Object.fromEntries(headers.entries())
+  const timeoutController = options?.timeoutMs ? new AbortController() : null;
+  const upstreamSignal = init?.signal;
+  let timedOut = false;
+  let timeoutId: number | null = null;
+  const handleUpstreamAbort = () => timeoutController?.abort(upstreamSignal?.reason);
+
+  if (timeoutController && upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      handleUpstreamAbort();
+    } else {
+      upstreamSignal.addEventListener("abort", handleUpstreamAbort, { once: true });
     }
-  });
+  }
+  if (timeoutController && options?.timeoutMs) {
+    timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, options.timeoutMs);
+  }
 
-  const contentType = response.headers.get("content-type") ?? "";
-  let body: unknown = null;
   try {
-    body = contentType.includes("application/json")
-      ? await response.json()
-      : await response.text();
-  } catch {
-    body = "";
-  }
+    let response: Response;
+    try {
+      response = await fetch(apiUrl(path), {
+        ...init,
+        signal: timeoutController?.signal ?? upstreamSignal,
+        headers: {
+          ...Object.fromEntries(headers.entries())
+        }
+      });
+    } catch (error) {
+      if (timedOut) {
+        throw new ApiError("请求超时，请检查后端连接", 408, null);
+      }
+      throw error;
+    }
 
-  if (!response.ok) {
-    const objectBody =
-      typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
-    const detail =
-      objectBody && typeof objectBody.last_error === "string"
-        ? objectBody.last_error
-        : objectBody && typeof objectBody.reason === "string"
-          ? objectBody.reason
-          : objectBody && typeof objectBody.detail === "string"
-            ? objectBody.detail
-            : objectBody &&
-                typeof objectBody.detail === "object" &&
-                objectBody.detail !== null &&
-                typeof (objectBody.detail as Record<string, unknown>).message === "string"
-              ? String((objectBody.detail as Record<string, unknown>).message)
-            : response.statusText;
-    throw new ApiError(detail || "请求失败", response.status, body);
-  }
+    const contentType = response.headers.get("content-type") ?? "";
+    let body: unknown = null;
+    try {
+      body = contentType.includes("application/json")
+        ? await response.json()
+        : await response.text();
+    } catch (error) {
+      if (timedOut) {
+        throw new ApiError("请求超时，请检查后端连接", 408, null);
+      }
+      if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
+        throw error;
+      }
+      body = "";
+    }
 
-  return body as T;
+    if (!response.ok) {
+      const objectBody =
+        typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
+      const detail =
+        objectBody && typeof objectBody.last_error === "string"
+          ? objectBody.last_error
+          : objectBody && typeof objectBody.reason === "string"
+            ? objectBody.reason
+            : objectBody && typeof objectBody.detail === "string"
+              ? objectBody.detail
+              : objectBody &&
+                  typeof objectBody.detail === "object" &&
+                  objectBody.detail !== null &&
+                  typeof (objectBody.detail as Record<string, unknown>).message === "string"
+                ? String((objectBody.detail as Record<string, unknown>).message)
+              : response.statusText;
+      throw new ApiError(detail || "请求失败", response.status, body);
+    }
+
+    return body as T;
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+    upstreamSignal?.removeEventListener("abort", handleUpstreamAbort);
+  }
 }
 
-export function getHealth(): Promise<HealthResponse> {
-  return requestJson<HealthResponse>(API_PATHS.health);
+export function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
+  return requestJson<HealthResponse>(
+    API_PATHS.health,
+    { signal },
+    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS }
+  );
 }
 
-export function getRuntimeState(): Promise<RuntimeState> {
-  return requestJson<RuntimeState>(API_PATHS.runtimeState);
+export function getRuntimeState(signal?: AbortSignal): Promise<RuntimeState> {
+  return requestJson<RuntimeState>(
+    API_PATHS.runtimeState,
+    { signal },
+    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS }
+  );
 }
 
 export function startRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
@@ -646,7 +725,11 @@ export function diagnosticCircleKmNet(
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {
-  return requestJson<RuntimeConfig>(API_PATHS.config);
+  return requestJson<RuntimeConfig>(
+    API_PATHS.config,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS }
+  );
 }
 
 export function getConfigSchema(): Promise<ConfigSchemaResponse> {
@@ -727,8 +810,26 @@ export function stopCapture(reason = "用户停止采集"): Promise<CaptureState
   });
 }
 
+export function setCapturePreviewEnabled(
+  enabled: boolean,
+  options?: { keepalive?: boolean }
+): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(API_PATHS.capturePreview, {
+    method: "POST",
+    keepalive: options?.keepalive,
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ enabled })
+  });
+}
+
 export function getModelProjects(): Promise<ModelProject[]> {
-  return requestJson<ModelProject[]>(API_PATHS.modelProjects);
+  return requestJson<ModelProject[]>(
+    API_PATHS.modelProjects,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS }
+  );
 }
 
 export function getModelCatalog(force = false): Promise<ModelCatalogResponse> {
@@ -770,13 +871,17 @@ export function getConversionJobs(versionId?: number): Promise<ConversionJob[]> 
   });
 }
 
-export function publishModel(projectId: number, artifactId: number): Promise<ModelPublishResponse> {
+export function publishModel(
+  projectId: number,
+  artifactId: number,
+  parserPreset: ParserPresetId = "auto"
+): Promise<ModelPublishResponse> {
   return requestJson<ModelPublishResponse>(`${API_PATHS.modelProjects}/${projectId}/publish`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ artifact_id: artifactId })
+    body: JSON.stringify({ artifact_id: artifactId, parser_preset: parserPreset })
   });
 }
 
@@ -858,7 +963,11 @@ export function uploadModelFile(payload: {
 }
 
 export function getLicenseStatus(): Promise<LicenseStatus> {
-  return requestJson<LicenseStatus>(API_PATHS.license);
+  return requestJson<LicenseStatus>(
+    API_PATHS.license,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS }
+  );
 }
 
 export function saveLicenseKey(key: string): Promise<LicenseStatus> {

@@ -1089,7 +1089,7 @@ def test_control_and_button_state_logs_only_on_trigger_state_changes(caplog, mon
     )
     command = SimpleNamespace(dx=4.0, dy=0.0, reason="test")
 
-    with caplog.at_level("INFO", logger="novasight.runtime.service"):
+    with caplog.at_level("DEBUG", logger="novasight.runtime.service"):
         service._log_box_input_state(BoxInputState(), "hardware")
         service._log_box_input_state(BoxInputState(), "hardware")
         service._log_box_input_state(BoxInputState(left=True), "hardware")

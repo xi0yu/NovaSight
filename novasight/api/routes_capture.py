@@ -6,7 +6,7 @@ from io import BytesIO
 from dataclasses import asdict
 from typing import Iterator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -63,6 +63,10 @@ class ImageSourceRequest(BaseModel):
         return stripped
 
 
+class PreviewStateRequest(BaseModel):
+    enabled: bool
+
+
 @router.get("/capabilities")
 def capabilities(request: Request, device: str = "/dev/video0") -> dict:
     return asdict(request.app.state.capture.capabilities(device))
@@ -106,6 +110,11 @@ def stream(request: Request):
                     )
                 },
             )
+        if preview_status.get("preview_active") is not True:
+            return JSONResponse(
+                status_code=503,
+                content={"message": "实时预览已暂停，推理与控制继续运行。"},
+            )
         preview_fps = _normalize_preview_fps(
             getattr(config, "limits", None)
             and config.limits.stream_fps
@@ -147,6 +156,20 @@ def stream(request: Request):
         ),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@router.post("/preview")
+def set_preview_state(payload: PreviewStateRequest, request: Request) -> dict:
+    backend = _active_deepstream_preview_backend(request)
+    if backend is None:
+        raise HTTPException(
+            status_code=409,
+            detail="当前运行链不支持动态硬件预览控制",
+        )
+    try:
+        return backend.set_preview_active(payload.enabled)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/select")
@@ -304,6 +327,8 @@ def _deepstream_mjpeg_frames(
         if max_attempts is not None and attempts >= max_attempts:
             break
         if not backend.running:
+            break
+        if getattr(backend, "preview_active", True) is False:
             break
         attempts += 1
         result = backend.wait_preview_jpeg(

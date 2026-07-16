@@ -117,6 +117,8 @@ class RuntimeTracker:
         self._last_capture_ts_ns: int | None = None
         self._last_frame_id: int | None = None
         self.last_debug: dict = {}
+        self._debug_config_source: TrackerConfig | None = None
+        self._debug_config_cache: dict = {}
 
     def reset(self) -> None:
         self._tracks.clear()
@@ -124,6 +126,8 @@ class RuntimeTracker:
         self._last_capture_ts_ns = None
         self._last_frame_id = None
         self.last_debug = {}
+        self._debug_config_source = None
+        self._debug_config_cache = {}
 
     def update(
         self,
@@ -733,22 +737,29 @@ class RuntimeTracker:
                 "tracker_update_us": 0.0,
                 "tracker_total_us": 0.0,
             },
-            "config": {
-                "max_match_distance": self.config.max_match_distance,
-                "position_cost_weight": self.config.position_cost_weight,
-                "iou_cost_weight": self.config.iou_cost_weight,
-                "scale_cost_weight": self.config.scale_cost_weight,
-                "max_size_ratio": self.config.max_size_ratio,
-                "max_association_dt_ms": self.config.max_association_dt_ms,
-                "max_missed_frames": self.config.max_missed_frames,
-                "max_lost_age_ms": self.config.max_lost_age_ms,
-                "kalman": {
-                    "acceleration_noise": self.config.kalman.acceleration_noise,
-                    "measurement_noise_x": self.config.kalman.measurement_noise_x,
-                    "measurement_noise_y": self.config.kalman.measurement_noise_y,
-                },
+            "config": self._debug_config_payload(),
+        }
+
+    def _debug_config_payload(self) -> dict:
+        if self._debug_config_source == self.config:
+            return self._debug_config_cache
+        self._debug_config_source = self.config
+        self._debug_config_cache = {
+            "max_match_distance": self.config.max_match_distance,
+            "position_cost_weight": self.config.position_cost_weight,
+            "iou_cost_weight": self.config.iou_cost_weight,
+            "scale_cost_weight": self.config.scale_cost_weight,
+            "max_size_ratio": self.config.max_size_ratio,
+            "max_association_dt_ms": self.config.max_association_dt_ms,
+            "max_missed_frames": self.config.max_missed_frames,
+            "max_lost_age_ms": self.config.max_lost_age_ms,
+            "kalman": {
+                "acceleration_noise": self.config.kalman.acceleration_noise,
+                "measurement_noise_x": self.config.kalman.measurement_noise_x,
+                "measurement_noise_y": self.config.kalman.measurement_noise_y,
             },
         }
+        return self._debug_config_cache
 
     def _track_debug(self, track: TrackRecord) -> dict:
         current_capture_ts_ns = int(self._last_capture_ts_ns or track.last_capture_ts_ns)

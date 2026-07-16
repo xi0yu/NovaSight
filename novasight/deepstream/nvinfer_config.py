@@ -5,6 +5,8 @@ from pathlib import Path
 
 from novasight.model_registry.manifest import ModelManifest
 
+from .parser_presets import ParserPlan, resolve_parser_plan
+
 
 def generate_nvinfer_config(
     manifest: ModelManifest,
@@ -14,7 +16,7 @@ def generate_nvinfer_config(
     confidence_threshold: float | None = None,
     nms_threshold: float | None = None,
 ) -> str:
-    _validate_manifest(manifest)
+    parser_plan = _validate_manifest(manifest)
     confidence = (
         float(manifest.postprocess.confidence_threshold)
         if confidence_threshold is None
@@ -42,10 +44,12 @@ def generate_nvinfer_config(
         f"model-color-format={_model_color_format(manifest.input.color_format)}",
         f"maintain-aspect-ratio={int(bool(manifest.input.maintain_aspect_ratio))}",
         f"symmetric-padding={int(bool(manifest.input.symmetric_padding))}",
-        "output-tensor-meta=1",
+        # The custom parser receives output_layers directly inside nvinfer. Exporting
+        # the same raw tensors as downstream metadata is redundant for ObjectMeta.
+        "output-tensor-meta=0",
         f"output-blob-names={manifest.output.name}",
         f"custom-lib-path={Path(parser_library_path).expanduser().resolve(strict=False)}",
-        "parse-bbox-func-name=NvDsInferParseNovaSight",
+        f"parse-bbox-func-name={parser_plan.parser_function}",
         "cluster-mode=2",
         "",
         "[class-attrs-all]",
@@ -96,7 +100,7 @@ def write_nvinfer_config(
     return target
 
 
-def _validate_manifest(manifest: ModelManifest) -> None:
+def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
     if int(manifest.runtime.batch_size) != 1:
         raise ValueError("deepstream_nvinfer requires model batch_size=1")
     if str(manifest.input.layout).upper() != "NCHW" or len(manifest.input.shape) != 4:
@@ -125,6 +129,12 @@ def _validate_manifest(manifest: ModelManifest) -> None:
         raise ValueError(
             "YOLO output must expose 4+classes or 5+classes channels for the native parser"
         )
+    return resolve_parser_plan(
+        manifest.postprocess.parser_preset,
+        output_shape=manifest.output.shape,
+        class_count=class_count,
+        inferred_has_objectness=manifest.output.has_objectness,
+    )
 
 
 def _network_mode(value: str) -> int:

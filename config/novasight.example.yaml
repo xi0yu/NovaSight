@@ -61,12 +61,18 @@ calibration:
 control:
   active_algorithm: dual_phase_atan_robust_predictive_v2
   aim:
-    y_ratio: 0.22
-    # Optional overrides are scoped to a detection class profile.
-    # class_y_ratios:
+    # Each ratio is measured from the top of that role's detection bbox.
+    role_y_ratios:
+      head: 0.22
+      body: 0.22
+      other: 0.22
+    # Class-to-role mappings are scoped to a detection class profile.
+    # Unmapped and unknown class ids use the other role.
+    # class_roles:
     #   default:
-    #     "1": 0.35
-    class_y_ratios: {}
+    #     "0": body
+    #     "1": head
+    class_roles: {}
   algorithms:
     calibrated_angular:
       fov_x_deg: 105.0

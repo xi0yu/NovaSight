@@ -18,10 +18,12 @@ type Listener = () => void;
 
 const DEFAULT_DURATION_MS = 4500;
 const MAX_TOASTS = 4;
+const DUPLICATE_WINDOW_MS = 1500;
 
 let nextId = 1;
 let toasts: Toast[] = [];
 const listeners = new Set<Listener>();
+const lastToastAtBySignature = new Map<string, number>();
 
 function emit(): void {
   for (const listener of listeners) {
@@ -84,6 +86,17 @@ function pushToast(toast: Toast): void {
     console.warn(`[ns-quiet] ${toast.title}${toast.detail ? " — " + toast.detail : ""}`);
     return;
   }
+  for (const [signature, createdAt] of lastToastAtBySignature) {
+    if (toast.createdAt - createdAt > DUPLICATE_WINDOW_MS) {
+      lastToastAtBySignature.delete(signature);
+    }
+  }
+  const signature = `${toast.source}\u0000${toast.title}\u0000${toast.detail ?? ""}`;
+  const previousCreatedAt = lastToastAtBySignature.get(signature);
+  if (previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
+    return;
+  }
+  lastToastAtBySignature.set(signature, toast.createdAt);
   const next = [...toasts, toast].slice(-MAX_TOASTS);
   setToasts(next);
   if (toast.tone !== "info" || toast.title !== "请求已取消") {

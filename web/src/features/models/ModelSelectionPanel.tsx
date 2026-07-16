@@ -2,6 +2,7 @@ import type {
   ModelArtifact,
   ModelCatalogDirectory,
   ModelCatalogModel,
+  ParserPresetId,
   ModelVersion
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
@@ -35,6 +36,8 @@ interface ModelSelectionPanelProps {
   blockedArtifacts: ModelArtifact[];
   busy: string | null;
   canSwitch: boolean;
+  parserPreset: ParserPresetId;
+  onParserPresetChange: (preset: ParserPresetId) => void;
   onRefresh: () => void;
   onToggleDirectory: (relativePath: string) => void;
   onSelectModel: (model: ModelCatalogModel) => void;
@@ -62,6 +65,8 @@ export function ModelSelectionPanel({
   blockedArtifacts,
   busy,
   canSwitch,
+  parserPreset,
+  onParserPresetChange,
   onRefresh,
   onToggleDirectory,
   onSelectModel,
@@ -176,6 +181,24 @@ export function ModelSelectionPanel({
             <div>
               <dt>切换准备</dt>
               <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel ? "选择后自动登记" : "-"}</dd>
+            </div>
+            <div className="wide model-parser-preset">
+              <dt>解析兼容模式</dt>
+              <dd>
+                <select
+                  aria-label="模型解析兼容模式"
+                  disabled={busy !== null}
+                  onChange={(event) => onParserPresetChange(event.target.value as ParserPresetId)}
+                  value={parserPreset}
+                >
+                  <option value="auto">自动识别（推荐）</option>
+                  <option value="yolov5">YOLO v5 兼容</option>
+                  <option value="yolov8">YOLO v8 兼容</option>
+                  <option value="yolo11">YOLO v11 兼容</option>
+                  <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
+                </select>
+                <small>全部使用 NovaSight 内置 parser；选择项会在加载前校验真实 tensor 契约。</small>
+              </dd>
             </div>
           </dl>
         </aside>

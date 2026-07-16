@@ -17,6 +17,7 @@ from novasight.detection_batch_mailbox import DetectionBatchMailbox
 
 from .pipeline_builder import DeepStreamPipelineConfig, build_deepstream_pipeline
 from .parser_build import ensure_deepstream_parser_library
+from .parser_presets import resolve_parser_plan
 
 
 GST_CLOCK_TIME_NONE = (1 << 64) - 1
@@ -100,9 +101,16 @@ class DeepStreamObjectBackend:
     ) -> None:
         self.pipeline_config = pipeline_config
         self._preview_requested = bool(pipeline_config.preview_enabled)
+        self._preview_active = bool(pipeline_config.preview_enabled)
         self._preview_disabled_reason = ""
         self._preview_negotiation_fallback_attempted = False
         self.manifest = manifest
+        self._parser_plan = resolve_parser_plan(
+            manifest.postprocess.parser_preset,
+            output_shape=manifest.output.shape,
+            class_count=manifest.output.class_count,
+            inferred_has_objectness=manifest.output.has_objectness,
+        )
         self.parser_library_path = Path(parser_library_path).expanduser().resolve(strict=False)
         self.max_publish_age_ms = max(0.0, float(max_publish_age_ms))
         self.pipeline_description = build_deepstream_pipeline(pipeline_config)
@@ -180,6 +188,41 @@ class DeepStreamObjectBackend:
     def running(self) -> bool:
         with self._lock:
             return self._running and not self._terminal_error
+
+    @property
+    def preview_active(self) -> bool:
+        with self._lock:
+            return (
+                self._preview_active
+                and self._running
+                and not self._terminal_error
+                and bool(self.pipeline_config.preview_enabled)
+            )
+
+    def set_preview_active(self, enabled: bool) -> dict[str, object]:
+        requested = bool(enabled)
+        with self._lock:
+            if not self.pipeline_config.preview_enabled:
+                raise RuntimeError(
+                    self._preview_disabled_reason or "hardware preview is unavailable"
+                )
+            pipeline = self._pipeline
+            if pipeline is None or not self._running or self._terminal_error:
+                raise RuntimeError("DeepStream pipeline is not running")
+            valve = pipeline.get_by_name("preview-valve")
+            if valve is None:
+                raise RuntimeError("DeepStream pipeline missing preview-valve")
+
+        valve.set_property("drop", not requested)
+        with self._preview_condition:
+            self._preview_active = requested
+            if not requested:
+                self._latest_preview_jpeg = None
+                self._last_preview_ts_ns = 0
+                self._preview_error = ""
+            self._preview_condition.notify_all()
+        logger.info("DeepStream hardware preview active=%s", requested)
+        return self.status()
 
     def wait_until_ready(self, timeout_s: float) -> bool:
         """Wait until this pipeline has published its first valid DetectionBatch."""
@@ -321,6 +364,7 @@ class DeepStreamObjectBackend:
                 "timestamp_correlation_misses": self._timestamp_correlation_misses,
                 "object_meta_frames": self._object_meta_frames,
                 "preview_enabled": bool(self.pipeline_config.preview_enabled),
+                "preview_active": self._preview_active,
                 "preview_requested": self._preview_requested,
                 "preview_negotiation_fallback_attempted": (
                     self._preview_negotiation_fallback_attempted
@@ -388,6 +432,12 @@ class DeepStreamObjectBackend:
                 },
                 "postprocess": {
                     "parser": self.manifest.postprocess.parser,
+                    "parser_preset": self.manifest.postprocess.parser_preset,
+                    "compatibility": self._parser_plan.compatibility,
+                    "has_objectness": self._parser_plan.has_objectness,
+                    "parser_library": self._parser_plan.parser_library,
+                    "parser_function": self._parser_plan.parser_function,
+                    "nms_owner": self._parser_plan.nms_owner,
                     "confidence_threshold": self.manifest.postprocess.confidence_threshold,
                     "nms_threshold": self.manifest.postprocess.nms_iou_threshold,
                 },
@@ -452,6 +502,7 @@ class DeepStreamObjectBackend:
             if self.pipeline_config.preview_enabled:
                 self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
                 self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
+            self._preview_active = False
             return
         find = getattr(getattr(Gst, "ElementFactory", None), "find", None)
         missing = [
@@ -469,6 +520,7 @@ class DeepStreamObjectBackend:
             "hardware preview disabled; missing GStreamer element(s): " + ", ".join(missing)
         )
         self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+        self._preview_active = False
         self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(self._preview_disabled_reason)
 
@@ -500,6 +552,7 @@ class DeepStreamObjectBackend:
         self._timestamp_correlation_misses = 0
         self._object_meta_frames = 0
         self._preview_frames = 0
+        self._preview_active = bool(self.pipeline_config.preview_enabled)
         self._preview_sequence = 0
         self._latest_preview_jpeg = None
         self._last_preview_ts_ns = 0
@@ -533,7 +586,10 @@ class DeepStreamObjectBackend:
         sink_pad.add_probe(Gst.PadProbeType.BUFFER, self._inference_start_probe)
         src_pad.add_probe(Gst.PadProbeType.BUFFER, self._object_meta_probe)
         if self.pipeline_config.preview_enabled:
+            preview_valve = pipeline.get_by_name("preview-valve")
             preview_sink = pipeline.get_by_name("preview_sink")
+            if preview_valve is None:
+                raise RuntimeError("DeepStream pipeline missing preview-valve")
             if preview_sink is None:
                 raise RuntimeError("DeepStream pipeline missing preview_sink")
             preview_pad = preview_sink.get_static_pad("sink")
@@ -620,6 +676,9 @@ class DeepStreamObjectBackend:
 
     def _preview_jpeg_probe(self, _pad: Any, info: Any) -> Any:
         Gst = importlib.import_module("gi.repository.Gst")
+        with self._lock:
+            if not self._preview_active:
+                return Gst.PadProbeReturn.OK
         buffer = info.get_buffer()
         if buffer is None:
             return Gst.PadProbeReturn.OK
@@ -659,6 +718,8 @@ class DeepStreamObjectBackend:
         deadline = time.monotonic() + max(0.0, float(timeout_s))
         with self._preview_condition:
             while True:
+                if not self._preview_active:
+                    return None
                 if (
                     self._latest_preview_jpeg is not None
                     and (after_sequence is None or self._preview_sequence > int(after_sequence))
@@ -964,6 +1025,7 @@ class DeepStreamObjectBackend:
                 "hardware preview disabled after NVMM preview caps negotiation failed"
             )
             self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+            self._preview_active = False
             self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(
             "DeepStream preview negotiation failed before nvinfer input; "
@@ -1022,6 +1084,8 @@ class DeepStreamObjectBackend:
     def _preview_reason_locked(self) -> str:
         if not self.pipeline_config.preview_enabled:
             return self._preview_disabled_reason or "preview consumer is disabled"
+        if not self._preview_active:
+            return "preview paused to preserve inference performance"
         if self._preview_error:
             return self._preview_error
         if self._latest_preview_jpeg is None:

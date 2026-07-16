@@ -29,6 +29,10 @@ from novasight.deepstream.model_manifest import (
     ensure_engine_manifest,
     recommend_engine_manifest,
 )
+from novasight.deepstream.parser_presets import (
+    parser_preset_payload,
+    resolve_parser_plan,
+)
 from novasight.api.routes_model_ingress import (
     serialized_model_operation,
     set_profile_activation,
@@ -114,6 +118,16 @@ class PublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     artifact_id: StrictInt
+    parser_preset: StrictStr = "auto"
+
+
+@router.get("/parser-presets")
+def list_parser_presets() -> dict[str, Any]:
+    return {
+        "presets": parser_preset_payload(),
+        "external_library_supported": False,
+        "parser_library": "novasight_builtin",
+    }
 
 
 def _download_file(url: str, path: Path) -> None:
@@ -782,6 +796,7 @@ def _prepare_runnable_artifact(
     artifact_path: Path,
     classes: list[str],
     input_shape: str,
+    parser_preset: str = "auto",
 ) -> tuple[Any, dict[str, Any]]:
     if not _deepstream_selected(request):
         raise RegistryValidationError(
@@ -800,11 +815,18 @@ def _prepare_runnable_artifact(
                 getattr(inference_config, "confidence_threshold", 0.25)
             ),
             nms_iou_threshold=float(getattr(inference_config, "nms_threshold", 0.45)),
+            parser_preset=parser_preset,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         raise RegistryValidationError(
             f"TensorRT Engine 自动配置失败：{exc}"
         ) from exc
+    parser_plan = resolve_parser_plan(
+        manifest.postprocess.parser_preset,
+        output_shape=manifest.output.shape,
+        class_count=manifest.output.class_count,
+        inferred_has_objectness=manifest.output.has_objectness,
+    )
     return None, {
         "selected": "deepstream_nvinfer",
         "available": True,
@@ -812,6 +834,7 @@ def _prepare_runnable_artifact(
         "input_shape": "x".join(str(value) for value in manifest.input.shape),
         "classes": list(manifest.output.class_names),
         "model_fingerprint": manifest.model_fingerprint,
+        "parser_contract": parser_plan.asdict(),
         "reason": (
             "generated runtime manifest from TensorRT engine contract"
             if generated
@@ -1307,6 +1330,8 @@ def recommend_deepstream_artifact(request: Request, artifact_id: int) -> dict[st
         ],
         "class_names": list(resolved.class_names),
         "output_has_objectness": resolved.output_has_objectness,
+        "parser_contract": resolved.parser_plan.asdict(),
+        "parser_presets": parser_preset_payload(),
         "sources": {
             "input_contract": "tensorrt_engine_probe",
             "output_contract": "tensorrt_engine_probe",
@@ -1640,6 +1665,7 @@ def publish(
             artifact_path=artifact_path,
             classes=classes,
             input_shape=input_shape,
+            parser_preset=payload.parser_preset,
         )
         candidate_classes = candidate_status.get("classes")
         if isinstance(candidate_classes, list) and candidate_classes:
@@ -1709,6 +1735,7 @@ def publish(
     return {
         "deployment": asdict(deployment),
         "inference": inference_status,
+        "parser_contract": candidate_status.get("parser_contract", {}),
         "report": _model_switch_report(
             action="publish",
             deployment=deployment,

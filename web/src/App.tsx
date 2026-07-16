@@ -16,15 +16,23 @@ import {
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
 import { reportError, reportInfo, reportSuccess } from "./lib/toast";
-import { reportWebSocketFailure } from "./lib/errorGuards";
+import {
+  clearWebSocketFailure,
+  reportWebSocketFailure,
+  reportWebSocketRecovered
+} from "./lib/errorGuards";
 import { LicenseGate } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { StudioConsoleView } from "./features/studio/StudioConsoleView";
 import { VisualSystemView } from "./features/visual-system/VisualSystemView";
 import { formatTime, getErrorMessage } from "./features/shared/format";
+import {
+  runtimeDeliveryLabel,
+  runtimeDeliveryTone,
+  type RuntimeDeliveryStatus
+} from "./features/shared/runtimeDelivery";
 
 type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
-type RealtimeStatus = "connecting" | "connected" | "stale" | "disconnected";
 type LoadState = {
   loading: boolean;
   errors: Partial<Record<ErrorKey, string>>;
@@ -45,32 +53,24 @@ const initialState: LoadState = {
   lastUpdated: null
 };
 
-function realtimeTone(status: RealtimeStatus): "good" | "warn" | "bad" | "idle" {
-  switch (status) {
-    case "connected":
-      return "good";
-    case "stale":
-    case "connecting":
-      return "warn";
-    case "disconnected":
-      return "bad";
-    default:
-      return "idle";
-  }
+const RUNTIME_FALLBACK_INTERVAL_MS = 3000;
+const HEALTH_FALLBACK_INTERVAL_MS = 30000;
+const STATUS_STALE_AFTER_MS = 3000;
+const STATUS_FIRST_MESSAGE_TIMEOUT_MS = 8000;
+const STATUS_RECONNECT_BASE_MS = 1000;
+const STATUS_RECONNECT_MAX_MS = 15000;
+
+function withoutError(
+  errors: LoadState["errors"],
+  key: ErrorKey
+): LoadState["errors"] {
+  const nextErrors = { ...errors };
+  delete nextErrors[key];
+  return nextErrors;
 }
 
-function realtimeLabel(status: RealtimeStatus): string {
-  switch (status) {
-    case "connected":
-      return "实时 已连接";
-    case "stale":
-      return "实时 数据陈旧";
-    case "connecting":
-      return "实时 连接中";
-    case "disconnected":
-    default:
-      return "实时 已断开";
-  }
+function isAbortError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
@@ -82,23 +82,27 @@ export default function App() {
 function StudioApp() {
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
-  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected");
-  const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
+  const [realtimeStatus, setRealtimeStatus] = useState<RuntimeDeliveryStatus>("disconnected");
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
+  const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine);
   const loadRequestSeqRef = useRef(0);
   const licenseRequestSeqRef = useRef(0);
-  const runtimeStateReceivedAtRef = useRef(0);
+  const runtimeRevisionRef = useRef(0);
+  const initialLoadStartedRef = useRef(false);
   const backgroundLoadInFlightRef = useRef(false);
+  const healthLoadInFlightRef = useRef(false);
   const foregroundLoadInFlightRef = useRef(false);
-  const [licenseLoading, setLicenseLoading] = useState(
-    localStorage.getItem(LICENSE_CACHE_KEY) === "1"
-  );
+  const runtimeFallbackAbortRef = useRef<AbortController | null>(null);
+  const healthRefreshAbortRef = useRef<AbortController | null>(null);
+  const [licenseLoading, setLicenseLoading] = useState(true);
   const [licenseError, setLicenseError] = useState<string | undefined>();
 
   const applyRuntimeState = useCallback((runtime: RuntimeState) => {
     const receivedAt = Date.now();
-    runtimeStateReceivedAtRef.current = receivedAt;
+    runtimeRevisionRef.current += 1;
     setState((current) => ({
       ...current,
+      errors: withoutError(current.errors, "runtime"),
       runtime,
       lastUpdated: new Date(receivedAt)
     }));
@@ -129,6 +133,7 @@ function StudioApp() {
       if (requestSeq !== licenseRequestSeqRef.current) {
         return null;
       }
+      setLicense(null);
       setLicenseError(getErrorMessage(err));
       localStorage.removeItem(LICENSE_CACHE_KEY);
       reportError(err, {
@@ -153,24 +158,25 @@ function StudioApp() {
       loadRequestSeqRef.current += 1;
       setState(initialState);
       setRealtimeStatus("disconnected");
-      setLastWsMessageAt(null);
-      runtimeStateReceivedAtRef.current = 0;
+      runtimeRevisionRef.current = 0;
+      initialLoadStartedRef.current = false;
       backgroundLoadInFlightRef.current = false;
+      healthLoadInFlightRef.current = false;
       foregroundLoadInFlightRef.current = false;
+      runtimeFallbackAbortRef.current?.abort();
+      healthRefreshAbortRef.current?.abort();
+      runtimeFallbackAbortRef.current = null;
+      healthRefreshAbortRef.current = null;
+      clearWebSocketFailure("status");
     }
   }, []);
 
-  const load = useCallback(async (options?: { background?: boolean }) => {
-    const background = options?.background === true;
-    if (background && foregroundLoadInFlightRef.current) {
-      return;
-    }
+  const load = useCallback(async () => {
     const requestSeq = loadRequestSeqRef.current + 1;
+    const runtimeRevisionAtRequest = runtimeRevisionRef.current;
     loadRequestSeqRef.current = requestSeq;
-    if (!background) {
-      foregroundLoadInFlightRef.current = true;
-      setState((current) => ({ ...current, loading: true, errors: {} }));
-    }
+    foregroundLoadInFlightRef.current = true;
+    setState((current) => ({ ...current, loading: true, errors: {} }));
     try {
       const [health, runtime, config, projects] = await Promise.allSettled([
         getHealth(),
@@ -178,7 +184,7 @@ function StudioApp() {
         getRuntimeConfig(),
         getModelProjects()
       ]);
-      const responseReceivedAt = Date.now();
+      const runtimeSuperseded = runtimeRevisionRef.current !== runtimeRevisionAtRequest;
       const sourceMap: Array<[PromiseSettledResult<unknown>, string]> = [
         [health, "health"],
         [runtime, "runtime"],
@@ -187,6 +193,9 @@ function StudioApp() {
       ];
       const seenReason = new Set<unknown>();
       for (const [result, source] of sourceMap) {
+        if (source === "runtime" && runtimeSuperseded) {
+          continue;
+        }
         if (result.status === "rejected" && !seenReason.has(result.reason)) {
           seenReason.add(result.reason);
           reportError(result.reason, {
@@ -203,7 +212,7 @@ function StudioApp() {
         if (health.status === "rejected") {
           errors.health = getErrorMessage(health.reason);
         }
-        if (runtime.status === "rejected") {
+        if (runtime.status === "rejected" && !runtimeSuperseded) {
           errors.runtime = getErrorMessage(runtime.reason);
         }
         if (config.status === "rejected") {
@@ -213,9 +222,9 @@ function StudioApp() {
           errors.projects = getErrorMessage(projects.reason);
         }
         const shouldApplyRuntime =
-          runtime.status === "fulfilled" && runtimeStateReceivedAtRef.current <= responseReceivedAt;
+          runtime.status === "fulfilled" && runtimeRevisionRef.current === runtimeRevisionAtRequest;
         if (shouldApplyRuntime) {
-          runtimeStateReceivedAtRef.current = responseReceivedAt;
+          runtimeRevisionRef.current += 1;
         }
         return {
           loading: false,
@@ -224,13 +233,74 @@ function StudioApp() {
           runtime: shouldApplyRuntime ? runtime.value : current.runtime,
           config: config.status === "fulfilled" ? config.value : current.config,
           projects: projects.status === "fulfilled" ? projects.value : current.projects,
-          lastUpdated: new Date()
+          lastUpdated: shouldApplyRuntime ? new Date() : current.lastUpdated
         };
       });
     } finally {
-      if (!background) {
-        foregroundLoadInFlightRef.current = false;
+      foregroundLoadInFlightRef.current = false;
+    }
+  }, []);
+
+  const refreshRuntime = useCallback(async () => {
+    if (backgroundLoadInFlightRef.current || foregroundLoadInFlightRef.current) {
+      return;
+    }
+    backgroundLoadInFlightRef.current = true;
+    const runtimeRevisionAtRequest = runtimeRevisionRef.current;
+    const abortController = new AbortController();
+    runtimeFallbackAbortRef.current = abortController;
+    try {
+      const runtime = await getRuntimeState(abortController.signal);
+      if (runtimeRevisionRef.current !== runtimeRevisionAtRequest) {
+        return;
       }
+      applyRuntimeState(runtime);
+      setRealtimeStatus((current) => current === "connected" ? current : "fallback");
+    } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
+      setState((current) => ({
+        ...current,
+        errors: { ...current.errors, runtime: getErrorMessage(err) }
+      }));
+      setRealtimeStatus((current) => current === "connected" ? current : "disconnected");
+    } finally {
+      if (runtimeFallbackAbortRef.current === abortController) {
+        runtimeFallbackAbortRef.current = null;
+      }
+      backgroundLoadInFlightRef.current = false;
+    }
+  }, [applyRuntimeState]);
+
+  const refreshHealth = useCallback(async () => {
+    if (healthLoadInFlightRef.current) {
+      return;
+    }
+    healthLoadInFlightRef.current = true;
+    const abortController = new AbortController();
+    healthRefreshAbortRef.current = abortController;
+    try {
+      const health = await getHealth(abortController.signal);
+      setState((current) => ({
+        ...current,
+        errors: withoutError(current.errors, "health"),
+        health
+      }));
+    } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
+      setState((current) => ({
+        ...current,
+        errors: { ...current.errors, health: getErrorMessage(err) },
+        health: null
+      }));
+    } finally {
+      if (healthRefreshAbortRef.current === abortController) {
+        healthRefreshAbortRef.current = null;
+      }
+      healthLoadInFlightRef.current = false;
     }
   }, []);
 
@@ -239,87 +309,207 @@ function StudioApp() {
   }, [loadLicense]);
 
   useEffect(() => {
-    if (license?.valid) {
+    if (license?.valid && networkOnline && pageVisible && !initialLoadStartedRef.current) {
+      initialLoadStartedRef.current = true;
       void load();
     }
-  }, [license?.valid, load]);
+  }, [license?.valid, load, networkOnline, pageVisible]);
 
   useEffect(() => {
-    if (!license?.valid) {
-      setRealtimeStatus("disconnected");
-      setLastWsMessageAt(null);
+    const handleVisibilityChange = () => {
+      const visible = document.visibilityState !== "hidden";
+      setPageVisible(visible);
+      if (!visible) {
+        runtimeFallbackAbortRef.current?.abort();
+        healthRefreshAbortRef.current?.abort();
+      }
+      if (visible && license?.valid && initialLoadStartedRef.current) {
+        void refreshRuntime();
+        void refreshHealth();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [license?.valid, refreshHealth, refreshRuntime]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setNetworkOnline(true);
+      if (pageVisible && license?.valid && initialLoadStartedRef.current) {
+        void refreshRuntime();
+        void refreshHealth();
+      }
+    };
+    const handleOffline = () => {
+      setNetworkOnline(false);
+      runtimeFallbackAbortRef.current?.abort();
+      healthRefreshAbortRef.current?.abort();
+      setState((current) => ({
+        ...current,
+        errors: { ...current.errors, health: "浏览器网络已断开" },
+        health: null
+      }));
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [license?.valid, pageVisible, refreshHealth, refreshRuntime]);
+
+  useEffect(() => {
+    if (!license?.valid || !pageVisible) {
+      setRealtimeStatus("paused");
+      clearWebSocketFailure("status");
+      return undefined;
+    }
+    if (!networkOnline) {
+      setRealtimeStatus("offline");
       return undefined;
     }
 
-    setRealtimeStatus("connecting");
-
     let active = true;
-    const socket = new WebSocket(statusWebSocketUrl());
-    socket.onerror = (event) => {
-      if (active) {
-        setRealtimeStatus("disconnected");
-        reportWebSocketFailure(event, "status");
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let staleTimer: number | null = null;
+    let reconnectAttempt = 0;
+    let latestMessageAt = 0;
+    let connectionStartedAt = 0;
+
+    const scheduleReconnect = () => {
+      if (!active || reconnectTimer !== null) {
+        return;
       }
+      const delay = Math.min(
+        STATUS_RECONNECT_BASE_MS * 2 ** reconnectAttempt,
+        STATUS_RECONNECT_MAX_MS
+      );
+      reconnectAttempt += 1;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
     };
-    socket.onclose = (event) => {
-      if (active) {
-        setRealtimeStatus("disconnected");
-        if (event.code !== 1000 && event.code !== 1001) {
-          reportWebSocketFailure(event.reason || `code=${event.code}`, "status");
-        }
-      }
-    };
-    socket.onmessage = (event) => {
+
+    const connect = () => {
       if (!active) {
         return;
       }
-      try {
-        const runtime = JSON.parse(String(event.data)) as RuntimeState;
-        const receivedAt = Date.now();
-        applyRuntimeState(runtime);
-        setLastWsMessageAt(receivedAt);
-        setRealtimeStatus("connected");
-      } catch {
-        // Ignore malformed status frames; REST refresh still provides recovery.
+      setRealtimeStatus((current) => current === "fallback" ? current : "connecting");
+      let failureReported = false;
+      let closedForStaleData = false;
+      latestMessageAt = 0;
+      connectionStartedAt = Date.now();
+      if (staleTimer !== null) {
+        window.clearInterval(staleTimer);
       }
+      const nextSocket = new WebSocket(statusWebSocketUrl());
+      socket = nextSocket;
+      nextSocket.onerror = (event) => {
+        if (!active) {
+          return;
+        }
+        setRealtimeStatus((current) => current === "fallback" ? current : "disconnected");
+        failureReported = true;
+        if (reportWebSocketFailure(event, "status")) {
+          void refreshHealth();
+        }
+      };
+      nextSocket.onclose = (event) => {
+        if (!active || socket !== nextSocket) {
+          return;
+        }
+        socket = null;
+        setRealtimeStatus((current) =>
+          current === "fallback" ? current : closedForStaleData ? "stale" : "disconnected"
+        );
+        if (!closedForStaleData && !failureReported && event.code !== 1000 && event.code !== 1001) {
+          if (reportWebSocketFailure(event.reason || `code=${event.code}`, "status")) {
+            void refreshHealth();
+          }
+        }
+        scheduleReconnect();
+      };
+      nextSocket.onmessage = (event) => {
+        if (!active || socket !== nextSocket) {
+          return;
+        }
+        try {
+          const runtime = JSON.parse(String(event.data)) as RuntimeState;
+          const receivedAt = Date.now();
+          latestMessageAt = receivedAt;
+          reconnectAttempt = 0;
+          applyRuntimeState(runtime);
+          setRealtimeStatus("connected");
+          reportWebSocketRecovered("status");
+        } catch {
+          // Ignore malformed status frames; REST refresh still provides recovery.
+        }
+      };
+
+      staleTimer = window.setInterval(() => {
+        if (socket !== nextSocket) {
+          return;
+        }
+        const now = Date.now();
+        if (latestMessageAt > 0 && now - latestMessageAt > STATUS_STALE_AFTER_MS) {
+          closedForStaleData = true;
+          setRealtimeStatus("stale");
+          nextSocket.close(4000, "status stream stale");
+          return;
+        }
+        if (latestMessageAt === 0 && now - connectionStartedAt > STATUS_FIRST_MESSAGE_TIMEOUT_MS) {
+          failureReported = true;
+          setRealtimeStatus((current) => current === "fallback" ? current : "disconnected");
+          if (reportWebSocketFailure("first status frame timed out", "status")) {
+            void refreshHealth();
+          }
+          nextSocket.close();
+        }
+      }, 1000);
     };
+
+    connect();
     return () => {
       active = false;
-      socket.close();
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      if (staleTimer !== null) {
+        window.clearInterval(staleTimer);
+      }
+      socket?.close(1000, "client suspended");
     };
-  }, [applyRuntimeState, license?.valid]);
+  }, [applyRuntimeState, license?.valid, networkOnline, pageVisible, refreshHealth]);
+
+  const realtimeConnected = realtimeStatus === "connected";
 
   useEffect(() => {
-    if (realtimeStatus !== "connected" || lastWsMessageAt === null) {
+    if (!license?.valid || !networkOnline || !pageVisible || realtimeConnected) {
       return undefined;
     }
 
     const intervalId = window.setInterval(() => {
-      if (Date.now() - lastWsMessageAt > 2000) {
-        setRealtimeStatus("stale");
-      }
-    }, 1000);
+      void refreshRuntime();
+    }, RUNTIME_FALLBACK_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [lastWsMessageAt, realtimeStatus]);
+  }, [license?.valid, networkOnline, pageVisible, realtimeConnected, refreshRuntime]);
 
   useEffect(() => {
-    if (!license?.valid || realtimeStatus === "connected") {
+    if (!license?.valid || !networkOnline || !pageVisible || realtimeConnected) {
       return undefined;
     }
 
     const intervalId = window.setInterval(() => {
-      if (backgroundLoadInFlightRef.current || foregroundLoadInFlightRef.current) {
-        return;
-      }
-      backgroundLoadInFlightRef.current = true;
-      void load({ background: true }).finally(() => {
-        backgroundLoadInFlightRef.current = false;
-      });
-    }, 3000);
+      void refreshHealth();
+    }, HEALTH_FALLBACK_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [license?.valid, load, realtimeStatus]);
+  }, [license?.valid, networkOnline, pageVisible, realtimeConnected, refreshHealth]);
 
   if (!license?.valid) {
     return (
@@ -339,8 +529,8 @@ function StudioApp() {
       <StatusIndicator tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
         {hasErrors ? "后端 部分异常" : state.health?.ok ? "后端 已连接" : "后端 检查中"}
       </StatusIndicator>
-      <StatusIndicator tone={realtimeTone(realtimeStatus)}>
-        {realtimeLabel(realtimeStatus)}
+      <StatusIndicator tone={runtimeDeliveryTone(realtimeStatus)}>
+        {runtimeDeliveryLabel(realtimeStatus)}
       </StatusIndicator>
       <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
     </>

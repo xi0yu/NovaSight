@@ -125,9 +125,16 @@ class CalibrationConfig:
 
 
 @dataclass
+class AimRoleRatiosConfig:
+    head: float = 0.22
+    body: float = 0.22
+    other: float = 0.22
+
+
+@dataclass
 class AimConfig:
-    y_ratio: float = 0.22
-    class_y_ratios: dict[str, dict[str, float]] = field(default_factory=dict)
+    role_y_ratios: AimRoleRatiosConfig = field(default_factory=AimRoleRatiosConfig)
+    class_roles: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -914,22 +921,37 @@ def _migrate_dual_phase_robust_v2_namespace(
 
 def _migrate_shared_aim_config(control: dict[str, Any]) -> None:
     algorithms = control.get("algorithms")
-    if not isinstance(algorithms, dict):
-        return
-    robust = algorithms.get("dual_phase_atan_robust_predictive_v2")
-    if not isinstance(robust, dict):
-        return
+    legacy_algorithm_ratio: Any = None
+    if isinstance(algorithms, dict):
+        robust = algorithms.get("dual_phase_atan_robust_predictive_v2")
+        if isinstance(robust, dict):
+            robust = dict(robust)
+            legacy_aim = robust.pop("aim", None)
+            if isinstance(legacy_aim, dict):
+                legacy_algorithm_ratio = legacy_aim.get("y_ratio")
+            algorithms = dict(algorithms)
+            algorithms["dual_phase_atan_robust_predictive_v2"] = robust
+            control["algorithms"] = algorithms
 
-    robust = dict(robust)
-    legacy_aim = robust.pop("aim", None)
-    if isinstance(legacy_aim, dict):
-        aim = dict(control.get("aim") or {})
-        if "y_ratio" not in aim and "y_ratio" in legacy_aim:
-            aim["y_ratio"] = legacy_aim["y_ratio"]
-        control["aim"] = aim
-    algorithms = dict(algorithms)
-    algorithms["dual_phase_atan_robust_predictive_v2"] = robust
-    control["algorithms"] = algorithms
+    aim = dict(control.get("aim") or {})
+    legacy_shared_ratio = aim.pop("y_ratio", None)
+    # Per-class ratios belonged to the old model. They cannot be mapped to a
+    # semantic role safely, so migration intentionally falls back to `other`.
+    aim.pop("class_y_ratios", None)
+    if "role_y_ratios" not in aim:
+        inherited_ratio = (
+            legacy_shared_ratio
+            if legacy_shared_ratio is not None
+            else legacy_algorithm_ratio
+            if legacy_algorithm_ratio is not None
+            else 0.22
+        )
+        aim["role_y_ratios"] = {
+            "head": inherited_ratio,
+            "body": inherited_ratio,
+            "other": inherited_ratio,
+        }
+    control["aim"] = aim
 
 
 _REMOVED_LEGACY_CONTROL_KEYS = frozenset(
@@ -1206,38 +1228,44 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError(
             "runtime config key 'control.active_algorithm' must select a configured algorithm"
         )
-    if not math.isfinite(float(cfg.control.aim.y_ratio)):
-        raise ValueError("runtime config key 'control.aim.y_ratio' must be finite")
-    cfg.control.aim.y_ratio = round(max(0.0, min(1.0, float(cfg.control.aim.y_ratio))), 2)
-    normalized_class_y_ratios: dict[str, dict[str, float]] = {}
-    for profile_name, raw_overrides in cfg.control.aim.class_y_ratios.items():
+    for role_name in ("head", "body", "other"):
+        ratio = float(getattr(cfg.control.aim.role_y_ratios, role_name))
+        if not math.isfinite(ratio):
+            raise ValueError(
+                f"runtime config key 'control.aim.role_y_ratios.{role_name}' must be finite"
+            )
+        setattr(
+            cfg.control.aim.role_y_ratios,
+            role_name,
+            round(max(0.0, min(1.0, ratio)), 2),
+        )
+    normalized_class_roles: dict[str, dict[str, str]] = {}
+    for profile_name, raw_roles in cfg.control.aim.class_roles.items():
         if profile_name not in cfg.inference.detection_class_profiles:
             raise ValueError(
-                "runtime config key 'control.aim.class_y_ratios' references unknown "
+                "runtime config key 'control.aim.class_roles' references unknown "
                 f"detection profile: {profile_name}"
             )
-        if not isinstance(raw_overrides, dict):
+        if not isinstance(raw_roles, dict):
             raise ValueError(
-                f"runtime config key 'control.aim.class_y_ratios.{profile_name}' must be a mapping"
+                f"runtime config key 'control.aim.class_roles.{profile_name}' must be a mapping"
             )
-        overrides: dict[str, float] = {}
-        for raw_class_id, raw_ratio in raw_overrides.items():
+        roles: dict[str, str] = {}
+        for raw_class_id, raw_role in raw_roles.items():
             try:
                 class_id = int(raw_class_id)
             except (TypeError, ValueError) as exc:
                 raise ValueError(
-                    "runtime config class aim override keys must be class indexes"
+                    "runtime config class role keys must be class indexes"
                 ) from exc
             if class_id < 0 or class_id > 255:
-                raise ValueError("runtime config class aim override indexes must be in [0, 255]")
-            if not isinstance(raw_ratio, int | float) or isinstance(raw_ratio, bool):
-                raise ValueError("runtime config class aim override values must be numbers")
-            ratio = float(raw_ratio)
-            if not math.isfinite(ratio) or ratio < 0.0 or ratio > 1.0:
-                raise ValueError("runtime config class aim override values must be in [0, 1]")
-            overrides[str(class_id)] = round(ratio, 2)
-        normalized_class_y_ratios[str(profile_name)] = overrides
-    cfg.control.aim.class_y_ratios = normalized_class_y_ratios
+                raise ValueError("runtime config class role indexes must be in [0, 255]")
+            role = str(raw_role).strip().lower()
+            if role not in {"head", "body", "other"}:
+                raise ValueError("runtime config class roles must be head, body, or other")
+            roles[str(class_id)] = role
+        normalized_class_roles[str(profile_name)] = roles
+    cfg.control.aim.class_roles = normalized_class_roles
     bounded_controls = {
         "configured_actuation_delay_s": (0.0, 0.1),
         "scheduler_interval_ms": (1.0, 10.0),

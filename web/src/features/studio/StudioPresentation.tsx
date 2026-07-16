@@ -122,21 +122,23 @@ export function KvCard({ title, rows, notice }: { title: string; rows: [string, 
   );
 }
 
-export function Bar({ label, width }: { label: string; width: number }) {
+export function Event({
+  label,
+  value,
+  width
+}: {
+  label: string;
+  value: string;
+  width: number | null;
+}) {
+  const hasSample = width !== null && value !== "—";
   return (
-    <>
-      <label>{label}</label>
-      <div className="console-bar"><i style={{ width: `${width}%` }} /></div>
-    </>
-  );
-}
-
-export function Event({ label, value, width }: { label: string; value: string; width: number }) {
-  return (
-    <div className="console-event">
+    <div className={hasSample ? "console-event" : "console-event unavailable"}>
       <span>{label}</span>
-      <div className="console-bar"><i style={{ width: `${width}%` }} /></div>
-      <b>{value} ms</b>
+      <div className="console-bar" aria-hidden="true">
+        {hasSample ? <i style={{ width: `${Math.max(0, Math.min(100, width))}%` }} /> : null}
+      </div>
+      <b>{hasSample ? `${value} ms` : "暂无样本"}</b>
     </div>
   );
 }

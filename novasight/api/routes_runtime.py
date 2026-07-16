@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import asdict
@@ -12,7 +11,6 @@ from novasight.config import parse_runtime_config
 from novasight.config.schema import runtime_config_schema
 from novasight.runtime.reconfigurator import RuntimeReconfigurator
 from novasight.runtime.pipeline_factory import create_runtime_pipeline
-from novasight.runtime.status import StatusHub
 
 
 router = APIRouter(tags=["runtime"])
@@ -195,9 +193,8 @@ async def websocket_status(websocket: WebSocket) -> None:
         await websocket.close(code=4401, reason="license required")
         return
     await websocket.accept()
-    hub = StatusHub(websocket.app.state.runtime)
+    hub = websocket.app.state.status_hub
     queue = await hub.subscribe()
-    pump = asyncio.create_task(hub.pump_forever())
     try:
         while True:
             payload = await queue.get()
@@ -206,4 +203,3 @@ async def websocket_status(websocket: WebSocket) -> None:
         pass
     finally:
         hub.unsubscribe(queue)
-        pump.cancel()

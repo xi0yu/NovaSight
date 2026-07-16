@@ -2788,17 +2788,18 @@ class RuntimeService:
         return context.width * 0.5, context.height * 0.5
 
     def _active_aim_ratio(self) -> float:
-        return float(self.config.control.aim.y_ratio)
+        return float(self.config.control.aim.role_y_ratios.other)
 
     def _active_class_aim_y_ratios(self) -> dict[int, float]:
         profile_name = str(
             getattr(self.config.inference, "detection_class_profile", "default")
         )
-        by_profile = getattr(self.config.control.aim, "class_y_ratios", {}) or {}
-        raw_overrides = by_profile.get(profile_name, {})
+        by_profile = getattr(self.config.control.aim, "class_roles", {}) or {}
+        raw_roles = by_profile.get(profile_name, {})
+        ratios = self.config.control.aim.role_y_ratios
         return {
-            int(class_id): float(ratio)
-            for class_id, ratio in raw_overrides.items()
+            int(class_id): float(getattr(ratios, str(role), ratios.other))
+            for class_id, role in raw_roles.items()
         }
 
     def _effective_aim_y_ratio(self, class_id: int) -> float:
