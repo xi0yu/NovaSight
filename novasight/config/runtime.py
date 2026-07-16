@@ -52,6 +52,20 @@ class RoiConfig:
 
 
 @dataclass
+class CrosshairConfig:
+    enabled: bool = False
+    use_for_control: bool = False
+    search_size: int = 96
+    sample_hz: int = 10
+    sample_frames: int = 5
+    confirm_duration_ms: float = 200.0
+    max_age_ms: float = 300.0
+    max_offset_px: float = 20.0
+    min_similarity: float = 0.68
+    max_step_px: float = 2.0
+
+
+@dataclass
 class InferenceConfig:
     enabled: bool = True
     backend: str = "deepstream_nvinfer"
@@ -374,6 +388,7 @@ class RuntimeConfig:
     limits: RuntimeLimitsConfig = field(default_factory=RuntimeLimitsConfig)
     runtime: RuntimeBehaviorConfig = field(default_factory=RuntimeBehaviorConfig)
     roi: RoiConfig = field(default_factory=RoiConfig)
+    crosshair: CrosshairConfig = field(default_factory=CrosshairConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
@@ -1188,6 +1203,29 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     except ValueError as exc:
         allowed = ", ".join(str(size) for size in ROI_SIZE_CHOICES)
         raise ValueError(f"unsupported ROI size: {cfg.roi.size}; must be one of {allowed}") from exc
+    if cfg.crosshair.search_size < 32 or cfg.crosshair.search_size > cfg.roi.size:
+        raise ValueError(
+            "runtime config key 'crosshair.search_size' must be >= 32 and <= roi.size"
+        )
+    if cfg.crosshair.search_size % 2 != 0:
+        raise ValueError("runtime config key 'crosshair.search_size' must be even")
+    if cfg.crosshair.sample_hz < 1 or cfg.crosshair.sample_hz > 30:
+        raise ValueError("runtime config key 'crosshair.sample_hz' must be in [1, 30]")
+    if cfg.crosshair.sample_frames < 3 or cfg.crosshair.sample_frames > 15:
+        raise ValueError("runtime config key 'crosshair.sample_frames' must be in [3, 15]")
+    crosshair_bounds = {
+        "confirm_duration_ms": (0.0, 2000.0),
+        "max_age_ms": (50.0, 2000.0),
+        "max_offset_px": (1.0, 64.0),
+        "min_similarity": (0.0, 1.0),
+        "max_step_px": (0.1, 20.0),
+    }
+    for key, (minimum, maximum) in crosshair_bounds.items():
+        value = float(getattr(cfg.crosshair, key))
+        if not math.isfinite(value) or value < minimum or value > maximum:
+            raise ValueError(
+                f"runtime config key 'crosshair.{key}' must be >= {minimum} and <= {maximum}"
+            )
     if cfg.preprocess.backend != "cuda":
         raise ValueError(
             "runtime config key 'preprocess.backend' must be cuda for deepstream_nvinfer"

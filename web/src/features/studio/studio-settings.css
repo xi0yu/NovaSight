@@ -108,6 +108,148 @@
   line-height: 1.5;
 }
 
+.crosshair-reference-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.crosshair-reference-card::after {
+  content: "";
+  position: absolute;
+  width: 150px;
+  height: 150px;
+  right: -72px;
+  top: -76px;
+  border: 1px solid color-mix(in srgb, var(--accent-red) 18%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 18px color-mix(in srgb, var(--accent-red) 3%, transparent);
+  pointer-events: none;
+}
+
+.crosshair-reference-card .module-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.crosshair-reference-panel {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  align-items: stretch;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.crosshair-template-preview {
+  min-height: 116px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent-red) 24%, var(--border-subtle));
+  border-radius: var(--radius-4);
+  background:
+    linear-gradient(color-mix(in srgb, var(--accent-red) 11%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-red) 11%, transparent) 1px, transparent 1px),
+    #11141c;
+  background-size: 12px 12px;
+}
+
+.crosshair-template-preview img {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  object-fit: contain;
+}
+
+.crosshair-template-preview > span {
+  display: grid;
+  place-items: center;
+  gap: var(--space-2);
+  color: #ff7c9c;
+}
+
+.crosshair-template-preview b {
+  color: #f4dce3;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.crosshair-reference-kv {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-4);
+  background: var(--bg-subtle);
+}
+
+.crosshair-reference-kv b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crosshair-reference-kv b[data-state="confirmed"] {
+  color: var(--status-success-fg);
+}
+
+.crosshair-reference-kv b[data-state="candidate"] {
+  color: var(--status-warning-fg);
+}
+
+.crosshair-learn-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.crosshair-learn-actions .console-button {
+  margin: 0;
+}
+
+.crosshair-inline-message {
+  margin: var(--space-2) 0 0;
+  color: var(--status-success-fg);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.5;
+}
+
+.crosshair-inline-message.warning {
+  color: var(--status-warning-fg);
+}
+
+.crosshair-advanced-settings {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+}
+
+.crosshair-advanced-settings summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.crosshair-advanced-settings .advanced-settings-grid {
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 720px) {
+  .crosshair-reference-panel {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+
+  .crosshair-template-preview {
+    min-height: 88px;
+  }
+}
+
 .class-profile-create-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

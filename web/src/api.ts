@@ -509,6 +509,10 @@ export const API_PATHS = {
   captureStop: "/api/capture/stop",
   capturePreview: "/api/capture/preview",
   captureStream: "/api/capture/stream.mjpg",
+  crosshair: "/api/crosshair",
+  crosshairLearn: "/api/crosshair/learn",
+  crosshairTemplate: "/api/crosshair/template",
+  crosshairTemplatePreview: "/api/crosshair/template.png",
   executors: "/api/executors",
   kmnetConnect: "/api/executors/kmnet/connect",
   kmnetDisconnect: "/api/executors/kmnet/disconnect",
@@ -678,6 +682,26 @@ export function stopRuntimePipeline(): Promise<RuntimeState> {
   return requestJson<RuntimeState>(API_PATHS.runtimeStop, {
     method: "POST"
   });
+}
+
+export function getCrosshairStatus(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.crosshair);
+}
+
+export function learnCrosshair(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.crosshairLearn, {
+    method: "POST"
+  });
+}
+
+export function clearCrosshairTemplate(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.crosshairTemplate, {
+    method: "DELETE"
+  });
+}
+
+export function crosshairTemplatePreviewUrl(cacheKey: number): string {
+  return apiUrl(`${API_PATHS.crosshairTemplatePreview}?ts=${cacheKey}`);
 }
 
 export function connectKmNet(): Promise<Record<string, RuntimeConfigValue>> {

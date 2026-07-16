@@ -11,6 +11,7 @@ latest DetectionBatch
 -> freshness and monotonic timestamp checks
 -> TargetSelector / Tracker identity
 -> shared bbox aim point (`control.aim`, optional profile/class override)
+-> one frozen `ControlReference` (verified HUD crosshair or geometry fallback)
 -> current measured ROI error
 -> FAR / NEAR selection from one measured-error threshold
 -> four same-target X positions / three segment velocities
@@ -186,7 +187,7 @@ delivery_mode: latest_replace
 scheduler_used: true
 ```
 
-See `docs/control/dual_phase_atan_robust_predictive_v2.md` for the frozen V2 implementation contract and tuning boundaries.
+See `docs/control/dual_phase_atan_robust_predictive_v2.md` for the frozen V2 implementation contract and tuning boundaries. See `docs/control/crosshair_control_reference.md` for the optional visual HUD reference, confirmation policy, and geometry fallback.
 
 ## Remaining Physical Uncertainty
 

@@ -65,6 +65,14 @@ class DeepStreamRuntimePipeline:
                 daemon=True,
             ),
         ]
+        if self.backend.pipeline_config.crosshair_enabled:
+            self._threads.append(
+                threading.Thread(
+                    target=self._crosshair_loop,
+                    name="novasight-crosshair-observer",
+                    daemon=True,
+                )
+            )
         for thread in self._threads:
             thread.start()
 
@@ -164,6 +172,30 @@ class DeepStreamRuntimePipeline:
             )
             time.sleep(interval_ms / 1000.0)
 
+    def _crosshair_loop(self) -> None:
+        process = getattr(self.runtime, "process_crosshair_jpeg", None)
+        wait_sample = getattr(self.backend, "wait_crosshair_jpeg", None)
+        if not callable(process) or not callable(wait_sample):
+            return
+        after_sequence: int | None = None
+        while not self._stop.is_set():
+            sample = wait_sample(after_sequence=after_sequence, timeout_s=0.1)
+            if sample is None:
+                if not self.backend.running:
+                    return
+                continue
+            sequence, payload, sample_ts_ns = sample
+            after_sequence = int(sequence)
+            try:
+                process(
+                    payload,
+                    sample_ts_ns=int(sample_ts_ns),
+                    roi_width=int(self.backend.pipeline_config.roi_width),
+                    roi_height=int(self.backend.pipeline_config.roi_height),
+                )
+            except Exception as exc:
+                logger.warning("crosshair observation rejected: %s", exc)
+
 
 def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipeline:
     config = runtime.config
@@ -240,6 +272,7 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
         engine_path=engine_path,
         nvinfer_config_name="active-nvinfer.ini",
         preview_enabled=bool(getattr(config.consumers, "preview", True)),
+        crosshair_enabled=bool(getattr(config.crosshair, "enabled", False)),
     )
     return DeepStreamRuntimePipeline(backend=backend, runtime=runtime)
 
@@ -257,6 +290,7 @@ def create_deepstream_probe_backend(*, runtime: Any, profile: Any) -> DeepStream
         engine_path=engine_path,
         nvinfer_config_name=f"probe-{fingerprint or 'candidate'}.ini",
         preview_enabled=False,
+        crosshair_enabled=False,
     )
 
 
@@ -267,6 +301,7 @@ def _create_deepstream_backend(
     engine_path: Path,
     nvinfer_config_name: str,
     preview_enabled: bool,
+    crosshair_enabled: bool,
 ) -> DeepStreamObjectBackend:
     config = runtime.config
     models = runtime.models
@@ -313,6 +348,9 @@ def _create_deepstream_backend(
         batched_push_timeout_us=config.inference.deepstream_batched_push_timeout_us,
         preview_enabled=preview_enabled,
         preview_fps=int(getattr(config.limits, "stream_fps", 30)),
+        crosshair_enabled=crosshair_enabled,
+        crosshair_size=int(config.crosshair.search_size),
+        crosshair_fps=int(config.crosshair.sample_hz),
     )
     return DeepStreamObjectBackend(
         pipeline_config=pipeline_config,

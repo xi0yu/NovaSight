@@ -11,6 +11,7 @@ from typing import Any
 from novasight.capture.source import CapturedFrame
 from novasight.config import RuntimeConfig
 from novasight.coordinates import CoordinateTransform
+from novasight.crosshair import ControlReference, CrosshairSystem
 from novasight.control import (
     CALIBRATED_ANGULAR,
     DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
@@ -84,6 +85,7 @@ class RuntimeService:
         capture: Any | None = None,
         inference: Any | None = None,
         recorder: Any | None = None,
+        crosshair: CrosshairSystem | None = None,
     ) -> None:
         self.config = config
         self.models = models
@@ -91,6 +93,7 @@ class RuntimeService:
         self.capture = capture
         self.inference = inference
         self.recorder = recorder
+        self.crosshair = crosshair or CrosshairSystem(config.crosshair)
         self.running = False
         self.config_store = RuntimeConfigStore(config)
         self.pipeline = None
@@ -124,6 +127,8 @@ class RuntimeService:
         self._last_runtime_reset_reason = ""
         self._accepted_batch_generation = -1
         self._accepted_batch_capture_ts_ns = 0
+        self._control_reference_frame_key: tuple[int, int] | None = None
+        self._control_reference: ControlReference | None = None
         self.stale_drop_count = 0
         self._log_production_control_chain("startup")
 
@@ -345,6 +350,9 @@ class RuntimeService:
             if executors is not None:
                 self.executors = executors
             self.config = config
+            self.crosshair.update_config(config.crosshair)
+            self._control_reference_frame_key = None
+            self._control_reference = None
             self.control_timing.reset()
             self.last_control_timing = {}
             self.control_algorithms.reset()
@@ -472,6 +480,8 @@ class RuntimeService:
         self.last_execution = None
         self._last_control_tick_ns = 0
         self._executed_control_samples.clear()
+        self._control_reference_frame_key = None
+        self._control_reference = None
         self.last_control = {
             "will_emit": False,
             "control_allowed": False,
@@ -484,6 +494,7 @@ class RuntimeService:
             "candidate_filter": self._candidate_filter_payload({}),
         }
         if reason in {"RUNTIME_STOPPED", "RUNTIME_FATAL_ERROR"}:
+            self.crosshair.reset_runtime()
             self.last_inference_reason = reason
             if isinstance(self.last_inference_status, dict):
                 self.last_inference_status.update(
@@ -2223,8 +2234,18 @@ class RuntimeService:
             requires_trigger=requires_trigger,
             trigger_mode=trigger_mode,
         )
-        control_center_x = float(control_metadata.get("control_width") or 0.0) * 0.5
-        control_center_y = float(control_metadata.get("control_height") or 0.0) * 0.5
+        control_center_x = float(
+            mouse_observation_debug.get(
+                "control_reference_x_px",
+                float(control_metadata.get("control_width") or 0.0) * 0.5,
+            )
+        )
+        control_center_y = float(
+            mouse_observation_debug.get(
+                "control_reference_y_px",
+                float(control_metadata.get("control_height") or 0.0) * 0.5,
+            )
+        )
         aim_error_x = float(aim_x - control_center_x)
         aim_error_y = float(aim_y - control_center_y)
         raw_error_x = float(pipeline_debug.get("observed_error_x_px", aim_error_x))
@@ -2826,6 +2847,13 @@ class RuntimeService:
         )
 
     def _control_center_in_roi(self, context: FrameContext) -> tuple[float, float]:
+        reference = self._control_reference_for_context(context)
+        return reference.x, reference.y
+
+    def _geometric_control_center_in_roi(
+        self,
+        context: FrameContext,
+    ) -> tuple[float, float]:
         if self.last_inference_status.get("source_geometry_trusted") is True:
             source_width = self._status_int("source_width", 0)
             source_height = self._status_int("source_height", 0)
@@ -2835,6 +2863,44 @@ class RuntimeService:
                     source_height * 0.5 - self._status_int("roi_offset_y", 0),
                 )
         return context.width * 0.5, context.height * 0.5
+
+    def _control_reference_for_context(self, context: FrameContext) -> ControlReference:
+        frame_key = (int(context.generation or -1), int(context.frame_id))
+        if (
+            self._control_reference is not None
+            and self._control_reference_frame_key == frame_key
+        ):
+            return self._control_reference
+        geometric_x, geometric_y = self._geometric_control_center_in_roi(context)
+        reference = self.crosshair.resolve(
+            geometric_x=geometric_x,
+            geometric_y=geometric_y,
+            now_ns=time.monotonic_ns(),
+            geometry_signature=f"{int(context.width)}x{int(context.height)}",
+        )
+        self._control_reference_frame_key = frame_key
+        self._control_reference = reference
+        return reference
+
+    def process_crosshair_jpeg(
+        self,
+        payload: bytes,
+        *,
+        sample_ts_ns: int,
+        roi_width: int,
+        roi_height: int,
+    ) -> dict[str, Any]:
+        try:
+            observation = self.crosshair.ingest_jpeg(
+                payload,
+                sample_ts_ns=sample_ts_ns,
+                roi_width=roi_width,
+                roi_height=roi_height,
+            )
+        except Exception as exc:
+            self.crosshair.record_error(str(exc))
+            raise
+        return asdict(observation)
 
     def _active_aim_ratio(self) -> float:
         return float(self.config.control.aim.role_y_ratios.other)
@@ -3110,9 +3176,24 @@ class RuntimeService:
             control_height_px=control_height,
             source_geometry_trusted=(control_metadata.get("capture_geometry_trusted") is True),
         )
+        control_reference = self._control_reference_for_context(context)
+        if transform is not None:
+            reference_capture = transform.roi_to_capture_point(
+                control_reference.x,
+                control_reference.y,
+            )
+            reference_control = transform.capture_to_control_point(
+                reference_capture.x,
+                reference_capture.y,
+            )
+            reference_control_x = float(reference_control.x)
+            reference_control_y = float(reference_control.y)
+        else:
+            reference_control_x = float(control_reference.x)
+            reference_control_y = float(control_reference.y)
         if transform is None:
-            crosshair_roi_x = 0.0
-            crosshair_roi_y = 0.0
+            crosshair_roi_x = float(control_reference.x)
+            crosshair_roi_y = float(control_reference.y)
             source_width = 0
             source_height = 0
             roi_width = 0
@@ -3120,16 +3201,8 @@ class RuntimeService:
             roi_left = 0
             roi_top = 0
         else:
-            crosshair_capture = transform.control_to_capture_point(
-                control_width * 0.5,
-                control_height * 0.5,
-            )
-            crosshair_roi = transform.capture_to_roi_point(
-                crosshair_capture.x,
-                crosshair_capture.y,
-            )
-            crosshair_roi_x = float(crosshair_roi.x)
-            crosshair_roi_y = float(crosshair_roi.y)
+            crosshair_roi_x = float(control_reference.x)
+            crosshair_roi_y = float(control_reference.y)
             source_width = int(round(transform.capture_width))
             source_height = int(round(transform.capture_height))
             roi_width = int(round(transform.roi_width))
@@ -3213,6 +3286,10 @@ class RuntimeService:
             "track_confidence": observation.track_confidence,
             "delivery_mode": "latest_replace",
             "scheduler_used": True,
+            "control_reference_source": control_reference.source,
+            "control_reference_confidence": control_reference.confidence,
+            "control_reference_age_ms": control_reference.age_ms,
+            "control_reference_reason": control_reference.reason,
         }
         block_reason = str(decision.block_reason or "")
         control_allowed = block_reason in {"", "TRIGGER_INACTIVE"}
@@ -3246,6 +3323,8 @@ class RuntimeService:
             "observed_y_roi_px": observation.aim_y,
             "crosshair_x_roi_px": observation.crosshair_x,
             "crosshair_y_roi_px": observation.crosshair_y,
+            "control_reference_x_px": reference_control_x,
+            "control_reference_y_px": reference_control_y,
             "valid": observation.target_valid,
             "invalid_reason": raw_aim.invalid_reason,
             "raw_aim": raw_aim.debug_payload(),
@@ -3304,6 +3383,21 @@ class RuntimeService:
         predicted_control_y = float(raw_aim.aim_control_y_px)
         prediction_valid = raw_aim.valid
         invalid_reason = raw_aim.invalid_reason
+        control_reference = self._control_reference_for_context(context)
+        if transform is not None:
+            reference_capture = transform.roi_to_capture_point(
+                control_reference.x,
+                control_reference.y,
+            )
+            reference_control = transform.capture_to_control_point(
+                reference_capture.x,
+                reference_capture.y,
+            )
+            reference_control_x = float(reference_control.x)
+            reference_control_y = float(reference_control.y)
+        else:
+            reference_control_x = float(control_reference.x)
+            reference_control_y = float(control_reference.y)
 
         observation = MouseObservation(
             frame_id=context.frame_id,
@@ -3327,6 +3421,8 @@ class RuntimeService:
             left_trigger_hold_ms=max(0.0, float(left_trigger_hold_ms)),
             valid=prediction_valid,
             invalid_reason=invalid_reason,
+            reference_x_px=reference_control_x,
+            reference_y_px=reference_control_y,
         )
         return {
             "mouse_observation": observation,
@@ -3342,6 +3438,9 @@ class RuntimeService:
                 "predicted_aim_x_roi_px": predicted_roi_x,
                 "predicted_aim_y_roi_px": predicted_roi_y,
                 "raw_aim": raw_aim.debug_payload(),
+                "control_reference": asdict(control_reference),
+                "control_reference_x_px": reference_control_x,
+                "control_reference_y_px": reference_control_y,
             },
         }
 
@@ -3743,6 +3842,7 @@ class RuntimeService:
     def _target_payload(self, target: Track, context: FrameContext) -> dict[str, Any]:
         class_name = self._class_display_name(int(target.cls), context)
         coordinate_payload = self._coordinate_payload(target, context)
+        reference = self._control_reference_for_context(context)
         payload = {
             "frame_id": context.frame_id,
             "class_id": int(target.cls),
@@ -3760,10 +3860,10 @@ class RuntimeService:
             "cy": float(target.cy),
             "box_cx": float(target.cx),
             "box_cy": float(target.cy),
-            "offset_x": float(target.cx - context.width / 2),
-            "offset_y": float(target.cy - context.height / 2),
-            "box_offset_x": float(target.cx - context.width / 2),
-            "box_offset_y": float(target.cy - context.height / 2),
+            "offset_x": float(target.cx - reference.x),
+            "offset_y": float(target.cy - reference.y),
+            "box_offset_x": float(target.cx - reference.x),
+            "box_offset_y": float(target.cy - reference.y),
             **coordinate_payload,
         }
         payload["track_id"] = int(target.track_id)
@@ -3912,6 +4012,7 @@ class RuntimeService:
                 "inference_reason": self.last_inference_reason,
                 "inference": dict(self.last_inference_status),
                 "calibration": self._calibration_fingerprint_status(),
+                "crosshair": self.crosshair.status(),
                 "target": None,
                 "control": None,
                 "execution": self.last_execution,
@@ -3929,6 +4030,7 @@ class RuntimeService:
             "inference_reason": self.last_inference_reason,
             "inference": dict(self.last_inference_status),
             "calibration": self._calibration_fingerprint_status(),
+            "crosshair": self.crosshair.status(),
             "target": self.last_target,
             "control": self.last_control,
             "execution": self.last_execution,

@@ -28,6 +28,9 @@ class DeepStreamPipelineConfig:
     batched_push_timeout_us: int = 0
     preview_enabled: bool = True
     preview_fps: int = 30
+    crosshair_enabled: bool = False
+    crosshair_size: int = 96
+    crosshair_fps: int = 10
 
     @property
     def roi_right(self) -> int:
@@ -122,6 +125,40 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
                 "appsink name=preview_sink emit-signals=false max-buffers=1 drop=true sync=false",
             ]
         )
+    if config.crosshair_enabled:
+        crosshair_left = (int(config.roi_width) - int(config.crosshair_size)) // 2
+        crosshair_top = (int(config.roi_height) - int(config.crosshair_size)) // 2
+        crosshair_right = crosshair_left + int(config.crosshair_size)
+        crosshair_bottom = crosshair_top + int(config.crosshair_size)
+        elements.extend(
+            [
+                "novasight_roi_split.",
+                "!",
+                LATEST_ONLY_QUEUE,
+                "!",
+                f"videorate drop-only=true max-rate={int(config.crosshair_fps)}",
+                "!",
+                (
+                    "nvvidconv name=crosshair-crop "
+                    f"left={crosshair_left} right={crosshair_right} "
+                    f"top={crosshair_top} bottom={crosshair_bottom}"
+                ),
+                "!",
+                (
+                    "video/x-raw(memory:NVMM),format=NV12,"
+                    f"width={int(config.crosshair_size)},"
+                    f"height={int(config.crosshair_size)},"
+                    f"framerate={int(config.crosshair_fps)}/1"
+                ),
+                "!",
+                "nvjpegenc name=crosshair-encoder",
+                "!",
+                (
+                    "appsink name=crosshair_sink emit-signals=false "
+                    "max-buffers=1 drop=true sync=false"
+                ),
+            ]
+        )
     elements.extend(
         [
             "nvstreammux name=mux",
@@ -162,6 +199,14 @@ def _validate_config(config: DeepStreamPipelineConfig) -> None:
         raise ValueError("batched_push_timeout_us must be >= 0")
     if int(config.preview_fps) <= 0:
         raise ValueError("preview_fps must be positive")
+    if int(config.crosshair_fps) <= 0:
+        raise ValueError("crosshair_fps must be positive")
+    if (
+        int(config.crosshair_size) < 32
+        or int(config.crosshair_size) > min(int(config.roi_width), int(config.roi_height))
+        or int(config.crosshair_size) % 2 != 0
+    ):
+        raise ValueError("crosshair_size must be even and inside the ROI")
     if int(config.roi_left) < 0 or int(config.roi_top) < 0:
         raise ValueError("ROI left/top must be >= 0")
     if config.roi_right > int(config.capture_width) or config.roi_bottom > int(

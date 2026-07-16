@@ -9,7 +9,10 @@ import {
   diagnosticCircleKmNet,
   diagnosticMoveKmNet,
   disconnectKmNet,
+  clearCrosshairTemplate,
+  crosshairTemplatePreviewUrl,
   getRuntimeState,
+  learnCrosshair,
   HealthResponse,
   ModelArtifact,
   ModelCatalogDirectory,
@@ -299,6 +302,17 @@ function formatRecoilBlockReason(value: unknown): string {
   return labels[reason] ?? (reason || "等待真实左键或启动延迟");
 }
 
+function crosshairStateLabel(value: string): string {
+  return {
+    idle: "尚未运行",
+    disabled: "已关闭",
+    searching: "等待模板或匹配",
+    candidate: "正在确认",
+    confirmed: "已确认",
+    uncertain: "短时丢失，保持已确认中心"
+  }[value] ?? value;
+}
+
 function triggerModeLabel(value: string): string {
   if (value === "always") {
     return "检测目标自动控制";
@@ -521,6 +535,8 @@ export function StudioConsoleView({
   const [launchToastVisible, setLaunchToastVisible] = useState(false);
   const [mainlineLaunchAccepted, setMainlineLaunchAccepted] = useState(false);
   const [mainlineLaunchMessage, setMainlineLaunchMessage] = useState("");
+  const [crosshairMessage, setCrosshairMessage] = useState("");
+  const [crosshairPreviewKey, setCrosshairPreviewKey] = useState(0);
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
   const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
@@ -676,6 +692,7 @@ export function StudioConsoleView({
   const configuredCaptureHeight = readNumber(captureConfig.height, 0);
   const configuredCaptureFps = readNumber(captureConfig.fps, 0);
   const roiConfig = nestedRecord(config, "roi");
+  const crosshairConfig = nestedRecord(config, "crosshair");
   const limitsConfig = nestedRecord(config, "limits");
   const inferenceConfig = nestedRecord(config, "inference");
   const preprocessConfig = nestedRecord(config, "preprocess");
@@ -683,6 +700,9 @@ export function StudioConsoleView({
   const hardwareConfig = nestedRecord(config, "hardware");
   const consumersConfig = nestedRecord(config, "consumers");
   const vision = asRecord(runtime?.vision);
+  const crosshairStatus = asRecord(vision.crosshair);
+  const crosshairObservation = asRecord(crosshairStatus.observation);
+  const crosshairTemplate = asRecord(crosshairStatus.template);
   const execution = asRecord(vision.execution);
   const executionIntent = asRecord(execution.intent);
   const executionMeta = asRecord(execution.metadata);
@@ -801,6 +821,22 @@ export function StudioConsoleView({
     choices.find((choice) => choiceId(choice) === runningChoiceId) ??
     choices[0];
   const roiSize = readNumber(roiConfig.size, 640);
+  const crosshairEnabled = readBoolean(crosshairConfig.enabled, false);
+  const crosshairUseForControl = readBoolean(crosshairConfig.use_for_control, false);
+  const crosshairSearchSize = readNumber(crosshairConfig.search_size, 96);
+  const crosshairSampleHz = readNumber(crosshairConfig.sample_hz, 10);
+  const crosshairSampleFrames = readNumber(crosshairConfig.sample_frames, 5);
+  const crosshairState = readString(crosshairStatus.state, "idle");
+  const crosshairTemplateId = readString(crosshairTemplate.id, "");
+  const crosshairRecentSamples = readNumber(crosshairStatus.recent_samples, 0);
+  const crosshairRequiredSamples = readNumber(crosshairStatus.required_samples, crosshairSampleFrames);
+  const crosshairConfidence = readNumber(crosshairObservation.confidence, 0);
+  const crosshairOffsetX = readNumber(crosshairObservation.offset_x, 0);
+  const crosshairOffsetY = readNumber(crosshairObservation.offset_y, 0);
+  const crosshairReferenceReady = readBoolean(crosshairStatus.control_reference_ready, false);
+  const crosshairBranchActive = readBoolean(deepstreamStatus.crosshair_active, false);
+  const crosshairBranchReason = readString(deepstreamStatus.crosshair_reason, "");
+  const crosshairProcessingError = readString(crosshairStatus.last_error, "");
   const previewFps = readNumber(limitsConfig.stream_fps, 30);
   const sourceWidth = selectedProfile?.width ?? readNumber(inferenceTrace.source_width, 0);
   const sourceHeight = selectedProfile?.height ?? readNumber(inferenceTrace.source_height, 0);
@@ -2159,6 +2195,79 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
+  const handleLearnCrosshair = useCallback(async () => {
+    setBusy("crosshair.learn");
+    setCrosshairMessage("");
+    setLocalError(null);
+    try {
+      const result = await learnCrosshair();
+      const template = asRecord(result.template);
+      setCrosshairPreviewKey(Date.now());
+      setCrosshairMessage(`准星模板 ${readString(template.id, "")} 已生成，等待连续观测确认。`);
+      await onRefresh();
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setLocalError(`准星学习失败：${message}`);
+      reportError(error, { source: "crosshair", title: "准星学习失败" });
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
+
+  const handleClearCrosshair = useCallback(async () => {
+    setBusy("crosshair.clear");
+    setCrosshairMessage("");
+    setLocalError(null);
+    try {
+      await clearCrosshairTemplate();
+      setCrosshairPreviewKey(Date.now());
+      setCrosshairMessage("准星模板已清除，控制基准已回退到几何中心。");
+      await onRefresh();
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setLocalError(`清除准星模板失败：${message}`);
+      reportError(error, { source: "crosshair", title: "清除准星模板失败" });
+    } finally {
+      setBusy(null);
+    }
+  }, [onRefresh]);
+
+  useEffect(() => {
+    const onCrosshairShortcut = (event: KeyboardEvent) => {
+      if (
+        event.key !== "F8"
+        || activePage !== "params"
+        || !crosshairEnabled
+        || event.repeat
+      ) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, select, textarea, button, [role='dialog']")) {
+        return;
+      }
+      event.preventDefault();
+      if (!runtimeMainlineRunning) {
+        setCrosshairMessage("请先启动主链，再使用 F8 学习当前准星。");
+        return;
+      }
+      if (crosshairRecentSamples < crosshairRequiredSamples) {
+        setCrosshairMessage(`正在积累学习帧：${crosshairRecentSamples}/${crosshairRequiredSamples}`);
+        return;
+      }
+      void handleLearnCrosshair();
+    };
+    document.addEventListener("keydown", onCrosshairShortcut);
+    return () => document.removeEventListener("keydown", onCrosshairShortcut);
+  }, [
+    activePage,
+    crosshairEnabled,
+    crosshairRecentSamples,
+    crosshairRequiredSamples,
+    handleLearnCrosshair,
+    runtimeMainlineRunning
+  ]);
+
   const updateDetectionClassName = useCallback(
     async (classId: number, name: string) => {
       const nextClasses = [...detectionClasses];
@@ -3451,6 +3560,85 @@ export function StudioConsoleView({
                 </button>
               </div>
 
+              <div className="console-card crosshair-reference-card">
+                <SectionTitle title="视觉准星基准" />
+                <p className="console-section-note">
+                  从主链中心独立采样真实 HUD 准星。未学习、未确认或观测过期时，控制会自动使用 ROI 几何中心。
+                </p>
+                <ModuleSwitch
+                  label="启用低频准星观测"
+                  detail="新增独立 NVMM 中心小图支路；修改后需要重启主链。"
+                  enabled={crosshairEnabled}
+                  onToggle={(enabled) => updateConfigField("crosshair", "enabled", enabled)}
+                />
+                <ModuleSwitch
+                  label="用于目标选择与鼠标控制"
+                  detail={crosshairTemplateId
+                    ? "只有连续确认且未过期的观测会接管控制基准。"
+                    : "请先启动主链并学习准星模板；现在始终使用几何中心。"}
+                  enabled={crosshairUseForControl}
+                  disabled={!crosshairEnabled || !crosshairTemplateId}
+                  onToggle={(enabled) => updateConfigField("crosshair", "use_for_control", enabled)}
+                />
+                <div className="crosshair-reference-panel">
+                  <div className="crosshair-template-preview" data-empty={!crosshairTemplateId}>
+                    {crosshairTemplateId ? (
+                      <img
+                        alt="已学习的准星结构模板"
+                        src={crosshairTemplatePreviewUrl(crosshairPreviewKey)}
+                      />
+                    ) : (
+                      <span><NovaIcon name="target" size={30} /><b>等待学习</b></span>
+                    )}
+                  </div>
+                  <div className="console-kv compact-kv crosshair-reference-kv">
+                    <span>观测状态</span><b data-state={crosshairState}>{crosshairStateLabel(crosshairState)}</b>
+                    <span>采样支路</span><b>{crosshairBranchActive ? "运行中" : crosshairEnabled ? "不可用" : "关闭"}</b>
+                    <span>控制可用</span><b>{crosshairReferenceReady ? "是" : "否，使用几何中心"}</b>
+                    <span>模板</span><b>{crosshairTemplateId || "尚未生成"}</b>
+                    <span>中心偏移</span><b>{crosshairReferenceReady ? `${crosshairOffsetX.toFixed(1)}, ${crosshairOffsetY.toFixed(1)} px` : "—"}</b>
+                    <span>匹配置信度</span><b>{crosshairConfidence > 0 ? `${(crosshairConfidence * 100).toFixed(1)}%` : "—"}</b>
+                    <span>学习帧</span><b>{crosshairRecentSamples}/{crosshairRequiredSamples}</b>
+                  </div>
+                </div>
+                <div className="crosshair-learn-actions">
+                  <button
+                    className="console-button primary"
+                    disabled={!crosshairEnabled || !runtimeMainlineRunning || crosshairRecentSamples < crosshairRequiredSamples || busy === "crosshair.learn"}
+                    onClick={() => void handleLearnCrosshair()}
+                    type="button"
+                  >
+                    <NovaIcon name="target" size={15} />
+                    {busy === "crosshair.learn" ? "正在学习…" : "学习当前准星 · F8"}
+                  </button>
+                  <button
+                    className="console-button"
+                    disabled={!crosshairTemplateId || busy === "crosshair.clear"}
+                    onClick={() => void handleClearCrosshair()}
+                    type="button"
+                  >
+                    清除模板
+                  </button>
+                </div>
+                {crosshairProcessingError ? (
+                  <p className="crosshair-inline-message warning">准星处理失败：{crosshairProcessingError}</p>
+                ) : runtimeMainlineRunning && crosshairEnabled && !crosshairBranchActive ? (
+                  <p className="crosshair-inline-message warning">准星采样支路不可用：{crosshairBranchReason || "请查看 DeepStream 状态"}</p>
+                ) : !runtimeMainlineRunning && crosshairEnabled ? (
+                  <p className="crosshair-inline-message warning">需要先启动主链，独立中心采样支路才会提供学习帧。</p>
+                ) : crosshairMessage ? (
+                  <p className="crosshair-inline-message">{crosshairMessage}</p>
+                ) : null}
+                <details className="crosshair-advanced-settings">
+                  <summary>采样高级设置</summary>
+                  <div className="advanced-settings-grid">
+                    <NumberControl label="中心搜索区 px" detail="只截取 ROI 正中心的小区域，不扫描整幅画面。" value={crosshairSearchSize} min={32} max={Math.max(32, roiSize)} step={2} onCommit={(value) => updateConfigField("crosshair", "search_size", Math.round(value / 2) * 2)} />
+                    <NumberControl label="观测频率 Hz" detail="已与推理支路隔离；10 Hz 通常足够验证固定 HUD 准星。" value={crosshairSampleHz} min={1} max={30} step={1} onCommit={(value) => updateConfigField("crosshair", "sample_hz", Math.round(value))} />
+                    <NumberControl label="学习采样帧数" detail="使用多帧中位图减少动态背景对模板的污染。" value={crosshairSampleFrames} min={3} max={15} step={1} onCommit={(value) => updateConfigField("crosshair", "sample_frames", Math.round(value))} />
+                  </div>
+                </details>
+              </div>
+
               <div className="console-card">
                   <SectionTitle title="固定 Y 轴压枪 · 所有控制算法" />
                   <ModuleSwitch label="启用固定 Y 压枪" detail="真实左键达到启动延迟后，每个新鲜目标观测固定追加一次反向 Y counts；不使用渐入、时间速率、积分或 Y 预测。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
@@ -4489,11 +4677,13 @@ function ModuleSwitch({
   label,
   detail,
   enabled,
+  disabled = false,
   onToggle
 }: {
   label: string;
   detail: string;
   enabled: boolean;
+  disabled?: boolean;
   onToggle: (enabled: boolean) => Promise<void> | void;
 }) {
   const [visualEnabled, setVisualEnabled] = useState(enabled);
@@ -4506,7 +4696,7 @@ function ModuleSwitch({
   }, [enabled, pending]);
 
   const toggle = useCallback(async () => {
-    if (pending) {
+    if (pending || disabled) {
       return;
     }
     const next = !visualEnabled;
@@ -4517,13 +4707,13 @@ function ModuleSwitch({
     } finally {
       setPending(false);
     }
-  }, [onToggle, pending, visualEnabled]);
+  }, [disabled, onToggle, pending, visualEnabled]);
 
   return (
     <button
       className={visualEnabled ? "module-switch on" : "module-switch"}
       onClick={() => void toggle()}
-      disabled={pending}
+      disabled={pending || disabled}
       type="button"
     >
       <span>

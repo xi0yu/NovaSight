@@ -20,6 +20,17 @@ runtime:
   consume_latest_only: true
 roi:
   size: 640
+crosshair:
+  enabled: false
+  use_for_control: false
+  search_size: 96
+  sample_hz: 10
+  sample_frames: 5
+  confirm_duration_ms: 200.0
+  max_age_ms: 300.0
+  max_offset_px: 20.0
+  min_similarity: 0.68
+  max_step_px: 2.0
 inference:
   enabled: true
   backend: deepstream_nvinfer

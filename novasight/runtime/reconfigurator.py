@@ -512,6 +512,8 @@ class RuntimeReconfigurator:
         next_runtime = config.runtime
         previous_roi = previous_config.roi
         next_roi = config.roi
+        previous_crosshair = previous_config.crosshair
+        next_crosshair = config.crosshair
         previous_limits = previous_config.limits
         next_limits = config.limits
         previous_consumers = previous_config.consumers
@@ -542,6 +544,9 @@ class RuntimeReconfigurator:
             or previous_runtime.drop_stale_batches != next_runtime.drop_stale_batches
             or previous_runtime.consume_latest_only != next_runtime.consume_latest_only
             or previous_roi.size != next_roi.size
+            or previous_crosshair.enabled != next_crosshair.enabled
+            or previous_crosshair.search_size != next_crosshair.search_size
+            or previous_crosshair.sample_hz != next_crosshair.sample_hz
             or previous_limits.stream_fps != next_limits.stream_fps
             or previous_consumers.preview != next_consumers.preview
         )

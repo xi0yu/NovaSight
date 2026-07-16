@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from novasight.capture.service import CaptureService
 from novasight.config import RuntimeConfig, load_runtime_config
+from novasight.crosshair import CrosshairSystem
 from novasight.executors import ExecutorRegistry
 from novasight.inference import InferenceRuntime
 from novasight.inference.jetson import create_gpu_resource_preprocessor
@@ -27,6 +28,7 @@ from novasight.systemd import SystemdNotifier, watchdog_interval_from_env
 from .routes_capture import router as capture_router
 from .routes_capture_v1 import router as capture_v1_router
 from .routes_control import router as control_router
+from .routes_crosshair import router as crosshair_router
 from .routes_device import router as device_router
 from .routes_executors import router as executors_router
 from .routes_health import router as health_router
@@ -87,6 +89,10 @@ def create_app(
         capture=capture,
         inference=inference,
         recorder=_create_control_frame_recorder(config, data_path),
+        crosshair=CrosshairSystem(
+            config.crosshair,
+            template_path=data_path / "crosshair" / "template.json",
+        ),
     )
     systemd_notifier = SystemdNotifier(interval_s=watchdog_interval_from_env())
     instance_lock = InstanceLock()
@@ -147,6 +153,7 @@ def create_app(
     app.include_router(capture_router)
     app.include_router(capture_v1_router)
     app.include_router(control_router)
+    app.include_router(crosshair_router)
     app.include_router(runtime_router)
     app.include_router(status_router)
     app.include_router(models_router)

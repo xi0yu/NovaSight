@@ -48,6 +48,8 @@ class MouseObservation:
     left_trigger_hold_ms: float = 0.0
     valid: bool = True
     invalid_reason: str = ""
+    reference_x_px: float | None = None
+    reference_y_px: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,8 +374,16 @@ class MouseController:
         if switched:
             self.reset()
 
-        center_x = observation.control_width_px * 0.5
-        center_y = observation.control_height_px * 0.5
+        center_x = (
+            float(observation.reference_x_px)
+            if observation.reference_x_px is not None
+            else observation.control_width_px * 0.5
+        )
+        center_y = (
+            float(observation.reference_y_px)
+            if observation.reference_y_px is not None
+            else observation.control_height_px * 0.5
+        )
         observed_error = Vec2(
             observation.observed_x_px - center_x,
             observation.observed_y_px - center_y,
@@ -506,6 +516,8 @@ class MouseController:
         debug = {
             "algorithm": self.mode,
             "control_mode": self.mode,
+            "control_reference_x_px": center_x,
+            "control_reference_y_px": center_y,
             "control_allowed": True,
             "frame_id": observation.frame_id,
             "target_id": observation.target_id,

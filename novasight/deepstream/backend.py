@@ -101,6 +101,7 @@ class DeepStreamObjectBackend:
     ) -> None:
         self.pipeline_config = pipeline_config
         self._preview_requested = bool(pipeline_config.preview_enabled)
+        self._crosshair_requested = bool(pipeline_config.crosshair_enabled)
         self._preview_active = bool(pipeline_config.preview_enabled)
         self._preview_disabled_reason = ""
         self._preview_negotiation_fallback_attempted = False
@@ -117,6 +118,7 @@ class DeepStreamObjectBackend:
         self.detection_batch_mailbox = DetectionBatchMailbox()
         self._lock = threading.RLock()
         self._preview_condition = threading.Condition(self._lock)
+        self._crosshair_condition = threading.Condition(self._lock)
         self._pipeline: Any | None = None
         self._running = False
         self._terminal_error = False
@@ -162,6 +164,11 @@ class DeepStreamObjectBackend:
         self._latest_preview_jpeg: bytes | None = None
         self._last_preview_ts_ns = 0
         self._preview_error = ""
+        self._crosshair_frames = 0
+        self._crosshair_sequence = 0
+        self._latest_crosshair_jpeg: bytes | None = None
+        self._last_crosshair_ts_ns = 0
+        self._crosshair_error = ""
         self._last_batch_age_ms = 0.0
         self._capture_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
         self._input_frame_samples: deque[tuple[int, float]] = deque(maxlen=16_384)
@@ -267,13 +274,15 @@ class DeepStreamObjectBackend:
                 )
             logger.info(
                 "DeepStream pipeline start accepted state_change=%s model=%s output=%s "
-                "classes=%s objectness=%s preview=%s capture=%s:%sx%s@%s format=%s io_mode=%s",
+                "classes=%s objectness=%s preview=%s crosshair=%s "
+                "capture=%s:%sx%s@%s format=%s io_mode=%s",
                 result,
                 self.manifest.model_id,
                 self.manifest.output.shape,
                 self.manifest.output.class_count,
                 self.manifest.output.has_objectness,
                 self.pipeline_config.preview_enabled,
+                self.pipeline_config.crosshair_enabled,
                 self.pipeline_config.device,
                 self.pipeline_config.capture_width,
                 self.pipeline_config.capture_height,
@@ -301,6 +310,7 @@ class DeepStreamObjectBackend:
             self._first_batch_event.clear()
             self.detection_batch_mailbox.clear()
             self._preview_condition.notify_all()
+            self._crosshair_condition.notify_all()
         if pipeline is None:
             return
         try:
@@ -380,6 +390,22 @@ class DeepStreamObjectBackend:
                 ),
                 "preview_reason": self._preview_reason_locked(),
                 "preview_transport": "nvmm_nvjpegenc_to_mjpeg_bytes",
+                "crosshair_requested": self._crosshair_requested,
+                "crosshair_enabled": bool(self.pipeline_config.crosshair_enabled),
+                "crosshair_active": bool(
+                    self.pipeline_config.crosshair_enabled and self._running
+                ),
+                "crosshair_available": self._latest_crosshair_jpeg is not None,
+                "crosshair_frames": self._crosshair_frames,
+                "crosshair_sequence": self._crosshair_sequence,
+                "crosshair_last_age_ms": (
+                    max(0.0, (now_ns - self._last_crosshair_ts_ns) / 1e6)
+                    if self._last_crosshair_ts_ns > 0
+                    else 0.0
+                ),
+                "crosshair_error": self._crosshair_error,
+                "crosshair_reason": self._crosshair_reason_locked(),
+                "crosshair_transport": "nvmm_center_crop_nvjpeg_bytes",
                 "python_nms": False,
                 "postprocess_owner": "native_parser_then_deepstream_cluster_mode_2",
                 "parser_library": str(self.parser_library_path),
@@ -496,11 +522,15 @@ class DeepStreamObjectBackend:
             self._dependency_status = None
 
     def _degrade_preview_if_unavailable(self, Gst: Any) -> None:
-        if not self._preview_requested:
+        if not self._preview_requested and not self.pipeline_config.crosshair_enabled:
             return
         if self._preview_negotiation_fallback_attempted:
-            if self.pipeline_config.preview_enabled:
-                self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+            if self.pipeline_config.preview_enabled or self.pipeline_config.crosshair_enabled:
+                self.pipeline_config = replace(
+                    self.pipeline_config,
+                    preview_enabled=False,
+                    crosshair_enabled=False,
+                )
                 self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
             self._preview_active = False
             return
@@ -511,15 +541,20 @@ class DeepStreamObjectBackend:
             if callable(find) and find(name) is None
         ]
         if not missing:
-            if not self.pipeline_config.preview_enabled:
+            if self._preview_requested and not self.pipeline_config.preview_enabled:
                 self.pipeline_config = replace(self.pipeline_config, preview_enabled=True)
                 self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
             self._preview_disabled_reason = ""
             return
         self._preview_disabled_reason = (
-            "hardware preview disabled; missing GStreamer element(s): " + ", ".join(missing)
+            "hardware JPEG branches disabled; missing GStreamer element(s): "
+            + ", ".join(missing)
         )
-        self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+        self.pipeline_config = replace(
+            self.pipeline_config,
+            preview_enabled=False,
+            crosshair_enabled=False,
+        )
         self._preview_active = False
         self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(self._preview_disabled_reason)
@@ -557,6 +592,11 @@ class DeepStreamObjectBackend:
         self._latest_preview_jpeg = None
         self._last_preview_ts_ns = 0
         self._preview_error = ""
+        self._crosshair_frames = 0
+        self._crosshair_sequence = 0
+        self._latest_crosshair_jpeg = None
+        self._last_crosshair_ts_ns = 0
+        self._crosshair_error = ""
         self._last_batch_age_ms = 0.0
         self._capture_samples.clear()
         self._input_frame_samples.clear()
@@ -596,6 +636,14 @@ class DeepStreamObjectBackend:
             if preview_pad is None:
                 raise RuntimeError("DeepStream preview sink pad is unavailable")
             preview_pad.add_probe(Gst.PadProbeType.BUFFER, self._preview_jpeg_probe)
+        if self.pipeline_config.crosshair_enabled:
+            crosshair_sink = pipeline.get_by_name("crosshair_sink")
+            if crosshair_sink is None:
+                raise RuntimeError("DeepStream pipeline missing crosshair_sink")
+            crosshair_pad = crosshair_sink.get_static_pad("sink")
+            if crosshair_pad is None:
+                raise RuntimeError("DeepStream crosshair sink pad is unavailable")
+            crosshair_pad.add_probe(Gst.PadProbeType.BUFFER, self._crosshair_jpeg_probe)
         logger.info("DeepStream capture and nvinfer sink/src probes attached")
 
     def _capture_probe(self, _pad: Any, info: Any) -> Any:
@@ -709,6 +757,37 @@ class DeepStreamObjectBackend:
                 buffer.unmap(map_info)
         return Gst.PadProbeReturn.OK
 
+    def _crosshair_jpeg_probe(self, _pad: Any, info: Any) -> Any:
+        Gst = importlib.import_module("gi.repository.Gst")
+        buffer = info.get_buffer()
+        if buffer is None:
+            return Gst.PadProbeReturn.OK
+        mapped = False
+        map_info = None
+        try:
+            mapped, map_info = buffer.map(Gst.MapFlags.READ)
+            if not mapped or map_info is None:
+                raise RuntimeError("crosshair JPEG buffer could not be mapped")
+            payload = bytes(map_info.data)
+            if len(payload) < 4 or not payload.startswith(b"\xff\xd8"):
+                raise RuntimeError("crosshair buffer is not a JPEG image")
+            now_ns = time.monotonic_ns()
+            with self._crosshair_condition:
+                self._crosshair_frames += 1
+                self._crosshair_sequence += 1
+                self._latest_crosshair_jpeg = payload
+                self._last_crosshair_ts_ns = now_ns
+                self._crosshair_error = ""
+                self._crosshair_condition.notify_all()
+        except Exception as exc:
+            with self._lock:
+                self._crosshair_error = str(exc)
+            logger.warning("DeepStream crosshair frame rejected: %s", exc)
+        finally:
+            if mapped and map_info is not None:
+                buffer.unmap(map_info)
+        return Gst.PadProbeReturn.OK
+
     def wait_preview_jpeg(
         self,
         *,
@@ -731,6 +810,36 @@ class DeepStreamObjectBackend:
                 if remaining <= 0.0:
                     return None
                 self._preview_condition.wait(timeout=remaining)
+
+    def wait_crosshair_jpeg(
+        self,
+        *,
+        after_sequence: int | None = None,
+        timeout_s: float = 0.0,
+    ) -> tuple[int, bytes, int] | None:
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        with self._crosshair_condition:
+            while True:
+                if not self.pipeline_config.crosshair_enabled:
+                    return None
+                if (
+                    self._latest_crosshair_jpeg is not None
+                    and (
+                        after_sequence is None
+                        or self._crosshair_sequence > int(after_sequence)
+                    )
+                ):
+                    return (
+                        self._crosshair_sequence,
+                        self._latest_crosshair_jpeg,
+                        self._last_crosshair_ts_ns,
+                    )
+                if not self.running:
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._crosshair_condition.wait(timeout=remaining)
 
     def _publish_frame_meta(self, pyds: Any, frame_meta: Any, buffer: Any) -> None:
         inference_end_ts_ns = time.monotonic_ns()
@@ -1012,8 +1121,7 @@ class DeepStreamObjectBackend:
         normalized = str(reason).lower()
         with self._lock:
             should_retry = (
-                self._preview_requested
-                and self.pipeline_config.preview_enabled
+                (self.pipeline_config.preview_enabled or self.pipeline_config.crosshair_enabled)
                 and not self._preview_negotiation_fallback_attempted
                 and self._input_frames == 0
                 and "not-negotiated" in normalized
@@ -1022,14 +1130,18 @@ class DeepStreamObjectBackend:
                 return False
             self._preview_negotiation_fallback_attempted = True
             self._preview_disabled_reason = (
-                "hardware preview disabled after NVMM preview caps negotiation failed"
+                "optional NVMM JPEG branches disabled after caps negotiation failed"
             )
-            self.pipeline_config = replace(self.pipeline_config, preview_enabled=False)
+            self.pipeline_config = replace(
+                self.pipeline_config,
+                preview_enabled=False,
+                crosshair_enabled=False,
+            )
             self._preview_active = False
             self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(
-            "DeepStream preview negotiation failed before nvinfer input; "
-            "retrying inference pipeline without preview reason=%s",
+            "DeepStream optional JPEG branch negotiation failed before nvinfer input; "
+            "retrying inference pipeline without preview/crosshair reason=%s",
             reason,
         )
         try:
@@ -1047,6 +1159,7 @@ class DeepStreamObjectBackend:
             self._terminal_error = True
             self._running = False
             self._preview_condition.notify_all()
+            self._crosshair_condition.notify_all()
         self._bus_stop.set()
         logger.error("DeepStream terminal error: %s", reason)
 
@@ -1090,6 +1203,17 @@ class DeepStreamObjectBackend:
             return self._preview_error
         if self._latest_preview_jpeg is None:
             return "waiting for the first hardware JPEG preview frame"
+        return ""
+
+    def _crosshair_reason_locked(self) -> str:
+        if not self._crosshair_requested:
+            return "crosshair observer is disabled"
+        if not self.pipeline_config.crosshair_enabled:
+            return self._preview_disabled_reason or "crosshair JPEG branch is unavailable"
+        if self._crosshair_error:
+            return self._crosshair_error
+        if self._latest_crosshair_jpeg is None:
+            return "waiting for the first crosshair sample"
         return ""
 
     def _inference_phase_locked(self, parser: object) -> tuple[str, str]:
