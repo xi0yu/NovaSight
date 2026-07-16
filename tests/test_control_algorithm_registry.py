@@ -175,6 +175,7 @@ def test_runtime_schema_exposes_separate_algorithm_sections_and_product_labels()
         field["path"] for field in sections["control_standard_output"]["fields"]
     }
     assert "control.shared.recoil_enabled" in standard_output_paths
+    assert "control.shared.recoil_y_counts_per_observation" in standard_output_paths
     assert "control.shared.trigger_activation_delay_ms" not in standard_output_paths
     non_predictive_paths = {
         field["path"]

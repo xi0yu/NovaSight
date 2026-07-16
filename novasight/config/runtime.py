@@ -281,9 +281,7 @@ class SharedControlConfig:
     trigger_activation_delay_ms: float = 0.0
     recoil_enabled: bool = False
     recoil_start_delay_ms: float = 0.0
-    recoil_y_rate_counts_s: float = 0.0
-    recoil_ramp_up_ms: float = 120.0
-    recoil_max_counts_per_observation: float = 8.0
+    recoil_y_counts_per_observation: float = 0.0
 
 
 @dataclass
@@ -561,6 +559,7 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
             _migrate_dual_control_modes(control, calibration)
         _migrate_control_algorithm_namespaces(control)
         _migrate_shared_aim_config(control)
+        _migrate_fixed_recoil_config(control)
         normalized["control"] = control
     if isinstance(calibration, dict):
         normalized["calibration"] = calibration
@@ -954,6 +953,30 @@ def _migrate_shared_aim_config(control: dict[str, Any]) -> None:
     control["aim"] = aim
 
 
+def _migrate_fixed_recoil_config(control: dict[str, Any]) -> None:
+    shared = control.get("shared")
+    if not isinstance(shared, dict):
+        return
+    shared = dict(shared)
+    legacy_present = any(
+        key in shared
+        for key in (
+            "recoil_y_rate_counts_s",
+            "recoil_ramp_up_ms",
+            "recoil_max_counts_per_observation",
+        )
+    )
+    shared.pop("recoil_y_rate_counts_s", None)
+    shared.pop("recoil_ramp_up_ms", None)
+    shared.pop("recoil_max_counts_per_observation", None)
+    if legacy_present:
+        # A rate cannot be converted without assuming an observation FPS. The
+        # retired behavior also caused unsafe over-compensation, so migration
+        # preserves enable/delay but requires an explicit new fixed amount.
+        shared.setdefault("recoil_y_counts_per_observation", 0.0)
+    control["shared"] = shared
+
+
 _REMOVED_LEGACY_CONTROL_KEYS = frozenset(
     {
         "max_abs_dx",
@@ -1334,9 +1357,7 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
     shared_bounds = {
         "trigger_activation_delay_ms": (0.0, 1000.0),
         "recoil_start_delay_ms": (0.0, 1000.0),
-        "recoil_y_rate_counts_s": (0.0, 5000.0),
-        "recoil_ramp_up_ms": (0.0, 2000.0),
-        "recoil_max_counts_per_observation": (0.1, 20.0),
+        "recoil_y_counts_per_observation": (0.0, 20.0),
     }
     for key, (minimum, maximum) in shared_bounds.items():
         value = float(getattr(shared, key))

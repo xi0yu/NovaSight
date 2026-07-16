@@ -1,7 +1,7 @@
 # NovaSight Control Trace Schema
 
 文档状态：trace 字段说明  
-schema：`novasight.control_trace` version `4`
+schema：`novasight.control_trace` version `5`
 格式：JSONL，每行一个 control observation trace record
 
 ## 范围
@@ -128,7 +128,7 @@ aim_px / bbox
 error_measured_px / error_control_px
 history position count / three segment velocities / median / EMA / spread / detection and track confidence
 prediction reference dt / configured lead frames / raw and weighted offset / cap / safe offset
-recoil enabled / active / left hold / ramp / Y counts
+recoil mode / enabled / active / left hold / configured-per-observation / visual demand / requested / combined demand / emitted / residual / block reason
 full_error_counts / float_demand / integer_command / quantizer_residual
 overzero_detected / will_emit / block_reason / executor_success
 delivery_mode / scheduler_used

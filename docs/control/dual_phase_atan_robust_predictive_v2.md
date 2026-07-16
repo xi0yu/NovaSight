@@ -86,7 +86,7 @@ e_ctrl.y = e_meas.y
 
 ## Y Feedback And Recoil
 
-V2 does not extrapolate target Y velocity. When `control.shared.recoil_enabled` is true, RuntimeService reads the real left-button state even in target-driven trigger mode and passes its hold duration plus the current measurement dt into V2. The algorithm computes a delayed/ramped `counts/s` feedforward term and adds it after visual Y feedback direction mapping, matching the existing shared recoil semantics. It then clamps the combined demand before quantization. Releasing the real left button immediately removes this term; visual Y feedback remains active throughout.
+V2 does not extrapolate target Y velocity. When `control.shared.recoil_enabled` is true, RuntimeService reads the real left-button state even in target-driven trigger mode. After `recoil_start_delay_ms`, each fresh accepted target observation contributes the configured `recoil_y_counts_per_observation` in the effective reverse-Y device direction. The contribution has an independent fractional quantizer, so trigger release, target loss/switch, stale input, configuration change, or runtime reset cannot leave recoil debt inside visual Y feedback. There is no time-rate integration, ramp, curve, or output-tick recoil generator.
 
 ## Projection And Control Atan
 
@@ -122,4 +122,4 @@ The deterministic closed-loop test compares `lead_frames=0` against enabled limi
 
 ## Main Remaining Calibration
 
-`lead_frames`, recoil rate, `counts_per_360`, FOV, Kp, Atan scale, prediction caps, and confidence scales require real Jetson/device/game traces. The current estimator intentionally measures apparent target-to-crosshair screen motion and does not yet subtract manual or NovaSight-induced camera motion.
+`lead_frames`, fixed recoil counts per observation, `counts_per_360`, FOV, Kp, Atan scale, prediction caps, and confidence scales require real Jetson/device/game traces. The current estimator intentionally measures apparent target-to-crosshair screen motion and does not yet subtract manual or NovaSight-induced camera motion.

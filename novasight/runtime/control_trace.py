@@ -8,7 +8,7 @@ from typing import Any
 
 
 CONTROL_TRACE_SCHEMA_NAME = "novasight.control_trace"
-CONTROL_TRACE_SCHEMA_VERSION = 4
+CONTROL_TRACE_SCHEMA_VERSION = 5
 MONOTONIC_CLOCK_DOMAIN = "monotonic"
 UNKNOWN_REASON_DEVICE_FEEDBACK = "device_feedback_unavailable"
 
@@ -337,11 +337,27 @@ def build_control_trace_record(
                 ),
             },
             "recoil": {
+                "mode": "fixed_per_observation",
                 "enabled": _optional_bool(pipeline.get("recoil_enabled")),
                 "active": _optional_bool(pipeline.get("recoil_active")),
                 "left_hold_ms": _optional_number(pipeline.get("recoil_left_hold_ms")),
-                "ramp": _optional_number(pipeline.get("recoil_ramp")),
+                "counts_per_observation": _optional_number(
+                    pipeline.get("recoil_y_counts_per_observation")
+                ),
                 "y_counts": _optional_number(pipeline.get("recoil_y_counts_float")),
+                "feedback_demand_y": _optional_number(
+                    pipeline.get("feedback_demand_y")
+                ),
+                "combined_demand_y": _optional_number(
+                    pipeline.get("combined_demand_y")
+                ),
+                "emitted_y_counts": _optional_number(
+                    pipeline.get("recoil_y_counts_emitted")
+                ),
+                "residual_y_counts": _optional_number(
+                    pipeline.get("recoil_residual_y_counts")
+                ),
+                "block_reason": _text(pipeline.get("recoil_block_reason")),
             },
             "full_error_counts": _axis_pair(
                 pipeline.get("full_error_counts_x"),

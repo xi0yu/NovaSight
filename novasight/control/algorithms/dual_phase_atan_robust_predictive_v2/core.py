@@ -3,6 +3,7 @@ from __future__ import annotations
 from math import atan, hypot, isfinite, pi, tan, trunc
 
 from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT
+from novasight.control.recoil import FixedRecoilConfig, FixedRecoilController
 
 from .models import (
     ALGORITHM_ID,
@@ -12,7 +13,6 @@ from .models import (
     DualPhaseAtanRobustPredictiveV2Config,
     DualPhaseAtanRobustPredictiveV2Observation,
     PredictionResult,
-    RecoilResult,
 )
 from .motion_history import RobustVelocityEstimator
 
@@ -30,6 +30,14 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._geometry_signature: tuple[int, ...] | None = None
         self._quantizer_x = _AxisQuantizer()
         self._quantizer_y = _AxisQuantizer()
+        self._recoil = FixedRecoilController(
+            FixedRecoilConfig(
+                enabled=config.recoil.enabled,
+                start_delay_ms=config.recoil.start_delay_ms,
+                y_counts_per_observation=config.recoil.y_counts_per_observation,
+                invert_y=config.projection.invert_y,
+            )
+        )
         self._velocity_x = RobustVelocityEstimator(config.velocity)
         self._previous_error_meas_x = 0.0
         self._previous_error_meas_y = 0.0
@@ -46,6 +54,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._target_id = None
         self._quantizer_x.reset()
         self._quantizer_y.reset()
+        self._recoil.reset()
         self._velocity_x.reset()
         self._previous_error_meas_x = 0.0
         self._previous_error_meas_y = 0.0
@@ -56,6 +65,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
 
         self._quantizer_x.reset()
         self._quantizer_y.reset()
+        self._recoil.reset()
 
     def calculate(
         self,
@@ -180,8 +190,13 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
         demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)
         feedback_demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
-        recoil = self._calculate_recoil(observation)
-        recoil_demand_y = recoil.counts_y
+        recoil = self._recoil.calculate(
+            left_trigger_active=bool(
+                observation.trigger_active and observation.left_trigger_active
+            ),
+            left_trigger_hold_ms=observation.left_trigger_hold_ms,
+        )
+        recoil_demand_y = recoil.requested_counts_y
         demand_y = _clamp(
             feedback_demand_y + recoil_demand_y,
             -atan_mode.max_counts_per_update,
@@ -189,7 +204,16 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         )
         if observation.trigger_active:
             dx, residual_direction_reset_x = self._quantizer_x.quantize(demand_x)
-            dy, residual_direction_reset_y = self._quantizer_y.quantize(demand_y)
+            feedback_dy, residual_direction_reset_y = self._quantizer_y.quantize(
+                feedback_demand_y
+            )
+            dy = int(
+                _clamp(
+                    feedback_dy + recoil.emitted_counts_y,
+                    -atan_mode.max_counts_per_update,
+                    atan_mode.max_counts_per_update,
+                )
+            )
             block_reason = ""
         else:
             self.release_trigger()
@@ -279,8 +303,14 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "recoil_enabled": self.config.recoil.enabled,
                 "recoil_active": recoil.active,
                 "recoil_left_hold_ms": observation.left_trigger_hold_ms,
-                "recoil_ramp": recoil.ramp,
+                "recoil_y_counts_per_observation": (
+                    self.config.recoil.y_counts_per_observation
+                ),
                 "recoil_y_counts_float": recoil_demand_y,
+                "recoil_y_counts_emitted": recoil.emitted_counts_y,
+                "recoil_residual_y_counts": recoil.residual_counts_y,
+                "recoil_block_reason": recoil.block_reason,
+                "combined_demand_y": demand_y,
                 "integer_command_x": dx,
                 "integer_command_y": dy,
                 "quantizer_residual_x": self._quantizer_x.accumulator,
@@ -334,36 +364,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
             motion_confidence=effective_confidence,
             allowed=allowed,
         )
-
-    def _calculate_recoil(
-        self,
-        observation: DualPhaseAtanRobustPredictiveV2Observation,
-    ) -> RecoilResult:
-        config = self.config.recoil
-        dt_ms = observation.measurement_dt_ms
-        if (
-            not config.enabled
-            or not observation.left_trigger_active
-            or dt_ms is None
-            or not isfinite(float(dt_ms))
-            or float(dt_ms) <= 0.0
-            or float(dt_ms) > 200.0
-        ):
-            return RecoilResult(counts_y=0.0, ramp=0.0, active=False)
-        active_ms = max(
-            0.0,
-            float(observation.left_trigger_hold_ms) - max(0.0, config.start_delay_ms),
-        )
-        if active_ms <= 0.0 or config.y_rate_counts_s <= 0.0:
-            return RecoilResult(counts_y=0.0, ramp=0.0, active=False)
-        ramp = (
-            1.0
-            if config.ramp_up_ms <= 0.0
-            else min(1.0, active_ms / config.ramp_up_ms)
-        )
-        requested = config.y_rate_counts_s * (float(dt_ms) / 1000.0) * ramp
-        counts_y = min(max(0.0, config.max_counts_per_observation), requested)
-        return RecoilResult(counts_y=counts_y, ramp=ramp, active=counts_y > 0.0)
 
     def _blocked_decision(
         self,
@@ -536,12 +536,7 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
         ):
             raise ValueError("prediction caps must be >= 0")
     recoil = config.recoil
-    if min(
-        recoil.start_delay_ms,
-        recoil.y_rate_counts_s,
-        recoil.ramp_up_ms,
-        recoil.max_counts_per_observation,
-    ) < 0.0:
+    if min(recoil.start_delay_ms, recoil.y_counts_per_observation) < 0.0:
         raise ValueError("recoil parameters must be >= 0")
     if not isfinite(config.atan.scale_counts) or config.atan.scale_counts <= 0.0:
         raise ValueError("Atan scale must be finite and > 0")

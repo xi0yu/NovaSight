@@ -125,7 +125,7 @@ safe_offset_x = clamp(weighted_offset_x, -allowed, allowed)
 
 The velocity path uses four current-target samples and three adjacent capture-time velocities. Their velocity median rejects one-position spikes; their capture intervals use the arithmetic mean required by the frame-based prediction contract. EMA uses `alpha = 1 - exp(-latest_dt / (dt_ref * smoothing_frames))`. Motion confidence also includes current detection and Tracker identity confidence. Stationary observations decay the previous velocity naturally—there is no forced-zero branch. A measured-error sign crossing clears only the opposite-direction fractional count; it does not damp or overwrite the motion estimate.
 
-Y target-velocity prediction remains disabled because apparent Y motion mixes target motion, recoil, manual input, and prior NovaSight output. When shared recoil is enabled, V2 instead adds a left-trigger-gated, ramped device-count feedforward term to Y feedback before quantization and per-update clamping.
+Y target-velocity prediction remains disabled because apparent Y motion mixes target motion, recoil, manual input, and prior NovaSight output. When shared recoil is enabled, V2 instead adds one configured fixed reverse-Y count contribution per fresh accepted observation after the real-left-button delay. Fixed recoil owns a separate fractional residual and never runs from the independent output tick.
 
 ## Projection And Control Law
 
@@ -190,4 +190,4 @@ See `docs/control/dual_phase_atan_robust_predictive_v2.md` for the frozen V2 imp
 
 ## Remaining Physical Uncertainty
 
-`prediction.lead_frames`, recoil rate, and caps still require Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V2 but do not remove it.
+`prediction.lead_frames`, fixed recoil counts per observation, and caps still require Jetson + device + game trace calibration. The estimator models target motion relative to the crosshair; it does not yet separate target motion, manual camera motion, and NovaSight-induced camera motion. Strict prediction caps make that limitation tolerable for V2 but do not remove it.

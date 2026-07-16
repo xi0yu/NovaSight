@@ -498,7 +498,7 @@ def test_frame_lead_prediction_reduces_closed_loop_lag_against_feedback_baseline
     assert predictive_error < feedback_error
 
 
-def test_v2_recoil_feedforward_requires_real_left_trigger_and_uses_measurement_dt() -> None:
+def test_v2_recoil_uses_fixed_counts_per_observation_after_delay() -> None:
     defaults = DualPhaseAtanRobustPredictiveV2Config()
     config = replace(
         defaults,
@@ -506,9 +506,7 @@ def test_v2_recoil_feedforward_requires_real_left_trigger_and_uses_measurement_d
         recoil=RecoilConfig(
             enabled=True,
             start_delay_ms=20.0,
-            y_rate_counts_s=100.0,
-            ramp_up_ms=0.0,
-            max_counts_per_observation=8.0,
+            y_counts_per_observation=1.25,
         ),
     )
     algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(config)
@@ -532,7 +530,9 @@ def test_v2_recoil_feedforward_requires_real_left_trigger_and_uses_measurement_d
     assert firing.dy == 1
     assert firing.telemetry["recoil_active"] is True
     assert firing.telemetry["feedback_demand_y"] == 0.0
-    assert firing.telemetry["recoil_y_counts_float"] == pytest.approx(1.0)
+    assert firing.telemetry["recoil_y_counts_per_observation"] == pytest.approx(1.25)
+    assert firing.telemetry["recoil_y_counts_float"] == pytest.approx(1.25)
+    assert firing.telemetry["recoil_block_reason"] == ""
 
     inverted_algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
         replace(config, projection=replace(config.projection, invert_y=True))
@@ -547,5 +547,51 @@ def test_v2_recoil_feedforward_requires_real_left_trigger_and_uses_measurement_d
             measurement_dt_ms=10.0,
         )
     )
-    assert inverted.dy == 1
-    assert inverted.telemetry["recoil_y_counts_float"] == pytest.approx(1.0)
+    assert inverted.dy == -1
+    assert inverted.telemetry["recoil_y_counts_float"] == pytest.approx(-1.25)
+
+
+def test_v2_fixed_recoil_ignores_measurement_dt_and_resets_fraction_on_release() -> None:
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(
+            defaults,
+            prediction=replace(defaults.prediction, lead_frames=0.0),
+            recoil=RecoilConfig(
+                enabled=True,
+                start_delay_ms=0.0,
+                y_counts_per_observation=0.5,
+            ),
+        )
+    )
+
+    first = algorithm.calculate(
+        _observation(
+            generation=1,
+            error_x=0.0,
+            error_y=0.0,
+            left_trigger_active=True,
+            left_trigger_hold_ms=10.0,
+            measurement_dt_ms=None,
+        )
+    )
+    released = algorithm.calculate(
+        _observation(generation=2, error_x=0.0, error_y=0.0)
+    )
+    resumed = algorithm.calculate(
+        _observation(
+            generation=3,
+            error_x=0.0,
+            error_y=0.0,
+            left_trigger_active=True,
+            left_trigger_hold_ms=10.0,
+            measurement_dt_ms=100.0,
+        )
+    )
+
+    assert first.dy == 0
+    assert first.telemetry["recoil_residual_y_counts"] == pytest.approx(0.5)
+    assert released.dy == 0
+    assert released.telemetry["recoil_residual_y_counts"] == 0.0
+    assert resumed.dy == 0
+    assert resumed.telemetry["recoil_residual_y_counts"] == pytest.approx(0.5)

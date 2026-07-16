@@ -136,9 +136,7 @@ control:
     trigger_activation_delay_ms: 0.0
     recoil_enabled: false
     recoil_start_delay_ms: 0.0
-    recoil_y_rate_counts_s: 0.0
-    recoil_ramp_up_ms: 120.0
-    recoil_max_counts_per_observation: 8.0
+    recoil_y_counts_per_observation: 0.0
   configured_actuation_delay_s: 0.004
   # V2 keeps only the newest complete command. The output tick validates and
   # sends it once; it never creates a cross-frame move plan.

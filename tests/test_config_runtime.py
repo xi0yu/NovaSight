@@ -290,6 +290,9 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.shared.deadzone_x_px == 4.0
     assert cfg.control.shared.max_count_slew_x == 10.0
     assert cfg.control.shared.invert_y is False
+    assert cfg.control.shared.recoil_y_counts_per_observation == 0.0
+    assert not hasattr(cfg.control.shared, "recoil_y_rate_counts_s")
+    assert not hasattr(cfg.control.shared, "recoil_ramp_up_ms")
     assert cfg.control.scheduler_step_counts_x == 8
     assert cfg.control.scheduler_step_counts_y == 8
     assert cfg.control.scheduler_enabled is True
@@ -553,6 +556,26 @@ def test_runtime_config_drops_legacy_noop_hardware_flip_dy() -> None:
 
     assert cfg.control.shared.invert_y is False
     assert not hasattr(cfg.hardware, "flip_dy")
+
+
+def test_runtime_config_retires_legacy_recoil_rate_without_preserving_unsafe_output() -> None:
+    cfg = parse_runtime_config(
+        {
+            "control": {
+                "shared": {
+                    "recoil_enabled": True,
+                    "recoil_start_delay_ms": 80.0,
+                    "recoil_y_rate_counts_s": 900.0,
+                    "recoil_ramp_up_ms": 120.0,
+                    "recoil_max_counts_per_observation": 8.0,
+                }
+            }
+        }
+    )
+
+    assert cfg.control.shared.recoil_enabled is True
+    assert cfg.control.shared.recoil_start_delay_ms == 80.0
+    assert cfg.control.shared.recoil_y_counts_per_observation == 0.0
 
 
 def test_runtime_config_rejects_unrepresentable_legacy_x_inversion() -> None:

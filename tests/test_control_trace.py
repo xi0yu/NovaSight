@@ -234,8 +234,13 @@ def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
                 "recoil_enabled": True,
                 "recoil_active": True,
                 "recoil_left_hold_ms": 120.0,
-                "recoil_ramp": 0.8,
+                "recoil_y_counts_per_observation": 1.25,
                 "recoil_y_counts_float": 1.25,
+                "feedback_demand_y": -0.15,
+                "combined_demand_y": 1.1,
+                "recoil_y_counts_emitted": 1,
+                "recoil_residual_y_counts": 0.25,
+                "recoil_block_reason": "",
                 "executor_success": True,
             },
         },
@@ -255,6 +260,11 @@ def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
     assert decision["prediction"]["weighted_offset_x"] == 6.0
     assert decision["recoil"]["active"] is True
     assert decision["recoil"]["y_counts"] == 1.25
+    assert decision["recoil"]["feedback_demand_y"] == -0.15
+    assert decision["recoil"]["combined_demand_y"] == 1.1
+    assert decision["recoil"]["mode"] == "fixed_per_observation"
+    assert decision["recoil"]["emitted_y_counts"] == 1.0
+    assert decision["recoil"]["residual_y_counts"] == 0.25
     assert decision["executor_success"] is True
 
 

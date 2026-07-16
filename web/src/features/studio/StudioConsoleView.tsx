@@ -287,6 +287,18 @@ function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function formatRecoilBlockReason(value: unknown): string {
+  const reason = readString(value);
+  const labels: Record<string, string> = {
+    RECOIL_DISABLED: "关闭",
+    LEFT_TRIGGER_INACTIVE: "等待真实左键",
+    LEFT_TRIGGER_HOLD_INVALID: "左键状态无效",
+    RECOIL_START_DELAY: "等待启动延迟",
+    RECOIL_COUNTS_ZERO: "固定强度为零",
+  };
+  return labels[reason] ?? (reason || "等待真实左键或启动延迟");
+}
+
 function triggerModeLabel(value: string): string {
   if (value === "always") {
     return "检测目标自动控制";
@@ -939,9 +951,7 @@ export function StudioConsoleView({
   const triggerActivationDelayMs = readNumber(sharedControlConfig.trigger_activation_delay_ms, 0);
   const recoilEnabled = readBoolean(sharedControlConfig.recoil_enabled, false);
   const recoilStartDelayMs = readNumber(sharedControlConfig.recoil_start_delay_ms, 0);
-  const recoilYRate = readNumber(sharedControlConfig.recoil_y_rate_counts_s, 0);
-  const recoilRampUpMs = readNumber(sharedControlConfig.recoil_ramp_up_ms, 120);
-  const recoilMaxCounts = readNumber(sharedControlConfig.recoil_max_counts_per_observation, 8);
+  const recoilYCountsPerObservation = readNumber(sharedControlConfig.recoil_y_counts_per_observation, 0);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -3270,13 +3280,16 @@ export function StudioConsoleView({
                     <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
                     <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
                     <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
-                    <span>压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? "等待左键或延迟" : "关闭"}</b>
                     <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
                     <span>到位限制后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
                     <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
                     <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
                   </>
                 )}
+                <span>固定压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? formatRecoilBlockReason(controlPipeline.recoil_block_reason) : "关闭"}</b>
+                <span>固定压枪 / 观测</span><b>{`${recoilYCountsPerObservation.toFixed(1)} counts · ${(dualPhaseActive ? dualPhaseInvertY : sharedInvertY) ? "-Y" : "+Y"}`}</b>
+                <span>预估固定压枪强度</span><b>{`${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s @ ${controlObservationFps.toFixed(1)} FPS`}</b>
+                <span>视觉 / 固定 / 合成 Y</span><b>{`${formatOptionalNumber(controlPipeline.feedback_demand_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_y_counts_float, 2)} / ${formatOptionalNumber(controlPipeline.combined_demand_y, 2)} counts`}</b>
                 <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, 1, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, 1, "ms")}`}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
@@ -3439,14 +3452,12 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                  <SectionTitle title="Y 轴后坐力前馈 · 所有控制算法" />
-                  <ModuleSwitch label="启用 Y 轴压枪" detail="只在检测到真实左键持续按下且存在有效目标时，将设备 counts 前馈叠加到视觉 Y 误差反馈；不会开启目标 Y 速度预测。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+                  <SectionTitle title="固定 Y 轴压枪 · 所有控制算法" />
+                  <ModuleSwitch label="启用固定 Y 压枪" detail="真实左键达到启动延迟后，每个新鲜目标观测固定追加一次反向 Y counts；不使用渐入、时间速率、积分或 Y 预测。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
                   {recoilEnabled ? (
                     <>
-                      <NumberControl label="压枪启动延迟 ms" detail="左键持续按下达到此时间后才开始压枪；与硬件触发启动延迟相互独立。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
-                      <NumberControl label="Y 压枪速率 counts/s" detail="持续按压时每秒追加的 Y 轴设备 counts；最终方向仍受反转 Y 轴设置影响。" value={recoilYRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_rate_counts_s", value)} />
-                      <NumberControl label="压枪渐入 ms" detail="从 0 平滑增长到完整压枪速率所需时间，避免按下瞬间产生突跳。" value={recoilRampUpMs} min={0} max={2000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_ramp_up_ms", value)} />
-                      <NumberControl label="单观测最大压枪 counts" detail="每个新观测最多允许叠加的压枪量，防止异常观测间隔产生大步输出。" value={recoilMaxCounts} min={0.1} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_max_counts_per_observation", value)} />
+                      <NumberControl label="开始压枪前等待 ms" detail="从真实左键按下开始计时；未达到该时间时固定压枪保持为零。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
+                      <NumberControl label="每个新观测固定 Y counts" detail={`每个新鲜目标观测追加相同数值；当前约 ${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s（${controlObservationFps.toFixed(1)} 控制观测 FPS），小数由独立余量累计。`} value={recoilYCountsPerObservation} min={0} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_counts_per_observation", value)} />
                     </>
                   ) : null}
                 </div>

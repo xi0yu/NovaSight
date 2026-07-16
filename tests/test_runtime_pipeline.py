@@ -58,6 +58,218 @@ def _handle(generation: int) -> FrameHandle:
     )
 
 
+def test_box_input_freshness_expires_stalled_button_sample() -> None:
+    config = RuntimeConfig()
+    config.control.scheduler_interval_ms = 4.0
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=ExecutorRegistry.from_config(config),
+    )
+    now_ns = 1_000_000_000
+
+    fresh = BoxInputState(
+        left=True,
+        raw={"sample_ts_ns": now_ns - 49_000_000},
+    )
+    stale = BoxInputState(
+        left=True,
+        raw={"sample_ts_ns": now_ns - 51_000_000},
+    )
+
+    assert service._box_input_is_fresh(fresh, now_ns) is True
+    assert service._box_input_is_fresh(stale, now_ns) is False
+
+
+def test_failed_device_send_clears_fixed_recoil_residual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "calibrated_angular"
+    executors = ExecutorRegistry.from_config(config)
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    controller = service._active_mouse_controller()
+    controller.recoil._residual_counts_y = 0.5
+    controller.state.residual_y_counts = 0.25
+    controller.state.output_history_valid = True
+    intent = ControlIntent(
+        dx=0.0,
+        dy=1.0,
+        action=None,
+        confidence=1.0,
+        reason="test",
+        source_id="test",
+    )
+    monkeypatch.setattr(service, "_control_intent_from_context", lambda _context: intent)
+    monkeypatch.setattr(
+        executors,
+        "execute",
+        lambda output: ExecutionResult(
+            executor_id="kmnet",
+            sent=False,
+            intent=output,
+            message="device send failed",
+            metadata={"stage": "device"},
+        ),
+    )
+
+    service.process_frame(FrameContext(frame_id=1, width=640, height=640))
+
+    assert controller.recoil._residual_counts_y == 0.0
+    assert controller.state.residual_y_counts == 0.0
+    assert controller.state.output_history_valid is False
+
+
+def test_latest_replace_tick_drops_recoil_when_button_sample_becomes_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
+    config.control.shared.recoil_enabled = True
+    executors = ExecutorRegistry.from_config(config)
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    controller = service._active_robust_predictive_controller()
+    controller._recoil._residual_counts_y = 0.5
+    service.last_control = {"pipeline": {"recoil_active": True}}
+    stale_sample = time.monotonic_ns() - 1_000_000_000
+    monkeypatch.setattr(
+        service,
+        "_box_input_state",
+        lambda: BoxInputState(
+            left=True,
+            raw={"sample_ts_ns": stale_sample},
+        ),
+    )
+    tick_called = False
+
+    def tick_pending() -> ExecutionResult:
+        nonlocal tick_called
+        tick_called = True
+        raise AssertionError("stale recoil command must be cleared before device send")
+
+    monkeypatch.setattr(executors, "tick_pending", tick_pending)
+
+    result = service.process_control_tick()
+
+    assert result.execution_results == []
+    assert tick_called is False
+    assert controller._recoil._residual_counts_y == 0.0
+
+
+def test_latest_replace_device_failure_resets_v2_output_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
+    config.control.shared.recoil_enabled = True
+    executors = ExecutorRegistry.from_config(config)
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    controller = service._active_robust_predictive_controller()
+    controller._recoil._residual_counts_y = 0.5
+    controller._quantizer_y.accumulator = 0.25
+    service.last_control = {"pipeline": {"recoil_active": True}}
+    now_ns = time.monotonic_ns()
+    monkeypatch.setattr(
+        service,
+        "_box_input_state",
+        lambda: BoxInputState(
+            left=True,
+            raw={"sample_ts_ns": now_ns},
+        ),
+    )
+    intent = ControlIntent(
+        dx=0.0,
+        dy=1.0,
+        action=None,
+        confidence=1.0,
+        reason="test",
+        source_id="test",
+    )
+    monkeypatch.setattr(
+        executors,
+        "tick_pending",
+        lambda: ExecutionResult(
+            executor_id="kmnet",
+            sent=False,
+            intent=intent,
+            message="device send failed",
+            metadata={"stage": "device"},
+        ),
+    )
+
+    result = service.process_control_tick()
+
+    assert result.execution_results[0].sent is False
+    assert controller._recoil._residual_counts_y == 0.0
+    assert controller._quantizer_y.accumulator == 0.0
+
+
+def test_latest_replace_superseded_tick_preserves_newer_recoil_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = RuntimeConfig()
+    config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
+    config.control.shared.recoil_enabled = True
+    executors = ExecutorRegistry.from_config(config)
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=executors,
+    )
+    service.running = True
+    controller = service._active_robust_predictive_controller()
+    controller._recoil._residual_counts_y = 0.5
+    service.last_control = {"pipeline": {"recoil_active": True}}
+    now_ns = time.monotonic_ns()
+    monkeypatch.setattr(
+        service,
+        "_box_input_state",
+        lambda: BoxInputState(
+            left=True,
+            raw={"sample_ts_ns": now_ns},
+        ),
+    )
+    intent = ControlIntent(
+        dx=0.0,
+        dy=1.0,
+        action=None,
+        confidence=1.0,
+        reason="test",
+        source_id="test",
+    )
+    monkeypatch.setattr(
+        executors,
+        "tick_pending",
+        lambda: ExecutionResult(
+            executor_id="kmnet",
+            sent=False,
+            intent=intent,
+            message="scheduled command discarded after executor reconfiguration",
+            metadata={"stage": "scheduler", "action": "scheduler_superseded"},
+        ),
+    )
+
+    result = service.process_control_tick()
+
+    assert result.execution_results[0].sent is False
+    assert controller._recoil._residual_counts_y == pytest.approx(0.5)
+
+
 class _TriggeredKmNet:
     executor_id = "kmnet"
 
@@ -1465,9 +1677,7 @@ def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
     config.control.trigger_mode = "always"
     config.control.shared.recoil_enabled = True
     config.control.shared.recoil_start_delay_ms = 0.0
-    config.control.shared.recoil_y_rate_counts_s = 100.0
-    config.control.shared.recoil_ramp_up_ms = 0.0
-    config.control.shared.recoil_max_counts_per_observation = 8.0
+    config.control.shared.recoil_y_counts_per_observation = 1.0
     kmnet = _HeldLeftKmNet()
     executors = ExecutorRegistry.from_config(config)
     executors.executors["kmnet"] = kmnet

@@ -71,9 +71,7 @@ class PredictionConfig:
 class RecoilConfig:
     enabled: bool = False
     start_delay_ms: float = 0.0
-    y_rate_counts_s: float = 0.0
-    ramp_up_ms: float = 120.0
-    max_counts_per_observation: float = 8.0
+    y_counts_per_observation: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,13 +179,6 @@ class PredictionResult:
     allowed_cap_x: float
     motion_confidence: float
     allowed: bool
-
-
-@dataclass(frozen=True, slots=True)
-class RecoilResult:
-    counts_y: float
-    ramp: float
-    active: bool
 
 
 @dataclass(frozen=True, slots=True)

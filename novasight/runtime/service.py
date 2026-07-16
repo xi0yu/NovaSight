@@ -632,12 +632,10 @@ class RuntimeService:
             control_intents = [intent] if intent is not None else []
             execution_results = [self.executors.execute(intent) for intent in control_intents]
             for result in execution_results:
-                if self._is_robust_predictive_active() and not bool(
-                    getattr(result, "sent", False)
-                ) and not self._execution_is_pending_latest_replace(result):
-                    # A failed or blocked device call must not leave fractional
-                    # demand from an unsent observation to a later frame.
-                    self._active_robust_predictive_controller().release_trigger()
+                if self._execution_invalidates_control_state(result):
+                    # A failed or blocked device call invalidates all output
+                    # state derived from the unsent observation.
+                    self._reset_control_motion_state()
                 self._record_executed_control(result)
             if execution_results:
                 self.last_execution = self._execution_result_payload(execution_results[-1])
@@ -670,19 +668,6 @@ class RuntimeService:
         )
 
     def process_control_tick(self) -> RuntimeFrameResult:
-        if self._is_robust_predictive_active():
-            with self._control_lock:
-                if not self.running:
-                    self._reset_control_motion_state()
-                    self._reset_direct_command_executor()
-                    return self._empty_runtime_frame_result()
-                if (
-                    str(self.config.control.trigger_mode) == "hardware"
-                    and not self._box_input_state().active
-                ):
-                    self._active_robust_predictive_controller().release_trigger()
-                    self._clear_pending_commands("TRIGGER_INACTIVE")
-                    return self._empty_runtime_frame_result()
         tick_pending = getattr(self.executors, "tick_pending", None)
         if not callable(tick_pending):
             return self._empty_runtime_frame_result()
@@ -691,12 +676,46 @@ class RuntimeService:
                 self._reset_control_motion_state()
                 self._clear_pending_commands("RUNTIME_STOPPED")
                 return self._empty_runtime_frame_result()
-            if (
-                str(self.config.control.trigger_mode) == "hardware"
-                and not self._box_input_state().active
+            trigger_mode = str(self.config.control.trigger_mode)
+            recoil_enabled = bool(self.config.control.shared.recoil_enabled)
+            button_state = (
+                self._box_input_state()
+                if trigger_mode == "hardware" or recoil_enabled
+                else None
+            )
+            button_fresh = bool(
+                button_state is not None
+                and self._box_input_is_fresh(button_state, time.monotonic_ns())
+            )
+            if trigger_mode == "hardware" and not bool(
+                button_state is not None and button_state.active and button_fresh
             ):
-                self._reset_control_motion_state()
-                self._clear_pending_commands("TRIGGER_INACTIVE")
+                if self._is_robust_predictive_active():
+                    self._active_robust_predictive_controller().release_trigger()
+                else:
+                    self._reset_control_motion_state()
+                self._clear_pending_commands(
+                    "TRIGGER_INPUT_STALE"
+                    if button_state is not None and button_state.active
+                    else "TRIGGER_INACTIVE"
+                )
+                return self._empty_runtime_frame_result()
+            if (
+                recoil_enabled
+                and self._pending_control_has_active_recoil()
+                and not bool(
+                    button_state is not None and button_state.left and button_fresh
+                )
+            ):
+                if self._is_robust_predictive_active():
+                    self._active_robust_predictive_controller().release_trigger()
+                else:
+                    self._reset_control_motion_state()
+                self._clear_pending_commands(
+                    "RECOIL_INPUT_STALE"
+                    if button_state is not None and button_state.left
+                    else "LEFT_TRIGGER_INACTIVE"
+                )
                 return self._empty_runtime_frame_result()
         result = tick_pending()
         with self._control_lock:
@@ -704,6 +723,8 @@ class RuntimeService:
             self._record_executed_control(result)
             if str(result.message) == "no pending control command ready":
                 return self._empty_runtime_frame_result()
+            if self._execution_invalidates_control_state(result):
+                self._reset_control_motion_state()
             self.last_execution = self._execution_result_payload(result)
             self._attach_execution_to_last_control(self.last_execution)
             self._record_control_frame()
@@ -720,6 +741,26 @@ class RuntimeService:
             isinstance(metadata, dict)
             and metadata.get("action") in {"replace_plan", "hold_latest"}
         )
+
+    @classmethod
+    def _execution_invalidates_control_state(cls, result: Any) -> bool:
+        if bool(getattr(result, "sent", False)):
+            return False
+        metadata = getattr(result, "metadata", {}) or {}
+        action = str(metadata.get("action") or "") if isinstance(metadata, dict) else ""
+        if cls._execution_is_pending_latest_replace(result):
+            return False
+        return action not in {
+            "scheduler_superseded",
+            "executor_superseded",
+            "scheduler_idle",
+            "no_pending_state",
+        } and str(getattr(result, "message", "")) != "no pending control command ready"
+
+    def _pending_control_has_active_recoil(self) -> bool:
+        control = self.last_control if isinstance(self.last_control, dict) else {}
+        pipeline = control.get("pipeline")
+        return bool(isinstance(pipeline, dict) and pipeline.get("recoil_active") is True)
 
     @staticmethod
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
@@ -2038,6 +2079,13 @@ class RuntimeService:
             control_now_ns,
             left_only=True,
         )
+        left_trigger_fresh = self._box_input_is_fresh(
+            hardware_input,
+            control_now_ns,
+        )
+        left_trigger_active = bool(hardware_input.left and left_trigger_fresh)
+        if not left_trigger_active:
+            left_trigger_hold_ms = 0.0
         activation_delay_ms = max(
             0.0,
             float(shared_control.trigger_activation_delay_ms),
@@ -2063,7 +2111,7 @@ class RuntimeService:
                 selector_debug=selector_debug,
                 control_now_ts_ns=control_now_ns,
                 trigger_active=algorithm_trigger_active,
-                left_trigger_active=bool(hardware_input.left),
+                left_trigger_active=left_trigger_active,
                 left_trigger_hold_ms=left_trigger_hold_ms,
                 measurement_dt_ms=(
                     float(measurement_dt_ms)
@@ -2085,7 +2133,7 @@ class RuntimeService:
                         if isinstance(measurement_dt_ms, (int, float))
                         else None
                     ),
-                    left_trigger_active=bool(hardware_input.left),
+                    left_trigger_active=left_trigger_active,
                     left_trigger_hold_ms=left_trigger_hold_ms,
                 )
             )
@@ -2250,7 +2298,8 @@ class RuntimeService:
             "trigger_hold_ms": trigger_hold_ms,
             "trigger_activation_delay_ms": activation_delay_ms,
             "trigger_activation_ready": trigger_activation_ready,
-            "left_trigger_active": bool(hardware_input.left),
+            "left_trigger_active": left_trigger_active,
+            "left_trigger_fresh": left_trigger_fresh,
             "left_trigger_hold_ms": left_trigger_hold_ms,
             "trigger_requirement": trigger_requirement,
             "trigger_reason": str(
@@ -2876,6 +2925,18 @@ class RuntimeService:
             return 0.0
         return max(0.0, (int(now_ns) - min(starts)) / 1e6)
 
+    def _box_input_is_fresh(self, state: BoxInputState, now_ns: int) -> bool:
+        raw = state.raw if isinstance(state.raw, dict) else {}
+        sample_ts_ns = int(raw.get("sample_ts_ns") or 0)
+        if sample_ts_ns <= 0:
+            return False
+        poll_interval_ms = max(
+            1.0,
+            float(self.config.control.scheduler_interval_ms),
+        )
+        max_age_ms = max(50.0, poll_interval_ms * 5.0)
+        return 0.0 <= (int(now_ns) - sample_ts_ns) / 1e6 <= max_age_ms
+
     def _create_control_algorithm_registry(self, config: RuntimeConfig) -> AlgorithmRegistry:
         algorithm_id = str(config.control.active_algorithm)
         controller = (
@@ -2930,10 +2991,8 @@ class RuntimeService:
                     * max_plan_steps,
                     recoil_enabled=bool(shared.recoil_enabled),
                     recoil_start_delay_ms=float(shared.recoil_start_delay_ms),
-                    recoil_y_rate_counts_s=float(shared.recoil_y_rate_counts_s),
-                    recoil_ramp_up_ms=float(shared.recoil_ramp_up_ms),
-                    recoil_max_counts_per_observation=float(
-                        shared.recoil_max_counts_per_observation
+                    recoil_y_counts_per_observation=float(
+                        shared.recoil_y_counts_per_observation
                     ),
                 ),
                 calibrated_angular=calibrated_config,
@@ -2983,10 +3042,8 @@ class RuntimeService:
                 recoil=DualPhaseRobustRecoilConfig(
                     enabled=bool(config.control.shared.recoil_enabled),
                     start_delay_ms=float(config.control.shared.recoil_start_delay_ms),
-                    y_rate_counts_s=float(config.control.shared.recoil_y_rate_counts_s),
-                    ramp_up_ms=float(config.control.shared.recoil_ramp_up_ms),
-                    max_counts_per_observation=float(
-                        config.control.shared.recoil_max_counts_per_observation
+                    y_counts_per_observation=float(
+                        config.control.shared.recoil_y_counts_per_observation
                     ),
                 ),
                 atan=DualPhaseRobustAtanControllerConfig(
