@@ -144,6 +144,47 @@
   font-size: 13px;
 }
 
+.motion-capture-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+  padding: 10px 0 0;
+}
+
+.motion-capture-strip span {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-3, 8px);
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-align: center;
+}
+
+.motion-capture-strip b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 14px;
+}
+
+.motion-capture-strip .good {
+  border-color: var(--status-normal-border);
+  background: var(--status-normal-bg);
+}
+
+.motion-capture-strip .pending {
+  border-color: var(--status-running-border);
+  background: var(--status-running-bg);
+}
+
+.motion-capture-strip .warn {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
 .profile-card {
   padding: 18px;
 }
@@ -223,5 +264,9 @@
 
   .motion-grid {
     grid-template-columns: 1fr;
+  }
+
+  .motion-capture-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

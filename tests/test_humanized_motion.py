@@ -65,13 +65,59 @@ def test_training_derives_fitts_and_progress_curve_from_samples(tmp_path) -> Non
             ],
         })
     profile = repository.train_profile(session["session_id"], "trained")
-    assert profile["profile_version"] == 2
+    assert profile["profile_version"] == 3
     assert profile["timing"]["model"] == "fitts"
     assert profile["timing"]["fitts_b_ms"] > 15.0
     assert len(profile["progress_curve"]) == 16
     assert profile["progress_curve"][0] == 0.0
     assert profile["progress_curve"][-1] == 1.0
     assert profile["runtime_parameters"]["correction_start_ratio"] != 0.68
+
+
+def test_training_separates_reaction_delay_from_mouse_movement_time(tmp_path) -> None:
+    repository = MotionProfileRepository(tmp_path)
+    session = repository.create_session("timing")
+    result = repository.add_sample(session["session_id"], {
+        "target_x": 220.0,
+        "target_y": 100.0,
+        "radius_px": 20.0,
+        "target_spawn_us": 0,
+        "first_motion_us": 100_000,
+        "click_us": 300_000,
+        "points": [
+            {"t_us": 0, "x": 20.0, "y": 100.0},
+            {"t_us": 100_000, "x": 22.0, "y": 100.0},
+            {"t_us": 180_000, "x": 100.0, "y": 100.0},
+            {"t_us": 250_000, "x": 190.0, "y": 100.0},
+            {"t_us": 300_000, "x": 220.0, "y": 100.0},
+        ],
+        "capture": {"event_count": 4, "max_dispatch_delay_ms": 2.0},
+    })
+    assert result["quality"] == "valid"
+    assert result["metrics"]["reaction_time_ms"] == 100.0
+    assert result["metrics"]["movement_duration_ms"] == 200.0
+    profile = repository.train_profile(session["session_id"], "timing")
+    assert profile["features"]["median_reaction_ms"] == 100.0
+    assert profile["features"]["median_duration_ms"] == 200.0
+
+
+def test_main_thread_dispatch_stall_marks_sample_low_quality(tmp_path) -> None:
+    repository = MotionProfileRepository(tmp_path)
+    session = repository.create_session("stall")
+    result = repository.add_sample(session["session_id"], {
+        "target_x": 120.0,
+        "target_y": 0.0,
+        "radius_px": 20.0,
+        "points": [
+            {"t_us": 0, "x": 0.0, "y": 0.0},
+            {"t_us": 20_000, "x": 10.0, "y": 0.0},
+            {"t_us": 70_000, "x": 80.0, "y": 0.0},
+            {"t_us": 120_000, "x": 120.0, "y": 0.0},
+        ],
+        "capture": {"event_count": 3, "max_dispatch_delay_ms": 140.0},
+    })
+    assert result["quality"] == "low_quality"
+    assert "dispatch_delay" in result["quality_reasons"]
 
 
 def test_runtime_profile_activation_does_not_mutate_static_config(tmp_path) -> None:

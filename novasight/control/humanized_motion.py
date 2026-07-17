@@ -193,8 +193,12 @@ def _direction_scale(profile: dict[str, Any] | None, x: float, y: float) -> floa
     elif abs(y) >= abs(x) * 1.5:
         key = "down" if y >= 0.0 else "up"
     else:
-        key = "diagonal"
-    return _bounded(scales.get(key, 1.0), 0.65, 1.45)
+        vertical = "down" if y >= 0.0 else "up"
+        horizontal = "right" if x >= 0.0 else "left"
+        key = f"{vertical}_{horizontal}"
+    # Profiles before v3 stored every diagonal in one shared bucket.
+    fallback = scales.get("diagonal", 1.0) if "_" in key else 1.0
+    return _bounded(scales.get(key, fallback), 0.65, 1.45)
 
 
 def _direction_reversed(initial_x: float, initial_y: float, x: float, y: float) -> bool:

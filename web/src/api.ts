@@ -26,6 +26,17 @@ export type ModelVersion = {
 export type MotionSession = { session_id: string; name: string; created_at: number; sample_count?: number };
 export type MotionProfile = { profile_id: string; name: string; sample_count: number; quality_score: number; features?: Record<string, number>; runtime_parameters?: Record<string, number> };
 export type MotionProfileRuntime = { enabled: boolean; active_profile: string; profile_name: string; sample_count: number; source: string };
+export type MotionSampleResult = {
+  sample_id: string;
+  quality: "valid" | "low_quality";
+  quality_reasons: string[];
+  metrics: {
+    reaction_time_ms?: number;
+    movement_duration_ms?: number;
+    path_efficiency?: number;
+    max_event_gap_ms?: number;
+  };
+};
 
 export type ModelArtifact = {
   id: number;
@@ -1055,7 +1066,7 @@ export function clearLicenseKey(): Promise<LicenseStatus> {
 
 export function getMotionSessions(): Promise<MotionSession[]> { return requestJson<MotionSession[]>("/api/motion/sessions"); }
 export function createMotionSession(name: string): Promise<MotionSession> { return requestJson<MotionSession>("/api/motion/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); }
-export function addMotionSample(sessionId: string, sample: unknown): Promise<unknown> { return requestJson(`/api/motion/sessions/${encodeURIComponent(sessionId)}/samples`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sample) }); }
+export function addMotionSample(sessionId: string, sample: unknown): Promise<MotionSampleResult> { return requestJson<MotionSampleResult>(`/api/motion/sessions/${encodeURIComponent(sessionId)}/samples`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sample) }); }
 export function trainMotionProfile(sessionId: string, name: string): Promise<MotionProfile> { return requestJson<MotionProfile>("/api/motion/profiles/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, name }) }); }
 export function getMotionProfiles(): Promise<MotionProfile[]> { return requestJson<MotionProfile[]>("/api/motion/profiles"); }
 export function activateMotionProfile(profileId: string): Promise<unknown> { return requestJson(`/api/motion/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }); }
