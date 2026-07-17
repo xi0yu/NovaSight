@@ -9,9 +9,9 @@ const ROLE_META: Record<AimRole, { label: string; caption: string; zoneTop: numb
   // The mannequin is a semantic calibration surface, not one shared 0-100% ruler.
   // A head bbox spans only the head. Body/other bboxes commonly cover the whole
   // person, so their full range intentionally includes both head and torso.
-  head: { label: "头部", caption: "0–100%：头皮到下巴", zoneTop: 4, zoneHeight: 14 },
-  body: { label: "身体", caption: "0–100%：头皮到脚底", zoneTop: 4, zoneHeight: 92 },
-  other: { label: "其他", caption: "0–100%：头皮到脚底", zoneTop: 4, zoneHeight: 92 }
+  head: { label: "头部", caption: "0–100%：头皮到下巴", zoneTop: 0, zoneHeight: 16 },
+  body: { label: "身体", caption: "0–100%：头皮到脚底", zoneTop: 0, zoneHeight: 100 },
+  other: { label: "其他", caption: "0–100%：头皮到脚底", zoneTop: 0, zoneHeight: 100 }
 };
 
 const ROLES: AimRole[] = ["head", "body", "other"];
@@ -27,7 +27,7 @@ type AimTargetRangeProps = {
 };
 
 export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTargetRangeProps) {
-  const stageRef = useRef<HTMLDivElement | null>(null);
+  const roleRangeRefs = useRef<Partial<Record<AimRole, HTMLDivElement | null>>>({});
   const draggingRef = useRef<AimRole | null>(null);
   const [draft, setDraft] = useState(ratios);
 
@@ -38,13 +38,11 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
   }, [ratios]);
 
   const ratioFromPointer = (role: AimRole, clientY: number): number => {
-    const rect = stageRef.current?.getBoundingClientRect();
+    const rect = roleRangeRefs.current[role]?.getBoundingClientRect();
     if (!rect || rect.height <= 0) {
       return draft[role];
     }
-    const meta = ROLE_META[role];
-    const pointerPercent = ((clientY - rect.top) / rect.height) * 100;
-    return clampRatio((pointerPercent - meta.zoneTop) / meta.zoneHeight);
+    return clampRatio((clientY - rect.top) / rect.height);
   };
 
   const updateDraft = (role: AimRole, ratio: number) => {
@@ -93,21 +91,31 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
         <span className="aim-target-axis-lock">X 轴固定居中</span>
       </div>
 
-      <div className="aim-target-stage" ref={stageRef}>
+      <div className="aim-target-stage">
         <div className="aim-target-grid" aria-hidden="true" />
-        <div className="aim-target-center-axis" aria-hidden="true" />
-        <img alt="正面人物训练靶" className="aim-target-mannequin" draggable={false} src={mannequinTarget} />
-        {ROLES.map((role) => {
-          const meta = ROLE_META[role];
-          const top = meta.zoneTop + draft[role] * meta.zoneHeight;
-          return (
-            <div className={`aim-role-guide aim-role-guide-${role}`} key={role} style={{ top: `${top}%` }}>
-              <span className="aim-role-guide-label">
-                <b>{meta.label}</b>
-                <small>{Math.round(draft[role] * 100)}%</small>
-              </span>
-              <span className="aim-role-guide-line before" aria-hidden="true" />
-              <button
+        <div className="aim-target-figure">
+          <div className="aim-target-center-axis" aria-hidden="true" />
+          <img alt="正面人物训练靶" className="aim-target-mannequin" draggable={false} src={mannequinTarget} />
+          {ROLES.map((role) => {
+            const meta = ROLE_META[role];
+            return (
+              <div
+                className={`aim-role-range aim-role-range-${role}`}
+                key={role}
+                ref={(node) => {
+                  roleRangeRefs.current[role] = node;
+                }}
+                style={{ top: `${meta.zoneTop}%`, height: `${meta.zoneHeight}%` }}
+              >
+                <div className={`aim-role-guide aim-role-guide-${role}`} style={{ top: `${draft[role] * 100}%` }}>
+                  <span className="aim-role-guide-leading">
+                    <span className="aim-role-guide-label">
+                      <b>{meta.label}</b>
+                      <small>{Math.round(draft[role] * 100)}%</small>
+                    </span>
+                    <span className="aim-role-guide-line before" aria-hidden="true" />
+                  </span>
+                  <button
                 aria-label={`${meta.label}瞄点，当前为框内 ${Math.round(draft[role] * 100)}%`}
                 aria-orientation="vertical"
                 aria-valuemax={100}
@@ -137,11 +145,13 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
                 }}
                 role="slider"
                 type="button"
-              />
-              <span className="aim-role-guide-line after" aria-hidden="true" />
-            </div>
-          );
-        })}
+                  />
+                  <span className="aim-role-guide-line after" aria-hidden="true" />
+                </div>
+              </div>
+            );
+          })}
+        </div>
         <span className="aim-target-stage-caption">人物头皮为 0%，脚底为 100%；头部类型单独映射头皮到下巴。</span>
       </div>
 

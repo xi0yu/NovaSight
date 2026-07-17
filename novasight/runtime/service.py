@@ -219,6 +219,11 @@ class RuntimeService:
                 "nvinfer_stage_ms_stats",
                 "p50",
             )
+            ingress_ms = _status_statistic(
+                deepstream_status,
+                "inference_input_age_ms_stats",
+                "p50",
+            )
             batch_age_p50 = _status_statistic(
                 deepstream_status,
                 "batch_age_ms_stats",
@@ -235,8 +240,13 @@ class RuntimeService:
             statistics["inference_latency"] = nvinfer_ms
             statistics["inference_ms"] = nvinfer_ms
             statistics["e2e_latency"] = batch_age_p50
+            statistics["stage_ingress_ms"] = ingress_ms
             statistics["stage_engine_ms"] = nvinfer_ms
+            statistics["stage_engine_scope"] = str(
+                deepstream_status.get("nvinfer_timing_scope") or ""
+            )
             statistics["stage_decode_ms"] = parser_decode_ms
+            statistics["stage_batch_build_ms"] = build_ms
             statistics["stage_postprocess_ms"] = build_ms
         statistics["stale_drop_count"] = int(self.stale_drop_count)
         latest_frame_age_ms = self._latest_frame_age_ms()
@@ -1037,6 +1047,10 @@ class RuntimeService:
         done_ns: int,
     ) -> None:
         handoff_start_ns = int(control_start_ns if control_start_ns is not None else done_ns)
+        publish_ts_ns = int(
+            detection_batch.publish_ts_ns or detection_batch.inference_end_ts_ns
+        )
+        control_wait_ms = max(0.0, (handoff_start_ns - publish_ts_ns) / 1e6)
         metadata = dict(getattr(detection_batch, "metadata", {}) or {})
         parser = metadata.get("parser")
         parser_payload = parser if isinstance(parser, dict) else {}
@@ -1055,10 +1069,8 @@ class RuntimeService:
             "decode_ms": decode_ms,
             "nms_ms": None,
             "detection_batch_build_ms": float(metadata.get("detection_batch_build_ms") or 0.0),
-            "handoff_ms": max(
-                0.0,
-                (handoff_start_ns - int(detection_batch.inference_end_ts_ns)) / 1e6,
-            ),
+            "handoff_ms": control_wait_ms,
+            "control_wait_ms": control_wait_ms,
             "postprocess_ms": decode_ms,
             "control_ms": (
                 max(0.0, (int(done_ns) - int(control_start_ns)) / 1e6)

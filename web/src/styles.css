@@ -1278,49 +1278,6 @@ tbody tr:hover {
   box-shadow: 0 0 18px rgba(255, 64, 88, 0.45);
 }
 
-.stats-diagnosis {
-  margin: -10px 0 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  background: rgba(17, 21, 31, 0.04);
-}
-
-.stats-diagnosis.failed {
-  border-color: rgba(255, 64, 88, 0.3);
-  background: rgba(255, 64, 88, 0.08);
-}
-
-.stats-diagnosis strong,
-.stats-diagnosis span,
-.stats-diagnosis em {
-  display: block;
-  min-width: 0;
-}
-
-.stats-diagnosis strong {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 950;
-}
-
-.stats-diagnosis span {
-  margin-top: 5px;
-  color: #5d6672;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1.5;
-}
-
-.stats-diagnosis em {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 760;
-  line-height: 1.5;
-}
-
 .console-card label {
   display: block;
   margin: 10px 0 5px;
@@ -2168,6 +2125,25 @@ tbody tr:hover {
   background: color-mix(in srgb, var(--border-default) 62%, transparent);
 }
 
+.latency-analysis-grid {
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 0.8fr);
+  align-items: start;
+}
+
+.latency-analysis-grid .console-event {
+  grid-template-columns: minmax(172px, auto) minmax(80px, 1fr) 74px;
+}
+
+.latency-boundary-note {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--signal-attention);
+  background: color-mix(in srgb, var(--signal-attention) 7%, var(--bg-surface));
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .console-error {
   margin-bottom: 16px;
   padding: 12px 14px;
@@ -2940,8 +2916,6 @@ tbody tr:hover {
 }
 
 .aim-target-stage {
-  --figure-top: 4%;
-  --figure-height: 92%;
   position: relative;
   min-height: 380px;
   flex: 1;
@@ -2951,6 +2925,11 @@ tbody tr:hover {
     radial-gradient(circle at 50% 42%, rgba(255, 212, 225, 0.2), transparent 42%),
     linear-gradient(160deg, #242129, #121116 72%);
   user-select: none;
+}
+
+.aim-target-figure {
+  position: absolute;
+  inset: 12px 0 28px;
 }
 
 .aim-target-grid {
@@ -2968,8 +2947,7 @@ tbody tr:hover {
 .aim-target-center-axis {
   position: absolute;
   z-index: 1;
-  top: var(--figure-top);
-  height: var(--figure-height);
+  inset-block: 0;
   left: 50%;
   width: 1px;
   background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.24) 14%, rgba(255, 255, 255, 0.24) 86%, transparent);
@@ -2979,13 +2957,21 @@ tbody tr:hover {
   position: absolute;
   z-index: 0;
   left: 50%;
-  top: var(--figure-top);
+  top: 0;
   width: auto;
-  height: var(--figure-height);
+  height: 100%;
   max-width: 74%;
   object-fit: contain;
   filter: drop-shadow(0 16px 22px rgba(0, 0, 0, 0.28));
   transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.aim-role-range {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  width: 100%;
   pointer-events: none;
 }
 
@@ -2995,16 +2981,25 @@ tbody tr:hover {
   z-index: 3;
   left: 25%;
   width: 50%;
-  height: 1px;
+  height: 0;
   display: grid;
-  grid-template-columns: max-content minmax(18px, 1fr) auto minmax(18px, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   color: var(--role-color);
+  pointer-events: none;
 }
 
 .aim-role-guide-body { --role-color: #38d17a; }
 .aim-role-guide-other { --role-color: #4b8df8; }
+
+.aim-role-guide-leading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
 
 .aim-role-guide-label {
   display: flex;
@@ -3016,7 +3011,6 @@ tbody tr:hover {
   background: color-mix(in srgb, #17151a 88%, var(--role-color));
   color: #fff;
   box-shadow: 0 5px 16px rgba(0, 0, 0, 0.28);
-  transform: translateY(-50%);
 }
 
 .aim-role-guide-label b { font-size: 11px; }
@@ -3024,11 +3018,13 @@ tbody tr:hover {
 
 .aim-role-guide-line {
   min-width: 0;
-  width: 100%;
+  width: 48px;
   height: 2px;
   background: var(--role-color);
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--role-color) 66%, transparent));
 }
+
+.aim-role-guide-line.after { justify-self: start; }
 
 .aim-role-guide-body .aim-role-guide-line {
   background: repeating-linear-gradient(90deg, var(--role-color) 0 12px, transparent 12px 19px);
@@ -3048,7 +3044,7 @@ tbody tr:hover {
   border-radius: 50%;
   background: var(--role-color);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--role-color) 32%, transparent), 0 5px 12px rgba(0, 0, 0, 0.35);
-  transform: translateY(-50%);
+  pointer-events: auto;
   cursor: ns-resize;
   touch-action: none;
 }
@@ -3067,7 +3063,7 @@ tbody tr:hover {
 .aim-role-guide-handle:hover,
 .aim-role-guide-handle:focus-visible {
   box-shadow: 0 0 0 6px color-mix(in srgb, var(--role-color) 40%, transparent), 0 6px 16px rgba(0, 0, 0, 0.42);
-  transform: translateY(-50%) scale(1.12);
+  transform: scale(1.12);
 }
 
 .aim-target-stage-caption {
@@ -4978,6 +4974,8 @@ body::before {
   .model-switch-dialog { max-height: calc(100vh - 16px); }
   .model-switch-dialog footer { align-items: stretch; flex-direction: column; }
   .model-switch-dialog footer .console-button { width: 100%; }
+  .latency-analysis-grid .console-event { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+  .latency-analysis-grid .console-event .console-bar { grid-column: 1 / -1; grid-row: 2; }
 }
 
 .visual-hero {

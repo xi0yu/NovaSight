@@ -283,6 +283,14 @@ def test_studio_uses_truthful_runtime_metrics_and_explicit_auto_save_copy() -> N
     assert '<KvCard title="系统状态"' not in source
     assert "<Bar " not in source
     assert "latencyStages.map((stage)" in source
+    assert 'activePage === "stats"' not in source
+    assert 'id: "stats"' not in STUDIO_NAVIGATION.read_text(encoding="utf-8")
+    assert 'label: "采集 / 解码 / ROI / 排队"' in source
+    assert 'label: "nvinfer（含 parser）"' in source
+    assert 'label: "Batch 构建"' in source
+    assert 'label: "控制等待"' in source
+    assert 'title="测量边界"' in source
+    assert "DeepStream 当前没有在解码器、ROI 和内部队列之间分别打点" in source
     assert 'width={30}' not in source
     assert '"暂无样本"' in presentation
 
@@ -446,8 +454,13 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     line_start = styles.index(".aim-role-guide-line {")
     line_rule = styles[line_start:styles.index("}", line_start)]
     assert "width: 50%;" in guide_rule
-    assert "grid-template-columns: max-content minmax(18px, 1fr) auto minmax(18px, 1fr);" in guide_rule
-    assert "width: 100%;" in line_rule
+    assert "grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);" in guide_rule
+    assert "width: 48px;" in line_rule
+    aim_range = (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
+    assert "aim-target-figure" in aim_range
+    assert 'style={{ top: `${draft[role] * 100}%` }}' in aim_range
+    assert "getBoundingClientRect()" in aim_range
+    assert "pointerPercent - meta.zoneTop" not in aim_range
     assert 'caption: "0–100%：头皮到下巴"' in (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
     assert "mannequin-target-v2.webp" in (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
     assert ".aim-role-guide-body .aim-role-guide-handle" in styles

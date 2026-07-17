@@ -341,11 +341,15 @@ export type Statistics = {
   queue_latency?: number;
   inference_latency?: number;
   stale_drop_count?: number;
+  stage_ingress_ms?: number;
   stage_roi_ms?: number;
   stage_engine_ms?: number;
+  stage_engine_scope?: string;
   stage_engine_execute_ms?: number | null;
   stage_decode_ms?: number;
+  stage_batch_build_ms?: number;
   stage_handoff_ms?: number;
+  stage_control_wait_ms?: number;
   stage_postprocess_ms?: number;
   stage_control_ms?: number;
   stage_total_ms?: number;

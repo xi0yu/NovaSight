@@ -1025,7 +1025,9 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
                 "timestamp_source": "first_probe_offset_pts",
                 "latest_frame_age_ms": 6.0,
                 "last_batch_age_ms": 8.0,
+                "inference_input_age_ms_stats": {"p50": 2.1},
                 "nvinfer_stage_ms_stats": {"p50": 5.5},
+                "nvinfer_timing_scope": "sink_to_src_including_parser",
                 "batch_age_ms_stats": {"p50": 9.0},
                 "detection_batch_build_ms_stats": {"p50": 0.4},
                 "parser": {"decode_ms": 0.3},
@@ -1049,7 +1051,9 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
     assert statistics["timestamp_rejected_batches"] == 2
     assert statistics["timestamp_source"] == "first_probe_offset_pts"
     assert statistics["batch_age_ms"] == 8.0
+    assert statistics["stage_ingress_ms"] == 2.1
     assert statistics["stage_engine_ms"] == 5.5
+    assert statistics["stage_engine_scope"] == "sink_to_src_including_parser"
     assert statistics["stage_decode_ms"] == 0.3
     assert statistics["stage_postprocess_ms"] == 0.4
     assert statistics["e2e_latency"] == 9.0

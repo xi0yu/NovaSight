@@ -8,7 +8,6 @@ export type ConsolePage =
   | "control"
   | "params"
   | "control-test"
-  | "stats"
   | "latency";
 
 type NavigationItem = {
@@ -38,7 +37,6 @@ export const CONSOLE_PAGES = new Set<ConsolePage>([
   "control",
   "params",
   "control-test",
-  "stats",
   "latency"
 ]);
 
@@ -64,7 +62,6 @@ const navigationGroups: NavigationGroup[] = [
     label: "诊断工具",
     items: [
       { id: "control-test", label: "控制测试", detail: "硬件输出实验", icon: "kmbox" },
-      { id: "stats", label: "运行统计", detail: "吞吐与丢弃", icon: "performance" },
       { id: "latency", label: "延迟分析", detail: "采集链路时序", icon: "latency" }
     ]
   }
@@ -95,11 +92,6 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
     group: "诊断工具",
     title: "控制测试",
     description: "脱离自动目标链路验证 kmNet 连接和受控移动输出。"
-  },
-  stats: {
-    group: "诊断工具",
-    title: "运行统计",
-    description: "按采集、推理和控制层查看吞吐、覆盖和丢弃情况。"
   },
   latency: {
     group: "诊断工具",

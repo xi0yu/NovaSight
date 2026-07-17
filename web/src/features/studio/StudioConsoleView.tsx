@@ -1146,21 +1146,7 @@ export function StudioConsoleView({
   const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
   const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
   const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
-  const detectionBatchFps = readNumber(statistics?.detection_batch_fps, 0);
   const controlObservationFps = readNumber(statistics?.control_observation_fps, 0);
-  const lastFrameAgeMs = readNumber(statistics?.last_frame_age_ms, 0);
-  const controlLatencyGuardMs = 55;
-  const inferenceThroughputHealthy = readNumber(statistics?.inference_fps, 0) > 0 || detectionBatchFps > 0;
-  const inferenceStaleRejected =
-    inferenceTrace.stale_rejected === true ||
-    inferenceTrace.latest_rejected === true;
-  const inferenceFreshnessBlocked =
-    inferenceStaleRejected ||
-    (
-      inferenceThroughputHealthy &&
-      controlObservationFps <= 0 &&
-      lastFrameAgeMs > controlLatencyGuardMs
-    );
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.kind === "engine" &&
@@ -2890,21 +2876,22 @@ export function StudioConsoleView({
       : health === null
         ? "后端检查中"
         : "后端异常";
-  const hasCaptureLatencySample = runtime?.running === true && readNumber(statistics?.capture_counter, 0) > 0;
   const hasInferenceLatencySample = runtime?.running === true && readNumber(statistics?.inference_counter, 0) > 0;
   const latencyStages = [
-    { label: "Capture", value: hasCaptureLatencySample ? readNullableNumber(capture?.capture_wait_ms) : null, digits: 2 },
-    { label: "Queue", value: hasInferenceLatencySample ? readNullableNumber(statistics?.queue_latency) : null, digits: 1 },
-    { label: "ROI", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_roi_ms) : null, digits: 1 },
-    { label: "nvinfer", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_engine_ms) : null, digits: 1 },
-    { label: "解码/NMS", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_decode_ms) : null, digits: 1 },
-    { label: "映射后处理", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_postprocess_ms) : null, digits: 1 },
-    { label: "Control", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_control_ms) : null, digits: 1 }
+    { label: "采集 / 解码 / ROI / 排队", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_ingress_ms) : null, digits: 1 },
+    { label: "nvinfer（含 parser）", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_engine_ms) : null, digits: 1 },
+    { label: "Batch 构建", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_batch_build_ms) : null, digits: 2 },
+    { label: "控制等待", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_control_wait_ms) : null, digits: 2 },
+    { label: "控制计算", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_control_ms) : null, digits: 2 }
   ];
   const latencyStageTotal = latencyStages.reduce(
     (total, stage) => total + (stage.value !== null && stage.value > 0 ? stage.value : 0),
     0
   );
+  const nvinferTimingScope = readString(statistics?.stage_engine_scope, "");
+  const nvinferTimingScopeLabel = nvinferTimingScope === "sink_to_src_including_parser"
+    ? "sink → src（包含 parser）"
+    : nvinferTimingScope || "sink → src（包含 parser）";
 
   return (
     <section className="console-app">
@@ -4146,64 +4133,17 @@ export function StudioConsoleView({
           )}
         </section>
 
-        <section className={activePage === "stats" ? "console-page active" : "console-page"}>
-          <div className="console-metrics">
-            <Metric title="总 FPS" value={formatNumber(statistics?.capture_fps, 1)} small="FPS" />
-            <Metric title="平均延迟" value={formatNumber(statistics?.e2e_latency, 1)} small="ms" />
-          </div>
-          <div className="console-grid2">
-            <KvCard title="采集统计" rows={[["成功帧", formatOptionalInteger(statistics?.capture_counter)], ["丢弃帧", formatOptionalInteger(statistics?.dropped_counter)], ["抖动", formatOptionalNumber(capture?.frame_period_ms, 2, "ms")]]} />
-            <KvCard
-              title="推理统计"
-              notice={inferenceFreshnessBlocked ? (
-                <div className="stats-diagnosis failed">
-                  <strong>吞吐正常，但批次新鲜度不合格</strong>
-                  <span>
-                    latest 推理有输出，但批次未进入控制；
-                    结束时帧差 {formatNumber(inferenceGenerationLag, 0)}，
-                    最后帧龄 {formatNumber(lastFrameAgeMs, 1)}ms。
-                  </span>
-                  <em>实时控制不会补完旧帧；过期或非 latest 的 DetectionBatch 会被丢弃。</em>
-                </div>
-              ) : null}
-              rows={[
-              ["完成帧", formatOptionalInteger(statistics?.inference_counter)],
-              ["推理 FPS", formatNumber(statistics?.inference_fps, 1)],
-              ["Batch 已发布", formatNumber(statistics?.detection_batch_counter, 0)],
-              ["Batch 已消费", formatNumber(statistics?.detection_batch_consumed_counter, 0)],
-              ["Batch 发布 FPS", formatNumber(statistics?.detection_batch_fps, 1)],
-              ["控制观察 FPS", formatNumber(statistics?.control_observation_fps, 1)],
-              ["跳过帧", formatNumber(statistics?.skipped_counter, 0)],
-              ["推理前过期", formatNumber(statistics?.stale_dropped_batches, 0)],
-              ["时间戳拒绝", formatNumber(statistics?.timestamp_rejected_batches, 0)],
-              ["非单调拒绝", formatNumber(statistics?.non_monotonic_dropped_batches, 0)],
-              ["旧 batch 丢弃", formatNumber(statistics?.stale_drop_count, 0)],
-              ["推理期间发布", formatNumber(inferencePublishedSinceAcquire, 0)],
-              ["结束时帧差", formatNumber(inferenceGenerationLag, 0)],
-              ["时间戳", shortTimestampSource(readString(statistics?.timestamp_source, "-"))],
-              ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
-              ["Batch age", formatNumber(inferenceResultAgeMs, 1)],
-              ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
-              ["推理引擎阶段", formatNumber(statistics?.stage_engine_ms, 1)],
-              ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],
-              ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
-              ["控制", formatNumber(statistics?.stage_control_ms, 1)]
-            ]}
-            />
-          </div>
-        </section>
-
         <section className={activePage === "latency" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="采集等待" value={formatNumber(capture?.capture_wait_ms, 2)} small="ms" />
+            <Metric title="进入 nvinfer" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_ingress_ms, 1) : NO_SAMPLE} small="ms" />
             <Metric title="帧间隔" value={formatNumber(capture?.frame_period_ms, 2)} small="ms" />
-            <Metric title="端到端" value={formatNumber(statistics?.e2e_latency, 1)} small="ms" />
-            <Metric title="队列等待" value={formatNumber(statistics?.queue_latency, 1)} small="ms" />
+            <Metric title="Batch 发布龄" value={hasInferenceLatencySample ? formatNumber(statistics?.e2e_latency, 1) : NO_SAMPLE} small="ms" />
+            <Metric title="控制计算" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_control_ms, 2) : NO_SAMPLE} small="ms" />
           </div>
-          <div className="console-grid2">
+          <div className="console-grid2 latency-analysis-grid">
             <div className="console-card">
               <SectionTitle title="延迟链路" />
-              <p className="console-section-note">条形长度按当前已知阶段耗时总和计算；没有运行样本时不绘制比例。</p>
+              <p className="console-section-note">只累加互不重叠的真实测量区间；没有运行样本时不绘制比例。</p>
               <div className="console-timeline">
                 {latencyStages.map((stage) => (
                   <Event
@@ -4215,7 +4155,18 @@ export function StudioConsoleView({
                 ))}
               </div>
             </div>
-            <KvCard title="采集诊断" rows={[["状态判断", capture?.available ? "采集中" : "等待数据"], ["队列积压", formatOptionalInteger(asRecord(pipeline.queue).size)], ["建议", capture?.available ? "观察队列等待和帧间隔" : "启动后分析"]]} />
+            <KvCard
+              title="测量边界"
+              rows={[
+                ["采集 / 解码 / ROI / 排队", "合并测量到 nvinfer sink"],
+                ["ROI 独立耗时", "当前未单独打点"],
+                ["nvinfer 范围", nvinferTimingScopeLabel],
+                ["解码 / NMS", "parser 已包含在 nvinfer，不重复累加"],
+                ["端到端范围", "采集时间戳 → DetectionBatch 发布"],
+                ["时间戳来源", shortTimestampSource(readString(statistics?.timestamp_source, "暂无样本"))]
+              ]}
+              notice={<p className="latency-boundary-note">DeepStream 当前没有在解码器、ROI 和内部队列之间分别打点，因此不能诚实拆成三个独立数字。</p>}
+            />
           </div>
         </section>
       </main>
