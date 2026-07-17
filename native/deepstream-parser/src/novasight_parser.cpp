@@ -455,7 +455,11 @@ extern "C" bool NvDsInferParseNovaSight(
         std::size_t input_candidates = 0U;
         if (!parse_rockchip_yolov5(
                 output_layers, network, params, objects, input_candidates)) {
-            return fail(5U);
+            // DeepStream versions in the field may abort after a custom parser
+            // returns false. Keep the error in telemetry, but return an empty
+            // detection batch so a malformed contract cannot crash the process.
+            fail(5U);
+            return true;
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - started);
@@ -470,7 +474,8 @@ extern "C" bool NvDsInferParseNovaSight(
         std::size_t input_candidates = 0U;
         if (!parse_efficient_nms(
                 output_layers, network, params, objects, input_candidates)) {
-            return fail(4U);
+            fail(4U);
+            return true;
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - started);
@@ -482,11 +487,13 @@ extern "C" bool NvDsInferParseNovaSight(
         return true;
     }
     if (output_layers.size() != 1U || output_layers.front().buffer == nullptr) {
-        return fail(1U);
+        fail(1U);
+        return true;
     }
     const NvDsInferLayerInfo& layer = output_layers.front();
     if (layer.dataType != FLOAT && layer.dataType != HALF) {
-        return fail(2U);
+        fail(2U);
+        return true;
     }
     const std::size_t class_count = params.numClassesConfigured;
     // Prefer the explicit decoded-box contract when the tensor has six
@@ -499,7 +506,10 @@ extern "C" bool NvDsInferParseNovaSight(
         }
         if (!dims.empty() && dims.back() == 6U) {
             std::size_t input_candidates = 0U;
-            if (!parse_decoded_boxes6(layer, network, params, objects, input_candidates)) return fail(6U);
+            if (!parse_decoded_boxes6(layer, network, params, objects, input_candidates)) {
+                fail(6U);
+                return true;
+            }
             g_last_error_code.store(0U, std::memory_order_relaxed);
             g_last_input_candidates.store(input_candidates, std::memory_order_relaxed);
             g_last_output_candidates.store(objects.size(), std::memory_order_relaxed);
@@ -513,7 +523,8 @@ extern "C" bool NvDsInferParseNovaSight(
     std::size_t candidates = 0;
     bool channels_first = false;
     if (!output_shape(layer, class_count, channels, candidates, channels_first)) {
-        return fail(3U);
+        fail(3U);
+        return true;
     }
     const bool has_objectness = channels == class_count + 5U;
     const std::size_t class_offset = has_objectness ? 5U : 4U;
