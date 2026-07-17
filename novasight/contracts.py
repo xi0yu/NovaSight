@@ -222,6 +222,11 @@ class Track:
     velocity_valid: bool
     missed_frames: int
     last_seen_ns: int
+    state_ts_ns: int
+    state_valid: bool | None
+    prediction_confidence: float
+    identity_confidence: float
+    track_rebuilt: bool
     is_predicted: bool
     is_stale: bool
 
@@ -247,6 +252,11 @@ class Track:
         velocity_valid: bool = False,
         missed_frames: int = 0,
         last_seen_ns: int = 0,
+        state_ts_ns: int = 0,
+        state_valid: bool | None = None,
+        prediction_confidence: float = 1.0,
+        identity_confidence: float = 1.0,
+        track_rebuilt: bool = False,
         is_predicted: bool = False,
         is_stale: bool = False,
     ) -> None:
@@ -276,6 +286,23 @@ class Track:
         object.__setattr__(self, "velocity_valid", bool(velocity_valid))
         object.__setattr__(self, "missed_frames", int(missed_frames))
         object.__setattr__(self, "last_seen_ns", int(last_seen_ns))
+        object.__setattr__(self, "state_ts_ns", int(state_ts_ns))
+        object.__setattr__(
+            self,
+            "state_valid",
+            None if state_valid is None else bool(state_valid),
+        )
+        object.__setattr__(
+            self,
+            "prediction_confidence",
+            max(0.0, min(1.0, float(prediction_confidence))),
+        )
+        object.__setattr__(
+            self,
+            "identity_confidence",
+            max(0.0, min(1.0, float(identity_confidence))),
+        )
+        object.__setattr__(self, "track_rebuilt", bool(track_rebuilt))
         object.__setattr__(self, "is_predicted", bool(is_predicted))
         object.__setattr__(self, "is_stale", bool(is_stale))
 

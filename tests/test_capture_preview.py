@@ -158,3 +158,28 @@ def test_paused_deepstream_preview_stream_stops_without_pulling_jpeg() -> None:
 
     assert chunks == []
     assert backend.calls == 0
+
+
+def test_deepstream_preview_stream_releases_consumer_when_client_stops() -> None:
+    backend = _DeepStreamPreviewBackend()
+    backend.acquired = 0
+    backend.released = 0
+    backend.acquire_preview_consumer = lambda: setattr(
+        backend, "acquired", backend.acquired + 1
+    )
+    backend.release_preview_consumer = lambda: setattr(
+        backend, "released", backend.released + 1
+    )
+
+    chunks = list(
+        _deepstream_mjpeg_frames(
+            backend,
+            preview_fps=30,
+            max_frames=1,
+            max_attempts=1,
+        )
+    )
+
+    assert len(chunks) == 1
+    assert backend.acquired == 1
+    assert backend.released == 1

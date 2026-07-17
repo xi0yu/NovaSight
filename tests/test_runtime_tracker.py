@@ -217,6 +217,7 @@ def test_lost_track_is_not_output_and_restores_same_track_id() -> None:
     assert lost.debug["tracks"][0]["status"] == "LOST"
     assert recovered.restored_track_ids == [1]
     assert recovered.active_tracks[0].track_id == 1
+    assert recovered.active_tracks[0].track_rebuilt is True
     assert recovered.debug["tracks"][0]["status"] == "CONFIRMED"
 
 

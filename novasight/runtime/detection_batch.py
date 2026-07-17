@@ -83,6 +83,15 @@ def _track_from_mapping(value: Any) -> Track | None:
             quality_score=_optional_float(value.get("quality_score")),
             missed_frames=int(value.get("missed_frames", 0) or 0),
             last_seen_ns=int(value.get("last_seen_ns", 0) or 0),
+            state_ts_ns=int(value.get("state_ts_ns", 0) or 0),
+            state_valid=(
+                bool(value["state_valid"])
+                if value.get("state_valid") is not None
+                else None
+            ),
+            prediction_confidence=float(value.get("prediction_confidence", 1.0) or 0.0),
+            identity_confidence=float(value.get("identity_confidence", 1.0) or 0.0),
+            track_rebuilt=bool(value.get("track_rebuilt", False)),
             is_predicted=bool(value.get("is_predicted", False)),
             is_stale=bool(value.get("is_stale", False)),
         )

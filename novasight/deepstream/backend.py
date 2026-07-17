@@ -22,6 +22,7 @@ from .parser_presets import resolve_parser_plan
 
 
 GST_CLOCK_TIME_NONE = (1 << 64) - 1
+PARSER_TELEMETRY_INTERVAL_NS = 100_000_000
 TRUSTED_TIMESTAMP_SOURCES = {
     "gst_clock_base_time_pts",
     "first_probe_offset_pts",
@@ -103,7 +104,8 @@ class DeepStreamObjectBackend:
         self.pipeline_config = pipeline_config
         self._preview_requested = bool(pipeline_config.preview_enabled)
         self._crosshair_requested = bool(pipeline_config.crosshair_enabled)
-        self._preview_active = bool(pipeline_config.preview_enabled)
+        self._preview_active = False
+        self._preview_consumers = 0
         self._preview_disabled_reason = ""
         self._preview_negotiation_fallback_attempted = False
         self.manifest = manifest
@@ -121,6 +123,8 @@ class DeepStreamObjectBackend:
         self._preview_condition = threading.Condition(self._lock)
         self._crosshair_condition = threading.Condition(self._lock)
         self._pipeline: Any | None = None
+        self._gst_module: Any | None = None
+        self._pyds_module: Any | None = None
         self._running = False
         self._terminal_error = False
         self._last_error = ""
@@ -129,6 +133,9 @@ class DeepStreamObjectBackend:
         self._bus_thread: threading.Thread | None = None
         self._dependency_status: DeepStreamDependencyStatus | None = None
         self._parser_telemetry = _ParserTelemetry(self.parser_library_path)
+        self._parser_status_lock = threading.Lock()
+        self._cached_parser_status: dict[str, object] = {}
+        self._cached_parser_status_ts_ns = 0
         self._parser_auto_build: dict[str, object] = {
             "attempted": False,
             "success": self.parser_library_path.is_file(),
@@ -225,12 +232,37 @@ class DeepStreamObjectBackend:
         with self._preview_condition:
             self._preview_active = requested
             if not requested:
+                self._preview_consumers = 0
                 self._latest_preview_jpeg = None
                 self._last_preview_ts_ns = 0
                 self._preview_error = ""
             self._preview_condition.notify_all()
         logger.info("DeepStream hardware preview active=%s", requested)
         return self.status()
+
+    def acquire_preview_consumer(self) -> None:
+        with self._lock:
+            if not self._preview_active:
+                raise RuntimeError("DeepStream hardware preview is paused")
+            self._preview_consumers += 1
+
+    def release_preview_consumer(self) -> None:
+        with self._lock:
+            if self._preview_consumers <= 0:
+                return
+            self._preview_consumers -= 1
+            should_disable = self._preview_consumers == 0 and self._preview_active
+        if not should_disable:
+            return
+        try:
+            self.set_preview_active(False)
+        except RuntimeError:
+            # Pipeline shutdown may race with StreamingResponse cleanup.
+            with self._preview_condition:
+                self._preview_active = False
+                self._latest_preview_jpeg = None
+                self._last_preview_ts_ns = 0
+                self._preview_condition.notify_all()
 
     def wait_until_ready(self, timeout_s: float) -> bool:
         """Wait until this pipeline has published its first valid DetectionBatch."""
@@ -256,6 +288,8 @@ class DeepStreamObjectBackend:
                 f"DeepStream backend unavailable: {dependency.reason}: {dependency.detail}"
             )
         Gst = importlib.import_module("gi.repository.Gst")
+        self._gst_module = Gst
+        self._pyds_module = importlib.import_module("pyds")
         Gst.init(None)
         self._degrade_preview_if_unavailable(Gst)
         pipeline = None
@@ -474,7 +508,7 @@ class DeepStreamObjectBackend:
                 "output_sync_copy_reason": "nvinfer does not expose per-frame copy timing",
                 "nms_ms": None,
                 "nms_timing_reason": "DeepStream cluster-mode=2 has no per-frame NMS timing API",
-                "parser": self._parser_telemetry.snapshot(),
+                "parser": self._parser_status_snapshot(now_ns=now_ns, force=True),
                 "detection_batch_mailbox": self.detection_batch_mailbox.status(),
                 "uptime_ms": uptime_ms,
             }
@@ -558,6 +592,7 @@ class DeepStreamObjectBackend:
             crosshair_enabled=False,
         )
         self._preview_active = False
+        self._preview_consumers = 0
         self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(self._preview_disabled_reason)
 
@@ -589,7 +624,7 @@ class DeepStreamObjectBackend:
         self._timestamp_correlation_misses = 0
         self._object_meta_frames = 0
         self._preview_frames = 0
-        self._preview_active = bool(self.pipeline_config.preview_enabled)
+        self._preview_active = False
         self._preview_sequence = 0
         self._latest_preview_jpeg = None
         self._last_preview_ts_ns = 0
@@ -608,6 +643,8 @@ class DeepStreamObjectBackend:
         self._input_age_samples.clear()
         self._inference_samples.clear()
         self._build_samples.clear()
+        self._cached_parser_status = {}
+        self._cached_parser_status_ts_ns = 0
         self._last_progress_log_ns = 0
 
     def _attach_probes(self, Gst: Any, pipeline: Any) -> None:
@@ -649,7 +686,7 @@ class DeepStreamObjectBackend:
         logger.info("DeepStream capture and nvinfer sink/src probes attached")
 
     def _capture_probe(self, _pad: Any, info: Any) -> Any:
-        Gst = importlib.import_module("gi.repository.Gst")
+        Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
         buffer = info.get_buffer()
         if buffer is None:
             return Gst.PadProbeReturn.OK
@@ -662,7 +699,7 @@ class DeepStreamObjectBackend:
         return Gst.PadProbeReturn.OK
 
     def _inference_start_probe(self, _pad: Any, info: Any) -> Any:
-        Gst = importlib.import_module("gi.repository.Gst")
+        Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
         try:
             buffer = info.get_buffer()
             if buffer is None:
@@ -698,7 +735,7 @@ class DeepStreamObjectBackend:
             return Gst.PadProbeReturn.DROP
 
     def _object_meta_probe(self, _pad: Any, info: Any) -> Any:
-        Gst = importlib.import_module("gi.repository.Gst")
+        Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
         try:
             buffer = info.get_buffer()
             if buffer is None:
@@ -707,7 +744,7 @@ class DeepStreamObjectBackend:
             with self._lock:
                 self._output_buffers += 1
                 self._output_samples.append((now_ns, 0.0))
-            pyds = importlib.import_module("pyds")
+            pyds = self._pyds_module or importlib.import_module("pyds")
             batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
             if batch_meta is None:
                 raise RuntimeError("nvinfer output buffer has no NvDsBatchMeta")
@@ -725,7 +762,7 @@ class DeepStreamObjectBackend:
         return Gst.PadProbeReturn.OK
 
     def _preview_jpeg_probe(self, _pad: Any, info: Any) -> Any:
-        Gst = importlib.import_module("gi.repository.Gst")
+        Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
         with self._lock:
             if not self._preview_active:
                 return Gst.PadProbeReturn.OK
@@ -760,7 +797,7 @@ class DeepStreamObjectBackend:
         return Gst.PadProbeReturn.OK
 
     def _crosshair_jpeg_probe(self, _pad: Any, info: Any) -> Any:
-        Gst = importlib.import_module("gi.repository.Gst")
+        Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
         buffer = info.get_buffer()
         if buffer is None:
             return Gst.PadProbeReturn.OK
@@ -871,7 +908,7 @@ class DeepStreamObjectBackend:
         publish_ts_ns = time.monotonic_ns()
         frame_id_value = getattr(frame_meta, "frame_num", None)
         frame_id = int(self._last_frame_id + 1 if frame_id_value is None else frame_id_value)
-        parser = self._parser_telemetry.snapshot()
+        parser = self._parser_status_snapshot(now_ns=publish_ts_ns)
         latency = pipeline_latency_breakdown_ms(
             capture_ts_ns=capture_ts_ns,
             inference_start_ts_ns=inference_start_ts_ns,
@@ -1102,7 +1139,7 @@ class DeepStreamObjectBackend:
 
     def _bus_monitor_loop(self, pipeline: Any) -> None:
         try:
-            Gst = importlib.import_module("gi.repository.Gst")
+            Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
             bus = pipeline.get_bus()
             if bus is None:
                 return
@@ -1198,8 +1235,25 @@ class DeepStreamObjectBackend:
                 "timestamp_source": self._timestamp_source,
                 "last_error": self._last_error,
             }
-        progress["parser"] = self._parser_telemetry.snapshot()
+        progress["parser"] = self._parser_status_snapshot(now_ns=now_ns, force=True)
         logger.info("DeepStream inference progress %s", progress)
+
+    def _parser_status_snapshot(
+        self,
+        *,
+        now_ns: int,
+        force: bool = False,
+    ) -> dict[str, object]:
+        with self._parser_status_lock:
+            if (
+                force
+                or not self._cached_parser_status
+                or int(now_ns) - self._cached_parser_status_ts_ns
+                >= PARSER_TELEMETRY_INTERVAL_NS
+            ):
+                self._cached_parser_status = self._parser_telemetry.snapshot()
+                self._cached_parser_status_ts_ns = int(now_ns)
+            return self._cached_parser_status
 
     def _preview_reason_locked(self) -> str:
         if not self.pipeline_config.preview_enabled:

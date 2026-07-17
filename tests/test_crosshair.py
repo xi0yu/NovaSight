@@ -206,7 +206,7 @@ def test_deepstream_pipeline_adds_independent_crosshair_nvmm_tap(tmp_path) -> No
 
     pipeline = build_deepstream_pipeline(config)
 
-    assert "nvvidconv name=crosshair-crop left=272 right=368 top=272 bottom=368" in pipeline
+    assert "nvvidconv name=crosshair-crop left=912 right=1008 top=492 bottom=588" in pipeline
     assert "nvjpegenc name=crosshair-encoder" in pipeline
     assert "appsink name=crosshair_sink" in pipeline
     assert "video/x-raw,format=BGR" not in pipeline

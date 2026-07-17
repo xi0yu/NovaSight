@@ -87,6 +87,20 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
                 "!",
             ]
         )
+    side_branches_enabled = bool(config.preview_enabled or config.crosshair_enabled)
+    if side_branches_enabled:
+        elements.extend(
+            [
+                "tee name=novasight_source_split",
+                "novasight_source_split.",
+                "!",
+                LATEST_ONLY_QUEUE,
+                "!",
+            ]
+        )
+    # Crop and scale directly into the model tensor geometry. Keeping this as
+    # one nvvidconv pass avoids an intermediate ROI-sized NVMM surface when the
+    # model input is smaller than the control ROI.
     elements.extend(
         [
             (
@@ -97,45 +111,32 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             "!",
             (
                 "video/x-raw(memory:NVMM),format=NV12,"
-                f"width={int(config.roi_width)},height={int(config.roi_height)},"
+                f"width={int(config.model_width)},height={int(config.model_height)},"
                 "pixel-aspect-ratio=1/1"
             ),
-            "!",
-            "tee name=novasight_roi_split",
-            "novasight_roi_split.",
             "!",
             LATEST_ONLY_QUEUE,
         ]
     )
-    if (
-        int(config.roi_width) != int(config.model_width)
-        or int(config.roi_height) != int(config.model_height)
-    ):
-        elements.extend(
-            [
-                "!",
-                "nvvidconv",
-                "!",
-                (
-                    "video/x-raw(memory:NVMM),format=NV12,"
-                    f"width={int(config.model_width)},height={int(config.model_height)},"
-                    "pixel-aspect-ratio=1/1"
-                ),
-                "!",
-                LATEST_ONLY_QUEUE,
-            ]
-        )
     elements.extend(["!", "mux.sink_0"])
     if config.preview_enabled:
         elements.extend(
             [
-                "novasight_roi_split.",
+                "novasight_source_split.",
                 "!",
                 LATEST_ONLY_QUEUE,
                 "!",
-                "valve name=preview-valve drop=false",
+                # Disabled by default: an unattended backend must not encode
+                # preview JPEGs until a client explicitly requests them.
+                "valve name=preview-valve drop=true",
                 "!",
                 f"videorate drop-only=true max-rate={int(config.preview_fps)}",
+                "!",
+                (
+                    "nvvidconv name=preview-crop "
+                    f"left={int(config.roi_left)} right={int(config.roi_right)} "
+                    f"top={int(config.roi_top)} bottom={int(config.roi_bottom)}"
+                ),
                 "!",
                 (
                     "video/x-raw(memory:NVMM),format=NV12,"
@@ -149,13 +150,17 @@ def build_deepstream_pipeline(config: DeepStreamPipelineConfig) -> str:
             ]
         )
     if config.crosshair_enabled:
-        crosshair_left = (int(config.roi_width) - int(config.crosshair_size)) // 2
-        crosshair_top = (int(config.roi_height) - int(config.crosshair_size)) // 2
+        crosshair_left = int(config.roi_left) + (
+            int(config.roi_width) - int(config.crosshair_size)
+        ) // 2
+        crosshair_top = int(config.roi_top) + (
+            int(config.roi_height) - int(config.crosshair_size)
+        ) // 2
         crosshair_right = crosshair_left + int(config.crosshair_size)
         crosshair_bottom = crosshair_top + int(config.crosshair_size)
         elements.extend(
             [
-                "novasight_roi_split.",
+                "novasight_source_split.",
                 "!",
                 LATEST_ONLY_QUEUE,
                 "!",

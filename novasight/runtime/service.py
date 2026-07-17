@@ -1156,14 +1156,14 @@ class RuntimeService:
                 if detection_batch.roi_size is not None
                 else [int(width), int(height)]
             ),
-            "detection_batch_metadata": dict(getattr(detection_batch, "metadata", {}) or {}),
+            "detection_batch_metadata": detection_batch.metadata,
             "latency_source": (
                 "capture_to_object_meta_done"
                 if str((getattr(detection_batch, "metadata", {}) or {}).get("source", ""))
                 == "deepstream_nvinfer"
                 else "custom_tensorrt_done"
             ),
-            "classes": list(detection_batch.classes),
+            "classes": detection_batch.classes,
             "input_width": int(width),
             "input_height": int(height),
             "model_input_width": int(
@@ -2296,6 +2296,7 @@ class RuntimeService:
         raw_error_x = float(pipeline_debug.get("observed_error_x_px", aim_error_x))
         raw_error_y = float(pipeline_debug.get("observed_error_y_px", aim_error_y))
         target_detection_index = self._target_detection_index(context, target)
+        candidate_filter = self._candidate_filter_payload(selector_debug)
         self.last_target = {
             **self._target_payload(target, context),
             "target_detection_index": target_detection_index,
@@ -2322,7 +2323,7 @@ class RuntimeService:
             "target_key": target_key,
             "frame_age_ms": frame_age_ms,
             "capture_ts_ns": context.capture_ts_ns,
-            "candidate_filter": self._candidate_filter_payload(selector_debug),
+            "candidate_filter": candidate_filter,
             "track_diagnostics": track_diagnostics,
             "mouse_observation": mouse_observation_debug,
         }
@@ -2348,8 +2349,8 @@ class RuntimeService:
             "mouse_observation": mouse_observation_debug,
             "selector_state": selection.state,
             "selection_reason": selection.reason,
-            "selector_debug": dict(getattr(self.target_selector, "last_debug", {}) or {}),
-            "candidate_filter": self._candidate_filter_payload(selector_debug),
+            "selector_debug": selector_debug,
+            "candidate_filter": candidate_filter,
             "track_diagnostics": track_diagnostics,
             "target_detection_index": target_detection_index,
             "priority_rank": selection.priority_rank,
@@ -2521,48 +2522,51 @@ class RuntimeService:
         measurement_dt_s: float | None,
     ) -> dict[str, Any]:
         self._prune_executed_control_samples(control_now_ts_ns)
-
-        def totals(start_ns: int, end_ns: int) -> tuple[int, int, int, int, int]:
-            selected = [
-                (dx, dy)
-                for send_ts_ns, dx, dy in self._executed_control_samples
-                if start_ns < send_ts_ns <= end_ns
-            ]
-            return (
-                sum(dx for dx, _ in selected),
-                sum(dy for _, dy in selected),
-                sum(abs(dx) + abs(dy) for dx, dy in selected),
-                sum(abs(dx) for dx, _ in selected),
-                sum(abs(dy) for _, dy in selected),
-            )
-
-        recent: dict[int, tuple[int, int, int, int, int]] = {
-            window_ms: totals(
-                control_now_ts_ns - window_ms * 1_000_000,
-                control_now_ts_ns,
-            )
-            for window_ms in (20, 40, 60)
-        }
+        windows_ms = (20, 40, 60)
+        recent_accumulators = {window_ms: [0, 0, 0, 0, 0] for window_ms in windows_ms}
+        between_accumulator = [0, 0, 0, 0, 0]
         if (
             measurement_dt_s is not None
             and math.isfinite(measurement_dt_s)
             and measurement_dt_s > 0.0
         ):
             previous_capture_ts_ns = capture_ts_ns - int(measurement_dt_s * 1e9)
-            between_observations = totals(previous_capture_ts_ns, capture_ts_ns)
         else:
-            between_observations = (0, 0, 0, 0, 0)
+            previous_capture_ts_ns = None
+        latest_send_x_ts_ns = 0
+        latest_send_y_ts_ns = 0
+        for send_ts_ns, dx, dy in self._executed_control_samples:
+            abs_x = abs(dx)
+            abs_y = abs(dy)
+            if dx != 0:
+                latest_send_x_ts_ns = max(latest_send_x_ts_ns, send_ts_ns)
+            if dy != 0:
+                latest_send_y_ts_ns = max(latest_send_y_ts_ns, send_ts_ns)
+            if send_ts_ns <= control_now_ts_ns:
+                for window_ms, accumulator in recent_accumulators.items():
+                    if send_ts_ns > control_now_ts_ns - window_ms * 1_000_000:
+                        accumulator[0] += dx
+                        accumulator[1] += dy
+                        accumulator[2] += abs_x + abs_y
+                        accumulator[3] += abs_x
+                        accumulator[4] += abs_y
+            if (
+                previous_capture_ts_ns is not None
+                and previous_capture_ts_ns < send_ts_ns <= capture_ts_ns
+            ):
+                between_accumulator[0] += dx
+                between_accumulator[1] += dy
+                between_accumulator[2] += abs_x + abs_y
+                between_accumulator[3] += abs_x
+                between_accumulator[4] += abs_y
+        recent = {
+            window_ms: tuple(values)
+            for window_ms, values in recent_accumulators.items()
+        }
+        between_observations = tuple(between_accumulator)
         recent_abs_40 = recent[40][2]
         recent_abs_x_60 = recent[60][3]
         recent_abs_y_60 = recent[60][4]
-        latest_send_x_ts_ns = max(
-            (send_ts_ns for send_ts_ns, dx, _ in self._executed_control_samples if dx != 0),
-            default=0,
-        )
-        latest_send_y_ts_ns = max(
-            (send_ts_ns for send_ts_ns, _, dy in self._executed_control_samples if dy != 0),
-            default=0,
-        )
         configured_feedback_delay_ns = int(
             max(0.0, float(self.config.control.configured_actuation_delay_s)) * 1e9
         )
@@ -3302,16 +3306,7 @@ class RuntimeService:
                 and not getattr(target, "is_stale", False)
             ),
         }
-        tracker_debug = selector_debug.get("tracker") if isinstance(selector_debug, dict) else None
-        if not isinstance(tracker_debug, dict):
-            tracker_debug = {}
-        rebuilt_track_ids = {
-            int(track_id)
-            for key in ("created_track_ids", "restored_track_ids")
-            for track_id in tracker_debug.get(key, [])
-            if isinstance(track_id, int)
-        }
-        observation_kwargs["track_rebuilt"] = int(target.track_id) in rebuilt_track_ids
+        observation_kwargs["track_rebuilt"] = bool(target.track_rebuilt)
         observation = DualPhaseAtanRobustPredictiveV2Observation(**observation_kwargs)
         decision = self._active_robust_predictive_controller().calculate(observation)
         telemetry = {
@@ -3517,18 +3512,6 @@ class RuntimeService:
             "model_height": preprocess.get("model_height")
             if isinstance(preprocess, dict)
             else None,
-            "detections": [
-                {
-                    "index": index,
-                    "cls": int(detection.cls),
-                    "score": float(detection.score),
-                    "x1": float(detection.x1),
-                    "y1": float(detection.y1),
-                    "x2": float(detection.x2),
-                    "y2": float(detection.y2),
-                }
-                for index, detection in enumerate(context.detections)
-            ],
         }
 
     def _status_int(self, key: str, fallback: int) -> int:

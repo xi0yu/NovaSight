@@ -72,9 +72,10 @@ def test_deepstream_pipeline_is_nvmm_latest_only_with_hardware_jpeg_preview(tmp_
     assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in pipeline
     assert "nvstreammux name=mux batch-size=1 live-source=1" in pipeline
     assert "nvinfer name=primary-infer" in pipeline
-    assert "tee name=novasight_roi_split" in pipeline
+    assert "tee name=novasight_source_split" in pipeline
     assert "nvjpegenc name=preview-encoder" in pipeline
-    assert "valve name=preview-valve drop=false" in pipeline
+    assert "valve name=preview-valve drop=true" in pipeline
+    assert pipeline.index("valve name=preview-valve") < pipeline.index("nvjpegenc name=preview-encoder")
     assert "appsink name=preview_sink" in pipeline
     assert "videoconvert" not in pipeline
     assert "video/x-raw,format=BGR" not in pipeline
@@ -116,6 +117,23 @@ def test_deepstream_pipeline_skips_model_resize_when_roi_already_matches(tmp_pat
     pipeline = build_deepstream_pipeline(config)
 
     assert pipeline.count("nvvidconv") == 1
+
+
+def test_deepstream_pipeline_fuses_crop_and_model_resize_without_side_branches(
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        _pipeline_config(tmp_path),
+        preview_enabled=False,
+        crosshair_enabled=False,
+    )
+
+    pipeline = build_deepstream_pipeline(config)
+
+    assert pipeline.count("nvvidconv") == 1
+    assert "tee name=novasight_source_split" not in pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in pipeline
+    assert "video/x-raw(memory:NVMM),format=NV12,width=480,height=480" not in pipeline
     assert "video/x-raw(memory:NVMM),format=NV12,width=320,height=320" in pipeline
 
 
@@ -235,6 +253,7 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
 
     assert status["loaded"] is True
     assert status["configured"] is True
+    assert status["preview_active"] is False
     assert status["inference_phase"] == "publishing"
     assert status["inference_reason"] == "DetectionBatch is being published"
     assert status["input_fps"] == 2.0
@@ -295,6 +314,34 @@ def test_deepstream_status_computes_percentiles_outside_stream_lock(
     assert lock_states == [False, False, False, False]
 
 
+def test_parser_telemetry_is_sampled_at_low_frequency_on_frame_path(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+    calls = 0
+
+    class Telemetry:
+        def snapshot(self):
+            nonlocal calls
+            calls += 1
+            return {"decode_calls": calls}
+
+    backend._parser_telemetry = Telemetry()
+
+    first = backend._parser_status_snapshot(now_ns=1_000_000_000)
+    second = backend._parser_status_snapshot(now_ns=1_050_000_000)
+    third = backend._parser_status_snapshot(now_ns=1_100_000_000)
+
+    assert first["decode_calls"] == 1
+    assert second["decode_calls"] == 1
+    assert third["decode_calls"] == 2
+    assert calls == 2
+
+
 def test_missing_hardware_preview_encoder_does_not_disable_inference(tmp_path: Path) -> None:
     _engine, manifest = _manifest(tmp_path)
     backend = DeepStreamObjectBackend(
@@ -347,6 +394,36 @@ def test_deepstream_preview_valve_pauses_encoding_without_stopping_inference(tmp
     assert status["preview_active"] is False
     assert status["preview_available"] is False
     assert "paused" in str(status["preview_reason"])
+
+
+def test_last_deepstream_preview_consumer_pauses_encoder(tmp_path: Path) -> None:
+    _engine, manifest = _manifest(tmp_path)
+    backend = DeepStreamObjectBackend(
+        pipeline_config=_pipeline_config(tmp_path),
+        manifest=manifest,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+        max_publish_age_ms=55.0,
+    )
+
+    class Valve:
+        drop = True
+
+        def set_property(self, name: str, value: bool) -> None:
+            assert name == "drop"
+            self.drop = value
+
+    valve = Valve()
+    backend._pipeline = SimpleNamespace(
+        get_by_name=lambda name: valve if name == "preview-valve" else None
+    )
+    backend._running = True
+    backend.set_preview_active(True)
+
+    backend.acquire_preview_consumer()
+    backend.release_preview_consumer()
+
+    assert valve.drop is True
+    assert backend.preview_active is False
 
 
 def test_deepstream_backend_auto_builds_missing_parser_before_dependency_check(

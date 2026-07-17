@@ -316,37 +316,45 @@ def _deepstream_mjpeg_frames(
     last_sequence: int | None = None
     preview_fps = _normalize_preview_fps(preview_fps)
     timeout_s = 1.0 / preview_fps
-    while True:
-        if config_getter is not None:
-            config = config_getter()
-            consumers = getattr(config, "consumers", None)
-            if consumers is not None and getattr(consumers, "preview", True) is not True:
+    acquire = getattr(backend, "acquire_preview_consumer", None)
+    release = getattr(backend, "release_preview_consumer", None)
+    if callable(acquire):
+        acquire()
+    try:
+        while True:
+            if config_getter is not None:
+                config = config_getter()
+                consumers = getattr(config, "consumers", None)
+                if consumers is not None and getattr(consumers, "preview", True) is not True:
+                    break
+            if max_frames is not None and emitted >= max_frames:
                 break
-        if max_frames is not None and emitted >= max_frames:
-            break
-        if max_attempts is not None and attempts >= max_attempts:
-            break
-        if not backend.running:
-            break
-        if getattr(backend, "preview_active", True) is False:
-            break
-        attempts += 1
-        result = backend.wait_preview_jpeg(
-            after_sequence=last_sequence,
-            timeout_s=timeout_s,
-        )
-        if result is None:
-            continue
-        sequence, payload = result
-        last_sequence = int(sequence)
-        emitted += 1
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n"
-            + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
-            + payload
-            + b"\r\n"
-        )
+            if max_attempts is not None and attempts >= max_attempts:
+                break
+            if not backend.running:
+                break
+            if getattr(backend, "preview_active", True) is False:
+                break
+            attempts += 1
+            result = backend.wait_preview_jpeg(
+                after_sequence=last_sequence,
+                timeout_s=timeout_s,
+            )
+            if result is None:
+                continue
+            sequence, payload = result
+            last_sequence = int(sequence)
+            emitted += 1
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+                + payload
+                + b"\r\n"
+            )
+    finally:
+        if callable(release):
+            release()
 
 
 def _mjpeg_frames(

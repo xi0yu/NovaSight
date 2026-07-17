@@ -186,6 +186,64 @@ def test_missing_tracker_estimate_falls_back_to_the_same_filtered_aim_point() ->
     assert estimate.y != pytest.approx(track.cy)
 
 
+def test_track_motion_contract_does_not_depend_on_ui_debug_payload() -> None:
+    track = Track(
+        track_id=7,
+        cls=0,
+        score=0.9,
+        x=10,
+        y=20,
+        w=40,
+        h=100,
+        filtered_aim_px=(31.5, 43.5),
+        velocity_px_s=(120.0, -30.0),
+        velocity_valid=True,
+        state_ts_ns=1_000_000,
+        state_valid=True,
+        prediction_confidence=0.8,
+        identity_confidence=0.7,
+    )
+
+    estimate = target_motion_estimate_from_debug(
+        track=track,
+        capture_ts_ns=2_000_000,
+        tracker_debug={},
+    )
+
+    assert (estimate.x, estimate.y) == pytest.approx((31.5, 43.5))
+    assert (estimate.vx, estimate.vy) == pytest.approx((120.0, -30.0))
+    assert estimate.state_ts_ns == 1_000_000
+    assert estimate.prediction_confidence == pytest.approx(0.8)
+    assert estimate.identity_confidence == pytest.approx(0.7)
+
+
+def test_track_motion_contract_preserves_invalid_kalman_state() -> None:
+    track = Track(
+        track_id=8,
+        cls=0,
+        score=0.9,
+        x=10,
+        y=20,
+        w=40,
+        h=100,
+        filtered_aim_px=(31.5, 43.5),
+        velocity_px_s=(500.0, 200.0),
+        velocity_valid=True,
+        state_ts_ns=1_000_000,
+        state_valid=False,
+        is_predicted=True,
+    )
+
+    estimate = target_motion_estimate_from_debug(
+        track=track,
+        capture_ts_ns=2_000_000,
+        tracker_debug={},
+    )
+
+    assert estimate.valid is False
+    assert estimate.predicted is True
+
+
 def test_mouse_controller_uses_predicted_error_for_p() -> None:
     controller = MouseController(_config(calibrated={"kd_x": 0.0, "kp_y": 0.0}))
 

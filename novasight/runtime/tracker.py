@@ -62,7 +62,8 @@ class TrackRecord:
     identity_confidence: float = 1.0
     lost_since_ts_ns: int | None = None
 
-    def to_output(self) -> Track:
+    def to_output(self, *, rebuilt: bool = False) -> Track:
+        estimate = self.estimate
         return Track(
             track_id=self.track_id,
             cls=self.class_id,
@@ -75,7 +76,20 @@ class TrackRecord:
             velocity_valid=self.velocity_valid,
             missed_frames=self.missed_count,
             last_seen_ns=self.last_capture_ts_ns,
-            is_predicted=False,
+            state_ts_ns=(
+                int(estimate.state_ts_ns)
+                if estimate is not None
+                else int(self.last_capture_ts_ns)
+            ),
+            state_valid=(bool(estimate.valid) if estimate is not None else None),
+            prediction_confidence=(
+                float(estimate.prediction_confidence)
+                if estimate is not None
+                else 1.0
+            ),
+            identity_confidence=float(self.identity_confidence),
+            track_rebuilt=bool(rebuilt),
+            is_predicted=(bool(estimate.predicted) if estimate is not None else False),
             is_stale=False,
         )
 
@@ -229,7 +243,11 @@ class RuntimeTracker:
             track for track in self._tracks.values() if track.status == "CONFIRMED"
         ]
         active_records.sort(key=lambda item: item.track_id)
-        active_tracks = [track.to_output() for track in active_records]
+        rebuilt_track_ids = set(created_track_ids) | set(restored_track_ids)
+        active_tracks = [
+            track.to_output(rebuilt=track.track_id in rebuilt_track_ids)
+            for track in active_records
+        ]
         lost_count = sum(track.status == "LOST" for track in self._tracks.values())
         tentative_count = sum(track.status == "TENTATIVE" for track in self._tracks.values())
         state: GlobalTrackerState = (

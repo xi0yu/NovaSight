@@ -11,6 +11,8 @@
 
 namespace {
 
+constexpr std::size_t kInitialObjectCapacity = 256U;
+
 std::atomic<std::uint64_t> g_decode_calls{0};
 std::atomic<std::uint64_t> g_parse_failures{0};
 std::atomic<std::uint64_t> g_last_error_code{0};
@@ -154,7 +156,10 @@ extern "C" bool NvDsInferParseNovaSight(
     }
     const bool has_objectness = channels == class_count + 5U;
     const std::size_t class_offset = has_objectness ? 5U : 4U;
-    objects.reserve(objects.size() + candidates);
+    // Raw YOLO outputs commonly contain thousands of candidates, while only a
+    // small post-threshold subset becomes NvDs objects. Reserving for every raw
+    // candidate caused a large allocation on every inference callback.
+    objects.reserve(objects.size() + std::min(candidates, kInitialObjectCapacity));
     for (std::size_t candidate = 0; candidate < candidates; ++candidate) {
         const float cx = prediction_value(
             layer, candidate, 0U, channels, candidates, channels_first);

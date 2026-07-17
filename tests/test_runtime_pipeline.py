@@ -4,6 +4,7 @@ import copy
 import math
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
@@ -1091,6 +1092,34 @@ def test_detection_batch_latency_stages_form_one_non_overlapping_timeline() -> N
     assert timings["accounted_ms"] == pytest.approx(19.0)
     assert timings["total_ms"] == pytest.approx(19.0)
     assert timings["unattributed_ms"] == pytest.approx(0.0)
+
+
+def test_executed_control_activity_aggregates_all_windows_in_one_result() -> None:
+    service = object.__new__(RuntimeService)
+    service.config = SimpleNamespace(
+        control=SimpleNamespace(configured_actuation_delay_s=0.004)
+    )
+    service._executed_control_samples = deque(
+        [
+            (945_000_000, 1, 0),
+            (965_000_000, 2, -1),
+            (985_000_000, -3, 4),
+        ]
+    )
+
+    activity = service._executed_control_activity(
+        control_now_ts_ns=1_000_000_000,
+        capture_ts_ns=990_000_000,
+        measurement_dt_s=0.030,
+    )
+
+    assert activity["executed_counts_last_20ms_x"] == -3
+    assert activity["executed_counts_last_40ms_x"] == -1
+    assert activity["executed_counts_last_60ms_x"] == 0
+    assert activity["executed_counts_since_previous_observation_x"] == -1
+    assert activity["executed_counts_since_previous_observation_y"] == 3
+    assert activity["latest_successful_send_x_ts_ns"] == 985_000_000
+    assert activity["latest_successful_send_y_ts_ns"] == 985_000_000
 
 
 def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acquire() -> None:

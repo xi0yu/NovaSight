@@ -87,6 +87,20 @@ def target_motion_estimate_from_debug(
     tracker_debug: dict,
 ) -> TargetMotionEstimate:
     fallback_x, fallback_y = track.filtered_aim_px
+    if track.state_valid is not None:
+        velocity_x, velocity_y = track.velocity_px_s
+        return TargetMotionEstimate(
+            track_id=int(track.track_id),
+            state_ts_ns=int(track.state_ts_ns or capture_ts_ns or 0),
+            x=float(fallback_x),
+            y=float(fallback_y),
+            vx=float(velocity_x if track.velocity_valid else 0.0),
+            vy=float(velocity_y if track.velocity_valid else 0.0),
+            valid=bool(track.state_valid),
+            predicted=bool(track.is_predicted),
+            prediction_confidence=float(track.prediction_confidence),
+            identity_confidence=float(track.identity_confidence),
+        )
     tracker = tracker_debug.get("tracker") if isinstance(tracker_debug, dict) else None
     tracks = tracker.get("tracks") if isinstance(tracker, dict) else None
     track_payload = {}
