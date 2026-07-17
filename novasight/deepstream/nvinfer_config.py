@@ -111,6 +111,13 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
     if str(manifest.input.layout).upper() != "NCHW" or len(manifest.input.shape) != 4:
         raise ValueError("deepstream_nvinfer requires a four-dimensional NCHW input")
     parser = str(manifest.postprocess.parser).strip().lower()
+    if parser == "decoded_nms":
+        if str(manifest.output.format).strip().lower() != "decoded_boxes6":
+            raise ValueError("decoded_nms requires decoded_boxes6 output format")
+        shape = [int(value) for value in manifest.output.shape]
+        if len(shape) != 3 or shape[0] != 1 or shape[2] != 6:
+            raise ValueError("decoded_nms requires output shape [1,N,6]")
+        return resolve_efficient_nms_parser_plan(manifest.postprocess.parser_preset)
     if parser == "rockchip_yolov5":
         if str(manifest.output.format).strip().lower() != "rockchip_yolov5_three_scale":
             raise ValueError("Rockchip YOLOv5 parser requires a three-scale output format")

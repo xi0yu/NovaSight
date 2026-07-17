@@ -251,6 +251,10 @@ def _contract_from_io_tensors(
             else _select_raw_yolo_output(outputs, class_count_hint=class_count_hint)
         )
     )
+    decoded_nms = False
+    if len(outputs) == 1:
+        shape = parse_runtime_shape(outputs[0].get("shape"), "output shape")
+        decoded_nms = len(shape) == 3 and shape[0] == 1 and shape[2] == 6 and shape[1] > 6
     input_name = str(input_tensor.get("name") or "").strip()
     output_name = str(output_tensor.get("name") or "").strip()
     if not input_name or not output_name:
@@ -263,19 +267,21 @@ def _contract_from_io_tensors(
         output_shape=parse_runtime_shape(output_tensor.get("shape"), "output_shape"),
         output_dtype=normalize_tensor_dtype(output_tensor.get("dtype")),
         output_format=(
+            "decoded_boxes6" if decoded_nms else (
             "rockchip_yolov5_three_scale"
             if rockchip_yolov5 is not None
             else (
                 "efficientnms_boxes_scores_classes"
                 if efficient_nms is not None
                 else "yolo_cxcywh_class_scores"
-            )
+            ))
         ),
         postprocess_parser=(
+            "decoded_nms" if decoded_nms else (
             "rockchip_yolov5"
             if rockchip_yolov5 is not None
             else ("efficientnms" if efficient_nms is not None else "yolo")
-        ),
+        )),
         output_bindings=tuple(
             TensorSpec(
                 name=str(item.get("name") or ""),
@@ -520,7 +526,7 @@ def recommend_engine_manifest(
             output_has_objectness=True,
             parser_plan=parser_plan,
         )
-    if contract.postprocess_parser == "efficientnms":
+    if contract.postprocess_parser in {"efficientnms", "decoded_nms"}:
         efficient_classes = list(registered_classes)
         if _automatic_class_names(efficient_classes):
             inferred_count = (
