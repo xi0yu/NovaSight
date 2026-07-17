@@ -2205,6 +2205,10 @@ class RuntimeService:
         aim_y = float(mouse_observation_debug.get("predicted_y_px") or 0.0)
         pipeline_debug = dict(command.debug)
         pipeline_debug["class_id"] = int(target.cls)
+        pipeline_debug["active_class_profile"] = str(
+            self.config.inference.detection_class_profile
+        )
+        pipeline_debug["effective_aim_role"] = self._effective_aim_role(int(target.cls))
         pipeline_debug["effective_aim_y_ratio"] = active_aim_y_ratio
         predicted_source = bool(getattr(target, "is_predicted", False))
         trajectory_generation = int(
@@ -2969,6 +2973,14 @@ class RuntimeService:
             int(class_id): float(getattr(ratios, str(role), ratios.other))
             for class_id, role in raw_roles.items()
         }
+
+    def _effective_aim_role(self, class_id: int) -> str:
+        profile_name = str(
+            getattr(self.config.inference, "detection_class_profile", "default")
+        )
+        by_profile = getattr(self.config.control.aim, "class_roles", {}) or {}
+        role = str(by_profile.get(profile_name, {}).get(str(int(class_id)), "other"))
+        return role if role in {"head", "body", "other"} else "other"
 
     def _effective_aim_y_ratio(self, class_id: int) -> float:
         return resolve_aim_y_ratio(

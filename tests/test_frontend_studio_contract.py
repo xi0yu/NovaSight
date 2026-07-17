@@ -116,6 +116,20 @@ def test_studio_deepstream_preview_uses_backend_hardware_jpeg_status() -> None:
     assert '{showImage ? <img alt="实时画面 / ROI"' in source
 
 
+def test_studio_preview_does_not_turn_off_when_card_temporarily_leaves_viewport() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    preview_call_start = source.index("<PreviewFrame")
+    preview_call_end = source.index("/>", preview_call_start)
+    preview_call = source[preview_call_start:preview_call_end]
+    preview_component_start = source.index("function PreviewFrame(")
+    preview_component_end = source.index("const liveDetections", preview_component_start)
+    preview_visibility_logic = source[preview_component_start:preview_component_end]
+
+    assert "onNotVisible" not in preview_call
+    assert "IntersectionObserver" not in preview_visibility_logic
+
+
 def test_studio_preview_holds_one_transient_miss_and_keeps_box_nodes_stable() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 

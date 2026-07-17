@@ -147,7 +147,7 @@ def test_nvinfer_config_uses_native_decode_and_exactly_one_nms(tmp_path: Path) -
 
     assert "network-mode=2" in text
     assert "output-tensor-meta=0" in text
-    assert "parse-bbox-func-name=NvDsInferParseNovaSight" in text
+    assert "parse-bbox-func-name=NvDsInferParseNovaSightRaw" in text
     assert "cluster-mode=2" in text
     assert "num-detected-classes=2" in text
 
@@ -281,7 +281,7 @@ def test_deepstream_status_exposes_ui_metrics_without_cpu_preview_contract(tmp_p
     }
     assert status["postprocess"]["parser_preset"] == "auto"
     assert status["postprocess"]["compatibility"] == "yolov8_yolo11"
-    assert status["postprocess"]["parser_function"] == "NvDsInferParseNovaSight"
+    assert status["postprocess"]["parser_function"] == "NvDsInferParseNovaSightRaw"
     assert status["postprocess"]["nms_owner"] == "deepstream"
     assert "preview" not in status
 
@@ -396,7 +396,7 @@ def test_deepstream_preview_valve_pauses_encoding_without_stopping_inference(tmp
     assert "paused" in str(status["preview_reason"])
 
 
-def test_last_deepstream_preview_consumer_pauses_encoder(tmp_path: Path) -> None:
+def test_preview_stream_disconnect_does_not_override_user_preview_choice(tmp_path: Path) -> None:
     _engine, manifest = _manifest(tmp_path)
     backend = DeepStreamObjectBackend(
         pipeline_config=_pipeline_config(tmp_path),
@@ -422,8 +422,9 @@ def test_last_deepstream_preview_consumer_pauses_encoder(tmp_path: Path) -> None
     backend.acquire_preview_consumer()
     backend.release_preview_consumer()
 
-    assert valve.drop is True
-    assert backend.preview_active is False
+    assert valve.drop is False
+    assert backend.preview_active is True
+    assert backend._preview_consumers == 0
 
 
 def test_deepstream_backend_auto_builds_missing_parser_before_dependency_check(
@@ -1179,6 +1180,61 @@ def test_missing_manifest_supports_four_output_efficient_nms_engine(
     ]
     assert "output-blob-names=num_dets;det_boxes;det_scores;det_classes" in nvinfer
     assert "cluster-mode=4" in nvinfer
+
+
+@pytest.mark.parametrize(
+    ("candidate_count", "expected_parser", "expected_function"),
+    [
+        (6300, "yolo", "NvDsInferParseNovaSightRaw"),
+        (300, "decoded_nms", "NvDsInferParseNovaSightDecodedNms"),
+    ],
+)
+def test_six_column_output_uses_density_to_resolve_raw_vs_decoded_contract(
+    tmp_path: Path,
+    candidate_count: int,
+    expected_parser: str,
+    expected_function: str,
+) -> None:
+    engine_path = tmp_path / f"six-column-{candidate_count}.engine"
+    engine_path.write_bytes(b"engine")
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "io_tensors": [
+                {
+                    "name": "images",
+                    "mode": "input",
+                    "shape": [1, 3, 640, 640],
+                    "dtype": "float16",
+                },
+                {
+                    "name": "output0",
+                    "mode": "output",
+                    "shape": [1, candidate_count, 6],
+                    "dtype": "float16",
+                },
+            ],
+        }
+    )
+
+    manifest, _ = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="six-column",
+        display_name="Six column",
+        classes=["enemy"],
+        registered_input_shape="1x3x640x640",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+    )
+    nvinfer = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+    )
+
+    assert manifest.postprocess.parser == expected_parser
+    assert f"parse-bbox-func-name={expected_function}" in nvinfer
 
 
 def test_missing_manifest_supports_rockchip_yolov5_three_scale_heads(

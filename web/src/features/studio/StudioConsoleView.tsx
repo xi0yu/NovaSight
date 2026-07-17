@@ -3412,7 +3412,6 @@ export function StudioConsoleView({
                 active={previewActive}
                 togglePending={previewTogglePending}
                 onToggle={(enabled) => void updatePreviewActive(enabled)}
-                onNotVisible={() => void updatePreviewActive(false, { quiet: true, keepalive: true })}
                 imageAvailable={previewImageAvailable}
                 unavailableReason={previewUnavailableReason}
                 runtime={runtime}
@@ -3574,6 +3573,7 @@ export function StudioConsoleView({
               <SectionTitle title="瞄准点与预测" />
               <div className="console-kv">
                 <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, 1, "px")}</b>
+                <span>类别配置 / 瞄点类型</span><b>{`${readString(controlPipeline.active_class_profile, activeDetectionProfile)} / ${readString(controlPipeline.effective_aim_role, "other")}`}</b>
                 <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
                 {dualPhaseActive ? (
                   <>
@@ -5192,7 +5192,6 @@ function PreviewFrame({
   active,
   togglePending,
   onToggle,
-  onNotVisible,
   imageAvailable,
   unavailableReason,
   runtime,
@@ -5202,7 +5201,6 @@ function PreviewFrame({
   active: boolean;
   togglePending: boolean;
   onToggle: (enabled: boolean) => void;
-  onNotVisible: () => void;
   imageAvailable: boolean;
   unavailableReason: string;
   runtime: RuntimeState | null;
@@ -5216,19 +5214,6 @@ function PreviewFrame({
   const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
   const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
-  useEffect(() => {
-    const node = previewRef.current;
-    if (!node || !active || typeof IntersectionObserver === "undefined") {
-      return undefined;
-    }
-    const observer = new IntersectionObserver(([entry]) => {
-      if (!entry.isIntersecting) {
-        onNotVisible();
-      }
-    }, { threshold: 0.05 });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [active, onNotVisible]);
   const liveDetections = readPreviewDetections(vision.detection_items);
   const liveTarget = asRecord(vision.target);
   const overlay = useStablePreviewOverlay(liveDetections, liveTarget);

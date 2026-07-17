@@ -82,6 +82,81 @@ def test_box_input_freshness_expires_stalled_button_sample() -> None:
     assert service._box_input_is_fresh(stale, now_ns) is False
 
 
+def test_class_aim_y_hot_update_changes_the_next_control_observation() -> None:
+    config = RuntimeConfig()
+    config.inference.detection_class_profile = "default"
+    config.inference.detection_class_profiles = {"default": ["body", "head"]}
+    config.control.aim.class_roles = {"default": {"0": "body", "1": "head"}}
+    config.control.aim.role_y_ratios.head = 0.15
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=ExecutorRegistry.from_config(config),
+    )
+    service.last_inference_status.update(
+        {
+            "source_geometry_trusted": True,
+            "source_width": 640,
+            "source_height": 640,
+            "roi_offset_x": 0,
+            "roi_offset_y": 0,
+        }
+    )
+    target = Track(
+        track_id=7,
+        cls=1,
+        score=0.9,
+        x=200.0,
+        y=100.0,
+        w=80.0,
+        h=100.0,
+    )
+    context = FrameContext(
+        frame_id=1,
+        width=640,
+        height=640,
+        capture_ts_ns=1_000_000_000,
+    )
+
+    first = service._mouse_observation_metadata(
+        context=context,
+        target=target,
+        control_metadata={
+            "control_width": 640,
+            "control_height": 640,
+            "capture_geometry_trusted": True,
+        },
+        selector_debug={},
+        control_now_ts_ns=1_001_000_000,
+        measurement_dt_s=None,
+        left_trigger_active=False,
+        left_trigger_hold_ms=0.0,
+    )
+
+    updated = copy.deepcopy(config)
+    updated.control.aim.role_y_ratios.head = 0.75
+    service.update_targeting_config(updated, reset_control_history=True)
+    second = service._mouse_observation_metadata(
+        context=context,
+        target=target,
+        control_metadata={
+            "control_width": 640,
+            "control_height": 640,
+            "capture_geometry_trusted": True,
+        },
+        selector_debug={},
+        control_now_ts_ns=1_002_000_000,
+        measurement_dt_s=None,
+        left_trigger_active=False,
+        left_trigger_hold_ms=0.0,
+    )
+
+    assert first["mouse_observation_debug"]["raw_aim"]["y_ratio"] == pytest.approx(0.15)
+    assert first["mouse_observation"].observed_y_px == pytest.approx(115.0)
+    assert second["mouse_observation_debug"]["raw_aim"]["y_ratio"] == pytest.approx(0.75)
+    assert second["mouse_observation"].observed_y_px == pytest.approx(175.0)
+
+
 def test_failed_device_send_clears_fixed_recoil_residual(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

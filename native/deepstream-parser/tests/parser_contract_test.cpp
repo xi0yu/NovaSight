@@ -9,6 +9,16 @@ extern "C" bool NvDsInferParseNovaSight(
     const NvDsInferNetworkInfo& network,
     const NvDsInferParseDetectionParams& params,
     std::vector<NvDsInferObjectDetectionInfo>& objects);
+extern "C" bool NvDsInferParseNovaSightRaw(
+    const std::vector<NvDsInferLayerInfo>& output_layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects);
+extern "C" bool NvDsInferParseNovaSightDecodedNms(
+    const std::vector<NvDsInferLayerInfo>& output_layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects);
 
 namespace {
 
@@ -101,6 +111,36 @@ bool test_rockchip_yolov5() {
         && std::fabs(object.height - 13.0F) <= 0.01F;
 }
 
+bool test_ambiguous_six_column_contracts_use_explicit_entrypoints() {
+    // The exact same [1,N,6] shape can mean one-class raw YOLOv5 or decoded NMS.
+    // The manifest-selected parser entrypoint, not a shape guess, owns the meaning.
+    float raw[] = {100.0F, 120.0F, 40.0F, 20.0F, 0.9F, 0.8F};
+    NvDsInferLayerInfo raw_layer{"output0", raw, FLOAT, dims({1, 1, 6})};
+    NvDsInferNetworkInfo network{640U, 640U};
+    NvDsInferParseDetectionParams one_class{};
+    one_class.numClassesConfigured = 1U;
+    one_class.perClassPreclusterThreshold = {0.25F};
+    std::vector<NvDsInferObjectDetectionInfo> raw_objects;
+    if (!NvDsInferParseNovaSightRaw({raw_layer}, network, one_class, raw_objects)
+        || raw_objects.size() != 1U) {
+        return false;
+    }
+    if (std::fabs(raw_objects.front().left - 80.0F) > 0.01F
+        || std::fabs(raw_objects.front().top - 110.0F) > 0.01F
+        || std::fabs(raw_objects.front().detectionConfidence - 0.72F) > 0.001F) {
+        return false;
+    }
+
+    float decoded[] = {80.0F, 110.0F, 120.0F, 130.0F, 0.9F, 0.0F};
+    NvDsInferLayerInfo decoded_layer{"detections", decoded, FLOAT, dims({1, 1, 6})};
+    std::vector<NvDsInferObjectDetectionInfo> decoded_objects;
+    return NvDsInferParseNovaSightDecodedNms(
+               {decoded_layer}, network, one_class, decoded_objects)
+        && decoded_objects.size() == 1U
+        && std::fabs(decoded_objects.front().left - 80.0F) <= 0.01F
+        && std::fabs(decoded_objects.front().width - 40.0F) <= 0.01F;
+}
+
 }  // namespace
 
 int main() {
@@ -109,6 +149,9 @@ int main() {
     }
     if (!test_rockchip_yolov5()) {
         return 2;
+    }
+    if (!test_ambiguous_six_column_contracts_use_explicit_entrypoints()) {
+        return 3;
     }
     return 0;
 }

@@ -33,6 +33,7 @@ from novasight.deepstream.model_manifest import (
 )
 from novasight.deepstream.parser_presets import (
     parser_preset_payload,
+    resolve_decoded_nms_parser_plan,
     resolve_parser_plan,
     resolve_rockchip_yolov5_parser_plan,
     resolve_efficient_nms_parser_plan,
@@ -838,7 +839,9 @@ def _prepare_runnable_artifact(
     parser_kind = str(manifest.postprocess.parser).strip().lower()
     if parser_kind == "rockchip_yolov5":
         parser_plan = resolve_rockchip_yolov5_parser_plan(manifest.postprocess.parser_preset)
-    elif parser_kind in {"efficientnms", "decoded_nms"}:
+    elif parser_kind == "decoded_nms":
+        parser_plan = resolve_decoded_nms_parser_plan(manifest.postprocess.parser_preset)
+    elif parser_kind == "efficientnms":
         parser_plan = resolve_efficient_nms_parser_plan(manifest.postprocess.parser_preset)
     else:
         parser_plan = resolve_parser_plan(

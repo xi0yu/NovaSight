@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -20,12 +21,17 @@ def ensure_deepstream_parser_library(
 ) -> Path:
     target = Path(library_path).expanduser().resolve(strict=False)
     source = _resolve_parser_source(source_dir)
-    # Always rebuild at backend startup.  A deployed Jetson checkout can have
-    # preserved mtimes (or an old CMake cache), so mtime-only freshness checks
-    # are not sufficient to guarantee that the loaded .so matches the source.
+    source_fingerprint = _parser_source_fingerprint(source)
+    fingerprint_path = target.with_name(f"{target.name}.source.sha256")
     with _BUILD_LOCK:
         # Keep the lock around the complete configure/build/copy sequence so
         # concurrent runtime start requests cannot load a half-written .so.
+        if target.is_file() and fingerprint_path.is_file():
+            try:
+                if fingerprint_path.read_text(encoding="utf-8").strip() == source_fingerprint:
+                    return target
+            except OSError:
+                pass
         cmake = shutil.which("cmake")
         if not cmake:
             raise RuntimeError(
@@ -64,26 +70,25 @@ def ensure_deepstream_parser_library(
         if built_library != target:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(built_library, target)
+        fingerprint_path.write_text(f"{source_fingerprint}\n", encoding="utf-8")
         logger.info("DeepStream parser automatic build completed path=%s", target)
     return target
 
 
-def _parser_source_newer(source: Path, target: Path) -> bool:
-    """Return whether parser sources changed after the deployed .so."""
-    try:
-        target_mtime = target.stat().st_mtime_ns
-    except OSError:
-        return True
-    try:
-        return any(
-            path.is_file() and path.stat().st_mtime_ns > target_mtime
-            for path in source.rglob("*")
-            if path.suffix in {".cpp", ".cc", ".h", ".hpp", ".cmake", ".txt"}
-        )
-    except OSError:
-        # If a source disappears during deployment, let CMake provide the
-        # authoritative diagnostic instead of silently running stale code.
-        return True
+def _parser_source_fingerprint(source: Path) -> str:
+    digest = hashlib.sha256()
+    files = sorted(
+        path
+        for path in source.rglob("*")
+        if path.is_file()
+        and path.suffix in {".cpp", ".cc", ".h", ".hpp", ".cmake", ".txt"}
+    )
+    for path in files:
+        digest.update(path.relative_to(source).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _resolve_parser_source(source_dir: Path | None) -> Path:

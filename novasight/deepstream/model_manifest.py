@@ -21,6 +21,7 @@ from .parser_presets import (
     ParserPlan,
     normalize_parser_preset,
     parser_preset_objectness_hint,
+    resolve_decoded_nms_parser_plan,
     resolve_efficient_nms_parser_plan,
     resolve_rockchip_yolov5_parser_plan,
     resolve_parser_plan,
@@ -254,7 +255,15 @@ def _contract_from_io_tensors(
     decoded_nms = False
     if len(outputs) == 1:
         shape = parse_runtime_shape(outputs[0].get("shape"), "output shape")
-        decoded_nms = len(shape) == 3 and shape[0] == 1 and shape[2] == 6 and shape[1] > 6
+        # [1,N,6] is ambiguous: a small N is the usual end-to-end NMS top-k,
+        # while a large N is also the canonical one-class YOLOv5 raw tensor
+        # (cx,cy,w,h,obj,class_score). Never classify the dense raw form as NMS.
+        decoded_nms = (
+            len(shape) == 3
+            and shape[0] == 1
+            and shape[2] == 6
+            and 6 < shape[1] <= 512
+        )
     input_name = str(input_tensor.get("name") or "").strip()
     output_name = str(output_tensor.get("name") or "").strip()
     if not input_name or not output_name:
@@ -540,7 +549,11 @@ def recommend_engine_manifest(
                     "然后重新发布模型；仅有默认类别 target 时系统不会猜测类别数量。"
                 )
             efficient_classes = [f"class_{index}" for index in range(inferred_count)]
-        parser_plan = resolve_efficient_nms_parser_plan(preset_id)
+        parser_plan = (
+            resolve_decoded_nms_parser_plan(preset_id)
+            if contract.postprocess_parser == "decoded_nms"
+            else resolve_efficient_nms_parser_plan(preset_id)
+        )
         return EngineManifestRecommendation(
             contract=contract,
             class_names=efficient_classes,
@@ -1036,9 +1049,12 @@ def _resolve_manifest_parser_plan(
     *,
     preset_id: object,
 ) -> ParserPlan:
-    if str(manifest.postprocess.parser).strip().lower() == "efficientnms":
+    parser = str(manifest.postprocess.parser).strip().lower()
+    if parser == "decoded_nms":
+        return resolve_decoded_nms_parser_plan(preset_id)
+    if parser == "efficientnms":
         return resolve_efficient_nms_parser_plan(preset_id)
-    if str(manifest.postprocess.parser).strip().lower() == "rockchip_yolov5":
+    if parser == "rockchip_yolov5":
         return resolve_rockchip_yolov5_parser_plan(preset_id)
     return resolve_parser_plan(
         preset_id,

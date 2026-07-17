@@ -251,18 +251,10 @@ class DeepStreamObjectBackend:
             if self._preview_consumers <= 0:
                 return
             self._preview_consumers -= 1
-            should_disable = self._preview_consumers == 0 and self._preview_active
-        if not should_disable:
-            return
-        try:
-            self.set_preview_active(False)
-        except RuntimeError:
-            # Pipeline shutdown may race with StreamingResponse cleanup.
-            with self._preview_condition:
-                self._preview_active = False
-                self._latest_preview_jpeg = None
-                self._last_preview_ts_ns = 0
-                self._preview_condition.notify_all()
+            # A stream connection is a transport lease, not the user's preview
+            # preference. Browsers routinely replace MJPEG connections; the
+            # explicit /api/capture/preview command owns the encoder valve.
+            self._preview_condition.notify_all()
 
     def wait_until_ready(self, timeout_s: float) -> bool:
         """Wait until this pipeline has published its first valid DetectionBatch."""

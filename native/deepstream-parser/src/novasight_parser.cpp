@@ -28,6 +28,31 @@ std::atomic<std::uint64_t> g_last_decode_ns{0};
 std::atomic<std::uint64_t> g_last_input_candidates{0};
 std::atomic<std::uint64_t> g_last_output_candidates{0};
 
+enum class ParserContract {
+    Auto,
+    RawYolo,
+    DecodedNms,
+    EfficientNms,
+    RockchipYoloV5,
+};
+
+thread_local ParserContract g_parser_contract = ParserContract::Auto;
+
+class ParserContractScope {
+public:
+    explicit ParserContractScope(ParserContract contract)
+        : previous_(g_parser_contract) {
+        g_parser_contract = contract;
+    }
+
+    ~ParserContractScope() {
+        g_parser_contract = previous_;
+    }
+
+private:
+    ParserContract previous_;
+};
+
 float half_to_float(std::uint16_t value) {
     const std::uint32_t sign = static_cast<std::uint32_t>(value & 0x8000U) << 16U;
     std::int32_t exponent = static_cast<std::int32_t>((value >> 10U) & 0x1FU);
@@ -451,7 +476,8 @@ extern "C" bool NvDsInferParseNovaSight(
             std::memory_order_relaxed);
         return false;
     };
-    if (output_layers.size() == 3U) {
+    if (g_parser_contract == ParserContract::RockchipYoloV5
+        || (g_parser_contract == ParserContract::Auto && output_layers.size() == 3U)) {
         std::size_t input_candidates = 0U;
         if (!parse_rockchip_yolov5(
                 output_layers, network, params, objects, input_candidates)) {
@@ -470,7 +496,8 @@ extern "C" bool NvDsInferParseNovaSight(
         g_last_output_candidates.store(objects.size(), std::memory_order_relaxed);
         return true;
     }
-    if (output_layers.size() == 4U) {
+    if (g_parser_contract == ParserContract::EfficientNms
+        || (g_parser_contract == ParserContract::Auto && output_layers.size() == 4U)) {
         std::size_t input_candidates = 0U;
         if (!parse_efficient_nms(
                 output_layers, network, params, objects, input_candidates)) {
@@ -504,7 +531,9 @@ extern "C" bool NvDsInferParseNovaSight(
         for (unsigned int i = 0; i < layer.inferDims.numDims; ++i) {
             if (layer.inferDims.d[i] > 0) dims.push_back(static_cast<std::size_t>(layer.inferDims.d[i]));
         }
-        if (!dims.empty() && dims.back() == 6U) {
+        if ((g_parser_contract == ParserContract::DecodedNms
+                || g_parser_contract == ParserContract::Auto)
+            && !dims.empty() && dims.back() == 6U) {
             std::size_t input_candidates = 0U;
             if (!parse_decoded_boxes6(layer, network, params, objects, input_candidates)) {
                 fail(6U);
@@ -592,6 +621,42 @@ extern "C" bool NvDsInferParseNovaSight(
     return true;
 }
 
+extern "C" bool NvDsInferParseNovaSightRaw(
+    const std::vector<NvDsInferLayerInfo>& output_layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects) {
+    const ParserContractScope scope(ParserContract::RawYolo);
+    return NvDsInferParseNovaSight(output_layers, network, params, objects);
+}
+
+extern "C" bool NvDsInferParseNovaSightDecodedNms(
+    const std::vector<NvDsInferLayerInfo>& output_layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects) {
+    const ParserContractScope scope(ParserContract::DecodedNms);
+    return NvDsInferParseNovaSight(output_layers, network, params, objects);
+}
+
+extern "C" bool NvDsInferParseNovaSightEfficientNms(
+    const std::vector<NvDsInferLayerInfo>& output_layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects) {
+    const ParserContractScope scope(ParserContract::EfficientNms);
+    return NvDsInferParseNovaSight(output_layers, network, params, objects);
+}
+
+extern "C" bool NvDsInferParseNovaSightRockchipYoloV5(
+    const std::vector<NvDsInferLayerInfo>& output_layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects) {
+    const ParserContractScope scope(ParserContract::RockchipYoloV5);
+    return NvDsInferParseNovaSight(output_layers, network, params, objects);
+}
+
 extern "C" std::uint64_t novasight_parser_decode_calls() {
     return g_decode_calls.load(std::memory_order_relaxed);
 }
@@ -626,3 +691,7 @@ extern "C" void novasight_parser_reset_telemetry() {
 }
 
 CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseNovaSight);
+CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseNovaSightRaw);
+CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseNovaSightDecodedNms);
+CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseNovaSightEfficientNms);
+CHECK_CUSTOM_PARSE_FUNC_PROTOTYPE(NvDsInferParseNovaSightRockchipYoloV5);

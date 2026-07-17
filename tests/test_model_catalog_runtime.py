@@ -547,7 +547,7 @@ def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_pa
         "compatibility": "yolov8_yolo11",
         "has_objectness": False,
         "parser_library": "novasight_builtin",
-        "parser_function": "NvDsInferParseNovaSight",
+        "parser_function": "NvDsInferParseNovaSightRaw",
         "nms_owner": "deepstream",
     }
     assert registry.get_artifact(artifact.id).status == "ready"

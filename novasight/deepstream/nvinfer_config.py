@@ -7,6 +7,7 @@ from novasight.model_registry.manifest import ModelManifest
 
 from .parser_presets import (
     ParserPlan,
+    resolve_decoded_nms_parser_plan,
     resolve_efficient_nms_parser_plan,
     resolve_parser_plan,
     resolve_rockchip_yolov5_parser_plan,
@@ -117,7 +118,7 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
         shape = [int(value) for value in manifest.output.shape]
         if len(shape) != 3 or shape[0] != 1 or shape[2] != 6:
             raise ValueError("decoded_nms requires output shape [1,N,6]")
-        return resolve_efficient_nms_parser_plan(manifest.postprocess.parser_preset)
+        return resolve_decoded_nms_parser_plan(manifest.postprocess.parser_preset)
     if parser == "rockchip_yolov5":
         if str(manifest.output.format).strip().lower() != "rockchip_yolov5_three_scale":
             raise ValueError("Rockchip YOLOv5 parser requires a three-scale output format")
@@ -159,13 +160,6 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
         raise ValueError("model output class_count must be positive")
     dims = [int(value) for value in manifest.output.shape]
     dims = dims[1:] if len(dims) == 3 and dims[0] == 1 else dims
-    raw_shape = [int(value) for value in manifest.output.shape]
-    if len(raw_shape) == 3 and raw_shape[0] == 1 and raw_shape[2] == 6 and raw_shape[1] > 512:
-        raise ValueError(
-            "TensorRT output is a decoded [1,N,6] contract (x1,y1,x2,y2,score,class); "
-            "the raw YOLO parser cannot consume it. Select an end-to-end decoder or "
-            "convert the engine to raw YOLO output before starting DeepStream."
-        )
     channels = {4 + class_count, 5 + class_count}
     if len(dims) != 2 or not any(value in channels for value in dims):
         raise ValueError(

@@ -246,6 +246,8 @@ def build_control_trace_record(
         "algorithm_decision": {
             "algorithm_id": _text(pipeline.get("algorithm") or pipeline.get("algorithm_id")),
             "class_id": _first_int(pipeline.get("class_id"), target_payload.get("cls")),
+            "class_profile": _text(pipeline.get("active_class_profile")),
+            "aim_role": _text(pipeline.get("effective_aim_role")),
             "effective_aim_y_ratio": _first_number(
                 pipeline.get("effective_aim_y_ratio"),
                 control_payload.get("aim_y_ratio"),

@@ -26,12 +26,13 @@ class ParserPlan:
     compatibility: Literal[
         "yolov5",
         "yolov8_yolo11",
+        "decoded_nms",
         "efficientnms",
         "rockchip_yolov5",
     ]
     has_objectness: bool
     parser_library: str = "novasight_builtin"
-    parser_function: str = "NvDsInferParseNovaSight"
+    parser_function: str = "NvDsInferParseNovaSightRaw"
     nms_owner: str = "deepstream"
 
     def asdict(self) -> dict[str, str | bool]:
@@ -138,6 +139,17 @@ def resolve_efficient_nms_parser_plan(preset: object) -> ParserPlan:
         requested_preset=normalize_parser_preset(preset),
         compatibility="efficientnms",
         has_objectness=False,
+        parser_function="NvDsInferParseNovaSightEfficientNms",
+        nms_owner="model",
+    )
+
+
+def resolve_decoded_nms_parser_plan(preset: object) -> ParserPlan:
+    return ParserPlan(
+        requested_preset=normalize_parser_preset(preset),
+        compatibility="decoded_nms",
+        has_objectness=False,
+        parser_function="NvDsInferParseNovaSightDecodedNms",
         nms_owner="model",
     )
 
@@ -152,6 +164,7 @@ def resolve_rockchip_yolov5_parser_plan(preset: object) -> ParserPlan:
         requested_preset=preset_id,
         compatibility="rockchip_yolov5",
         has_objectness=True,
+        parser_function="NvDsInferParseNovaSightRockchipYoloV5",
         nms_owner="deepstream",
     )
 
@@ -176,6 +189,7 @@ __all__ = [
     "normalize_parser_preset",
     "parser_preset_objectness_hint",
     "parser_preset_payload",
+    "resolve_decoded_nms_parser_plan",
     "resolve_parser_plan",
     "resolve_efficient_nms_parser_plan",
     "resolve_rockchip_yolov5_parser_plan",

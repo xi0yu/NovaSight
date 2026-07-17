@@ -145,6 +145,8 @@ def test_control_trace_preserves_dual_phase_decision_and_direct_delivery() -> No
             "pipeline": {
                 "algorithm": "dual_phase_atan_robust_predictive_v2",
                 "class_id": 1,
+                "active_class_profile": "default",
+                "effective_aim_role": "head",
                 "effective_aim_y_ratio": 0.35,
                 "mode": "far",
                 "measurement_dt_ms": 8.3,
@@ -189,6 +191,8 @@ def test_control_trace_preserves_dual_phase_decision_and_direct_delivery() -> No
     decision = trace["algorithm_decision"]
     assert decision["algorithm_id"] == "dual_phase_atan_robust_predictive_v2"
     assert decision["class_id"] == 1
+    assert decision["class_profile"] == "default"
+    assert decision["aim_role"] == "head"
     assert decision["effective_aim_y_ratio"] == 0.35
     assert decision["phase"] == "far"
     assert decision["error_real_px"] == {"x": 40.0, "y": 0.0}

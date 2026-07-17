@@ -5,6 +5,7 @@ import pytest
 from novasight.deepstream.parser_presets import (
     normalize_parser_preset,
     parser_preset_payload,
+    resolve_decoded_nms_parser_plan,
     resolve_efficient_nms_parser_plan,
     resolve_parser_plan,
 )
@@ -20,7 +21,7 @@ def test_auto_preset_resolves_v5_objectness_contract() -> None:
 
     assert plan.compatibility == "yolov5"
     assert plan.has_objectness is True
-    assert plan.parser_function == "NvDsInferParseNovaSight"
+    assert plan.parser_function == "NvDsInferParseNovaSightRaw"
 
 
 @pytest.mark.parametrize("preset", ["yolov8", "yolo11", "novasight_generic"])
@@ -60,4 +61,13 @@ def test_efficient_nms_plan_keeps_nms_owned_by_model() -> None:
 
     assert plan.compatibility == "efficientnms"
     assert plan.nms_owner == "model"
-    assert plan.parser_function == "NvDsInferParseNovaSight"
+    assert plan.parser_function == "NvDsInferParseNovaSightEfficientNms"
+
+
+def test_decoded_nms_has_a_distinct_parser_entrypoint() -> None:
+    plan = resolve_decoded_nms_parser_plan("auto")
+
+    assert plan.compatibility == "decoded_nms"
+    assert plan.nms_owner == "model"
+    assert plan.parser_function == "NvDsInferParseNovaSightDecodedNms"
+    resolve_decoded_nms_parser_plan,
