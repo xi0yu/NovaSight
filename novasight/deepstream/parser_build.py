@@ -20,11 +20,12 @@ def ensure_deepstream_parser_library(
 ) -> Path:
     target = Path(library_path).expanduser().resolve(strict=False)
     source = _resolve_parser_source(source_dir)
-    if target.is_file() and not _parser_source_newer(source, target):
-        return target
+    # Always rebuild at backend startup.  A deployed Jetson checkout can have
+    # preserved mtimes (or an old CMake cache), so mtime-only freshness checks
+    # are not sufficient to guarantee that the loaded .so matches the source.
     with _BUILD_LOCK:
-        if target.is_file() and not _parser_source_newer(source, target):
-            return target
+        # Keep the lock around the complete configure/build/copy sequence so
+        # concurrent runtime start requests cannot load a half-written .so.
         cmake = shutil.which("cmake")
         if not cmake:
             raise RuntimeError(
