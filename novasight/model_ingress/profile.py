@@ -374,6 +374,17 @@ def _validate_parser_output_contract(
     class_count: int,
     has_objectness: bool,
 ) -> None:
+    if parser_type == "rockchip_yolov5":
+        if len(profile.outputs) != 3:
+            raise ValueError("rockchip_yolov5 requires exactly three raw detection outputs")
+        shapes = [tuple(int(v) for v in output.shape) for output in profile.outputs]
+        grids = sorted((shape[2] for shape in shapes if len(shape) == 4 and shape[0] == 1 and shape[2] == shape[3]), reverse=True)
+        expected_channels = 3 * (5 + class_count)
+        if len(grids) != 3 or grids[1] * 2 != grids[0] or grids[2] * 2 != grids[1]:
+            raise ValueError("rockchip_yolov5 outputs must be three square heads at 1/2 scales")
+        if any(len(shape) != 4 or shape[1] != expected_channels for shape in shapes):
+            raise ValueError(f"rockchip_yolov5 outputs require channels={expected_channels}")
+        return
     if len(profile.outputs) != 1:
         raise ValueError(f"{parser_type} requires exactly one raw detection output")
     dimensions = [dimension for dimension in profile.outputs[0].shape if dimension > 0]

@@ -14,6 +14,10 @@ PARSER_REGISTRY: dict[str, ParserDefinition] = {
     "yolov5_raw": ParserDefinition("yolov5_raw", "yolov5", False),
     "yolov8_raw": ParserDefinition("yolov8_raw", "yolov8", False),
     "yolo11_raw": ParserDefinition("yolo11_raw", "yolov8", False),
+    # Rockchip RKNN/YOLOv5 exports three raw NCHW heads.  It is decoded by the
+    # DeepStream native parser; it is intentionally not offered to the Python
+    # TensorRT fallback.
+    "rockchip_yolov5": ParserDefinition("rockchip_yolov5", "rockchip_yolov5", False),
 }
 
 

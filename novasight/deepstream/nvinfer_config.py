@@ -9,6 +9,7 @@ from .parser_presets import (
     ParserPlan,
     resolve_efficient_nms_parser_plan,
     resolve_parser_plan,
+    resolve_rockchip_yolov5_parser_plan,
 )
 
 
@@ -110,6 +111,20 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
     if str(manifest.input.layout).upper() != "NCHW" or len(manifest.input.shape) != 4:
         raise ValueError("deepstream_nvinfer requires a four-dimensional NCHW input")
     parser = str(manifest.postprocess.parser).strip().lower()
+    if parser == "rockchip_yolov5":
+        if str(manifest.output.format).strip().lower() != "rockchip_yolov5_three_scale":
+            raise ValueError("Rockchip YOLOv5 parser requires a three-scale output format")
+        if len(manifest.output.bindings) != 3:
+            raise ValueError("Rockchip YOLOv5 parser requires three output bindings")
+        if list(manifest.output.strides) != [8, 16, 32]:
+            raise ValueError("Rockchip YOLOv5 parser requires strides [8, 16, 32]")
+        if len(manifest.output.anchors) != 3 or any(
+            len(scale) != 6 for scale in manifest.output.anchors
+        ):
+            raise ValueError("Rockchip YOLOv5 parser requires three groups of anchors")
+        if int(manifest.output.class_count) <= 0:
+            raise ValueError("Rockchip YOLOv5 parser requires a positive model class count")
+        return resolve_rockchip_yolov5_parser_plan(manifest.postprocess.parser_preset)
     if parser == "efficientnms":
         if str(manifest.output.format).strip().lower() != "efficientnms_boxes_scores_classes":
             raise ValueError("EfficientNMS parser requires boxes/scores/classes output format")

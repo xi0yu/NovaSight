@@ -22,9 +22,7 @@ NvDsInferDims dims(std::initializer_list<int> values) {
     return result;
 }
 
-}  // namespace
-
-int main() {
+bool test_efficient_nms() {
     std::int32_t count[] = {2};
     float boxes[] = {
         0.10F, 0.20F, 0.30F, 0.40F,
@@ -43,19 +41,74 @@ int main() {
     params.numClassesConfigured = 2U;
     params.perClassPreclusterThreshold = {0.25F, 0.25F};
     std::vector<NvDsInferObjectDetectionInfo> objects;
-
-    if (!NvDsInferParseNovaSight(layers, network, params, objects)) {
-        return 1;
-    }
-    if (objects.size() != 1U || objects.front().classId != 1U) {
-        return 2;
+    if (!NvDsInferParseNovaSight(layers, network, params, objects)
+        || objects.size() != 1U || objects.front().classId != 1U) {
+        return false;
     }
     const auto& object = objects.front();
-    if (std::fabs(object.left - 64.0F) > 0.01F
-        || std::fabs(object.top - 128.0F) > 0.01F
-        || std::fabs(object.width - 128.0F) > 0.01F
-        || std::fabs(object.height - 128.0F) > 0.01F) {
-        return 3;
+    return std::fabs(object.left - 64.0F) <= 0.01F
+        && std::fabs(object.top - 128.0F) <= 0.01F
+        && std::fabs(object.width - 128.0F) <= 0.01F
+        && std::fabs(object.height - 128.0F) <= 0.01F;
+}
+
+void set_nchw(
+    std::vector<float>& tensor,
+    std::size_t channels,
+    std::size_t height,
+    std::size_t width,
+    std::size_t channel,
+    std::size_t y,
+    std::size_t x,
+    float value) {
+    (void)channels;
+    tensor[(channel * height + y) * width + x] = value;
+}
+
+bool test_rockchip_yolov5() {
+    constexpr std::size_t channels = 21U;
+    std::vector<float> head40(channels * 40U * 40U, 0.0F);
+    std::vector<float> head20(channels * 20U * 20U, 0.0F);
+    std::vector<float> head10(channels * 10U * 10U, 0.0F);
+    set_nchw(head40, channels, 40U, 40U, 0U, 2U, 1U, 0.5F);
+    set_nchw(head40, channels, 40U, 40U, 1U, 2U, 1U, 0.5F);
+    set_nchw(head40, channels, 40U, 40U, 2U, 2U, 1U, 0.5F);
+    set_nchw(head40, channels, 40U, 40U, 3U, 2U, 1U, 0.5F);
+    set_nchw(head40, channels, 40U, 40U, 4U, 2U, 1U, 0.9F);
+    set_nchw(head40, channels, 40U, 40U, 5U, 2U, 1U, 0.1F);
+    set_nchw(head40, channels, 40U, 40U, 6U, 2U, 1U, 0.8F);
+
+    // Deliberately shuffled to prove that binding order does not control anchor scale.
+    std::vector<NvDsInferLayerInfo> layers{
+        {"288", head10.data(), FLOAT, dims({1, 21, 10, 10})},
+        {"output0", head40.data(), FLOAT, dims({1, 21, 40, 40})},
+        {"286", head20.data(), FLOAT, dims({1, 21, 20, 20})},
+    };
+    NvDsInferNetworkInfo network{320U, 320U};
+    NvDsInferParseDetectionParams params{};
+    params.numClassesConfigured = 2U;
+    params.perClassPreclusterThreshold = {0.25F, 0.25F};
+    std::vector<NvDsInferObjectDetectionInfo> objects;
+    if (!NvDsInferParseNovaSight(layers, network, params, objects)
+        || objects.size() != 1U || objects.front().classId != 1U) {
+        return false;
+    }
+    const auto& object = objects.front();
+    return std::fabs(object.detectionConfidence - 0.72F) <= 0.001F
+        && std::fabs(object.left - 7.0F) <= 0.01F
+        && std::fabs(object.top - 13.5F) <= 0.01F
+        && std::fabs(object.width - 10.0F) <= 0.01F
+        && std::fabs(object.height - 13.0F) <= 0.01F;
+}
+
+}  // namespace
+
+int main() {
+    if (!test_efficient_nms()) {
+        return 1;
+    }
+    if (!test_rockchip_yolov5()) {
+        return 2;
     }
     return 0;
 }

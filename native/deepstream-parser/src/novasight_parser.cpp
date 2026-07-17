@@ -14,6 +14,12 @@
 namespace {
 
 constexpr std::size_t kInitialObjectCapacity = 256U;
+constexpr std::size_t kRockchipAnchorCount = 3U;
+constexpr float kRockchipYoloV5Anchors[3][kRockchipAnchorCount][2] = {
+    {{10.0F, 13.0F}, {16.0F, 30.0F}, {33.0F, 23.0F}},
+    {{30.0F, 61.0F}, {62.0F, 45.0F}, {59.0F, 119.0F}},
+    {{116.0F, 90.0F}, {156.0F, 198.0F}, {373.0F, 326.0F}},
+};
 
 std::atomic<std::uint64_t> g_decode_calls{0};
 std::atomic<std::uint64_t> g_parse_failures{0};
@@ -249,6 +255,142 @@ float prediction_value(
     return layer_value(layer, index);
 }
 
+struct RockchipHead {
+    const NvDsInferLayerInfo* layer = nullptr;
+    std::size_t channels = 0U;
+    std::size_t height = 0U;
+    std::size_t width = 0U;
+};
+
+bool rockchip_head_shape(const NvDsInferLayerInfo& layer, RockchipHead& head) {
+    if (layer.buffer == nullptr || (layer.dataType != FLOAT && layer.dataType != HALF)) {
+        return false;
+    }
+    std::vector<std::size_t> dimensions;
+    dimensions.reserve(layer.inferDims.numDims);
+    for (unsigned int index = 0; index < layer.inferDims.numDims; ++index) {
+        const int value = layer.inferDims.d[index];
+        if (value <= 0) {
+            return false;
+        }
+        dimensions.push_back(static_cast<std::size_t>(value));
+    }
+    if (dimensions.size() == 4U && dimensions.front() == 1U) {
+        dimensions.erase(dimensions.begin());
+    }
+    if (dimensions.size() != 3U || dimensions[1] != dimensions[2]) {
+        return false;
+    }
+    head = RockchipHead{&layer, dimensions[0], dimensions[1], dimensions[2]};
+    return true;
+}
+
+float rockchip_value(
+    const RockchipHead& head,
+    std::size_t channel,
+    std::size_t y,
+    std::size_t x) {
+    const std::size_t index = (channel * head.height + y) * head.width + x;
+    return layer_value(*head.layer, index);
+}
+
+bool parse_rockchip_yolov5(
+    const std::vector<NvDsInferLayerInfo>& layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects,
+    std::size_t& input_candidates) {
+    if (layers.size() != 3U || params.numClassesConfigured == 0U) {
+        return false;
+    }
+    std::vector<RockchipHead> heads(3U);
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        if (!rockchip_head_shape(layers[index], heads[index])) {
+            return false;
+        }
+    }
+    std::sort(heads.begin(), heads.end(), [](const RockchipHead& left, const RockchipHead& right) {
+        return left.width > right.width;
+    });
+    const std::size_t expected_channels = kRockchipAnchorCount
+        * (params.numClassesConfigured + 5U);
+    input_candidates = 0U;
+    for (std::size_t scale = 0; scale < heads.size(); ++scale) {
+        const auto& head = heads[scale];
+        const std::size_t expected_stride = 8U << scale;
+        if (head.channels != expected_channels
+            || head.width * expected_stride != network.width
+            || head.height * expected_stride != network.height) {
+            return false;
+        }
+        input_candidates += kRockchipAnchorCount * head.width * head.height;
+    }
+
+    objects.reserve(objects.size() + std::min(input_candidates, kInitialObjectCapacity));
+    const std::size_t values_per_anchor = params.numClassesConfigured + 5U;
+    for (std::size_t scale = 0; scale < heads.size(); ++scale) {
+        const auto& head = heads[scale];
+        const float stride_x = static_cast<float>(network.width) / static_cast<float>(head.width);
+        const float stride_y = static_cast<float>(network.height) / static_cast<float>(head.height);
+        for (std::size_t anchor = 0; anchor < kRockchipAnchorCount; ++anchor) {
+            const std::size_t channel_base = anchor * values_per_anchor;
+            for (std::size_t y = 0; y < head.height; ++y) {
+                for (std::size_t x = 0; x < head.width; ++x) {
+                    const float objectness = rockchip_value(head, channel_base + 4U, y, x);
+                    if (!std::isfinite(objectness) || objectness <= 0.0F) {
+                        continue;
+                    }
+                    std::size_t best_class = 0U;
+                    float best_score = -std::numeric_limits<float>::infinity();
+                    for (std::size_t class_id = 0; class_id < params.numClassesConfigured; ++class_id) {
+                        const float class_probability = rockchip_value(
+                            head, channel_base + 5U + class_id, y, x);
+                        const float score = objectness * class_probability;
+                        if (score > best_score) {
+                            best_score = score;
+                            best_class = class_id;
+                        }
+                    }
+                    if (!std::isfinite(best_score)
+                        || best_score < threshold_for_class(params, best_class)) {
+                        continue;
+                    }
+                    const float raw_x = rockchip_value(head, channel_base, y, x);
+                    const float raw_y = rockchip_value(head, channel_base + 1U, y, x);
+                    const float raw_w = rockchip_value(head, channel_base + 2U, y, x);
+                    const float raw_h = rockchip_value(head, channel_base + 3U, y, x);
+                    if (!std::isfinite(raw_x) || !std::isfinite(raw_y)
+                        || !std::isfinite(raw_w) || !std::isfinite(raw_h)) {
+                        continue;
+                    }
+                    const float cx = (raw_x * 2.0F - 0.5F + static_cast<float>(x)) * stride_x;
+                    const float cy = (raw_y * 2.0F - 0.5F + static_cast<float>(y)) * stride_y;
+                    const float scaled_w = raw_w * 2.0F;
+                    const float scaled_h = raw_h * 2.0F;
+                    const float width = scaled_w * scaled_w * kRockchipYoloV5Anchors[scale][anchor][0];
+                    const float height = scaled_h * scaled_h * kRockchipYoloV5Anchors[scale][anchor][1];
+                    const float left = std::max(0.0F, cx - width * 0.5F);
+                    const float top = std::max(0.0F, cy - height * 0.5F);
+                    const float right = std::min(static_cast<float>(network.width), cx + width * 0.5F);
+                    const float bottom = std::min(static_cast<float>(network.height), cy + height * 0.5F);
+                    if (right <= left || bottom <= top) {
+                        continue;
+                    }
+                    NvDsInferObjectDetectionInfo object{};
+                    object.classId = static_cast<unsigned int>(best_class);
+                    object.detectionConfidence = best_score;
+                    object.left = left;
+                    object.top = top;
+                    object.width = right - left;
+                    object.height = bottom - top;
+                    objects.push_back(object);
+                }
+            }
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 extern "C" bool NvDsInferParseNovaSight(
@@ -268,6 +410,21 @@ extern "C" bool NvDsInferParseNovaSight(
             std::memory_order_relaxed);
         return false;
     };
+    if (output_layers.size() == 3U) {
+        std::size_t input_candidates = 0U;
+        if (!parse_rockchip_yolov5(
+                output_layers, network, params, objects, input_candidates)) {
+            return fail(5U);
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started);
+        g_last_error_code.store(0U, std::memory_order_relaxed);
+        g_last_decode_ns.store(
+            static_cast<std::uint64_t>(elapsed.count()), std::memory_order_relaxed);
+        g_last_input_candidates.store(input_candidates, std::memory_order_relaxed);
+        g_last_output_candidates.store(objects.size(), std::memory_order_relaxed);
+        return true;
+    }
     if (output_layers.size() == 4U) {
         std::size_t input_candidates = 0U;
         if (!parse_efficient_nms(

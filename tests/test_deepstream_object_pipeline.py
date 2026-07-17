@@ -1179,3 +1179,69 @@ def test_missing_manifest_supports_four_output_efficient_nms_engine(
     ]
     assert "output-blob-names=num_dets;det_boxes;det_scores;det_classes" in nvinfer
     assert "cluster-mode=4" in nvinfer
+
+
+def test_missing_manifest_supports_rockchip_yolov5_three_scale_heads(
+    tmp_path: Path,
+) -> None:
+    engine_path = tmp_path / "rockchip-yolov5.engine"
+    engine_path.write_bytes(b"engine")
+    outputs = {
+        "output0": {"shape": [1, 21, 40, 40], "dtype": "float16"},
+        "286": {"shape": [1, 21, 20, 20], "dtype": "float16"},
+        "288": {"shape": [1, 21, 10, 10], "dtype": "float16"},
+    }
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": False,
+            "reason": (
+                "unsupported TensorRT detection output contract; decoder expects one "
+                f"NxC/CxN tensor with at least 5 columns, outputs={outputs}"
+            ),
+            "io_tensors": [
+                {
+                    "name": "images",
+                    "mode": "input",
+                    "shape": [1, 3, 320, 320],
+                    "dtype": "float16",
+                },
+                *[
+                    {
+                        "name": name,
+                        "mode": "output",
+                        **contract,
+                    }
+                    for name, contract in outputs.items()
+                ],
+            ],
+        }
+    )
+
+    manifest, regenerated = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="rockchip-yolov5",
+        display_name="Rockchip YOLOv5",
+        classes=["body", "head"],
+        registered_input_shape="1x3x320x320",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+    )
+    nvinfer = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+    )
+
+    assert regenerated is True
+    assert manifest.output.format == "rockchip_yolov5_three_scale"
+    assert manifest.postprocess.parser == "rockchip_yolov5"
+    assert [item.name for item in manifest.output.bindings] == ["output0", "286", "288"]
+    assert manifest.output.strides == [8, 16, 32]
+    assert manifest.output.anchors == [
+        [10.0, 13.0, 16.0, 30.0, 33.0, 23.0],
+        [30.0, 61.0, 62.0, 45.0, 59.0, 119.0],
+        [116.0, 90.0, 156.0, 198.0, 373.0, 326.0],
+    ]
+    assert "output-blob-names=output0;286;288" in nvinfer
+    assert "cluster-mode=2" in nvinfer

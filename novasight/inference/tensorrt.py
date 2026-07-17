@@ -543,6 +543,29 @@ class TensorRtInferenceEngine:
             self._host_outputs[name] = host_output
             context.set_tensor_address(name, int(device_output))
 
+        # Preserve the immutable tensor contract before selecting a runtime
+        # decoder. DeepStream can support contracts (for example Rockchip's
+        # three raw YOLO heads) that the custom TensorRT execution path does
+        # not decode itself.
+        self._io_tensors = [
+            {
+                "name": input_name,
+                "shape": list(input_shape),
+                "engine_shape": list(engine_input_shape),
+                "dtype": str(input_dtype),
+                "mode": "input",
+            },
+            *[
+                {
+                    "name": name,
+                    "shape": list(self._output_shapes[name]),
+                    "engine_shape": list(_shape_tuple(engine.get_tensor_shape(name))),
+                    "dtype": self._output_dtypes[name],
+                    "mode": "output",
+                }
+                for name in output_names
+            ],
+        ]
         self._output_name, self._output_candidate_columns = _select_detection_output_name(
             output_names,
             self._output_shapes,
@@ -580,25 +603,6 @@ class TensorRtInferenceEngine:
             )
         self._output_shape = self._output_shapes[self._output_name]
         self._output_dtype = self._output_dtypes.get(self._output_name, "")
-        self._io_tensors = [
-            {
-                "name": input_name,
-                "shape": list(input_shape),
-                "engine_shape": list(engine_input_shape),
-                "dtype": str(input_dtype),
-                "mode": "input",
-            },
-            *[
-                {
-                    "name": name,
-                    "shape": list(self._output_shapes[name]),
-                    "engine_shape": list(_shape_tuple(engine.get_tensor_shape(name))),
-                    "dtype": self._output_dtypes[name],
-                    "mode": "output",
-                }
-                for name in output_names
-            ],
-        ]
         logger.info(
             "TensorRT engine loaded path=%s engine_input=%s selected_input=%s input_source=%s profile=%s output=%s shape=%s dtype=%s outputs=%s",
             artifact_path,

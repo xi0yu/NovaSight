@@ -51,6 +51,8 @@ class OutputSpec(TensorSpec):
     scores_are_sigmoid: bool = True
     coordinate_mode: str = "pixel"
     bindings: list[TensorSpec] = field(default_factory=list)
+    strides: list[int] = field(default_factory=list)
+    anchors: list[list[float]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,8 @@ def build_engine_manifest(
     postprocess_parser: str = "yolo",
     parser_preset: str = "auto",
     output_bindings: list[TensorSpec] | None = None,
+    output_strides: list[int] | None = None,
+    output_anchors: list[list[float]] | None = None,
     validated: bool = False,
 ) -> ModelManifest:
     engine_path = Path(engine_path)
@@ -151,6 +155,11 @@ def build_engine_manifest(
                 )
                 for item in (output_bindings or [])
             ],
+            strides=[int(value) for value in (output_strides or [])],
+            anchors=[
+                [float(value) for value in scale]
+                for scale in (output_anchors or [])
+            ],
         ),
         postprocess=PostprocessSpec(
             parser=_require_non_empty(postprocess_parser, "postprocess.parser"),
@@ -184,6 +193,10 @@ def _compute_model_fingerprint(
     }
     if manifest.output.bindings:
         output_payload["bindings"] = [asdict(item) for item in manifest.output.bindings]
+    if manifest.output.strides:
+        output_payload["strides"] = list(manifest.output.strides)
+    if manifest.output.anchors:
+        output_payload["anchors"] = [list(scale) for scale in manifest.output.anchors]
     if include_class_names:
         output_payload["class_names"] = list(manifest.output.class_names)
     payload = {

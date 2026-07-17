@@ -23,7 +23,12 @@ class ParserPreset:
 @dataclass(frozen=True, slots=True)
 class ParserPlan:
     requested_preset: ParserPresetId
-    compatibility: Literal["yolov5", "yolov8_yolo11", "efficientnms"]
+    compatibility: Literal[
+        "yolov5",
+        "yolov8_yolo11",
+        "efficientnms",
+        "rockchip_yolov5",
+    ]
     has_objectness: bool
     parser_library: str = "novasight_builtin"
     parser_function: str = "NvDsInferParseNovaSight"
@@ -137,6 +142,20 @@ def resolve_efficient_nms_parser_plan(preset: object) -> ParserPlan:
     )
 
 
+def resolve_rockchip_yolov5_parser_plan(preset: object) -> ParserPlan:
+    preset_id = normalize_parser_preset(preset)
+    if preset_id in {"yolov8", "yolo11"}:
+        raise ValueError(
+            "Rockchip three-scale YOLOv5 output conflicts with the selected parser preset"
+        )
+    return ParserPlan(
+        requested_preset=preset_id,
+        compatibility="rockchip_yolov5",
+        has_objectness=True,
+        nms_owner="deepstream",
+    )
+
+
 def parser_preset_payload() -> list[dict[str, str | bool | None]]:
     return [
         {
@@ -159,4 +178,5 @@ __all__ = [
     "parser_preset_payload",
     "resolve_parser_plan",
     "resolve_efficient_nms_parser_plan",
+    "resolve_rockchip_yolov5_parser_plan",
 ]

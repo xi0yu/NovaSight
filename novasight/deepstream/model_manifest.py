@@ -22,12 +22,19 @@ from .parser_presets import (
     normalize_parser_preset,
     parser_preset_objectness_hint,
     resolve_efficient_nms_parser_plan,
+    resolve_rockchip_yolov5_parser_plan,
     resolve_parser_plan,
 )
 
 
 _MANIFEST_LOCK = threading.RLock()
 logger = logging.getLogger("novasight.deepstream.model_manifest")
+_ROCKCHIP_YOLOV5_STRIDES = (8, 16, 32)
+_ROCKCHIP_YOLOV5_ANCHORS = (
+    (10.0, 13.0, 16.0, 30.0, 33.0, 23.0),
+    (30.0, 61.0, 62.0, 45.0, 59.0, 119.0),
+    (116.0, 90.0, 156.0, 198.0, 373.0, 326.0),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +48,9 @@ class EngineTensorContract:
     output_format: str = "yolo_cxcywh_class_scores"
     postprocess_parser: str = "yolo"
     output_bindings: tuple[TensorSpec, ...] = ()
+    output_strides: tuple[int, ...] = ()
+    output_anchors: tuple[tuple[float, ...], ...] = ()
+    inferred_class_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,11 +134,16 @@ def probe_engine_contract(
             "TensorRT engine probe is unavailable; refusing to guess DeepStream tensor bindings"
         )
     status = dict(probe(artifact_path, classes, registered_input_shape))
-    if status.get("loaded") is not True:
+    io_tensors = status.get("io_tensors")
+    contract_only_probe = (
+        isinstance(io_tensors, list)
+        and "unsupported TensorRT detection output contract"
+        in str(status.get("reason") or "")
+    )
+    if status.get("loaded") is not True and not contract_only_probe:
         raise ValueError(
             f"TensorRT engine probe failed: {status.get('reason') or 'loaded=false'}"
         )
-    io_tensors = status.get("io_tensors")
     if isinstance(io_tensors, list):
         return _contract_from_io_tensors(
             io_tensors,
@@ -220,11 +235,21 @@ def _contract_from_io_tensors(
             f"got inputs={len(inputs)} outputs={len(outputs)}"
         )
     input_tensor = inputs[0]
-    efficient_nms = _efficient_nms_bindings(outputs)
+    input_shape = parse_runtime_shape(input_tensor.get("shape"), "input_shape")
+    rockchip_yolov5 = _rockchip_yolov5_bindings(
+        outputs,
+        input_shape=input_shape,
+        class_count_hint=class_count_hint,
+    )
+    efficient_nms = _efficient_nms_bindings(outputs) if rockchip_yolov5 is None else None
     output_tensor = (
-        efficient_nms[1]
-        if efficient_nms is not None
-        else _select_raw_yolo_output(outputs, class_count_hint=class_count_hint)
+        rockchip_yolov5[0][0]
+        if rockchip_yolov5 is not None
+        else (
+            efficient_nms[1]
+            if efficient_nms is not None
+            else _select_raw_yolo_output(outputs, class_count_hint=class_count_hint)
+        )
     )
     input_name = str(input_tensor.get("name") or "").strip()
     output_name = str(output_tensor.get("name") or "").strip()
@@ -232,17 +257,25 @@ def _contract_from_io_tensors(
         raise ValueError("TensorRT engine probe returned an unnamed I/O tensor")
     return EngineTensorContract(
         input_name=input_name,
-        input_shape=parse_runtime_shape(input_tensor.get("shape"), "input_shape"),
+        input_shape=input_shape,
         input_dtype=normalize_tensor_dtype(input_tensor.get("dtype")),
         output_name=output_name,
         output_shape=parse_runtime_shape(output_tensor.get("shape"), "output_shape"),
         output_dtype=normalize_tensor_dtype(output_tensor.get("dtype")),
         output_format=(
-            "efficientnms_boxes_scores_classes"
-            if efficient_nms is not None
-            else "yolo_cxcywh_class_scores"
+            "rockchip_yolov5_three_scale"
+            if rockchip_yolov5 is not None
+            else (
+                "efficientnms_boxes_scores_classes"
+                if efficient_nms is not None
+                else "yolo_cxcywh_class_scores"
+            )
         ),
-        postprocess_parser="efficientnms" if efficient_nms is not None else "yolo",
+        postprocess_parser=(
+            "rockchip_yolov5"
+            if rockchip_yolov5 is not None
+            else ("efficientnms" if efficient_nms is not None else "yolo")
+        ),
         output_bindings=tuple(
             TensorSpec(
                 name=str(item.get("name") or ""),
@@ -250,9 +283,68 @@ def _contract_from_io_tensors(
                 dtype=_normalize_output_binding_dtype(item.get("dtype")),
                 layout="NCHW",
             )
-            for item in (efficient_nms or [])
+            for item in (
+                [entry[0] for entry in rockchip_yolov5]
+                if rockchip_yolov5 is not None
+                else (efficient_nms or [])
+            )
+        ),
+        output_strides=(
+            _ROCKCHIP_YOLOV5_STRIDES if rockchip_yolov5 is not None else ()
+        ),
+        output_anchors=(
+            _ROCKCHIP_YOLOV5_ANCHORS if rockchip_yolov5 is not None else ()
+        ),
+        inferred_class_count=(
+            rockchip_yolov5[0][1] if rockchip_yolov5 is not None else None
         ),
     )
+
+
+def _rockchip_yolov5_bindings(
+    outputs: list[dict[str, object]],
+    *,
+    input_shape: list[int],
+    class_count_hint: int | None,
+) -> tuple[tuple[dict[str, object], int], ...] | None:
+    if len(outputs) != 3 or len(input_shape) != 4 or input_shape[2] != input_shape[3]:
+        return None
+    described: list[tuple[dict[str, object], int, int]] = []
+    channels: int | None = None
+    for output in outputs:
+        try:
+            shape = parse_runtime_shape(
+                output.get("shape"),
+                f"output {output.get('name') or '<unnamed>'}",
+            )
+        except ValueError:
+            return None
+        if len(shape) != 4 or shape[0] != 1 or shape[2] != shape[3]:
+            return None
+        if normalize_tensor_dtype(output.get("dtype")) not in {"float16", "float32"}:
+            return None
+        channels = shape[1] if channels is None else channels
+        if shape[1] != channels:
+            return None
+        described.append((output, shape[2], shape[1]))
+    described.sort(key=lambda item: item[1], reverse=True)
+    grids = [item[1] for item in described]
+    if grids[1] * 2 != grids[0] or grids[2] * 2 != grids[1]:
+        return None
+    strides = [int(input_shape[2]) // grid for grid in grids]
+    if strides != list(_ROCKCHIP_YOLOV5_STRIDES):
+        return None
+    if channels is None or channels % 3 != 0:
+        return None
+    inferred_class_count = channels // 3 - 5
+    if inferred_class_count <= 0:
+        return None
+    if class_count_hint is not None and int(class_count_hint) != inferred_class_count:
+        raise ValueError(
+            "Rockchip YOLOv5 output class count conflicts with category configuration "
+            f"(heads infer {inferred_class_count}, configured {class_count_hint})"
+        )
+    return tuple((item[0], inferred_class_count) for item in described)
 
 
 def _efficient_nms_bindings(
@@ -409,6 +501,25 @@ def recommend_engine_manifest(
             f"got {contract.input_shape}"
         )
     preset_id = normalize_parser_preset(parser_preset)
+    if contract.postprocess_parser == "rockchip_yolov5":
+        inferred_count = int(contract.inferred_class_count or 0)
+        if inferred_count <= 0:
+            raise ValueError("Rockchip YOLOv5 contract did not expose a class count")
+        rockchip_classes = list(registered_classes)
+        if _automatic_class_names(rockchip_classes):
+            rockchip_classes = [f"class_{index}" for index in range(inferred_count)]
+        elif len(rockchip_classes) != inferred_count:
+            raise ValueError(
+                "Rockchip YOLOv5 output class count conflicts with category names "
+                f"(heads infer {inferred_count}, configured {len(rockchip_classes)})"
+            )
+        parser_plan = resolve_rockchip_yolov5_parser_plan(preset_id)
+        return EngineManifestRecommendation(
+            contract=contract,
+            class_names=rockchip_classes,
+            output_has_objectness=True,
+            parser_plan=parser_plan,
+        )
     if contract.postprocess_parser == "efficientnms":
         efficient_classes = list(registered_classes)
         if _automatic_class_names(efficient_classes):
@@ -824,6 +935,8 @@ def ensure_engine_manifest(
             postprocess_parser=contract.postprocess_parser,
             parser_preset=parser_plan.requested_preset,
             output_bindings=list(contract.output_bindings),
+            output_strides=list(contract.output_strides),
+            output_anchors=[list(scale) for scale in contract.output_anchors],
             validated=True,
         )
         engine_signature_after = _engine_file_signature(path)
@@ -901,6 +1014,13 @@ def _manifest_matches_engine_contract(
         and str(manifest.postprocess.parser).strip().lower()
         == contract.postprocess_parser
         and manifest_bindings == contract_bindings
+        and tuple(int(value) for value in manifest.output.strides)
+        == contract.output_strides
+        and tuple(
+            tuple(float(value) for value in scale)
+            for scale in manifest.output.anchors
+        )
+        == contract.output_anchors
     )
 
 
@@ -911,6 +1031,8 @@ def _resolve_manifest_parser_plan(
 ) -> ParserPlan:
     if str(manifest.postprocess.parser).strip().lower() == "efficientnms":
         return resolve_efficient_nms_parser_plan(preset_id)
+    if str(manifest.postprocess.parser).strip().lower() == "rockchip_yolov5":
+        return resolve_rockchip_yolov5_parser_plan(preset_id)
     return resolve_parser_plan(
         preset_id,
         output_shape=manifest.output.shape,

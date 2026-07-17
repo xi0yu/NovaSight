@@ -15,6 +15,12 @@ from .unavailable import UnavailableInferenceEngine
 logger = logging.getLogger("novasight.inference.runtime")
 
 
+class _InferencePreparationError(RuntimeError):
+    def __init__(self, reason: str, *, status: dict[str, Any]) -> None:
+        super().__init__(reason)
+        self.status = status
+
+
 class InferenceRuntime:
     _UNSET = object()
 
@@ -132,8 +138,14 @@ class InferenceRuntime:
             candidate, status = self.prepare(artifact_path, classes, input_shape)
             return status
         except Exception as exc:
+            status = dict(getattr(exc, "status", {}))
+            if candidate is not None:
+                status.update(candidate.status())
             return {
-                "selected": getattr(candidate, "engine_id", "unknown"),
+                **status,
+                "selected": status.get(
+                    "selected", getattr(candidate, "engine_id", "unknown")
+                ),
                 "available": False,
                 "loaded": False,
                 "reason": str(exc),
@@ -183,14 +195,15 @@ class InferenceRuntime:
                 status = dict(candidate.status())
             status["loaded"] = status.get("loaded") is True
             return candidate, status
-        except Exception:
+        except Exception as exc:
+            status = dict(candidate.status())
             close = getattr(candidate, "close", None)
             if callable(close):
                 try:
                     close()
                 except Exception:
                     pass
-            raise
+            raise _InferencePreparationError(str(exc), status=status) from exc
 
     def prepare_profile(
         self,

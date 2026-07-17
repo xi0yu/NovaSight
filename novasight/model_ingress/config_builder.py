@@ -65,8 +65,11 @@ class InferenceConfigBuilder:
             raise ValueError(
                 "the current DeepStream native parser does not support built-in NMS outputs"
             )
-        if len(profile.outputs) != 1:
+        is_rockchip = str(profile.decoder.parser_type).strip().lower() == "rockchip_yolov5"
+        if (not is_rockchip) and len(profile.outputs) != 1:
             raise ValueError("the current DeepStream runtime requires exactly one output tensor")
+        if is_rockchip and len(profile.outputs) != 3:
+            raise ValueError("rockchip_yolov5 requires exactly three output tensors")
         if profile.preprocess.offsets or profile.preprocess.mean or profile.preprocess.std:
             raise ValueError(
                 "the current DeepStream nvinfer path cannot represent ModelProfile "
@@ -103,8 +106,20 @@ class InferenceConfigBuilder:
             input_scale_factor=float(profile.preprocess.scale),
             maintain_aspect_ratio=profile.preprocess.resize_mode == "letterbox",
             symmetric_padding=profile.preprocess.symmetric_padding,
-            output_has_objectness=bool(profile.decoder.has_objectness),
-            parser_preset=normalize_parser_preset(parser.parser_type),
+            output_has_objectness=True if is_rockchip else bool(profile.decoder.has_objectness),
+            parser_preset=("auto" if is_rockchip else normalize_parser_preset(parser.parser_type)),
+            output_format=("rockchip_yolov5_three_scale" if is_rockchip else "yolo_cxcywh_class_scores"),
+            postprocess_parser=("rockchip_yolov5" if is_rockchip else "yolo"),
+            output_bindings=[
+                TensorSpec(name=item.name, shape=list(item.shape), dtype=item.dtype, layout="NCHW")
+                for item in profile.outputs
+            ] if is_rockchip else None,
+            output_strides=[8, 16, 32] if is_rockchip else None,
+            output_anchors=[
+                [10.0, 13.0, 16.0, 30.0, 33.0, 23.0],
+                [30.0, 61.0, 62.0, 45.0, 59.0, 119.0],
+                [116.0, 90.0, 156.0, 198.0, 373.0, 326.0],
+            ] if is_rockchip else None,
             validated=True,
         )
         manifest = replace(
