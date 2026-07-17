@@ -50,6 +50,7 @@ class OutputSpec(TensorSpec):
     has_objectness: bool = False
     scores_are_sigmoid: bool = True
     coordinate_mode: str = "pixel"
+    bindings: list[TensorSpec] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ def build_engine_manifest(
     output_coordinate_mode: str = "pixel",
     postprocess_parser: str = "yolo",
     parser_preset: str = "auto",
+    output_bindings: list[TensorSpec] | None = None,
     validated: bool = False,
 ) -> ModelManifest:
     engine_path = Path(engine_path)
@@ -140,6 +142,15 @@ def build_engine_manifest(
                 output_coordinate_mode,
                 "output.coordinate_mode",
             ),
+            bindings=[
+                TensorSpec(
+                    name=_require_non_empty(item.name, "output.bindings.name"),
+                    shape=_validate_shape(item.shape, "output.bindings.shape"),
+                    dtype=_require_non_empty(item.dtype, "output.bindings.dtype"),
+                    layout=_require_non_empty(item.layout, "output.bindings.layout"),
+                )
+                for item in (output_bindings or [])
+            ],
         ),
         postprocess=PostprocessSpec(
             parser=_require_non_empty(postprocess_parser, "postprocess.parser"),
@@ -161,7 +172,7 @@ def _compute_model_fingerprint(
     *,
     include_class_names: bool,
 ) -> str:
-    output_payload = {
+    output_payload: dict[str, Any] = {
         "name": manifest.output.name,
         "shape": list(manifest.output.shape),
         "dtype": manifest.output.dtype,
@@ -171,6 +182,8 @@ def _compute_model_fingerprint(
         "has_objectness": manifest.output.has_objectness,
         "coordinate_mode": manifest.output.coordinate_mode,
     }
+    if manifest.output.bindings:
+        output_payload["bindings"] = [asdict(item) for item in manifest.output.bindings]
     if include_class_names:
         output_payload["class_names"] = list(manifest.output.class_names)
     payload = {
@@ -220,6 +233,12 @@ def validate_manifest_engine_artifact(manifest: ModelManifest, engine_path: Path
 
 def manifest_from_dict(raw: dict[str, Any]) -> ModelManifest:
     raw_output = dict(raw["output"])
+    raw_bindings = raw_output.get("bindings", [])
+    raw_output["bindings"] = [
+        TensorSpec(**dict(item))
+        for item in raw_bindings
+        if isinstance(item, dict)
+    ]
     artifact = ArtifactInfo(**dict(raw["artifact"]))
     runtime = RuntimeInfo(**dict(raw.get("runtime", {})))
     input_spec = InputSpec(**dict(raw["input"]))

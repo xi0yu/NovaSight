@@ -23,7 +23,7 @@ class ParserPreset:
 @dataclass(frozen=True, slots=True)
 class ParserPlan:
     requested_preset: ParserPresetId
-    compatibility: Literal["yolov5", "yolov8_yolo11"]
+    compatibility: Literal["yolov5", "yolov8_yolo11", "efficientnms"]
     has_objectness: bool
     parser_library: str = "novasight_builtin"
     parser_function: str = "NvDsInferParseNovaSight"
@@ -128,6 +128,15 @@ def resolve_parser_plan(
     )
 
 
+def resolve_efficient_nms_parser_plan(preset: object) -> ParserPlan:
+    return ParserPlan(
+        requested_preset=normalize_parser_preset(preset),
+        compatibility="efficientnms",
+        has_objectness=False,
+        nms_owner="model",
+    )
+
+
 def parser_preset_payload() -> list[dict[str, str | bool | None]]:
     return [
         {
@@ -149,4 +158,5 @@ __all__ = [
     "parser_preset_objectness_hint",
     "parser_preset_payload",
     "resolve_parser_plan",
+    "resolve_efficient_nms_parser_plan",
 ]

@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -58,7 +60,133 @@ float layer_value(const NvDsInferLayerInfo& layer, std::size_t index) {
     if (layer.dataType == HALF) {
         return half_to_float(static_cast<const std::uint16_t*>(layer.buffer)[index]);
     }
+    if (layer.dataType == INT32) {
+        return static_cast<float>(static_cast<const std::int32_t*>(layer.buffer)[index]);
+    }
     return std::numeric_limits<float>::quiet_NaN();
+}
+
+float threshold_for_class(
+    const NvDsInferParseDetectionParams& params,
+    std::size_t class_id);
+
+std::size_t layer_element_count(const NvDsInferLayerInfo& layer) {
+    std::size_t count = 1U;
+    if (layer.inferDims.numDims == 0U) {
+        return 0U;
+    }
+    for (unsigned int index = 0; index < layer.inferDims.numDims; ++index) {
+        if (layer.inferDims.d[index] <= 0) {
+            return 0U;
+        }
+        count *= static_cast<std::size_t>(layer.inferDims.d[index]);
+    }
+    return count;
+}
+
+bool layer_name_contains(const NvDsInferLayerInfo& layer, const char* token) {
+    if (layer.layerName == nullptr) {
+        return false;
+    }
+    std::string name(layer.layerName);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    return name.find(token) != std::string::npos;
+}
+
+bool parse_efficient_nms(
+    const std::vector<NvDsInferLayerInfo>& layers,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects,
+    std::size_t& input_candidates) {
+    const NvDsInferLayerInfo* count_layer = nullptr;
+    const NvDsInferLayerInfo* boxes_layer = nullptr;
+    const NvDsInferLayerInfo* scores_layer = nullptr;
+    const NvDsInferLayerInfo* classes_layer = nullptr;
+    for (const auto& layer : layers) {
+        if (layer.buffer == nullptr) {
+            return false;
+        }
+        if (layer_name_contains(layer, "num_det")
+            || layer_name_contains(layer, "count")) {
+            count_layer = &layer;
+        } else if (layer_name_contains(layer, "box")
+            || layer_name_contains(layer, "bbox")) {
+            boxes_layer = &layer;
+        } else if (layer_name_contains(layer, "score")
+            || layer_name_contains(layer, "conf")) {
+            scores_layer = &layer;
+        } else if (layer_name_contains(layer, "class")
+            || layer_name_contains(layer, "label")) {
+            classes_layer = &layer;
+        }
+    }
+    if (count_layer == nullptr || boxes_layer == nullptr || scores_layer == nullptr
+        || classes_layer == nullptr || layer_element_count(*count_layer) != 1U) {
+        return false;
+    }
+    const std::size_t box_values = layer_element_count(*boxes_layer);
+    const std::size_t score_values = layer_element_count(*scores_layer);
+    const std::size_t class_values = layer_element_count(*classes_layer);
+    if (box_values == 0U || box_values % 4U != 0U
+        || score_values != box_values / 4U || class_values != score_values) {
+        return false;
+    }
+    const float raw_count = layer_value(*count_layer, 0U);
+    if (!std::isfinite(raw_count) || raw_count < 0.0F) {
+        return false;
+    }
+    input_candidates = std::min(
+        static_cast<std::size_t>(raw_count),
+        score_values);
+    objects.reserve(objects.size() + std::min(input_candidates, kInitialObjectCapacity));
+    for (std::size_t index = 0; index < input_candidates; ++index) {
+        const float score = layer_value(*scores_layer, index);
+        const float raw_class = layer_value(*classes_layer, index);
+        if (!std::isfinite(score) || !std::isfinite(raw_class) || raw_class < 0.0F) {
+            continue;
+        }
+        const std::size_t class_id = static_cast<std::size_t>(raw_class);
+        if (class_id >= params.numClassesConfigured
+            || score < threshold_for_class(params, class_id)) {
+            continue;
+        }
+        float left = layer_value(*boxes_layer, index * 4U);
+        float top = layer_value(*boxes_layer, index * 4U + 1U);
+        float right = layer_value(*boxes_layer, index * 4U + 2U);
+        float bottom = layer_value(*boxes_layer, index * 4U + 3U);
+        if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right)
+            || !std::isfinite(bottom)) {
+            continue;
+        }
+        const float largest_coordinate = std::max(
+            std::max(std::fabs(left), std::fabs(right)),
+            std::max(std::fabs(top), std::fabs(bottom)));
+        if (largest_coordinate <= 2.0F) {
+            left *= static_cast<float>(network.width);
+            right *= static_cast<float>(network.width);
+            top *= static_cast<float>(network.height);
+            bottom *= static_cast<float>(network.height);
+        }
+        left = std::max(0.0F, left);
+        top = std::max(0.0F, top);
+        right = std::min(static_cast<float>(network.width), right);
+        bottom = std::min(static_cast<float>(network.height), bottom);
+        if (right <= left || bottom <= top) {
+            continue;
+        }
+        NvDsInferObjectDetectionInfo object{};
+        object.classId = static_cast<unsigned int>(class_id);
+        object.detectionConfidence = score;
+        object.left = left;
+        object.top = top;
+        object.width = right - left;
+        object.height = bottom - top;
+        objects.push_back(object);
+    }
+    return true;
 }
 
 float threshold_for_class(
@@ -140,6 +268,21 @@ extern "C" bool NvDsInferParseNovaSight(
             std::memory_order_relaxed);
         return false;
     };
+    if (output_layers.size() == 4U) {
+        std::size_t input_candidates = 0U;
+        if (!parse_efficient_nms(
+                output_layers, network, params, objects, input_candidates)) {
+            return fail(4U);
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started);
+        g_last_error_code.store(0U, std::memory_order_relaxed);
+        g_last_decode_ns.store(
+            static_cast<std::uint64_t>(elapsed.count()), std::memory_order_relaxed);
+        g_last_input_candidates.store(input_candidates, std::memory_order_relaxed);
+        g_last_output_candidates.store(objects.size(), std::memory_order_relaxed);
+        return true;
+    }
     if (output_layers.size() != 1U || output_layers.front().buffer == nullptr) {
         return fail(1U);
     }

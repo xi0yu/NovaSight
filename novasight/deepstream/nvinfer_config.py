@@ -5,7 +5,11 @@ from pathlib import Path
 
 from novasight.model_registry.manifest import ModelManifest
 
-from .parser_presets import ParserPlan, resolve_parser_plan
+from .parser_presets import (
+    ParserPlan,
+    resolve_efficient_nms_parser_plan,
+    resolve_parser_plan,
+)
 
 
 def generate_nvinfer_config(
@@ -47,10 +51,10 @@ def generate_nvinfer_config(
         # The custom parser receives output_layers directly inside nvinfer. Exporting
         # the same raw tensors as downstream metadata is redundant for ObjectMeta.
         "output-tensor-meta=0",
-        f"output-blob-names={manifest.output.name}",
+        f"output-blob-names={_output_blob_names(manifest)}",
         f"custom-lib-path={Path(parser_library_path).expanduser().resolve(strict=False)}",
         f"parse-bbox-func-name={parser_plan.parser_function}",
-        "cluster-mode=2",
+        f"cluster-mode={4 if parser_plan.nms_owner == 'model' else 2}",
         "",
         "[class-attrs-all]",
         f"pre-cluster-threshold={confidence:.8g}",
@@ -105,7 +109,16 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
         raise ValueError("deepstream_nvinfer requires model batch_size=1")
     if str(manifest.input.layout).upper() != "NCHW" or len(manifest.input.shape) != 4:
         raise ValueError("deepstream_nvinfer requires a four-dimensional NCHW input")
-    if str(manifest.postprocess.parser).strip().lower() != "yolo":
+    parser = str(manifest.postprocess.parser).strip().lower()
+    if parser == "efficientnms":
+        if str(manifest.output.format).strip().lower() != "efficientnms_boxes_scores_classes":
+            raise ValueError("EfficientNMS parser requires boxes/scores/classes output format")
+        if len(manifest.output.bindings) != 4:
+            raise ValueError("EfficientNMS parser requires four explicit output bindings")
+        if int(manifest.output.class_count) <= 0:
+            raise ValueError("EfficientNMS parser requires a positive model class count")
+        return resolve_efficient_nms_parser_plan(manifest.postprocess.parser_preset)
+    if parser != "yolo":
         raise ValueError(
             "deepstream_nvinfer raw parser only supports postprocess.parser=yolo; "
             "models with built-in Decode/NMS need an explicit no-second-NMS parser contract"
@@ -135,6 +148,13 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
         class_count=class_count,
         inferred_has_objectness=manifest.output.has_objectness,
     )
+
+
+def _output_blob_names(manifest: ModelManifest) -> str:
+    bindings = list(manifest.output.bindings)
+    if not bindings:
+        return manifest.output.name
+    return ";".join(item.name for item in bindings)
 
 
 def _network_mode(value: str) -> int:

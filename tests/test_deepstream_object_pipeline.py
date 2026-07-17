@@ -152,7 +152,7 @@ def test_nvinfer_config_uses_native_decode_and_exactly_one_nms(tmp_path: Path) -
     assert "num-detected-classes=2" in text
 
 
-def test_nvinfer_config_rejects_model_nms_without_explicit_contract(tmp_path: Path) -> None:
+def test_nvinfer_config_rejects_incomplete_model_nms_contract(tmp_path: Path) -> None:
     engine, manifest = _manifest(tmp_path)
     manifest = SimpleNamespace(
         **{
@@ -163,7 +163,7 @@ def test_nvinfer_config_rejects_model_nms_without_explicit_contract(tmp_path: Pa
         }
     )
 
-    with pytest.raises(ValueError, match="built-in Decode/NMS"):
+    with pytest.raises(ValueError, match="boxes/scores/classes output format"):
         generate_nvinfer_config(
             manifest,
             engine_path=engine,
@@ -806,6 +806,7 @@ def test_existing_manifest_is_rebuilt_when_engine_tensor_contract_changed(
     )
 
     assert regenerated is True
+    manifest = read_manifest(engine_path.with_name(f"{engine_path.name}.manifest.json"))
     assert manifest.input.name == "input_tensor"
     assert manifest.input.shape == [1, 3, 320, 512]
     assert manifest.input.dtype == "float16"
@@ -1011,7 +1012,9 @@ def test_missing_manifest_is_not_generated_for_builtin_nms_output(tmp_path: Path
     assert not engine_path.with_name(f"{engine_path.name}.manifest.json").exists()
 
 
-def test_missing_manifest_is_not_generated_for_multi_output_engine(tmp_path: Path) -> None:
+def test_missing_manifest_is_not_generated_for_unrecognized_multi_output_engine(
+    tmp_path: Path,
+) -> None:
     engine_path = tmp_path / "demo.engine"
     engine_path.write_bytes(b"engine")
     inference = SimpleNamespace(
@@ -1021,16 +1024,16 @@ def test_missing_manifest_is_not_generated_for_multi_output_engine(tmp_path: Pat
             "input_shape": "1x3x256x256",
             "input_dtype": "float32",
             "output_name": "boxes",
-            "output_shape": "1x6x1344",
+            "output_shape": "1x100x4",
             "output_dtype": "float32",
             "outputs": {
-                "boxes": {"shape": [1, 6, 1344], "dtype": "float32"},
+                "boxes": {"shape": [1, 100, 4], "dtype": "float32"},
                 "masks": {"shape": [1, 32, 64, 64], "dtype": "float32"},
             },
         }
     )
 
-    with pytest.raises(ValueError, match="exactly one TensorRT output"):
+    with pytest.raises(ValueError, match="could not identify a supported detection"):
         ensure_engine_manifest(
             inference,
             engine_path=engine_path,
@@ -1044,3 +1047,135 @@ def test_missing_manifest_is_not_generated_for_multi_output_engine(tmp_path: Pat
 
     assert not engine_path.with_name("model.manifest.json").exists()
     assert not engine_path.with_name(f"{engine_path.name}.manifest.json").exists()
+
+
+def test_missing_manifest_selects_unique_raw_yolo_tensor_from_four_outputs(
+    tmp_path: Path,
+) -> None:
+    engine_path = tmp_path / "demo.engine"
+    engine_path.write_bytes(b"engine")
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "io_tensors": [
+                {
+                    "name": "images",
+                    "mode": "input",
+                    "shape": [1, 3, 256, 256],
+                    "dtype": "float16",
+                },
+                {
+                    "name": "predictions",
+                    "mode": "output",
+                    "shape": [1, 6, 1344],
+                    "dtype": "float16",
+                },
+                {
+                    "name": "prototype",
+                    "mode": "output",
+                    "shape": [1, 32, 64, 64],
+                    "dtype": "float16",
+                },
+                {
+                    "name": "feature_a",
+                    "mode": "output",
+                    "shape": [1, 16, 32, 32],
+                    "dtype": "float16",
+                },
+                {
+                    "name": "feature_b",
+                    "mode": "output",
+                    "shape": [1, 8, 16, 16],
+                    "dtype": "float16",
+                },
+            ],
+        }
+    )
+
+    manifest, regenerated = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="demo",
+        display_name="demo",
+        classes=["body", "head"],
+        registered_input_shape="1x3x256x256",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+    )
+
+    assert regenerated is True
+    assert manifest.output.name == "predictions"
+    assert manifest.output.shape == [1, 6, 1344]
+
+
+def test_missing_manifest_supports_four_output_efficient_nms_engine(
+    tmp_path: Path,
+) -> None:
+    engine_path = tmp_path / "demo.engine"
+    engine_path.write_bytes(b"engine")
+    inference = SimpleNamespace(
+        probe=lambda *_args: {
+            "loaded": True,
+            "io_tensors": [
+                {
+                    "name": "images",
+                    "mode": "input",
+                    "shape": [1, 3, 640, 640],
+                    "dtype": "float16",
+                },
+                {
+                    "name": "num_dets",
+                    "mode": "output",
+                    "shape": [1, 1],
+                    "dtype": "int32",
+                },
+                {
+                    "name": "det_boxes",
+                    "mode": "output",
+                    "shape": [1, 300, 4],
+                    "dtype": "float32",
+                },
+                {
+                    "name": "det_scores",
+                    "mode": "output",
+                    "shape": [1, 300],
+                    "dtype": "float32",
+                },
+                {
+                    "name": "det_classes",
+                    "mode": "output",
+                    "shape": [1, 300],
+                    "dtype": "int32",
+                },
+            ],
+        }
+    )
+
+    manifest, regenerated = ensure_engine_manifest(
+        inference,
+        engine_path=engine_path,
+        model_id="demo",
+        display_name="demo",
+        classes=["body", "head"],
+        registered_input_shape="1x3x640x640",
+        confidence_threshold=0.25,
+        nms_iou_threshold=0.45,
+    )
+    nvinfer = generate_nvinfer_config(
+        manifest,
+        engine_path=engine_path,
+        parser_library_path=tmp_path / "libnovasight_parser.so",
+    )
+
+    assert regenerated is True
+    manifest = read_manifest(engine_path.with_name(f"{engine_path.name}.manifest.json"))
+    assert manifest.output.format == "efficientnms_boxes_scores_classes"
+    assert manifest.postprocess.parser == "efficientnms"
+    assert [item.name for item in manifest.output.bindings] == [
+        "num_dets",
+        "det_boxes",
+        "det_scores",
+        "det_classes",
+    ]
+    assert "output-blob-names=num_dets;det_boxes;det_scores;det_classes" in nvinfer
+    assert "cluster-mode=4" in nvinfer

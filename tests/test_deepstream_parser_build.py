@@ -1,7 +1,35 @@
 from pathlib import Path
+import shutil
 import subprocess
 
 from novasight.deepstream import parser_build
+
+
+def test_native_parser_decodes_four_output_efficient_nms(tmp_path) -> None:
+    compiler = shutil.which("c++")
+    if compiler is None:
+        return
+    root = Path(__file__).resolve().parents[1]
+    executable = tmp_path / "parser-contract-test"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-I",
+            str(root / "native/deepstream-parser/tests"),
+            str(root / "native/deepstream-parser/src/novasight_parser.cpp"),
+            str(root / "native/deepstream-parser/tests/parser_contract_test.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run([str(executable)], check=True)
 
 
 def test_missing_deepstream_parser_is_built_once(tmp_path, monkeypatch) -> None:

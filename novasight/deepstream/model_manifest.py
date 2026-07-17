@@ -21,6 +21,7 @@ from .parser_presets import (
     ParserPlan,
     normalize_parser_preset,
     parser_preset_objectness_hint,
+    resolve_efficient_nms_parser_plan,
     resolve_parser_plan,
 )
 
@@ -37,6 +38,9 @@ class EngineTensorContract:
     output_name: str
     output_shape: list[int]
     output_dtype: str
+    output_format: str = "yolo_cxcywh_class_scores"
+    postprocess_parser: str = "yolo"
+    output_bindings: tuple[TensorSpec, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +116,7 @@ def probe_engine_contract(
     artifact_path: Path,
     classes: list[str],
     registered_input_shape: str,
+    class_count_hint: int | None = None,
 ) -> EngineTensorContract:
     probe = getattr(inference, "probe", None)
     if not callable(probe):
@@ -125,15 +130,39 @@ def probe_engine_contract(
         )
     io_tensors = status.get("io_tensors")
     if isinstance(io_tensors, list):
-        return _contract_from_io_tensors(io_tensors)
-    outputs = status.get("outputs")
-    if isinstance(outputs, dict) and len(outputs) != 1:
-        raise ValueError(
-            "DeepStream native parser requires exactly one TensorRT output tensor, "
-            f"got {sorted(str(name) for name in outputs)}"
+        return _contract_from_io_tensors(
+            io_tensors,
+            class_count_hint=class_count_hint,
         )
+    outputs = status.get("outputs")
     input_name = str(status.get("input_name") or "").strip()
-    output_name = str(status.get("output_name") or "").strip()
+    selected_output: dict[str, object] | None = None
+    efficient_nms: tuple[
+        dict[str, object],
+        dict[str, object],
+        dict[str, object],
+        dict[str, object],
+    ] | None = None
+    if isinstance(outputs, dict):
+        output_tensors = [
+            {
+                "name": str(name),
+                **(dict(value) if isinstance(value, dict) else {}),
+            }
+            for name, value in outputs.items()
+        ]
+        efficient_nms = _efficient_nms_bindings(output_tensors)
+        selected_output = (
+            efficient_nms[1]
+            if efficient_nms is not None
+            else _select_raw_yolo_output(
+                output_tensors,
+                class_count_hint=class_count_hint,
+            )
+        )
+    output_name = str(
+        (selected_output or {}).get("name") or status.get("output_name") or ""
+    ).strip()
     if not input_name or not output_name:
         raise ValueError("TensorRT engine probe did not expose input/output tensor names")
     return EngineTensorContract(
@@ -141,12 +170,36 @@ def probe_engine_contract(
         input_shape=parse_runtime_shape(status.get("input_shape"), "input_shape"),
         input_dtype=normalize_tensor_dtype(status.get("input_dtype")),
         output_name=output_name,
-        output_shape=parse_runtime_shape(status.get("output_shape"), "output_shape"),
-        output_dtype=normalize_tensor_dtype(status.get("output_dtype")),
+        output_shape=parse_runtime_shape(
+            (selected_output or {}).get("shape", status.get("output_shape")),
+            "output_shape",
+        ),
+        output_dtype=normalize_tensor_dtype(
+            (selected_output or {}).get("dtype", status.get("output_dtype"))
+        ),
+        output_format=(
+            "efficientnms_boxes_scores_classes"
+            if efficient_nms is not None
+            else "yolo_cxcywh_class_scores"
+        ),
+        postprocess_parser="efficientnms" if efficient_nms is not None else "yolo",
+        output_bindings=tuple(
+            TensorSpec(
+                name=str(item.get("name") or ""),
+                shape=parse_runtime_shape(item.get("shape"), "output binding shape"),
+                dtype=_normalize_output_binding_dtype(item.get("dtype")),
+                layout="NCHW",
+            )
+            for item in (efficient_nms or [])
+        ),
     )
 
 
-def _contract_from_io_tensors(io_tensors: list[object]) -> EngineTensorContract:
+def _contract_from_io_tensors(
+    io_tensors: list[object],
+    *,
+    class_count_hint: int | None = None,
+) -> EngineTensorContract:
     inputs: list[dict[str, object]] = []
     outputs: list[dict[str, object]] = []
     for raw_tensor in io_tensors:
@@ -161,13 +214,18 @@ def _contract_from_io_tensors(io_tensors: list[object]) -> EngineTensorContract:
             raise ValueError(
                 "TensorRT engine probe returned an I/O tensor without input/output mode"
             )
-    if len(inputs) != 1 or len(outputs) != 1:
+    if len(inputs) != 1:
         raise ValueError(
-            "DeepStream native parser requires exactly one TensorRT input and one output "
-            f"tensor, got inputs={len(inputs)} outputs={len(outputs)}"
+            "DeepStream requires exactly one TensorRT image input, "
+            f"got inputs={len(inputs)} outputs={len(outputs)}"
         )
     input_tensor = inputs[0]
-    output_tensor = outputs[0]
+    efficient_nms = _efficient_nms_bindings(outputs)
+    output_tensor = (
+        efficient_nms[1]
+        if efficient_nms is not None
+        else _select_raw_yolo_output(outputs, class_count_hint=class_count_hint)
+    )
     input_name = str(input_tensor.get("name") or "").strip()
     output_name = str(output_tensor.get("name") or "").strip()
     if not input_name or not output_name:
@@ -179,6 +237,142 @@ def _contract_from_io_tensors(io_tensors: list[object]) -> EngineTensorContract:
         output_name=output_name,
         output_shape=parse_runtime_shape(output_tensor.get("shape"), "output_shape"),
         output_dtype=normalize_tensor_dtype(output_tensor.get("dtype")),
+        output_format=(
+            "efficientnms_boxes_scores_classes"
+            if efficient_nms is not None
+            else "yolo_cxcywh_class_scores"
+        ),
+        postprocess_parser="efficientnms" if efficient_nms is not None else "yolo",
+        output_bindings=tuple(
+            TensorSpec(
+                name=str(item.get("name") or ""),
+                shape=parse_runtime_shape(item.get("shape"), "output binding shape"),
+                dtype=_normalize_output_binding_dtype(item.get("dtype")),
+                layout="NCHW",
+            )
+            for item in (efficient_nms or [])
+        ),
+    )
+
+
+def _efficient_nms_bindings(
+    outputs: list[dict[str, object]],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]] | None:
+    if len(outputs) != 4:
+        return None
+    described: list[tuple[dict[str, object], str, list[int], str]] = []
+    for output in outputs:
+        name = str(output.get("name") or "").strip().lower()
+        try:
+            shape = parse_runtime_shape(output.get("shape"), f"output {name}")
+        except ValueError:
+            return None
+        dtype = _normalize_output_binding_dtype(output.get("dtype"))
+        described.append((output, name, shape, dtype))
+
+    def named(tokens: tuple[str, ...]) -> list[tuple[dict[str, object], str, list[int], str]]:
+        return [item for item in described if any(token in item[1] for token in tokens)]
+
+    count_candidates = named(("num_det", "numdet", "count", "keep_count"))
+    boxes_candidates = named(("box", "bbox"))
+    scores_candidates = named(("score", "conf"))
+    classes_candidates = named(("class", "label"))
+    if not all(
+        len(items) == 1
+        for items in (
+            count_candidates,
+            boxes_candidates,
+            scores_candidates,
+            classes_candidates,
+        )
+    ):
+        return None
+    count = count_candidates[0]
+    boxes = boxes_candidates[0]
+    scores = scores_candidates[0]
+    classes = classes_candidates[0]
+    boxes_shape = boxes[2]
+    box_count = boxes_shape[-2] if len(boxes_shape) >= 2 and boxes_shape[-1] == 4 else 0
+    if box_count <= 0 or _element_count(count[2]) != 1:
+        return None
+    if _element_count(scores[2]) != box_count or _element_count(classes[2]) != box_count:
+        return None
+    return (count[0], boxes[0], scores[0], classes[0])
+
+
+def _element_count(shape: list[int]) -> int:
+    result = 1
+    for value in shape:
+        result *= int(value)
+    return result
+
+
+def _normalize_output_binding_dtype(value: object) -> str:
+    normalized = str(value or "float32").strip().lower().replace("_", "")
+    aliases = {
+        "float": "float32",
+        "fp32": "float32",
+        "float32": "float32",
+        "half": "float16",
+        "fp16": "float16",
+        "float16": "float16",
+        "int32": "int32",
+        "int": "int32",
+    }
+    if normalized not in aliases:
+        raise ValueError(f"unsupported TensorRT output binding dtype {value!r}")
+    return aliases[normalized]
+
+
+def _select_raw_yolo_output(
+    outputs: list[dict[str, object]],
+    *,
+    class_count_hint: int | None,
+) -> dict[str, object]:
+    if not outputs:
+        raise ValueError("TensorRT engine does not expose an output tensor")
+    if len(outputs) == 1:
+        return outputs[0]
+    expected_channels = (
+        {4 + int(class_count_hint), 5 + int(class_count_hint)}
+        if class_count_hint is not None and int(class_count_hint) > 0
+        else set()
+    )
+    candidates: list[dict[str, object]] = []
+    descriptions: list[str] = []
+    for output in outputs:
+        name = str(output.get("name") or "<unnamed>")
+        try:
+            shape = parse_runtime_shape(output.get("shape"), f"output {name}")
+        except ValueError:
+            shape = []
+        descriptions.append(f"{name}:{shape or '<unknown>'}")
+        dimensions = shape[1:] if len(shape) == 3 and shape[0] == 1 else shape
+        raw_shape_candidate = (
+            len(dimensions) == 2
+            and min(dimensions) > 4
+            and max(dimensions) > min(dimensions)
+            and not (6 in dimensions and max(dimensions) <= 512)
+        )
+        channel_contract_matches = (
+            any(value in expected_channels for value in dimensions)
+            if expected_channels
+            else raw_shape_candidate
+        )
+        if raw_shape_candidate and channel_contract_matches:
+            candidates.append(output)
+    if len(candidates) == 1:
+        return candidates[0]
+    detail = ", ".join(descriptions)
+    if not candidates:
+        raise ValueError(
+            "DeepStream could not identify a supported detection contract among multiple "
+            f"TensorRT outputs ({detail}). Expected one raw YOLO tensor or named "
+            "num_dets/boxes/scores/classes EfficientNMS outputs."
+        )
+    raise ValueError(
+        "DeepStream found multiple possible raw YOLO detection tensors; refusing an "
+        f"ambiguous binding selection ({detail})"
     )
 
 
@@ -196,6 +390,14 @@ def recommend_engine_manifest(
         artifact_path=path,
         classes=registered_classes,
         registered_input_shape=registered_input_shape,
+        class_count_hint=(
+            infer_class_count_hint_from_name(path.name)
+            or (
+                None
+                if _automatic_class_names(registered_classes)
+                else len(registered_classes) or None
+            )
+        ),
     )
     if (
         len(contract.input_shape) != 4
@@ -207,6 +409,26 @@ def recommend_engine_manifest(
             f"got {contract.input_shape}"
         )
     preset_id = normalize_parser_preset(parser_preset)
+    if contract.postprocess_parser == "efficientnms":
+        efficient_classes = list(registered_classes)
+        if _automatic_class_names(efficient_classes):
+            inferred_count = (
+                infer_class_count_hint_from_name(path.name)
+                or (len(efficient_classes) if len(efficient_classes) > 1 else 0)
+            )
+            if inferred_count <= 0:
+                raise ValueError(
+                    "EfficientNMS output does not encode the model class count; configure "
+                    "the model category names before activation"
+                )
+            efficient_classes = [f"class_{index}" for index in range(inferred_count)]
+        parser_plan = resolve_efficient_nms_parser_plan(preset_id)
+        return EngineManifestRecommendation(
+            contract=contract,
+            class_names=efficient_classes,
+            output_has_objectness=False,
+            parser_plan=parser_plan,
+        )
     preset_objectness = parser_preset_objectness_hint(preset_id)
     resolved_classes, output_has_objectness = resolve_yolo_class_contract(
         contract.output_shape,
@@ -341,6 +563,8 @@ def _manifest_needs_class_hint_reconciliation(
     class_count_hint: int | None,
     objectness_hint: bool | None,
 ) -> bool:
+    if str(manifest.postprocess.parser).strip().lower() != "yolo":
+        return False
     if not _automatic_class_names(list(manifest.output.class_names)):
         return False
     expected_classes, expected_objectness = resolve_yolo_class_contract(
@@ -453,11 +677,9 @@ def ensure_engine_manifest(
                 objectness_hint,
             )
             if registered_classes_match and not needs_hint_reconciliation:
-                parser_plan = resolve_parser_plan(
-                    preset_id,
-                    output_shape=existing_manifest.output.shape,
-                    class_count=existing_manifest.output.class_count,
-                    inferred_has_objectness=existing_manifest.output.has_objectness,
+                parser_plan = _resolve_manifest_parser_plan(
+                    existing_manifest,
+                    preset_id=preset_id,
                 )
                 preset_changed = (
                     str(existing_manifest.postprocess.parser_preset) != preset_id
@@ -594,19 +816,14 @@ def ensure_engine_manifest(
             symmetric_padding=(
                 template.input.symmetric_padding if template is not None else False
             ),
-            output_format=(
-                template.output.format
-                if template is not None
-                else "yolo_cxcywh_class_scores"
-            ),
+            output_format=contract.output_format,
             output_has_objectness=output_has_objectness,
             output_coordinate_mode=(
                 template.output.coordinate_mode if template is not None else "pixel"
             ),
-            postprocess_parser=(
-                template.postprocess.parser if template is not None else "yolo"
-            ),
+            postprocess_parser=contract.postprocess_parser,
             parser_preset=parser_plan.requested_preset,
+            output_bindings=list(contract.output_bindings),
             validated=True,
         )
         engine_signature_after = _engine_file_signature(path)
@@ -665,6 +882,14 @@ def _manifest_matches_engine_contract(
     manifest: ModelManifest,
     contract: EngineTensorContract,
 ) -> bool:
+    manifest_bindings = [
+        (item.name, list(item.shape), _normalize_output_binding_dtype(item.dtype))
+        for item in manifest.output.bindings
+    ]
+    contract_bindings = [
+        (item.name, list(item.shape), _normalize_output_binding_dtype(item.dtype))
+        for item in contract.output_bindings
+    ]
     return (
         manifest.input.name == contract.input_name
         and list(manifest.input.shape) == contract.input_shape
@@ -672,6 +897,25 @@ def _manifest_matches_engine_contract(
         and manifest.output.name == contract.output_name
         and list(manifest.output.shape) == contract.output_shape
         and normalize_tensor_dtype(manifest.output.dtype) == contract.output_dtype
+        and str(manifest.output.format).strip().lower() == contract.output_format
+        and str(manifest.postprocess.parser).strip().lower()
+        == contract.postprocess_parser
+        and manifest_bindings == contract_bindings
+    )
+
+
+def _resolve_manifest_parser_plan(
+    manifest: ModelManifest,
+    *,
+    preset_id: object,
+) -> ParserPlan:
+    if str(manifest.postprocess.parser).strip().lower() == "efficientnms":
+        return resolve_efficient_nms_parser_plan(preset_id)
+    return resolve_parser_plan(
+        preset_id,
+        output_shape=manifest.output.shape,
+        class_count=manifest.output.class_count,
+        inferred_has_objectness=manifest.output.has_objectness,
     )
 
 

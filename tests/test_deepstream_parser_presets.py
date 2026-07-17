@@ -5,6 +5,7 @@ import pytest
 from novasight.deepstream.parser_presets import (
     normalize_parser_preset,
     parser_preset_payload,
+    resolve_efficient_nms_parser_plan,
     resolve_parser_plan,
 )
 
@@ -52,3 +53,11 @@ def test_custom_alias_means_novasight_builtin_generic_parser() -> None:
 
     assert all(item["external_library"] is False for item in payload)
     assert any(item["id"] == "novasight_generic" for item in payload)
+
+
+def test_efficient_nms_plan_keeps_nms_owned_by_model() -> None:
+    plan = resolve_efficient_nms_parser_plan("auto")
+
+    assert plan.compatibility == "efficientnms"
+    assert plan.nms_owner == "model"
+    assert plan.parser_function == "NvDsInferParseNovaSight"

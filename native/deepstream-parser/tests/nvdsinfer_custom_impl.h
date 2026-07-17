@@ -10,6 +10,7 @@ struct NvDsInferDims {
 };
 
 struct NvDsInferLayerInfo {
+    const char* layerName = nullptr;
     void* buffer = nullptr;
     NvDsInferDataType dataType = FLOAT;
     NvDsInferDims inferDims{};
