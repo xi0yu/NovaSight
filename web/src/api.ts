@@ -1057,3 +1057,5 @@ export function createMotionSession(name: string): Promise<MotionSession> { retu
 export function addMotionSample(sessionId: string, sample: unknown): Promise<unknown> { return requestJson(`/api/motion/sessions/${encodeURIComponent(sessionId)}/samples`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sample) }); }
 export function trainMotionProfile(sessionId: string, name: string): Promise<MotionProfile> { return requestJson<MotionProfile>("/api/motion/profiles/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, name }) }); }
 export function getMotionProfiles(): Promise<MotionProfile[]> { return requestJson<MotionProfile[]>("/api/motion/profiles"); }
+export function activateMotionProfile(profileId: string): Promise<unknown> { return requestJson(`/api/motion/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }); }
+export function disableMotionProfile(): Promise<unknown> { return requestJson("/api/motion/profiles/disable", { method: "POST" }); }

@@ -43,3 +43,21 @@ async def train_profile(request: Request) -> dict[str, Any]:
 def list_profiles(request: Request) -> list[dict[str, Any]]:
     return _repo(request).list_profiles()
 
+
+@router.post("/profiles/{profile_id}/activate")
+def activate_profile(request: Request, profile_id: str) -> dict[str, Any]:
+    profile = next((item for item in _repo(request).list_profiles() if item.get("profile_id") == profile_id), None)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="motion profile not found")
+    report = __import__("novasight.runtime.reconfigurator", fromlist=["RuntimeReconfigurator"]).RuntimeReconfigurator(request.app).apply_field(
+        "control", "humanized_motion", {"enabled": True, "active_profile": profile_id}
+    )
+    return {"profile": profile, "config": report.asdict(include_schema=False)}
+
+
+@router.post("/profiles/disable")
+def disable_profile(request: Request) -> dict[str, Any]:
+    report = __import__("novasight.runtime.reconfigurator", fromlist=["RuntimeReconfigurator"]).RuntimeReconfigurator(request.app).apply_field(
+        "control", "humanized_motion", {"enabled": False, "active_profile": ""}
+    )
+    return report.asdict(include_schema=False)

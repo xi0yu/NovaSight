@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createMotionSession, addMotionSample, trainMotionProfile, getMotionProfiles, type MotionProfile } from "../../api";
+import { createMotionSession, addMotionSample, trainMotionProfile, getMotionProfiles, activateMotionProfile, disableMotionProfile, type MotionProfile } from "../../api";
 import "./motion-profile.css";
 
 type Point = { t_us: number; x: number; y: number; dx: number; dy: number };
@@ -52,9 +52,9 @@ export function MotionProfileStudio() {
   };
   const train = async () => { if (!session) return; const profile = await trainMotionProfile(session.session_id, "我的真人画像"); setProfiles((items) => [profile, ...items]); setMessage(`画像已生成：${profile.name}`); };
   return <main className="motion-studio">
-    <header><div><span className="eyebrow">NOVASIGHT / MOTION PROFILE</span><h1>真人轨迹训练</h1><p>只记录硬件触发前后的目标移动风格；压枪仍由原控制链独立负责。</p></div><button className="motion-toggle" onClick={() => void start()}>{training ? "重新开始" : "开始训练"}</button></header>
+    <header><div><span className="eyebrow">NOVASIGHT / MOTION PROFILE</span><h1>真人轨迹训练</h1><p>只记录硬件触发后的目标移动风格；压枪仍由原控制链独立负责。</p></div><div className="motion-actions"><button className="motion-secondary" onClick={() => void disableMotionProfile()}>关闭真人曲线</button><button className="motion-toggle" onClick={() => void start()}>{training ? "重新开始" : "开始训练"}</button></div></header>
     <section className="motion-grid"><div className="motion-card arena-card"><div className="card-head"><span>训练画布</span><strong>{samples.toString().padStart(2, "0")} 条样本</strong></div><canvas ref={canvasRef} width={840} height={520} tabIndex={0} onPointerMove={onMove} onClick={(event) => void onClick(event)} /><div className="motion-status">{message}</div></div>
-      <aside className="motion-card profile-card"><div className="card-head"><span>画像工作区</span><span className="status-dot">● {training ? "采集中" : "待机"}</span></div><div className="metric"><small>当前会话</small><b>{session?.session_id ?? "未开始"}</b></div><div className="metric"><small>训练建议</small><b>至少 30 条有效轨迹</b></div><button className="motion-secondary" disabled={!session || samples < 3} onClick={() => void train()}>生成真人画像</button><div className="profile-list">{profiles.map((profile) => <div className="profile-row" key={profile.profile_id}><span>{profile.name}</span><em>{profile.sample_count} samples</em></div>)}</div></aside>
+      <aside className="motion-card profile-card"><div className="card-head"><span>画像工作区</span><span className="status-dot">● {training ? "采集中" : "待机"}</span></div><div className="metric"><small>当前会话</small><b>{session?.session_id ?? "未开始"}</b></div><div className="metric"><small>训练建议</small><b>至少 30 条有效轨迹</b></div><button className="motion-secondary" disabled={!session || samples < 3} onClick={() => void train()}>生成真人画像</button><div className="profile-list">{profiles.map((profile) => <div className="profile-row" key={profile.profile_id}><span>{profile.name}</span><em>{profile.sample_count} samples</em><button onClick={() => void activateMotionProfile(profile.profile_id)}>启用</button></div>)}</div></aside>
     </section>
   </main>;
 }
