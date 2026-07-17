@@ -84,7 +84,7 @@ export function ThemeToggle() {
               onClick={() => selectTheme(option.id)}
               type="button"
             >
-              <span className={`theme-swatch theme-swatch-${option.id}`} aria-hidden="true" />
+              <span className={`theme-option-art theme-option-art-${option.id}`} aria-hidden="true" />
               <span className="theme-option-copy">
                 <strong>{option.label}</strong>
                 <small>{option.character} · {option.palette}</small>

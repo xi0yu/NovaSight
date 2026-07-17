@@ -167,6 +167,8 @@
   --card-radius: var(--radius-4);
   --card-shadow: var(--shadow-card);
   --theme-keyart: url("../assets/themes/elysia-sakura-keyart.webp");
+  --theme-portrait: url("../assets/themes/elysia-sakura-portrait.webp");
+  --theme-scene: url("../assets/themes/elysia-sakura-scene.webp");
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.23;
   --theme-glow: rgba(232, 59, 87, 0.18);
@@ -214,6 +216,8 @@
 [data-theme="elysia"] {
   color-scheme: light;
   --theme-keyart: url("../assets/themes/elysia-sakura-keyart.webp");
+  --theme-portrait: url("../assets/themes/elysia-sakura-portrait.webp");
+  --theme-scene: url("../assets/themes/elysia-sakura-scene.webp");
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.23;
   --theme-glow: rgba(232, 59, 87, 0.18);
@@ -249,6 +253,8 @@
   --button-radius: 7px;
   --card-radius: 7px;
   --theme-keyart: url("../assets/themes/rem-azure-keyart.webp");
+  --theme-portrait: url("../assets/themes/rem-azure-portrait.webp");
+  --theme-scene: url("../assets/themes/rem-azure-scene.webp");
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.22;
   --theme-glow: rgba(57, 125, 204, 0.2);
@@ -284,6 +290,8 @@
   --button-radius: 12px;
   --card-radius: 12px;
   --theme-keyart: url("../assets/themes/lusha-gilded-keyart.webp");
+  --theme-portrait: url("../assets/themes/lusha-gilded-portrait.webp");
+  --theme-scene: url("../assets/themes/lusha-gilded-scene.webp");
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.2;
   --theme-glow: rgba(181, 119, 39, 0.24);
@@ -335,6 +343,8 @@
   --button-radius: 4px;
   --card-radius: 4px;
   --theme-keyart: url("../assets/themes/tayama-crimson-keyart.webp");
+  --theme-portrait: url("../assets/themes/tayama-crimson-portrait.webp");
+  --theme-scene: url("../assets/themes/tayama-crimson-scene.webp");
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.28;
   --theme-glow: rgba(201, 24, 74, 0.3);

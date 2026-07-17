@@ -42,7 +42,7 @@ import {
 import { reportError, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
-import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
+import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
 import { ModelSelectionPanel } from "../models/ModelSelectionPanel";
 import { ModelSwitchDialog, type ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
 import { formatModelSize } from "../models/modelPresentation";
@@ -4174,6 +4174,8 @@ export function StudioConsoleView({
           </div>
         </section>
       </main>
+
+      <ThemeGallery />
 
       <AdvancedSettingsDialog
         description="这些参数决定投影、响应曲线、限幅与预测行为。日常使用无需频繁调整。"

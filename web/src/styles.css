@@ -4864,7 +4864,7 @@ body::after {
 
 .theme-option {
   width: 100%;
-  min-height: 50px;
+  min-height: 62px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) 18px;
   align-items: center;
@@ -4876,6 +4876,25 @@ body::after {
   color: var(--text-secondary);
   text-align: left;
 }
+
+.theme-option-art {
+  width: 46px;
+  height: 46px;
+  overflow: hidden;
+  border: 2px solid var(--bg-elevated);
+  border-radius: 14px 50% 50% 50%;
+  background-position: center;
+  background-size: cover;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand-primary) 48%, var(--border-default)),
+    0 7px 16px color-mix(in srgb, var(--theme-glow) 55%, transparent);
+  transform: rotate(-2deg);
+}
+
+.theme-option-art-elysia { background-image: url("./assets/themes/elysia-sakura-portrait.webp"); }
+.theme-option-art-rem { background-image: url("./assets/themes/rem-azure-portrait.webp"); }
+.theme-option-art-lusha { background-image: url("./assets/themes/lusha-gilded-portrait.webp"); }
+.theme-option-art-tayama { background-image: url("./assets/themes/tayama-crimson-portrait.webp"); }
 
 .theme-option:hover,
 .theme-option[aria-pressed="true"] {
@@ -5627,5 +5646,340 @@ body::after {
   .toast-host {
     top: 64px;
     right: 8px;
+  }
+}
+
+/* ============================================================
+ * Character gallery wing
+ * A deliberately maximal anime layer for wide Studio workspaces.
+ * Operational content remains in the center pane; fandom lives here.
+ * ============================================================ */
+
+.theme-gallery {
+  display: none;
+}
+
+@media (min-width: 1280px) {
+  .console-app {
+    grid-template-columns: clamp(196px, 14vw, 232px) minmax(0, 1fr) clamp(248px, 19vw, 316px);
+  }
+
+  .console-top {
+    grid-column: 1 / 4;
+  }
+
+  .theme-gallery {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: 116px minmax(220px, 1fr) auto auto;
+    grid-column: 3;
+    grid-row: 2;
+    overflow: hidden;
+    border-left: 1px solid color-mix(in srgb, var(--brand-primary) 38%, var(--border-default));
+    background:
+      radial-gradient(circle at 50% 30%, var(--theme-glow), transparent 42%),
+      var(--bg-elevated);
+    color: var(--text-primary);
+    isolation: isolate;
+  }
+
+  .theme-gallery::before,
+  .theme-gallery::after {
+    content: "";
+    position: absolute;
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  .theme-gallery::before {
+    inset: 9px;
+    border: 1px solid color-mix(in srgb, var(--brand-primary) 34%, transparent);
+    border-radius: max(var(--card-radius), 5px);
+    clip-path: polygon(0 0, 35% 0, 40% 5px, 60% 5px, 65% 0, 100% 0, 100% 100%, 0 100%);
+  }
+
+  .theme-gallery::after {
+    top: 14px;
+    right: 14px;
+    width: 34px;
+    height: 34px;
+    border-top: 2px solid var(--brand-primary);
+    border-right: 2px solid var(--brand-primary);
+    opacity: 0.78;
+  }
+
+  .theme-gallery-scene {
+    position: relative;
+    z-index: 1;
+    overflow: hidden;
+    background:
+      linear-gradient(to bottom, transparent 48%, var(--bg-elevated) 100%),
+      var(--theme-scene) center / cover no-repeat;
+  }
+
+  .theme-gallery-scene::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 44%, color-mix(in srgb, var(--brand-primary) 22%, transparent));
+    mix-blend-mode: screen;
+  }
+
+  .theme-gallery-scene > span {
+    position: absolute;
+    top: 19px;
+    left: 20px;
+    z-index: 1;
+    padding: 4px 7px;
+    border: 1px solid color-mix(in srgb, #ffffff 62%, transparent);
+    background: rgba(12, 12, 18, 0.56);
+    color: #ffffff;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    line-height: 1;
+    letter-spacing: 0.18em;
+    backdrop-filter: blur(8px);
+  }
+
+  .theme-gallery-stage {
+    position: relative;
+    z-index: 1;
+    min-height: 0;
+    margin: -14px 10px 0;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--brand-primary) 30%, var(--border-default));
+    border-radius: max(var(--card-radius), 7px) max(var(--card-radius), 7px) 28px 7px;
+    background:
+      linear-gradient(to bottom, transparent 55%, color-mix(in srgb, var(--bg-elevated) 94%, transparent) 100%),
+      var(--theme-keyart) var(--theme-art-position) / cover no-repeat;
+    box-shadow:
+      0 18px 44px color-mix(in srgb, var(--theme-glow) 54%, transparent),
+      inset 0 0 0 1px color-mix(in srgb, #ffffff 20%, transparent);
+    animation: theme-stage-breathe 6s ease-in-out infinite alternate;
+  }
+
+  .theme-gallery-halo {
+    position: absolute;
+    top: 18%;
+    left: 50%;
+    width: 150px;
+    height: 150px;
+    border: 1px solid color-mix(in srgb, var(--brand-primary) 52%, transparent);
+    border-radius: 50%;
+    transform: translateX(-50%);
+    box-shadow:
+      0 0 0 12px color-mix(in srgb, var(--brand-primary) 6%, transparent),
+      0 0 48px var(--theme-glow);
+    mix-blend-mode: screen;
+  }
+
+  .theme-gallery-spark {
+    position: absolute;
+    z-index: 2;
+    color: #ffffff;
+    font-size: 22px;
+    text-shadow: 0 0 14px var(--brand-primary);
+    animation: theme-spark-float 3.8s ease-in-out infinite;
+  }
+
+  .theme-gallery-spark-a { top: 18%; left: 14%; }
+  .theme-gallery-spark-b { right: 11%; bottom: 28%; animation-delay: -1.7s; }
+
+  .theme-gallery-portrait {
+    position: absolute;
+    z-index: 6;
+    right: 17px;
+    bottom: 150px;
+    width: 84px;
+    height: 84px;
+    border: 3px solid var(--bg-elevated);
+    border-radius: 22px 50% 50% 50%;
+    background: var(--theme-portrait) center / cover no-repeat;
+    box-shadow:
+      0 0 0 1px var(--brand-primary),
+      0 12px 28px color-mix(in srgb, var(--theme-glow) 72%, rgba(0, 0, 0, 0.18));
+    transform: rotate(3deg);
+  }
+
+  .theme-gallery-stories {
+    position: relative;
+    z-index: 4;
+    margin: -26px 10px 0;
+    padding: 18px 16px 13px;
+    border: 1px solid color-mix(in srgb, var(--brand-primary) 32%, var(--border-default));
+    border-radius: 7px 28px 7px 7px;
+    background:
+      linear-gradient(145deg, color-mix(in srgb, var(--brand-soft) 86%, var(--bg-elevated)), var(--bg-elevated));
+    box-shadow: 0 -12px 34px color-mix(in srgb, var(--theme-glow) 36%, transparent);
+  }
+
+  .theme-gallery-story {
+    display: none;
+    gap: 3px;
+  }
+
+  [data-theme="elysia"] .theme-gallery-story[data-theme-story="elysia"],
+  [data-theme="rem"] .theme-gallery-story[data-theme-story="rem"],
+  [data-theme="lusha"] .theme-gallery-story[data-theme-story="lusha"],
+  [data-theme="tayama"] .theme-gallery-story[data-theme-story="tayama"] {
+    display: grid;
+    animation: theme-story-enter 320ms var(--ease-standard) both;
+  }
+
+  .theme-gallery-kicker {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--brand-primary);
+    font-family: var(--font-mono);
+  }
+
+  .theme-gallery-kicker > span {
+    font-size: 20px;
+    line-height: 1;
+    font-weight: 800;
+  }
+
+  .theme-gallery-kicker > small {
+    padding: 2px 5px;
+    border: 1px solid color-mix(in srgb, var(--brand-primary) 35%, transparent);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+  }
+
+  .theme-gallery-story > strong {
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+  }
+
+  .theme-gallery-story > h2 {
+    color: var(--text-primary);
+    font-family: "Songti SC", "Noto Serif CJK SC", "Yu Mincho", serif;
+    font-size: 25px;
+    line-height: 30px;
+    letter-spacing: 0.06em;
+  }
+
+  .theme-gallery-story > p {
+    max-width: calc(100% - 72px);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 17px;
+  }
+
+  .theme-gallery-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 7px;
+  }
+
+  .theme-gallery-tags > span {
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--brand-primary) 12%, var(--bg-elevated));
+    color: var(--brand-primary);
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .theme-gallery-footer {
+    position: relative;
+    z-index: 3;
+    display: grid;
+    gap: 2px;
+    padding: 10px 17px 15px;
+    color: var(--text-tertiary);
+  }
+
+  .theme-gallery-footer > span {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.17em;
+  }
+
+  .theme-gallery-footer > b {
+    color: var(--text-secondary);
+    font-size: 10px;
+  }
+
+  [data-theme="elysia"] .theme-gallery {
+    background: linear-gradient(160deg, #fff7fb 0%, #ffeaf3 48%, #f4c2d6 100%);
+  }
+
+  [data-theme="rem"] .theme-gallery {
+    background: linear-gradient(160deg, #f7fbff 0%, #dfedff 48%, #a9cdf2 100%);
+  }
+
+  [data-theme="lusha"] .theme-gallery {
+    background: linear-gradient(160deg, #fffaf0 0%, #f3dfb9 46%, #b88746 100%);
+  }
+
+  [data-theme="tayama"] .theme-gallery {
+    background: linear-gradient(160deg, #161216 0%, #120b0e 52%, #3a0e19 100%);
+  }
+
+  [data-theme="rem"] .theme-gallery::before {
+    border-radius: 26px 8px 26px 8px;
+    border-style: double;
+  }
+
+  [data-theme="lusha"] .theme-gallery::before {
+    border-width: 2px;
+    box-shadow: inset 0 0 0 4px rgba(148, 93, 27, 0.08);
+  }
+
+  [data-theme="tayama"] .theme-gallery::before,
+  [data-theme="tayama"] .theme-gallery-stage,
+  [data-theme="tayama"] .theme-gallery-stories {
+    border-radius: 2px;
+  }
+
+  [data-theme="tayama"] .theme-gallery-stage {
+    clip-path: polygon(0 0, 100% 0, 100% 94%, 92% 100%, 0 100%);
+  }
+}
+
+@media (min-width: 1280px) and (max-height: 760px) {
+  .theme-gallery {
+    grid-template-rows: 82px minmax(180px, 1fr) auto auto;
+  }
+
+  .theme-gallery-portrait {
+    width: 66px;
+    height: 66px;
+    bottom: 130px;
+  }
+
+  .theme-gallery-story > p,
+  .theme-gallery-tags {
+    display: none;
+  }
+}
+
+@keyframes theme-stage-breathe {
+  from { background-size: 100% auto; }
+  to { background-size: 104% auto; }
+}
+
+@keyframes theme-spark-float {
+  0%, 100% { opacity: 0.45; transform: translateY(0) rotate(0deg); }
+  50% { opacity: 1; transform: translateY(-9px) rotate(12deg); }
+}
+
+@keyframes theme-story-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-gallery-stage,
+  .theme-gallery-spark,
+  .theme-gallery-story {
+    animation: none !important;
   }
 }
