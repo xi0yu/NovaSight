@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
-import mannequinTarget from "../../assets/aim-target/mannequin-target.webp";
+import mannequinTarget from "../../assets/aim-target/mannequin-target-v2.webp";
 
 export type AimRole = "head" | "body" | "other";
 export type AimRoleRatios = Record<AimRole, number>;
@@ -9,9 +9,9 @@ const ROLE_META: Record<AimRole, { label: string; caption: string; zoneTop: numb
   // The mannequin is a semantic calibration surface, not one shared 0-100% ruler.
   // A head bbox spans only the head. Body/other bboxes commonly cover the whole
   // person, so their full range intentionally includes both head and torso.
-  head: { label: "头部", caption: "0–100%：仅头部", zoneTop: 5, zoneHeight: 22 },
-  body: { label: "身体", caption: "0–100%：整个人物", zoneTop: 5, zoneHeight: 90 },
-  other: { label: "其他", caption: "0–100%：整个人物", zoneTop: 5, zoneHeight: 90 }
+  head: { label: "头部", caption: "0–100%：头皮到下巴", zoneTop: 4, zoneHeight: 14 },
+  body: { label: "身体", caption: "0–100%：头皮到脚底", zoneTop: 4, zoneHeight: 92 },
+  other: { label: "其他", caption: "0–100%：头皮到脚底", zoneTop: 4, zoneHeight: 92 }
 };
 
 const ROLES: AimRole[] = ["head", "body", "other"];
@@ -106,7 +106,7 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
                 <b>{meta.label}</b>
                 <small>{Math.round(draft[role] * 100)}%</small>
               </span>
-              <span className="aim-role-guide-line" aria-hidden="true" />
+              <span className="aim-role-guide-line before" aria-hidden="true" />
               <button
                 aria-label={`${meta.label}瞄点，当前为框内 ${Math.round(draft[role] * 100)}%`}
                 aria-orientation="vertical"
@@ -138,10 +138,11 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
                 role="slider"
                 type="button"
               />
+              <span className="aim-role-guide-line after" aria-hidden="true" />
             </div>
           );
         })}
-        <span className="aim-target-stage-caption">头部按头框映射；身体与其他按完整人物框映射。拖动只改变 bbox 内的 Y 比例。</span>
+        <span className="aim-target-stage-caption">人物头皮为 0%，脚底为 100%；头部类型单独映射头皮到下巴。</span>
       </div>
 
       <div className="aim-role-controls">

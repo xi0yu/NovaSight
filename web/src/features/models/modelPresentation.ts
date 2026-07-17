@@ -29,7 +29,7 @@ export function modelStatusLabel(status: string): string {
     ready: "可用",
     pending: "待验证",
     running: "处理中",
-    need_confirm: "待确认",
+    need_confirm: "待加载验证",
     invalid: "无效",
     failed: "失败",
     unsupported: "不支持"

@@ -69,6 +69,11 @@ def test_model_catalog_navigation_does_not_hash_large_engine(tmp_path, monkeypat
         "sha256_file",
         lambda _path: (_ for _ in ()).throw(AssertionError("catalog navigation must not hash engines")),
     )
+    monkeypatch.setattr(
+        scanner,
+        "read_manifest",
+        lambda _path: (_ for _ in ()).throw(AssertionError("catalog navigation must not parse manifests")),
+    )
 
     catalog = routes_models.get_model_catalog(_request_with_registry(registry))
 
@@ -513,6 +518,7 @@ def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_pa
     manifest = read_manifest(manifest_path)
     assert response["report"]["applied"] is True
     assert response["report"]["input_shape"] == "1x3x256x256"
+    assert response["preparation"]["manifest_action"] == "generated"
     assert manifest.input.shape == [1, 3, 256, 256]
     assert manifest.output.shape == [1, 6, 1344]
     assert manifest.output.class_names == ["body", "head"]

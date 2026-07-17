@@ -1239,6 +1239,15 @@ tbody tr:hover {
   gap: 12px;
 }
 
+.compact-content-grid {
+  align-items: start;
+}
+
+.compact-content-grid > .console-card {
+  align-self: start;
+  margin-bottom: 0;
+}
+
 .console-card {
   min-width: 0;
   padding: 16px;
@@ -2931,6 +2940,8 @@ tbody tr:hover {
 }
 
 .aim-target-stage {
+  --figure-top: 4%;
+  --figure-height: 92%;
   position: relative;
   min-height: 380px;
   flex: 1;
@@ -2957,8 +2968,8 @@ tbody tr:hover {
 .aim-target-center-axis {
   position: absolute;
   z-index: 1;
-  top: 4%;
-  bottom: 5%;
+  top: var(--figure-top);
+  height: var(--figure-height);
   left: 50%;
   width: 1px;
   background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.24) 14%, rgba(255, 255, 255, 0.24) 86%, transparent);
@@ -2968,9 +2979,9 @@ tbody tr:hover {
   position: absolute;
   z-index: 0;
   left: 50%;
-  bottom: 2%;
+  top: var(--figure-top);
   width: auto;
-  height: 94%;
+  height: var(--figure-height);
   max-width: 74%;
   object-fit: contain;
   filter: drop-shadow(0 16px 22px rgba(0, 0, 0, 0.28));
@@ -2982,10 +2993,13 @@ tbody tr:hover {
   --role-color: #e23b61;
   position: absolute;
   z-index: 3;
-  right: 6%;
-  left: 6%;
+  left: 25%;
+  width: 50%;
   height: 1px;
-  display: block;
+  display: grid;
+  grid-template-columns: max-content minmax(18px, 1fr) auto minmax(18px, 1fr);
+  align-items: center;
+  gap: 7px;
   color: var(--role-color);
 }
 
@@ -2993,9 +3007,6 @@ tbody tr:hover {
 .aim-role-guide-other { --role-color: #4b8df8; }
 
 .aim-role-guide-label {
-  position: absolute;
-  top: 0;
-  left: calc(50% + 18px);
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -3008,17 +3019,12 @@ tbody tr:hover {
   transform: translateY(-50%);
 }
 
-.aim-role-guide-other .aim-role-guide-label {
-  right: calc(50% + 18px);
-  left: auto;
-}
-
 .aim-role-guide-label b { font-size: 11px; }
 .aim-role-guide-label small { color: var(--role-color); font-family: var(--font-mono); font-size: 10px; font-weight: 800; }
 
 .aim-role-guide-line {
-  position: absolute;
-  inset: 0 0 auto;
+  min-width: 0;
+  width: 100%;
   height: 2px;
   background: var(--role-color);
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--role-color) 66%, transparent));
@@ -3034,9 +3040,7 @@ tbody tr:hover {
 }
 
 .aim-role-guide-handle {
-  position: absolute;
-  top: 0;
-  left: 50%;
+  position: relative;
   width: 21px;
   height: 21px;
   padding: 0;
@@ -3044,7 +3048,7 @@ tbody tr:hover {
   border-radius: 50%;
   background: var(--role-color);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--role-color) 32%, transparent), 0 5px 12px rgba(0, 0, 0, 0.35);
-  transform: translate(-50%, -50%);
+  transform: translateY(-50%);
   cursor: ns-resize;
   touch-action: none;
 }
@@ -3063,7 +3067,7 @@ tbody tr:hover {
 .aim-role-guide-handle:hover,
 .aim-role-guide-handle:focus-visible {
   box-shadow: 0 0 0 6px color-mix(in srgb, var(--role-color) 40%, transparent), 0 6px 16px rgba(0, 0, 0, 0.42);
-  transform: translate(-50%, -50%) scale(1.12);
+  transform: translateY(-50%) scale(1.12);
 }
 
 .aim-target-stage-caption {
@@ -4889,6 +4893,63 @@ body::before {
 .error-center-empty span { color: var(--text-tertiary); font-size: 12px; }
 .error-center-footer { display: flex; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border-subtle); }
 
+.model-switch-dialog-layer {
+  position: fixed;
+  z-index: 1320;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(20, 14, 18, 0.46);
+  backdrop-filter: blur(6px);
+}
+
+.model-switch-dialog {
+  width: min(700px, 100%);
+  max-height: min(760px, calc(100vh - 32px));
+  display: grid;
+  overflow: hidden auto;
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-dialog);
+}
+
+.model-switch-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 12px;
+}
+
+.model-switch-dialog-header > div { min-width: 0; }
+.model-switch-dialog-header span { color: var(--signal-target); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.model-switch-dialog-header h2 { margin: 3px 0; color: var(--text-primary); font-size: 19px; }
+.model-switch-dialog-header p { overflow: hidden; margin: 0; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.model-switch-dialog-header > strong { color: var(--signal-target); font-family: var(--font-mono); font-size: 24px; font-variant-numeric: tabular-nums; }
+
+.model-switch-progress { height: 3px; overflow: hidden; background: var(--border-subtle); }
+.model-switch-progress i { height: 100%; display: block; background: var(--signal-target); transition: width 180ms cubic-bezier(0.23, 1, 0.32, 1); }
+.model-switch-dialog.success .model-switch-progress i { background: var(--status-success-icon); }
+.model-switch-dialog.failed .model-switch-progress i { background: var(--status-error-icon); }
+
+.model-switch-stage-list { display: grid; gap: 0; margin: 0; padding: 10px 18px; list-style: none; }
+.model-switch-stage-list li { position: relative; min-width: 0; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 8px 0; }
+.model-switch-stage-list li:not(:last-child)::after { content: ""; position: absolute; top: 31px; bottom: -5px; left: 11px; width: 1px; background: var(--border-subtle); }
+.model-switch-stage-marker { position: relative; z-index: 1; width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--border-default); border-radius: 50%; background: var(--bg-surface); color: var(--text-tertiary); font-size: 13px; font-weight: 900; }
+.model-switch-stage-list li.running .model-switch-stage-marker { border: 2px solid color-mix(in srgb, var(--signal-attention) 24%, transparent); border-top-color: var(--signal-attention); animation: launch-spin .8s linear infinite; }
+.model-switch-stage-list li.success .model-switch-stage-marker { border-color: var(--status-success-border); background: var(--status-success-bg); color: var(--status-success-fg); }
+.model-switch-stage-list li.failed .model-switch-stage-marker { border-color: var(--status-error-border); background: var(--status-error-bg); color: var(--status-error-fg); }
+.model-switch-stage-list strong { display: block; color: var(--text-primary); font-size: 13px; }
+.model-switch-stage-list p { margin: 2px 0 0; color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
+.model-switch-stage-list li.pending { opacity: .55; }
+
+.model-switch-dialog-detail { margin: 0 18px 12px; padding: 9px 11px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-subtle); color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.model-switch-dialog-detail.error { border-color: var(--status-error-border); background: var(--status-error-bg); color: var(--status-error-fg); }
+.model-switch-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--border-subtle); }
+.model-switch-dialog footer small { max-width: 470px; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+
 @media (max-width: 1280px) {
   .console-toolbar-item { max-width: 190px; overflow: hidden; }
   .console-toolbar-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4913,6 +4974,10 @@ body::before {
   .capture-format-control { grid-template-columns: minmax(0, 1fr); }
   .capture-format-control .console-button { width: 100%; }
   .error-center-trigger span { display: none; }
+  .model-switch-dialog-layer { padding: 8px; }
+  .model-switch-dialog { max-height: calc(100vh - 16px); }
+  .model-switch-dialog footer { align-items: stretch; flex-direction: column; }
+  .model-switch-dialog footer .console-button { width: 100%; }
 }
 
 .visual-hero {

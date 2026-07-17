@@ -71,10 +71,6 @@ export function ModelSelectionPanel({
   const selectedStatus = selectedModel
     ? selectedModel.artifact_status ?? selectedModel.scan_status
     : artifactStatus(selectedArtifact);
-  const switchNeedsPreparation =
-    (selectedModel?.kind === "engine" && !selectedArtifact) ||
-    selectedArtifact?.status === "pending" ||
-    selectedArtifact?.status === "failed";
   const selectedKind = selectedModel?.kind ?? selectedArtifact?.kind;
   const selectedIsActive = selectedArtifact?.id === activeArtifactId;
   const previewBackend = selectedKind === "engine"
@@ -86,12 +82,10 @@ export function ModelSelectionPanel({
         : "按模型自动选择";
   const previewInputShape = selectedVersion?.input_shape ||
     (selectedIsActive ? runtimeInputShape : "") ||
-    "加载后读取真实契约";
+    "切换时读取真实契约";
   const switchLabel = busy === "model.switch"
-    ? "自动配置并切换中..."
-    : switchNeedsPreparation
-      ? "自动配置并加载模型"
-      : "切换到所选模型";
+    ? "正在验证并切换..."
+    : "验证并切换到所选模型";
 
   return (
     <div className="model-selection-panel">
@@ -139,7 +133,7 @@ export function ModelSelectionPanel({
               <NovaIcon name="engine" size={20} />
             </span>
             <div>
-              <span>所选模型快速预览</span>
+              <span>所选 Engine 文件</span>
               <strong title={selectedModel?.name ?? selectedArtifact?.path ?? ""}>
                 {selectedModel?.name ?? selectedArtifact?.path ?? "尚未选择模型"}
               </strong>
@@ -178,7 +172,7 @@ export function ModelSelectionPanel({
             </div>
             <div>
               <dt>切换准备</dt>
-              <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel ? "选择后自动登记" : "-"}</dd>
+              <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel?.kind === "engine" ? "后缀已接受，切换时验证" : "不可加载"}</dd>
             </div>
             <div className="wide model-parser-preset">
               <dt>解析兼容模式</dt>
@@ -195,7 +189,7 @@ export function ModelSelectionPanel({
                   <option value="yolo11">YOLO v11 兼容</option>
                   <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
                 </select>
-                <small>全部使用 NovaSight 内置 parser；选择项会在加载前校验真实 tensor 契约。</small>
+                <small>目录浏览不读取 TensorRT；确认切换后才验证真实 tensor 契约。</small>
               </dd>
             </div>
           </dl>
@@ -220,9 +214,9 @@ export function ModelSelectionPanel({
         {switchLabel}
       </button>
 
-      {switchNeedsPreparation ? (
+      {selectedModel?.kind === "engine" ? (
         <p className="console-field-hint">
-          后端会读取 Engine I/O、Shape 和数据类型，并自动生成唯一 DeepStream manifest。
+          点击后会打开切换进度：验证 Engine I/O、复用或生成 manifest，再应用运行态。
         </p>
       ) : null}
 

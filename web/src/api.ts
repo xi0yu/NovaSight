@@ -137,6 +137,12 @@ export type ModelPublishResponse = {
   deployment: Deployment;
   inference: Record<string, unknown>;
   parser_contract?: ParserContract;
+  preparation?: {
+    manifest_action: "generated" | "reused" | (string & {});
+    reason: string;
+    input_shape: string;
+    classes: string[];
+  };
   report?: ModelSwitchReport;
 };
 

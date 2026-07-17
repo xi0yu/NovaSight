@@ -44,6 +44,7 @@ import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
 import { ModelSelectionPanel } from "../models/ModelSelectionPanel";
+import { ModelSwitchDialog, type ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
 import { formatModelSize } from "../models/modelPresentation";
 import {
   runtimeDeliveryDescription,
@@ -524,6 +525,12 @@ export function StudioConsoleView({
   const errorNotices = useErrorNotices();
   const clearErrorNotices = useClearErrorNotices();
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
+  const [modelSwitchDialogOpen, setModelSwitchDialogOpen] = useState(false);
+  const [modelSwitchDialogStatus, setModelSwitchDialogStatus] = useState<ModelSwitchDialogStatus>("running");
+  const [modelSwitchStageIndex, setModelSwitchStageIndex] = useState(0);
+  const [modelSwitchCompletedStages, setModelSwitchCompletedStages] = useState(0);
+  const [modelSwitchProgressDetail, setModelSwitchProgressDetail] = useState("");
+  const [modelSwitchDialogError, setModelSwitchDialogError] = useState("");
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
   const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
@@ -552,15 +559,8 @@ export function StudioConsoleView({
   const dialogSaving = busy !== null || pendingConfigWriteCount > 0;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
-  const currentModelProjectSelectionRef = useRef<number | "">(selectedModelProjectId);
-  const currentModelVersionSelectionRef = useRef<number | "">(selectedModelVersionId);
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
-  const requestedModelSelectionRef = useRef<{
-    projectId: number;
-    versionId: number;
-    artifactId: number;
-  } | null>(null);
   const preferLatestModelVersionRef = useRef(false);
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
@@ -570,9 +570,8 @@ export function StudioConsoleView({
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
+  const modelSwitchDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
-  currentModelProjectSelectionRef.current = selectedModelProjectId;
-  currentModelVersionSelectionRef.current = selectedModelVersionId;
 
   useEffect(() => {
     dialogSavingRef.current = dialogSaving;
@@ -607,6 +606,29 @@ export function StudioConsoleView({
     setActivePage(page);
     writePageToUrl(page);
   }, []);
+
+  useEffect(() => {
+    if (!modelSwitchDialogOpen) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => modelSwitchDialogRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && modelSwitchDialogStatus !== "running") {
+        setModelSwitchDialogOpen(false);
+      } else {
+        trapDialogTabKey(event, modelSwitchDialogRef.current);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
+    };
+  }, [modelSwitchDialogOpen, modelSwitchDialogStatus]);
 
   useEffect(() => {
     if (!errorCenterOpen) {
@@ -1671,13 +1693,6 @@ export function StudioConsoleView({
         const preferLatest = preferLatestModelVersionRef.current;
         preferLatestModelVersionRef.current = false;
         setSelectedModelVersionId((current) => {
-          const requested = requestedModelSelectionRef.current;
-          if (
-            requested?.projectId === selectedModelProjectId &&
-            items.some((item) => item.id === requested.versionId)
-          ) {
-            return requested.versionId;
-          }
           if (preferLatest) {
             return items[items.length - 1]?.id ?? "";
           }
@@ -1740,14 +1755,6 @@ export function StudioConsoleView({
             return leftRank - rightRank || left.path.localeCompare(right.path);
           });
         setSelectedModelArtifactId((current) => {
-          const requested = requestedModelSelectionRef.current;
-          if (
-            requested?.versionId === selectedModelVersionId &&
-            runnable.some((item) => item.id === requested.artifactId)
-          ) {
-            requestedModelSelectionRef.current = null;
-            return requested.artifactId;
-          }
           if (typeof current === "number" && runnable.some((item) => item.id === current)) {
             return current;
           }
@@ -2745,32 +2752,10 @@ export function StudioConsoleView({
     });
   }, []);
 
-  const selectModelFromCatalog = useCallback(async (model: ModelCatalogModel) => {
+  const selectModelFromCatalog = useCallback((model: ModelCatalogModel) => {
     setParserPreset("auto");
     setSelectedModelCatalogPath(model.relative_path);
     setLocalError(null);
-    const projectId = model.project_id;
-    const versionId = model.version_id;
-    const artifactId = model.artifact_id;
-    if (typeof projectId !== "number" || typeof versionId !== "number" || typeof artifactId !== "number") {
-      setSelectedModelProjectId("");
-      setSelectedModelVersionId("");
-      setSelectedModelArtifactId("");
-      return;
-    }
-    requestedModelSelectionRef.current = {
-      projectId,
-      versionId,
-      artifactId
-    };
-    setSelectedModelProjectId(projectId);
-    if (currentModelProjectSelectionRef.current === projectId) {
-      setSelectedModelVersionId(versionId);
-      if (currentModelVersionSelectionRef.current === versionId) {
-        setSelectedModelArtifactId(artifactId);
-        requestedModelSelectionRef.current = null;
-      }
-    }
   }, []);
 
   const switchModel = async () => {
@@ -2778,26 +2763,32 @@ export function StudioConsoleView({
       setLocalError("请选择 TensorRT engine 产物。");
       return;
     }
-    if (selectedSwitchArtifact !== null && (
-      selectedModelVersionId === "" || selectedSwitchArtifact.version_id !== selectedModelVersionId
-    )) {
-      setLocalError("模型选择已刷新，请重新选择这个版本下的推理产物。");
-      return;
-    }
     setBusy("model.switch");
     setLocalError(null);
     setModelSwitchMessage("");
+    setModelSwitchDialogOpen(true);
+    setModelSwitchDialogStatus("running");
+    setModelSwitchStageIndex(0);
+    setModelSwitchCompletedStages(0);
+    setModelSwitchDialogError("");
+    setModelSwitchProgressDetail("已按 .engine 后缀接受候选，准备登记模型引用。");
     try {
-      let projectId = selectedModelProjectId;
-      let artifactId = selectedSwitchArtifact?.id;
-      if (projectId === "" || typeof artifactId !== "number") {
-        setModelSwitchMessage("正在登记模型并读取文件指纹…");
+      setModelSwitchCompletedStages(1);
+      setModelSwitchStageIndex(1);
+      let projectId = selectedCatalogModel.project_id;
+      let artifactId = selectedCatalogModel.artifact_id;
+      if (typeof projectId !== "number" || typeof artifactId !== "number") {
+        setModelSwitchProgressDetail("模型尚未登记，正在建立原文件引用并计算登记指纹。");
         const registered = await registerCatalogModel(selectedCatalogModel.relative_path);
         projectId = registered.project.id;
         artifactId = registered.artifact.id;
         setModelCatalogMessage(`已引用原始 Engine：${selectedCatalogModel.relative_path}；未复制模型文件。`);
+      } else {
+        setModelSwitchProgressDetail("已找到现有模型登记，跳过重复登记。");
       }
-      setModelSwitchMessage("正在读取 TensorRT Engine 契约并自动生成 DeepStream 配置...");
+      setModelSwitchCompletedStages(2);
+      setModelSwitchStageIndex(2);
+      setModelSwitchProgressDetail("正在后端事务中验证 TensorRT 契约，并复用或生成运行 manifest。");
       const response = await publishModel(
         projectId,
         artifactId,
@@ -2814,16 +2805,28 @@ export function StudioConsoleView({
           : "";
       const switchSummary = response.report?.message ??
         "Engine 契约读取完成，DeepStream 配置已自动生成并切换。";
+      const manifestSummary = response.preparation?.manifest_action === "generated"
+        ? "已自动生成运行 manifest"
+        : response.preparation?.manifest_action === "reused"
+          ? "已复用匹配的运行 manifest"
+          : "运行 manifest 已准备";
       setModelSwitchMessage(
         parserLabel
           ? `${switchSummary} · 已验证 ${parserLabel} · NovaSight 内置 parser`
           : switchSummary
       );
+      setModelSwitchCompletedStages(5);
+      setModelSwitchStageIndex(4);
+      setModelSwitchDialogStatus("success");
+      setModelSwitchProgressDetail(`${manifestSummary}；${switchSummary}`);
       setModelCatalogRefreshKey((current) => current + 1);
       setModelDetailsRefreshKey((current) => current + 1);
       await onRefresh();
     } catch (err) {
-      setLocalError(`模型切换未生效：${getErrorMessage(err)}`);
+      const message = getErrorMessage(err);
+      setModelSwitchDialogStatus("failed");
+      setModelSwitchDialogError(message);
+      setLocalError(`模型切换未生效：${message}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
@@ -3072,7 +3075,7 @@ export function StudioConsoleView({
             </details>
           </div>
 
-          <div className="console-grid2 capture-config-grid">
+          <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
                 <SectionTitle title="采集设备" />
                 <label>视频设备</label>
@@ -3239,7 +3242,7 @@ export function StudioConsoleView({
               catalogMessage={modelCatalogMessage}
               switchMessage={modelSwitchMessage}
               busy={busy}
-              canSwitch={selectedCatalogModel?.kind === "engine" && (selectedCatalogArtifactMatches || selectedSwitchArtifact === null)}
+              canSwitch={selectedCatalogModel?.kind === "engine"}
               parserPreset={parserPreset}
               onParserPresetChange={setParserPreset}
               onRefresh={() => void refreshModelCatalog()}
@@ -3621,7 +3624,7 @@ export function StudioConsoleView({
                 管理类别配置
               </button>
             </div>
-            <div className="console-grid2" data-algorithm-page={controlMode}>
+            <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlMode}>
               <div className="console-card">
                 <SectionTitle title="控制模式" />
                 <div className="mini-segmented control-algorithm-segmented" role="group" aria-label="控制模式">
@@ -4738,6 +4741,18 @@ export function StudioConsoleView({
           </section>
         </div>
       ) : null}
+
+      <ModelSwitchDialog
+        completedStages={modelSwitchCompletedStages}
+        currentStage={modelSwitchStageIndex}
+        detail={modelSwitchProgressDetail}
+        dialogRef={modelSwitchDialogRef}
+        error={modelSwitchDialogError}
+        modelName={selectedCatalogModel?.relative_path ?? "TensorRT Engine"}
+        onClose={() => setModelSwitchDialogOpen(false)}
+        open={modelSwitchDialogOpen}
+        status={modelSwitchDialogStatus}
+      />
 
       {launchDialogOpen ? (
         <div

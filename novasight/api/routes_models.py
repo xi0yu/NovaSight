@@ -1742,6 +1742,16 @@ def publish(
         "deployment": asdict(deployment),
         "inference": inference_status,
         "parser_contract": candidate_status.get("parser_contract", {}),
+        "preparation": {
+            "manifest_action": (
+                "generated"
+                if str(candidate_status.get("reason", "")).startswith("generated ")
+                else "reused"
+            ),
+            "reason": str(candidate_status.get("reason") or ""),
+            "input_shape": input_shape,
+            "classes": list(classes),
+        },
         "report": _model_switch_report(
             action="publish",
             deployment=deployment,

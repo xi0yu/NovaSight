@@ -41,6 +41,9 @@ MODEL_SELECTION = (
 MODEL_CATALOG_TREE = (
     STUDIO_CONSOLE.parents[1] / "models" / "ModelCatalogTree.tsx"
 )
+MODEL_SWITCH_DIALOG = (
+    STUDIO_CONSOLE.parents[1] / "models" / "ModelSwitchDialog.tsx"
+)
 LICENSE_VIEW = (
     STUDIO_CONSOLE.parents[1] / "license" / "LicenseView.tsx"
 )
@@ -202,8 +205,9 @@ def test_model_catalog_tree_skips_unrelated_runtime_rerenders() -> None:
     assert "export const ModelCatalogTree = memo(" in tree
     assert "const toggleModelDirectory = useCallback(" in source
     assert "const selectModelFromCatalog = useCallback(" in source
-    assert "currentModelProjectSelectionRef.current" in selection_handler
-    assert "currentModelVersionSelectionRef.current" in selection_handler
+    assert "getModelVersions(" not in selection_handler
+    assert "getModelArtifacts(" not in selection_handler
+    assert "registerCatalogModel(" not in selection_handler
     assert "}, []);" in selection_handler
 
 
@@ -254,15 +258,14 @@ def test_studio_auto_configures_and_switches_pending_engine() -> None:
     panel = MODEL_SELECTION.read_text(encoding="utf-8")
 
     assert 'item.status === "ready" || item.status === "pending" || item.status === "failed"' in source
-    assert '(selectedModel?.kind === "engine" && !selectedArtifact)' in panel
-    assert 'selectedArtifact?.status === "pending"' in panel
     assert "publishModel(" in source
     assert "parserPreset" in source
     assert "inspectModelArtifact" not in source
     assert "configureModelProfile" not in source
     assert "probeModelArtifact" not in source
-    assert '"自动配置并加载模型"' in panel
-    assert "自动生成唯一 DeepStream manifest" in panel
+    assert '"验证并切换到所选模型"' in panel
+    assert "复用或生成 manifest" in panel
+    assert "验证 TensorRT 契约" in MODEL_SWITCH_DIALOG.read_text(encoding="utf-8")
     assert "yoloCandidateCount" not in source
     assert "preferLatestModelVersionRef.current" in source
     assert "模型产物不可切换" not in panel
@@ -442,12 +445,11 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     guide_rule = styles[guide_start:styles.index("}", guide_start)]
     line_start = styles.index(".aim-role-guide-line {")
     line_rule = styles[line_start:styles.index("}", line_start)]
-    assert "display: block;" in guide_rule
-    assert "right: 6%;" in guide_rule
-    assert "position: absolute;" in line_rule
-    assert "inset: 0 0 auto;" in line_rule
-    assert 'caption: "0–100%：仅头部"' in (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
-    assert ".aim-role-guide-other .aim-role-guide-label" in styles
+    assert "width: 50%;" in guide_rule
+    assert "grid-template-columns: max-content minmax(18px, 1fr) auto minmax(18px, 1fr);" in guide_rule
+    assert "width: 100%;" in line_rule
+    assert 'caption: "0–100%：头皮到下巴"' in (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
+    assert "mannequin-target-v2.webp" in (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
     assert ".aim-role-guide-body .aim-role-guide-handle" in styles
     assert ".class-config-workspace" in settings
     assert "overflow-y: auto" in settings
