@@ -523,8 +523,6 @@ class DeepStreamObjectBackend:
         return payload
 
     def _ensure_parser_library(self) -> None:
-        if self.parser_library_path.is_file():
-            return
         self._parser_auto_build = {
             "attempted": True,
             "success": False,
