@@ -34,6 +34,8 @@ from novasight.deepstream.model_manifest import (
 from novasight.deepstream.parser_presets import (
     parser_preset_payload,
     resolve_parser_plan,
+    resolve_rockchip_yolov5_parser_plan,
+    resolve_efficient_nms_parser_plan,
 )
 from novasight.api.routes_model_ingress import (
     serialized_model_operation,
@@ -833,12 +835,18 @@ def _prepare_runnable_artifact(
         raise RegistryValidationError(
             f"TensorRT Engine 自动配置失败：{exc}"
         ) from exc
-    parser_plan = resolve_parser_plan(
-        manifest.postprocess.parser_preset,
-        output_shape=manifest.output.shape,
-        class_count=manifest.output.class_count,
-        inferred_has_objectness=manifest.output.has_objectness,
-    )
+    parser_kind = str(manifest.postprocess.parser).strip().lower()
+    if parser_kind == "rockchip_yolov5":
+        parser_plan = resolve_rockchip_yolov5_parser_plan(manifest.postprocess.parser_preset)
+    elif parser_kind in {"efficientnms", "decoded_nms"}:
+        parser_plan = resolve_efficient_nms_parser_plan(manifest.postprocess.parser_preset)
+    else:
+        parser_plan = resolve_parser_plan(
+            manifest.postprocess.parser_preset,
+            output_shape=manifest.output.shape,
+            class_count=manifest.output.class_count,
+            inferred_has_objectness=manifest.output.has_objectness,
+        )
     return None, {
         "selected": "deepstream_nvinfer",
         "available": True,
