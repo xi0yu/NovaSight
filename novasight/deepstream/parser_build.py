@@ -12,6 +12,7 @@ import threading
 
 logger = logging.getLogger("novasight.deepstream.parser_build")
 _BUILD_LOCK = threading.Lock()
+_PARSER_BUILD_ABI_VERSION = "2"
 
 
 def ensure_deepstream_parser_library(
@@ -21,7 +22,9 @@ def ensure_deepstream_parser_library(
 ) -> Path:
     target = Path(library_path).expanduser().resolve(strict=False)
     source = _resolve_parser_source(source_dir)
-    source_fingerprint = _parser_source_fingerprint(source)
+    source_fingerprint = (
+        f"abi-v{_PARSER_BUILD_ABI_VERSION}:{_parser_source_fingerprint(source)}"
+    )
     fingerprint_path = target.with_name(f"{target.name}.source.sha256")
     with _BUILD_LOCK:
         # Keep the lock around the complete configure/build/copy sequence so
@@ -58,7 +61,14 @@ def ensure_deepstream_parser_library(
         )
         _run_build_command(configure_command, "configure")
         _run_build_command(
-            [cmake, "--build", str(build_dir), "--parallel", "2"],
+            [
+                cmake,
+                "--build",
+                str(build_dir),
+                "--clean-first",
+                "--parallel",
+                "2",
+            ],
             "compile",
         )
         built_library = build_dir / "libnovasight_parser.so"

@@ -71,6 +71,45 @@ def test_missing_deepstream_parser_is_built_once(tmp_path, monkeypatch) -> None:
     assert commands[1][:2] == ["/usr/bin/cmake", "--build"]
 
 
+def test_stale_parser_forces_clean_rebuild_before_recording_new_fingerprint(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_dir = tmp_path / "native" / "deepstream-parser"
+    source_dir.mkdir(parents=True)
+    (source_dir / "CMakeLists.txt").write_text("project(test)", encoding="utf-8")
+    (source_dir / "parser.cpp").write_text("new parser ABI", encoding="utf-8")
+    library_path = tmp_path / "build" / "deepstream-parser" / "libnovasight_parser.so"
+    library_path.parent.mkdir(parents=True)
+    library_path.write_bytes(b"old parser without new symbols")
+    library_path.with_name(f"{library_path.name}.source.sha256").write_text(
+        parser_build._parser_source_fingerprint(source_dir),
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(parser_build.shutil, "which", lambda _name: "/usr/bin/cmake")
+
+    def fake_run(command, **_kwargs):
+        normalized = [str(item) for item in command]
+        commands.append(normalized)
+        # This models the Jetson failure: an incremental build trusts preserved
+        # mtimes and leaves the old .so untouched. A clean build produces the ABI.
+        if "--build" in normalized and "--clean-first" in normalized:
+            library_path.write_bytes(b"new parser with explicit entrypoints")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(parser_build.subprocess, "run", fake_run)
+
+    parser_build.ensure_deepstream_parser_library(
+        library_path,
+        source_dir=source_dir,
+    )
+
+    assert library_path.read_bytes() == b"new parser with explicit entrypoints"
+    assert "--clean-first" in commands[1]
+
+
 def test_deepstream_parser_build_failure_includes_compiler_output(tmp_path, monkeypatch) -> None:
     source_dir = tmp_path / "native" / "deepstream-parser"
     source_dir.mkdir(parents=True)
