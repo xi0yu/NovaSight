@@ -87,6 +87,7 @@ class RuntimeService:
         inference: Any | None = None,
         recorder: Any | None = None,
         crosshair: CrosshairSystem | None = None,
+        motion_profile_repository: Any | None = None,
     ) -> None:
         self.config = config
         self.models = models
@@ -95,6 +96,7 @@ class RuntimeService:
         self.inference = inference
         self.recorder = recorder
         self.crosshair = crosshair or CrosshairSystem(config.crosshair)
+        self.motion_profile_repository = motion_profile_repository
         self.running = False
         self.config_store = RuntimeConfigStore(config)
         self.pipeline = None
@@ -3091,6 +3093,14 @@ class RuntimeService:
             )
         else:
             raise ValueError(f"unsupported mouse control algorithm: {algorithm_id}")
+        humanized_profile = None
+        humanized = getattr(config.control, "humanized_motion", None)
+        repository = getattr(self, "motion_profile_repository", None)
+        if humanized is not None and bool(getattr(humanized, "enabled", False)) and repository is not None:
+            for candidate in repository.list_profiles():
+                if candidate.get("profile_id") == str(getattr(humanized, "active_profile", "")):
+                    humanized_profile = candidate
+                    break
         return MouseController(
             MouseControllerConfig(
                 mode=algorithm_id,
@@ -3112,14 +3122,23 @@ class RuntimeService:
                 ),
                 calibrated_angular=calibrated_config,
                 universal_saturated=universal_config,
+                humanized_profile=humanized_profile,
             )
         )
 
-    @staticmethod
     def _create_dual_phase_algorithm(
+        self,
         config: RuntimeConfig,
     ) -> DualPhaseAtanRobustPredictiveV2Algorithm:
         source_v2 = config.control.dual_phase_atan_robust_predictive_v2
+        humanized_profile = None
+        humanized = getattr(config.control, "humanized_motion", None)
+        repository = getattr(self, "motion_profile_repository", None)
+        if humanized is not None and bool(getattr(humanized, "enabled", False)) and repository is not None:
+            humanized_profile = next(
+                (item for item in repository.list_profiles() if item.get("profile_id") == str(getattr(humanized, "active_profile", ""))),
+                None,
+            )
         return DualPhaseAtanRobustPredictiveV2Algorithm(
             DualPhaseRobustAlgorithmConfig(
                 freshness_threshold_ms=float(source_v2.freshness_threshold_ms),
@@ -3172,6 +3191,7 @@ class RuntimeService:
                         max_counts_per_update=float(source_v2.atan.near.max_counts_per_update),
                     ),
                 ),
+                humanized_profile=humanized_profile,
             )
         )
 

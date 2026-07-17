@@ -110,6 +110,7 @@ class DualPhaseAtanRobustPredictiveV2Config:
     prediction: PredictionConfig = field(default_factory=PredictionConfig)
     recoil: RecoilConfig = field(default_factory=RecoilConfig)
     atan: AtanControllerConfig = field(default_factory=AtanControllerConfig)
+    humanized_profile: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

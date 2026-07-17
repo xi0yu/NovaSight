@@ -36,6 +36,7 @@ from .routes_executors import router as executors_router
 from .routes_health import router as health_router
 from .routes_model_ingress import load_validated_profile, router as model_ingress_router
 from .routes_models import router as models_router
+from .routes_motion import router as motion_router
 from .routes_runtime import (
     _start_runtime_pipeline_core,
     _stop_runtime_pipeline_core,
@@ -88,6 +89,8 @@ def create_app(
         nms_threshold=config.inference.nms_threshold,
     )
     _load_active_model(models, inference, config)
+    from novasight.motion_profile import MotionProfileRepository
+    motion_profiles = MotionProfileRepository(data_path / "motion")
     runtime = RuntimeService(
         config=config,
         models=models,
@@ -99,6 +102,7 @@ def create_app(
             config.crosshair,
             template_path=data_path / "crosshair" / "template.json",
         ),
+        motion_profile_repository=motion_profiles,
     )
     systemd_notifier = SystemdNotifier(interval_s=watchdog_interval_from_env())
     instance_lock = InstanceLock()
@@ -106,6 +110,7 @@ def create_app(
     app.state.config = config
     app.state.config_path = Path(config_path)
     app.state.models = models
+    app.state.motion_profiles = motion_profiles
     app.state.executors = executors
     app.state.license = LicenseStore(data_path / "license.json")
     app.state.capture = capture
@@ -181,6 +186,7 @@ def create_app(
     app.include_router(runtime_router)
     app.include_router(status_router)
     app.include_router(models_router)
+    app.include_router(motion_router)
     app.include_router(model_ingress_router)
     app.include_router(executors_router)
     app.include_router(system_router)

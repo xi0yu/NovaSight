@@ -25,6 +25,7 @@ import { LicenseGate } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { StudioConsoleView } from "./features/studio/StudioConsoleView";
 import { VisualSystemView } from "./features/visual-system/VisualSystemView";
+import { MotionProfileStudio } from "./features/motion/MotionProfileStudio";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 import {
   runtimeDeliveryLabel,
@@ -76,6 +77,8 @@ function isAbortError(error: unknown): boolean {
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
 
 export default function App() {
+  const page = new URLSearchParams(window.location.search).get("page");
+  if (page === "motion-profile") return <MotionProfileStudio />;
   return visualSystemMode ? <VisualSystemView /> : <StudioApp />;
 }
 

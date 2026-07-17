@@ -116,6 +116,7 @@ class MouseControllerConfig:
     shared: SharedOutputConfig
     calibrated_angular: CalibratedAngularControllerConfig | None = None
     universal_saturated: UniversalSaturatedControllerConfig | None = None
+    humanized_profile: dict[str, Any] | None = None
 
 
 class ControlController(Protocol):
@@ -415,6 +416,22 @@ class MouseController:
         except ValueError as exc:
             self.reset()
             return self._zero(str(exc))
+
+        # Humanized motion is an optional target-motion layer.  It is gated by
+        # the real hardware trigger and deliberately runs before arrival,
+        # recoil, slew and budget protection.  Recoil never reads this layer.
+        base_counts = computation.counts
+        profile_counts, profile_debug = _apply_humanized_profile(
+            base_counts,
+            observed_error,
+            predicted_error,
+            observation,
+            self.config.humanized_profile,
+        )
+        computation = ControllerComputation(
+            counts=profile_counts,
+            debug={**computation.debug, **profile_debug},
+        )
 
         shared = self.config.shared
         (
@@ -736,6 +753,45 @@ def _valid_measurement_dt(dt_s: float | None) -> bool:
 
 def _saturated_axis(error_px: float, response_scale_px: float, max_counts: float) -> float:
     return max_counts * (2.0 / math.pi) * math.atan(error_px / response_scale_px)
+
+
+def _apply_humanized_profile(
+    counts: Vec2,
+    observed_error: Vec2,
+    predicted_error: Vec2,
+    observation: MouseObservation,
+    profile: dict[str, Any] | None,
+) -> tuple[Vec2, dict[str, Any]]:
+    if not profile or not observation.left_trigger_active:
+        return counts, {"humanized_motion_enabled": False, "humanized_motion_reason": "disabled_or_not_triggered"}
+    params = profile.get("runtime_parameters") if isinstance(profile, dict) else None
+    if not isinstance(params, dict):
+        return counts, {"humanized_motion_enabled": False, "humanized_motion_reason": "profile_parameters_missing"}
+    distance = math.hypot(predicted_error.x, predicted_error.y)
+    diagonal = max(1.0, math.hypot(observation.control_width_px, observation.control_height_px))
+    ratio = min(1.0, distance / diagonal)
+    if ratio > 0.55:
+        phase, gain = "startup", float(params.get("startup_gain", 0.82))
+    elif ratio > 0.18:
+        phase, gain = "cruise", float(params.get("cruise_gain", 1.0))
+    else:
+        phase, gain = "fine_correction", float(params.get("fine_correction_gain", 0.86))
+    if 0.18 < ratio <= 0.35:
+        phase, gain = "braking", float(params.get("braking_gain", 0.72))
+    gain = min(1.15, max(0.70, gain))
+    direction_gain = 1.0
+    direction = "horizontal" if abs(predicted_error.x) >= abs(predicted_error.y) else "vertical"
+    direction_values = params.get("direction_gains")
+    if isinstance(direction_values, dict):
+        direction_gain = float(direction_values.get(direction, 1.0))
+    effective = min(1.15, max(0.70, gain * direction_gain))
+    return Vec2(counts.x * effective, counts.y * effective), {
+        "humanized_motion_enabled": True,
+        "humanized_motion_phase": phase,
+        "humanized_motion_gain": effective,
+        "humanized_motion_distance_ratio": ratio,
+        "humanized_motion_direction": direction,
+    }
 
 
 def _slew_limit(requested: float, previous: float, max_slew: float) -> float:

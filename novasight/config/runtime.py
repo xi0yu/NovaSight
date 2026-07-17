@@ -308,6 +308,17 @@ class SharedControlConfig:
 
 
 @dataclass
+class HumanizedMotionConfig:
+    """Runtime switch for an optional humanized target-motion profile.
+
+    The profile is deliberately separate from recoil and persisted control
+    tuning.  When disabled, the existing controller path is unchanged.
+    """
+    enabled: bool = False
+    active_profile: str = ""
+
+
+@dataclass
 class ControlConfig:
     active_algorithm: str = DEFAULT_ACTIVE_ALGORITHM_ID
     target_fov_radius_px: float = 180.0
@@ -342,6 +353,7 @@ class ControlConfig:
     aim: AimConfig = field(default_factory=AimConfig)
     algorithms: ControlAlgorithmConfigs = field(default_factory=ControlAlgorithmConfigs)
     shared: SharedControlConfig = field(default_factory=SharedControlConfig)
+    humanized_motion: HumanizedMotionConfig = field(default_factory=HumanizedMotionConfig)
     configured_actuation_delay_s: float = 0.004
     scheduler_enabled: bool = True
     scheduler_step_counts_x: int = 8
