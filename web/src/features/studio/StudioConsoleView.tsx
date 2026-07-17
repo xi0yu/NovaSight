@@ -20,14 +20,20 @@ import {
   ModelCatalogResponse,
   ModelProject,
   ModelVersion,
+  MotionProfile,
+  MotionProfileRuntime,
   ParserPresetId,
   RuntimeConfig,
   RuntimeConfigValue,
   RuntimeState,
+  activateMotionProfile,
+  disableMotionProfile,
   getCaptureCapabilities,
   getModelArtifacts,
   getModelCatalog,
   getModelVersions,
+  getMotionProfileRuntime,
+  getMotionProfiles,
   publishModel,
   registerCatalogModel,
   selectCaptureProfile,
@@ -506,6 +512,10 @@ export function StudioConsoleView({
   const [modelCatalogModelCount, setModelCatalogModelCount] = useState(0);
   const [modelCatalogDirectoryCount, setModelCatalogDirectoryCount] = useState(0);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
+  const [motionProfiles, setMotionProfiles] = useState<MotionProfile[]>([]);
+  const [motionProfileRuntime, setMotionProfileRuntime] = useState<MotionProfileRuntime | null>(null);
+  const [selectedMotionProfileId, setSelectedMotionProfileId] = useState("");
+  const [motionProfileBusy, setMotionProfileBusy] = useState(false);
   const [expandedModelDirectories, setExpandedModelDirectories] = useState<Set<string>>(
     () => new Set([""])
   );
@@ -606,6 +616,78 @@ export function StudioConsoleView({
     setActivePage(page);
     writePageToUrl(page);
   }, []);
+
+  const openMotionProfileStudio = useCallback(() => {
+    window.open("?page=motion-profile", "novasight-motion-profile", "popup=yes,width=1280,height=820");
+  }, []);
+
+  const refreshMotionProfileRuntime = useCallback(async () => {
+    const [profiles, status] = await Promise.all([getMotionProfiles(), getMotionProfileRuntime()]);
+    setMotionProfiles(profiles);
+    setMotionProfileRuntime(status);
+    setSelectedMotionProfileId((current) => {
+      if (status.active_profile && profiles.some((profile) => profile.profile_id === status.active_profile)) {
+        return status.active_profile;
+      }
+      if (current && profiles.some((profile) => profile.profile_id === current)) {
+        return current;
+      }
+      return profiles[0]?.profile_id ?? "";
+    });
+  }, []);
+
+  useEffect(() => {
+    if (activePage !== "params") {
+      return;
+    }
+    const refresh = () => {
+      void refreshMotionProfileRuntime().catch((error) => {
+        reportError(error, { source: "motion-profile-runtime", title: "真人轨迹状态读取失败" });
+      });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [activePage, refreshMotionProfileRuntime]);
+
+  const setMotionControlMode = useCallback(async (useHumanProfile: boolean) => {
+    if (motionProfileBusy) {
+      return;
+    }
+    if (useHumanProfile && !selectedMotionProfileId) {
+      openMotionProfileStudio();
+      return;
+    }
+    setMotionProfileBusy(true);
+    try {
+      if (useHumanProfile) {
+        await activateMotionProfile(selectedMotionProfileId);
+      } else {
+        await disableMotionProfile();
+      }
+      await refreshMotionProfileRuntime();
+    } catch (error) {
+      reportError(error, { source: "motion-profile-mode", title: "控制轨迹切换失败" });
+    } finally {
+      setMotionProfileBusy(false);
+    }
+  }, [motionProfileBusy, openMotionProfileStudio, refreshMotionProfileRuntime, selectedMotionProfileId]);
+
+  const selectMotionProfile = useCallback(async (profileId: string) => {
+    setSelectedMotionProfileId(profileId);
+    if (!motionProfileRuntime?.enabled || !profileId) {
+      return;
+    }
+    setMotionProfileBusy(true);
+    try {
+      await activateMotionProfile(profileId);
+      await refreshMotionProfileRuntime();
+    } catch (error) {
+      reportError(error, { source: "motion-profile-select", title: "真人画像切换失败" });
+    } finally {
+      setMotionProfileBusy(false);
+    }
+  }, [motionProfileRuntime?.enabled, refreshMotionProfileRuntime]);
 
   useEffect(() => {
     if (!modelSwitchDialogOpen) {
@@ -2974,7 +3056,7 @@ export function StudioConsoleView({
           </button>
           <button
             className="console-button"
-            onClick={() => window.open("?page=motion-profile", "novasight-motion-profile", "popup=yes,width=1280,height=820")}
+            onClick={openMotionProfileStudio}
             type="button"
           >
             <NovaIcon name="track-trace" size={16} />
@@ -3588,12 +3670,80 @@ export function StudioConsoleView({
         <section className={activePage === "params" || activePage === "control-test" ? "console-page active" : "console-page"}>
           {activePage === "params" ? (
           <>
-            <div className="console-metrics">
+            <div className="console-metrics params-summary-metrics">
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
+              <Metric
+                title="轨迹来源"
+                value={motionProfileRuntime === null ? "读取中" : motionProfileRuntime.enabled ? "真人轨迹" : "静态参数"}
+                small={motionProfileRuntime?.enabled ? motionProfileRuntime.profile_name || "运行内存画像" : motionProfileRuntime === null ? "等待运行态" : "配置文件"}
+              />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
             <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+            </div>
+            <div className={motionProfileRuntime?.enabled ? "console-card motion-control-mode-card human" : motionProfileRuntime === null ? "console-card motion-control-mode-card loading" : "console-card motion-control-mode-card static"}>
+              <div className="motion-control-mode-copy">
+                <span className="class-config-eyebrow">硬件触发后的控制轨迹</span>
+                <h3>{motionProfileRuntime === null ? "正在读取控制轨迹" : motionProfileRuntime.enabled ? "真人轨迹算法" : "静态控制算法"}</h3>
+                <p>
+                  {motionProfileRuntime === null
+                    ? "正在从后端确认当前运行内存使用的轨迹来源。"
+                    : motionProfileRuntime.enabled
+                    ? "当前画像直接覆盖运行内存中的静态节奏参数；关闭后立即恢复配置文件中的控制参数。"
+                    : "使用参数页中已经调整好的固定控制参数，不加载真人画像。"}
+                </p>
+              </div>
+              <div className="motion-control-mode-actions">
+                <div className="motion-mode-segmented" role="group" aria-label="控制轨迹来源">
+                  <button
+                    aria-pressed={motionProfileRuntime?.enabled !== true}
+                    className={motionProfileRuntime?.enabled ? "" : "active"}
+                    disabled={motionProfileBusy || motionProfileRuntime === null}
+                    onClick={() => void setMotionControlMode(false)}
+                    type="button"
+                  >
+                    <NovaIcon name="settings" size={16} />
+                    静态控制算法
+                  </button>
+                  <button
+                    aria-pressed={motionProfileRuntime?.enabled === true}
+                    className={motionProfileRuntime?.enabled ? "active" : ""}
+                    disabled={motionProfileBusy || motionProfiles.length === 0}
+                    onClick={() => void setMotionControlMode(true)}
+                    type="button"
+                  >
+                    <NovaIcon name="track-trace" size={16} />
+                    真人轨迹算法
+                  </button>
+                </div>
+                <div className="motion-profile-picker">
+                  <label htmlFor="motion-profile-select">真人画像</label>
+                  <select
+                    id="motion-profile-select"
+                    disabled={motionProfileBusy || motionProfiles.length === 0}
+                    onChange={(event) => void selectMotionProfile(event.target.value)}
+                    value={selectedMotionProfileId}
+                  >
+                    {motionProfiles.length === 0 ? <option value="">尚未训练画像</option> : null}
+                    {motionProfiles.map((profile) => (
+                      <option key={profile.profile_id} value={profile.profile_id}>
+                        {profile.name} · {profile.sample_count} 条
+                      </option>
+                    ))}
+                  </select>
+                  <button className="console-button" onClick={openMotionProfileStudio} type="button">
+                    {motionProfiles.length === 0 ? "去训练画像" : "管理与训练"}
+                  </button>
+                </div>
+                <small className="motion-control-memory-note">
+                  {motionProfileBusy
+                    ? "正在切换运行内存…"
+                    : motionProfileRuntime?.enabled
+                      ? `运行中：${motionProfileRuntime.profile_name || motionProfileRuntime.active_profile} · ${motionProfileRuntime.sample_count} 条样本`
+                      : "当前未启用真人曲线；文件配置不会被修改。"}
+                </small>
+              </div>
             </div>
             <div className="console-card class-config-summary-card">
               <div className="class-config-summary-main">

@@ -13,6 +13,16 @@ import "./motion-profile.css";
 
 type Point = { t_us: number; x: number; y: number; dx: number; dy: number };
 type Target = { x: number; y: number; radius: number; spawnedUs: number };
+type CanvasColors = { background: string; grid: string; target: string; ring: string; trace: string; cursor: string };
+
+const DEFAULT_CANVAS_COLORS: CanvasColors = {
+  background: "#ffe8f1",
+  grid: "rgba(126,24,66,.12)",
+  target: "#b6195d",
+  ring: "#fff",
+  trace: "#4f1733",
+  cursor: "#111827"
+};
 
 export function MotionProfileStudio() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -20,6 +30,7 @@ export function MotionProfileStudio() {
   const cursorRef = useRef({ x: 420, y: 260 });
   const targetRef = useRef<Target>({ x: 650, y: 260, radius: 28, spawnedUs: performance.now() * 1000 });
   const animationRef = useRef(0);
+  const canvasColorsRef = useRef<CanvasColors>(DEFAULT_CANVAS_COLORS);
   const [session, setSession] = useState<{ session_id: string } | null>(null);
   const [training, setTraining] = useState(false);
   const [locked, setLocked] = useState(false);
@@ -52,28 +63,50 @@ export function MotionProfileStudio() {
   }, []);
 
   useEffect(() => {
+    const updateCanvasColors = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const styles = window.getComputedStyle(canvas);
+      const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+      canvasColorsRef.current = {
+        background: read("--motion-canvas-bg", DEFAULT_CANVAS_COLORS.background),
+        grid: read("--motion-canvas-grid", DEFAULT_CANVAS_COLORS.grid),
+        target: read("--motion-target-fill", DEFAULT_CANVAS_COLORS.target),
+        ring: read("--motion-target-ring", DEFAULT_CANVAS_COLORS.ring),
+        trace: read("--motion-trace", DEFAULT_CANVAS_COLORS.trace),
+        cursor: read("--motion-cursor", DEFAULT_CANVAS_COLORS.cursor)
+      };
+    };
+    updateCanvasColors();
+    const observer = new MutationObserver(updateCanvasColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     const draw = () => {
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
       if (canvas && ctx) {
         const target = targetRef.current;
-        ctx.fillStyle = "#ffe8f1";
+        const colors = canvasColorsRef.current;
+        ctx.fillStyle = colors.background;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.strokeStyle = "rgba(126,24,66,.12)";
+        ctx.strokeStyle = colors.grid;
         ctx.lineWidth = 1;
         for (let x = 0; x < canvas.width; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
         for (let y = 0; y < canvas.height; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
-        ctx.fillStyle = "#b6195d";
+        ctx.fillStyle = colors.target;
         ctx.beginPath(); ctx.arc(target.x, target.y, target.radius, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+        ctx.strokeStyle = colors.ring; ctx.lineWidth = 2; ctx.stroke();
         const points = pointsRef.current;
         if (points.length > 1) {
-          ctx.strokeStyle = "#4f1733"; ctx.lineWidth = 3; ctx.beginPath();
+          ctx.strokeStyle = colors.trace; ctx.lineWidth = 3; ctx.beginPath();
           points.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
           ctx.stroke();
         }
         const cursor = cursorRef.current;
-        ctx.strokeStyle = "#111827"; ctx.lineWidth = 2;
+        ctx.strokeStyle = colors.cursor; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(cursor.x - 7, cursor.y); ctx.lineTo(cursor.x + 7, cursor.y); ctx.moveTo(cursor.x, cursor.y - 7); ctx.lineTo(cursor.x, cursor.y + 7); ctx.stroke();
       }
       animationRef.current = requestAnimationFrame(draw);
