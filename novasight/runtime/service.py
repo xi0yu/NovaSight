@@ -112,6 +112,8 @@ class RuntimeService:
             "available": False,
             "reason": "推理尚未执行",
         }
+        self._runtime_humanized_profile: dict[str, Any] | None = None
+        self._runtime_humanized_profile_override_set = False
         self._last_control_log_signature = ""
         self._last_box_input_log_signature = ""
         self._last_no_target_log_signature = ""
@@ -3093,14 +3095,7 @@ class RuntimeService:
             )
         else:
             raise ValueError(f"unsupported mouse control algorithm: {algorithm_id}")
-        humanized_profile = None
-        humanized = getattr(config.control, "humanized_motion", None)
-        repository = getattr(self, "motion_profile_repository", None)
-        if humanized is not None and bool(getattr(humanized, "enabled", False)) and repository is not None:
-            for candidate in repository.list_profiles():
-                if candidate.get("profile_id") == str(getattr(humanized, "active_profile", "")):
-                    humanized_profile = candidate
-                    break
+        humanized_profile = self._resolve_humanized_profile(config)
         return MouseController(
             MouseControllerConfig(
                 mode=algorithm_id,
@@ -3131,14 +3126,7 @@ class RuntimeService:
         config: RuntimeConfig,
     ) -> DualPhaseAtanRobustPredictiveV2Algorithm:
         source_v2 = config.control.dual_phase_atan_robust_predictive_v2
-        humanized_profile = None
-        humanized = getattr(config.control, "humanized_motion", None)
-        repository = getattr(self, "motion_profile_repository", None)
-        if humanized is not None and bool(getattr(humanized, "enabled", False)) and repository is not None:
-            humanized_profile = next(
-                (item for item in repository.list_profiles() if item.get("profile_id") == str(getattr(humanized, "active_profile", ""))),
-                None,
-            )
+        humanized_profile = self._resolve_humanized_profile(config)
         return DualPhaseAtanRobustPredictiveV2Algorithm(
             DualPhaseRobustAlgorithmConfig(
                 freshness_threshold_ms=float(source_v2.freshness_threshold_ms),
@@ -3194,6 +3182,38 @@ class RuntimeService:
                 humanized_profile=humanized_profile,
             )
         )
+
+    def set_humanized_motion_profile(self, profile: dict[str, Any] | None) -> dict[str, Any]:
+        """Hot-switch only the in-memory profile; persisted config is untouched."""
+
+        with self._control_lock:
+            self._runtime_humanized_profile = profile
+            self._runtime_humanized_profile_override_set = True
+            self.control_algorithms.reset()
+            self.control_algorithms = self._create_control_algorithm_registry(self.config)
+            self._clear_pending_commands("HUMANIZED_MOTION_PROFILE_CHANGED")
+            self._reset_runtime_control_state("HUMANIZED_MOTION_PROFILE_CHANGED")
+        return self.humanized_motion_status()
+
+    def humanized_motion_status(self) -> dict[str, Any]:
+        profile = self._runtime_humanized_profile if self._runtime_humanized_profile_override_set else self._resolve_humanized_profile(self.config)
+        return {
+            "enabled": profile is not None,
+            "active_profile": str(profile.get("profile_id", "")) if profile else "",
+            "profile_name": str(profile.get("name", "")) if profile else "",
+            "sample_count": int(profile.get("sample_count", 0)) if profile else 0,
+            "source": "runtime_memory" if self._runtime_humanized_profile_override_set else "startup_config",
+        }
+
+    def _resolve_humanized_profile(self, config: RuntimeConfig) -> dict[str, Any] | None:
+        if self._runtime_humanized_profile_override_set:
+            return self._runtime_humanized_profile
+        humanized = getattr(config.control, "humanized_motion", None)
+        repository = getattr(self, "motion_profile_repository", None)
+        if humanized is None or not bool(getattr(humanized, "enabled", False)) or repository is None:
+            return None
+        profile_id = str(getattr(humanized, "active_profile", ""))
+        return next((item for item in repository.list_profiles() if item.get("profile_id") == profile_id), None)
 
     def _reset_control_motion_state(self) -> None:
         self.control_algorithms.reset()

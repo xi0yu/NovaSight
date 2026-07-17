@@ -2972,6 +2972,14 @@ export function StudioConsoleView({
             <NovaIcon name={runtimeControlRequested ? "stop" : "start"} size={16} />
             {runtimeControlRequested ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
           </button>
+          <button
+            className="console-button"
+            onClick={() => window.open("?page=motion-profile", "novasight-motion-profile", "popup=yes,width=1280,height=820")}
+            type="button"
+          >
+            <NovaIcon name="track-trace" size={16} />
+            真人轨迹
+          </button>
           {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
             <button
               className="console-button"

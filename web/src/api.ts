@@ -25,6 +25,7 @@ export type ModelVersion = {
 
 export type MotionSession = { session_id: string; name: string; created_at: number; sample_count?: number };
 export type MotionProfile = { profile_id: string; name: string; sample_count: number; quality_score: number; features?: Record<string, number>; runtime_parameters?: Record<string, number> };
+export type MotionProfileRuntime = { enabled: boolean; active_profile: string; profile_name: string; sample_count: number; source: string };
 
 export type ModelArtifact = {
   id: number;
@@ -1059,3 +1060,4 @@ export function trainMotionProfile(sessionId: string, name: string): Promise<Mot
 export function getMotionProfiles(): Promise<MotionProfile[]> { return requestJson<MotionProfile[]>("/api/motion/profiles"); }
 export function activateMotionProfile(profileId: string): Promise<unknown> { return requestJson(`/api/motion/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }); }
 export function disableMotionProfile(): Promise<unknown> { return requestJson("/api/motion/profiles/disable", { method: "POST" }); }
+export function getMotionProfileRuntime(): Promise<MotionProfileRuntime> { return requestJson<MotionProfileRuntime>("/api/motion/runtime"); }

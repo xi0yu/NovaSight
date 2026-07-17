@@ -49,15 +49,15 @@ def activate_profile(request: Request, profile_id: str) -> dict[str, Any]:
     profile = next((item for item in _repo(request).list_profiles() if item.get("profile_id") == profile_id), None)
     if profile is None:
         raise HTTPException(status_code=404, detail="motion profile not found")
-    report = __import__("novasight.runtime.reconfigurator", fromlist=["RuntimeReconfigurator"]).RuntimeReconfigurator(request.app).apply_field(
-        "control", "humanized_motion", {"enabled": True, "active_profile": profile_id}
-    )
-    return {"profile": profile, "config": report.asdict(include_schema=False)}
+    status = request.app.state.runtime.set_humanized_motion_profile(profile)
+    return {"profile": profile, "runtime": status}
 
 
 @router.post("/profiles/disable")
 def disable_profile(request: Request) -> dict[str, Any]:
-    report = __import__("novasight.runtime.reconfigurator", fromlist=["RuntimeReconfigurator"]).RuntimeReconfigurator(request.app).apply_field(
-        "control", "humanized_motion", {"enabled": False, "active_profile": ""}
-    )
-    return report.asdict(include_schema=False)
+    return request.app.state.runtime.set_humanized_motion_profile(None)
+
+
+@router.get("/runtime")
+def runtime_profile_status(request: Request) -> dict[str, Any]:
+    return request.app.state.runtime.humanized_motion_status()

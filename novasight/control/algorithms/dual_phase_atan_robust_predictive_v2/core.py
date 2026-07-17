@@ -4,6 +4,7 @@ from math import atan, hypot, isfinite, pi, tan, trunc
 
 from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT
 from novasight.control.recoil import FixedRecoilConfig, FixedRecoilController
+from novasight.control.humanized_motion import HumanizedMotionGenerator, HumanizedMotionInput
 
 from .models import (
     ALGORITHM_ID,
@@ -38,6 +39,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 invert_y=config.projection.invert_y,
             )
         )
+        self._humanized_motion = HumanizedMotionGenerator(config.humanized_profile)
         self._velocity_x = RobustVelocityEstimator(config.velocity)
         self._previous_error_meas_x = 0.0
         self._previous_error_meas_y = 0.0
@@ -55,6 +57,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._quantizer_x.reset()
         self._quantizer_y.reset()
         self._recoil.reset()
+        self._humanized_motion.reset()
         self._velocity_x.reset()
         self._previous_error_meas_x = 0.0
         self._previous_error_meas_y = 0.0
@@ -66,6 +69,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._quantizer_x.reset()
         self._quantizer_y.reset()
         self._recoil.reset()
+        self._humanized_motion.reset()
 
     def calculate(
         self,
@@ -190,10 +194,22 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
         demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)
         feedback_demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
-        demand_x, feedback_demand_y, humanized_debug = _humanize_demands(
-            demand_x, feedback_demand_y, error_meas_x, error_meas_y,
-            observation, self.config.humanized_profile,
-        )
+        humanized = self._humanized_motion.apply(HumanizedMotionInput(
+            base_x=demand_x,
+            base_y=feedback_demand_y,
+            full_x=full_counts_x,
+            full_y=full_counts_y,
+            error_x_px=error_meas_x,
+            error_y_px=error_meas_y,
+            target_width_px=max(1.0, observation.bbox_x2 - observation.bbox_x1),
+            target_id=observation.target_id,
+            trigger_active=observation.trigger_active,
+            left_trigger_active=observation.left_trigger_active,
+            trigger_hold_ms=observation.left_trigger_hold_ms,
+        ))
+        demand_x = humanized.x
+        feedback_demand_y = humanized.y
+        humanized_debug = humanized.telemetry
         recoil = self._recoil.calculate(
             left_trigger_active=bool(
                 observation.trigger_active and observation.left_trigger_active
@@ -516,38 +532,6 @@ def _crossed_center(previous_error: float, current_error: float) -> bool:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
-
-
-def _humanize_demands(
-    demand_x: float,
-    demand_y: float,
-    error_x: float,
-    error_y: float,
-    observation: DualPhaseAtanRobustPredictiveV2Observation,
-    profile: dict[str, object] | None,
-) -> tuple[float, float, dict[str, object]]:
-    if not profile or not observation.trigger_active or not observation.left_trigger_active:
-        return demand_x, demand_y, {"humanized_motion_enabled": False}
-    params = profile.get("runtime_parameters") if isinstance(profile, dict) else None
-    if not isinstance(params, dict):
-        return demand_x, demand_y, {"humanized_motion_enabled": False, "humanized_motion_reason": "profile_parameters_missing"}
-    distance = hypot(error_x, error_y)
-    ratio = min(1.0, distance / max(1.0, hypot(observation.roi_width, observation.roi_height)))
-    if ratio > 0.55:
-        phase, gain = "startup", float(params.get("startup_gain", 0.82))
-    elif ratio > 0.35:
-        phase, gain = "cruise", float(params.get("cruise_gain", 1.0))
-    elif ratio > 0.18:
-        phase, gain = "braking", float(params.get("braking_gain", 0.72))
-    else:
-        phase, gain = "fine_correction", float(params.get("fine_correction_gain", 0.86))
-    gain = min(1.15, max(0.70, gain))
-    return demand_x * gain, demand_y * gain, {
-        "humanized_motion_enabled": True,
-        "humanized_motion_phase": phase,
-        "humanized_motion_gain": gain,
-        "humanized_motion_distance_ratio": ratio,
-    }
 
 
 def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
