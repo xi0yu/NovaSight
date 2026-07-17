@@ -32,8 +32,6 @@ interface ModelSelectionPanelProps {
   runtimeInputShape: string;
   catalogMessage: string;
   switchMessage: string;
-  switchError: string;
-  blockedArtifacts: ModelArtifact[];
   busy: string | null;
   canSwitch: boolean;
   parserPreset: ParserPresetId;
@@ -61,8 +59,6 @@ export function ModelSelectionPanel({
   runtimeInputShape,
   catalogMessage,
   switchMessage,
-  switchError,
-  blockedArtifacts,
   busy,
   canSwitch,
   parserPreset,
@@ -76,7 +72,9 @@ export function ModelSelectionPanel({
     ? selectedModel.artifact_status ?? selectedModel.scan_status
     : artifactStatus(selectedArtifact);
   const switchNeedsPreparation =
-    selectedArtifact?.status === "pending" || selectedArtifact?.status === "failed";
+    (selectedModel?.kind === "engine" && !selectedArtifact) ||
+    selectedArtifact?.status === "pending" ||
+    selectedArtifact?.status === "failed";
   const selectedKind = selectedModel?.kind ?? selectedArtifact?.kind;
   const selectedIsActive = selectedArtifact?.id === activeArtifactId;
   const previewBackend = selectedKind === "engine"
@@ -88,7 +86,7 @@ export function ModelSelectionPanel({
         : "按模型自动选择";
   const previewInputShape = selectedVersion?.input_shape ||
     (selectedIsActive ? runtimeInputShape : "") ||
-    "等待模型探测";
+    "加载后读取真实契约";
   const switchLabel = busy === "model.switch"
     ? "自动配置并切换中..."
     : switchNeedsPreparation
@@ -210,11 +208,7 @@ export function ModelSelectionPanel({
         <small title={activeArtifactLabel}>{activeArtifactLabel}</small>
       </div>
 
-      {switchMessage || switchError ? (
-        <div className={switchError && !switchMessage ? "model-switch-note bad" : "model-switch-note good"}>
-          {switchMessage || `上次切换失败：${switchError}`}
-        </div>
-      ) : null}
+      {switchMessage ? <div className="model-switch-note good">{switchMessage}</div> : null}
 
       <button
         className="console-button primary console-full-button"
@@ -232,11 +226,6 @@ export function ModelSelectionPanel({
         </p>
       ) : null}
 
-      {!selectedArtifact && blockedArtifacts.length > 0 ? (
-        <div className="model-switch-note bad">
-          模型产物不可切换：{blockedArtifacts.map((item) => `${item.path} (${item.status})`).join("，")}。
-        </div>
-      ) : null}
     </div>
   );
 }

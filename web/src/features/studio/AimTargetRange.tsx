@@ -6,9 +6,12 @@ export type AimRole = "head" | "body" | "other";
 export type AimRoleRatios = Record<AimRole, number>;
 
 const ROLE_META: Record<AimRole, { label: string; caption: string; zoneTop: number; zoneHeight: number }> = {
-  head: { label: "头部", caption: "头部框内", zoneTop: 8, zoneHeight: 22 },
-  body: { label: "身体", caption: "身体框内", zoneTop: 24, zoneHeight: 45 },
-  other: { label: "其他", caption: "其他框内", zoneTop: 10, zoneHeight: 78 }
+  // The mannequin is a semantic calibration surface, not one shared 0-100% ruler.
+  // A head bbox spans only the head. Body/other bboxes commonly cover the whole
+  // person, so their full range intentionally includes both head and torso.
+  head: { label: "头部", caption: "0–100%：仅头部", zoneTop: 5, zoneHeight: 22 },
+  body: { label: "身体", caption: "0–100%：整个人物", zoneTop: 5, zoneHeight: 90 },
+  other: { label: "其他", caption: "0–100%：整个人物", zoneTop: 5, zoneHeight: 90 }
 };
 
 const ROLES: AimRole[] = ["head", "body", "other"];
@@ -138,7 +141,7 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
             </div>
           );
         })}
-        <span className="aim-target-stage-caption">拖动彩色标记，只调整各角色 bbox 内的 Y 比例</span>
+        <span className="aim-target-stage-caption">头部按头框映射；身体与其他按完整人物框映射。拖动只改变 bbox 内的 Y 比例。</span>
       </div>
 
       <div className="aim-role-controls">

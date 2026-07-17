@@ -1,13 +1,14 @@
 .console-app {
-  grid-template-columns: 288px minmax(0, 1fr);
+  grid-template-columns: 232px minmax(0, 1fr);
 }
 
 .console-top {
-  grid-template-columns: 288px minmax(0, 1fr);
+  grid-template-columns: 232px minmax(0, 1fr);
 }
 
 .console-sidebar {
-  padding: 24px 14px;
+  min-width: 0;
+  padding: 16px 10px;
   background: var(--bg-app);
   border-color: var(--border-default);
 }
@@ -15,7 +16,7 @@
 .console-navigation {
   display: grid;
   align-content: start;
-  gap: 24px;
+  gap: 14px;
 }
 
 .console-nav-group {
@@ -23,7 +24,7 @@
 }
 
 .console-nav-group > h2 {
-  margin: 0 10px 8px;
+  margin: 0 8px 5px;
   color: var(--text-tertiary);
   font-size: 11px;
   font-weight: 650;
@@ -38,14 +39,14 @@
 
 .console-nav {
   width: 100%;
-  min-height: 52px;
+  min-height: 44px;
   height: auto;
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   margin: 0;
-  padding: 8px 10px;
+  padding: 6px 8px;
   text-align: left;
 }
 
@@ -104,8 +105,8 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-bottom: 14px;
 }
 
 .console-page-heading {
@@ -156,6 +157,10 @@
   .console-app,
   .console-top {
     grid-template-columns: 1fr;
+  }
+
+  .console-top {
+    grid-column: 1;
   }
 
   .console-navigation {

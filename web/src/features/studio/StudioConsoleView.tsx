@@ -39,7 +39,7 @@ import {
   updateRuntimeConfig,
   updateRuntimeConfigField
 } from "../../api";
-import { reportError } from "../../lib/toast";
+import { reportError, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
@@ -520,6 +520,9 @@ export function StudioConsoleView({
   const [kmnetTestMessage, setKmnetTestMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [errorCenterOpen, setErrorCenterOpen] = useState(false);
+  const errorNotices = useErrorNotices();
+  const clearErrorNotices = useClearErrorNotices();
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
@@ -566,6 +569,7 @@ export function StudioConsoleView({
   const launchTimerResolveRef = useRef<(() => void) | null>(null);
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
+  const errorCenterDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
   currentModelProjectSelectionRef.current = selectedModelProjectId;
   currentModelVersionSelectionRef.current = selectedModelVersionId;
@@ -603,6 +607,29 @@ export function StudioConsoleView({
     setActivePage(page);
     writePageToUrl(page);
   }, []);
+
+  useEffect(() => {
+    if (!errorCenterOpen) {
+      return undefined;
+    }
+    const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => errorCenterDialogRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setErrorCenterOpen(false);
+      } else {
+        trapDialogTabKey(event, errorCenterDialogRef.current);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
+    };
+  }, [errorCenterOpen]);
 
   useEffect(() => {
     if (!launchDialogOpen) {
@@ -1142,11 +1169,6 @@ export function StudioConsoleView({
       ? modelVersions.find((item) => item.id === selectedModelVersionId) ?? null
       : null;
   const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
-  const blockedSwitchArtifacts = modelArtifacts.filter(
-    (item) =>
-      item.kind === "engine" &&
-      !["ready", "pending", "failed"].includes(item.status)
-  );
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const activeRuntimeClassId = readNullableNumber(target.cls ?? target.class_id);
@@ -1394,9 +1416,6 @@ export function StudioConsoleView({
   const capturePublishedFrames = readNullableNumber(
     latestFrameBroker.published_frames ?? deepstreamStatus.capture_frames ?? captureStatistics.published_frames
   );
-  const captureOverwrittenFrames = readNullableNumber(
-    latestFrameBroker.overwritten_frames ?? deepstreamMailbox.overwritten_batches ?? captureStatistics.overwritten_frames
-  );
   const captureDroppedFrames = readNullableNumber(
     deepstreamStatus.stale_dropped_batches ?? captureStatistics.dropped_counter ?? capture?.frames_dropped
   );
@@ -1456,6 +1475,10 @@ export function StudioConsoleView({
       ? (inferenceEndTsNs - inferenceCaptureTsNs) / 1e6
       : readNullableNumber(inferenceResultAgeMs);
   const inferenceInputDtype = readString(runtimeInference.input_dtype, "");
+  const inferenceRuntimePrecision = readString(
+    runtimeInference.runtime_precision,
+    readString(deepstreamStatus.runtime_precision, "")
+  );
   const inferenceInputLayout = readString(
     inferenceDebug.input_layout,
     readString(runtimeInference.input_layout, "")
@@ -1494,7 +1517,33 @@ export function StudioConsoleView({
     (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0 || deepstreamPublishedBatches > 0;
   const inferenceBatchStale =
     inferenceTrace.is_stale === true || inferenceTrace.stale_rejected === true || inferenceTrace.latest_rejected === true;
-  const lastError = localError ?? Object.values(errors)[0] ?? capture?.last_error;
+  const currentErrorDetails = useMemo(() => {
+    const items: Array<{ key: string; title: string; detail: string; time?: number }> = [];
+    for (const notice of errorNotices) {
+      items.push({
+        key: `notice-${notice.id}`,
+        title: notice.title,
+        detail: notice.detail || notice.source,
+        time: notice.createdAt
+      });
+    }
+    for (const [source, detail] of Object.entries(errors)) {
+      if (detail) items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail });
+    }
+    if (localError) items.push({ key: "local", title: "当前操作未完成", detail: localError });
+    if (capture?.last_error) items.push({ key: "capture", title: "采集链路异常", detail: capture.last_error });
+    if (lastModelSwitchError) items.push({ key: "model-switch", title: "模型切换异常", detail: lastModelSwitchError });
+    if (runtimePowerInterrupted) {
+      items.push({
+        key: "runtime-power",
+        title: "主链运行被中断",
+        detail: runtimePowerReason || "主链并非由省流策略停止，请检查运行管线。"
+      });
+    }
+    return items.filter((item, index, all) => (
+      all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail) === index
+    ));
+  }, [capture?.last_error, errorNotices, errors, lastModelSwitchError, localError, runtimePowerInterrupted, runtimePowerReason]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -2699,36 +2748,16 @@ export function StudioConsoleView({
   const selectModelFromCatalog = useCallback(async (model: ModelCatalogModel) => {
     setParserPreset("auto");
     setSelectedModelCatalogPath(model.relative_path);
-    let projectId = model.project_id;
-    let versionId = model.version_id;
-    let artifactId = model.artifact_id;
-    if (typeof projectId !== "number" || typeof versionId !== "number" || typeof artifactId !== "number") {
-      if (model.kind !== "engine") {
-        setLocalError("当前运行主线只允许选择 TensorRT .engine 模型。");
-        return;
-      }
-      setBusy("model.register");
-      setLocalError(null);
-      try {
-        const registered = await registerCatalogModel(model.relative_path);
-        projectId = registered.project.id;
-        versionId = registered.version.id;
-        artifactId = registered.artifact.id;
-        setModelCatalogMessage(
-          `已引用原始 Engine：${model.relative_path}；未复制模型文件。`
-        );
-        setModelCatalogRefreshKey((current) => current + 1);
-        setModelDetailsRefreshKey((current) => current + 1);
-        await onRefresh();
-      } catch (err) {
-        setLocalError(`模型引用登记失败：${getErrorMessage(err)}`);
-        reportError(err, { source: "model-register", title: "模型引用登记失败" });
-        return;
-      } finally {
-        setBusy(null);
-      }
-    }
     setLocalError(null);
+    const projectId = model.project_id;
+    const versionId = model.version_id;
+    const artifactId = model.artifact_id;
+    if (typeof projectId !== "number" || typeof versionId !== "number" || typeof artifactId !== "number") {
+      setSelectedModelProjectId("");
+      setSelectedModelVersionId("");
+      setSelectedModelArtifactId("");
+      return;
+    }
     requestedModelSelectionRef.current = {
       projectId,
       versionId,
@@ -2742,17 +2771,16 @@ export function StudioConsoleView({
         requestedModelSelectionRef.current = null;
       }
     }
-  }, [onRefresh]);
+  }, []);
 
   const switchModel = async () => {
-    if (selectedModelProjectId === "" || selectedSwitchArtifact === null) {
+    if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
       setLocalError("请选择 TensorRT engine 产物。");
       return;
     }
-    if (
-      selectedModelVersionId === "" ||
-      selectedSwitchArtifact.version_id !== selectedModelVersionId
-    ) {
+    if (selectedSwitchArtifact !== null && (
+      selectedModelVersionId === "" || selectedSwitchArtifact.version_id !== selectedModelVersionId
+    )) {
       setLocalError("模型选择已刷新，请重新选择这个版本下的推理产物。");
       return;
     }
@@ -2760,13 +2788,19 @@ export function StudioConsoleView({
     setLocalError(null);
     setModelSwitchMessage("");
     try {
-      if (selectedSwitchArtifact.kind !== "engine") {
-        throw new Error("NovaSight DeepStream 主线只支持 TensorRT Engine。");
+      let projectId = selectedModelProjectId;
+      let artifactId = selectedSwitchArtifact?.id;
+      if (projectId === "" || typeof artifactId !== "number") {
+        setModelSwitchMessage("正在登记模型并读取文件指纹…");
+        const registered = await registerCatalogModel(selectedCatalogModel.relative_path);
+        projectId = registered.project.id;
+        artifactId = registered.artifact.id;
+        setModelCatalogMessage(`已引用原始 Engine：${selectedCatalogModel.relative_path}；未复制模型文件。`);
       }
       setModelSwitchMessage("正在读取 TensorRT Engine 契约并自动生成 DeepStream 配置...");
       const response = await publishModel(
-        selectedModelProjectId,
-        selectedSwitchArtifact.id,
+        projectId,
+        artifactId,
         parserPreset
       );
       if (response.report && !response.report.applied) {
@@ -2898,6 +2932,15 @@ export function StudioConsoleView({
               label={backendStatusLabel}
               size="sm"
             />
+            <button
+              className={currentErrorDetails.length > 0 ? "error-center-trigger has-errors" : "error-center-trigger"}
+              onClick={() => setErrorCenterOpen(true)}
+              type="button"
+            >
+              <NovaIcon name={currentErrorDetails.length > 0 ? "triangle-alert" : "shield-check"} size={15} />
+              <span>异常信息</span>
+              {currentErrorDetails.length > 0 ? <b>{currentErrorDetails.length}</b> : null}
+            </button>
             <ThemeToggle />
             <div
               aria-label={`${realtimeStatusText}。${realtimeStatusDescription}运行态 ${formatDate(lastUpdated)}`}
@@ -2962,11 +3005,7 @@ export function StudioConsoleView({
           ) : null}
         </section>
 
-        {runtimePowerInterrupted ? (
-          <div className="console-error">
-            主链并非由省流策略停止：{runtimePowerReason || "请检查 pipeline 故障后手动重试"}。
-          </div>
-        ) : hostPresenceStandby ? (
+        {hostPresenceStandby ? (
           <div className="console-info">
             省流待机：{runtimePowerReason || "等待目标主机心跳"}。
             {runtimePowerAutoResume ? "主机恢复后将按运行意图自动启动。" : "主机上线后需要再次点击启动。"}
@@ -2977,59 +3016,63 @@ export function StudioConsoleView({
           </div>
         ) : null}
 
-        {lastError ? <div className="console-error">{lastError}</div> : null}
-
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureMainRunning ? "运行中" : "未运行"} small={captureBackendLabel || NO_SAMPLE} />
             <Metric title="采集 FPS" value={formatOptionalNumber(captureSourceFps, 1)} small={deepstreamNvinferSelected ? "v4l2 source" : "appsink arrival"} />
-            <Metric title="最新帧龄" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="ms" />
-            <Metric title={deepstreamNvinferSelected ? "Batch 覆盖" : "LatestFrame 覆盖"} value={formatOptionalInteger(captureOverwrittenFrames)} small={deepstreamNvinferSelected ? "batches" : "frames"} />
+            <Metric title="数据新鲜度" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="距当前 ms" />
+            <Metric title="采集帧间隔" value={formatOptionalNumber(captureFramePeriodMs, 2)} small="ms" />
           </div>
-          <div className="console-card">
+          <div className="console-card power-saving-card">
             <SectionTitle title="目标主机离线省流" />
             <p className="console-section-note">
-              目标主机 Agent 心跳超时后停止完整 DeepStream pipeline；配置修改后需要重启 NovaSight 后端。
+              可选功能：游戏电脑离线后暂停 Jetson 的采集与推理，电脑恢复后可自动继续。配置立即生效，无需重启后端。
             </p>
             <ModuleSwitch
-              label="启用主机心跳监管"
-              detail="默认关闭；启用前请先在目标主机运行 host_presence_agent.py"
+              label="游戏电脑离线时自动待机"
+              detail={targetHostId ? `监管标识：${targetHostId}` : "请先填写游戏电脑标识，再启用此功能"}
               enabled={hostPresencePowerSavingEnabled}
+              disabled={!hostPresencePowerSavingEnabled && !targetHostId.trim()}
               onToggle={(enabled) => updateConfigField("power_saving", "host_presence_enabled", enabled)}
             />
-            <TextControl
-              label="目标主机 ID"
-              value={targetHostId}
-              onCommit={(value) => updateConfigField("power_saving", "target_host_id", value.trim())}
-            />
-            <NumberControl
-              label="心跳超时 s"
-              detail="超过该时间未收到心跳后进入离线宽限。"
-              value={hostHeartbeatTimeoutS}
-              min={1}
-              max={120}
-              step={1}
-              onCommit={(value) => updateConfigField("power_saving", "heartbeat_timeout_s", value)}
-            />
-            <NumberControl
-              label="离线宽限 s"
-              detail="宽限结束后停止采集、解码、nvinfer 与预览。"
-              value={hostOfflineGraceS}
-              min={0}
-              max={600}
-              step={1}
-              onCommit={(value) => updateConfigField("power_saving", "offline_grace_s", value)}
-            />
-            <ModuleSwitch
-              label="主机恢复后自动启动"
-              detail="只恢复策略挂起的运行意图；用户主动停止后不会自动启动。"
-              enabled={hostAutoResume}
-              onToggle={(enabled) => updateConfigField("power_saving", "auto_resume", enabled)}
-            />
+            <div className="power-saving-host-field">
+              <TextControl
+                label="游戏电脑标识"
+                value={targetHostId}
+                onCommit={(value) => updateConfigField("power_saving", "target_host_id", value.trim())}
+              />
+              <p className="console-field-hint">需与游戏电脑上 host_presence_agent.py 的 --host-id 完全一致，例如 gaming-pc。</p>
+            </div>
+            <details className="compact-settings-details">
+              <summary>高级时序设置</summary>
+              <NumberControl
+                label="掉线判定时间 s"
+                detail="超过该时间未收到心跳，开始进入离线宽限。"
+                value={hostHeartbeatTimeoutS}
+                min={1}
+                max={120}
+                step={1}
+                onCommit={(value) => updateConfigField("power_saving", "heartbeat_timeout_s", value)}
+              />
+              <NumberControl
+                label="停止前宽限 s"
+                detail="宽限结束后暂停采集、解码、推理与预览。"
+                value={hostOfflineGraceS}
+                min={0}
+                max={600}
+                step={1}
+                onCommit={(value) => updateConfigField("power_saving", "offline_grace_s", value)}
+              />
+              <ModuleSwitch
+                label="电脑恢复后自动继续"
+                detail="只恢复省流策略暂停的任务；用户主动停止后不会自动启动。"
+                enabled={hostAutoResume}
+                onToggle={(enabled) => updateConfigField("power_saving", "auto_resume", enabled)}
+              />
+            </details>
           </div>
 
-          <div className="console-grid1">
-            <div>
+          <div className="console-grid2 capture-config-grid">
               <div className="console-card">
                 <SectionTitle title="采集设备" />
                 <label>视频设备</label>
@@ -3119,7 +3162,6 @@ export function StudioConsoleView({
                   <span>坐标系</span><b>推理 / 预览 / 控制统一 ROI</b>
                 </div>
               </div>
-            </div>
           </div>
 
           <div className="console-grid2 diagnostic-grid" data-layer="capture">
@@ -3147,15 +3189,14 @@ export function StudioConsoleView({
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="最新帧状态" />
+              <SectionTitle title="最新画面状态" />
               <div className="console-kv">
                 <span>最新 frame_id</span><b>{formatOptionalInteger(latestCaptureFrameId)}</b>
                 <span>最新 generation</span><b>{formatOptionalInteger(latestCaptureGeneration)}</b>
                 <span>最新帧时间戳</span><b>{latestCaptureTsNs !== null && latestCaptureTsNs > 0 ? `${Math.trunc(latestCaptureTsNs)} ns` : NO_SAMPLE}</b>
                 <span>时间戳来源</span><b>{latestCaptureTimestampSource || NO_SAMPLE}</b>
-                <span>最新帧龄</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
+                <span>数据距当前时间</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
                 <span>帧到达间隔</span><b>{formatOptionalNumber(captureFramePeriodMs, 2, "ms")}</b>
-                <span>{deepstreamNvinferSelected ? "DetectionBatch 覆盖次数" : "LatestFrame 覆盖次数"}</span><b>{formatOptionalInteger(captureOverwrittenFrames)}</b>
                 <span>{deepstreamNvinferSelected ? "stale 拒绝数" : "采集丢帧数"}</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
                 <span>已发布 / 已取得</span><b>{`${formatOptionalInteger(capturePublishedFrames)} / ${formatOptionalInteger(deepstreamNvinferSelected ? deepstreamMailbox.acquired_batches : latestFrameBroker.acquired_frames)}`}</b>
               </div>
@@ -3175,7 +3216,7 @@ export function StudioConsoleView({
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
             <Metric title="推理状态" value={inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"} small={selectedRuntimeBackend || NO_SAMPLE} />
-            <Metric title="nvinfer 阶段耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
+            <Metric title="推理引擎耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
             <Metric title="NMS 后检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="detections" />
           </div>
           <div className="console-card model-selection-card">
@@ -3197,10 +3238,8 @@ export function StudioConsoleView({
               runtimeInputShape={displayedInputShape}
               catalogMessage={modelCatalogMessage}
               switchMessage={modelSwitchMessage}
-              switchError={lastModelSwitchError}
-              blockedArtifacts={blockedSwitchArtifacts}
               busy={busy}
-              canSwitch={selectedCatalogArtifactMatches && selectedModelProjectId !== "" && selectedSwitchArtifact !== null}
+              canSwitch={selectedCatalogModel?.kind === "engine" && (selectedCatalogArtifactMatches || selectedSwitchArtifact === null)}
               parserPreset={parserPreset}
               onParserPresetChange={setParserPreset}
               onRefresh={() => void refreshModelCatalog()}
@@ -3342,19 +3381,23 @@ export function StudioConsoleView({
             </div>
             <div className="console-card">
               <SectionTitle title="模型输入" />
+              <p className="console-section-note">输入 Tensor 类型来自当前 Engine 契约；运行精度来自已应用的模型 manifest。两者可以不同，float32 输入不代表 Engine 内部使用 FP32 计算。</p>
               <div className="console-kv">
                 <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
                 <span>推理后端</span><b>{selectedRuntimeBackend || NO_SAMPLE}</b>
                 <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
                 <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
-                <span>输入数据类型</span><b>{inferenceInputDtype || NO_SAMPLE}</b>
+                <span>输入 Tensor 类型</span><b>{inferenceInputDtype || NO_SAMPLE}</b>
+                <span>Engine 精度声明</span><b>{inferenceRuntimePrecision ? `${inferenceRuntimePrecision}（manifest）` : NO_SAMPLE}</b>
+                <span>内部逐层精度</span><b>未实时检测</b>
                 <span>输入布局</span><b>{inferenceInputLayout || UNAVAILABLE}</b>
                 <span>输入准备耗时</span><b>{formatOptionalNumber(inferencePreprocessMs, 3, "ms")}</b>
                 <span>CUDA 上传耗时</span><b>{formatOptionalNumber(inferenceUploadMs, 3, "ms")}</b>
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="nvinfer 阶段" />
+              <SectionTitle title="推理引擎阶段" />
+              <p className="console-section-note">从数据进入 nvinfer 到输出离开：包含 DeepStream 输入预处理、TensorRT 执行和自定义 parser 解析；不包含目标跟踪与鼠标控制。</p>
               <div className="console-kv">
                 <span>TensorRT enqueue 耗时</span><b>{formatOptionalNumber(inferenceEnqueueMs, 3, "ms")}</b>
                 <span>CUDA stream 同步等待</span><b>{formatOptionalNumber(inferenceSyncWaitMs, 3, "ms")}</b>
@@ -4131,7 +4174,6 @@ export function StudioConsoleView({
               ["推理前过期", formatNumber(statistics?.stale_dropped_batches, 0)],
               ["时间戳拒绝", formatNumber(statistics?.timestamp_rejected_batches, 0)],
               ["非单调拒绝", formatNumber(statistics?.non_monotonic_dropped_batches, 0)],
-              ["Batch 覆盖", formatNumber(statistics?.mailbox_overwritten_batches, 0)],
               ["旧 batch 丢弃", formatNumber(statistics?.stale_drop_count, 0)],
               ["推理期间发布", formatNumber(inferencePublishedSinceAcquire, 0)],
               ["结束时帧差", formatNumber(inferenceGenerationLag, 0)],
@@ -4139,7 +4181,7 @@ export function StudioConsoleView({
               ["最后帧龄", formatNumber(statistics?.last_frame_age_ms, 1)],
               ["Batch age", formatNumber(inferenceResultAgeMs, 1)],
               ["ROI", formatNumber(statistics?.stage_roi_ms, 1)],
-              ["nvinfer 阶段", formatNumber(statistics?.stage_engine_ms, 1)],
+              ["推理引擎阶段", formatNumber(statistics?.stage_engine_ms, 1)],
               ["解码/NMS", formatNumber(statistics?.stage_decode_ms, 1)],
               ["映射后处理", formatNumber(statistics?.stage_postprocess_ms, 1)],
               ["控制", formatNumber(statistics?.stage_control_ms, 1)]
@@ -4639,6 +4681,64 @@ export function StudioConsoleView({
         </div>
       ) : null}
 
+      {errorCenterOpen ? (
+        <div
+          className="error-center-layer"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setErrorCenterOpen(false);
+          }}
+        >
+          <section
+            aria-labelledby="error-center-title"
+            aria-modal="true"
+            className="error-center-dialog"
+            ref={errorCenterDialogRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <header className="error-center-header">
+              <div>
+                <span>SYSTEM DIAGNOSTICS</span>
+                <h2 id="error-center-title">异常信息</h2>
+                <p>页面保持安静；网络、后端与操作错误统一收拢在这里。</p>
+              </div>
+              <button aria-label="关闭异常信息" onClick={() => setErrorCenterOpen(false)} type="button">
+                <NovaIcon name="x-circle" size={18} />
+              </button>
+            </header>
+            <div className="error-center-body">
+              {currentErrorDetails.length > 0 ? currentErrorDetails.map((item) => (
+                <article className="error-center-item" key={item.key}>
+                  <NovaIcon name="triangle-alert" size={17} />
+                  <div>
+                    <strong>{item.title}</strong>
+                    <p>{item.detail}</p>
+                    {item.time ? <time>{formatDate(new Date(item.time))}</time> : null}
+                  </div>
+                </article>
+              )) : (
+                <div className="error-center-empty">
+                  <NovaIcon name="shield-check" size={28} />
+                  <strong>当前没有异常</strong>
+                  <span>后端连接和最近操作均未报告错误。</span>
+                </div>
+              )}
+            </div>
+            <footer className="error-center-footer">
+              <button
+                className="console-button"
+                disabled={errorNotices.length === 0}
+                onClick={clearErrorNotices}
+                type="button"
+              >
+                清除历史记录
+              </button>
+              <button className="console-button primary" onClick={() => setErrorCenterOpen(false)} type="button">完成</button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
       {launchDialogOpen ? (
         <div
           aria-hidden="false"
@@ -5046,6 +5146,14 @@ function PreviewFrame({
         "--preview-aspect": `${previewWidth} / ${previewHeight}`
       } as CSSProperties}
     >
+      {supported && active ? (
+        <div className="console-preview-live-control">
+          <span>实时预览会占用 Jetson 资源</span>
+          <button disabled={togglePending} onClick={() => onToggle(false)} type="button">
+            {togglePending ? "正在关闭…" : "关闭预览"}
+          </button>
+        </div>
+      ) : null}
       <div className="console-preview-frame">
         {showImage ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
         {supported && active && !showImage ? <div className="console-preview-unavailable">{unavailableReason}</div> : null}
@@ -5056,14 +5164,6 @@ function PreviewFrame({
             <p>推理、跟踪与控制继续运行。开启画面会占用 NVJPEG 与内存带宽。</p>
             <button disabled={togglePending} onClick={() => onToggle(true)} type="button">
               {togglePending ? "正在开启…" : "开启实时预览"}
-            </button>
-          </div>
-        ) : null}
-        {supported && active ? (
-          <div className="console-preview-live-control">
-            <span>实时预览会占用 Jetson 资源</span>
-            <button disabled={togglePending} onClick={() => onToggle(false)} type="button">
-              {togglePending ? "正在关闭…" : "关闭预览"}
             </button>
           </div>
         ) : null}

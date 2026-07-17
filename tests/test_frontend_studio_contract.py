@@ -204,7 +204,7 @@ def test_model_catalog_tree_skips_unrelated_runtime_rerenders() -> None:
     assert "const selectModelFromCatalog = useCallback(" in source
     assert "currentModelProjectSelectionRef.current" in selection_handler
     assert "currentModelVersionSelectionRef.current" in selection_handler
-    assert "}, [onRefresh]);" in selection_handler
+    assert "}, []);" in selection_handler
 
 
 def test_studio_defers_non_capture_io_and_uses_launch_specific_status_timeout() -> None:
@@ -240,9 +240,13 @@ def test_studio_registers_unmanaged_catalog_engine_by_reference() -> None:
     selection_end = source.index("const switchModel", selection_start)
     selection = source[selection_start:selection_end]
 
-    assert "registerCatalogModel(model.relative_path)" in selection
+    switch = source[selection_end:source.index("const launchStages", selection_end)]
+
+    assert "registerCatalogModel(" not in selection
+    assert "registerCatalogModel(selectedCatalogModel.relative_path)" in switch
+    assert 'setSelectedModelCatalogPath(model.relative_path)' in selection
     assert "尚未登记完成，请重新扫描" not in selection
-    assert "引用原始 Engine" in selection
+    assert "引用原始 Engine" in switch
 
 
 def test_studio_auto_configures_and_switches_pending_engine() -> None:
@@ -250,7 +254,8 @@ def test_studio_auto_configures_and_switches_pending_engine() -> None:
     panel = MODEL_SELECTION.read_text(encoding="utf-8")
 
     assert 'item.status === "ready" || item.status === "pending" || item.status === "failed"' in source
-    assert 'selectedArtifact?.status === "pending" || selectedArtifact?.status === "failed"' in panel
+    assert '(selectedModel?.kind === "engine" && !selectedArtifact)' in panel
+    assert 'selectedArtifact?.status === "pending"' in panel
     assert "publishModel(" in source
     assert "parserPreset" in source
     assert "inspectModelArtifact" not in source
@@ -260,7 +265,7 @@ def test_studio_auto_configures_and_switches_pending_engine() -> None:
     assert "自动生成唯一 DeepStream manifest" in panel
     assert "yoloCandidateCount" not in source
     assert "preferLatestModelVersionRef.current" in source
-    assert "模型产物不可切换" in panel
+    assert "模型产物不可切换" not in panel
 
 
 def test_studio_uses_truthful_runtime_metrics_and_explicit_auto_save_copy() -> None:
@@ -350,14 +355,14 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
     control_page = source[control_start:params_start]
 
     assert 'data-layer="capture"' in capture_page
-    assert '<SectionTitle title="最新帧状态" />' in capture_page
+    assert '<SectionTitle title="最新画面状态" />' in capture_page
     assert '<SectionTitle title="采集性能" />' in capture_page
     assert "模型输入尺寸" not in capture_page
     assert "理论 counts" not in capture_page
 
     assert 'data-layer="inference"' in inference_page
     assert '<SectionTitle title="推理调度" />' in inference_page
-    assert '<SectionTitle title="nvinfer 阶段" />' in inference_page
+    assert '<SectionTitle title="推理引擎阶段" />' in inference_page
     assert "预处理 + TensorRT + parser" in inference_page
     assert "GPU 等待" not in inference_page
     assert "目标框中心" not in inference_page
@@ -437,10 +442,13 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     guide_rule = styles[guide_start:styles.index("}", guide_start)]
     line_start = styles.index(".aim-role-guide-line {")
     line_rule = styles[line_start:styles.index("}", line_start)]
-    assert "grid-template-columns: max-content minmax(0, 1fr);" in guide_rule
-    assert "column-gap: var(--space-2);" in guide_rule
-    assert "width: 100%;" in line_rule
-    assert "left: 0;" not in line_rule
+    assert "display: block;" in guide_rule
+    assert "right: 6%;" in guide_rule
+    assert "position: absolute;" in line_rule
+    assert "inset: 0 0 auto;" in line_rule
+    assert 'caption: "0–100%：仅头部"' in (STUDIO_CONSOLE.parent / "AimTargetRange.tsx").read_text(encoding="utf-8")
+    assert ".aim-role-guide-other .aim-role-guide-label" in styles
+    assert ".aim-role-guide-body .aim-role-guide-handle" in styles
     assert ".class-config-workspace" in settings
     assert "overflow-y: auto" in settings
     assert ".class-config-dialog-footer" in settings

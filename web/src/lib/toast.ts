@@ -22,11 +22,19 @@ const DUPLICATE_WINDOW_MS = 1500;
 
 let nextId = 1;
 let toasts: Toast[] = [];
+let errorNotices: Toast[] = [];
 const listeners = new Set<Listener>();
+const errorListeners = new Set<Listener>();
 const lastToastAtBySignature = new Map<string, number>();
 
 function emit(): void {
   for (const listener of listeners) {
+    listener();
+  }
+}
+
+function emitErrors(): void {
+  for (const listener of errorListeners) {
     listener();
   }
 }
@@ -49,6 +57,24 @@ function getSnapshot(): Toast[] {
 
 export function useToasts(): Toast[] {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function useErrorNotices(): Toast[] {
+  return useSyncExternalStore(
+    (listener) => {
+      errorListeners.add(listener);
+      return () => errorListeners.delete(listener);
+    },
+    () => errorNotices,
+    () => errorNotices
+  );
+}
+
+export function useClearErrorNotices(): () => void {
+  return useCallback(() => {
+    errorNotices = [];
+    emitErrors();
+  }, []);
 }
 
 function dismiss(id: number): void {
@@ -97,6 +123,11 @@ function pushToast(toast: Toast): void {
     return;
   }
   lastToastAtBySignature.set(signature, toast.createdAt);
+  if (toast.tone === "warn" || toast.tone === "error") {
+    errorNotices = [...errorNotices, toast].slice(-20);
+    emitErrors();
+    return;
+  }
   const next = [...toasts, toast].slice(-MAX_TOASTS);
   setToasts(next);
   if (toast.tone !== "info" || toast.title !== "请求已取消") {
