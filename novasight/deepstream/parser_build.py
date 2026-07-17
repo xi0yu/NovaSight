@@ -19,17 +19,17 @@ def ensure_deepstream_parser_library(
     source_dir: Path | None = None,
 ) -> Path:
     target = Path(library_path).expanduser().resolve(strict=False)
-    if target.is_file():
+    source = _resolve_parser_source(source_dir)
+    if target.is_file() and not _parser_source_newer(source, target):
         return target
     with _BUILD_LOCK:
-        if target.is_file():
+        if target.is_file() and not _parser_source_newer(source, target):
             return target
         cmake = shutil.which("cmake")
         if not cmake:
             raise RuntimeError(
                 "DeepStream parser auto-build requires cmake; install cmake and build-essential"
             )
-        source = _resolve_parser_source(source_dir)
         build_dir = target.parent
         build_dir.mkdir(parents=True, exist_ok=True)
         configure_command = [
@@ -46,7 +46,7 @@ def ensure_deepstream_parser_library(
         if cuda_root is not None:
             configure_command.append(f"-DNOVASIGHT_CUDA_ROOT={cuda_root}")
         logger.warning(
-            "DeepStream parser library missing; starting automatic build target=%s",
+            "DeepStream parser library missing or stale; starting automatic build target=%s",
             target,
         )
         _run_build_command(configure_command, "configure")
@@ -64,7 +64,25 @@ def ensure_deepstream_parser_library(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(built_library, target)
         logger.info("DeepStream parser automatic build completed path=%s", target)
-        return target
+    return target
+
+
+def _parser_source_newer(source: Path, target: Path) -> bool:
+    """Return whether parser sources changed after the deployed .so."""
+    try:
+        target_mtime = target.stat().st_mtime_ns
+    except OSError:
+        return True
+    try:
+        return any(
+            path.is_file() and path.stat().st_mtime_ns > target_mtime
+            for path in source.rglob("*")
+            if path.suffix in {".cpp", ".cc", ".h", ".hpp", ".cmake", ".txt"}
+        )
+    except OSError:
+        # If a source disappears during deployment, let CMake provide the
+        # authoritative diagnostic instead of silently running stale code.
+        return True
 
 
 def _resolve_parser_source(source_dir: Path | None) -> Path:
