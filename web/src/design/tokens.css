@@ -166,6 +166,10 @@
   --card-border: var(--border-default);
   --card-radius: var(--radius-4);
   --card-shadow: var(--shadow-card);
+  --theme-keyart: url("../assets/themes/elysia-sakura-keyart.webp");
+  --theme-art-position: center bottom;
+  --theme-art-opacity: 0.23;
+  --theme-glow: rgba(232, 59, 87, 0.18);
 
   /* Status component tokens */
   --status-normal-bg: var(--ns-green-50);
@@ -207,11 +211,85 @@
   --radius-10: 18px;
 }
 
-[data-theme="light"] {
+[data-theme="elysia"] {
   color-scheme: light;
+  --theme-keyart: url("../assets/themes/elysia-sakura-keyart.webp");
+  --theme-art-position: center bottom;
+  --theme-art-opacity: 0.23;
+  --theme-glow: rgba(232, 59, 87, 0.18);
 }
 
-[data-theme="dark"] {
+[data-theme="rem"] {
+  color-scheme: light;
+  --bg-app: #f3f8ff;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f5f9ff;
+  --bg-elevated: #fbfdff;
+  --bg-hover: #eaf3ff;
+  --bg-active: #dcecff;
+  --text-primary: #14243b;
+  --text-secondary: #49617e;
+  --text-tertiary: #7086a0;
+  --brand-primary: #2f70ba;
+  --brand-primary-hover: #245e9f;
+  --brand-primary-active: #194b83;
+  --brand-soft: #e8f3ff;
+  --brand-border: #b9d8f8;
+  --border-default: #cddceb;
+  --border-strong: #a9bed4;
+  --border-focus: #448bd6;
+  --selection-strong-bg: #163457;
+  --selection-strong-fg: #f7fbff;
+  --selection-strong-muted: #c8ddef;
+  --signal-target: #3b82d0;
+  --signal-compute: #4f8f74;
+  --signal-info: #2469bb;
+  --signal-attention: #b87921;
+  --signal-ink: #172b45;
+  --button-radius: 7px;
+  --card-radius: 7px;
+  --theme-keyart: url("../assets/themes/rem-azure-keyart.webp");
+  --theme-art-position: center bottom;
+  --theme-art-opacity: 0.22;
+  --theme-glow: rgba(57, 125, 204, 0.2);
+}
+
+[data-theme="lusha"] {
+  color-scheme: light;
+  --bg-app: #f5eee3;
+  --bg-surface: #fffdf8;
+  --bg-subtle: #f8f0e4;
+  --bg-elevated: #fffaf1;
+  --bg-hover: #f3e5d1;
+  --bg-active: #ead5b5;
+  --text-primary: #302117;
+  --text-secondary: #69503c;
+  --text-tertiary: #8d735b;
+  --brand-primary: #945d1b;
+  --brand-primary-hover: #794a13;
+  --brand-primary-active: #60390d;
+  --brand-soft: #f6ead3;
+  --brand-border: #d9bd82;
+  --border-default: #dfcdb3;
+  --border-strong: #bfa47c;
+  --border-focus: #bd7d2b;
+  --selection-strong-bg: #4a2d1b;
+  --selection-strong-fg: #fff9ec;
+  --selection-strong-muted: #e8cfaa;
+  --signal-target: #b57727;
+  --signal-compute: #66804a;
+  --signal-info: #517b9a;
+  --signal-attention: #a25a1d;
+  --signal-ink: #3c271a;
+  --button-radius: 12px;
+  --card-radius: 12px;
+  --theme-keyart: url("../assets/themes/lusha-gilded-keyart.webp");
+  --theme-art-position: center bottom;
+  --theme-art-opacity: 0.2;
+  --theme-glow: rgba(181, 119, 39, 0.24);
+}
+
+[data-theme="tayama"] {
   color-scheme: dark;
   --bg-app: #09070a;
   --bg-surface: #121014;
@@ -254,6 +332,12 @@
   --shadow-card:
     0 1px 2px rgba(0, 0, 0, 0.24),
     0 12px 32px rgba(0, 0, 0, 0.22);
+  --button-radius: 4px;
+  --card-radius: 4px;
+  --theme-keyart: url("../assets/themes/tayama-crimson-keyart.webp");
+  --theme-art-position: center bottom;
+  --theme-art-opacity: 0.28;
+  --theme-glow: rgba(201, 24, 74, 0.3);
 }
 
 @media (prefers-reduced-motion: reduce) {
