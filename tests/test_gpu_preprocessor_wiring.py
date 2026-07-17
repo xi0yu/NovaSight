@@ -229,6 +229,80 @@ def test_runtime_reconfigurator_applies_control_parameters_without_touching_infe
     assert runtime.config.control.target_fov_radius_px == pytest.approx(320.0)
 
 
+def test_runtime_reconfigurator_hot_updates_power_policy_without_pipeline_rebuild(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+    pipeline = SimpleNamespace(running=True)
+    app.state.runtime.pipeline = pipeline
+    app.state.runtime.running = True
+    monkeypatch.setattr(
+        app.state.inference,
+        "configure",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("power policy must not reconfigure inference")
+        ),
+    )
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.power_saving.target_host_id = "gaming-pc"
+    next_cfg.power_saving.heartbeat_timeout_s = 8.0
+
+    report = RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert report.sections[0].impact == "policy_hot_update"
+    assert app.state.runtime.pipeline is pipeline
+    assert app.state.runtime.running is True
+    assert app.state.runtime.config.power_saving.target_host_id == "gaming-pc"
+
+
+def test_runtime_reconfigurator_rolls_back_power_policy_when_persistence_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.power_saving.target_host_id = "old-host"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+    persisted: list[RuntimeConfig] = []
+    supervisor_reconfigure_calls: list[dict[str, object]] = []
+    original_reconfigure = app.state.runtime_power.reconfigure
+
+    def record_reconfigure(**kwargs):
+        supervisor_reconfigure_calls.append(kwargs)
+        return original_reconfigure(**kwargs)
+
+    def save_with_first_call_failure(config, _path) -> None:
+        persisted.append(config)
+        if len(persisted) == 1:
+            raise OSError("disk unavailable")
+
+    monkeypatch.setattr(
+        "novasight.runtime.reconfigurator.save_runtime_config",
+        save_with_first_call_failure,
+    )
+    monkeypatch.setattr(app.state.runtime_power, "reconfigure", record_reconfigure)
+    next_cfg = copy.deepcopy(cfg)
+    next_cfg.power_saving.target_host_id = "new-host"
+
+    with pytest.raises(ValueError, match="previous config restored"):
+        RuntimeReconfigurator(app).apply(next_cfg)
+
+    assert app.state.config.power_saving.target_host_id == "old-host"
+    assert app.state.runtime.config.power_saving.target_host_id == "old-host"
+    assert app.state.runtime.config_store.snapshot().power_saving.target_host_id == "old-host"
+    assert persisted[-1].power_saving.target_host_id == "old-host"
+    assert supervisor_reconfigure_calls == []
+
+
 def test_runtime_field_update_does_not_build_unused_config_schema(
     tmp_path,
     monkeypatch,

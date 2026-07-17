@@ -233,3 +233,63 @@ def test_heartbeat_rejects_unconfigured_host_identity() -> None:
 
     with pytest.raises(ValueError, match="does not match configured target_host_id"):
         supervisor.heartbeat("other-host")
+
+
+def test_power_policy_can_be_hot_reconfigured_without_losing_run_intent() -> None:
+    lifecycle = FakeLifecycle()
+    supervisor = RuntimePowerSupervisor(
+        lifecycle=lifecycle,
+        enabled=True,
+        target_host_id="gaming-pc",
+        heartbeat_timeout_s=6.0,
+        offline_grace_s=15.0,
+        auto_resume=True,
+    )
+    supervisor.request_start()
+
+    status = supervisor.reconfigure(
+        enabled=False,
+        target_host_id="gaming-pc",
+        heartbeat_timeout_s=8.0,
+        offline_grace_s=20.0,
+        auto_resume=False,
+    )
+
+    assert lifecycle.events == [("start", "POWER_SAVING_DISABLED")]
+    assert status["run_intent"] is True
+    assert status["mode"] == "disabled"
+
+
+def test_power_policy_reconfigure_restores_state_when_resume_fails() -> None:
+    class FailingLifecycle(FakeLifecycle):
+        def start(self, reason: str) -> None:
+            if reason == "POWER_SAVING_DISABLED":
+                raise RuntimeError("runtime start failed")
+            super().start(reason)
+
+    lifecycle = FailingLifecycle()
+    supervisor = RuntimePowerSupervisor(
+        lifecycle=lifecycle,
+        enabled=True,
+        target_host_id="gaming-pc",
+        heartbeat_timeout_s=6.0,
+        offline_grace_s=15.0,
+        auto_resume=True,
+    )
+    supervisor.request_start()
+
+    with pytest.raises(RuntimeError, match="runtime start failed"):
+        supervisor.reconfigure(
+            enabled=False,
+            target_host_id="gaming-pc",
+            heartbeat_timeout_s=8.0,
+            offline_grace_s=20.0,
+            auto_resume=False,
+        )
+
+    status = supervisor.status()
+    supervisor.close()
+    assert status["enabled"] is True
+    assert status["mode"] == "cold_standby"
+    assert status["suspended_by_policy"] is True
+    assert status["target_host_id"] == "gaming-pc"

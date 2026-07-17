@@ -45,6 +45,51 @@ def scan_model_artifacts(
     return results
 
 
+def scan_model_catalog_artifacts(root: Path) -> list[ModelArtifactScanResult]:
+    """List model files without hashing or deserializing large engines.
+
+    The catalog is navigation UI, not a trust boundary. Full SHA-256 and
+    TensorRT contract validation remain part of explicit register/publish.
+    """
+
+    root = Path(root)
+    if not root.exists():
+        return []
+    results: list[ModelArtifactScanResult] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_MODEL_SUFFIXES:
+            continue
+        size_bytes = path.stat().st_size
+        manifest_path = _existing_manifest_path(path)
+        status: ModelScanStatus = "need_confirm"
+        reason = "full model validation deferred until load"
+        model_fingerprint = ""
+        manifest: ModelManifest | None = None
+        if manifest_path is not None:
+            try:
+                manifest = read_manifest(manifest_path)
+            except Exception:
+                reason = "model manifest requires validation"
+            else:
+                status = "ready"
+                reason = "manifest available; full validation deferred until load"
+                model_fingerprint = manifest.model_fingerprint
+        results.append(
+            ModelArtifactScanResult(
+                path=path,
+                kind=path.suffix.lower().lstrip("."),
+                status=status,
+                reason=reason,
+                sha256="",
+                size_bytes=size_bytes,
+                manifest_path=manifest_path,
+                model_fingerprint=model_fingerprint,
+                manifest=manifest,
+            )
+        )
+    return results
+
+
 def inspect_model_artifact(
     path: Path,
     *,

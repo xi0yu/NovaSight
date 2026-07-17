@@ -58,6 +58,24 @@ def test_model_catalog_read_does_not_import_or_copy_discovered_engine(
     assert list(registry.data_dir.rglob("*.engine")) == []
 
 
+def test_model_catalog_navigation_does_not_hash_large_engine(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_root = tmp_path / "models"
+    source_root.mkdir()
+    (source_root / "large.engine").write_bytes(b"engine")
+    registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+    monkeypatch.setattr(
+        scanner,
+        "sha256_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("catalog navigation must not hash engines")),
+    )
+
+    catalog = routes_models.get_model_catalog(_request_with_registry(registry))
+
+    assert catalog["model_count"] == 1
+    assert catalog["root"]["children"][0]["scan_status"] == "need_confirm"
+
+
 def test_model_scan_is_read_only_and_does_not_import_or_copy_engine(
     tmp_path,
     monkeypatch,

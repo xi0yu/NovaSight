@@ -104,6 +104,8 @@ class RuntimeReconfigurator:
                 previous_config,
                 targeting_plan,
             )
+        if self._power_saving_only_changed(previous_config, config):
+            return self._apply_power_saving_config(config, previous_config)
         if (
             self._control_config_only_changed(previous_config, config)
             and not self._hardware_changed(previous_config, config)
@@ -304,6 +306,61 @@ class RuntimeReconfigurator:
                 )
             ],
             message="控制配置已热更新",
+        )
+
+    def _apply_power_saving_config(
+        self,
+        config: RuntimeConfig,
+        previous_config: RuntimeConfig,
+    ) -> ConfigApplyReport:
+        supervisor = getattr(self.app.state, "runtime_power", None)
+        if supervisor is None or not callable(getattr(supervisor, "reconfigure", None)):
+            raise ValueError("runtime power supervisor is unavailable")
+        config_path = getattr(self.app.state, "config_path", None)
+        policy = config.power_saving
+        policy_transition_started = False
+        try:
+            if config_path is not None:
+                save_runtime_config(config, config_path)
+            policy_transition_started = True
+            supervisor.reconfigure(
+                enabled=policy.host_presence_enabled,
+                target_host_id=policy.target_host_id,
+                heartbeat_timeout_s=policy.heartbeat_timeout_s,
+                offline_grace_s=policy.offline_grace_s,
+                auto_resume=policy.auto_resume,
+            )
+            self.app.state.config = config
+            self.app.state.runtime.config = config
+            self.app.state.runtime.config_store.replace(config)
+        except Exception as exc:
+            previous = previous_config.power_saving
+            if policy_transition_started:
+                supervisor.reconfigure(
+                    enabled=previous.host_presence_enabled,
+                    target_host_id=previous.target_host_id,
+                    heartbeat_timeout_s=previous.heartbeat_timeout_s,
+                    offline_grace_s=previous.offline_grace_s,
+                    auto_resume=previous.auto_resume,
+                )
+            self.app.state.config = previous_config
+            self.app.state.runtime.config = previous_config
+            self.app.state.runtime.config_store.replace(previous_config)
+            if config_path is not None:
+                save_runtime_config(previous_config, config_path)
+            raise ValueError(f"power-saving config rejected; previous config restored: {exc}") from exc
+        return ConfigApplyReport(
+            config=asdict(config),
+            schema=None,
+            restart_required=False,
+            applied=True,
+            sections=[ConfigSectionApplyResult(
+                section="power_saving",
+                impact="policy_hot_update",
+                status="applied",
+                message="host-presence policy updated without rebuilding runtime pipeline",
+            )],
+            message="省流策略已热更新",
         )
 
     def select_capture(
@@ -536,6 +593,19 @@ class RuntimeReconfigurator:
             or previous_config.control.shared.recoil_enabled
             != config.control.shared.recoil_enabled
         )
+
+    @staticmethod
+    def _power_saving_only_changed(
+        previous_config: RuntimeConfig | None,
+        config: RuntimeConfig,
+    ) -> bool:
+        if previous_config is None or previous_config.power_saving == config.power_saving:
+            return False
+        previous = asdict(previous_config)
+        current = asdict(config)
+        previous.pop("power_saving", None)
+        current.pop("power_saving", None)
+        return previous == current
 
     @staticmethod
     def _capture_signature(config: RuntimeConfig | None) -> tuple[object, ...]:

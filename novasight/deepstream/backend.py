@@ -446,6 +446,7 @@ class DeepStreamObjectBackend:
                 "input_shape": "x".join(str(value) for value in self.manifest.input.shape),
                 "input_dtype": self.manifest.input.dtype,
                 "input_layout": self.manifest.input.layout,
+                "runtime_precision": self.manifest.runtime.precision,
                 "output_name": self.manifest.output.name,
                 "output_shape": "x".join(str(value) for value in self.manifest.output.shape),
                 "output_dtype": self.manifest.output.dtype,

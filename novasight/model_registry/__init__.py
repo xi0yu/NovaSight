@@ -40,6 +40,7 @@ from .scanner import (
     ModelScanStatus,
     inspect_model_artifact,
     scan_model_artifacts,
+    scan_model_catalog_artifacts,
 )
 from .store import ModelRegistry
 
@@ -78,4 +79,5 @@ __all__ = [
     "ModelScanStatus",
     "inspect_model_artifact",
     "scan_model_artifacts",
+    "scan_model_catalog_artifacts",
 ]

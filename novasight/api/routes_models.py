@@ -22,6 +22,7 @@ from novasight.model_registry import (
     RegistryNotFoundError,
     RegistryValidationError,
     inspect_model_artifact,
+    scan_model_catalog_artifacts,
     scan_model_artifacts,
 )
 from novasight.inference import parse_tensor_input_shape
@@ -1167,7 +1168,12 @@ def _read_model_catalog(
     artifacts_by_relative_path: dict[str, ModelArtifactScanResult] = {}
     for root in catalog_roots:
         resolved_root = root.resolve(strict=False)
-        for artifact in scan_model_artifacts(root, force=force):
+        scanned = (
+            scan_model_artifacts(root, force=True)
+            if force
+            else scan_model_catalog_artifacts(root)
+        )
+        for artifact in scanned:
             relative_path = _catalog_relative_path(artifact.path, (resolved_root,))
             if relative_path is None:
                 continue

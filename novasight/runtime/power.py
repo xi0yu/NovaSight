@@ -129,9 +129,14 @@ class RuntimePowerSupervisor:
     def tick(self) -> dict[str, Any]:
         with self._lock:
             now_ns = int(self._now_ns())
-            if not self._enabled or not self._run_intent or self._last_heartbeat_ns <= 0:
+            if not self._enabled or not self._run_intent:
                 return self._status_locked(now_ns=now_ns)
-            if now_ns - self._last_heartbeat_ns <= self._heartbeat_timeout_ns:
+            if self._suspended_by_policy and not self._lifecycle.running:
+                return self._status_locked(now_ns=now_ns)
+            if (
+                self._last_heartbeat_ns > 0
+                and now_ns - self._last_heartbeat_ns <= self._heartbeat_timeout_ns
+            ):
                 self._offline_since_ns = 0
                 return self._status_locked(now_ns=now_ns)
             if self._offline_since_ns <= 0:
@@ -151,6 +156,85 @@ class RuntimePowerSupervisor:
     def status(self) -> dict[str, Any]:
         with self._lock:
             return self._status_locked()
+
+    def reconfigure(
+        self,
+        *,
+        enabled: bool,
+        target_host_id: str,
+        heartbeat_timeout_s: float,
+        offline_grace_s: float,
+        auto_resume: bool,
+    ) -> dict[str, Any]:
+        """Hot-update policy without rebuilding the vision pipeline."""
+
+        normalized_host_id = str(target_host_id).strip()
+        if enabled and not normalized_host_id:
+            raise ValueError("enabled host presence requires target_host_id")
+        should_resume = False
+        with self._lock:
+            previous_state = {
+                "enabled": self._enabled,
+                "target_host_id": self._target_host_id,
+                "heartbeat_timeout_ns": self._heartbeat_timeout_ns,
+                "offline_grace_ns": self._offline_grace_ns,
+                "auto_resume": self._auto_resume,
+                "suspended_by_policy": self._suspended_by_policy,
+                "last_heartbeat_ns": self._last_heartbeat_ns,
+                "offline_since_ns": self._offline_since_ns,
+                "host_id": self._host_id,
+                "reason": self._reason,
+            }
+            was_running = self._lifecycle.running
+            target_changed = normalized_host_id != self._target_host_id
+            was_suspended = self._suspended_by_policy
+            self._enabled = bool(enabled)
+            self._target_host_id = normalized_host_id
+            self._heartbeat_timeout_ns = int(max(0.1, float(heartbeat_timeout_s)) * 1e9)
+            self._offline_grace_ns = int(max(0.0, float(offline_grace_s)) * 1e9)
+            self._auto_resume = bool(auto_resume)
+            if target_changed:
+                self._host_id = ""
+                self._last_heartbeat_ns = 0
+                self._offline_since_ns = 0
+            if not self._enabled:
+                should_resume = self._run_intent and was_suspended and not self._lifecycle.running
+                self._suspended_by_policy = False
+                self._offline_since_ns = 0
+                self._reason = "power saving disabled"
+            elif self._run_intent and not self._host_online_locked(int(self._now_ns())):
+                self._reason = "waiting for target host heartbeat"
+        try:
+            if not enabled:
+                self.close()
+                if should_resume:
+                    self._lifecycle.start("POWER_SAVING_DISABLED")
+            else:
+                self.start_monitoring()
+        except Exception:
+            self.close()
+            with self._lock:
+                self._enabled = bool(previous_state["enabled"])
+                self._target_host_id = str(previous_state["target_host_id"])
+                self._heartbeat_timeout_ns = int(previous_state["heartbeat_timeout_ns"])
+                self._offline_grace_ns = int(previous_state["offline_grace_ns"])
+                self._auto_resume = bool(previous_state["auto_resume"])
+                self._suspended_by_policy = bool(previous_state["suspended_by_policy"])
+                self._last_heartbeat_ns = int(previous_state["last_heartbeat_ns"])
+                self._offline_since_ns = int(previous_state["offline_since_ns"])
+                self._host_id = str(previous_state["host_id"])
+                self._reason = str(previous_state["reason"])
+            try:
+                if was_running and not self._lifecycle.running:
+                    self._lifecycle.start("POWER_SAVING_RECONFIG_ROLLBACK")
+                elif not was_running and self._lifecycle.running:
+                    self._lifecycle.stop("POWER_SAVING_RECONFIG_ROLLBACK")
+            except Exception as rollback_exc:
+                logger.error("runtime power lifecycle rollback failed: %s", rollback_exc)
+            if bool(previous_state["enabled"]):
+                self.start_monitoring()
+            raise
+        return self.status()
 
     def start_monitoring(self, *, interval_s: float = 0.5) -> None:
         with self._lock:
