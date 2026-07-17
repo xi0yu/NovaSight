@@ -535,8 +535,9 @@ def recommend_engine_manifest(
             )
             if inferred_count <= 0:
                 raise ValueError(
-                    "EfficientNMS output does not encode the model class count; configure "
-                    "the model category names before activation"
+                    "EfficientNMS 输出本身不包含类别总数，无法安全自动生成类别映射。"
+                    "请先在项目的类别配置中填写完整类别名称和顺序（例如：敌人、倒地、队友），"
+                    "然后重新发布模型；仅有默认类别 target 时系统不会猜测类别数量。"
                 )
             efficient_classes = [f"class_{index}" for index in range(inferred_count)]
         parser_plan = resolve_efficient_nms_parser_plan(preset_id)
