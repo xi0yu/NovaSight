@@ -36,7 +36,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 enabled=config.recoil.enabled,
                 start_delay_ms=config.recoil.start_delay_ms,
                 y_counts_per_observation=config.recoil.y_counts_per_observation,
-                invert_y=config.projection.invert_y,
             )
         )
         self._humanized_motion = HumanizedMotionGenerator(config.humanized_profile)
@@ -218,22 +217,26 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         )
         recoil_demand_y = recoil.requested_counts_y
         demand_y = _clamp(
-            feedback_demand_y + recoil_demand_y,
+            recoil_demand_y if recoil.active else feedback_demand_y,
             -atan_mode.max_counts_per_update,
             atan_mode.max_counts_per_update,
         )
         if observation.trigger_active:
             dx, residual_direction_reset_x = self._quantizer_x.quantize(demand_x)
-            feedback_dy, residual_direction_reset_y = self._quantizer_y.quantize(
-                feedback_demand_y
-            )
-            dy = int(
-                _clamp(
-                    feedback_dy + recoil.emitted_counts_y,
-                    -atan_mode.max_counts_per_update,
-                    atan_mode.max_counts_per_update,
+            if recoil.active:
+                residual_direction_reset_y = self._quantizer_y.accumulator != 0.0
+                self._quantizer_y.reset()
+                dy = int(
+                    _clamp(
+                        recoil.emitted_counts_y,
+                        0.0,
+                        atan_mode.max_counts_per_update,
+                    )
                 )
-            )
+            else:
+                dy, residual_direction_reset_y = self._quantizer_y.quantize(
+                    feedback_demand_y
+                )
             block_reason = ""
         else:
             self.release_trigger()
@@ -331,6 +334,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "recoil_y_counts_emitted": recoil.emitted_counts_y,
                 "recoil_residual_y_counts": recoil.residual_counts_y,
                 "recoil_block_reason": recoil.block_reason,
+                "recoil_y_policy": "fixed_down_exclusive",
                 "combined_demand_y": demand_y,
                 "integer_command_x": dx,
                 "integer_command_y": dy,

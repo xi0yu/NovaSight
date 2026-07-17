@@ -1139,12 +1139,10 @@ export function StudioConsoleView({
   const dualPhaseHistoryResetGapMs = readNumber(dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
   const dualPhaseFarPredictionCap = readNumber(dualPhasePredictionFarConfig.absolute_cap_px, 10.0);
   const dualPhaseNearPredictionCap = readNumber(dualPhasePredictionNearConfig.absolute_cap_px, 3.0);
-  const dualPhaseInvertY = readBoolean(dualPhaseProjectionConfig.invert_y, false);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
   const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
-  const sharedInvertY = readBoolean(sharedControlConfig.invert_y, false);
   const triggerActivationDelayMs = readNumber(sharedControlConfig.trigger_activation_delay_ms, 0);
   const recoilEnabled = readBoolean(sharedControlConfig.recoil_enabled, false);
   const recoilStartDelayMs = readNumber(sharedControlConfig.recoil_start_delay_ms, 0);
@@ -3641,7 +3639,7 @@ export function StudioConsoleView({
                   </>
                 )}
                 <span>固定压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? formatRecoilBlockReason(controlPipeline.recoil_block_reason) : "关闭"}</b>
-                <span>固定压枪 / 观测</span><b>{`${recoilYCountsPerObservation.toFixed(1)} counts · ${(dualPhaseActive ? dualPhaseInvertY : sharedInvertY) ? "-Y" : "+Y"}`}</b>
+                <span>固定压枪 / 观测</span><b>{`${recoilYCountsPerObservation.toFixed(1)} counts · +Y 向下`}</b>
                 <span>预估固定压枪强度</span><b>{`${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s @ ${controlObservationFps.toFixed(1)} FPS`}</b>
                 <span>视觉 / 固定 / 合成 Y</span><b>{`${formatOptionalNumber(controlPipeline.feedback_demand_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_y_counts_float, 2)} / ${formatOptionalNumber(controlPipeline.combined_demand_y, 2)} counts`}</b>
                 <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, 1, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, 1, "ms")}`}</b>
@@ -3814,14 +3812,6 @@ export function StudioConsoleView({
                     <i className="other" style={{ top: `${aimRoleRatios.other * 100}%` }} />
                   </div>
                 </div>
-                <ModuleSwitch
-                  label="反转 Y 轴"
-                  detail="只改变当前算法输出到设备的 Y 方向。"
-                  enabled={dualPhaseActive ? dualPhaseInvertY : sharedInvertY}
-                  onToggle={(enabled) => dualPhaseActive
-                    ? updateDualPhasePath(["projection", "invert_y"], enabled)
-                    : updateControlGroupField("shared", "invert_y", enabled)}
-                />
                 {dualPhaseActive ? (
                   <div className="console-kv compact-kv">
                     <span>输出交付</span><b>Latest Replace</b>
@@ -3954,11 +3944,11 @@ export function StudioConsoleView({
 
               <div className="console-card">
                   <SectionTitle title="固定 Y 轴压枪 · 所有控制算法" />
-                  <ModuleSwitch label="启用固定 Y 压枪" detail="真实左键达到启动延迟后，每个新鲜目标观测固定追加一次反向 Y counts；不使用渐入、时间速率、积分或 Y 预测。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+                  <ModuleSwitch label="启用固定 Y 压枪" detail="真实左键达到启动延迟后，Y 轴只输出固定的 +Y 向下 counts；开火期间不叠加目标视觉 Y，也不受反转设置影响。X 轴仍正常跟踪。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
                   {recoilEnabled ? (
                     <>
                       <NumberControl label="开始压枪前等待 ms" detail="从真实左键按下开始计时；未达到该时间时固定压枪保持为零。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
-                      <NumberControl label="每个新观测固定 Y counts" detail={`每个新鲜目标观测追加相同数值；当前约 ${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s（${controlObservationFps.toFixed(1)} 控制观测 FPS），小数由独立余量累计。`} value={recoilYCountsPerObservation} min={0} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_counts_per_observation", value)} />
+                      <NumberControl label="每个新观测向下 counts" detail={`每个新鲜目标观测固定输出 +Y 向下量；当前约 ${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s（${controlObservationFps.toFixed(1)} 控制观测 FPS），小数由独立余量累计。`} value={recoilYCountsPerObservation} min={0} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_counts_per_observation", value)} />
                     </>
                   ) : null}
                 </div>

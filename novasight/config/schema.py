@@ -706,12 +706,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "restart_required": False,
                     },
                     {
-                        "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.invert_y",
-                        "label": "稳健预测控制：反转 Y",
-                        "type": "bool",
-                        "restart_required": False,
-                    },
-                    {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
                         "label": "稳健预测控制：NEAR 阈值 px",
                         "type": "float",
@@ -931,12 +925,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "min": 0.1,
                         "step": 0.1,
                         "precision": 1,
-                        "restart_required": False,
-                    },
-                    {
-                        "path": "control.shared.invert_y",
-                        "label": "共享：反转 Y 轴",
-                        "type": "bool",
                         "restart_required": False,
                     },
                     {

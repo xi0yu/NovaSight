@@ -247,7 +247,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
         20.0,
         0.1,
         "counts",
-        "启动延迟后，每个新鲜目标观测固定加入的反向 Y counts；小数由独立余量累计。",
+        "启动延迟后，每个新鲜目标观测固定输出 +Y 向下 counts；开火期间不叠加视觉 Y，小数由独立余量累计。",
     ),
     "control.scheduler_step_counts_x": _spec(
         "control.scheduler_step_counts_x",

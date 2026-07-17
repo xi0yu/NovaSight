@@ -367,7 +367,6 @@ def test_fixed_recoil_controller_delays_quantizes_and_resets_without_dt() -> Non
             enabled=True,
             start_delay_ms=50.0,
             y_counts_per_observation=0.5,
-            invert_y=True,
         )
     )
 
@@ -390,11 +389,41 @@ def test_fixed_recoil_controller_delays_quantizes_and_resets_without_dt() -> Non
 
     assert delayed.block_reason == "RECOIL_START_DELAY"
     assert first.emitted_counts_y == 0
-    assert first.residual_counts_y == pytest.approx(-0.5)
-    assert second.emitted_counts_y == -1
+    assert first.residual_counts_y == pytest.approx(0.5)
+    assert second.emitted_counts_y == 1
     assert second.residual_counts_y == 0.0
     assert released.block_reason == "LEFT_TRIGGER_INACTIVE"
     assert released.residual_counts_y == 0.0
+
+
+def test_fixed_recoil_owns_y_output_while_active_even_when_target_is_above() -> None:
+    controller = MouseController(
+        _config(
+            calibrated={"kp_x": 0.0, "kp_y": 1.0},
+            shared={
+                "recoil_enabled": True,
+                "recoil_start_delay_ms": 0.0,
+                "recoil_y_counts_per_observation": 2.0,
+                "invert_y": False,
+                "max_count_slew_y": 1000.0,
+            },
+        )
+    )
+
+    command = controller.calculate(
+        _observation(
+            frame_id=1,
+            observed_y=50.0,
+            predicted_y=50.0,
+            left_trigger_active=True,
+            left_trigger_hold_ms=20.0,
+        )
+    )
+
+    assert command.debug["feedback_demand_y"] < 0.0
+    assert command.debug["recoil_y_counts_float"] == pytest.approx(2.0)
+    assert command.debug["recoil_y_policy"] == "fixed_down_exclusive"
+    assert command.dy == 2
 
 
 def test_mouse_controller_resets_fixed_recoil_on_predicted_only_track() -> None:

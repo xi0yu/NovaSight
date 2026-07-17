@@ -547,8 +547,23 @@ def test_v2_recoil_uses_fixed_counts_per_observation_after_delay() -> None:
             measurement_dt_ms=10.0,
         )
     )
-    assert inverted.dy == -1
-    assert inverted.telemetry["recoil_y_counts_float"] == pytest.approx(-1.25)
+    assert inverted.dy == 1
+    assert inverted.telemetry["recoil_y_counts_float"] == pytest.approx(1.25)
+
+    above_algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(config)
+    target_above = above_algorithm.calculate(
+        _observation(
+            generation=1,
+            error_x=0.0,
+            error_y=-100.0,
+            left_trigger_active=True,
+            left_trigger_hold_ms=60.0,
+            measurement_dt_ms=10.0,
+        )
+    )
+    assert target_above.telemetry["feedback_demand_y"] < 0.0
+    assert target_above.telemetry["recoil_y_policy"] == "fixed_down_exclusive"
+    assert target_above.dy == 1
 
 
 def test_v2_fixed_recoil_ignores_measurement_dt_and_resets_fraction_on_release() -> None:

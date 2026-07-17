@@ -9,7 +9,6 @@ class FixedRecoilConfig:
     enabled: bool = False
     start_delay_ms: float = 0.0
     y_counts_per_observation: float = 0.0
-    invert_y: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +21,7 @@ class FixedRecoilDecision:
 
 
 class FixedRecoilController:
-    """Emit one fixed reverse-Y contribution for each accepted observation."""
+    """Emit one fixed positive-Y (physical downward) command per observation."""
 
     def __init__(self, config: FixedRecoilConfig) -> None:
         _validate_config(config)
@@ -52,8 +51,7 @@ class FixedRecoilController:
                 block_reason=block_reason,
             )
 
-        direction = -1.0 if self.config.invert_y else 1.0
-        requested = direction * self.config.y_counts_per_observation
+        requested = self.config.y_counts_per_observation
         accumulator = self._residual_counts_y + requested
         emitted = trunc(accumulator)
         self._residual_counts_y = accumulator - emitted

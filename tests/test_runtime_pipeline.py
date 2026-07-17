@@ -1813,7 +1813,7 @@ def test_latest_replace_discards_popped_command_when_newer_observation_arrives()
     assert [(output.source_frame_id, output.dx) for output in kmnet.outputs] == [(2, 20)]
 
 
-def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
+def test_dual_phase_recoil_stays_fixed_down_for_target_above_in_always_mode() -> None:
     config = RuntimeConfig()
     config.control.active_algorithm = "dual_phase_atan_robust_predictive_v2"
     config.control.trigger_mode = "always"
@@ -1840,7 +1840,7 @@ def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
                 capture_ts_ns=capture_ts_ns,
                 inference_start_ts_ns=capture_ts_ns + 1_000,
                 inference_end_ts_ns=capture_ts_ns + 2_000,
-                detections=[Detection(cls=0, score=0.95, x=340, y=298, w=40, h=100)],
+                detections=[Detection(cls=0, score=0.95, x=340, y=160, w=40, h=100)],
                 classes=["target"],
                 coordinate_space="roi",
             ),
@@ -1860,6 +1860,8 @@ def test_dual_phase_recoil_reads_real_left_trigger_in_always_mode() -> None:
     assert (kmnet.outputs[0].dx, kmnet.outputs[0].dy) == (0, 1)
     assert service.last_control is not None
     assert service.last_control["pipeline"]["recoil_active"] is True
+    assert service.last_control["pipeline"]["feedback_demand_y"] < 0.0
+    assert service.last_control["pipeline"]["recoil_y_policy"] == "fixed_down_exclusive"
     assert service.last_control["pipeline"]["recoil_y_counts_float"] == pytest.approx(1.0)
 
 

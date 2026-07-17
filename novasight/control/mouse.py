@@ -344,7 +344,6 @@ class MouseController:
                 y_counts_per_observation=(
                     config.shared.recoil_y_counts_per_observation
                 ),
-                invert_y=config.shared.invert_y,
             )
         )
         self.humanized_motion = HumanizedMotionGenerator(config.humanized_profile)
@@ -495,10 +494,10 @@ class MouseController:
             ),
             left_trigger_hold_ms=observation.left_trigger_hold_ms,
         )
-        mixed_counts = Vec2(
-            directed_counts.x,
-            directed_counts.y + recoil.emitted_counts_y,
+        effective_demand_y = (
+            float(recoil.emitted_counts_y) if recoil.active else directed_counts.y
         )
+        mixed_counts = Vec2(directed_counts.x, effective_demand_y)
         previous_counts = (
             self.state.previous_counts if self.state.output_history_valid else Vec2(0.0, 0.0)
         )
@@ -508,10 +507,14 @@ class MouseController:
                 previous_counts.x,
                 shared.max_count_slew_x,
             ),
-            _slew_limit(
-                mixed_counts.y,
-                previous_counts.y,
-                shared.max_count_slew_y,
+            (
+                mixed_counts.y
+                if recoil.active
+                else _slew_limit(
+                    mixed_counts.y,
+                    previous_counts.y,
+                    shared.max_count_slew_y,
+                )
             ),
         )
         feasible_counts = Vec2(
@@ -523,9 +526,13 @@ class MouseController:
             feasible_counts.x,
             self.state.residual_x_counts,
         )
-        residual_input_y, residual_direction_reset_y = _residual_for_direction(
-            feasible_counts.y,
-            self.state.residual_y_counts,
+        residual_input_y, residual_direction_reset_y = (
+            (0.0, self.state.residual_y_counts != 0.0)
+            if recoil.active
+            else _residual_for_direction(
+                feasible_counts.y,
+                self.state.residual_y_counts,
+            )
         )
         counts_x, residual_x = _quantize_counts(feasible_counts.x, residual_input_x)
         counts_y, residual_y = _quantize_counts(feasible_counts.y, residual_input_y)
@@ -577,7 +584,10 @@ class MouseController:
             "recoil_y_counts_emitted": recoil.emitted_counts_y,
             "recoil_residual_y_counts": recoil.residual_counts_y,
             "recoil_block_reason": recoil.block_reason,
-            "combined_demand_y": directed_counts.y + recoil.requested_counts_y,
+            "recoil_y_policy": "fixed_down_exclusive",
+            "combined_demand_y": (
+                recoil.requested_counts_y if recoil.active else directed_counts.y
+            ),
             "mixed_counts_x_float": mixed_counts.x,
             "mixed_counts_y_float": mixed_counts.y,
             "slew_limited_counts_x_float": slew_limited.x,

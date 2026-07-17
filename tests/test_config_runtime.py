@@ -1047,7 +1047,6 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.shared.deadzone_y_px",
         "control.shared.max_count_slew_x",
         "control.shared.max_count_slew_y",
-        "control.shared.invert_y",
         "control.scheduler_step_counts_x",
         "control.scheduler_step_counts_y",
         "control.scheduler_interval_ms",
