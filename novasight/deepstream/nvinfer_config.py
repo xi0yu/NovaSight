@@ -152,6 +152,13 @@ def _validate_manifest(manifest: ModelManifest) -> ParserPlan:
         raise ValueError("model output class_count must be positive")
     dims = [int(value) for value in manifest.output.shape]
     dims = dims[1:] if len(dims) == 3 and dims[0] == 1 else dims
+    raw_shape = [int(value) for value in manifest.output.shape]
+    if len(raw_shape) == 3 and raw_shape[0] == 1 and raw_shape[2] == 6 and raw_shape[1] > 512:
+        raise ValueError(
+            "TensorRT output is a decoded [1,N,6] contract (x1,y1,x2,y2,score,class); "
+            "the raw YOLO parser cannot consume it. Select an end-to-end decoder or "
+            "convert the engine to raw YOLO output before starting DeepStream."
+        )
     channels = {4 + class_count, 5 + class_count}
     if len(dims) != 2 or not any(value in channels for value in dims):
         raise ValueError(

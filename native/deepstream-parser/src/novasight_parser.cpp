@@ -262,6 +262,47 @@ struct RockchipHead {
     std::size_t width = 0U;
 };
 
+// In-graph Decode/NMS engines commonly expose [1,N,6] as
+// x1,y1,x2,y2,confidence,class_id. Consume that contract explicitly.
+bool parse_decoded_boxes6(
+    const NvDsInferLayerInfo& layer,
+    const NvDsInferNetworkInfo& network,
+    const NvDsInferParseDetectionParams& params,
+    std::vector<NvDsInferObjectDetectionInfo>& objects,
+    std::size_t& input_candidates) {
+    const std::size_t count = layer_element_count(layer);
+    if (count == 0U || count % 6U != 0U || network.width == 0U || network.height == 0U) return false;
+    input_candidates = count / 6U;
+    if (input_candidates > 200000U) return false;
+    objects.reserve(objects.size() + std::min(input_candidates, kInitialObjectCapacity));
+    for (std::size_t i = 0; i < input_candidates; ++i) {
+        float left = layer_value(layer, i * 6U), top = layer_value(layer, i * 6U + 1U);
+        float right = layer_value(layer, i * 6U + 2U), bottom = layer_value(layer, i * 6U + 3U);
+        const float score = layer_value(layer, i * 6U + 4U);
+        const float raw_class = layer_value(layer, i * 6U + 5U);
+        if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right)
+            || !std::isfinite(bottom) || !std::isfinite(score) || !std::isfinite(raw_class)
+            || raw_class < 0.0F) continue;
+        const std::size_t class_id = static_cast<std::size_t>(raw_class);
+        if (class_id >= params.numClassesConfigured || score < threshold_for_class(params, class_id)) continue;
+        const float largest = std::max({std::fabs(left), std::fabs(top), std::fabs(right), std::fabs(bottom)});
+        if (largest <= 2.0F) {
+            left *= static_cast<float>(network.width); right *= static_cast<float>(network.width);
+            top *= static_cast<float>(network.height); bottom *= static_cast<float>(network.height);
+        }
+        left = std::clamp(left, 0.0F, static_cast<float>(network.width));
+        right = std::clamp(right, 0.0F, static_cast<float>(network.width));
+        top = std::clamp(top, 0.0F, static_cast<float>(network.height));
+        bottom = std::clamp(bottom, 0.0F, static_cast<float>(network.height));
+        if (right <= left || bottom <= top) continue;
+        NvDsInferObjectDetectionInfo object{};
+        object.classId = static_cast<unsigned int>(class_id); object.detectionConfidence = score;
+        object.left = left; object.top = top; object.width = right - left; object.height = bottom - top;
+        objects.push_back(object);
+    }
+    return true;
+}
+
 bool rockchip_head_shape(const NvDsInferLayerInfo& layer, RockchipHead& head) {
     if (layer.buffer == nullptr || (layer.dataType != FLOAT && layer.dataType != HALF)) {
         return false;
@@ -448,6 +489,26 @@ extern "C" bool NvDsInferParseNovaSight(
         return fail(2U);
     }
     const std::size_t class_count = params.numClassesConfigured;
+    // Prefer the explicit decoded-box contract when the tensor has six
+    // columns. Treating it as raw YOLO cx/cy/w/h is incorrect and can feed
+    // invalid geometry into downstream DeepStream code.
+    {
+        std::vector<std::size_t> dims;
+        for (unsigned int i = 0; i < layer.inferDims.numDims; ++i) {
+            if (layer.inferDims.d[i] > 0) dims.push_back(static_cast<std::size_t>(layer.inferDims.d[i]));
+        }
+        if (!dims.empty() && dims.back() == 6U) {
+            std::size_t input_candidates = 0U;
+            if (!parse_decoded_boxes6(layer, network, params, objects, input_candidates)) return fail(6U);
+            g_last_error_code.store(0U, std::memory_order_relaxed);
+            g_last_input_candidates.store(input_candidates, std::memory_order_relaxed);
+            g_last_output_candidates.store(objects.size(), std::memory_order_relaxed);
+            g_last_decode_ns.store(static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()),
+                std::memory_order_relaxed);
+            return true;
+        }
+    }
     std::size_t channels = 0;
     std::size_t candidates = 0;
     bool channels_first = false;
