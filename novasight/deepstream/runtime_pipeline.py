@@ -13,7 +13,11 @@ from novasight.roi import center_roi_region
 from .backend import DeepStreamObjectBackend
 from .nvinfer_config import write_nvinfer_config
 from .pipeline_builder import DeepStreamPipelineConfig
-from .model_manifest import ensure_engine_manifest, remove_matching_legacy_manifest
+from .model_manifest import (
+    PreparedEngineManifest,
+    ensure_engine_manifest,
+    remove_matching_legacy_manifest,
+)
 
 
 logger = logging.getLogger("novasight.deepstream.runtime")
@@ -218,6 +222,7 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
     profile_store = ModelProfileStore()
     profile_path = profile_store.existing_path_for_engine(engine_path)
     if profile_store.contains_model_profile(profile_path):
+        runtime.prepared_engine_manifest = None
         profile = profile_store.load(profile_path)
         runtime_config = InferenceConfigBuilder().build(
             profile,
@@ -226,16 +231,30 @@ def create_deepstream_runtime_pipeline(*, runtime: Any) -> DeepStreamRuntimePipe
         manifest = runtime_config.manifest
         generated_manifest = False
     else:
-        manifest, generated_manifest = ensure_engine_manifest(
-            runtime.inference,
-            engine_path=engine_path,
-            model_id=project.name,
-            display_name=project.name,
-            classes=list(version.classes),
-            registered_input_shape=version.input_shape,
-            confidence_threshold=config.inference.confidence_threshold,
-            nms_iou_threshold=config.inference.nms_threshold,
+        handoff = getattr(runtime, "prepared_engine_manifest", None)
+        runtime.prepared_engine_manifest = None
+        manifest = (
+            handoff.take_if_current(engine_path)
+            if isinstance(handoff, PreparedEngineManifest)
+            else None
         )
+        if manifest is not None:
+            generated_manifest = False
+            logger.info(
+                "reused manifest validated by the active model-switch operation path=%s",
+                engine_path,
+            )
+        else:
+            manifest, generated_manifest = ensure_engine_manifest(
+                runtime.inference,
+                engine_path=engine_path,
+                model_id=project.name,
+                display_name=project.name,
+                classes=list(version.classes),
+                registered_input_shape=version.input_shape,
+                confidence_threshold=config.inference.confidence_threshold,
+                nms_iou_threshold=config.inference.nms_threshold,
+            )
     remove_matching_legacy_manifest(engine_path)
     resolved_classes = list(manifest.output.class_names)
     if list(version.classes) != resolved_classes:

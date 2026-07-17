@@ -45,6 +45,7 @@ from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
 from novasight.executors import BoxInputState, ExecutorRegistry
 from novasight.inference import InferenceResult
 from novasight.inference.jetson import create_gpu_resource_preprocessor
+from novasight.latency import pipeline_latency_breakdown_ms
 from novasight.model_registry import ModelRegistry
 from novasight.contracts import BBox, ControlIntent, Detection, DetectionBatch, FrameContext, Track
 from novasight.roi import center_roi_frame, center_roi_region
@@ -247,7 +248,10 @@ class RuntimeService:
             )
             statistics["stage_decode_ms"] = parser_decode_ms
             statistics["stage_batch_build_ms"] = build_ms
-            statistics["stage_postprocess_ms"] = build_ms
+            # Parser decode is diagnostic detail inside the nvinfer sink-to-src
+            # interval. Keep it separate from DetectionBatch construction so
+            # callers cannot accidentally count the same work twice.
+            statistics["stage_postprocess_ms"] = parser_decode_ms
         statistics["stale_drop_count"] = int(self.stale_drop_count)
         latest_frame_age_ms = self._latest_frame_age_ms()
         if latest_frame_age_ms is not None:
@@ -272,6 +276,8 @@ class RuntimeService:
                 )
         for key, value in pipeline_timings.items():
             statistics[f"stage_{key}"] = value
+        if "publish_age_ms" in pipeline_timings:
+            statistics["e2e_latency"] = float(pipeline_timings["publish_age_ms"])
         statistics["postprocess_ms"] = float(pipeline_timings.get("postprocess_ms", 0.0))
         if capture_payload:
             capture_payload["statistics"] = statistics
@@ -1046,38 +1052,43 @@ class RuntimeService:
         control_start_ns: int | None,
         done_ns: int,
     ) -> None:
-        handoff_start_ns = int(control_start_ns if control_start_ns is not None else done_ns)
         publish_ts_ns = int(
             detection_batch.publish_ts_ns or detection_batch.inference_end_ts_ns
         )
-        control_wait_ms = max(0.0, (handoff_start_ns - publish_ts_ns) / 1e6)
+        latency = pipeline_latency_breakdown_ms(
+            capture_ts_ns=int(detection_batch.capture_ts_ns),
+            inference_start_ts_ns=int(detection_batch.inference_start_ts_ns),
+            inference_end_ts_ns=int(detection_batch.inference_end_ts_ns),
+            publish_ts_ns=publish_ts_ns,
+            control_start_ts_ns=(
+                int(control_start_ns) if control_start_ns is not None else int(done_ns)
+            ),
+            control_end_ts_ns=int(done_ns),
+        )
         metadata = dict(getattr(detection_batch, "metadata", {}) or {})
         parser = metadata.get("parser")
         parser_payload = parser if isinstance(parser, dict) else {}
         decode_ms = float(parser_payload.get("decode_ms") or 0.0)
-        nvinfer_stage_ms = float(
-            metadata.get("nvinfer_stage_ms")
-            or metadata.get("nvinfer_total_ms")
-            or detection_batch.inference_latency_ms
-        )
+        del total_start_ns
         self.last_pipeline_timings = {
             "roi_ms": 0.0,
-            "engine_ms": nvinfer_stage_ms,
+            "ingress_ms": latency["ingress_ms"],
+            "engine_ms": latency["inference_ms"],
             # DeepStream exposes nvinfer sink-to-src elapsed time. It does not
             # expose isolated TensorRT execution time on this path.
             "engine_execute_ms": None,
             "decode_ms": decode_ms,
             "nms_ms": None,
-            "detection_batch_build_ms": float(metadata.get("detection_batch_build_ms") or 0.0),
-            "handoff_ms": control_wait_ms,
-            "control_wait_ms": control_wait_ms,
+            "detection_batch_build_ms": latency["batch_build_ms"],
+            "batch_build_ms": latency["batch_build_ms"],
+            "publish_age_ms": latency["publish_age_ms"],
+            "handoff_ms": latency["control_wait_ms"],
+            "control_wait_ms": latency["control_wait_ms"],
             "postprocess_ms": decode_ms,
-            "control_ms": (
-                max(0.0, (int(done_ns) - int(control_start_ns)) / 1e6)
-                if control_start_ns is not None
-                else 0.0
-            ),
-            "total_ms": max(0.0, (int(done_ns) - int(total_start_ns)) / 1e6),
+            "control_ms": latency["control_ms"],
+            "accounted_ms": latency["accounted_ms"],
+            "total_ms": latency["total_ms"],
+            "unattributed_ms": latency["unattributed_ms"],
         }
 
     def _detection_batch_status_payload(

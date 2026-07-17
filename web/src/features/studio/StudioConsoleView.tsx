@@ -2764,7 +2764,7 @@ export function StudioConsoleView({
       let projectId = selectedCatalogModel.project_id;
       let artifactId = selectedCatalogModel.artifact_id;
       if (typeof projectId !== "number" || typeof artifactId !== "number") {
-        setModelSwitchProgressDetail("模型尚未登记，正在建立原文件引用并计算登记指纹。");
+        setModelSwitchProgressDetail("模型尚未登记，正在建立轻量文件引用；此步骤不会读取 Engine 内容。");
         const registered = await registerCatalogModel(selectedCatalogModel.relative_path);
         projectId = registered.project.id;
         artifactId = registered.artifact.id;
@@ -2892,6 +2892,8 @@ export function StudioConsoleView({
   const nvinferTimingScopeLabel = nvinferTimingScope === "sink_to_src_including_parser"
     ? "sink → src（包含 parser）"
     : nvinferTimingScope || "sink → src（包含 parser）";
+  const latencyUnattributedMs = readNullableNumber(statistics?.stage_unattributed_ms);
+  const latencyTimelineClosed = latencyUnattributedMs !== null && Math.abs(latencyUnattributedMs) <= 0.01;
 
   return (
     <section className="console-app">
@@ -4136,7 +4138,7 @@ export function StudioConsoleView({
         <section className={activePage === "latency" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="进入 nvinfer" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_ingress_ms, 1) : NO_SAMPLE} small="ms" />
-            <Metric title="帧间隔" value={formatNumber(capture?.frame_period_ms, 2)} small="ms" />
+            <Metric title="完整链路" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_total_ms, 2) : NO_SAMPLE} small="采集→控制 ms" />
             <Metric title="Batch 发布龄" value={hasInferenceLatencySample ? formatNumber(statistics?.e2e_latency, 1) : NO_SAMPLE} small="ms" />
             <Metric title="控制计算" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_control_ms, 2) : NO_SAMPLE} small="ms" />
           </div>
@@ -4162,7 +4164,9 @@ export function StudioConsoleView({
                 ["ROI 独立耗时", "当前未单独打点"],
                 ["nvinfer 范围", nvinferTimingScopeLabel],
                 ["解码 / NMS", "parser 已包含在 nvinfer，不重复累加"],
-                ["端到端范围", "采集时间戳 → DetectionBatch 发布"],
+                ["Batch 发布龄范围", "采集时间戳 → DetectionBatch 发布"],
+                ["完整链路范围", "采集时间戳 → 控制计算完成"],
+                ["阶段完整性", latencyTimelineClosed ? "已闭合 · 未归因 0.00ms" : `未归因 ${formatOptionalNumber(latencyUnattributedMs, 2, "ms")}`],
                 ["时间戳来源", shortTimestampSource(readString(statistics?.timestamp_source, "暂无样本"))]
               ]}
               notice={<p className="latency-boundary-note">DeepStream 当前没有在解码器、ROI 和内部队列之间分别打点，因此不能诚实拆成三个独立数字。</p>}

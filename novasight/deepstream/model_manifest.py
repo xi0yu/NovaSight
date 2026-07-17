@@ -47,6 +47,41 @@ class EngineManifestRecommendation:
     parser_plan: ParserPlan
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedEngineManifest:
+    """One-shot proof that an Engine manifest was validated in this operation."""
+
+    engine_path: Path
+    engine_signature: tuple[int, int, int, int]
+    manifest: ModelManifest
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        engine_path: Path,
+        manifest: ModelManifest,
+    ) -> "PreparedEngineManifest":
+        path = Path(engine_path).resolve(strict=False)
+        return cls(
+            engine_path=path,
+            engine_signature=_engine_file_signature(path),
+            manifest=manifest,
+        )
+
+    def take_if_current(self, engine_path: Path) -> ModelManifest | None:
+        path = Path(engine_path).resolve(strict=False)
+        if path != self.engine_path:
+            return None
+        try:
+            current_signature = _engine_file_signature(path)
+        except OSError:
+            return None
+        if current_signature != self.engine_signature:
+            return None
+        return self.manifest
+
+
 def _write_manifest_preserving_extensions(
     manifest: ModelManifest,
     path: Path,
@@ -343,6 +378,11 @@ def _raw_yolo_dimensions(output_shape: list[int]) -> tuple[list[int], int, int]:
     return shape, channels, candidates
 
 
+def _engine_file_signature(path: Path) -> tuple[int, int, int, int]:
+    stat = Path(path).stat()
+    return (int(stat.st_dev), int(stat.st_ino), int(stat.st_size), int(stat.st_mtime_ns))
+
+
 def ensure_engine_manifest(
     inference: Any,
     *,
@@ -518,6 +558,7 @@ def ensure_engine_manifest(
             )
 
         template = existing_manifest
+        engine_signature_before = _engine_file_signature(path)
         manifest = build_engine_manifest(
             model_id=model_id,
             display_name=display_name,
@@ -568,7 +609,11 @@ def ensure_engine_manifest(
             parser_preset=parser_plan.requested_preset,
             validated=True,
         )
-        validate_manifest_engine_artifact(manifest, path)
+        engine_signature_after = _engine_file_signature(path)
+        if engine_signature_after != engine_signature_before:
+            raise ValueError("TensorRT engine changed while its manifest was being generated")
+        if int(manifest.artifact.size_bytes) != engine_signature_after[2]:
+            raise ValueError("generated manifest does not match TensorRT engine size")
         temporary_path = manifest_path.with_suffix(".json.tmp")
         try:
             _write_manifest_preserving_extensions(

@@ -1055,8 +1055,42 @@ def test_runtime_service_maps_deepstream_stage_and_drop_statistics() -> None:
     assert statistics["stage_engine_ms"] == 5.5
     assert statistics["stage_engine_scope"] == "sink_to_src_including_parser"
     assert statistics["stage_decode_ms"] == 0.3
-    assert statistics["stage_postprocess_ms"] == 0.4
+    assert statistics["stage_postprocess_ms"] == 0.3
     assert statistics["e2e_latency"] == 9.0
+
+
+def test_detection_batch_latency_stages_form_one_non_overlapping_timeline() -> None:
+    service = object.__new__(RuntimeService)
+    capture_ts_ns = 1_000_000_000
+    batch = DetectionBatch(
+        frame_id=1,
+        capture_ts_ns=capture_ts_ns,
+        inference_start_ts_ns=capture_ts_ns + 10_000_000,
+        inference_end_ts_ns=capture_ts_ns + 15_000_000,
+        publish_ts_ns=capture_ts_ns + 16_000_000,
+        detections=[],
+        classes=["target"],
+        coordinate_space="roi",
+        metadata={"source": "deepstream_nvinfer"},
+    )
+
+    service._set_detection_batch_pipeline_timings(
+        batch,
+        total_start_ns=capture_ts_ns + 16_500_000,
+        control_start_ns=capture_ts_ns + 18_000_000,
+        done_ns=capture_ts_ns + 19_000_000,
+    )
+
+    timings = service.last_pipeline_timings
+    assert timings["ingress_ms"] == pytest.approx(10.0)
+    assert timings["engine_ms"] == pytest.approx(5.0)
+    assert timings["batch_build_ms"] == pytest.approx(1.0)
+    assert timings["publish_age_ms"] == pytest.approx(16.0)
+    assert timings["control_wait_ms"] == pytest.approx(2.0)
+    assert timings["control_ms"] == pytest.approx(1.0)
+    assert timings["accounted_ms"] == pytest.approx(19.0)
+    assert timings["total_ms"] == pytest.approx(19.0)
+    assert timings["unattributed_ms"] == pytest.approx(0.0)
 
 
 def test_runtime_service_accepts_batch_when_newer_generation_arrives_after_acquire() -> None:

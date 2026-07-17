@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 import novasight.deepstream.backend as backend_module
+import novasight.deepstream.runtime_pipeline as runtime_pipeline_module
 from novasight.contracts import DetectionBatch
 from novasight.config import RuntimeConfig
 from novasight.deepstream.backend import DeepStreamDependencyStatus, DeepStreamObjectBackend
 from novasight.deepstream.model_manifest import (
+    PreparedEngineManifest,
     ensure_engine_manifest,
     remove_matching_legacy_manifest,
     resolve_yolo_class_contract,
@@ -600,7 +602,10 @@ def test_deepstream_runtime_rejects_unsupported_ui_modes(
         create_deepstream_runtime_pipeline(runtime=runtime)
 
 
-def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_path: Path) -> None:
+def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "models")
     project = registry.create_project("demo", "")
     version = registry.create_version(
@@ -649,6 +654,17 @@ def test_deepstream_runtime_generates_missing_manifest_from_engine_probe(tmp_pat
 
     manifest_path = engine_path.with_name(f"{engine_path.name}.manifest.json")
     manifest = read_manifest(manifest_path)
+    runtime.prepared_engine_manifest = PreparedEngineManifest.create(
+        engine_path=engine_path,
+        manifest=manifest,
+    )
+    monkeypatch.setattr(
+        runtime_pipeline_module,
+        "ensure_engine_manifest",
+        lambda *_args, **_kwargs: pytest.fail(
+            "model-switch handoff must not revalidate an unchanged Engine"
+        ),
+    )
     restarted_pipeline = create_deepstream_runtime_pipeline(runtime=runtime)
     assert pipeline.backend.pipeline_config.nvinfer_config_path.name == "active-nvinfer.ini"
     assert pipeline.backend.manifest.model_fingerprint == manifest.model_fingerprint

@@ -289,6 +289,9 @@ def test_studio_uses_truthful_runtime_metrics_and_explicit_auto_save_copy() -> N
     assert 'label: "nvinfer（含 parser）"' in source
     assert 'label: "Batch 构建"' in source
     assert 'label: "控制等待"' in source
+    assert 'title="完整链路"' in source
+    assert '"阶段完整性"' in source
+    assert "stage_unattributed_ms" in source
     assert 'title="测量边界"' in source
     assert "DeepStream 当前没有在解码器、ROI 和内部队列之间分别打点" in source
     assert 'width={30}' not in source

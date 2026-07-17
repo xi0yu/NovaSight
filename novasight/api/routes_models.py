@@ -27,6 +27,7 @@ from novasight.model_registry import (
 )
 from novasight.inference import parse_tensor_input_shape
 from novasight.deepstream.model_manifest import (
+    PreparedEngineManifest,
     ensure_engine_manifest,
     recommend_engine_manifest,
 )
@@ -194,6 +195,16 @@ def _find_artifact_by_checksum(
 def _checksum_token(checksum: str) -> str:
     value = checksum.split(":", 1)[-1].strip().lower()
     return value[:12] or "unknown"
+
+
+def _deferred_engine_reference(path: Path) -> tuple[str, str]:
+    """Build a stable registration token without reading the Engine body."""
+
+    resolved = Path(path).resolve(strict=True)
+    stat = resolved.stat()
+    metadata = f"{resolved}\0{stat.st_size}\0{stat.st_mtime_ns}"
+    token = hashlib.sha256(metadata.encode("utf-8")).hexdigest()[:12]
+    return token, f"deferred:{token}"
 
 
 def _immutable_artifact_filename(filename: str, checksum: str) -> str:
@@ -835,6 +846,11 @@ def _prepare_runnable_artifact(
         "input_shape": "x".join(str(value) for value in manifest.input.shape),
         "classes": list(manifest.output.class_names),
         "model_fingerprint": manifest.model_fingerprint,
+        "artifact_sha256": manifest.artifact.sha256,
+        "_manifest_handoff": PreparedEngineManifest.create(
+            engine_path=artifact_path,
+            manifest=manifest,
+        ),
         "parser_contract": parser_plan.asdict(),
         "reason": (
             "generated runtime manifest from TensorRT engine contract"
@@ -842,6 +858,13 @@ def _prepare_runnable_artifact(
             else "reused runtime manifest matching TensorRT engine contract"
         ),
     }
+
+
+def _stage_prevalidated_manifest(request: Request, status: dict[str, Any]) -> None:
+    runtime = getattr(request.app.state, "runtime", None)
+    handoff = status.pop("_manifest_handoff", None)
+    if runtime is not None and isinstance(handoff, PreparedEngineManifest):
+        runtime.prepared_engine_manifest = handoff
 
 
 def _close_candidate(candidate: Any) -> None:
@@ -1217,7 +1240,7 @@ def register_catalog_model(
                 "created": False,
             }
 
-        inspection = inspect_model_artifact(engine_path, force=True)
+        reference_token, deferred_checksum = _deferred_engine_reference(engine_path)
         project_name = _safe_component(engine_path.stem, "model")
         project = _find_project_by_name(registry, project_name)
         if project is None:
@@ -1226,7 +1249,7 @@ def register_catalog_model(
                 description="引用服务端 models 目录中的原始 TensorRT Engine。",
                 create_asset_dir=False,
             )
-        version_name = f"external-{_checksum_token(inspection.sha256)}"
+        version_name = f"external-{reference_token}"
         version = _find_version(registry, project.id, version_name)
         if version is None:
             version = registry.create_version(
@@ -1242,8 +1265,8 @@ def register_catalog_model(
             version_id=version.id,
             kind="engine",
             path=str(engine_path),
-            checksum=inspection.sha256,
-            status=_registry_status_from_scan(inspection.status),
+            checksum=deferred_checksum,
+            status="pending",
             allow_external=True,
         )
     except RegistryError as exc:
@@ -1680,7 +1703,11 @@ def publish(
         get_artifact = getattr(registry, "get_artifact", None)
         artifact = get_artifact(payload.artifact_id) if callable(get_artifact) else None
         if artifact is not None and artifact.status in {"pending", "failed"}:
-            registry.update_artifact_status(payload.artifact_id, "ready")
+            registry.update_artifact_status(
+                payload.artifact_id,
+                "ready",
+                checksum=str(candidate_status.get("artifact_sha256") or artifact.checksum),
+            )
         paused_for_switch = _pause_runtime_pipeline_for_model_switch(request)
         try:
             deployment = registry.publish(
@@ -1701,6 +1728,7 @@ def publish(
             classes=classes,
         )
         if candidate is None:
+            _stage_prevalidated_manifest(request, candidate_status)
             request.app.state.inference.unload(
                 "TensorRT engine ownership delegated to DeepStream nvinfer"
             )
@@ -1845,6 +1873,7 @@ def rollback(request: Request, project_id: int) -> dict[str, Any]:
             classes=classes,
         )
         if candidate is None:
+            _stage_prevalidated_manifest(request, candidate_status)
             request.app.state.inference.unload(
                 "TensorRT engine ownership delegated to DeepStream nvinfer"
             )

@@ -4,7 +4,7 @@ export type ModelSwitchDialogStatus = "running" | "success" | "failed";
 
 const MODEL_SWITCH_STAGES = [
   ["确认 Engine 文件", "仅按 .engine 后缀接受候选，不在目录浏览阶段读取 TensorRT。"],
-  ["登记模型引用", "复用已有登记；未登记时只创建项目、版本与文件引用。"],
+  ["登记模型引用", "复用已有登记；未登记时只按路径和文件元数据创建轻量引用。"],
   ["验证 TensorRT 契约", "读取真实输入、输出、Shape 与数据类型，非法 Engine 在此终止。"],
   ["准备运行 manifest", "复用匹配的 manifest；缺失或不匹配时自动生成唯一配置。"],
   ["切换推理运行态", "应用模型并在主链运行时等待新的 DetectionBatch。"]

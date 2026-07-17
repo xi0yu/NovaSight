@@ -352,6 +352,9 @@ export type Statistics = {
   stage_control_wait_ms?: number;
   stage_postprocess_ms?: number;
   stage_control_ms?: number;
+  stage_publish_age_ms?: number;
+  stage_accounted_ms?: number;
+  stage_unattributed_ms?: number;
   stage_total_ms?: number;
   e2e_latency: number;
   detection_batch_fps?: number;

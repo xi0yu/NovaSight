@@ -9,6 +9,7 @@ from novasight.api.app import create_app
 from novasight.api.routes_models import PublishRequest
 from novasight.config import RuntimeConfig
 from novasight.model_registry import ModelRegistry, read_manifest
+from novasight.model_registry import manifest as manifest_module
 from novasight.model_registry import scanner
 from novasight.model_registry.schema import Deployment
 
@@ -114,6 +115,13 @@ def test_catalog_engine_registration_references_original_without_asset_directori
     source_path = source_root / "demo.engine"
     source_path.write_bytes(b"engine")
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "data" / "models")
+    monkeypatch.setattr(
+        routes_models,
+        "inspect_model_artifact",
+        lambda *_args, **_kwargs: pytest.fail(
+            "catalog registration must not hash or inspect the Engine"
+        ),
+    )
 
     result = routes_models.register_catalog_model(
         _request_with_registry(registry),
@@ -124,6 +132,8 @@ def test_catalog_engine_registration_references_original_without_asset_directori
     assert artifact is not None
     assert Path(artifact.path) == source_path.resolve()
     assert registry.resolve_artifact_path(artifact) == source_path.resolve()
+    assert artifact.status == "pending"
+    assert artifact.checksum.startswith("deferred:")
     assert list(registry.data_dir.rglob("*.engine")) == []
     assert not (registry.data_dir / "demo").exists()
 
@@ -458,7 +468,7 @@ def test_publish_rejects_non_deepstream_runtime(
     assert registry.get_artifact(artifact.id).status == "pending"
 
 
-def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_path) -> None:
+def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_path, monkeypatch) -> None:
     registry = ModelRegistry(tmp_path / "registry.db", tmp_path / "assets")
     project = registry.create_project("demo", "")
     version = registry.create_version(
@@ -481,6 +491,15 @@ def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_pa
     )
     config = RuntimeConfig()
     config.inference.backend = "deepstream_nvinfer"
+    sha256_calls = 0
+    real_sha256_file = manifest_module.sha256_file
+
+    def counted_sha256_file(path):
+        nonlocal sha256_calls
+        sha256_calls += 1
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(manifest_module, "sha256_file", counted_sha256_file)
 
     class Inference:
         def probe(self, *_args):
@@ -532,6 +551,8 @@ def test_publish_deepstream_engine_auto_generates_single_runtime_manifest(tmp_pa
         "nms_owner": "deepstream",
     }
     assert registry.get_artifact(artifact.id).status == "ready"
+    assert registry.get_artifact(artifact.id).checksum == manifest.artifact.sha256
+    assert sha256_calls == 1
 
 
 def test_publish_prepares_candidate_before_pausing_pipeline(tmp_path, monkeypatch) -> None:

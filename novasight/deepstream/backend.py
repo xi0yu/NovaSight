@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from novasight.contracts import BBox, Detection, DetectionBatch
+from novasight.latency import pipeline_latency_breakdown_ms
 from novasight.model_registry.manifest import ModelManifest
 from novasight.detection_batch_mailbox import DetectionBatchMailbox
 
@@ -866,16 +867,21 @@ class DeepStreamObjectBackend:
         capture_ts_ns = timing.capture_ts_ns
         inference_start_ts_ns = timing.inference_start_ts_ns
         timestamp_source = timing.timestamp_source
-        build_start_ns = time.monotonic_ns()
         detections = self._object_meta_detections(pyds, frame_meta)
         publish_ts_ns = time.monotonic_ns()
         frame_id_value = getattr(frame_meta, "frame_num", None)
         frame_id = int(self._last_frame_id + 1 if frame_id_value is None else frame_id_value)
         parser = self._parser_telemetry.snapshot()
-        input_age_ms = max(0.0, (inference_start_ts_ns - capture_ts_ns) / 1e6)
-        inference_ms = max(0.0, (inference_end_ts_ns - inference_start_ts_ns) / 1e6)
-        batch_age_ms = max(0.0, (publish_ts_ns - capture_ts_ns) / 1e6)
-        build_ms = max(0.0, (publish_ts_ns - build_start_ns) / 1e6)
+        latency = pipeline_latency_breakdown_ms(
+            capture_ts_ns=capture_ts_ns,
+            inference_start_ts_ns=inference_start_ts_ns,
+            inference_end_ts_ns=inference_end_ts_ns,
+            publish_ts_ns=publish_ts_ns,
+        )
+        input_age_ms = latency["ingress_ms"]
+        inference_ms = latency["inference_ms"]
+        batch_age_ms = latency["publish_age_ms"]
+        build_ms = latency["batch_build_ms"]
         with self._lock:
             if self._terminal_error or not self._running:
                 return
