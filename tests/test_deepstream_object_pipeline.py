@@ -396,7 +396,9 @@ def test_deepstream_preview_valve_pauses_encoding_without_stopping_inference(tmp
     assert "paused" in str(status["preview_reason"])
 
 
-def test_preview_stream_disconnect_does_not_override_user_preview_choice(tmp_path: Path) -> None:
+def test_preview_stream_disconnect_suspends_encoder_without_overriding_user_choice(
+    tmp_path: Path,
+) -> None:
     _engine, manifest = _manifest(tmp_path)
     backend = DeepStreamObjectBackend(
         pipeline_config=_pipeline_config(tmp_path),
@@ -421,9 +423,13 @@ def test_preview_stream_disconnect_does_not_override_user_preview_choice(tmp_pat
 
     backend.acquire_preview_consumer()
     backend.release_preview_consumer()
+    with backend._lock:
+        backend._cancel_preview_idle_timer_locked()
+    backend._suspend_preview_encoder_if_idle()
 
-    assert valve.drop is False
+    assert valve.drop is True
     assert backend.preview_active is True
+    assert backend.status()["preview_encoder_active"] is False
     assert backend._preview_consumers == 0
 
 

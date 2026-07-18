@@ -95,7 +95,16 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
         <div className="aim-target-grid" aria-hidden="true" />
         <div className="aim-target-figure">
           <div className="aim-target-center-axis" aria-hidden="true" />
-          <img alt="正面人物训练靶" className="aim-target-mannequin" draggable={false} src={mannequinTarget} />
+          <img
+            alt="正面人物训练靶"
+            className="aim-target-mannequin"
+            decoding="async"
+            draggable={false}
+            height={1737}
+            loading="lazy"
+            src={mannequinTarget}
+            width={864}
+          />
           {ROLES.map((role) => {
             const meta = ROLE_META[role];
             return (

@@ -40,6 +40,7 @@ function getInitialTheme(): ThemeMode {
 
 export function ThemeToggle() {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLDetailsElement>(null);
   const activeTheme = THEME_OPTIONS.find((option) => option.id === theme) ?? THEME_OPTIONS[0];
 
@@ -53,10 +54,15 @@ export function ThemeToggle() {
     if (pickerRef.current) {
       pickerRef.current.open = false;
     }
+    setPickerOpen(false);
   }
 
   return (
-    <details className="theme-picker" ref={pickerRef}>
+    <details
+      className="theme-picker"
+      onToggle={(event) => setPickerOpen(event.currentTarget.open)}
+      ref={pickerRef}
+    >
       <summary
         aria-label={`当前主题：${activeTheme.label}，角色：${activeTheme.character}`}
         className="theme-toggle"
@@ -69,7 +75,7 @@ export function ThemeToggle() {
         </span>
         <NovaIcon className="theme-toggle-chevron" name="expand" size={14} />
       </summary>
-      <div className="theme-menu" aria-label="网站主题">
+      {pickerOpen ? <div className="theme-menu" aria-label="网站主题">
         <div className="theme-menu-heading">
           <span>THEME ARCHIVE</span>
           <strong>选择视觉主题</strong>
@@ -93,7 +99,7 @@ export function ThemeToggle() {
             </button>
           );
         })}
-      </div>
+      </div> : null}
     </details>
   );
 }

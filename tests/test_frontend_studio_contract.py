@@ -80,11 +80,13 @@ def test_roi_size_control_commits_once_instead_of_writing_on_every_change() -> N
     assert "垂直偏移" not in roi_card
 
 
-def test_studio_exposes_only_15_or_30_fps_for_inference_preview() -> None:
+def test_studio_exposes_remote_friendly_inference_preview_rates() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
     assert 'aria-label="推理画面预览帧率"' in source
     assert "{[15, 30].map((fps)" in source
+    assert "远程预览省流档位" in source
+    assert "[5, 10, 15, 30].filter((fps) => fps <= previewFps)" in source
     assert "目标帧率" not in source
 
 
@@ -116,7 +118,8 @@ def test_studio_deepstream_preview_uses_backend_hardware_jpeg_status() -> None:
     assert "const deepstreamPreviewStreamReady =" in source
     assert "runtimeInference.preview_enabled === true" in source
     assert "const previewImageAvailable = deepstreamNvinferSelected" in source
-    assert '{showImage ? <img alt="实时画面 / ROI"' in source
+    assert 'alt="实时画面 / ROI"' in source
+    assert "setStreamRetryAttempt((current) => current + 1)" in source
 
 
 def test_studio_preview_does_not_turn_off_when_card_temporarily_leaves_viewport() -> None:
@@ -265,14 +268,14 @@ def test_studio_defers_non_capture_io_and_uses_launch_specific_status_timeout() 
     assert "timeoutMs = STATUS_REQUEST_TIMEOUT_MS" in api
 
 
-def test_studio_refreshes_changed_models_without_exposing_force_revalidation() -> None:
+def test_studio_forces_catalog_refresh_without_exposing_engine_revalidation() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     panel = MODEL_SELECTION.read_text(encoding="utf-8")
     refresh_start = source.index("const refreshModelCatalog")
     handlers_end = source.index("const launchStages", refresh_start)
 
-    assert "getModelCatalog(false)" in source[refresh_start:handlers_end]
-    assert "getModelCatalog(true)" not in source
+    assert "getModelCatalog(true)" in source[refresh_start:handlers_end]
+    assert source.count("getModelCatalog(true)") == 1
     assert "rescanModelCatalog" not in source
     assert "scanModelDirectory" not in source
     assert '"刷新模型"' in panel

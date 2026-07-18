@@ -285,7 +285,7 @@ async def websocket_status(websocket: WebSocket) -> None:
     try:
         while True:
             payload = await queue.get()
-            await websocket.send_json(payload)
+            await websocket.send_text(payload)
     except WebSocketDisconnect:
         pass
     finally:

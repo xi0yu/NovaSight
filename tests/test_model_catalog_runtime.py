@@ -55,6 +55,24 @@ def test_model_catalog_read_does_not_import_or_copy_discovered_engine(
     assert catalog["updated_files"] == 0
     assert catalog["model_count"] == 1
     assert catalog["root"]["children"][0]["relative_path"] == "demo.engine"
+
+
+def test_model_catalog_reuses_short_lived_navigation_snapshot(tmp_path, monkeypatch) -> None:
+    models_root = tmp_path / "models"
+    models_root.mkdir()
+    (models_root / "cached.engine").write_bytes(b"engine")
+    registry = ModelRegistry(
+        db_path=tmp_path / "registry.db",
+        data_dir=tmp_path / "registry-models",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    first = routes_models.get_model_catalog(_request_with_registry(registry))
+    second = routes_models.get_model_catalog(_request_with_registry(registry))
+
+    assert first["cache_hits"] == 0
+    assert second["cache_hits"] == 1
+    assert second["model_count"] == 1
     assert registry.list_projects() == []
     assert list(registry.data_dir.rglob("*.engine")) == []
 

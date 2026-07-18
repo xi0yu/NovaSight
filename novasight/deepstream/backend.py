@@ -23,6 +23,7 @@ from .parser_presets import resolve_parser_plan
 
 GST_CLOCK_TIME_NONE = (1 << 64) - 1
 PARSER_TELEMETRY_INTERVAL_NS = 100_000_000
+PREVIEW_IDLE_GRACE_S = 2.0
 TRUSTED_TIMESTAMP_SOURCES = {
     "gst_clock_base_time_pts",
     "first_probe_offset_pts",
@@ -105,7 +106,9 @@ class DeepStreamObjectBackend:
         self._preview_requested = bool(pipeline_config.preview_enabled)
         self._crosshair_requested = bool(pipeline_config.crosshair_enabled)
         self._preview_active = False
+        self._preview_encoder_active = False
         self._preview_consumers = 0
+        self._preview_idle_timer: threading.Timer | None = None
         self._preview_disabled_reason = ""
         self._preview_negotiation_fallback_attempted = False
         self.manifest = manifest
@@ -227,34 +230,81 @@ class DeepStreamObjectBackend:
             valve = pipeline.get_by_name("preview-valve")
             if valve is None:
                 raise RuntimeError("DeepStream pipeline missing preview-valve")
-
-        valve.set_property("drop", not requested)
-        with self._preview_condition:
+            self._cancel_preview_idle_timer_locked()
             self._preview_active = requested
+            encoder_active = requested and self._preview_consumers > 0
+            self._preview_encoder_active = encoder_active
             if not requested:
                 self._preview_consumers = 0
                 self._latest_preview_jpeg = None
                 self._last_preview_ts_ns = 0
                 self._preview_error = ""
             self._preview_condition.notify_all()
-        logger.info("DeepStream hardware preview active=%s", requested)
+        valve.set_property("drop", not encoder_active)
+        logger.info(
+            "DeepStream hardware preview requested=%s encoder_active=%s consumers=%s",
+            requested,
+            encoder_active,
+            self._preview_consumers,
+        )
         return self.status()
 
     def acquire_preview_consumer(self) -> None:
         with self._lock:
             if not self._preview_active:
                 raise RuntimeError("DeepStream hardware preview is paused")
+            pipeline = self._pipeline
+            if pipeline is None or not self._running or self._terminal_error:
+                raise RuntimeError("DeepStream pipeline is not running")
+            valve = pipeline.get_by_name("preview-valve")
+            if valve is None:
+                raise RuntimeError("DeepStream pipeline missing preview-valve")
+            self._cancel_preview_idle_timer_locked()
             self._preview_consumers += 1
+            self._preview_encoder_active = True
+        valve.set_property("drop", False)
 
     def release_preview_consumer(self) -> None:
         with self._lock:
             if self._preview_consumers <= 0:
                 return
             self._preview_consumers -= 1
-            # A stream connection is a transport lease, not the user's preview
-            # preference. Browsers routinely replace MJPEG connections; the
-            # explicit /api/capture/preview command owns the encoder valve.
+            if self._preview_consumers == 0 and self._preview_active:
+                self._cancel_preview_idle_timer_locked()
+                timer = threading.Timer(
+                    PREVIEW_IDLE_GRACE_S,
+                    self._suspend_preview_encoder_if_idle,
+                )
+                timer.daemon = True
+                self._preview_idle_timer = timer
+                timer.start()
             self._preview_condition.notify_all()
+
+    def _cancel_preview_idle_timer_locked(self) -> None:
+        timer = self._preview_idle_timer
+        self._preview_idle_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _suspend_preview_encoder_if_idle(self) -> None:
+        with self._lock:
+            self._preview_idle_timer = None
+            if self._preview_consumers > 0 or not self._preview_active:
+                return
+            pipeline = self._pipeline
+            if pipeline is None or not self._running or self._terminal_error:
+                self._preview_encoder_active = False
+                return
+            valve = pipeline.get_by_name("preview-valve")
+            if valve is None:
+                self._preview_error = "DeepStream pipeline missing preview-valve"
+                return
+            self._preview_encoder_active = False
+            self._latest_preview_jpeg = None
+            self._last_preview_ts_ns = 0
+            self._preview_condition.notify_all()
+        valve.set_property("drop", True)
+        logger.info("DeepStream hardware preview encoder suspended without viewers")
 
     def wait_until_ready(self, timeout_s: float) -> bool:
         """Wait until this pipeline has published its first valid DetectionBatch."""
@@ -330,9 +380,11 @@ class DeepStreamObjectBackend:
     def stop(self) -> None:
         self._stop_bus_monitor()
         with self._lock:
+            self._cancel_preview_idle_timer_locked()
             pipeline = self._pipeline
             self._pipeline = None
             self._running = False
+            self._preview_encoder_active = False
             self._inference_start_by_pts.clear()
             self._first_batch_event.clear()
             self.detection_batch_mailbox.clear()
@@ -402,6 +454,8 @@ class DeepStreamObjectBackend:
                 "object_meta_frames": self._object_meta_frames,
                 "preview_enabled": bool(self.pipeline_config.preview_enabled),
                 "preview_active": self._preview_active,
+                "preview_encoder_active": self._preview_encoder_active,
+                "preview_consumers": self._preview_consumers,
                 "preview_requested": self._preview_requested,
                 "preview_negotiation_fallback_attempted": (
                     self._preview_negotiation_fallback_attempted
@@ -500,7 +554,7 @@ class DeepStreamObjectBackend:
                 "output_sync_copy_reason": "nvinfer does not expose per-frame copy timing",
                 "nms_ms": None,
                 "nms_timing_reason": "DeepStream cluster-mode=2 has no per-frame NMS timing API",
-                "parser": self._parser_status_snapshot(now_ns=now_ns, force=True),
+                "parser": self._parser_status_snapshot(now_ns=now_ns),
                 "detection_batch_mailbox": self.detection_batch_mailbox.status(),
                 "uptime_ms": uptime_ms,
             }
@@ -559,6 +613,8 @@ class DeepStreamObjectBackend:
                 )
                 self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
             self._preview_active = False
+            self._preview_encoder_active = False
+            self._preview_consumers = 0
             return
         find = getattr(getattr(Gst, "ElementFactory", None), "find", None)
         missing = [
@@ -582,11 +638,13 @@ class DeepStreamObjectBackend:
             crosshair_enabled=False,
         )
         self._preview_active = False
+        self._preview_encoder_active = False
         self._preview_consumers = 0
         self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(self._preview_disabled_reason)
 
     def _reset_state_locked(self) -> None:
+        self._cancel_preview_idle_timer_locked()
         self.detection_batch_mailbox.clear()
         self._first_batch_event.clear()
         self._terminal_error = False
@@ -615,6 +673,8 @@ class DeepStreamObjectBackend:
         self._object_meta_frames = 0
         self._preview_frames = 0
         self._preview_active = False
+        self._preview_encoder_active = False
+        self._preview_consumers = 0
         self._preview_sequence = 0
         self._latest_preview_jpeg = None
         self._last_preview_ts_ns = 0
@@ -754,7 +814,7 @@ class DeepStreamObjectBackend:
     def _preview_jpeg_probe(self, _pad: Any, info: Any) -> Any:
         Gst = self._gst_module or importlib.import_module("gi.repository.Gst")
         with self._lock:
-            if not self._preview_active:
+            if not self._preview_encoder_active:
                 return Gst.PadProbeReturn.OK
         buffer = info.get_buffer()
         if buffer is None:
@@ -1171,7 +1231,10 @@ class DeepStreamObjectBackend:
                 preview_enabled=False,
                 crosshair_enabled=False,
             )
+            self._cancel_preview_idle_timer_locked()
             self._preview_active = False
+            self._preview_encoder_active = False
+            self._preview_consumers = 0
             self.pipeline_description = build_deepstream_pipeline(self.pipeline_config)
         logger.warning(
             "DeepStream optional JPEG branch negotiation failed before nvinfer input; "
@@ -1250,6 +1313,8 @@ class DeepStreamObjectBackend:
             return self._preview_disabled_reason or "preview consumer is disabled"
         if not self._preview_active:
             return "preview paused to preserve inference performance"
+        if not self._preview_encoder_active:
+            return "preview ready; waiting for a browser viewer"
         if self._preview_error:
             return self._preview_error
         if self._latest_preview_jpeg is None:

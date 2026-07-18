@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { StatusIndicator } from "./components/ui";
 import {
@@ -23,9 +23,6 @@ import {
 } from "./lib/errorGuards";
 import { LicenseGate } from "./features/license/LicenseView";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
-import { StudioConsoleView } from "./features/studio/StudioConsoleView";
-import { VisualSystemView } from "./features/visual-system/VisualSystemView";
-import { MotionProfileStudio } from "./features/motion/MotionProfileStudio";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 import {
   runtimeDeliveryLabel,
@@ -76,10 +73,41 @@ function isAbortError(error: unknown): boolean {
 
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
 
+const StudioConsoleView = lazy(() =>
+  import("./features/studio/StudioConsoleView").then((module) => ({
+    default: module.StudioConsoleView
+  }))
+);
+const VisualSystemView = lazy(() =>
+  import("./features/visual-system/VisualSystemView").then((module) => ({
+    default: module.VisualSystemView
+  }))
+);
+const MotionProfileStudio = lazy(() =>
+  import("./features/motion/MotionProfileStudio").then((module) => ({
+    default: module.MotionProfileStudio
+  }))
+);
+
+function RouteLoadingShell() {
+  return (
+    <main className="route-loading-shell" role="status">
+      <span className="route-loading-mark" aria-hidden="true" />
+      <strong>NovaSight Studio</strong>
+      <small>正在载入控制台…</small>
+    </main>
+  );
+}
+
 export default function App() {
   const page = new URLSearchParams(window.location.search).get("page");
-  if (page === "motion-profile") return <MotionProfileStudio />;
-  return visualSystemMode ? <VisualSystemView /> : <StudioApp />;
+  if (page === "motion-profile") {
+    return <Suspense fallback={<RouteLoadingShell />}><MotionProfileStudio /></Suspense>;
+  }
+  if (visualSystemMode) {
+    return <Suspense fallback={<RouteLoadingShell />}><VisualSystemView /></Suspense>;
+  }
+  return <StudioApp />;
 }
 
 function StudioApp() {
@@ -95,6 +123,9 @@ function StudioApp() {
   const backgroundLoadInFlightRef = useRef(false);
   const healthLoadInFlightRef = useRef(false);
   const foregroundLoadInFlightRef = useRef(false);
+  const projectsLoadedRef = useRef(false);
+  const projectsRef = useRef<ModelProject[]>([]);
+  const projectsLoadInFlightRef = useRef<Promise<ModelProject[]> | null>(null);
   const runtimeFallbackAbortRef = useRef<AbortController | null>(null);
   const healthRefreshAbortRef = useRef<AbortController | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(true);
@@ -174,12 +205,48 @@ function StudioApp() {
       backgroundLoadInFlightRef.current = false;
       healthLoadInFlightRef.current = false;
       foregroundLoadInFlightRef.current = false;
+      projectsLoadedRef.current = false;
+      projectsRef.current = [];
+      projectsLoadInFlightRef.current = null;
       runtimeFallbackAbortRef.current?.abort();
       healthRefreshAbortRef.current?.abort();
       runtimeFallbackAbortRef.current = null;
       healthRefreshAbortRef.current = null;
       clearWebSocketFailure("status");
     }
+  }, []);
+
+  const loadProjects = useCallback(async (force = false): Promise<ModelProject[]> => {
+    if (!force && projectsLoadedRef.current) {
+      return projectsRef.current;
+    }
+    if (projectsLoadInFlightRef.current) {
+      return projectsLoadInFlightRef.current;
+    }
+    const request = getModelProjects()
+      .then((projects) => {
+        projectsLoadedRef.current = true;
+        projectsRef.current = projects;
+        setState((current) => ({
+          ...current,
+          errors: withoutError(current.errors, "projects"),
+          projects
+        }));
+        return projects;
+      })
+      .catch((error) => {
+        setState((current) => ({
+          ...current,
+          errors: { ...current.errors, projects: getErrorMessage(error) }
+        }));
+        reportError(error, { source: "projects", title: "模型项目读取失败" });
+        throw error;
+      })
+      .finally(() => {
+        projectsLoadInFlightRef.current = null;
+      });
+    projectsLoadInFlightRef.current = request;
+    return request;
   }, []);
 
   const load = useCallback(async () => {
@@ -189,68 +256,72 @@ function StudioApp() {
     foregroundLoadInFlightRef.current = true;
     setState((current) => ({ ...current, loading: true, errors: {} }));
     try {
-      const [health, runtime, config, projects] = await Promise.allSettled([
-        getHealth(),
-        getRuntimeState(),
-        getRuntimeConfig(),
-        getModelProjects()
+      const healthRequest = getHealth()
+        .then((health) => {
+          if (requestSeq !== loadRequestSeqRef.current) return;
+          setState((current) => ({
+            ...current,
+            errors: withoutError(current.errors, "health"),
+            health
+          }));
+        })
+        .catch((error) => {
+          if (requestSeq !== loadRequestSeqRef.current) return;
+          setState((current) => ({
+            ...current,
+            errors: { ...current.errors, health: getErrorMessage(error) },
+            health: null
+          }));
+          reportError(error, { source: "health", title: "后端健康检查失败" });
+        });
+      const runtimeRequest = getRuntimeState()
+        .then((runtime) => {
+          if (
+            requestSeq !== loadRequestSeqRef.current ||
+            runtimeRevisionRef.current !== runtimeRevisionAtRequest
+          ) return;
+          applyRuntimeState(runtime);
+        })
+        .catch((error) => {
+          if (
+            requestSeq !== loadRequestSeqRef.current ||
+            runtimeRevisionRef.current !== runtimeRevisionAtRequest
+          ) return;
+          setState((current) => ({
+            ...current,
+            errors: { ...current.errors, runtime: getErrorMessage(error) }
+          }));
+          reportError(error, { source: "runtime", title: "运行态失败" });
+        });
+      const configRequest = getRuntimeConfig()
+        .then((config) => {
+          if (requestSeq !== loadRequestSeqRef.current) return;
+          applyRuntimeConfig(config);
+        })
+        .catch((error) => {
+          if (requestSeq !== loadRequestSeqRef.current) return;
+          setState((current) => ({
+            ...current,
+            errors: { ...current.errors, config: getErrorMessage(error) }
+          }));
+          reportError(error, { source: "config", title: "配置读取失败" });
+        });
+      const projectsRequest = projectsLoadedRef.current
+        ? loadProjects(true).catch(() => undefined)
+        : Promise.resolve();
+      await Promise.allSettled([
+        healthRequest,
+        runtimeRequest,
+        configRequest,
+        projectsRequest
       ]);
-      const runtimeSuperseded = runtimeRevisionRef.current !== runtimeRevisionAtRequest;
-      const sourceMap: Array<[PromiseSettledResult<unknown>, string]> = [
-        [health, "health"],
-        [runtime, "runtime"],
-        [config, "config"],
-        [projects, "projects"]
-      ];
-      const seenReason = new Set<unknown>();
-      for (const [result, source] of sourceMap) {
-        if (source === "runtime" && runtimeSuperseded) {
-          continue;
-        }
-        if (result.status === "rejected" && !seenReason.has(result.reason)) {
-          seenReason.add(result.reason);
-          reportError(result.reason, {
-            source,
-            title: source === "runtime" ? "运行态失败" : "请求失败"
-          });
-        }
-      }
-      setState((current) => {
-        if (requestSeq !== loadRequestSeqRef.current) {
-          return current;
-        }
-        const errors: LoadState["errors"] = {};
-        if (health.status === "rejected") {
-          errors.health = getErrorMessage(health.reason);
-        }
-        if (runtime.status === "rejected" && !runtimeSuperseded) {
-          errors.runtime = getErrorMessage(runtime.reason);
-        }
-        if (config.status === "rejected") {
-          errors.config = getErrorMessage(config.reason);
-        }
-        if (projects.status === "rejected") {
-          errors.projects = getErrorMessage(projects.reason);
-        }
-        const shouldApplyRuntime =
-          runtime.status === "fulfilled" && runtimeRevisionRef.current === runtimeRevisionAtRequest;
-        if (shouldApplyRuntime) {
-          runtimeRevisionRef.current += 1;
-        }
-        return {
-          loading: false,
-          errors,
-          health: health.status === "fulfilled" ? health.value : current.health,
-          runtime: shouldApplyRuntime ? runtime.value : current.runtime,
-          config: config.status === "fulfilled" ? config.value : current.config,
-          projects: projects.status === "fulfilled" ? projects.value : current.projects,
-          lastUpdated: shouldApplyRuntime ? new Date() : current.lastUpdated
-        };
-      });
     } finally {
+      if (requestSeq === loadRequestSeqRef.current) {
+        setState((current) => ({ ...current, loading: false }));
+      }
       foregroundLoadInFlightRef.current = false;
     }
-  }, []);
+  }, [applyRuntimeConfig, applyRuntimeState, loadProjects]);
 
   const refreshRuntime = useCallback(async () => {
     if (backgroundLoadInFlightRef.current || foregroundLoadInFlightRef.current) {
@@ -549,18 +620,21 @@ function StudioApp() {
 
   return (
     <>
-      <StudioConsoleView
-        health={state.health}
-        runtime={state.runtime}
-        runtimeConfig={state.config}
-        projects={state.projects}
-        errors={state.errors}
-        lastUpdated={state.lastUpdated}
-        realtimeStatus={realtimeStatus}
-        onRefresh={load}
-        onRuntimeConfigChange={applyRuntimeConfig}
-        onRuntimeStateChange={applyRuntimeState}
-      />
+      <Suspense fallback={<RouteLoadingShell />}>
+        <StudioConsoleView
+          health={state.health}
+          runtime={state.runtime}
+          runtimeConfig={state.config}
+          projects={state.projects}
+          errors={state.errors}
+          lastUpdated={state.lastUpdated}
+          realtimeStatus={realtimeStatus}
+          onEnsureProjects={loadProjects}
+          onRefresh={load}
+          onRuntimeConfigChange={applyRuntimeConfig}
+          onRuntimeStateChange={applyRuntimeState}
+        />
+      </Suspense>
       <ToastHost />
       <div className="visually-hidden">{consoleStatus}</div>
     </>

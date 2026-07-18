@@ -18,7 +18,7 @@ from novasight.roi import normalize_roi_size
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 logger = logging.getLogger("novasight.api.capture")
-PREVIEW_FPS_CHOICES = (15, 30)
+PREVIEW_FPS_CHOICES = (5, 10, 15, 30)
 
 
 class CaptureSelectRequest(BaseModel):
@@ -83,7 +83,7 @@ def state(request: Request) -> dict:
 
 
 @router.get("/stream.mjpg")
-def stream(request: Request):
+def stream(request: Request, fps: int | None = None):
     capture = request.app.state.capture
     config = getattr(request.app.state, "config", None)
     consumers = getattr(config, "consumers", None)
@@ -116,8 +116,9 @@ def stream(request: Request):
                 content={"message": "实时预览已暂停，推理与控制继续运行。"},
             )
         preview_fps = _normalize_preview_fps(
-            getattr(config, "limits", None)
-            and config.limits.stream_fps
+            fps
+            if fps is not None
+            else getattr(config, "limits", None) and config.limits.stream_fps
         )
         return StreamingResponse(
             _deepstream_mjpeg_frames(
@@ -138,8 +139,9 @@ def stream(request: Request):
             content={"message": "采集未启动，无法打开预览。"},
         )
     preview_fps = _normalize_preview_fps(
-        getattr(config, "limits", None)
-        and config.limits.stream_fps
+        fps
+        if fps is not None
+        else getattr(config, "limits", None) and config.limits.stream_fps
     )
     roi_size = _normalize_roi_size(
         getattr(config, "roi", None)
@@ -316,6 +318,8 @@ def _deepstream_mjpeg_frames(
     last_sequence: int | None = None
     preview_fps = _normalize_preview_fps(preview_fps)
     timeout_s = 1.0 / preview_fps
+    emit_interval_s = 1.0 / preview_fps
+    next_emit_at = 0.0
     acquire = getattr(backend, "acquire_preview_consumer", None)
     release = getattr(backend, "release_preview_consumer", None)
     if callable(acquire):
@@ -344,6 +348,10 @@ def _deepstream_mjpeg_frames(
                 continue
             sequence, payload = result
             last_sequence = int(sequence)
+            now = time.monotonic()
+            if now < next_emit_at:
+                continue
+            next_emit_at = now + emit_interval_s
             emitted += 1
             yield (
                 b"--frame\r\n"

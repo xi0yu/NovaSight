@@ -43,6 +43,39 @@ body {
   color: var(--text);
 }
 
+.route-loading-shell {
+  width: min(460px, calc(100vw - 32px));
+  min-height: 180px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  margin: min(18vh, 160px) auto 0;
+  padding: 28px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-6);
+  background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-dialog);
+}
+
+.route-loading-shell strong {
+  font-size: 18px;
+}
+
+.route-loading-shell small {
+  color: var(--text-tertiary);
+}
+
+.route-loading-mark {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border-default);
+  border-top-color: var(--brand-primary);
+  border-radius: 50%;
+  animation: launch-spin 800ms linear infinite;
+}
+
 body::before {
   content: "";
   position: fixed;
@@ -922,6 +955,19 @@ tbody tr:hover {
   min-height: 0;
   overflow: auto;
   padding: 14px;
+}
+
+.model-manager-loading-body {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.model-manager-loading-body small {
+  color: var(--text-tertiary);
 }
 
 .model-manager-dialog .model-selection-panel {
@@ -2319,6 +2365,31 @@ tbody tr:hover {
 .console-preview-live-control button { min-height: 28px; padding: 3px 8px; }
 .console-preview-live-control button:hover,
 .console-preview-live-control button:focus-visible { border-color: var(--status-warning-fg); }
+
+.console-preview-rate-control {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.console-preview-rate-control button {
+  min-width: 32px;
+  padding-inline: 6px;
+  font-family: var(--font-mono);
+}
+
+.console-preview-rate-control button.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-soft);
+  color: var(--brand-primary-active);
+}
+
+@media (max-width: 620px) {
+  .console-preview-live-control > span {
+    display: none;
+  }
+}
 
 .console-preview::after {
   content: "实时画面 / ROI";
@@ -6391,6 +6462,7 @@ body::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .route-loading-mark,
   .theme-gallery-stage,
   .theme-gallery-spark,
   .theme-gallery-story {

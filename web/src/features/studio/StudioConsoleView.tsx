@@ -1,4 +1,4 @@
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ChangeEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
   CaptureCapabilitiesResponse,
@@ -50,7 +50,6 @@ import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
-import { ModelManagerDialog } from "../models/ModelManagerDialog";
 import { ModelSwitchDialog, type ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
 import {
   runtimeDeliveryDescription,
@@ -85,6 +84,45 @@ const CONTROL_ALGORITHM_OPTIONS = [
   }
 ] as const;
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
+const ModelManagerDialog = lazy(() =>
+  import("../models/ModelManagerDialog").then((module) => ({
+    default: module.ModelManagerDialog
+  }))
+);
+
+function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="model-manager-dialog-layer">
+      <section
+        aria-labelledby="model-manager-loading-title"
+        aria-modal="true"
+        className="model-manager-dialog"
+        role="dialog"
+      >
+        <header className="model-manager-dialog-header">
+          <div className="model-manager-dialog-title">
+            <span className="model-manager-dialog-icon" aria-hidden="true">
+              <NovaIcon name="models" size={22} />
+            </span>
+            <div>
+              <span className="class-config-eyebrow">MODEL VAULT</span>
+              <h2 id="model-manager-loading-title">模型管理与切换</h2>
+              <p>正在读取模型管理界面，运行主链不受影响。</p>
+            </div>
+          </div>
+          <button aria-label="关闭模型管理" className="launch-dialog-close" onClick={onClose} type="button">
+            <NovaIcon name="x-circle" size={18} />
+          </button>
+        </header>
+        <div className="model-manager-dialog-body model-manager-loading-body" role="status">
+          <span className="route-loading-mark" aria-hidden="true" />
+          <strong>正在加载模型目录组件…</strong>
+          <small>弱网下可能需要几秒，当前模型和推理不会切换。</small>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 type StudioConsoleViewProps = {
   health: HealthResponse | null;
@@ -94,6 +132,7 @@ type StudioConsoleViewProps = {
   errors: Partial<Record<string, string>>;
   lastUpdated: Date | null;
   realtimeStatus: RuntimeDeliveryStatus;
+  onEnsureProjects: (force?: boolean) => Promise<ModelProject[]>;
   onRefresh: () => Promise<void>;
   onRuntimeConfigChange: (config: RuntimeConfig) => void;
   onRuntimeStateChange: (runtime: RuntimeState) => void;
@@ -490,14 +529,25 @@ export function StudioConsoleView({
   errors,
   lastUpdated,
   realtimeStatus,
+  onEnsureProjects,
   onRefresh,
   onRuntimeConfigChange,
   onRuntimeStateChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
+  const [wideThemeGallery, setWideThemeGallery] = useState(
+    () => window.matchMedia("(min-width: 1280px)").matches
+  );
   const [device, setDevice] = useState(
     readString(nestedRecord(runtimeConfig, "capture").device, runtime?.capture?.device ?? "/dev/video0")
   );
+
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1280px)");
+    const update = () => setWideThemeGallery(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
   const [selectedChoiceId, setSelectedChoiceId] = useState("");
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
@@ -1440,23 +1490,6 @@ export function StudioConsoleView({
     runtime
   ]);
 
-  useEffect(() => {
-    const releasePreview = () => {
-      if (previewActive) {
-        void updatePreviewActive(false, { quiet: true, keepalive: true });
-      }
-    };
-    if (activePage !== "infer") {
-      releasePreview();
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
-        releasePreview();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [activePage, previewActive, updatePreviewActive]);
   const inferenceBatchGeneration = readNumber(
     inferenceTrace.generation ?? inferenceTrace.detection_batch_generation ?? pipeline.last_generation,
     Number.NaN
@@ -2836,6 +2869,7 @@ export function StudioConsoleView({
   }, []);
 
   const openModelManager = useCallback(() => {
+    void onEnsureProjects(false).catch(() => undefined);
     const activePath = modelCatalog && typeof artifact?.id === "number"
       ? findCatalogModelPath(modelCatalog, artifact.id)
       : undefined;
@@ -2849,7 +2883,7 @@ export function StudioConsoleView({
       });
     }
     setModelManagerDialogOpen(true);
-  }, [artifact?.id, modelCatalog]);
+  }, [artifact?.id, modelCatalog, onEnsureProjects]);
 
   const switchModel = async () => {
     if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
@@ -2935,7 +2969,7 @@ export function StudioConsoleView({
     setModelCatalogMessage("");
     preferLatestModelVersionRef.current = true;
     try {
-      const result = await getModelCatalog(false);
+      const result = await getModelCatalog(true);
       applyModelCatalogResult(result);
       setModelDetailsRefreshKey((current) => current + 1);
       await onRefresh();
@@ -3238,6 +3272,9 @@ export function StudioConsoleView({
                     </button>
                   ))}
                 </div>
+                <p className="console-section-note">
+                  这是 NVJPEG 预览分支的最高帧率；远程观看时还可以在画面上选择省流档。
+                </p>
               </div>
 
               <div className="console-card">
@@ -3392,6 +3429,7 @@ export function StudioConsoleView({
                 unavailableReason={previewUnavailableReason}
                 runtime={runtime}
                 roiSize={roiSize}
+                previewFps={previewFps}
               />
               <div className="console-kv">
                 <span>画面阶段</span><b>{deepstreamNvinferSelected ? "nvinfer 前 NVMM ROI" : "推理输入 ROI"}</b>
@@ -4320,7 +4358,7 @@ export function StudioConsoleView({
         </section>
       </main>
 
-      <ThemeGallery />
+      {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
         description="这些参数决定投影、响应曲线、限幅与预测行为。日常使用无需频繁调整。"
@@ -4844,12 +4882,14 @@ export function StudioConsoleView({
         </div>
       ) : null}
 
-      <ModelManagerDialog
-        activeArtifactLabel={activeArtifactLabel}
-        activeModelName={activeModelName}
-        onClose={closeModelManager}
-        open={modelManagerDialogOpen}
-        panelProps={{
+      {modelManagerDialogOpen ? (
+        <Suspense fallback={<ModelManagerLoadingDialog onClose={closeModelManager} />}>
+          <ModelManagerDialog
+            activeArtifactLabel={activeArtifactLabel}
+            activeModelName={activeModelName}
+            onClose={closeModelManager}
+            open
+            panelProps={{
           root: modelCatalog,
           loading: modelCatalogLoading,
           directoryCount: modelCatalogDirectoryCount,
@@ -4872,8 +4912,10 @@ export function StudioConsoleView({
           onToggleDirectory: toggleModelDirectory,
           onSelectModel: selectModelFromCatalog,
           onSwitch: () => void switchModel()
-        }}
-      />
+            }}
+          />
+        </Suspense>
+      ) : null}
 
       <ModelSwitchDialog
         completedStages={modelSwitchCompletedStages}
@@ -5218,7 +5260,8 @@ function PreviewFrame({
   imageAvailable,
   unavailableReason,
   runtime,
-  roiSize
+  roiSize,
+  previewFps
 }: {
   supported: boolean;
   active: boolean;
@@ -5228,8 +5271,13 @@ function PreviewFrame({
   unavailableReason: string;
   runtime: RuntimeState | null;
   roiSize: number;
+  previewFps: number;
 }) {
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const [streamFailure, setStreamFailure] = useState(false);
+  const [streamRetryAttempt, setStreamRetryAttempt] = useState(0);
+  const [streamRetryKey, setStreamRetryKey] = useState(0);
+  const [transportFps, setTransportFps] = useState(previewFps);
   const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
   const vision = asRecord(runtime?.vision);
   const inferenceTrace = asRecord(vision.inference);
@@ -5253,7 +5301,7 @@ function PreviewFrame({
   const targetAimY = readNullableNumber(mouseObservation.predicted_aim_y_roi_px)
     ?? readNullableNumber(rawAim.aim_roi_y_px)
     ?? targetCy;
-  const showImage = supported && active && imageAvailable;
+  const showImage = supported && active && imageAvailable && !streamFailure;
   const showOverlay = supported && active && runtime?.running === true && detections.length > 0;
   const selectedDetection = detections.find((item) => (
     targetDetectionIndex !== null
@@ -5275,6 +5323,26 @@ function PreviewFrame({
     0,
     previewHeight
   );
+
+  useEffect(() => {
+    setStreamFailure(false);
+    setStreamRetryAttempt(0);
+    setStreamRetryKey(0);
+    setTransportFps(previewFps);
+  }, [active, configVersion, previewFps]);
+
+  useEffect(() => {
+    if (!streamFailure || !supported || !active) {
+      return undefined;
+    }
+    const delayMs = Math.min(1000 * 2 ** Math.max(0, streamRetryAttempt - 1), 8000);
+    const timer = window.setTimeout(() => {
+      setStreamFailure(false);
+      setStreamRetryKey((current) => current + 1);
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [active, streamFailure, streamRetryAttempt, supported]);
+
   return (
     <div
       ref={previewRef}
@@ -5286,15 +5354,50 @@ function PreviewFrame({
     >
       {supported && active ? (
         <div className="console-preview-live-control">
-          <span>实时预览会占用 Jetson 资源</span>
+          <span>实时预览</span>
+          <div className="console-preview-rate-control" role="group" aria-label="远程预览省流档位">
+            {[5, 10, 15, 30].filter((fps) => fps <= previewFps).map((fps) => (
+              <button
+                aria-pressed={transportFps === fps}
+                className={transportFps === fps ? "active" : ""}
+                key={fps}
+                onClick={() => setTransportFps(fps)}
+                type="button"
+              >
+                {fps}
+              </button>
+            ))}
+          </div>
           <button disabled={togglePending} onClick={() => onToggle(false)} type="button">
             {togglePending ? "正在关闭…" : "关闭预览"}
           </button>
         </div>
       ) : null}
       <div className="console-preview-frame">
-        {showImage ? <img alt="实时画面 / ROI" src={streamUrl(configVersion, configVersion)} /> : null}
-        {supported && active && !showImage ? <div className="console-preview-unavailable">{unavailableReason}</div> : null}
+        {showImage ? (
+          <img
+            alt="实时画面 / ROI"
+            decoding="async"
+            height={previewHeight}
+            onError={() => {
+              setStreamFailure(true);
+              setStreamRetryAttempt((current) => current + 1);
+            }}
+            onLoad={() => {
+              setStreamFailure(false);
+              setStreamRetryAttempt(0);
+            }}
+            src={streamUrl(configVersion + streamRetryKey, configVersion, transportFps)}
+            width={previewWidth}
+          />
+        ) : null}
+        {supported && active && !showImage ? (
+          <div className="console-preview-unavailable" role="status">
+            {streamFailure
+              ? `预览连接中断，正在自动重试（第 ${streamRetryAttempt} 次）`
+              : unavailableReason}
+          </div>
+        ) : null}
         {supported && !active ? (
           <div className="console-preview-gate" role="status">
             <span className="console-preview-gate-kicker">性能保护已启用</span>

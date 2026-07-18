@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import re
 import tempfile
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -48,6 +50,9 @@ router = APIRouter(prefix="/api/models")
 logger = logging.getLogger("novasight.api.models")
 _ENGINE_INPUT_SHAPE_PENDING = "engine-probe-required"
 MODEL_SWITCH_READY_TIMEOUT_S = 5.0
+MODEL_CATALOG_CACHE_TTL_S = 2.0
+_MODEL_CATALOG_CACHE_LOCK = threading.RLock()
+_MODEL_CATALOG_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 YOLOV8N_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
@@ -1198,6 +1203,16 @@ def _read_model_catalog(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
+    cache_key = str(Path(registry.data_dir).resolve(strict=False))
+    now = time.monotonic()
+    if not force:
+        with _MODEL_CATALOG_CACHE_LOCK:
+            cached = _MODEL_CATALOG_CACHE.get(cache_key)
+            if cached is not None and now - cached[0] < MODEL_CATALOG_CACHE_TTL_S:
+                payload = copy.deepcopy(cached[1])
+                payload["cache_hits"] = int(payload.get("cache_hits") or 0) + 1
+                payload["force"] = False
+                return payload
     catalog_roots = (Path("models"), Path(registry.data_dir))
     artifacts_by_relative_path: dict[str, ModelArtifactScanResult] = {}
     for root in catalog_roots:
@@ -1213,7 +1228,7 @@ def _read_model_catalog(
                 continue
             artifacts_by_relative_path.setdefault(relative_path.as_posix(), artifact)
     artifacts = list(artifacts_by_relative_path.values())
-    return {
+    payload = {
         **_model_catalog_payload(
             registry,
             artifacts,
@@ -1224,6 +1239,11 @@ def _read_model_catalog(
         "cache_hits": 0,
         "force": force,
     }
+    cached_payload = copy.deepcopy(payload)
+    cached_payload["force"] = False
+    with _MODEL_CATALOG_CACHE_LOCK:
+        _MODEL_CATALOG_CACHE[cache_key] = (now, cached_payload)
+    return payload
 
 
 @router.get("/catalog")
