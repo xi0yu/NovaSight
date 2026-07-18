@@ -77,6 +77,9 @@ calibration:
   game_sensitivity_fingerprint: unverified-default
 control:
   active_algorithm: dual_phase_atan_robust_predictive_v2
+  # Gates only final mouse-offset delivery; kmNet and the vision/control chain
+  # stay connected and active for diagnostics while this is false.
+  output_enabled: true
   aim:
     # Each ratio is measured from the top of that role's detection bbox.
     role_y_ratios:

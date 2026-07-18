@@ -102,6 +102,7 @@ function CatalogNodes({
             className={`model-catalog-row model ${selected ? "selected" : ""}`}
             style={{ paddingLeft: `${30 + depth * 18}px` }}
             aria-selected={selected}
+            data-active={active ? "true" : undefined}
             aria-label={`${node.name}，${formatModelSize(node.size_bytes)}，${modelStatusLabel(status)}`}
             onClick={() => onSelectModel(node)}
           >

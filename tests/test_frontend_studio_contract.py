@@ -44,6 +44,9 @@ MODEL_CATALOG_TREE = (
 MODEL_SWITCH_DIALOG = (
     STUDIO_CONSOLE.parents[1] / "models" / "ModelSwitchDialog.tsx"
 )
+MODEL_MANAGER_DIALOG = (
+    STUDIO_CONSOLE.parents[1] / "models" / "ModelManagerDialog.tsx"
+)
 LICENSE_VIEW = (
     STUDIO_CONSOLE.parents[1] / "license" / "LicenseView.tsx"
 )
@@ -185,6 +188,30 @@ def test_model_file_lists_show_human_readable_size() -> None:
     assert "font-variant-numeric: tabular-nums;" in styles
 
 
+def test_inference_page_keeps_current_model_summary_and_moves_catalog_into_large_dialog() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    dialog = MODEL_MANAGER_DIALOG.read_text(encoding="utf-8")
+    catalog = MODEL_CATALOG_TREE.read_text(encoding="utf-8")
+
+    infer_start = source.index('<section className={activePage === "infer"')
+    infer_end = source.index('<section className={activePage === "control"', infer_start)
+    inference_page = source[infer_start:infer_end]
+    assert "<CurrentModelSummary" in inference_page
+    assert "<ModelSelectionPanel" not in inference_page
+    assert "模型管理与切换" in dialog
+    assert "scrollIntoView" in dialog
+    assert 'data-active={active ? "true" : undefined}' in catalog
+
+
+def test_parameter_page_exposes_runtime_output_gate_without_kmnet_disconnect() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'readBoolean(controlConfig.output_enabled, true)' in source
+    assert 'updateConfigField("control", "output_enabled", enabled)' in source
+    assert "不会断开 KMNet" in source
+    assert "关闭后立即清空待发送旧命令" in source
+
+
 def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     refresh_start = source.index("const refreshModelCatalog")
@@ -231,7 +258,7 @@ def test_studio_defers_non_capture_io_and_uses_launch_specific_status_timeout() 
 
     catalog_effect = source[source.index("setModelCatalogLoading(true)") - 180:]
     catalog_effect = catalog_effect[:catalog_effect.index("setModelCatalogLoading(false)")]
-    assert 'if (activePage !== "infer")' in catalog_effect
+    assert 'if (activePage !== "infer" || !modelManagerDialogOpen)' in catalog_effect
     assert "void refreshCapabilities();" not in source
     assert "LAUNCH_STATUS_REQUEST_TIMEOUT_MS" in source
     assert "getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS)" in source

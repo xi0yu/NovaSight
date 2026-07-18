@@ -33,6 +33,7 @@ class ExecutorRegistry:
         direct_output: bool = False,
         single_command_per_observation: bool = False,
         latest_replace: bool = False,
+        output_enabled: bool = True,
     ) -> None:
         self.executors = {executor.executor_id: executor for executor in executors}
         if default not in self.executors:
@@ -41,6 +42,7 @@ class ExecutorRegistry:
         self.policy = policy or ControlOutputPolicy()
         self.single_command_per_observation = bool(single_command_per_observation)
         self.latest_replace = bool(latest_replace)
+        self.output_enabled = bool(output_enabled)
         self.scheduler = None if self.single_command_per_observation else scheduler
         self.direct_output = bool(direct_output) or self.single_command_per_observation
         self._config_epoch = 0
@@ -59,6 +61,7 @@ class ExecutorRegistry:
         direct_output: bool = False,
         single_command_per_observation: bool = False,
         latest_replace: bool = False,
+        output_enabled: bool = True,
     ) -> ExecutorRegistry:
         kmnet = KmNetExecutor.from_config(config) if config is not None else KmNetExecutor()
         return cls(
@@ -71,6 +74,7 @@ class ExecutorRegistry:
             direct_output=direct_output,
             single_command_per_observation=single_command_per_observation,
             latest_replace=latest_replace,
+            output_enabled=output_enabled,
         )
 
     @classmethod
@@ -84,6 +88,7 @@ class ExecutorRegistry:
             scheduler=scheduler_from_config(config),
             direct_output=not latest_replace and not bool(config.control.scheduler_enabled),
             latest_replace=latest_replace,
+            output_enabled=bool(config.control.output_enabled),
         )
 
     def update_runtime_config(self, config: RuntimeConfig) -> None:
@@ -97,12 +102,17 @@ class ExecutorRegistry:
         direct_output = not latest_replace and not bool(config.control.scheduler_enabled)
         policy = policy_from_config(config)
         with self._scheduler_lock:
+            if self.output_enabled and not bool(config.control.output_enabled):
+                self._submission_epoch += 1
+                if self.scheduler is not None:
+                    self.scheduler.clear("CONTROL_OUTPUT_DISABLED")
             self.selected = selected
             self.policy = policy
             self.scheduler = scheduler
             self.direct_output = direct_output
             self.single_command_per_observation = single_command
             self.latest_replace = latest_replace
+            self.output_enabled = bool(config.control.output_enabled)
             self._config_epoch += 1
             kmnet = self.executors.get("kmnet")
             if isinstance(kmnet, KmNetExecutor):
@@ -120,6 +130,8 @@ class ExecutorRegistry:
             direct_output = self.direct_output or single_command
             selected = self.selected
             config_epoch = self._config_epoch
+            if not self.output_enabled:
+                return _output_disabled_result(selected=selected, output=bounded)
             if scheduler is not None:
                 self._submission_epoch += 1
                 decision = scheduler.submit(bounded, emit_immediately=False)
@@ -325,8 +337,19 @@ class ExecutorRegistry:
             scheduler = None if single_command else self.scheduler
             selected = self.selected
             config_epoch = self._config_epoch
-            decision = scheduler.tick(now_s=now_s) if scheduler is not None else None
+            output_enabled = self.output_enabled
+            decision = (
+                scheduler.tick(now_s=now_s)
+                if output_enabled and scheduler is not None
+                else None
+            )
             submission_epoch = self._submission_epoch
+        if not output_enabled:
+            return _output_disabled_result(
+                selected=selected,
+                output=_scheduler_status_output("CONTROL_OUTPUT_DISABLED"),
+                idle=True,
+            )
         if scheduler is None:
             if single_command:
                 return ExecutionResult(
@@ -438,6 +461,7 @@ class ExecutorRegistry:
 
         return {
             "selected": self.selected,
+            "output_enabled": self.output_enabled,
             "direct_output": self.direct_output,
             "single_command_per_observation": self.single_command_per_observation,
             "latest_replace": self.latest_replace,
@@ -581,6 +605,32 @@ def _scheduler_status_output(reason: str) -> ControlOutput:
         accepted=False,
         clipped=False,
         reason=reason,
+    )
+
+
+def _output_disabled_result(
+    *,
+    selected: str,
+    output: ControlOutput,
+    idle: bool = False,
+) -> ExecutionResult:
+    """Describe the global output gate without touching the live device."""
+    return ExecutionResult(
+        executor_id=selected,
+        sent=False,
+        intent=output,
+        message=(
+            "no pending control command ready"
+            if idle
+            else "mouse offset output disabled by runtime configuration"
+        ),
+        metadata={
+            "stage": "output_gate",
+            "selected_executor": selected,
+            "action": "output_disabled",
+            "block_reason": "CONTROL_OUTPUT_DISABLED",
+            "output_enabled": False,
+        },
     )
 
 

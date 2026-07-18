@@ -49,9 +49,9 @@ import { reportError, useClearErrorNotices, useErrorNotices } from "../../lib/to
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
-import { ModelSelectionPanel } from "../models/ModelSelectionPanel";
+import { CurrentModelSummary } from "../models/CurrentModelSummary";
+import { ModelManagerDialog } from "../models/ModelManagerDialog";
 import { ModelSwitchDialog, type ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
-import { formatModelSize } from "../models/modelPresentation";
 import {
   runtimeDeliveryDescription,
   runtimeDeliveryLabel,
@@ -535,6 +535,7 @@ export function StudioConsoleView({
   const errorNotices = useErrorNotices();
   const clearErrorNotices = useClearErrorNotices();
   const [modelSwitchMessage, setModelSwitchMessage] = useState("");
+  const [modelManagerDialogOpen, setModelManagerDialogOpen] = useState(false);
   const [modelSwitchDialogOpen, setModelSwitchDialogOpen] = useState(false);
   const [modelSwitchDialogStatus, setModelSwitchDialogStatus] = useState<ModelSwitchDialogStatus>("running");
   const [modelSwitchStageIndex, setModelSwitchStageIndex] = useState(0);
@@ -1162,6 +1163,7 @@ export function StudioConsoleView({
   const hostOfflineGraceS = readNumber(powerSavingConfig.offline_grace_s, 15);
   const hostAutoResume = readBoolean(powerSavingConfig.auto_resume, true);
   const schedulerEnabled = readBoolean(controlConfig.scheduler_enabled, true);
+  const outputEnabled = readBoolean(controlConfig.output_enabled, true);
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
   const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
@@ -1256,7 +1258,6 @@ export function StudioConsoleView({
     (selectedCatalogModel === null || selectedCatalogModel.version_id === selectedModelVersionId)
       ? modelVersions.find((item) => item.id === selectedModelVersionId) ?? null
       : null;
-  const preferredSwitchArtifact = sortedSwitchableArtifacts[0] ?? null;
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const activeRuntimeClassId = readNullableNumber(target.cls ?? target.class_id);
@@ -1668,7 +1669,7 @@ export function StudioConsoleView({
   }, []);
 
   useEffect(() => {
-    if (activePage !== "infer") {
+    if (activePage !== "infer" || !modelManagerDialogOpen) {
       return undefined;
     }
     let cancelled = false;
@@ -1701,15 +1702,21 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, applyModelCatalogResult, modelCatalogRefreshKey, onRefresh]);
+  }, [activePage, applyModelCatalogResult, modelCatalogRefreshKey, modelManagerDialogOpen, onRefresh]);
 
   useEffect(() => {
     if (!modelCatalog || typeof artifact?.id !== "number") {
       return;
     }
-    setSelectedModelCatalogPath((current) =>
-      current ?? findCatalogModelPath(modelCatalog, artifact.id)
-    );
+    const activePath = findCatalogModelPath(modelCatalog, artifact.id);
+    if (!activePath) return;
+    setSelectedModelCatalogPath((current) => current ?? activePath);
+    setExpandedModelDirectories((current) => {
+      const next = new Set(current);
+      next.add("");
+      modelDirectoryAncestors(activePath).forEach((path) => next.add(path));
+      return next;
+    });
   }, [artifact?.id, modelCatalog]);
 
   useEffect(() => {
@@ -1729,7 +1736,7 @@ export function StudioConsoleView({
   }, [projects, runtime?.active_model?.project?.id]);
 
   useEffect(() => {
-    if (activePage !== "infer") {
+    if (activePage !== "infer" || !modelManagerDialogOpen) {
       return undefined;
     }
     if (selectedModelProjectId === "") {
@@ -1784,10 +1791,10 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelDetailsRefreshKey, runtime?.active_model?.version?.id, selectedModelProjectId]);
+  }, [activePage, modelDetailsRefreshKey, modelManagerDialogOpen, runtime?.active_model?.version?.id, selectedModelProjectId]);
 
   useEffect(() => {
-    if (activePage !== "infer") {
+    if (activePage !== "infer" || !modelManagerDialogOpen) {
       return undefined;
     }
     if (selectedModelVersionId === "") {
@@ -1841,7 +1848,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelDetailsRefreshKey, selectedModelVersionId]);
+  }, [activePage, modelDetailsRefreshKey, modelManagerDialogOpen, selectedModelVersionId]);
 
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
@@ -2824,6 +2831,26 @@ export function StudioConsoleView({
     setLocalError(null);
   }, []);
 
+  const closeModelManager = useCallback(() => {
+    setModelManagerDialogOpen(false);
+  }, []);
+
+  const openModelManager = useCallback(() => {
+    const activePath = modelCatalog && typeof artifact?.id === "number"
+      ? findCatalogModelPath(modelCatalog, artifact.id)
+      : undefined;
+    if (activePath) {
+      setSelectedModelCatalogPath(activePath);
+      setExpandedModelDirectories((current) => {
+        const next = new Set(current);
+        next.add("");
+        modelDirectoryAncestors(activePath).forEach((path) => next.add(path));
+        return next;
+      });
+    }
+    setModelManagerDialogOpen(true);
+  }, [artifact?.id, modelCatalog]);
+
   const switchModel = async () => {
     if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
       setLocalError("请选择 TensorRT engine 产物。");
@@ -2885,6 +2912,7 @@ export function StudioConsoleView({
       setModelSwitchStageIndex(4);
       setModelSwitchDialogStatus("success");
       setModelSwitchProgressDetail(`${manifestSummary}；${switchSummary}`);
+      setModelManagerDialogOpen(false);
       setModelCatalogRefreshKey((current) => current + 1);
       setModelDetailsRefreshKey((current) => current + 1);
       await onRefresh();
@@ -3301,31 +3329,15 @@ export function StudioConsoleView({
           </div>
           <div className="console-card model-selection-card">
             <SectionTitle title="模型设置" />
-            <ModelSelectionPanel
-              root={modelCatalog}
-              loading={modelCatalogLoading}
-              directoryCount={modelCatalogDirectoryCount}
-              modelCount={modelCatalogModelCount}
-              expandedDirectories={expandedModelDirectories}
-              selectedPath={selectedModelCatalogPath}
-              selectedModel={selectedCatalogModel}
-              selectedArtifact={selectedPreviewArtifact}
-              selectedVersion={selectedPreviewVersion}
-              activeArtifactId={artifact?.id ?? null}
-              activeModelName={activeModelName}
-              activeArtifactLabel={activeArtifactLabel}
-              runtimeBackend={readString(runtime?.inference?.selected, "")}
-              runtimeInputShape={displayedInputShape}
-              catalogMessage={modelCatalogMessage}
-              switchMessage={modelSwitchMessage}
-              busy={busy}
-              canSwitch={selectedCatalogModel?.kind === "engine"}
-              parserPreset={parserPreset}
-              onParserPresetChange={setParserPreset}
-              onRefresh={() => void refreshModelCatalog()}
-              onToggleDirectory={toggleModelDirectory}
-              onSelectModel={selectModelFromCatalog}
-              onSwitch={() => void switchModel()}
+            <CurrentModelSummary
+              active={artifact !== null && artifact !== undefined}
+              artifactLabel={activeArtifactLabel}
+              backend={selectedRuntimeBackend}
+              inputShape={displayedInputShape}
+              modelName={activeModelName}
+              outputShape={deepstreamModelOutputSummary}
+              precision={inferenceRuntimePrecision}
+              onOpenManager={openModelManager}
             />
           </div>
           <div className="console-grid2 inference-config-grid">
@@ -3350,44 +3362,10 @@ export function StudioConsoleView({
                 onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
               />
               <details className="model-debug-details">
-                <summary>工程调试详情</summary>
-                <label>模型版本</label>
-                <select
-                  value={selectedModelVersionId}
-                  onChange={(event) => {
-                    const nextVersionId =
-                      event.target.value === "" ? "" : Number(event.target.value);
-                    setSelectedModelVersionId(
-                      typeof nextVersionId === "number" && Number.isFinite(nextVersionId)
-                        ? nextVersionId
-                        : ""
-                    );
-                    setSelectedModelArtifactId("");
-                    setModelArtifacts([]);
-                  }}
-                >
-                  {modelVersions.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.version === "default" ? "自动发现版本" : item.version} · 输入 {item.input_shape}
-                    </option>
-                  ))}
-                  {modelVersions.length === 0 ? <option value="">暂无版本</option> : null}
-                </select>
-                <label>推理产物</label>
-                <select
-                  value={selectedSwitchArtifact?.id ?? ""}
-                  onChange={(event) => setSelectedModelArtifactId(Number(event.target.value))}
-                >
-                  {sortedSwitchableArtifacts.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.kind} · {item.path} · {formatModelSize(item.size_bytes)}{item.status === "pending" ? " · 待验证" : ""}
-                    </option>
-                  ))}
-                  {sortedSwitchableArtifacts.length === 0 ? <option value="">暂无可验证的 ONNX / engine 产物</option> : null}
-                </select>
+                <summary>当前模型工程详情</summary>
                 <div className="model-debug-grid">
-                  <span>推荐产物</span><b>{preferredSwitchArtifact ? `${preferredSwitchArtifact.kind} · ${preferredSwitchArtifact.path}` : "-"}</b>
-                  <span>当前产物</span><b>{selectedSwitchArtifact ? `${selectedSwitchArtifact.kind} · ${selectedSwitchArtifact.path}` : "-"}</b>
+                  <span>当前模型</span><b>{activeModelName}</b>
+                  <span>当前产物</span><b>{activeArtifactLabel}</b>
                   <span>运行输入</span><b>{runtimeInputShape || "-"}</b>
                   <span>登记输入</span><b>{registeredInputShape || "-"}</b>
                   <span>运行输出</span><b>{deepstreamModelOutputSummary}</b>
@@ -3678,7 +3656,26 @@ export function StudioConsoleView({
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
-            <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+              <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
+              <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+            </div>
+            <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
+              <div className="control-output-gate-identity">
+                <span className="control-output-gate-icon" aria-hidden="true">
+                  <NovaIcon name={outputEnabled ? "device-send" : "pause-output"} size={21} strokeWidth={1.8} />
+                </span>
+                <div>
+                  <span className="class-config-eyebrow">GLOBAL OUTPUT GATE</span>
+                  <h3>{outputEnabled ? "允许发送偏移控制量" : "偏移输出已暂停"}</h3>
+                  <p>只控制最终鼠标位移是否交付；不会断开 KMNet，也不会停止采集、推理、目标选择和控制量计算。</p>
+                </div>
+              </div>
+              <ModuleSwitch
+                label="发送偏移控制量"
+                detail={outputEnabled ? "关闭后立即清空待发送旧命令" : "开启后只发送新的实时观测"}
+                enabled={outputEnabled}
+                onToggle={(enabled) => updateConfigField("control", "output_enabled", enabled)}
+              />
             </div>
             <div className={motionProfileRuntime?.enabled ? "console-card motion-control-mode-card human" : motionProfileRuntime === null ? "console-card motion-control-mode-card loading" : "console-card motion-control-mode-card static"}>
               <div className="motion-control-mode-copy">
@@ -4847,6 +4844,37 @@ export function StudioConsoleView({
         </div>
       ) : null}
 
+      <ModelManagerDialog
+        activeArtifactLabel={activeArtifactLabel}
+        activeModelName={activeModelName}
+        onClose={closeModelManager}
+        open={modelManagerDialogOpen}
+        panelProps={{
+          root: modelCatalog,
+          loading: modelCatalogLoading,
+          directoryCount: modelCatalogDirectoryCount,
+          modelCount: modelCatalogModelCount,
+          expandedDirectories: expandedModelDirectories,
+          selectedPath: selectedModelCatalogPath,
+          selectedModel: selectedCatalogModel,
+          selectedArtifact: selectedPreviewArtifact,
+          selectedVersion: selectedPreviewVersion,
+          activeArtifactId: artifact?.id ?? null,
+          runtimeBackend: readString(runtime?.inference?.selected, ""),
+          runtimeInputShape: displayedInputShape,
+          catalogMessage: modelCatalogMessage,
+          switchMessage: modelSwitchMessage,
+          busy,
+          canSwitch: selectedCatalogModel?.kind === "engine",
+          parserPreset,
+          onParserPresetChange: setParserPreset,
+          onRefresh: () => void refreshModelCatalog(),
+          onToggleDirectory: toggleModelDirectory,
+          onSelectModel: selectModelFromCatalog,
+          onSwitch: () => void switchModel()
+        }}
+      />
+
       <ModelSwitchDialog
         completedStages={modelSwitchCompletedStages}
         currentStage={modelSwitchStageIndex}
@@ -5175,6 +5203,11 @@ function findCatalogModelByPath(
     }
   }
   return null;
+}
+
+function modelDirectoryAncestors(relativePath: string): string[] {
+  const parts = relativePath.split("/").filter(Boolean);
+  return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
 }
 
 function PreviewFrame({

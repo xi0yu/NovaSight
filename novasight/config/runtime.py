@@ -321,6 +321,9 @@ class HumanizedMotionConfig:
 @dataclass
 class ControlConfig:
     active_algorithm: str = DEFAULT_ACTIVE_ALGORITHM_ID
+    # Global runtime gate for mouse offset delivery.  Detection, tracking,
+    # control calculation, and the kmNet connection stay alive when disabled.
+    output_enabled: bool = True
     target_fov_radius_px: float = 180.0
     target_switch_delay_ms: float = 50.0
     target_lock_enabled: bool = True

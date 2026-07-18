@@ -804,6 +804,7 @@ class RuntimeService:
         if cls._execution_is_pending_latest_replace(result):
             return False
         return action not in {
+            "output_disabled",
             "scheduler_superseded",
             "executor_superseded",
             "scheduler_idle",
@@ -2260,10 +2261,13 @@ class RuntimeService:
             and trigger_activation_ready
             and control_allowed
         )
+        output_enabled = bool(self.config.control.output_enabled)
         has_movement = int(command.dx) != 0 or int(command.dy) != 0
-        will_emit = can_emit and has_movement
+        will_emit = can_emit and has_movement and output_enabled
         no_send_reason = ""
-        if not can_emit:
+        if not output_enabled:
+            no_send_reason = "CONTROL_OUTPUT_DISABLED"
+        elif not can_emit:
             no_send_reason = (
                 "CONTROL_NOT_ALLOWED"
                 if not control_allowed
@@ -2385,6 +2389,7 @@ class RuntimeService:
             ),
             "trigger_raw": trigger_raw,
             "output_mode": output_mode,
+            "output_enabled": output_enabled,
             "will_emit": will_emit,
             "no_send_reason": no_send_reason,
             "control_allowed": control_allowed,

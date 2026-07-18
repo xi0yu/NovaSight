@@ -964,6 +964,12 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "restart_required": False,
                     },
                     {
+                        "path": "control.output_enabled",
+                        "label": "发送偏移控制量",
+                        "type": "bool",
+                        "restart_required": False,
+                    },
+                    {
                         "path": "control.scheduler_enabled",
                         "label": "启用 Scheduler 分步发送",
                         "type": "bool",

@@ -337,6 +337,7 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert not hasattr(cfg.control.shared, "recoil_ramp_up_ms")
     assert cfg.control.scheduler_step_counts_x == 8
     assert cfg.control.scheduler_step_counts_y == 8
+    assert cfg.control.output_enabled is True
     assert cfg.control.scheduler_enabled is True
     assert cfg.control.scheduler_interval_ms == 4.0
     assert cfg.control.target_fov_radius_px == 180.0
@@ -1047,6 +1048,7 @@ def test_runtime_config_schema_exposes_only_exclusive_dual_mouse_control_fields(
         "control.shared.deadzone_y_px",
         "control.shared.max_count_slew_x",
         "control.shared.max_count_slew_y",
+        "control.output_enabled",
         "control.scheduler_step_counts_x",
         "control.scheduler_step_counts_y",
         "control.scheduler_interval_ms",

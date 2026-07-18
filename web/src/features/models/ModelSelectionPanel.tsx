@@ -15,7 +15,7 @@ import {
   modelStatusTone
 } from "./modelPresentation";
 
-interface ModelSelectionPanelProps {
+export interface ModelSelectionPanelProps {
   root: ModelCatalogDirectory | null;
   loading: boolean;
   directoryCount: number;
@@ -26,8 +26,6 @@ interface ModelSelectionPanelProps {
   selectedArtifact: ModelArtifact | null;
   selectedVersion: ModelVersion | null;
   activeArtifactId: number | null;
-  activeModelName: string;
-  activeArtifactLabel: string;
   runtimeBackend: string;
   runtimeInputShape: string;
   catalogMessage: string;
@@ -53,8 +51,6 @@ export function ModelSelectionPanel({
   selectedArtifact,
   selectedVersion,
   activeArtifactId,
-  activeModelName,
-  activeArtifactLabel,
   runtimeBackend,
   runtimeInputShape,
   catalogMessage,
@@ -194,12 +190,6 @@ export function ModelSelectionPanel({
             </div>
           </dl>
         </aside>
-      </div>
-
-      <div className="model-active-summary">
-        <span>当前运行模型</span>
-        <b title={activeModelName}>{activeModelName}</b>
-        <small title={activeArtifactLabel}>{activeArtifactLabel}</small>
       </div>
 
       {switchMessage ? <div className="model-switch-note good">{switchMessage}</div> : null}

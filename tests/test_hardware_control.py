@@ -146,6 +146,52 @@ def test_scheduler_disabled_sends_each_observation_directly_without_splitting() 
     assert registry.status()["scheduler"]["direct_output"] is True
 
 
+def test_global_output_gate_blocks_delivery_without_replacing_device_and_drops_old_plan() -> None:
+    class FakeExecutor:
+        executor_id = "kmnet"
+
+        def __init__(self) -> None:
+            self.outputs: list[ControlOutput] = []
+
+        def available(self) -> bool:
+            return True
+
+        def execute(self, output: ControlOutput) -> ExecutionResult:
+            self.outputs.append(output)
+            return ExecutionResult(self.executor_id, True, output, "sent")
+
+    config = RuntimeConfig()
+    config.control.active_algorithm = "universal_saturated"
+    fake = FakeExecutor()
+    registry = ExecutorRegistry.from_config(config)
+    registry.executors["kmnet"] = fake
+
+    scheduled = registry.execute(_intent(12, 4))
+    assert scheduled.sent is False
+    assert registry.status()["scheduler"]["has_pending"] is True
+
+    config.control.output_enabled = False
+    registry.update_runtime_config(config)
+    blocked = registry.tick_pending()
+    newly_blocked = registry.execute(_intent(8, 2))
+
+    assert registry.executors["kmnet"] is fake
+    assert blocked.metadata["block_reason"] == "CONTROL_OUTPUT_DISABLED"
+    assert newly_blocked.metadata["stage"] == "output_gate"
+    assert RuntimeService._execution_invalidates_control_state(newly_blocked) is False
+    assert registry.status()["output_enabled"] is False
+    assert fake.outputs == []
+
+    config.control.output_enabled = True
+    registry.update_runtime_config(config)
+    assert registry.tick_pending().sent is False
+    registry.execute(_intent(6, 2))
+    sent = registry.tick_pending()
+
+    assert sent.sent is True
+    assert len(fake.outputs) == 1
+
+
 def test_new_observation_only_replaces_plan_and_scheduler_tick_owns_send() -> None:
     class FakeExecutor:
         executor_id = "kmnet"
