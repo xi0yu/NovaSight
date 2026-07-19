@@ -344,12 +344,29 @@ function formatRecoilBlockReason(value: unknown): string {
   const reason = readString(value);
   const labels: Record<string, string> = {
     RECOIL_DISABLED: "关闭",
-    LEFT_TRIGGER_INACTIVE: "等待真实左键",
-    LEFT_TRIGGER_HOLD_INVALID: "左键状态无效",
-    RECOIL_START_DELAY: "等待启动延迟",
-    RECOIL_COUNTS_ZERO: "固定强度为零",
+    FIRING_INACTIVE: "等待真实左键",
+    DT_INVALID: "控制周期无效",
+    OBSERVATION_AGE_INVALID: "观测时间无效",
+    TARGET_STALE: "目标观测已过期",
+    TARGET_INVALID: "等待有效目标",
+    ERROR_INVALID: "垂直误差无效",
+    POSITION_BRAKE: "位置保护刹车",
+    RECOIL_RATE_ZERO: "压枪速率为零",
   };
-  return labels[reason] ?? (reason || "等待真实左键或启动延迟");
+  return labels[reason] ?? (reason || "等待真实左键或有效目标");
+}
+
+function formatRecoilState(stateValue: unknown, reasonValue: unknown): string {
+  const state = readString(stateValue);
+  const labels: Record<string, string> = {
+    IDLE: "待机",
+    STARTUP: "启动渐入",
+    ACTIVE: "即时追加",
+    HOLD: "稳定保持",
+    BRAKE: "位置刹车",
+    STALE: "观测过期",
+  };
+  return labels[state] ?? formatRecoilBlockReason(reasonValue);
 }
 
 function crosshairStateLabel(value: string): string {
@@ -1206,9 +1223,10 @@ export function StudioConsoleView({
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
   const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
   const triggerActivationDelayMs = readNumber(sharedControlConfig.trigger_activation_delay_ms, 0);
-  const recoilEnabled = readBoolean(sharedControlConfig.recoil_enabled, false);
-  const recoilStartDelayMs = readNumber(sharedControlConfig.recoil_start_delay_ms, 0);
-  const recoilYCountsPerObservation = readNumber(sharedControlConfig.recoil_y_counts_per_observation, 0);
+  const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
+  const recoilEnabled = readBoolean(recoilConfig.enabled, false);
+  const recoilStartupRampMs = readNumber(recoilConfig.startup_ms, 35);
+  const recoilBaseRate = readNumber(recoilConfig.base_rate_counts_s, 0);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -1289,7 +1307,6 @@ export function StudioConsoleView({
   const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
   const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
   const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
-  const controlObservationFps = readNumber(statistics?.control_observation_fps, 0);
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.kind === "engine" &&
@@ -2378,10 +2395,10 @@ export function StudioConsoleView({
   );
 
   const updateControlGroupField = useCallback(
-    async (group: "aim" | "calibrated_angular" | "universal_saturated" | "shared", key: string, value: RuntimeConfigValue) => {
+    async (group: "aim" | "calibrated_angular" | "universal_saturated" | "shared" | "recoil", key: string, value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const control = nestedRecord(base, "control");
-      if (group !== "aim" && group !== "shared") {
+      if (group !== "aim" && group !== "shared" && group !== "recoil") {
         const algorithms = nestedRecord(control, "algorithms");
         const algorithm = {
           ...nestedRecord(algorithms, group),
@@ -3665,10 +3682,11 @@ export function StudioConsoleView({
                     <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
                   </>
                 )}
-                <span>固定压枪状态</span><b>{controlPipeline.recoil_active === true ? "输出中" : recoilEnabled ? formatRecoilBlockReason(controlPipeline.recoil_block_reason) : "关闭"}</b>
-                <span>固定压枪 / 观测</span><b>{`${recoilYCountsPerObservation.toFixed(1)} counts · +Y 向下`}</b>
-                <span>预估固定压枪强度</span><b>{`${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s @ ${controlObservationFps.toFixed(1)} FPS`}</b>
-                <span>视觉 / 固定 / 合成 Y</span><b>{`${formatOptionalNumber(controlPipeline.feedback_demand_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_y_counts_float, 2)} / ${formatOptionalNumber(controlPipeline.combined_demand_y, 2)} counts`}</b>
+                <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
+                <span>基础 / 追加速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_base_rate_counts_s, 0)} / ${formatOptionalNumber(controlPipeline.recoil_fast_add_rate_counts_s, 0)} counts/s`}</b>
+                <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
+                <span>请求 / 实际输出</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 2)} counts`}</b>
+                <span>误差归一化</span><b>{formatOptionalNumber(controlPipeline.recoil_error_y_norm, 3)}</b>
                 <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, 1, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, 1, "ms")}`}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
@@ -3989,12 +4007,14 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                  <SectionTitle title="固定 Y 轴压枪 · 所有控制算法" />
-                  <ModuleSwitch label="启用固定 Y 压枪" detail="真实左键达到启动延迟后，Y 轴只输出固定的 +Y 向下 counts；开火期间不叠加目标视觉 Y，也不受反转设置影响。X 轴仍正常跟踪。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("shared", "recoil_enabled", enabled)} />
+                  <SectionTitle title="独立 Y 轴压枪 · 所有控制算法" />
+                  <ModuleSwitch label="启用独立压枪" detail="开火后按独立速率曲线输出 Y 轴补偿；与目标跟踪分开计算。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
                   {recoilEnabled ? (
                     <>
-                      <NumberControl label="开始压枪前等待 ms" detail="从真实左键按下开始计时；未达到该时间时固定压枪保持为零。" value={recoilStartDelayMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("shared", "recoil_start_delay_ms", value)} />
-                      <NumberControl label="每个新观测向下 counts" detail={`每个新鲜目标观测固定输出 +Y 向下量；当前约 ${(recoilYCountsPerObservation * controlObservationFps).toFixed(1)} counts/s（${controlObservationFps.toFixed(1)} 控制观测 FPS），小数由独立余量累计。`} value={recoilYCountsPerObservation} min={0} max={20} step={0.1} onCommit={(value) => updateControlGroupField("shared", "recoil_y_counts_per_observation", value)} />
+                      <NumberControl label="压枪启动斜坡 ms" detail="从真实左键按下开始，压枪速率逐步进入基础速率。" value={recoilStartupRampMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("recoil", "startup_ms", value)} />
+                      <NumberControl label="基础压枪速率 counts/s" detail="与观测 FPS 无关的时间速率。" value={recoilBaseRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "base_rate_counts_s", value)} />
+                      <NumberControl label="最大压枪速率 counts/s" value={readNumber(recoilConfig.max_rate_counts_s, 0)} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "max_rate_counts_s", value)} />
+                      <NumberControl label="追加强度 counts/s" value={readNumber(recoilConfig.fast_add_gain_counts_s, 0)} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "fast_add_gain_counts_s", value)} />
                     </>
                   ) : null}
                 </div>

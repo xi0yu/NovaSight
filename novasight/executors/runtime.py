@@ -9,6 +9,7 @@ from typing import Any
 
 from novasight.config import RuntimeConfig
 from novasight.control import (
+    ControlMixer,
     DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
     MAX_PLAN_DURATION_MS,
     CommandScheduler,
@@ -16,6 +17,7 @@ from novasight.control import (
     ControlOutputPolicy,
     plan_step_capacity,
 )
+from novasight.control.recoil import RecoilDecision, RecoilState
 from novasight.control.registry import SchedulerPolicy, algorithm_definition
 from novasight.executors.contracts import ExecutionResult, Executor
 from novasight.executors.kmnet import KmNetExecutor
@@ -47,6 +49,7 @@ class ExecutorRegistry:
         self.direct_output = bool(direct_output) or self.single_command_per_observation
         self._config_epoch = 0
         self._submission_epoch = 0
+        self._actuation_sequence = 0
         self._scheduler_lock = threading.Lock()
         self._executor_lock = threading.Lock()
         self.mouse_command_executor = MouseCommandExecutor(self._executor_lock)
@@ -80,7 +83,10 @@ class ExecutorRegistry:
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> ExecutorRegistry:
         capabilities = algorithm_definition(str(config.control.active_algorithm)).capabilities
-        latest_replace = capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
+        latest_replace = bool(
+            capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
+            or config.control.recoil.enabled
+        )
         return cls.with_builtin_executors(
             config=config,
             default="kmnet",
@@ -96,7 +102,10 @@ class ExecutorRegistry:
         if selected not in self.executors:
             raise ValueError(f"unknown executor: {selected}")
         capabilities = algorithm_definition(str(config.control.active_algorithm)).capabilities
-        latest_replace = capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
+        latest_replace = bool(
+            capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
+            or config.control.recoil.enabled
+        )
         single_command = False
         scheduler = scheduler_from_config(config)
         direct_output = not latest_replace and not bool(config.control.scheduler_enabled)
@@ -330,7 +339,13 @@ class ExecutorRegistry:
         )
         return replace(result, metadata=metadata)
 
-    def tick_pending(self, *, now_s: float | None = None) -> ExecutionResult:
+    def tick_pending(
+        self,
+        *,
+        now_s: float | None = None,
+        recoil: RecoilDecision | None = None,
+        recoil_source: ControlIntent | None = None,
+    ) -> ExecutionResult:
         with self._scheduler_lock:
             single_command = self.single_command_per_observation
             latest_replace = self.latest_replace
@@ -377,7 +392,90 @@ class ExecutorRegistry:
             )
         assert decision is not None
         scheduler_metadata = decision.metadata
-        if decision.output is None:
+        tracking_output = decision.output
+        output = tracking_output
+        recoil_generation = (
+            int(recoil_source.trajectory_generation)
+            if recoil_source is not None
+            and recoil_source.trajectory_generation is not None
+            else None
+        )
+        tracking_generation = (
+            int(tracking_output.trajectory_generation)
+            if tracking_output is not None
+            and tracking_output.trajectory_generation is not None
+            else None
+        )
+        recoil_generation_matches = bool(
+            tracking_output is None
+            or recoil_generation is None
+            or tracking_generation is None
+            or recoil_generation == tracking_generation
+        )
+        recoil_owns_tick = bool(
+            recoil is not None
+            and recoil_generation_matches
+            and recoil.state
+            in {
+                RecoilState.STARTUP,
+                RecoilState.ACTIVE,
+                RecoilState.HOLD,
+                RecoilState.BRAKE,
+            }
+        )
+        if recoil_owns_tick or (
+            recoil is not None
+            and recoil.state is RecoilState.STALE
+            and tracking_output is not None
+            and recoil_generation_matches
+        ):
+            template = tracking_output
+            if template is None and recoil_source is not None:
+                template = self.policy.apply(recoil_source)
+                template = replace(template, dx=0, dy=0)
+            if template is not None:
+                mixed = ControlMixer().mix(
+                    float(tracking_output.dx) if tracking_output is not None else 0.0,
+                    float(tracking_output.dy) if tracking_output is not None else 0.0,
+                    recoil,
+                )
+                output = replace(
+                    template,
+                    dx=int(mixed.final_x),
+                    dy=int(mixed.final_y),
+                    source_generation=(
+                        int(recoil_source.trajectory_generation)
+                        if recoil_source is not None
+                        and recoil_source.trajectory_generation is not None
+                        else template.trajectory_generation
+                    ),
+                    trigger_required=True if mixed.recoil_active else template.trigger_required,
+                    trigger_active=True if mixed.recoil_active else template.trigger_active,
+                    left_trigger_required=(
+                        True if mixed.recoil_active else template.left_trigger_required
+                    ),
+                )
+                scheduler_metadata = {
+                    **scheduler_metadata,
+                    "recoil_mixed": True,
+                    "tracking_dx": mixed.tracking_x,
+                    "tracking_dy": mixed.tracking_y,
+                    "recoil_dy": mixed.recoil_y,
+                    "mixed_dx": mixed.final_x,
+                    "mixed_dy": mixed.final_y,
+                    "recoil_owns_y": mixed.recoil_active,
+                }
+        elif recoil is not None and not recoil_generation_matches:
+            scheduler_metadata = {
+                **scheduler_metadata,
+                "recoil_mixed": False,
+                "recoil_generation_mismatch": True,
+                "recoil_source_generation": recoil_generation,
+                "tracking_source_generation": tracking_generation,
+            }
+        if output is None or (
+            output.action == "move" and int(output.dx) == 0 and int(output.dy) == 0
+        ):
             return ExecutionResult(
                 executor_id=selected,
                 sent=False,
@@ -403,17 +501,27 @@ class ExecutorRegistry:
                 ):
                     return _scheduler_superseded_result(
                         selected=selected,
-                        output=decision.output,
+                        output=output,
                     )
+                self._actuation_sequence += 1
+                output = replace(
+                    output,
+                    actuation_sequence=self._actuation_sequence,
+                    source_generation=(
+                        output.source_generation
+                        if output.source_generation is not None
+                        else output.trajectory_generation
+                    ),
+                )
                 device_send_start_ts_ns = time.monotonic_ns()
                 executor = self.executors[selected]
                 result = (
                     self.mouse_command_executor.execute_locked(
                         executor=executor,
-                        command=decision.output,
+                        command=output,
                     )
                     if latest_replace
-                    else executor.execute(decision.output)
+                    else executor.execute(output)
                 )
                 device_send_end_ts_ns = time.monotonic_ns()
                 result_action = str((result.metadata or {}).get("action") or "")
@@ -501,6 +609,8 @@ class ExecutorRegistry:
                 self.scheduler.clear(reason)
 
     def reset_mouse_command_executor(self) -> None:
+        with self._scheduler_lock:
+            self._actuation_sequence = 0
         self.mouse_command_executor.reset()
 
     def _scheduler_status(self) -> dict[str, Any]:
@@ -549,13 +659,14 @@ def policy_from_config(config: RuntimeConfig) -> ControlOutputPolicy:
 
 
 def scheduler_from_config(config: RuntimeConfig) -> CommandScheduler | None:
-    latest_replace = (
+    latest_replace = bool(
         algorithm_definition(str(config.control.active_algorithm)).capabilities.scheduler_policy
         is SchedulerPolicy.LATEST_REPLACE
+        or config.control.recoil.enabled
     )
     if not latest_replace and not bool(config.control.scheduler_enabled):
         return None
-    if latest_replace:
+    if latest_replace and config.control.active_algorithm == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
         precise = config.control.dual_phase_atan_robust_predictive_v2
         maximum = int(
             math.ceil(

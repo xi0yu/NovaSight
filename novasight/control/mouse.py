@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, Protocol
 
-from novasight.control.recoil import FixedRecoilConfig, FixedRecoilController
 from novasight.control.humanized_motion import HumanizedMotionGenerator, HumanizedMotionInput
 from novasight.control.registry import CALIBRATED_ANGULAR, UNIVERSAL_SATURATED
 
@@ -106,9 +105,6 @@ class SharedOutputConfig:
     invert_y: bool
     max_budget_counts_x: int
     max_budget_counts_y: int
-    recoil_enabled: bool = False
-    recoil_start_delay_ms: float = 0.0
-    recoil_y_counts_per_observation: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,15 +333,6 @@ class MouseController:
         self.config = config
         self.controller = ControllerFactory.create(config)
         self.state = MouseControllerState()
-        self.recoil = FixedRecoilController(
-            FixedRecoilConfig(
-                enabled=config.shared.recoil_enabled,
-                start_delay_ms=config.shared.recoil_start_delay_ms,
-                y_counts_per_observation=(
-                    config.shared.recoil_y_counts_per_observation
-                ),
-            )
-        )
         self.humanized_motion = HumanizedMotionGenerator(config.humanized_profile)
 
     @property
@@ -355,7 +342,6 @@ class MouseController:
     def reset(self) -> None:
         self.controller.reset()
         self.state.reset()
-        self.recoil.reset()
         self.humanized_motion.reset()
 
     def calculate(self, observation: MouseObservation) -> MoveCommand:
@@ -488,16 +474,7 @@ class MouseController:
             deadzone_limited.x,
             -deadzone_limited.y if shared.invert_y else deadzone_limited.y,
         )
-        recoil = self.recoil.calculate(
-            left_trigger_active=(
-                observation.left_trigger_active and observation.observed_valid
-            ),
-            left_trigger_hold_ms=observation.left_trigger_hold_ms,
-        )
-        effective_demand_y = (
-            float(recoil.emitted_counts_y) if recoil.active else directed_counts.y
-        )
-        mixed_counts = Vec2(directed_counts.x, effective_demand_y)
+        mixed_counts = directed_counts
         previous_counts = (
             self.state.previous_counts if self.state.output_history_valid else Vec2(0.0, 0.0)
         )
@@ -508,9 +485,7 @@ class MouseController:
                 shared.max_count_slew_x,
             ),
             (
-                mixed_counts.y
-                if recoil.active
-                else _slew_limit(
+                _slew_limit(
                     mixed_counts.y,
                     previous_counts.y,
                     shared.max_count_slew_y,
@@ -526,13 +501,8 @@ class MouseController:
             feasible_counts.x,
             self.state.residual_x_counts,
         )
-        residual_input_y, residual_direction_reset_y = (
-            (0.0, self.state.residual_y_counts != 0.0)
-            if recoil.active
-            else _residual_for_direction(
-                feasible_counts.y,
-                self.state.residual_y_counts,
-            )
+        residual_input_y, residual_direction_reset_y = _residual_for_direction(
+            feasible_counts.y, self.state.residual_y_counts
         )
         counts_x, residual_x = _quantize_counts(feasible_counts.x, residual_input_x)
         counts_y, residual_y = _quantize_counts(feasible_counts.y, residual_input_y)
@@ -574,19 +544,8 @@ class MouseController:
             "directed_counts_x_float": directed_counts.x,
             "directed_counts_y_float": directed_counts.y,
             "feedback_demand_y": directed_counts.y,
-            "recoil_enabled": shared.recoil_enabled,
-            "recoil_active": recoil.active,
-            "recoil_left_hold_ms": observation.left_trigger_hold_ms,
-            "recoil_y_counts_per_observation": (
-                shared.recoil_y_counts_per_observation
-            ),
-            "recoil_y_counts_float": recoil.requested_counts_y,
-            "recoil_y_counts_emitted": recoil.emitted_counts_y,
-            "recoil_residual_y_counts": recoil.residual_counts_y,
-            "recoil_block_reason": recoil.block_reason,
-            "recoil_y_policy": "fixed_down_exclusive",
             "combined_demand_y": (
-                recoil.requested_counts_y if recoil.active else directed_counts.y
+                directed_counts.y
             ),
             "mixed_counts_x_float": mixed_counts.x,
             "mixed_counts_y_float": mixed_counts.y,

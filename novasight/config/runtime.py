@@ -302,9 +302,20 @@ class SharedControlConfig:
     arrival_hysteresis_enabled: bool = True
     invert_y: bool = False
     trigger_activation_delay_ms: float = 0.0
-    recoil_enabled: bool = False
-    recoil_start_delay_ms: float = 0.0
-    recoil_y_counts_per_observation: float = 0.0
+
+
+@dataclass
+class RecoilConfig:
+    enabled: bool = False
+    base_rate_counts_s: float = 0.0
+    max_rate_counts_s: float = 0.0
+    startup_ms: float = 35.0
+    positive_deadzone_norm: float = 0.04
+    negative_deadzone_norm: float = 0.04
+    full_brake_error_norm: float = 0.12
+    fast_add_gain_counts_s: float = 0.0
+    max_fast_add_ratio: float = 0.30
+    stale_threshold_ms: float = 55.0
 
 
 @dataclass
@@ -324,6 +335,7 @@ class ControlConfig:
     # Global runtime gate for mouse offset delivery.  Detection, tracking,
     # control calculation, and the kmNet connection stay alive when disabled.
     output_enabled: bool = True
+    recoil: RecoilConfig = field(default_factory=RecoilConfig)
     target_fov_radius_px: float = 180.0
     target_switch_delay_ms: float = 50.0
     target_lock_enabled: bool = True
@@ -996,25 +1008,16 @@ def _migrate_shared_aim_config(control: dict[str, Any]) -> None:
 def _migrate_fixed_recoil_config(control: dict[str, Any]) -> None:
     shared = control.get("shared")
     if not isinstance(shared, dict):
-        return
+        shared = {}
     shared = dict(shared)
-    legacy_present = any(
-        key in shared
-        for key in (
-            "recoil_y_rate_counts_s",
-            "recoil_ramp_up_ms",
-            "recoil_max_counts_per_observation",
-        )
-    )
-    shared.pop("recoil_y_rate_counts_s", None)
-    shared.pop("recoil_ramp_up_ms", None)
-    shared.pop("recoil_max_counts_per_observation", None)
-    if legacy_present:
-        # A rate cannot be converted without assuming an observation FPS. The
-        # retired behavior also caused unsafe over-compensation, so migration
-        # preserves enable/delay but requires an explicit new fixed amount.
-        shared.setdefault("recoil_y_counts_per_observation", 0.0)
+    recoil = dict(control.get("recoil") or {})
+    # Retire the old per-observation implementation without carrying any of
+    # its semantics into the independent time-rate controller.
+    for key in tuple(shared):
+        if key.startswith("recoil_"):
+            shared.pop(key, None)
     control["shared"] = shared
+    control["recoil"] = recoil
 
 
 _REMOVED_LEGACY_CONTROL_KEYS = frozenset(
@@ -1440,8 +1443,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(f"runtime config key 'control.shared.{key}' must be finite and > 0")
     shared_bounds = {
         "trigger_activation_delay_ms": (0.0, 1000.0),
-        "recoil_start_delay_ms": (0.0, 1000.0),
-        "recoil_y_counts_per_observation": (0.0, 20.0),
     }
     for key, (minimum, maximum) in shared_bounds.items():
         value = float(getattr(shared, key))
@@ -1449,6 +1450,26 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             raise ValueError(
                 f"runtime config key 'control.shared.{key}' must be >= {minimum} and <= {maximum}"
             )
+    recoil = cfg.control.recoil
+    recoil_bounds = {
+        "base_rate_counts_s": (0.0, 5000.0),
+        "max_rate_counts_s": (0.0, 5000.0),
+        "startup_ms": (0.0, 1000.0),
+        "positive_deadzone_norm": (0.0, 1.0),
+        "negative_deadzone_norm": (0.0, 1.0),
+        "full_brake_error_norm": (0.0, 1.0),
+        "fast_add_gain_counts_s": (0.0, 5000.0),
+        "max_fast_add_ratio": (0.0, 1.0),
+        "stale_threshold_ms": (0.0, 5000.0),
+    }
+    for key, (minimum, maximum) in recoil_bounds.items():
+        value = float(getattr(recoil, key))
+        if not math.isfinite(value) or value < minimum or value > maximum:
+            raise ValueError(f"runtime config key 'control.recoil.{key}' must be finite and within bounds")
+    if recoil.max_rate_counts_s < recoil.base_rate_counts_s:
+        raise ValueError("runtime config key 'control.recoil.max_rate_counts_s' must be >= base_rate_counts_s")
+    if recoil.full_brake_error_norm <= recoil.negative_deadzone_norm:
+        raise ValueError("runtime config key 'control.recoil.full_brake_error_norm' must be > negative_deadzone_norm")
     for key in ("scheduler_step_counts_x", "scheduler_step_counts_y"):
         value = int(getattr(cfg.control, key))
         if value < 1 or value > 20:

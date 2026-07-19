@@ -8,7 +8,7 @@ from typing import Any
 
 
 CONTROL_TRACE_SCHEMA_NAME = "novasight.control_trace"
-CONTROL_TRACE_SCHEMA_VERSION = 5
+CONTROL_TRACE_SCHEMA_VERSION = 6
 MONOTONIC_CLOCK_DOMAIN = "monotonic"
 UNKNOWN_REASON_DEVICE_FEEDBACK = "device_feedback_unavailable"
 
@@ -64,6 +64,14 @@ CONTROL_TRACE_FIELD_UNITS: dict[str, str] = {
     "algorithm.float_demand": "counts",
     "algorithm.integer_command": "counts",
     "algorithm.quantizer_residual": "counts",
+    "algorithm.recoil.base_rate_counts_s": "counts/s",
+    "algorithm.recoil.fast_add_rate_counts_s": "counts/s",
+    "algorithm.recoil.final_rate_counts_s": "counts/s",
+    "algorithm.recoil.requested_counts_y": "counts",
+    "algorithm.recoil.emitted_counts_y": "counts",
+    "algorithm.recoil.residual_counts_y": "counts",
+    "algorithm.recoil.error_y_norm": "bbox",
+    "algorithm.recoil.observation_age_ms": "ms",
 }
 
 
@@ -339,25 +347,33 @@ def build_control_trace_record(
                 ),
             },
             "recoil": {
-                "mode": "fixed_per_observation",
+                "mode": _text(pipeline.get("recoil_mode")),
                 "enabled": _optional_bool(pipeline.get("recoil_enabled")),
                 "active": _optional_bool(pipeline.get("recoil_active")),
-                "left_hold_ms": _optional_number(pipeline.get("recoil_left_hold_ms")),
-                "counts_per_observation": _optional_number(
-                    pipeline.get("recoil_y_counts_per_observation")
+                "state": _text(pipeline.get("recoil_state")),
+                "base_rate_counts_s": _optional_number(pipeline.get("recoil_base_rate_counts_s")),
+                "fast_add_rate_counts_s": _optional_number(
+                    pipeline.get("recoil_fast_add_rate_counts_s")
                 ),
-                "y_counts": _optional_number(pipeline.get("recoil_y_counts_float")),
-                "feedback_demand_y": _optional_number(
-                    pipeline.get("feedback_demand_y")
+                "position_gate": _optional_number(pipeline.get("recoil_position_gate")),
+                "final_rate_counts_s": _optional_number(
+                    pipeline.get("recoil_final_rate_counts_s")
                 ),
-                "combined_demand_y": _optional_number(
-                    pipeline.get("combined_demand_y")
+                "requested_counts_y": _optional_number(
+                    pipeline.get("recoil_requested_counts_y")
                 ),
-                "emitted_y_counts": _optional_number(
-                    pipeline.get("recoil_y_counts_emitted")
+                "emitted_counts_y": _optional_number(
+                    pipeline.get("recoil_emitted_counts_y")
                 ),
-                "residual_y_counts": _optional_number(
-                    pipeline.get("recoil_residual_y_counts")
+                "residual_counts_y": _optional_number(
+                    pipeline.get("recoil_residual_counts_y")
+                ),
+                "error_y_norm": _optional_number(pipeline.get("recoil_error_y_norm")),
+                "observation_age_ms": _optional_number(
+                    pipeline.get("recoil_observation_age_ms")
+                ),
+                "source_generation": _first_int(
+                    pipeline.get("recoil_source_generation")
                 ),
                 "block_reason": _text(pipeline.get("recoil_block_reason")),
             },

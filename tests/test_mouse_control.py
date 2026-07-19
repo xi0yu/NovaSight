@@ -11,8 +11,6 @@ from novasight.control import (
     CalibratedAngularController,
     CalibratedAngularControllerConfig,
     ControllerFactory,
-    FixedRecoilConfig,
-    FixedRecoilController,
     MouseController,
     MouseControllerConfig,
     MouseObservation,
@@ -359,104 +357,6 @@ def test_mouse_controller_inverts_y_only_in_count_mapping() -> None:
 
     assert command.debug["limited_output_y_rad"] > 0.0
     assert command.dy < 0
-
-
-def test_fixed_recoil_controller_delays_quantizes_and_resets_without_dt() -> None:
-    controller = FixedRecoilController(
-        FixedRecoilConfig(
-            enabled=True,
-            start_delay_ms=50.0,
-            y_counts_per_observation=0.5,
-        )
-    )
-
-    delayed = controller.calculate(
-        left_trigger_active=True,
-        left_trigger_hold_ms=49.9,
-    )
-    first = controller.calculate(
-        left_trigger_active=True,
-        left_trigger_hold_ms=50.0,
-    )
-    second = controller.calculate(
-        left_trigger_active=True,
-        left_trigger_hold_ms=51.0,
-    )
-    released = controller.calculate(
-        left_trigger_active=False,
-        left_trigger_hold_ms=0.0,
-    )
-
-    assert delayed.block_reason == "RECOIL_START_DELAY"
-    assert first.emitted_counts_y == 0
-    assert first.residual_counts_y == pytest.approx(0.5)
-    assert second.emitted_counts_y == 1
-    assert second.residual_counts_y == 0.0
-    assert released.block_reason == "LEFT_TRIGGER_INACTIVE"
-    assert released.residual_counts_y == 0.0
-
-
-def test_fixed_recoil_owns_y_output_while_active_even_when_target_is_above() -> None:
-    controller = MouseController(
-        _config(
-            calibrated={"kp_x": 0.0, "kp_y": 1.0},
-            shared={
-                "recoil_enabled": True,
-                "recoil_start_delay_ms": 0.0,
-                "recoil_y_counts_per_observation": 2.0,
-                "invert_y": False,
-                "max_count_slew_y": 1000.0,
-            },
-        )
-    )
-
-    command = controller.calculate(
-        _observation(
-            frame_id=1,
-            observed_y=50.0,
-            predicted_y=50.0,
-            left_trigger_active=True,
-            left_trigger_hold_ms=20.0,
-        )
-    )
-
-    assert command.debug["feedback_demand_y"] < 0.0
-    assert command.debug["recoil_y_counts_float"] == pytest.approx(2.0)
-    assert command.debug["recoil_y_policy"] == "fixed_down_exclusive"
-    assert command.dy == 2
-
-
-def test_mouse_controller_resets_fixed_recoil_on_predicted_only_track() -> None:
-    controller = MouseController(
-        _config(
-            calibrated={"kp_x": 0.0, "kp_y": 0.0},
-            shared={
-                "recoil_enabled": True,
-                "recoil_y_counts_per_observation": 0.5,
-            },
-        )
-    )
-
-    first = controller.calculate(
-        _observation(frame_id=1, left_trigger_active=True, left_trigger_hold_ms=20.0)
-    )
-    predicted_only = controller.calculate(
-        _observation(
-            frame_id=2,
-            observed_valid=False,
-            left_trigger_active=True,
-            left_trigger_hold_ms=30.0,
-        )
-    )
-    observed_again = controller.calculate(
-        _observation(frame_id=3, left_trigger_active=True, left_trigger_hold_ms=40.0)
-    )
-
-    assert first.debug["recoil_residual_y_counts"] == pytest.approx(0.5)
-    assert predicted_only.debug["recoil_active"] is False
-    assert predicted_only.debug["recoil_residual_y_counts"] == 0.0
-    assert observed_again.dy == 0
-    assert observed_again.debug["recoil_residual_y_counts"] == pytest.approx(0.5)
 
 
 def test_mouse_controller_distinguishes_theoretical_and_limited_counts() -> None:

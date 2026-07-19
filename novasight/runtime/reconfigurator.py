@@ -590,8 +590,8 @@ class RuntimeReconfigurator:
             or previous_config.hardware.uuid != config.hardware.uuid
             or previous_config.hardware.monitor_port != config.hardware.monitor_port
             or previous_config.control.trigger_mode != config.control.trigger_mode
-            or previous_config.control.shared.recoil_enabled
-            != config.control.shared.recoil_enabled
+            or previous_config.control.recoil.enabled
+            != config.control.recoil.enabled
         )
 
     @staticmethod

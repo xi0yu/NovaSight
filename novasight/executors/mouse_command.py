@@ -65,7 +65,7 @@ class MouseCommandExecutor:
                 checked_ts_ns=send_start_ns,
             )
 
-        generation = int(command.trajectory_generation)
+        generation = int(command.actuation_sequence or command.trajectory_generation or 0)
         self._last_generation = generation
         if command.action == "move" and command.dx == 0 and command.dy == 0:
             return ExecutionResult(
@@ -146,7 +146,10 @@ class MouseCommandExecutor:
                 return "TRIGGER_STATE_UNAVAILABLE"
             if not isinstance(state, dict) or state.get("available") is not True:
                 return "TRIGGER_STATE_UNAVAILABLE"
-            if not bool(state.get("left") or state.get("right") or state.get("side")):
+            pressed = bool(state.get("left")) if command.left_trigger_required else bool(
+                state.get("left") or state.get("right") or state.get("side")
+            )
+            if not pressed:
                 return "TRIGGER_INACTIVE"
         return ""
 
@@ -161,11 +164,13 @@ class MouseCommandExecutor:
             return "COMMAND_FRESHNESS_MISSING"
         if now_ns > int(expires_ts_ns):
             return "COMMAND_STALE"
-        generation = command.trajectory_generation
+        generation = command.actuation_sequence
+        if generation is None:
+            generation = command.trajectory_generation
         if generation is None:
             return "COMMAND_GENERATION_MISSING"
         if self._last_generation is not None and int(generation) <= self._last_generation:
-            return "COMMAND_GENERATION_NOT_NEWER"
+            return "COMMAND_ACTUATION_NOT_NEWER"
         return ""
 
     def _blocked_result(

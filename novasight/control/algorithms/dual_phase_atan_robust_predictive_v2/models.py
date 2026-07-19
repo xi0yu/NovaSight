@@ -68,13 +68,6 @@ class PredictionConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class RecoilConfig:
-    enabled: bool = False
-    start_delay_ms: float = 0.0
-    y_counts_per_observation: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
 class AtanModeConfig:
     kp: float
     max_counts_per_update: float
@@ -108,7 +101,6 @@ class DualPhaseAtanRobustPredictiveV2Config:
     mode: ModeSelectorConfig = field(default_factory=ModeSelectorConfig)
     velocity: VelocityConfig = field(default_factory=VelocityConfig)
     prediction: PredictionConfig = field(default_factory=PredictionConfig)
-    recoil: RecoilConfig = field(default_factory=RecoilConfig)
     atan: AtanControllerConfig = field(default_factory=AtanControllerConfig)
     humanized_profile: dict[str, object] | None = None
 

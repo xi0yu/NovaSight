@@ -93,7 +93,7 @@ class KmNetExecutor:
                 config.hardware.monitor_port
                 if (
                     config.control.trigger_mode == "hardware"
-                    or bool(config.control.shared.recoil_enabled)
+                    or bool(config.control.recoil.enabled)
                 )
                 else 0
             ),

@@ -154,9 +154,17 @@ control:
     arrival_hysteresis_enabled: true
     invert_y: false
     trigger_activation_delay_ms: 0.0
-    recoil_enabled: false
-    recoil_start_delay_ms: 0.0
-    recoil_y_counts_per_observation: 0.0
+  recoil:
+    enabled: false
+    base_rate_counts_s: 0.0
+    max_rate_counts_s: 0.0
+    startup_ms: 35.0
+    positive_deadzone_norm: 0.04
+    negative_deadzone_norm: 0.04
+    full_brake_error_norm: 0.12
+    fast_add_gain_counts_s: 0.0
+    max_fast_add_ratio: 0.30
+    stale_threshold_ms: 55.0
   configured_actuation_delay_s: 0.004
   # V2 keeps only the newest complete command. The output tick validates and
   # sends it once; it never creates a cross-frame move plan.

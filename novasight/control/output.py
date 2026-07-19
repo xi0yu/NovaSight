@@ -29,7 +29,10 @@ class ControlOutput:
     trajectory_generation: int | None = None
     trigger_required: bool | None = None
     trigger_active: bool | None = None
+    left_trigger_required: bool = False
     command_expires_ts_ns: int | None = None
+    source_generation: int | None = None
+    actuation_sequence: int | None = None
 
 
 class ControlOutputPolicy:

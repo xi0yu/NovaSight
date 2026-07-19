@@ -534,10 +534,10 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert 'label="共享 Atan 尺度 counts"' in studio
     assert 'label="前瞻帧数"' in studio
     assert 'label="速度平滑帧数"' in studio
-    assert 'title="固定 Y 轴压枪 · 所有控制算法"' in studio
-    assert '"recoil_y_counts_per_observation"' in studio
-    assert '"recoil_y_rate_counts_s"' not in studio
-    assert '"recoil_ramp_up_ms"' not in studio
+    assert 'title="独立 Y 轴压枪 · 所有控制算法"' in studio
+    assert 'updateControlGroupField("recoil", "enabled", enabled)' in studio
+    assert 'updateControlGroupField("recoil", "base_rate_counts_s", value)' in studio
+    assert 'updateControlGroupField("recoil", "max_rate_counts_s", value)' in studio
     assert 'updateDualPhasePath(["prediction", "coefficient"]' not in studio
     assert 'updateDualPhasePath(["prediction", "actuation_delay_ms"]' not in studio
     assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio

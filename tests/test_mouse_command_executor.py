@@ -82,7 +82,7 @@ def test_mouse_command_executor_rechecks_trigger_freshness_and_generation() -> N
     assert trigger_blocked.metadata["block_reason"] == "TRIGGER_INACTIVE"
     assert stale_blocked.metadata["block_reason"] == "COMMAND_STALE"
     assert sent.sent is True
-    assert replay_blocked.metadata["block_reason"] == "COMMAND_GENERATION_NOT_NEWER"
+    assert replay_blocked.metadata["block_reason"] == "COMMAND_ACTUATION_NOT_NEWER"
     assert [(output.dx, output.dy) for output in device.outputs] == [(5, 1)]
 
     executor.reset()
@@ -105,6 +105,22 @@ def test_mouse_command_executor_rechecks_live_hardware_trigger_before_send() -> 
     assert blocked.sent is False
     assert blocked.metadata["block_reason"] == "TRIGGER_INACTIVE"
     assert device.outputs == []
+
+    device.read_buttons = lambda: {  # type: ignore[method-assign]
+        "available": True,
+        "left": False,
+        "right": True,
+    }
+    tracking = executor.execute(executor=device, command=_command(1))
+    executor.reset()
+    recoil = executor.execute(
+        executor=device,
+        command=replace(_command(1), left_trigger_required=True),
+    )
+
+    assert tracking.sent is True
+    assert recoil.sent is False
+    assert recoil.metadata["block_reason"] == "TRIGGER_INACTIVE"
 
 
 def test_mouse_command_executor_rechecks_freshness_after_live_trigger_read() -> None:

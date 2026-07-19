@@ -1,8 +1,11 @@
 from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT, ControlOutput, ControlOutputPolicy
+from novasight.control.mixer import ControlMix, ControlMixer
 from novasight.control.recoil import (
-    FixedRecoilConfig,
-    FixedRecoilController,
-    FixedRecoilDecision,
+    RecoilState,
+    TargetRelativeRecoilConfig,
+    RecoilInput,
+    RecoilDecision,
+    TargetRelativeRecoilController,
 )
 from novasight.control.registry import (
     DEFAULT_ACTIVE_ALGORITHM_ID,
@@ -60,11 +63,15 @@ __all__ = [
     "CalibratedAngularControllerConfig",
     "ControlController",
     "ControlOutput",
+    "ControlMix",
+    "ControlMixer",
     "ControlOutputPolicy",
     "ControllerFactory",
-    "FixedRecoilConfig",
-    "FixedRecoilController",
-    "FixedRecoilDecision",
+    "RecoilState",
+    "TargetRelativeRecoilConfig",
+    "RecoilInput",
+    "RecoilDecision",
+    "TargetRelativeRecoilController",
     "MAX_PLAN_DURATION_MS",
     "MAX_ABS_MOUSE_MOVE_COUNT",
     "MoveCommand",

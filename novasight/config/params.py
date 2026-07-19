@@ -229,26 +229,37 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
         "ms",
         "真实鼠标触发持续达到该时间后才允许瞄准算法输出。",
     ),
-    "control.shared.recoil_start_delay_ms": _spec(
-        "control.shared.recoil_start_delay_ms",
-        "压枪启动延迟",
-        0.0,
+    "control.recoil.base_rate_counts_s": _spec(
+        "control.recoil.base_rate_counts_s", "压枪基础速率", 0.0, 0.0, 5000.0, 1.0, "counts/s", "开火后的基础 Y 轴压枪速率。"),
+    "control.recoil.max_rate_counts_s": _spec(
+        "control.recoil.max_rate_counts_s", "压枪最大速率", 0.0, 0.0, 5000.0, 1.0, "counts/s", "压枪速率上限。"),
+    "control.recoil.startup_ms": _spec(
+        "control.recoil.startup_ms",
+        "压枪启动斜坡",
+        35.0,
         0.0,
         1000.0,
         1.0,
         "ms",
-        "左键按下后等待多久开始 Y 轴压枪前馈。",
+        "左键按下后的速率渐入时间；首个控制节拍立即输出，不是等待时间。",
     ),
-    "control.shared.recoil_y_counts_per_observation": _spec(
-        "control.shared.recoil_y_counts_per_observation",
-        "单观测固定 Y 压枪",
+    "control.recoil.positive_deadzone_norm": _spec(
+        "control.recoil.positive_deadzone_norm", "压枪追加起点", 0.04, 0.0, 1.0, 0.01, "bbox", "目标瞄点低于准星超过该归一化距离后追加下压。"),
+    "control.recoil.negative_deadzone_norm": _spec(
+        "control.recoil.negative_deadzone_norm", "压枪刹车起点", 0.04, 0.0, 1.0, 0.01, "bbox", "准星低于目标瞄点超过该归一化距离后开始削弱压枪。"),
+    "control.recoil.full_brake_error_norm": _spec(
+        "control.recoil.full_brake_error_norm", "压枪完全刹车", 0.12, 0.0, 1.0, 0.01, "bbox", "准星明显低于目标瞄点时将压枪量归零。"),
+    "control.recoil.fast_add_gain_counts_s": _spec(
+        "control.recoil.fast_add_gain_counts_s",
+        "压枪追加强度",
         0.0,
         0.0,
-        20.0,
-        0.1,
-        "counts",
-        "启动延迟后，每个新鲜目标观测固定输出 +Y 向下 counts；开火期间不叠加视觉 Y，小数由独立余量累计。",
+        5000.0, 1.0, "counts/s", "根据目标误差追加的压枪强度。",
     ),
+    "control.recoil.max_fast_add_ratio": _spec(
+        "control.recoil.max_fast_add_ratio", "压枪追加上限", 0.30, 0.0, 1.0, 0.01, "ratio", "即时追加最多占最大压枪速率的比例。"),
+    "control.recoil.stale_threshold_ms": _spec(
+        "control.recoil.stale_threshold_ms", "压枪观测有效期", 55.0, 0.0, 5000.0, 1.0, "ms", "超过该帧龄后停止压枪，不执行旧目标控制量。"),
     "control.scheduler_step_counts_x": _spec(
         "control.scheduler_step_counts_x",
         "Scheduler X 单步",

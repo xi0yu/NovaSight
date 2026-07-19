@@ -3,7 +3,6 @@ from __future__ import annotations
 from math import atan, hypot, isfinite, pi, tan, trunc
 
 from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT
-from novasight.control.recoil import FixedRecoilConfig, FixedRecoilController
 from novasight.control.humanized_motion import HumanizedMotionGenerator, HumanizedMotionInput
 
 from .models import (
@@ -31,13 +30,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._geometry_signature: tuple[int, ...] | None = None
         self._quantizer_x = _AxisQuantizer()
         self._quantizer_y = _AxisQuantizer()
-        self._recoil = FixedRecoilController(
-            FixedRecoilConfig(
-                enabled=config.recoil.enabled,
-                start_delay_ms=config.recoil.start_delay_ms,
-                y_counts_per_observation=config.recoil.y_counts_per_observation,
-            )
-        )
         self._humanized_motion = HumanizedMotionGenerator(config.humanized_profile)
         self._velocity_x = RobustVelocityEstimator(config.velocity)
         self._previous_error_meas_x = 0.0
@@ -55,7 +47,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._target_id = None
         self._quantizer_x.reset()
         self._quantizer_y.reset()
-        self._recoil.reset()
         self._humanized_motion.reset()
         self._velocity_x.reset()
         self._previous_error_meas_x = 0.0
@@ -67,7 +58,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
 
         self._quantizer_x.reset()
         self._quantizer_y.reset()
-        self._recoil.reset()
         self._humanized_motion.reset()
 
     def calculate(
@@ -209,34 +199,14 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         demand_x = humanized.x
         feedback_demand_y = humanized.y
         humanized_debug = humanized.telemetry
-        recoil = self._recoil.calculate(
-            left_trigger_active=bool(
-                observation.trigger_active and observation.left_trigger_active
-            ),
-            left_trigger_hold_ms=observation.left_trigger_hold_ms,
-        )
-        recoil_demand_y = recoil.requested_counts_y
         demand_y = _clamp(
-            recoil_demand_y if recoil.active else feedback_demand_y,
+            feedback_demand_y,
             -atan_mode.max_counts_per_update,
             atan_mode.max_counts_per_update,
         )
         if observation.trigger_active:
             dx, residual_direction_reset_x = self._quantizer_x.quantize(demand_x)
-            if recoil.active:
-                residual_direction_reset_y = self._quantizer_y.accumulator != 0.0
-                self._quantizer_y.reset()
-                dy = int(
-                    _clamp(
-                        recoil.emitted_counts_y,
-                        0.0,
-                        atan_mode.max_counts_per_update,
-                    )
-                )
-            else:
-                dy, residual_direction_reset_y = self._quantizer_y.quantize(
-                    feedback_demand_y
-                )
+            dy, residual_direction_reset_y = self._quantizer_y.quantize(feedback_demand_y)
             block_reason = ""
         else:
             self.release_trigger()
@@ -324,17 +294,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
                 "float_demand_x": demand_x,
                 "float_demand_y": demand_y,
                 "feedback_demand_y": feedback_demand_y,
-                "recoil_enabled": self.config.recoil.enabled,
-                "recoil_active": recoil.active,
-                "recoil_left_hold_ms": observation.left_trigger_hold_ms,
-                "recoil_y_counts_per_observation": (
-                    self.config.recoil.y_counts_per_observation
-                ),
-                "recoil_y_counts_float": recoil_demand_y,
-                "recoil_y_counts_emitted": recoil.emitted_counts_y,
-                "recoil_residual_y_counts": recoil.residual_counts_y,
-                "recoil_block_reason": recoil.block_reason,
-                "recoil_y_policy": "fixed_down_exclusive",
                 "combined_demand_y": demand_y,
                 "integer_command_x": dx,
                 "integer_command_y": dy,
@@ -560,9 +519,6 @@ def _validate_config(config: DualPhaseAtanRobustPredictiveV2Config) -> None:
             < 0.0
         ):
             raise ValueError("prediction caps must be >= 0")
-    recoil = config.recoil
-    if min(recoil.start_delay_ms, recoil.y_counts_per_observation) < 0.0:
-        raise ValueError("recoil parameters must be >= 0")
     if not isfinite(config.atan.scale_counts) or config.atan.scale_counts <= 0.0:
         raise ValueError("Atan scale must be finite and > 0")
     for mode_config in (config.atan.far, config.atan.near):

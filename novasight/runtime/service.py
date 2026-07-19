@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import logging
 import math
 import threading
@@ -29,6 +29,13 @@ from novasight.control import (
     resolve_aim_y_ratio,
     target_motion_estimate_from_debug,
 )
+from novasight.control.recoil import (
+    RecoilDecision,
+    RecoilInput,
+    RecoilState,
+    TargetRelativeRecoilConfig,
+    TargetRelativeRecoilController,
+)
 from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
     AtanControllerConfig as DualPhaseRobustAtanControllerConfig,
     AtanModeConfig as DualPhaseRobustAtanModeConfig,
@@ -39,7 +46,6 @@ from novasight.control.algorithms.dual_phase_atan_robust_predictive_v2 import (
     PredictionConfig as DualPhaseRobustPredictionConfig,
     PredictionModeConfig as DualPhaseRobustPredictionModeConfig,
     ProjectionConfig as DualPhaseRobustProjectionConfig,
-    RecoilConfig as DualPhaseRobustRecoilConfig,
     VelocityConfig as DualPhaseRobustVelocityConfig,
 )
 from novasight.executors import BoxInputState, ExecutorRegistry
@@ -61,6 +67,15 @@ from .state import RuntimeFrameResult, RuntimeState
 from .target_selector import RuntimeTargetSelector, TargetSelection
 
 logger = logging.getLogger("novasight.runtime.service")
+
+
+@dataclass(frozen=True, slots=True)
+class _LatestRecoilObservation:
+    source_generation: int
+    target_id: int
+    capture_ts_ns: int
+    error_y_norm: float
+    source_intent: ControlIntent
 
 
 def _status_statistic(
@@ -119,6 +134,11 @@ class RuntimeService:
         self._last_no_target_log_signature = ""
         self._control_lock = threading.Lock()
         self._last_control_tick_ns = 0
+        self._last_recoil_tick_ns = 0
+        self._recoil_controller = self._create_recoil_controller(config)
+        self._latest_recoil_observation: _LatestRecoilObservation | None = None
+        self._recoil_bbox_heights: deque[float] = deque(maxlen=3)
+        self._recoil_bbox_target_id: int | None = None
         self._executed_control_samples: deque[tuple[int, int, int]] = deque()
         self.control_timing = ControlTimingModel()
         self.last_control_timing: dict[str, Any] = {}
@@ -515,6 +535,7 @@ class RuntimeService:
             self.last_control_timing = {}
             self.control_algorithms.reset()
             self.control_algorithms = self._create_control_algorithm_registry(config)
+            self._recoil_controller = self._create_recoil_controller(config)
             self._clear_pending_commands(reset_reason)
             self.executors.update_runtime_config(config)
             if calibration_changed:
@@ -653,6 +674,11 @@ class RuntimeService:
         self.last_target = None
         self.last_execution = None
         self._last_control_tick_ns = 0
+        self._last_recoil_tick_ns = 0
+        self._recoil_controller.reset()
+        self._latest_recoil_observation = None
+        self._recoil_bbox_heights.clear()
+        self._recoil_bbox_target_id = None
         self._executed_control_samples.clear()
         self._control_reference_frame_key = None
         self._control_reference = None
@@ -820,7 +846,7 @@ class RuntimeService:
                 if self._execution_invalidates_control_state(result):
                     # A failed or blocked device call invalidates all output
                     # state derived from the unsent observation.
-                    self._reset_control_motion_state()
+                    self._reset_control_output_state()
                 self._record_executed_control(result)
             if execution_results:
                 self.last_execution = self._execution_result_payload(execution_results[-1])
@@ -862,19 +888,22 @@ class RuntimeService:
                 self._clear_pending_commands("RUNTIME_STOPPED")
                 return self._empty_runtime_frame_result()
             trigger_mode = str(self.config.control.trigger_mode)
-            recoil_enabled = bool(self.config.control.shared.recoil_enabled)
+            recoil_enabled = bool(self.config.control.recoil.enabled)
             button_state = (
                 self._box_input_state()
                 if trigger_mode == "hardware" or recoil_enabled
                 else None
             )
+            now_ns = time.monotonic_ns()
             button_fresh = bool(
                 button_state is not None
-                and self._box_input_is_fresh(button_state, time.monotonic_ns())
+                and self._box_input_is_fresh(button_state, now_ns)
             )
             if trigger_mode == "hardware" and not bool(
                 button_state is not None and button_state.active and button_fresh
             ):
+                self._recoil_controller.reset()
+                self._last_recoil_tick_ns = 0
                 if self._is_robust_predictive_active():
                     self._active_robust_predictive_controller().release_trigger()
                 else:
@@ -885,31 +914,69 @@ class RuntimeService:
                     else "TRIGGER_INACTIVE"
                 )
                 return self._empty_runtime_frame_result()
-            if (
-                recoil_enabled
-                and self._pending_control_has_active_recoil()
-                and not bool(
-                    button_state is not None and button_state.left and button_fresh
+
+            interval_s = max(
+                0.001,
+                float(self.config.control.scheduler_interval_ms) / 1000.0,
+            )
+            if self._last_recoil_tick_ns > 0:
+                recoil_dt_s = max(
+                    0.0,
+                    min(
+                        (now_ns - self._last_recoil_tick_ns) / 1e9,
+                        interval_s * 2.0,
+                    ),
                 )
-            ):
-                if self._is_robust_predictive_active():
-                    self._active_robust_predictive_controller().release_trigger()
-                else:
-                    self._reset_control_motion_state()
-                self._clear_pending_commands(
-                    "RECOIL_INPUT_STALE"
-                    if button_state is not None and button_state.left
-                    else "LEFT_TRIGGER_INACTIVE"
+            else:
+                recoil_dt_s = interval_s
+            self._last_recoil_tick_ns = now_ns
+
+            observation = self._latest_recoil_observation
+            target_valid = observation is not None
+            observation_age_ms = (
+                max(0.0, (now_ns - observation.capture_ts_ns) / 1e6)
+                if observation is not None and observation.capture_ts_ns > 0
+                else 0.0
+            )
+            recoil_decision = self._recoil_controller.calculate(
+                RecoilInput(
+                    firing=bool(
+                        recoil_enabled
+                        and button_state is not None
+                        and button_state.left
+                        and button_fresh
+                    ),
+                    now_ns=now_ns,
+                    dt_s=recoil_dt_s,
+                    target_valid=target_valid,
+                    target_id=observation.target_id if observation is not None else None,
+                    source_generation=(
+                        observation.source_generation if observation is not None else None
+                    ),
+                    observation_age_ms=observation_age_ms,
+                    error_y_norm=(
+                        observation.error_y_norm if observation is not None else 0.0
+                    ),
                 )
-                return self._empty_runtime_frame_result()
-        result = tick_pending()
+            )
+            self._attach_recoil_decision(
+                recoil_decision,
+                observation=observation,
+                observation_age_ms=observation_age_ms,
+            )
+            recoil_source = observation.source_intent if observation is not None else None
+        result = tick_pending(
+            now_s=now_ns / 1e9,
+            recoil=recoil_decision if recoil_enabled else None,
+            recoil_source=recoil_source,
+        )
         with self._control_lock:
             self._last_control_tick_ns = time.monotonic_ns()
             self._record_executed_control(result)
             if str(result.message) == "no pending control command ready":
                 return self._empty_runtime_frame_result()
             if self._execution_invalidates_control_state(result):
-                self._reset_control_motion_state()
+                self._reset_control_output_state()
             self.last_execution = self._execution_result_payload(result)
             self._attach_execution_to_last_control(self.last_execution)
             self._record_control_frame()
@@ -943,10 +1010,47 @@ class RuntimeService:
             "no_pending_state",
         } and str(getattr(result, "message", "")) != "no pending control command ready"
 
-    def _pending_control_has_active_recoil(self) -> bool:
-        control = self.last_control if isinstance(self.last_control, dict) else {}
-        pipeline = control.get("pipeline")
-        return bool(isinstance(pipeline, dict) and pipeline.get("recoil_active") is True)
+    def _attach_recoil_decision(
+        self,
+        decision: RecoilDecision,
+        *,
+        observation: _LatestRecoilObservation | None,
+        observation_age_ms: float,
+    ) -> None:
+        if not isinstance(self.last_control, dict):
+            return
+        pipeline = self.last_control.get("pipeline")
+        if not isinstance(pipeline, dict):
+            pipeline = {}
+            self.last_control["pipeline"] = pipeline
+        pipeline.update(
+            {
+                "recoil_mode": "independent_target_relative_rate",
+                "recoil_enabled": bool(self.config.control.recoil.enabled),
+                "recoil_state": decision.state.value,
+                "recoil_active": bool(
+                    decision.final_rate_counts_s > 0.0
+                    or decision.requested_counts_y > 0.0
+                    or decision.emitted_counts_y > 0
+                    or decision.residual_counts_y > 0.0
+                ),
+                "recoil_base_rate_counts_s": decision.base_rate_counts_s,
+                "recoil_fast_add_rate_counts_s": decision.fast_add_rate_counts_s,
+                "recoil_position_gate": decision.gate,
+                "recoil_final_rate_counts_s": decision.final_rate_counts_s,
+                "recoil_requested_counts_y": decision.requested_counts_y,
+                "recoil_emitted_counts_y": decision.emitted_counts_y,
+                "recoil_residual_counts_y": decision.residual_counts_y,
+                "recoil_error_y_norm": (
+                    observation.error_y_norm if observation is not None else None
+                ),
+                "recoil_observation_age_ms": observation_age_ms,
+                "recoil_source_generation": (
+                    observation.source_generation if observation is not None else None
+                ),
+                "recoil_block_reason": decision.block_reason,
+            }
+        )
 
     @staticmethod
     def _empty_runtime_frame_result() -> RuntimeFrameResult:
@@ -2124,6 +2228,9 @@ class RuntimeService:
         selection = self._select_control_target(context)
         target = selection.target
         if target is None:
+            self._latest_recoil_observation = None
+            self._recoil_bbox_heights.clear()
+            self._recoil_bbox_target_id = None
             self._clear_pending_commands("TARGET_UNAVAILABLE")
             self._reset_control_motion_state()
             self._log_no_control_target(context, selection)
@@ -2163,7 +2270,7 @@ class RuntimeService:
         hardware_input = (
             self._box_input_state()
             if trigger_mode == "hardware"
-            or bool(shared_control.recoil_enabled)
+            or bool(self.config.control.recoil.enabled)
             else BoxInputState(raw={"source": "monitor_not_required"})
         )
         box_input = (
@@ -2181,6 +2288,7 @@ class RuntimeService:
         target_key = self._control_target_key(target)
         calibration_status = self._calibration_fingerprint_status()
         if calibration_status["control_allowed"] is not True:
+            self._latest_recoil_observation = None
             self._clear_pending_commands(str(calibration_status["reason_code"]))
             selector_debug = dict(getattr(self.target_selector, "last_debug", {}) or {})
             track_diagnostics = self._track_diagnostics_payload(
@@ -2343,18 +2451,36 @@ class RuntimeService:
         )
         pipeline_debug["effective_aim_role"] = self._effective_aim_role(int(target.cls))
         pipeline_debug["effective_aim_y_ratio"] = active_aim_y_ratio
+        control_center_x = float(
+            mouse_observation_debug.get(
+                "control_reference_x_px",
+                float(control_metadata.get("control_width") or 0.0) * 0.5,
+            )
+        )
+        control_center_y = float(
+            mouse_observation_debug.get(
+                "control_reference_y_px",
+                float(control_metadata.get("control_height") or 0.0) * 0.5,
+            )
+        )
+        aim_error_x = float(aim_x - control_center_x)
+        aim_error_y = float(aim_y - control_center_y)
         predicted_source = bool(getattr(target, "is_predicted", False))
         trajectory_generation = int(
             context.frame_id if context.generation is None else context.generation
         )
         requires_trigger = trigger_mode != "always"
+        freshness_limits_ms: list[float] = []
+        if self._is_robust_predictive_active():
+            freshness_limits_ms.append(
+                float(self._active_dual_phase_config(self.config).freshness_threshold_ms)
+            )
+        if self.config.control.recoil.enabled:
+            freshness_limits_ms.append(float(self.config.control.recoil.stale_threshold_ms))
         command_expires_ts_ns = (
             int(context.capture_ts_ns or 0)
-            + int(
-                float(self._active_dual_phase_config(self.config).freshness_threshold_ms)
-                * 1_000_000.0
-            )
-            if self._is_robust_predictive_active()
+            + int(min(freshness_limits_ms) * 1_000_000.0)
+            if freshness_limits_ms and int(context.capture_ts_ns or 0) > 0
             else None
         )
         intent = ControlIntent(
@@ -2375,10 +2501,16 @@ class RuntimeService:
             predicted_source=predicted_source,
             trajectory_generation=trajectory_generation,
             trigger_required=(
-                requires_trigger if self._is_robust_predictive_active() else None
+                requires_trigger
+                if self._is_robust_predictive_active()
+                or self.config.control.recoil.enabled
+                else None
             ),
             trigger_active=(
-                algorithm_trigger_active if self._is_robust_predictive_active() else None
+                algorithm_trigger_active
+                if self._is_robust_predictive_active()
+                or self.config.control.recoil.enabled
+                else None
             ),
             command_expires_ts_ns=command_expires_ts_ns,
         )
@@ -2388,6 +2520,26 @@ class RuntimeService:
         calibration_status = self._calibration_fingerprint_status()
         if calibration_status["control_allowed"] is not True:
             control_allowed = False
+        if (
+            self.config.control.recoil.enabled
+            and control_allowed
+            and not predicted_source
+            and not bool(getattr(target, "is_stale", False))
+            and int(context.capture_ts_ns or 0) > 0
+        ):
+            stable_bbox_height = self._stable_recoil_bbox_height(target)
+            self._latest_recoil_observation = _LatestRecoilObservation(
+                source_generation=trajectory_generation,
+                target_id=int(target.track_id),
+                capture_ts_ns=int(context.capture_ts_ns),
+                error_y_norm=max(
+                    -1.0,
+                    min(1.0, aim_error_y / max(1.0, stable_bbox_height)),
+                ),
+                source_intent=intent,
+            )
+        elif self.config.control.recoil.enabled:
+            self._latest_recoil_observation = None
         can_emit = (
             (box_input.active or not requires_trigger)
             and trigger_activation_ready
@@ -2423,20 +2575,6 @@ class RuntimeService:
             requires_trigger=requires_trigger,
             trigger_mode=trigger_mode,
         )
-        control_center_x = float(
-            mouse_observation_debug.get(
-                "control_reference_x_px",
-                float(control_metadata.get("control_width") or 0.0) * 0.5,
-            )
-        )
-        control_center_y = float(
-            mouse_observation_debug.get(
-                "control_reference_y_px",
-                float(control_metadata.get("control_height") or 0.0) * 0.5,
-            )
-        )
-        aim_error_x = float(aim_x - control_center_x)
-        aim_error_y = float(aim_y - control_center_y)
         raw_error_x = float(pipeline_debug.get("observed_error_x_px", aim_error_x))
         raw_error_y = float(pipeline_debug.get("observed_error_y_px", aim_error_y))
         target_detection_index = self._target_detection_index(context, target)
@@ -3214,6 +3352,26 @@ class RuntimeService:
         )
         return AlgorithmRegistry(algorithm_id, controller)
 
+    @staticmethod
+    def _create_recoil_controller(
+        config: RuntimeConfig,
+    ) -> TargetRelativeRecoilController:
+        source = config.control.recoil
+        return TargetRelativeRecoilController(
+            TargetRelativeRecoilConfig(
+                enabled=bool(source.enabled),
+                base_rate_counts_s=float(source.base_rate_counts_s),
+                max_rate_counts_s=float(source.max_rate_counts_s),
+                startup_ms=float(source.startup_ms),
+                positive_deadzone_norm=float(source.positive_deadzone_norm),
+                negative_deadzone_norm=float(source.negative_deadzone_norm),
+                full_brake_error_norm=float(source.full_brake_error_norm),
+                fast_add_gain_counts_s=float(source.fast_add_gain_counts_s),
+                max_fast_add_ratio=float(source.max_fast_add_ratio),
+                stale_threshold_ms=float(source.stale_threshold_ms),
+            )
+        )
+
     def _create_mouse_controller(self, config: RuntimeConfig) -> MouseController:
         max_plan_steps = plan_step_capacity(config.control.scheduler_interval_ms)
         shared = config.control.shared
@@ -3258,11 +3416,6 @@ class RuntimeService:
                     * max_plan_steps,
                     max_budget_counts_y=int(config.control.scheduler_step_counts_y)
                     * max_plan_steps,
-                    recoil_enabled=bool(shared.recoil_enabled),
-                    recoil_start_delay_ms=float(shared.recoil_start_delay_ms),
-                    recoil_y_counts_per_observation=float(
-                        shared.recoil_y_counts_per_observation
-                    ),
                 ),
                 calibrated_angular=calibrated_config,
                 universal_saturated=universal_config,
@@ -3308,13 +3461,6 @@ class RuntimeService:
                         absolute_cap_px=float(source_v2.prediction.near.absolute_cap_px),
                         base_cap_px=float(source_v2.prediction.near.base_cap_px),
                         relative_cap=float(source_v2.prediction.near.relative_cap),
-                    ),
-                ),
-                recoil=DualPhaseRobustRecoilConfig(
-                    enabled=bool(config.control.shared.recoil_enabled),
-                    start_delay_ms=float(config.control.shared.recoil_start_delay_ms),
-                    y_counts_per_observation=float(
-                        config.control.shared.recoil_y_counts_per_observation
                     ),
                 ),
                 atan=DualPhaseRobustAtanControllerConfig(
@@ -3367,6 +3513,11 @@ class RuntimeService:
     def _reset_control_motion_state(self) -> None:
         self.control_algorithms.reset()
 
+    def _reset_control_output_state(self) -> None:
+        self._reset_control_motion_state()
+        self._recoil_controller.reset()
+        self._last_recoil_tick_ns = 0
+
     @staticmethod
     def _target_detection_index(context: FrameContext, target: Track) -> int | None:
         for index, detection in enumerate(context.detections):
@@ -3386,6 +3537,19 @@ class RuntimeService:
     @staticmethod
     def _control_target_key(target: Track) -> str:
         return f"track:{int(target.track_id)}"
+
+    def _stable_recoil_bbox_height(self, target: Track) -> float:
+        target_id = int(target.track_id)
+        if self._recoil_bbox_target_id != target_id:
+            self._recoil_bbox_heights.clear()
+            self._recoil_bbox_target_id = target_id
+        height = max(1.0, float(target.h))
+        self._recoil_bbox_heights.append(height)
+        ordered = sorted(self._recoil_bbox_heights)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return (ordered[middle - 1] + ordered[middle]) * 0.5
 
     def _dual_phase_control_command(
         self,

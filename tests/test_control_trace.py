@@ -237,13 +237,18 @@ def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
                 "prediction_safe_offset_x": 2.0,
                 "recoil_enabled": True,
                 "recoil_active": True,
-                "recoil_left_hold_ms": 120.0,
-                "recoil_y_counts_per_observation": 1.25,
-                "recoil_y_counts_float": 1.25,
-                "feedback_demand_y": -0.15,
-                "combined_demand_y": 1.1,
-                "recoil_y_counts_emitted": 1,
-                "recoil_residual_y_counts": 0.25,
+                "recoil_mode": "independent_target_relative_rate",
+                "recoil_state": "ACTIVE",
+                "recoil_base_rate_counts_s": 250.0,
+                "recoil_fast_add_rate_counts_s": 25.0,
+                "recoil_position_gate": 1.0,
+                "recoil_final_rate_counts_s": 275.0,
+                "recoil_requested_counts_y": 1.1,
+                "recoil_emitted_counts_y": 1,
+                "recoil_residual_counts_y": 0.25,
+                "recoil_error_y_norm": 0.1,
+                "recoil_observation_age_ms": 7.0,
+                "recoil_source_generation": 9,
                 "recoil_block_reason": "",
                 "executor_success": True,
             },
@@ -263,12 +268,12 @@ def test_control_trace_records_robust_v2_velocity_in_px_per_ms() -> None:
     assert decision["prediction"]["lead_frames"] == 1.5
     assert decision["prediction"]["weighted_offset_x"] == 6.0
     assert decision["recoil"]["active"] is True
-    assert decision["recoil"]["y_counts"] == 1.25
-    assert decision["recoil"]["feedback_demand_y"] == -0.15
-    assert decision["recoil"]["combined_demand_y"] == 1.1
-    assert decision["recoil"]["mode"] == "fixed_per_observation"
-    assert decision["recoil"]["emitted_y_counts"] == 1.0
-    assert decision["recoil"]["residual_y_counts"] == 0.25
+    assert decision["recoil"]["mode"] == "independent_target_relative_rate"
+    assert decision["recoil"]["state"] == "ACTIVE"
+    assert decision["recoil"]["final_rate_counts_s"] == 275.0
+    assert decision["recoil"]["emitted_counts_y"] == 1.0
+    assert decision["recoil"]["residual_counts_y"] == 0.25
+    assert decision["recoil"]["error_y_norm"] == 0.1
     assert decision["executor_success"] is True
 
 
