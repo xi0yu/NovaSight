@@ -41,6 +41,7 @@ class MouseObservation:
     prediction_horizon_s: float
     target_confidence: float
     prediction_confidence: float
+    target_width_px: float = 1.0
     observed_valid: bool = True
     actuation_pending_x: bool = False
     actuation_pending_y: bool = False
@@ -201,6 +202,10 @@ class CalibratedAngularController:
             requested_rad.x * self.config.counts_per_360_x / math.tau,
             requested_rad.y * self.config.counts_per_360_y / math.tau,
         )
+        full_error_counts = Vec2(
+            predicted_rad.x * self.config.counts_per_360_x / math.tau,
+            predicted_rad.y * self.config.counts_per_360_y / math.tau,
+        )
         limited_counts = Vec2(
             limited_rad.x * self.config.counts_per_360_x / math.tau,
             limited_rad.y * self.config.counts_per_360_y / math.tau,
@@ -235,6 +240,8 @@ class CalibratedAngularController:
                 "limited_output_y_rad": limited_rad.y,
                 "theoretical_counts_x_float": theoretical_counts.x,
                 "theoretical_counts_y_float": theoretical_counts.y,
+                "full_error_counts_x": full_error_counts.x,
+                "full_error_counts_y": full_error_counts.y,
                 "mode_limited_counts_x_float": limited_counts.x,
                 "mode_limited_counts_y_float": limited_counts.y,
             },
@@ -409,14 +416,18 @@ class MouseController:
         # the real hardware trigger and deliberately runs before arrival,
         # recoil, slew and budget protection.  Recoil never reads this layer.
         base_counts = computation.counts
+        full_counts = Vec2(
+            float(computation.debug.get("full_error_counts_x", base_counts.x)),
+            float(computation.debug.get("full_error_counts_y", base_counts.y)),
+        )
         humanized = self.humanized_motion.apply(HumanizedMotionInput(
             base_x=base_counts.x,
             base_y=base_counts.y,
-            full_x=base_counts.x,
-            full_y=base_counts.y,
+            full_x=full_counts.x,
+            full_y=full_counts.y,
             error_x_px=predicted_error.x,
             error_y_px=predicted_error.y,
-            target_width_px=1.0,
+            target_width_px=max(1.0, observation.target_width_px),
             target_id=observation.target_id,
             trigger_active=observation.left_trigger_active,
             left_trigger_active=observation.left_trigger_active,

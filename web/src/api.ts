@@ -25,7 +25,16 @@ export type ModelVersion = {
 
 export type MotionSession = { session_id: string; name: string; created_at: number; sample_count?: number };
 export type MotionProfile = { profile_id: string; name: string; sample_count: number; quality_score: number; features?: Record<string, number>; runtime_parameters?: Record<string, number> };
-export type MotionProfileRuntime = { enabled: boolean; active_profile: string; profile_name: string; sample_count: number; source: string };
+export type MotionProfileRuntime = {
+  enabled: boolean;
+  active_profile: string;
+  profile_name: string;
+  sample_count: number;
+  profile_version?: number;
+  spatial_curve_available?: boolean;
+  effective_runtime_parameters?: Record<string, number | boolean>;
+  source: string;
+};
 export type MotionSampleResult = {
   sample_id: string;
   quality: "valid" | "low_quality";

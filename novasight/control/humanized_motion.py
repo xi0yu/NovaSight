@@ -47,6 +47,7 @@ class HumanizedMotionGenerator:
         self._initial_full_y = 0.0
         self._initial_magnitude = 0.0
         self._planned_duration_ms = 0.0
+        self._last_side_position = 0.0
 
     def apply(self, value: HumanizedMotionInput) -> HumanizedMotionResult:
         if self.profile is None or not value.trigger_active or not value.left_trigger_active:
@@ -66,6 +67,26 @@ class HumanizedMotionGenerator:
             })
 
         current_magnitude = hypot(value.full_x, value.full_y)
+        runtime = self.profile.get("runtime_parameters", {}) if self.profile else {}
+        runtime = runtime if isinstance(runtime, dict) else {}
+        micro_bypass = _bounded(runtime.get("micro_bypass_px", 0.0), 0.0, 1000.0)
+        if hypot(value.error_x_px, value.error_y_px) <= micro_bypass:
+            # A future departure from the micro zone must start a fresh path;
+            # retaining an old segment here would resume it midway through.
+            self.reset()
+            return HumanizedMotionResult(value.base_x, value.base_y, {
+                "humanized_motion_enabled": True,
+                "humanized_motion_reason": "micro_bypass",
+                "humanized_motion_phase": "closed_loop_correction",
+                "humanized_motion_progress": 1.0,
+                "humanized_motion_curve_position": 1.0,
+                "humanized_motion_curve_delta": 0.0,
+                "humanized_motion_side_offset": 0.0,
+                "humanized_motion_reference_x": value.base_x,
+                "humanized_motion_reference_y": value.base_y,
+                "humanized_motion_rebased": True,
+            })
+        dynamic_rebase = _bounded(runtime.get("dynamic_rebase_ratio", 0.25), 0.05, 1.0)
         rebase = (
             self._target_id != value.target_id
             or self._initial_magnitude <= 1e-6
@@ -73,23 +94,41 @@ class HumanizedMotionGenerator:
             or _direction_reversed(
                 self._initial_full_x, self._initial_full_y, value.full_x, value.full_y
             )
-            or current_magnitude > self._initial_magnitude * 1.35
+            or current_magnitude > self._initial_magnitude * (1.0 + dynamic_rebase)
+            or _endpoint_shift_ratio(
+                self._initial_full_x,
+                self._initial_full_y,
+                value.full_x,
+                value.full_y,
+            ) > dynamic_rebase
         )
         if rebase:
             self._begin_segment(value)
 
         elapsed_ms = max(0.0, value.trigger_hold_ms - self._segment_hold_start_ms)
         progress = min(1.0, elapsed_ms / max(1.0, self._planned_duration_ms))
-        curve = _profile_curve(self.profile, value.error_x_px, value.error_y_px)
+        curve = _profile_curve(self.profile, value.error_x_px, value.error_y_px, runtime)
         position = _interpolate_curve(curve, progress)
         previous_position = _interpolate_curve(curve, self._last_progress)
         delta_position = max(0.0, position - previous_position)
+        side_curve = _profile_side_curve(self.profile, value.error_x_px, value.error_y_px)
+        side_position = _interpolate_curve(side_curve, progress)
+        if not bool(runtime.get("spatial_curve_enabled", True)):
+            side_position = 0.0
+        side_position *= _bounded(runtime.get("side_scale", 1.0), 0.0, 4.0)
+        side_position = max(-_bounded(runtime.get("max_side_ratio", 0.25), 0.0, 1.0),
+                            min(_bounded(runtime.get("max_side_ratio", 0.25), 0.0, 1.0), side_position))
+        fade_start = _bounded(runtime.get("near_fade_start_px", 0.0), 0.0, 5000.0)
+        if fade_start > 0.0 and hypot(value.error_x_px, value.error_y_px) < fade_start:
+            side_position *= hypot(value.error_x_px, value.error_y_px) / fade_start
+        delta_side = side_position - self._last_side_position
+        self._last_side_position = side_position
         self._last_progress = max(self._last_progress, progress)
 
-        params = self.profile.get("runtime_parameters", {})
-        params = params if isinstance(params, dict) else {}
+        params = runtime
         correction_start = _bounded(params.get("correction_start_ratio", 0.82), 0.5, 1.0)
         correction_gain = _bounded(params.get("correction_gain", 0.35), 0.0, 1.0)
+        terminal_gain = _bounded(params.get("terminal_feedback_gain", correction_gain), 0.0, 2.0)
         correction_weight = (
             0.0 if progress <= correction_start
             else min(1.0, (progress - correction_start) / max(1e-6, 1.0 - correction_start))
@@ -103,8 +142,8 @@ class HumanizedMotionGenerator:
         trajectory_error_counts = max(0.0, desired_progress_counts - observed_progress_counts)
 
         if progress >= 1.0:
-            output_x = value.base_x * max(correction_gain, correction_weight)
-            output_y = value.base_y * max(correction_gain, correction_weight)
+            output_x = value.base_x * terminal_gain
+            output_y = value.base_y * terminal_gain
             phase = "closed_loop_correction"
         else:
             direction_mag = max(1e-6, current_magnitude)
@@ -113,8 +152,13 @@ class HumanizedMotionGenerator:
             # older pending command because unsent motion stays in the error.
             step_cap = self._initial_magnitude * max(0.02, delta_position * 1.5)
             step_magnitude = min(trajectory_error_counts, step_cap)
-            reference_x = value.full_x / direction_mag * step_magnitude
-            reference_y = value.full_y / direction_mag * step_magnitude
+            ux, uy = value.full_x / direction_mag, value.full_y / direction_mag
+            # A learned side offset forms a 2-D Bezier-space path around the
+            # direct line.  It is emitted as a delta per observation, never as
+            # a device-side curve command.
+            side_step = self._initial_magnitude * delta_side
+            reference_x = ux * step_magnitude - uy * side_step
+            reference_y = uy * step_magnitude + ux * side_step
             output_x = reference_x + value.base_x * correction_gain * correction_weight
             output_y = reference_y + value.base_y * correction_gain * correction_weight
             phase = _phase(progress)
@@ -125,6 +169,7 @@ class HumanizedMotionGenerator:
             "humanized_motion_progress": progress,
             "humanized_motion_curve_position": position,
             "humanized_motion_curve_delta": delta_position,
+            "humanized_motion_side_offset": side_position,
             "humanized_motion_planned_duration_ms": self._planned_duration_ms,
             "humanized_motion_initial_counts": self._initial_magnitude,
             "humanized_motion_desired_progress_counts": desired_progress_counts,
@@ -152,9 +197,10 @@ class HumanizedMotionGenerator:
         duration = a_ms + b_ms * log2(distance_px / width_px + 1.0)
         duration *= _direction_scale(self.profile, value.error_x_px, value.error_y_px)
         self._planned_duration_ms = min(1200.0, max(35.0, duration))
+        self._last_side_position = 0.0
 
 
-def _profile_curve(profile: dict[str, Any], error_x: float, error_y: float) -> tuple[float, ...]:
+def _profile_curve(profile: dict[str, Any], error_x: float, error_y: float, runtime: dict[str, Any] | None = None) -> tuple[float, ...]:
     curves = profile.get("distance_profiles", {})
     curves = curves if isinstance(curves, dict) else {}
     distance = hypot(error_x, error_y)
@@ -162,8 +208,10 @@ def _profile_curve(profile: dict[str, Any], error_x: float, error_y: float) -> t
     selected = curves.get(key, {})
     selected = selected if isinstance(selected, dict) else {}
     raw = selected.get("progress_curve") or profile.get("progress_curve")
+    if not isinstance(raw, list) and runtime and runtime.get("minimum_jerk_fallback", True):
+        return tuple(10*t**3 - 15*t**4 + 6*t**5 for t in [i / 8.0 for i in range(9)])
     if not isinstance(raw, list) or len(raw) < 2:
-        return (0.0, 0.04, 0.13, 0.27, 0.45, 0.64, 0.79, 0.90, 0.96, 1.0)
+        return (0.0, 1.0)
     values = [min(1.0, max(0.0, float(item))) for item in raw if isinstance(item, int | float)]
     if len(values) < 2:
         return (0.0, 1.0)
@@ -180,6 +228,30 @@ def _interpolate_curve(curve: tuple[float, ...], progress: float) -> float:
     right = min(len(curve) - 1, left + 1)
     weight = position - left
     return curve[left] + (curve[right] - curve[left]) * weight
+
+
+def _profile_side_curve(profile: dict[str, Any], error_x: float = 0.0, error_y: float = 0.0) -> tuple[float, ...]:
+    """Return normalized lateral offset; supports a cubic Bezier profile."""
+    distance = hypot(error_x, error_y)
+    profiles = profile.get("distance_profiles", {})
+    selected = profiles.get("micro" if distance < 50 else "near" if distance < 150 else "mid" if distance < 350 else "far", {}) if isinstance(profiles, dict) else {}
+    raw = selected.get("side_offset_curve") if isinstance(selected, dict) else None
+    raw = raw or profile.get("side_offset_curve")
+    if isinstance(raw, dict):
+        points = raw.get("control_points")
+        if isinstance(points, list) and len(points) == 4:
+            values = [_bounded(item, -1.0, 1.0) for item in points]
+            values[0] = 0.0
+            values[-1] = 0.0
+            return tuple(_bezier(values, i / 8.0) for i in range(9))
+    if isinstance(raw, list) and len(raw) >= 2:
+        return tuple(_bounded(item, -1.0, 1.0) for item in raw)
+    return (0.0, 0.0)
+
+
+def _bezier(points: list[float], t: float) -> float:
+    u = 1.0 - t
+    return u**3 * points[0] + 3.0 * u**2 * t * points[1] + 3.0 * u * t**2 * points[2] + t**3 * points[3]
 
 
 def _direction_scale(profile: dict[str, Any] | None, x: float, y: float) -> float:
@@ -207,6 +279,18 @@ def _direction_reversed(initial_x: float, initial_y: float, x: float, y: float) 
     if min(initial_mag, current_mag) <= 1e-6:
         return False
     return (initial_x * x + initial_y * y) / (initial_mag * current_mag) < 0.25
+
+
+def _endpoint_shift_ratio(initial_x: float, initial_y: float, x: float, y: float) -> float:
+    """Measure endpoint drift perpendicular to the active segment."""
+
+    initial_mag = hypot(initial_x, initial_y)
+    if initial_mag <= 1e-6:
+        return 0.0
+    unit_x = initial_x / initial_mag
+    unit_y = initial_y / initial_mag
+    lateral = x * (-unit_y) + y * unit_x
+    return abs(lateral) / initial_mag
 
 
 def _phase(progress: float) -> str:

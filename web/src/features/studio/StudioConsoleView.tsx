@@ -1134,6 +1134,15 @@ export function StudioConsoleView({
       : nestedRecord(controlConfig, algorithmId);
   };
   const aimConfig = nestedRecord(controlConfig, "aim");
+  const humanizedMotionConfig = nestedRecord(controlConfig, "humanized_motion");
+  const humanizedSpatialCurveEnabled = readBoolean(humanizedMotionConfig.spatial_curve_enabled, true);
+  const humanizedValue = (key: string, fallback: number) => readNumber(humanizedMotionConfig[key], fallback);
+  const updateHumanized = (key: string, value: RuntimeConfigValue) =>
+    updateConfigField(
+      "control",
+      "humanized_motion",
+      { ...humanizedMotionConfig, [key]: value } as Record<string, RuntimeConfigValue>
+    );
   const calibratedAngularConfig = algorithmConfig("calibrated_angular");
   const universalSaturatedConfig = algorithmConfig("universal_saturated");
   const dualPhaseConfig = algorithmConfig("dual_phase_atan_robust_predictive_v2");
@@ -3805,6 +3814,32 @@ export function StudioConsoleView({
                       ? `运行中：${motionProfileRuntime.profile_name || motionProfileRuntime.active_profile} · ${motionProfileRuntime.sample_count} 条样本`
                       : "当前未启用真人曲线；文件配置不会被修改。"}
                 </small>
+                <div className="motion-profile-runtime-tuning">
+                  <ModuleSwitch label="空间贝塞尔轨迹" detail="控制画像的侧向空间路径；关闭后仍保留真人速度节奏和末端闭环。" enabled={humanizedSpatialCurveEnabled} onToggle={(enabled) => updateHumanized("spatial_curve_enabled", enabled)} />
+                  <div className="control-grid compact">
+                    <NumberControl label="侧向弯曲倍率" value={humanizedValue("side_scale", 1)} min={0} max={4} step={0.05} onCommit={(value) => updateHumanized("side_scale", value)} />
+                    <NumberControl label="微调直通距离 px" value={humanizedValue("micro_bypass_px", 3)} min={0} max={500} step={1} onCommit={(value) => updateHumanized("micro_bypass_px", value)} />
+                    <NumberControl label="末端闭环增益" value={humanizedValue("terminal_feedback_gain", 0.35)} min={0.05} max={2} step={0.05} onCommit={(value) => updateHumanized("terminal_feedback_gain", value)} />
+                  </div>
+                </div>
+                <details className="control-advanced-disclosure">
+                  <summary>轨迹运行说明与高级策略</summary>
+                  <div className="control-grid compact">
+                    <NumberControl label="最大侧偏比例" value={humanizedValue("max_side_ratio", 0.35)} min={0} max={1} step={0.01} onCommit={(value) => updateHumanized("max_side_ratio", value)} />
+                    <NumberControl label="近端淡出距离 px" value={humanizedValue("near_fade_start_px", 24)} min={0} max={1000} step={1} onCommit={(value) => updateHumanized("near_fade_start_px", value)} />
+                    <NumberControl label="动态重规划比例" value={humanizedValue("dynamic_rebase_ratio", 0.25)} min={0.05} max={1} step={0.01} onCommit={(value) => updateHumanized("dynamic_rebase_ratio", value)} />
+                    <ModuleSwitch label="钟形速度回退" detail="画像缺少进度曲线时使用 finite minimum-jerk 曲线。" enabled={readBoolean(humanizedMotionConfig.minimum_jerk_fallback, true)} onToggle={(enabled) => updateHumanized("minimum_jerk_fallback", enabled)} />
+                  </div>
+                  <div className="console-kv compact">
+                    <span>空间轨迹</span><b>{motionProfileRuntime?.enabled ? "已启用真人画像" : "静态控制参数"}</b>
+                    <span>速度曲线来源</span><b>{motionProfileRuntime?.enabled ? "真人画像；缺少曲线时钟形回退" : "静态控制算法"}</b>
+                    <span>侧向弯曲</span><b>由真人画像采样决定</b>
+                    <span>近端淡出</span><b>由运行时控制器按距离自动处理</b>
+                    <span>动态目标降级 / 重规划</span><b>由最新观测自动触发</b>
+                    <span>末端闭环</span><b>始终保留目标误差闭环</b>
+                  </div>
+                  <p className="control-advanced-hint">上方是持久化的轨迹安全参数；真人画像开关只覆盖运行内存，不会改写画像文件。</p>
+                </details>
               </div>
             </div>
             <div className="console-card class-config-summary-card">

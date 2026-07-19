@@ -122,6 +122,10 @@ class MotionProfileRepository:
             raise ValueError("valid samples do not contain a usable trajectory")
         fitts_a_ms, fitts_b_ms = _fit_fitts(features)
         progress_curve = _median_curve([item["progress_curve"] for item in features])
+        side_offset_samples = _median_side_curve(
+            [item["side_offset_curve"] for item in features]
+        )
+        side_offset_curve = _fit_side_bezier(side_offset_samples)
         distance_profiles: dict[str, dict[str, Any]] = {}
         for group in ("micro", "near", "mid", "far"):
             group_items = [item for item in features if item["distance_group"] == group]
@@ -129,6 +133,11 @@ class MotionProfileRepository:
                 distance_profiles[group] = {
                     "sample_count": len(group_items),
                     "progress_curve": _median_curve([item["progress_curve"] for item in group_items]),
+                    "side_offset_curve": _fit_side_bezier(
+                        _median_side_curve(
+                            [item["side_offset_curve"] for item in group_items]
+                        )
+                    ),
                     "median_duration_ms": _median([item["movement_duration_ms"] for item in group_items]),
                 }
         direction_scales = _direction_duration_scales(features, fitts_a_ms, fitts_b_ms)
@@ -143,7 +152,7 @@ class MotionProfileRepository:
             + distance_coverage * 4
         ))
         profile = {
-            "profile_version": 3,
+            "profile_version": 4,
             "profile_id": f"profile_{time.time_ns()}",
             "name": name,
             "session_id": session_id,
@@ -164,6 +173,7 @@ class MotionProfileRepository:
                 "fitts_b_ms": fitts_b_ms,
             },
             "progress_curve": progress_curve,
+            "side_offset_curve": side_offset_curve,
             "distance_profiles": distance_profiles,
             "direction_duration_scales": direction_scales,
             "runtime_parameters": {
@@ -387,6 +397,14 @@ def _analyze_sample(sample: dict[str, Any]) -> dict[str, Any] | None:
     curve = [_sample_series(time_ratios, along_ratios, index / (CURVE_POINTS - 1)) for index in range(CURVE_POINTS)]
     curve[0] = 0.0
     curve[-1] = 1.0
+    side_ratios: list[float] = []
+    for point in motion_points:
+        px = float(point.get("x", 0.0)) - start_x
+        py = float(point.get("y", 0.0)) - start_y
+        side_ratios.append((px * (-unit_y) + py * unit_x) / movement_distance)
+    side_curve = [_sample_series(time_ratios, side_ratios, index / (CURVE_POINTS - 1)) for index in range(CURVE_POINTS)]
+    side_curve[0] = 0.0
+    side_curve[-1] = 0.0
     correction_start = next(
         (index / (CURVE_POINTS - 1) for index, value in enumerate(curve) if value >= 0.82),
         0.82,
@@ -403,6 +421,7 @@ def _analyze_sample(sample: dict[str, Any]) -> dict[str, Any] | None:
         "path_efficiency": min(1.0, movement_distance / max(movement_distance, path_length)),
         "click_error_px": math.hypot(click_x - target_x, click_y - target_y),
         "progress_curve": curve,
+        "side_offset_curve": side_curve,
         "correction_start_ratio": correction_start,
         "distance_group": _distance_group(target_distance),
         "direction_group": _direction_group(target_vector_x, target_vector_y),
@@ -430,6 +449,48 @@ def _median_curve(curves: list[list[float]]) -> list[float]:
         result[index] = max(result[index - 1], min(1.0, result[index]))
     result[-1] = 1.0
     return result
+
+
+def _median_side_curve(curves: list[list[float]]) -> list[float]:
+    """Aggregate signed lateral motion without forcing monotonic progress."""
+
+    result = [
+        max(-1.0, min(1.0, _median([float(curve[index]) for curve in curves])))
+        for index in range(CURVE_POINTS)
+    ]
+    result[0] = 0.0
+    result[-1] = 0.0
+    return result
+
+
+def _fit_side_bezier(samples: list[float]) -> dict[str, Any]:
+    """Fit signed lateral samples to a cubic Bezier with zero endpoints."""
+
+    aa = ab = bb = ay = by = 0.0
+    denominator = max(1, len(samples) - 1)
+    for index, value in enumerate(samples):
+        t = index / denominator
+        u = 1.0 - t
+        a = 3.0 * u * u * t
+        b = 3.0 * u * t * t
+        aa += a * a
+        ab += a * b
+        bb += b * b
+        ay += a * float(value)
+        by += b * float(value)
+    determinant = aa * bb - ab * ab
+    if abs(determinant) <= 1e-9:
+        control_1 = control_2 = 0.0
+    else:
+        control_1 = (ay * bb - by * ab) / determinant
+        control_2 = (by * aa - ay * ab) / determinant
+    control_1 = max(-1.0, min(1.0, control_1))
+    control_2 = max(-1.0, min(1.0, control_2))
+    return {
+        "model": "cubic_bezier_side",
+        "control_points": [0.0, control_1, control_2, 0.0],
+        "samples": samples,
+    }
 
 
 def _sample_series(xs: list[float], ys: list[float], x: float) -> float:

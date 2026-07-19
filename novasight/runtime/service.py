@@ -3402,7 +3402,7 @@ class RuntimeService:
             )
         else:
             raise ValueError(f"unsupported mouse control algorithm: {algorithm_id}")
-        humanized_profile = self._resolve_humanized_profile(config)
+        humanized_profile = self._effective_humanized_profile(config)
         return MouseController(
             MouseControllerConfig(
                 mode=algorithm_id,
@@ -3428,7 +3428,7 @@ class RuntimeService:
         config: RuntimeConfig,
     ) -> DualPhaseAtanRobustPredictiveV2Algorithm:
         source_v2 = config.control.dual_phase_atan_robust_predictive_v2
-        humanized_profile = self._resolve_humanized_profile(config)
+        humanized_profile = self._effective_humanized_profile(config)
         return DualPhaseAtanRobustPredictiveV2Algorithm(
             DualPhaseRobustAlgorithmConfig(
                 freshness_threshold_ms=float(source_v2.freshness_threshold_ms),
@@ -3491,12 +3491,24 @@ class RuntimeService:
         return self.humanized_motion_status()
 
     def humanized_motion_status(self) -> dict[str, Any]:
-        profile = self._runtime_humanized_profile if self._runtime_humanized_profile_override_set else self._resolve_humanized_profile(self.config)
+        profile = (
+            self._runtime_humanized_profile
+            if self._runtime_humanized_profile_override_set
+            else self._resolve_humanized_profile(self.config)
+        )
+        effective = self._effective_humanized_profile(self.config)
         return {
             "enabled": profile is not None,
             "active_profile": str(profile.get("profile_id", "")) if profile else "",
             "profile_name": str(profile.get("name", "")) if profile else "",
             "sample_count": int(profile.get("sample_count", 0)) if profile else 0,
+            "profile_version": int(profile.get("profile_version", 0)) if profile else 0,
+            "spatial_curve_available": bool(
+                profile and isinstance(profile.get("side_offset_curve"), (list, dict))
+            ),
+            "effective_runtime_parameters": dict(
+                effective.get("runtime_parameters", {}) if effective else {}
+            ),
             "source": "runtime_memory" if self._runtime_humanized_profile_override_set else "startup_config",
         }
 
@@ -3509,6 +3521,33 @@ class RuntimeService:
             return None
         profile_id = str(getattr(humanized, "active_profile", ""))
         return next((item for item in repository.list_profiles() if item.get("profile_id") == profile_id), None)
+
+    def _effective_humanized_profile(self, config: RuntimeConfig) -> dict[str, Any] | None:
+        """Overlay persisted safety tuning onto the selected immutable profile.
+
+        Training output remains read-only.  The returned copy exists only in
+        the active controller, so switching back to static control or another
+        profile never mutates a profile file.
+        """
+
+        profile = self._resolve_humanized_profile(config)
+        if profile is None:
+            return None
+        source = config.control.humanized_motion
+        runtime_parameters = dict(profile.get("runtime_parameters", {}) or {})
+        runtime_parameters.update(
+            {
+                "spatial_curve_enabled": bool(source.spatial_curve_enabled),
+                "side_scale": float(source.side_scale),
+                "max_side_ratio": float(source.max_side_ratio),
+                "near_fade_start_px": float(source.near_fade_start_px),
+                "micro_bypass_px": float(source.micro_bypass_px),
+                "dynamic_rebase_ratio": float(source.dynamic_rebase_ratio),
+                "minimum_jerk_fallback": bool(source.minimum_jerk_fallback),
+                "terminal_feedback_gain": float(source.terminal_feedback_gain),
+            }
+        )
+        return {**profile, "runtime_parameters": runtime_parameters}
 
     def _reset_control_motion_state(self) -> None:
         self.control_algorithms.reset()
@@ -3807,6 +3846,10 @@ class RuntimeService:
             prediction_horizon_s=0.0,
             target_confidence=max(0.0, min(1.0, float(target.score))),
             prediction_confidence=0.0,
+            target_width_px=max(
+                1.0,
+                float(target.w) * control_width / max(1.0, float(context.width)),
+            ),
             observed_valid=raw_aim.valid and not bool(target.is_predicted),
             actuation_pending_x=bool(executed_control["actuation_pending_x"]),
             actuation_pending_y=bool(executed_control["actuation_pending_y"]),

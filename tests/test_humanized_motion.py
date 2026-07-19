@@ -65,7 +65,7 @@ def test_training_derives_fitts_and_progress_curve_from_samples(tmp_path) -> Non
             ],
         })
     profile = repository.train_profile(session["session_id"], "trained")
-    assert profile["profile_version"] == 3
+    assert profile["profile_version"] == 4
     assert profile["timing"]["model"] == "fitts"
     assert profile["timing"]["fitts_b_ms"] > 15.0
     assert len(profile["progress_curve"]) == 16
