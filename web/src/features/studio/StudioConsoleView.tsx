@@ -692,6 +692,7 @@ export function StudioConsoleView({
   const preferLatestModelVersionRef = useRef(false);
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
+  const configWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const launchCancelledRef = useRef(false);
   const launchTimerRef = useRef<number | null>(null);
   const launchTimerResolveRef = useRef<(() => void) | null>(null);
@@ -2504,7 +2505,12 @@ export function StudioConsoleView({
   }, [applyCapture, runtimeControlRequested, runtimeMainlineSelected, openMainlineLaunchDialog, stopCurrentCapture]);
 
   const updateConfigField = useCallback(
-    async (section: string, key: string, value: RuntimeConfigValue) => {
+    async (
+      section: string,
+      key: string,
+      value: RuntimeConfigValue,
+      options?: { optimistic?: boolean; rethrow?: boolean }
+    ): Promise<void> => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const next = base ? normalizeRuntimeConfig(base) : null;
       if (!next) {
@@ -2519,6 +2525,7 @@ export function StudioConsoleView({
         stageConfigDialogDraft(next);
         return;
       }
+      const optimistic = options?.optimistic !== false;
       const writeSeq = ++configWriteSeqRef.current;
       pendingConfigWritesRef.current += 1;
       setDialogSaveError(null);
@@ -2527,10 +2534,19 @@ export function StudioConsoleView({
         setBusy(`${section}.${key}`);
       }
       setLocalError(null);
-      configDraftRef.current = next;
-      setConfigDraft(next);
+      if (optimistic) {
+        configDraftRef.current = next;
+        setConfigDraft(next);
+      }
       try {
-        const result = await updateRuntimeConfigField(section, key, value);
+        const request = configWriteQueueRef.current.then(() =>
+          updateRuntimeConfigField(section, key, value)
+        );
+        configWriteQueueRef.current = request.then(
+          () => undefined,
+          () => undefined
+        );
+        const result = await request;
         if (writeSeq === configWriteSeqRef.current) {
           const applied = normalizeRuntimeConfig(result.config);
           runtimeConfigLatestRef.current = applied;
@@ -2544,9 +2560,12 @@ export function StudioConsoleView({
         setDialogSaveError(message);
 
         reportError(err, { source: 'studio', title: '操作失败' });
-        if (writeSeq === configWriteSeqRef.current) {
+        if (optimistic && writeSeq === configWriteSeqRef.current) {
           configDraftRef.current = null;
           setConfigDraft(null);
+        }
+        if (options?.rethrow) {
+          throw err;
         }
       } finally {
         pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
@@ -3896,8 +3915,15 @@ export function StudioConsoleView({
               <ModuleSwitch
                 label="发送偏移控制量"
                 detail={outputEnabled ? "关闭后立即清空待发送旧命令" : "开启后只发送新的实时观测"}
+                disabled={busy !== null}
                 enabled={outputEnabled}
-                onToggle={(enabled) => updateConfigField("control", "output_enabled", enabled)}
+                optimistic={false}
+                onToggle={(enabled) => updateConfigField(
+                  "control",
+                  "output_enabled",
+                  enabled,
+                  { optimistic: false, rethrow: true }
+                )}
               />
             </div>
             <div className={motionProfileRuntime?.enabled ? "console-card motion-control-mode-card human" : motionProfileRuntime === null ? "console-card motion-control-mode-card loading" : "console-card motion-control-mode-card static"}>
@@ -5328,12 +5354,14 @@ function ModuleSwitch({
   detail,
   enabled,
   disabled = false,
+  optimistic = true,
   onToggle
 }: {
   label: string;
   detail: string;
   enabled: boolean;
   disabled?: boolean;
+  optimistic?: boolean;
   onToggle: (enabled: boolean) => Promise<void> | void;
 }) {
   const [visualEnabled, setVisualEnabled] = useState(enabled);
@@ -5350,14 +5378,21 @@ function ModuleSwitch({
       return;
     }
     const next = !visualEnabled;
-    setVisualEnabled(next);
+    if (optimistic) {
+      setVisualEnabled(next);
+    }
     setPending(true);
     try {
       await onToggle(next);
+      if (!optimistic) {
+        setVisualEnabled(next);
+      }
+    } catch {
+      setVisualEnabled(enabled);
     } finally {
       setPending(false);
     }
-  }, [disabled, onToggle, pending, visualEnabled]);
+  }, [disabled, enabled, onToggle, optimistic, pending, visualEnabled]);
 
   return (
     <button
@@ -5370,7 +5405,7 @@ function ModuleSwitch({
         <b>{label}</b>
         <small>{detail}</small>
       </span>
-      <i>{visualEnabled ? "开" : "关"}</i>
+      <i>{pending ? "处理中" : visualEnabled ? "开" : "关"}</i>
     </button>
   );
 }

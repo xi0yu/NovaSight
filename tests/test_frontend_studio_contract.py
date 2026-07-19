@@ -210,7 +210,9 @@ def test_parameter_page_exposes_runtime_output_gate_without_kmnet_disconnect() -
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
     assert 'readBoolean(controlConfig.output_enabled, true)' in source
-    assert 'updateConfigField("control", "output_enabled", enabled)' in source
+    assert '"output_enabled",\n                  enabled,\n                  { optimistic: false, rethrow: true }' in source
+    assert "optimistic={false}" in source
+    assert 'pending ? "处理中"' in source
     assert "不会断开 KMNet" in source
     assert "关闭后立即清空待发送旧命令" in source
 
@@ -236,6 +238,7 @@ def test_studio_config_field_save_does_not_trigger_full_app_refresh() -> None:
     update_handler = source[update_start:update_end]
 
     assert "updateRuntimeConfigField(section, key, value)" in update_handler
+    assert "configWriteQueueRef.current.then" in update_handler
     assert "await onRefresh()" not in update_handler
 
 

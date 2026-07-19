@@ -97,6 +97,8 @@ class RuntimeReconfigurator:
         include_schema: bool,
     ) -> ConfigApplyReport:
         previous_config = getattr(self.app.state, "config", None)
+        if self._output_gate_only_changed(previous_config, config):
+            return self._apply_output_gate_config(config, previous_config)
         targeting_plan = self._targeting_config_plan(previous_config, config)
         if targeting_plan is not None:
             return self._apply_targeting_config(
@@ -306,6 +308,48 @@ class RuntimeReconfigurator:
                 )
             ],
             message="控制配置已热更新",
+        )
+
+    def _apply_output_gate_config(
+        self,
+        config: RuntimeConfig,
+        previous_config: RuntimeConfig,
+    ) -> ConfigApplyReport:
+        runtime = self.app.state.runtime
+        executors = self.app.state.executors
+        config_path = getattr(self.app.state, "config_path", None)
+        try:
+            runtime.update_output_gate(config, executors=executors)
+            self.app.state.config = config
+            if config_path is not None:
+                save_runtime_config(config, config_path)
+        except Exception as exc:
+            runtime.update_output_gate(previous_config, executors=executors)
+            self.app.state.config = previous_config
+            if config_path is not None:
+                save_runtime_config(previous_config, config_path)
+            raise ValueError(
+                f"control output gate rejected; previous state restored: {exc}"
+            ) from exc
+        enabled = bool(config.control.output_enabled)
+        return ConfigApplyReport(
+            config=asdict(config),
+            schema=None,
+            restart_required=False,
+            applied=True,
+            sections=[
+                ConfigSectionApplyResult(
+                    section="control.output_enabled",
+                    impact="output_gate_hot_update",
+                    status="applied",
+                    message=(
+                        "mouse offset delivery enabled; waiting for a fresh observation"
+                        if enabled
+                        else "mouse offset delivery disabled and pending commands cleared"
+                    ),
+                )
+            ],
+            message="控制输出开关已热更新",
         )
 
     def _apply_power_saving_config(
@@ -824,4 +868,21 @@ class RuntimeReconfigurator:
         previous_payload = asdict(previous_config)
         next_payload = asdict(config)
         previous_payload["control"] = next_payload["control"]
+        return previous_payload == next_payload
+
+    @staticmethod
+    def _output_gate_only_changed(
+        previous_config: RuntimeConfig | None,
+        config: RuntimeConfig,
+    ) -> bool:
+        if (
+            previous_config is None
+            or previous_config.control.output_enabled == config.control.output_enabled
+        ):
+            return False
+        previous_payload = asdict(previous_config)
+        next_payload = asdict(config)
+        previous_payload["control"]["output_enabled"] = next_payload["control"][
+            "output_enabled"
+        ]
         return previous_payload == next_payload

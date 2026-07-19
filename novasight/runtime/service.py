@@ -557,6 +557,38 @@ class RuntimeService:
         )
         return self.config_store.replace(config)
 
+    def update_output_gate(
+        self,
+        config: RuntimeConfig,
+        *,
+        executors: ExecutorRegistry | None = None,
+    ) -> RuntimeConfig:
+        """Update only final mouse delivery while preserving live control state."""
+
+        with self._control_lock:
+            previous_enabled = bool(self.config.control.output_enabled)
+            if executors is not None:
+                self.executors = executors
+            self.config = config
+            self.executors.set_output_enabled(config.control.output_enabled)
+            if previous_enabled != bool(config.control.output_enabled):
+                # Recoil can emit on scheduler ticks without a newly submitted
+                # tracking command.  Drop its cached source observation on
+                # both edges so reopening cannot reuse pre-transition vision.
+                self._latest_recoil_observation = None
+            if isinstance(self.last_control, dict):
+                self.last_control = {
+                    **self.last_control,
+                    "output_enabled": bool(config.control.output_enabled),
+                    "will_emit": False,
+                    "no_send_reason": (
+                        "WAITING_FOR_FRESH_OBSERVATION"
+                        if config.control.output_enabled
+                        else "CONTROL_OUTPUT_DISABLED"
+                    ),
+                }
+        return self.config_store.replace(config)
+
     def update_targeting_config(
         self,
         config: RuntimeConfig,

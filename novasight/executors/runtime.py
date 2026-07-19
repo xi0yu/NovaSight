@@ -130,6 +130,22 @@ class ExecutorRegistry:
                     min(0.050, float(config.control.scheduler_interval_ms) / 1000.0),
                 )
 
+    def set_output_enabled(self, enabled: bool) -> None:
+        """Atomically gate delivery without rebuilding scheduler or device state."""
+
+        next_enabled = bool(enabled)
+        with self._scheduler_lock:
+            if self.output_enabled == next_enabled:
+                return
+            # Invalidate a command already popped by another thread.  Closing
+            # the gate also drops every queued step so reopening can only
+            # deliver an observation submitted after the transition.
+            self._config_epoch += 1
+            self._submission_epoch += 1
+            if not next_enabled and self.scheduler is not None:
+                self.scheduler.clear("CONTROL_OUTPUT_DISABLED")
+            self.output_enabled = next_enabled
+
     def execute(self, intent: ControlIntent) -> ExecutionResult:
         with self._scheduler_lock:
             bounded = self.policy.apply(intent)

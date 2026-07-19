@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ from novasight.capture.source import (
 )
 from novasight.capture.state import CaptureProfile, CaptureRuntimeState
 from novasight.config import RuntimeConfig
-from novasight.contracts import BBox
+from novasight.contracts import BBox, Detection, DetectionBatch
 from novasight.executors import ExecutorRegistry
 from novasight.inference.contracts import InferenceDetection
 from novasight.inference.geometry import map_model_detections_to_roi_frame
@@ -328,6 +329,72 @@ def test_runtime_field_update_does_not_build_unused_config_schema(
 
     assert report.applied is True
     assert "schema" not in report.asdict()
+
+
+def test_output_gate_hot_update_preserves_live_target_and_control_modules(
+    tmp_path,
+) -> None:
+    cfg = RuntimeConfig()
+    cfg.control.trigger_mode = "always"
+    app = create_app(
+        data_dir=tmp_path / "data",
+        config_path=tmp_path / "runtime.yaml",
+        config=cfg,
+    )
+    runtime = app.state.runtime
+    runtime.running = True
+    app.state.config_path = None
+
+    def feed(frame_id: int) -> None:
+        capture_ts_ns = time.monotonic_ns()
+        runtime.process_detection_batch(
+            DetectionBatch(
+                frame_id=frame_id,
+                generation=frame_id,
+                capture_ts_ns=capture_ts_ns,
+                inference_start_ts_ns=capture_ts_ns + 1_000,
+                inference_end_ts_ns=capture_ts_ns + 2_000,
+                detections=[
+                    Detection(cls=0, score=0.95, x1=330, y1=250, x2=490, y2=568),
+                    Detection(cls=1, score=0.94, x1=370, y1=250, x2=430, y2=340),
+                ],
+                classes=["body", "head"],
+                coordinate_space="roi",
+            ),
+            width=640,
+            height=640,
+            source_width=1920,
+            source_height=1080,
+            roi_offset_x=600,
+            roi_offset_y=220,
+        )
+
+    feed(1)
+    feed(2)
+    assert runtime.last_control["will_emit"] is True
+    active_track_id = runtime.last_target["track_id"]
+    algorithms = runtime.control_algorithms
+    scheduler = app.state.executors.scheduler
+
+    disabled = RuntimeReconfigurator(app).apply_field(
+        "control",
+        "output_enabled",
+        False,
+    )
+    enabled = RuntimeReconfigurator(app).apply_field(
+        "control",
+        "output_enabled",
+        True,
+    )
+    feed(3)
+
+    assert disabled.sections[0].impact == "output_gate_hot_update"
+    assert enabled.sections[0].impact == "output_gate_hot_update"
+    assert runtime.last_control["will_emit"] is True
+    assert runtime.last_target["track_id"] == active_track_id
+    assert runtime.control_algorithms is algorithms
+    assert app.state.executors.scheduler is scheduler
+    assert app.state.executors.status()["output_enabled"] is True
 
 
 def test_runtime_reconfigurator_applies_aim_mapping_without_full_runtime_rebuild(
