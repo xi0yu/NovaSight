@@ -184,4 +184,6 @@ def test_builtin_profile_requires_no_training_data_and_reports_its_source(tmp_pa
     assert status["source"] == "runtime_memory"
     assert status["sample_count"] == 0
     assert effective is not None
+    assert effective["timing"]["fitts_b_ms"] == 55.0
     assert effective["side_offset_curve"]["model"] == "cubic_bezier_side"
+    assert effective["runtime_parameters"]["max_side_ratio"] == 0.10

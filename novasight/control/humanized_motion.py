@@ -115,11 +115,12 @@ class HumanizedMotionGenerator:
         position = _interpolate_curve(curve, progress)
         previous_position = _interpolate_curve(curve, self._last_progress)
         delta_position = max(0.0, position - previous_position)
-        side_curve = _profile_side_curve(self.profile, value.error_x_px, value.error_y_px)
         spatial_curve_source = _profile_side_curve_source(
             self.profile, value.error_x_px, value.error_y_px
         )
-        side_position = _interpolate_curve(side_curve, progress)
+        side_position = _profile_side_position(
+            self.profile, value.error_x_px, value.error_y_px, progress
+        )
         if not bool(runtime.get("spatial_curve_enabled", True)):
             side_position = 0.0
         side_position *= _bounded(runtime.get("side_scale", 1.0), 0.0, 4.0)
@@ -272,9 +273,7 @@ def _profile_side_curve(
     profile: dict[str, Any], error_x: float = 0.0, error_y: float = 0.0
 ) -> tuple[float, ...]:
     """Return normalized lateral offset; supports a cubic Bezier profile."""
-    selected = _distance_profile(profile, error_x, error_y)
-    raw = selected.get("side_offset_curve") if isinstance(selected, dict) else None
-    raw = raw or profile.get("side_offset_curve")
+    raw = _profile_side_curve_raw(profile, error_x, error_y)
     if isinstance(raw, dict):
         points = raw.get("control_points")
         if isinstance(points, list) and len(points) == 4:
@@ -287,12 +286,26 @@ def _profile_side_curve(
     return (0.0, 0.0)
 
 
+def _profile_side_position(
+    profile: dict[str, Any], error_x: float, error_y: float, progress: float
+) -> float:
+    """Evaluate explicit Bezier controls exactly; interpolate learned samples."""
+
+    raw = _profile_side_curve_raw(profile, error_x, error_y)
+    if isinstance(raw, dict):
+        points = raw.get("control_points")
+        if isinstance(points, list) and len(points) == 4:
+            bounded = [_bounded(item, -1.0, 1.0) for item in points]
+            bounded[0] = 0.0
+            bounded[-1] = 0.0
+            return _bezier(bounded, min(1.0, max(0.0, progress)))
+    return _interpolate_curve(_profile_side_curve(profile, error_x, error_y), progress)
+
+
 def _profile_side_curve_source(
     profile: dict[str, Any], error_x: float = 0.0, error_y: float = 0.0
 ) -> str:
-    selected = _distance_profile(profile, error_x, error_y)
-    raw = selected.get("side_offset_curve") if isinstance(selected, dict) else None
-    raw = raw or profile.get("side_offset_curve")
+    raw = _profile_side_curve_raw(profile, error_x, error_y)
     if isinstance(raw, dict):
         points = raw.get("control_points")
         if isinstance(points, list) and len(points) == 4:
@@ -300,6 +313,11 @@ def _profile_side_curve_source(
     if isinstance(raw, list) and len(raw) >= 2:
         return "sampled_side_curve"
     return "none"
+
+
+def _profile_side_curve_raw(profile: dict[str, Any], error_x: float, error_y: float) -> Any:
+    selected = _distance_profile(profile, error_x, error_y)
+    return selected.get("side_offset_curve") or profile.get("side_offset_curve")
 
 
 def _distance_profile(
