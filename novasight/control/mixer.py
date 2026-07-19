@@ -24,13 +24,17 @@ class ControlMixer:
         # to correct an overshoot as the recoil gate closes.
         state = recoil.state.value
         engaged = state in {"STARTUP", "ACTIVE", "HOLD", "BRAKE"} and (
-            recoil.base_rate_counts_s > 0.0
-            or recoil.fast_add_rate_counts_s > 0.0
+            recoil.gate > 0.0
             or recoil.final_rate_counts_s > 0.0
             or recoil.residual_counts_y > 0.0
         )
         if engaged:
-            final_y = float(recoil.emitted_counts_y) + min(0.0, float(tracking_y))
+            # Positive values are physical downward motion.  Do not stack two
+            # downward demands; upward tracking remains able to cancel recoil.
+            tracking_down = max(0.0, float(tracking_y))
+            final_y = max(float(recoil.emitted_counts_y), tracking_down) + min(
+                0.0, float(tracking_y)
+            )
         else:
             # Recoil staleness disables only the independent branch.  The
             # tracking branch keeps its own freshness and target-loss policy.

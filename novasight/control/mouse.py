@@ -42,6 +42,7 @@ class MouseObservation:
     target_confidence: float
     prediction_confidence: float
     target_width_px: float = 1.0
+    trigger_active: bool = True
     observed_valid: bool = True
     actuation_pending_x: bool = False
     actuation_pending_y: bool = False
@@ -429,9 +430,8 @@ class MouseController:
             error_y_px=predicted_error.y,
             target_width_px=max(1.0, observation.target_width_px),
             target_id=observation.target_id,
-            trigger_active=observation.left_trigger_active,
-            left_trigger_active=observation.left_trigger_active,
-            trigger_hold_ms=observation.left_trigger_hold_ms,
+            trigger_active=observation.trigger_active,
+            control_time_ms=max(0.0, observation.control_now_ts_ns / 1_000_000.0),
         ))
         profile_counts = Vec2(humanized.x, humanized.y)
         profile_debug = humanized.telemetry

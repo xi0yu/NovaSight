@@ -28,6 +28,7 @@ import {
   RuntimeState,
   RuntimeStatusTopic,
   activateMotionProfile,
+  activateBuiltinMotion,
   disableMotionProfile,
   getCaptureCapabilities,
   getModelArtifacts,
@@ -705,13 +706,16 @@ export function StudioConsoleView({
     setMotionProfiles(profiles);
     setMotionProfileRuntime(status);
     setSelectedMotionProfileId((current) => {
+      if (status.trajectory_source === "builtin" || status.active_profile === "builtin") {
+        return "__builtin__";
+      }
       if (status.active_profile && profiles.some((profile) => profile.profile_id === status.active_profile)) {
         return status.active_profile;
       }
       if (current && profiles.some((profile) => profile.profile_id === current)) {
         return current;
       }
-      return profiles[0]?.profile_id ?? "";
+      return "__builtin__";
     });
   }, []);
 
@@ -733,14 +737,14 @@ export function StudioConsoleView({
     if (motionProfileBusy) {
       return;
     }
-    if (useHumanProfile && !selectedMotionProfileId) {
-      openMotionProfileStudio();
-      return;
-    }
     setMotionProfileBusy(true);
     try {
       if (useHumanProfile) {
-        await activateMotionProfile(selectedMotionProfileId);
+        if (!selectedMotionProfileId || selectedMotionProfileId === "__builtin__") {
+          await activateBuiltinMotion();
+        } else {
+          await activateMotionProfile(selectedMotionProfileId);
+        }
       } else {
         await disableMotionProfile();
       }
@@ -750,7 +754,7 @@ export function StudioConsoleView({
     } finally {
       setMotionProfileBusy(false);
     }
-  }, [motionProfileBusy, openMotionProfileStudio, refreshMotionProfileRuntime, selectedMotionProfileId]);
+  }, [motionProfileBusy, refreshMotionProfileRuntime, selectedMotionProfileId]);
 
   const selectMotionProfile = useCallback(async (profileId: string) => {
     setSelectedMotionProfileId(profileId);
@@ -759,7 +763,8 @@ export function StudioConsoleView({
     }
     setMotionProfileBusy(true);
     try {
-      await activateMotionProfile(profileId);
+      if (profileId === "__builtin__") await activateBuiltinMotion();
+      else await activateMotionProfile(profileId);
       await refreshMotionProfileRuntime();
     } catch (error) {
       reportError(error, { source: "motion-profile-select", title: "真人画像切换失败" });
@@ -1136,6 +1141,12 @@ export function StudioConsoleView({
   const aimConfig = nestedRecord(controlConfig, "aim");
   const humanizedMotionConfig = nestedRecord(controlConfig, "humanized_motion");
   const humanizedSpatialCurveEnabled = readBoolean(humanizedMotionConfig.spatial_curve_enabled, true);
+  const motionTrajectorySource = motionProfileRuntime?.trajectory_source
+    ?? (motionProfileRuntime?.active_profile === "builtin"
+      ? "builtin"
+      : motionProfileRuntime?.enabled
+        ? "trained"
+        : "static");
   const humanizedValue = (key: string, fallback: number) => readNumber(humanizedMotionConfig[key], fallback);
   const updateHumanized = (key: string, value: RuntimeConfigValue) =>
     updateConfigField(
@@ -1405,6 +1416,22 @@ export function StudioConsoleView({
       : diagnosticTracks.find((item) => readNumber(item.track_id, Number.NaN) === selectedTrackId) ?? {};
   const selectedTrackEstimate = asRecord(selectedTrackDebug.estimate);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
+  const humanizedSpeedCurveSource = readString(controlPipeline.humanized_motion_speed_curve_source, "");
+  const humanizedSpatialCurveSource = readString(controlPipeline.humanized_motion_spatial_curve_source, "");
+  const humanizedSpeedCurveLabel = humanizedSpeedCurveSource === "minimum_jerk"
+    ? "minimum-jerk 钟形速度"
+    : humanizedSpeedCurveSource === "trained_progress"
+      ? "训练进度曲线"
+      : humanizedSpeedCurveSource === "micro_bypass"
+        ? "微调区闭环直通"
+        : humanizedSpeedCurveSource || NO_SAMPLE;
+  const humanizedSpatialCurveLabel = humanizedSpatialCurveSource === "cubic_bezier"
+    ? "三次贝塞尔"
+    : humanizedSpatialCurveSource === "sampled_side_curve"
+      ? "训练侧向曲线"
+      : humanizedSpatialCurveSource === "micro_bypass"
+        ? "微调区关闭侧偏"
+        : humanizedSpatialCurveSource || NO_SAMPLE;
   const mouseObservation = asRecord(control.mouse_observation ?? target.mouse_observation);
   const rawAimDebug = asRecord(mouseObservation.raw_aim);
   const controlHasSample = Object.keys(control).length > 0;
@@ -3691,6 +3718,14 @@ export function StudioConsoleView({
                     <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
                   </>
                 )}
+                {controlPipeline.humanized_motion_enabled !== undefined ? (
+                  <>
+                    <span>拟人轨迹状态</span><b>{readBoolean(controlPipeline.humanized_motion_enabled, false) ? readString(controlPipeline.humanized_motion_phase, "运行中") : readString(controlPipeline.humanized_motion_reason, "未启用")}</b>
+                    <span>速度 / 空间曲线</span><b>{`${humanizedSpeedCurveLabel} / ${humanizedSpatialCurveLabel}`}</b>
+                    <span>轨迹进度 / 侧偏</span><b>{`${formatPercent(controlPipeline.humanized_motion_progress, 1)} / ${formatOptionalNumber(controlPipeline.humanized_motion_side_offset, 4)}`}</b>
+                    <span>计划时长</span><b>{formatOptionalNumber(controlPipeline.humanized_motion_planned_duration_ms, 1, "ms")}</b>
+                  </>
+                ) : null}
                 <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
                 <span>基础 / 追加速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_base_rate_counts_s, 0)} / ${formatOptionalNumber(controlPipeline.recoil_fast_add_rate_counts_s, 0)} counts/s`}</b>
                 <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
@@ -3726,7 +3761,7 @@ export function StudioConsoleView({
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric
                 title="轨迹来源"
-                value={motionProfileRuntime === null ? "读取中" : motionProfileRuntime.enabled ? "真人轨迹" : "静态参数"}
+                value={motionProfileRuntime === null ? "读取中" : motionTrajectorySource === "builtin" ? "内置拟人" : motionProfileRuntime.enabled ? "训练拟人" : "静态参数"}
                 small={motionProfileRuntime?.enabled ? motionProfileRuntime.profile_name || "运行内存画像" : motionProfileRuntime === null ? "等待运行态" : "配置文件"}
               />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
@@ -3755,14 +3790,16 @@ export function StudioConsoleView({
             </div>
             <div className={motionProfileRuntime?.enabled ? "console-card motion-control-mode-card human" : motionProfileRuntime === null ? "console-card motion-control-mode-card loading" : "console-card motion-control-mode-card static"}>
               <div className="motion-control-mode-copy">
-                <span className="class-config-eyebrow">硬件触发后的控制轨迹</span>
-                <h3>{motionProfileRuntime === null ? "正在读取控制轨迹" : motionProfileRuntime.enabled ? "真人轨迹算法" : "静态控制算法"}</h3>
+                <span className="class-config-eyebrow">控制触发后的轨迹整形</span>
+                <h3>{motionProfileRuntime === null ? "正在读取控制轨迹" : motionProfileRuntime.enabled ? "拟人轨迹算法" : "静态控制算法"}</h3>
                 <p>
                   {motionProfileRuntime === null
                     ? "正在从后端确认当前运行内存使用的轨迹来源。"
                     : motionProfileRuntime.enabled
-                    ? "当前画像直接覆盖运行内存中的静态节奏参数；关闭后立即恢复配置文件中的控制参数。"
-                    : "使用参数页中已经调整好的固定控制参数，不加载真人画像。"}
+                    ? motionTrajectorySource === "builtin"
+                      ? "无需训练画像：直接使用内置钟形速度、轻量贝塞尔路径和末端闭环。关闭后立即恢复静态控制参数。"
+                      : "训练画像只覆盖运行内存中的轨迹节奏；关闭后立即恢复配置文件中的控制参数。"
+                    : "使用参数页中已经调整好的固定控制算法；拟人轨迹并非运行前提。"}
                 </p>
               </div>
               <div className="motion-control-mode-actions">
@@ -3780,23 +3817,23 @@ export function StudioConsoleView({
                   <button
                     aria-pressed={motionProfileRuntime?.enabled === true}
                     className={motionProfileRuntime?.enabled ? "active" : ""}
-                    disabled={motionProfileBusy || motionProfiles.length === 0}
+                    disabled={motionProfileBusy || motionProfileRuntime === null}
                     onClick={() => void setMotionControlMode(true)}
                     type="button"
                   >
                     <NovaIcon name="track-trace" size={16} />
-                    真人轨迹算法
+                    拟人轨迹
                   </button>
                 </div>
                 <div className="motion-profile-picker">
-                  <label htmlFor="motion-profile-select">真人画像</label>
+                  <label htmlFor="motion-profile-select">轨迹来源</label>
                   <select
                     id="motion-profile-select"
-                    disabled={motionProfileBusy || motionProfiles.length === 0}
+                    disabled={motionProfileBusy}
                     onChange={(event) => void selectMotionProfile(event.target.value)}
                     value={selectedMotionProfileId}
                   >
-                    {motionProfiles.length === 0 ? <option value="">尚未训练画像</option> : null}
+                    <option value="__builtin__">内置拟人轨迹（无需训练）</option>
                     {motionProfiles.map((profile) => (
                       <option key={profile.profile_id} value={profile.profile_id}>
                         {profile.name} · {profile.sample_count} 条
@@ -3811,8 +3848,10 @@ export function StudioConsoleView({
                   {motionProfileBusy
                     ? "正在切换运行内存…"
                     : motionProfileRuntime?.enabled
-                      ? `运行中：${motionProfileRuntime.profile_name || motionProfileRuntime.active_profile} · ${motionProfileRuntime.sample_count} 条样本`
-                      : "当前未启用真人曲线；文件配置不会被修改。"}
+                      ? motionTrajectorySource === "builtin"
+                        ? "运行中：内置钟形速度 + 贝塞尔空间轨迹（无需训练样本）"
+                        : `运行中：${motionProfileRuntime.profile_name || motionProfileRuntime.active_profile} · ${motionProfileRuntime.sample_count} 条样本`
+                      : "当前使用静态控制算法；文件配置不会被修改。"}
                 </small>
                 <div className="motion-profile-runtime-tuning">
                   <ModuleSwitch label="空间贝塞尔轨迹" detail="控制画像的侧向空间路径；关闭后仍保留真人速度节奏和末端闭环。" enabled={humanizedSpatialCurveEnabled} onToggle={(enabled) => updateHumanized("spatial_curve_enabled", enabled)} />
@@ -3825,15 +3864,18 @@ export function StudioConsoleView({
                 <details className="control-advanced-disclosure">
                   <summary>轨迹运行说明与高级策略</summary>
                   <div className="control-grid compact">
-                    <NumberControl label="最大侧偏比例" value={humanizedValue("max_side_ratio", 0.35)} min={0} max={1} step={0.01} onCommit={(value) => updateHumanized("max_side_ratio", value)} />
+                    <NumberControl label="最大侧偏比例" value={humanizedValue("max_side_ratio", 0.1)} min={0} max={0.25} step={0.005} onCommit={(value) => updateHumanized("max_side_ratio", value)} />
                     <NumberControl label="近端淡出距离 px" value={humanizedValue("near_fade_start_px", 24)} min={0} max={1000} step={1} onCommit={(value) => updateHumanized("near_fade_start_px", value)} />
                     <NumberControl label="动态重规划比例" value={humanizedValue("dynamic_rebase_ratio", 0.25)} min={0.05} max={1} step={0.01} onCommit={(value) => updateHumanized("dynamic_rebase_ratio", value)} />
-                    <ModuleSwitch label="钟形速度回退" detail="画像缺少进度曲线时使用 finite minimum-jerk 曲线。" enabled={readBoolean(humanizedMotionConfig.minimum_jerk_fallback, true)} onToggle={(enabled) => updateHumanized("minimum_jerk_fallback", enabled)} />
+                    <ModuleSwitch label="钟形速度回退" detail="没有训练进度曲线时，用 minimum-jerk 累计曲线生成钟形速度。" enabled={readBoolean(humanizedMotionConfig.minimum_jerk_fallback, true)} onToggle={(enabled) => updateHumanized("minimum_jerk_fallback", enabled)} />
+                    <NumberControl label="内置启动基准 ms" value={humanizedValue("builtin_fitts_a_ms", 35)} min={0} max={500} step={1} onCommit={(value) => updateHumanized("builtin_fitts_a_ms", value)} />
+                    <NumberControl label="内置难度时长 ms" value={humanizedValue("builtin_fitts_b_ms", 55)} min={1} max={500} step={1} onCommit={(value) => updateHumanized("builtin_fitts_b_ms", value)} />
+                    <NumberControl label="内置侧向弯曲" value={humanizedValue("builtin_side_ratio", 0.012)} min={-0.15} max={0.15} step={0.001} onCommit={(value) => updateHumanized("builtin_side_ratio", value)} />
                   </div>
                   <div className="console-kv compact">
-                    <span>空间轨迹</span><b>{motionProfileRuntime?.enabled ? "已启用真人画像" : "静态控制参数"}</b>
-                    <span>速度曲线来源</span><b>{motionProfileRuntime?.enabled ? "真人画像；缺少曲线时钟形回退" : "静态控制算法"}</b>
-                    <span>侧向弯曲</span><b>由真人画像采样决定</b>
+                    <span>空间轨迹</span><b>{motionProfileRuntime?.enabled ? "贝塞尔 / 训练采样曲线" : "静态控制参数"}</b>
+                    <span>速度曲线来源</span><b>{motionTrajectorySource === "trained" ? "训练画像；缺失时钟形回退" : motionProfileRuntime?.enabled ? "内置 minimum-jerk 钟形速度" : "静态控制算法"}</b>
+                    <span>侧向弯曲</span><b>{motionTrajectorySource === "trained" ? "由训练轨迹拟合" : "由内置贝塞尔控制点生成"}</b>
                     <span>近端淡出</span><b>由运行时控制器按距离自动处理</b>
                     <span>动态目标降级 / 重规划</span><b>由最新观测自动触发</b>
                     <span>末端闭环</span><b>始终保留目标误差闭环</b>

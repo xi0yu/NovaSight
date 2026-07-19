@@ -19,8 +19,7 @@ def _input(*, hold_ms: float, target_id: int = 1, active: bool = True) -> Humani
         target_width_px=32.0,
         target_id=target_id,
         trigger_active=active,
-        left_trigger_active=active,
-        trigger_hold_ms=hold_ms,
+        control_time_ms=hold_ms,
     )
 
 
@@ -28,6 +27,29 @@ def test_disabled_humanized_motion_is_exact_identity() -> None:
     result = HumanizedMotionGenerator(None).apply(_input(hold_ms=20.0))
     assert (result.x, result.y) == (12.0, 4.0)
     assert result.telemetry["humanized_motion_enabled"] is False
+
+
+def test_empty_profile_curve_uses_minimum_jerk_and_cubic_bezier() -> None:
+    profile = {
+        "timing": {"fitts_a_ms": 35.0, "fitts_b_ms": 55.0},
+        "progress_curve": [],
+        "side_offset_curve": {
+            "model": "cubic_bezier_side",
+            "control_points": [0.0, 0.012, 0.012, 0.0],
+        },
+        "runtime_parameters": {
+            "minimum_jerk_fallback": True,
+            "spatial_curve_enabled": True,
+        },
+    }
+    generator = HumanizedMotionGenerator(profile)
+    generator.apply(_input(hold_ms=0.0))
+    result = generator.apply(_input(hold_ms=50.0))
+
+    assert result.telemetry["humanized_motion_speed_curve_source"] == "minimum_jerk"
+    assert result.telemetry["humanized_motion_spatial_curve_source"] == "cubic_bezier"
+    assert result.telemetry["humanized_motion_curve_position"] > 0.0
+    assert result.telemetry["humanized_motion_side_offset"] > 0.0
 
 
 def test_profile_curve_generates_progressive_counts_and_resets_on_target_switch() -> None:
@@ -142,3 +164,24 @@ def test_runtime_profile_activation_does_not_mutate_static_config(tmp_path) -> N
     assert config.control.humanized_motion.active_profile == ""
     disabled = service.set_humanized_motion_profile(None)
     assert disabled["enabled"] is False
+
+
+def test_builtin_profile_requires_no_training_data_and_reports_its_source(tmp_path) -> None:
+    config = RuntimeConfig()
+    repository = MotionProfileRepository(tmp_path)
+    service = RuntimeService(
+        config,
+        models=SimpleNamespace(get_active_deployment=lambda: None),
+        executors=ExecutorRegistry.from_config(config),
+        motion_profile_repository=repository,
+    )
+
+    status = service.enable_builtin_humanized_motion()
+    effective = service._effective_humanized_profile(config)
+
+    assert status["enabled"] is True
+    assert status["trajectory_source"] == "builtin"
+    assert status["source"] == "runtime_memory"
+    assert status["sample_count"] == 0
+    assert effective is not None
+    assert effective["side_offset_curve"]["model"] == "cubic_bezier_side"

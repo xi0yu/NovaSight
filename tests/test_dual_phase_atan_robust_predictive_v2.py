@@ -306,6 +306,47 @@ def test_far_controller_can_use_kmnet_counts_above_legacy_hid8_limit() -> None:
     assert decision.dx <= 600
 
 
+def test_humanized_layer_cannot_bypass_far_axis_limit() -> None:
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    axis_limit = 12.0
+    profile = {
+        "timing": {"fitts_a_ms": 0.0, "fitts_b_ms": 1.0},
+        "progress_curve": [0.0, 1.0],
+        "runtime_parameters": {"micro_bypass_px": 0.0},
+    }
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(
+            defaults,
+            mode=ModeSelectorConfig(near_threshold_px=0.01),
+            atan=replace(
+                defaults.atan,
+                far=AtanModeConfig(kp=1.0, max_counts_per_update=axis_limit),
+            ),
+            humanized_profile=profile,
+        )
+    )
+    algorithm.calculate(
+        _observation(
+            generation=1,
+            error_x=150.0,
+            error_y=150.0,
+        )
+    )
+    decision = algorithm.calculate(
+        _observation(
+            generation=2,
+            error_x=150.0,
+            error_y=150.0,
+        )
+    )
+
+    assert decision.telemetry["humanized_motion_enabled"] is True
+    assert abs(decision.dx) <= axis_limit
+    assert abs(decision.dy) <= axis_limit
+    assert abs(decision.telemetry["float_demand_x"]) <= axis_limit
+    assert abs(decision.telemetry["float_demand_y"]) <= axis_limit
+
+
 def test_projection_atan_and_control_atan_are_separate_unit_steps() -> None:
     defaults = DualPhaseAtanRobustPredictiveV2Config()
     far = AtanModeConfig(kp=0.25, max_counts_per_update=127.0)

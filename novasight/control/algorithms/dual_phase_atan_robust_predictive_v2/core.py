@@ -193,10 +193,16 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
             target_width_px=max(1.0, observation.bbox_x2 - observation.bbox_x1),
             target_id=observation.target_id,
             trigger_active=observation.trigger_active,
-            left_trigger_active=observation.left_trigger_active,
-            trigger_hold_ms=observation.left_trigger_hold_ms,
+            control_time_ms=max(0.0, observation.control_now_ns / 1_000_000.0),
         ))
-        demand_x = humanized.x
+        # Humanized shaping runs after Atan feedback, but it must not bypass
+        # the active FAR/NEAR authority limit.  Keep both axes inside the same
+        # per-observation contract before residual quantization.
+        demand_x = _clamp(
+            humanized.x,
+            -atan_mode.max_counts_per_update,
+            atan_mode.max_counts_per_update,
+        )
         feedback_demand_y = humanized.y
         humanized_debug = humanized.telemetry
         demand_y = _clamp(
@@ -206,7 +212,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         )
         if observation.trigger_active:
             dx, residual_direction_reset_x = self._quantizer_x.quantize(demand_x)
-            dy, residual_direction_reset_y = self._quantizer_y.quantize(feedback_demand_y)
+            dy, residual_direction_reset_y = self._quantizer_y.quantize(demand_y)
             block_reason = ""
         else:
             self.release_trigger()

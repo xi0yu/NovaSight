@@ -58,6 +58,11 @@ def disable_profile(request: Request) -> dict[str, Any]:
     return request.app.state.runtime.set_humanized_motion_profile(None)
 
 
+@router.post("/runtime/builtin/activate")
+def activate_builtin_profile(request: Request) -> dict[str, Any]:
+    return request.app.state.runtime.enable_builtin_humanized_motion()
+
+
 @router.get("/runtime")
 def runtime_profile_status(request: Request) -> dict[str, Any]:
     return request.app.state.runtime.humanized_motion_status()

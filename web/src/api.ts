@@ -33,6 +33,7 @@ export type MotionProfileRuntime = {
   profile_version?: number;
   spatial_curve_available?: boolean;
   effective_runtime_parameters?: Record<string, number | boolean>;
+  trajectory_source?: "static" | "builtin" | "trained" | (string & {});
   source: string;
 };
 export type MotionSampleResult = {
@@ -1098,5 +1099,6 @@ export function addMotionSample(sessionId: string, sample: unknown): Promise<Mot
 export function trainMotionProfile(sessionId: string, name: string): Promise<MotionProfile> { return requestJson<MotionProfile>("/api/motion/profiles/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, name }) }); }
 export function getMotionProfiles(): Promise<MotionProfile[]> { return requestJson<MotionProfile[]>("/api/motion/profiles"); }
 export function activateMotionProfile(profileId: string): Promise<unknown> { return requestJson(`/api/motion/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" }); }
+export function activateBuiltinMotion(): Promise<unknown> { return requestJson("/api/motion/runtime/builtin/activate", { method: "POST" }); }
 export function disableMotionProfile(): Promise<unknown> { return requestJson("/api/motion/profiles/disable", { method: "POST" }); }
 export function getMotionProfileRuntime(): Promise<MotionProfileRuntime> { return requestJson<MotionProfileRuntime>("/api/motion/runtime"); }

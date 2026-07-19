@@ -84,9 +84,9 @@ def test_recoil_controller_complete_rate_state_and_freshness_contract() -> None:
     ("state", "gate", "tracking_y", "recoil_y", "expected_y"),
     [
         (RecoilState.IDLE, 0.0, 4.0, 0, 4.0),
-        (RecoilState.ACTIVE, 1.0, 4.0, 2, 2.0),
+        (RecoilState.ACTIVE, 1.0, 4.0, 2, 4.0),
         (RecoilState.ACTIVE, 1.0, -3.0, 2, -1.0),
-        (RecoilState.BRAKE, 0.0, 4.0, 0, 0.0),
+        (RecoilState.BRAKE, 0.0, 4.0, 0, 4.0),
         (RecoilState.BRAKE, 0.0, -3.0, 0, -3.0),
         (RecoilState.STALE, 0.0, -3.0, 0, -3.0),
     ],
@@ -173,7 +173,7 @@ def test_recoil_latest_replace_sends_once_per_tick_and_requires_live_left_button
     blocked = registry.tick_pending(now_s=now_s + 0.015, recoil=recoil, recoil_source=source)
 
     assert first.sent is True and second.sent is True and generation_mismatch.sent is True
-    assert [(item.dx, item.dy) for item in device.outputs] == [(5, 1), (0, 1), (4, 5)]
+    assert [(item.dx, item.dy) for item in device.outputs] == [(5, 6), (0, 1), (4, 5)]
     assert generation_mismatch.metadata["scheduler"]["recoil_generation_mismatch"] is True
     assert device.outputs[0].source_generation == device.outputs[1].source_generation == 7
     assert device.outputs[0].actuation_sequence < device.outputs[1].actuation_sequence

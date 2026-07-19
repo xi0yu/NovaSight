@@ -16,8 +16,7 @@ class HumanizedMotionInput:
     target_width_px: float
     target_id: int
     trigger_active: bool
-    left_trigger_active: bool
-    trigger_hold_ms: float
+    control_time_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +27,7 @@ class HumanizedMotionResult:
 
 
 class HumanizedMotionGenerator:
-    """Turns a trained normalized movement curve into per-observation counts.
+    """Turn a normalized trained or built-in trajectory into observation counts.
 
     The generator owns all profile phase state.  Callers provide the existing
     controller's full correction and demand; safety limiting remains outside
@@ -41,7 +40,7 @@ class HumanizedMotionGenerator:
 
     def reset(self) -> None:
         self._target_id: int | None = None
-        self._segment_hold_start_ms = 0.0
+        self._segment_start_ms = 0.0
         self._last_progress = 0.0
         self._initial_full_x = 0.0
         self._initial_full_y = 0.0
@@ -50,7 +49,7 @@ class HumanizedMotionGenerator:
         self._last_side_position = 0.0
 
     def apply(self, value: HumanizedMotionInput) -> HumanizedMotionResult:
-        if self.profile is None or not value.trigger_active or not value.left_trigger_active:
+        if self.profile is None or not value.trigger_active:
             self.reset()
             return HumanizedMotionResult(value.base_x, value.base_y, {
                 "humanized_motion_enabled": False,
@@ -58,7 +57,7 @@ class HumanizedMotionGenerator:
             })
         if not all(isfinite(item) for item in (
             value.base_x, value.base_y, value.full_x, value.full_y,
-            value.error_x_px, value.error_y_px, value.trigger_hold_ms,
+            value.error_x_px, value.error_y_px, value.control_time_ms,
         )):
             self.reset()
             return HumanizedMotionResult(value.base_x, value.base_y, {
@@ -78,6 +77,8 @@ class HumanizedMotionGenerator:
                 "humanized_motion_enabled": True,
                 "humanized_motion_reason": "micro_bypass",
                 "humanized_motion_phase": "closed_loop_correction",
+                "humanized_motion_speed_curve_source": "micro_bypass",
+                "humanized_motion_spatial_curve_source": "micro_bypass",
                 "humanized_motion_progress": 1.0,
                 "humanized_motion_curve_position": 1.0,
                 "humanized_motion_curve_delta": 0.0,
@@ -90,7 +91,7 @@ class HumanizedMotionGenerator:
         rebase = (
             self._target_id != value.target_id
             or self._initial_magnitude <= 1e-6
-            or value.trigger_hold_ms < self._segment_hold_start_ms
+            or value.control_time_ms < self._segment_start_ms
             or _direction_reversed(
                 self._initial_full_x, self._initial_full_y, value.full_x, value.full_y
             )
@@ -105,13 +106,19 @@ class HumanizedMotionGenerator:
         if rebase:
             self._begin_segment(value)
 
-        elapsed_ms = max(0.0, value.trigger_hold_ms - self._segment_hold_start_ms)
+        elapsed_ms = max(0.0, value.control_time_ms - self._segment_start_ms)
         progress = min(1.0, elapsed_ms / max(1.0, self._planned_duration_ms))
         curve = _profile_curve(self.profile, value.error_x_px, value.error_y_px, runtime)
+        speed_curve_source = _profile_curve_source(
+            self.profile, value.error_x_px, value.error_y_px, runtime
+        )
         position = _interpolate_curve(curve, progress)
         previous_position = _interpolate_curve(curve, self._last_progress)
         delta_position = max(0.0, position - previous_position)
         side_curve = _profile_side_curve(self.profile, value.error_x_px, value.error_y_px)
+        spatial_curve_source = _profile_side_curve_source(
+            self.profile, value.error_x_px, value.error_y_px
+        )
         side_position = _interpolate_curve(side_curve, progress)
         if not bool(runtime.get("spatial_curve_enabled", True)):
             side_position = 0.0
@@ -166,10 +173,13 @@ class HumanizedMotionGenerator:
         return HumanizedMotionResult(output_x, output_y, {
             "humanized_motion_enabled": True,
             "humanized_motion_phase": phase,
+            "humanized_motion_speed_curve_source": speed_curve_source,
+            "humanized_motion_spatial_curve_source": spatial_curve_source,
             "humanized_motion_progress": progress,
             "humanized_motion_curve_position": position,
             "humanized_motion_curve_delta": delta_position,
             "humanized_motion_side_offset": side_position,
+            "humanized_motion_side_delta": delta_side,
             "humanized_motion_planned_duration_ms": self._planned_duration_ms,
             "humanized_motion_initial_counts": self._initial_magnitude,
             "humanized_motion_desired_progress_counts": desired_progress_counts,
@@ -183,7 +193,7 @@ class HumanizedMotionGenerator:
 
     def _begin_segment(self, value: HumanizedMotionInput) -> None:
         self._target_id = value.target_id
-        self._segment_hold_start_ms = max(0.0, value.trigger_hold_ms)
+        self._segment_start_ms = max(0.0, value.control_time_ms)
         self._last_progress = 0.0
         self._initial_full_x = value.full_x
         self._initial_full_y = value.full_y
@@ -200,26 +210,54 @@ class HumanizedMotionGenerator:
         self._last_side_position = 0.0
 
 
-def _profile_curve(profile: dict[str, Any], error_x: float, error_y: float, runtime: dict[str, Any] | None = None) -> tuple[float, ...]:
-    curves = profile.get("distance_profiles", {})
-    curves = curves if isinstance(curves, dict) else {}
-    distance = hypot(error_x, error_y)
-    key = "micro" if distance < 50.0 else "near" if distance < 150.0 else "mid" if distance < 350.0 else "far"
-    selected = curves.get(key, {})
-    selected = selected if isinstance(selected, dict) else {}
-    raw = selected.get("progress_curve") or profile.get("progress_curve")
-    if not isinstance(raw, list) and runtime and runtime.get("minimum_jerk_fallback", True):
-        return tuple(10*t**3 - 15*t**4 + 6*t**5 for t in [i / 8.0 for i in range(9)])
-    if not isinstance(raw, list) or len(raw) < 2:
-        return (0.0, 1.0)
-    values = [min(1.0, max(0.0, float(item))) for item in raw if isinstance(item, int | float)]
-    if len(values) < 2:
-        return (0.0, 1.0)
-    values[0] = 0.0
-    for index in range(1, len(values)):
-        values[index] = max(values[index - 1], values[index])
-    values[-1] = 1.0
-    return tuple(values)
+def _profile_curve(
+    profile: dict[str, Any],
+    error_x: float,
+    error_y: float,
+    runtime: dict[str, Any] | None = None,
+) -> tuple[float, ...]:
+    raw = _profile_curve_raw(profile, error_x, error_y)
+    values = (
+        [min(1.0, max(0.0, float(item))) for item in raw if isinstance(item, int | float)]
+        if isinstance(raw, list)
+        else []
+    )
+    if len(values) >= 2:
+        values[0] = 0.0
+        for index in range(1, len(values)):
+            values[index] = max(values[index - 1], values[index])
+        values[-1] = 1.0
+        return tuple(values)
+    if runtime and runtime.get("minimum_jerk_fallback", True):
+        return tuple(
+            10 * t**3 - 15 * t**4 + 6 * t**5
+            for t in (index / 8.0 for index in range(9))
+        )
+    return (0.0, 1.0)
+
+
+def _profile_curve_source(
+    profile: dict[str, Any],
+    error_x: float,
+    error_y: float,
+    runtime: dict[str, Any] | None = None,
+) -> str:
+    raw = _profile_curve_raw(profile, error_x, error_y)
+    valid_points = (
+        [item for item in raw if isinstance(item, int | float)]
+        if isinstance(raw, list)
+        else []
+    )
+    if len(valid_points) >= 2:
+        return "trained_progress"
+    if runtime and runtime.get("minimum_jerk_fallback", True):
+        return "minimum_jerk"
+    return "linear"
+
+
+def _profile_curve_raw(profile: dict[str, Any], error_x: float, error_y: float) -> Any:
+    selected = _distance_profile(profile, error_x, error_y)
+    return selected.get("progress_curve") or profile.get("progress_curve")
 
 
 def _interpolate_curve(curve: tuple[float, ...], progress: float) -> float:
@@ -230,11 +268,11 @@ def _interpolate_curve(curve: tuple[float, ...], progress: float) -> float:
     return curve[left] + (curve[right] - curve[left]) * weight
 
 
-def _profile_side_curve(profile: dict[str, Any], error_x: float = 0.0, error_y: float = 0.0) -> tuple[float, ...]:
+def _profile_side_curve(
+    profile: dict[str, Any], error_x: float = 0.0, error_y: float = 0.0
+) -> tuple[float, ...]:
     """Return normalized lateral offset; supports a cubic Bezier profile."""
-    distance = hypot(error_x, error_y)
-    profiles = profile.get("distance_profiles", {})
-    selected = profiles.get("micro" if distance < 50 else "near" if distance < 150 else "mid" if distance < 350 else "far", {}) if isinstance(profiles, dict) else {}
+    selected = _distance_profile(profile, error_x, error_y)
     raw = selected.get("side_offset_curve") if isinstance(selected, dict) else None
     raw = raw or profile.get("side_offset_curve")
     if isinstance(raw, dict):
@@ -247,6 +285,41 @@ def _profile_side_curve(profile: dict[str, Any], error_x: float = 0.0, error_y: 
     if isinstance(raw, list) and len(raw) >= 2:
         return tuple(_bounded(item, -1.0, 1.0) for item in raw)
     return (0.0, 0.0)
+
+
+def _profile_side_curve_source(
+    profile: dict[str, Any], error_x: float = 0.0, error_y: float = 0.0
+) -> str:
+    selected = _distance_profile(profile, error_x, error_y)
+    raw = selected.get("side_offset_curve") if isinstance(selected, dict) else None
+    raw = raw or profile.get("side_offset_curve")
+    if isinstance(raw, dict):
+        points = raw.get("control_points")
+        if isinstance(points, list) and len(points) == 4:
+            return "cubic_bezier"
+    if isinstance(raw, list) and len(raw) >= 2:
+        return "sampled_side_curve"
+    return "none"
+
+
+def _distance_profile(
+    profile: dict[str, Any], error_x: float, error_y: float
+) -> dict[str, Any]:
+    profiles = profile.get("distance_profiles", {})
+    if not isinstance(profiles, dict):
+        return {}
+    distance = hypot(error_x, error_y)
+    key = (
+        "micro"
+        if distance < 50.0
+        else "near"
+        if distance < 150.0
+        else "mid"
+        if distance < 350.0
+        else "far"
+    )
+    selected = profiles.get(key, {})
+    return selected if isinstance(selected, dict) else {}
 
 
 def _bezier(points: list[float], t: float) -> float:

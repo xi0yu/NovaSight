@@ -329,12 +329,18 @@ class HumanizedMotionConfig:
     active_profile: str = ""
     spatial_curve_enabled: bool = True
     side_scale: float = 1.0
-    max_side_ratio: float = 0.35
+    max_side_ratio: float = 0.10
     near_fade_start_px: float = 24.0
     micro_bypass_px: float = 3.0
     dynamic_rebase_ratio: float = 0.25
     minimum_jerk_fallback: bool = True
     terminal_feedback_gain: float = 0.35
+    # The built-in path is usable without a trained profile.  Fitts timing
+    # controls the duration while the side ratio controls a subtle curve, not
+    # an absolute cursor displacement.
+    builtin_fitts_a_ms: float = 35.0
+    builtin_fitts_b_ms: float = 55.0
+    builtin_side_ratio: float = 0.012
 
     def __post_init__(self) -> None:
         bounded = {
@@ -344,6 +350,9 @@ class HumanizedMotionConfig:
             "micro_bypass_px": (0.0, 1000.0),
             "dynamic_rebase_ratio": (0.05, 1.0),
             "terminal_feedback_gain": (0.05, 2.0),
+            "builtin_fitts_a_ms": (0.0, 1000.0),
+            "builtin_fitts_b_ms": (1.0, 1000.0),
+            "builtin_side_ratio": (-0.15, 0.15),
         }
         for name, (lower, upper) in bounded.items():
             value = float(getattr(self, name))

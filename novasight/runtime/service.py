@@ -32,7 +32,6 @@ from novasight.control import (
 from novasight.control.recoil import (
     RecoilDecision,
     RecoilInput,
-    RecoilState,
     TargetRelativeRecoilConfig,
     TargetRelativeRecoilController,
 )
@@ -2434,6 +2433,7 @@ class RuntimeService:
                         if isinstance(measurement_dt_ms, (int, float))
                         else None
                     ),
+                    trigger_active=algorithm_trigger_active,
                     left_trigger_active=left_trigger_active,
                     left_trigger_hold_ms=left_trigger_hold_ms,
                 )
@@ -3490,15 +3490,55 @@ class RuntimeService:
             self._reset_runtime_control_state("HUMANIZED_MOTION_PROFILE_CHANGED")
         return self.humanized_motion_status()
 
-    def humanized_motion_status(self) -> dict[str, Any]:
-        profile = (
-            self._runtime_humanized_profile
-            if self._runtime_humanized_profile_override_set
-            else self._resolve_humanized_profile(self.config)
+    def enable_builtin_humanized_motion(self) -> dict[str, Any]:
+        """Enable an in-memory fallback profile without writing a training file."""
+        return self.set_humanized_motion_profile(
+            self._builtin_humanized_profile(self.config)
         )
+
+    @staticmethod
+    def _builtin_humanized_profile(config: RuntimeConfig) -> dict[str, Any]:
+        """Build the deterministic no-training trajectory from live tuning."""
+
+        tuning = config.control.humanized_motion
+        side_ratio = float(tuning.builtin_side_ratio)
+        return {
+            "profile_id": "builtin",
+            "name": "NovaSight 内置拟人轨迹",
+            "profile_version": 4,
+            "sample_count": 0,
+            "profile_source": "builtin",
+            "timing": {
+                "model": "fitts",
+                "fitts_a_ms": float(tuning.builtin_fitts_a_ms),
+                "fitts_b_ms": float(tuning.builtin_fitts_b_ms),
+            },
+            # An empty learned curve deliberately selects the configured
+            # minimum-jerk cumulative curve (whose derivative is bell-shaped).
+            "progress_curve": [],
+            "side_offset_curve": {
+                "model": "cubic_bezier_side",
+                "control_points": [0.0, side_ratio, side_ratio, 0.0],
+            },
+            "runtime_parameters": {
+                "correction_start_ratio": 0.82,
+                "correction_gain": 0.35,
+            },
+        }
+
+    def humanized_motion_status(self) -> dict[str, Any]:
+        profile = self._resolve_humanized_profile(self.config)
         effective = self._effective_humanized_profile(self.config)
+        trajectory_source = (
+            "builtin"
+            if profile and profile.get("profile_id") == "builtin"
+            else "trained"
+            if profile
+            else "static"
+        )
         return {
             "enabled": profile is not None,
+            "trajectory_source": trajectory_source,
             "active_profile": str(profile.get("profile_id", "")) if profile else "",
             "profile_name": str(profile.get("name", "")) if profile else "",
             "sample_count": int(profile.get("sample_count", 0)) if profile else 0,
@@ -3514,13 +3554,27 @@ class RuntimeService:
 
     def _resolve_humanized_profile(self, config: RuntimeConfig) -> dict[str, Any] | None:
         if self._runtime_humanized_profile_override_set:
-            return self._runtime_humanized_profile
+            profile = self._runtime_humanized_profile
+            if profile and profile.get("profile_id") == "builtin":
+                # Persisted advanced tuning may be hot-updated while the
+                # in-memory switch remains enabled.
+                return self._builtin_humanized_profile(config)
+            return profile
         humanized = getattr(config.control, "humanized_motion", None)
-        repository = getattr(self, "motion_profile_repository", None)
-        if humanized is None or not bool(getattr(humanized, "enabled", False)) or repository is None:
+        if humanized is None or not bool(getattr(humanized, "enabled", False)):
             return None
         profile_id = str(getattr(humanized, "active_profile", ""))
-        return next((item for item in repository.list_profiles() if item.get("profile_id") == profile_id), None)
+        repository = getattr(self, "motion_profile_repository", None)
+        if repository is not None and profile_id and profile_id != "builtin":
+            selected = next(
+                (item for item in repository.list_profiles() if item.get("profile_id") == profile_id),
+                None,
+            )
+            if selected is not None:
+                return selected
+        # Enabling the persisted switch must never silently degrade to the
+        # static controller just because no training profile exists.
+        return self._builtin_humanized_profile(config)
 
     def _effective_humanized_profile(self, config: RuntimeConfig) -> dict[str, Any] | None:
         """Overlay persisted safety tuning onto the selected immutable profile.
@@ -3783,6 +3837,7 @@ class RuntimeService:
         selector_debug: dict[str, Any],
         control_now_ts_ns: int,
         measurement_dt_s: float | None,
+        trigger_active: bool = True,
         left_trigger_active: bool,
         left_trigger_hold_ms: float,
     ) -> dict[str, Any]:
@@ -3850,6 +3905,7 @@ class RuntimeService:
                 1.0,
                 float(target.w) * control_width / max(1.0, float(context.width)),
             ),
+            trigger_active=bool(trigger_active),
             observed_valid=raw_aim.valid and not bool(target.is_predicted),
             actuation_pending_x=bool(executed_control["actuation_pending_x"]),
             actuation_pending_y=bool(executed_control["actuation_pending_y"]),
