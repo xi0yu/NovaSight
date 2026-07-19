@@ -451,6 +451,20 @@ export type RuntimeState = {
   fatal_error: Record<string, unknown> | null;
 };
 
+export type RuntimeStatusTopic =
+  | "summary"
+  | "capture"
+  | "infer"
+  | "control"
+  | "latency";
+
+export type RuntimeStatusFrame = {
+  kind: "runtime_snapshot";
+  topic: RuntimeStatusTopic | "full";
+  full: boolean;
+  state: Partial<RuntimeState>;
+};
+
 export type RuntimeConfigValue =
   | string
   | number
@@ -582,16 +596,19 @@ export function streamUrl(cacheKey: number, configVersion = 0, previewFps = 30):
   );
 }
 
-export function statusWebSocketUrl(): string {
+export function statusWebSocketUrl(topic?: RuntimeStatusTopic): string {
   const explicit = import.meta.env.VITE_NOVASIGHT_WS_BASE;
   if (explicit) {
-    return `${explicit.replace(/\/$/, "")}${API_PATHS.statusWs}`;
+    const base = `${explicit.replace(/\/$/, "")}${API_PATHS.statusWs}`;
+    return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
   }
   if (apiBase.startsWith("http")) {
-    return `${apiBase.replace(/^http/, "ws")}${API_PATHS.statusWs}`;
+    const base = `${apiBase.replace(/^http/, "ws")}${API_PATHS.statusWs}`;
+    return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
   }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
+  const base = `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
+  return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
 }
 
 type RequestOptions = {

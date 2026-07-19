@@ -113,6 +113,13 @@ class RuntimePipeline:
             "latest_frame_broker": self._latest_frame_broker_status(),
         }
 
+    def summary_status(self) -> dict[str, Any]:
+        self.stats.threads = {thread.name: thread.is_alive() for thread in self._threads}
+        return {
+            **self.stats.__dict__,
+            "running": self.running,
+        }
+
     def _require_running_capture(self) -> None:
         state = getattr(self.capture, "state", None)
         session = getattr(self.capture, "session", None)

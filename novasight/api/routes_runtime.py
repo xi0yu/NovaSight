@@ -281,7 +281,16 @@ async def websocket_status(websocket: WebSocket) -> None:
         return
     await websocket.accept()
     hub = websocket.app.state.status_hub
-    queue = await hub.subscribe()
+    requested_topic = str(websocket.query_params.get("topic") or "full").strip().lower()
+    topic = requested_topic if requested_topic in {
+        "full",
+        "summary",
+        "capture",
+        "infer",
+        "control",
+        "latency",
+    } else "summary"
+    queue = await hub.subscribe(topic)
     try:
         while True:
             payload = await queue.get()

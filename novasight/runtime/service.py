@@ -308,6 +308,138 @@ class RuntimeService:
             fatal_error=self.fatal_error,
         )
 
+    def status_snapshot(self, topic: str = "full") -> dict[str, Any]:
+        """Build a page-scoped WebSocket snapshot.
+
+        Detailed pages keep the complete, backwards-compatible runtime state.
+        Shell-oriented pages receive a mergeable patch that deliberately avoids
+        model-registry expansion, vision diagnostics and timing-window sorting.
+        """
+
+        normalized_topic = str(topic or "full").strip().lower()
+        if normalized_topic in {"full", "infer", "control", "latency"}:
+            return {
+                "kind": "runtime_snapshot",
+                "topic": normalized_topic,
+                "full": True,
+                "state": asdict(self.state()),
+            }
+
+        with self._control_lock:
+            inference_observation = dict(self.last_inference_status)
+            pipeline_timings = dict(self.last_pipeline_timings)
+
+        capture_state = getattr(self, "capture", None)
+        inference_state = getattr(self, "inference", None)
+        capture_payload = asdict(capture_state.state) if capture_state is not None else {}
+        statistics = dict(capture_payload.get("statistics", {}))
+        pipeline = getattr(self, "pipeline", None)
+        summary_status = getattr(pipeline, "summary_status", None)
+        pipeline_payload = summary_status() if callable(summary_status) else {}
+        pipeline_stats = getattr(pipeline, "stats", None)
+        deepstream_status = (
+            pipeline_payload.get("deepstream", {}) if isinstance(pipeline_payload, dict) else {}
+        )
+
+        if pipeline_stats is not None:
+            statistics.update(
+                {
+                    "inference_counter": int(
+                        getattr(pipeline_stats, "processed_frames", 0)
+                    ),
+                    "detection_batch_consumed_counter": int(
+                        getattr(pipeline_stats, "processed_frames", 0)
+                    ),
+                    "control_observation_counter": int(
+                        getattr(pipeline_stats, "control_observations", 0)
+                    ),
+                }
+            )
+        if isinstance(deepstream_status, dict) and deepstream_status:
+            mailbox_status = deepstream_status.get("detection_batch_mailbox", {})
+            mailbox_status = mailbox_status if isinstance(mailbox_status, dict) else {}
+            stale_dropped = int(deepstream_status.get("stale_dropped_batches") or 0)
+            timestamp_rejected = int(deepstream_status.get("timestamp_rejected_batches") or 0)
+            non_monotonic = int(deepstream_status.get("non_monotonic_dropped_batches") or 0)
+            mailbox_overwritten = int(mailbox_status.get("overwritten_batches") or 0)
+            statistics.update(
+                {
+                    "capture_counter": int(deepstream_status.get("capture_frames") or 0),
+                    "capture_fps": float(deepstream_status.get("capture_fps") or 0.0),
+                    "nvinfer_input_counter": int(deepstream_status.get("input_frames") or 0),
+                    "nvinfer_input_fps": float(deepstream_status.get("input_fps") or 0.0),
+                    "inference_counter": int(deepstream_status.get("output_buffers") or 0),
+                    "inference_fps": float(deepstream_status.get("output_fps") or 0.0),
+                    "detection_batch_counter": int(
+                        deepstream_status.get("published_batches") or 0
+                    ),
+                    "detection_batch_fps": float(
+                        deepstream_status.get("published_fps") or 0.0
+                    ),
+                    "stale_dropped_batches": stale_dropped,
+                    "timestamp_rejected_batches": timestamp_rejected,
+                    "non_monotonic_dropped_batches": non_monotonic,
+                    "mailbox_overwritten_batches": mailbox_overwritten,
+                    "skipped_counter": (
+                        stale_dropped
+                        + timestamp_rejected
+                        + non_monotonic
+                        + mailbox_overwritten
+                    ),
+                    "timestamp_source": str(deepstream_status.get("timestamp_source") or ""),
+                    "last_frame_age_ms": float(
+                        deepstream_status.get("latest_frame_age_ms") or 0.0
+                    ),
+                    "batch_age_ms": float(
+                        deepstream_status.get("last_batch_age_ms") or 0.0
+                    ),
+                }
+            )
+        if inference_observation.get("frame_age_ms") is not None:
+            statistics["batch_age_ms"] = float(
+                inference_observation.get("frame_age_ms") or 0.0
+            )
+        for key, value in pipeline_timings.items():
+            statistics[f"stage_{key}"] = value
+        statistics["stale_drop_count"] = int(self.stale_drop_count)
+        statistics.setdefault("control_observe_fps", 0.0)
+        statistics.setdefault("inference_ms", 0.0)
+        if capture_payload:
+            capture_payload["statistics"] = statistics
+
+        inference_payload = self._runtime_inference_status(
+            inference_state,
+            None,
+            pipeline_payload=pipeline_payload,
+        )
+        # The summary path intentionally does not query the model registry.
+        # Omitting this static field preserves the last full snapshot instead
+        # of falsely reporting that the active model is unconfigured.
+        inference_payload.pop("configured", None)
+
+        patch: dict[str, Any] = {
+            "running": self.running,
+            "source": self.config.source.default,
+            "executor": self.executors.status(),
+            "capture": capture_payload,
+            "statistics": statistics,
+            "inference": inference_payload,
+            "config": self.config_store.status(),
+            "pipeline": pipeline_payload,
+            "power_saving": (
+                dict(self.power_supervisor.status())
+                if getattr(self, "power_supervisor", None) is not None
+                else {}
+            ),
+            "fatal_error": self.fatal_error,
+        }
+        return {
+            "kind": "runtime_snapshot",
+            "topic": normalized_topic,
+            "full": False,
+            "state": patch,
+        }
+
     def _runtime_inference_status(
         self,
         inference_state: Any,

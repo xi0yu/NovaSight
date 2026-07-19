@@ -7,6 +7,8 @@ import {
   ModelProject,
   RuntimeConfig,
   RuntimeState,
+  RuntimeStatusFrame,
+  RuntimeStatusTopic,
   getHealth,
   getLicenseStatus,
   getModelProjects,
@@ -71,6 +73,57 @@ function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
+function statusTopicFromPage(): RuntimeStatusTopic {
+  const page = new URLSearchParams(window.location.search).get("page");
+  if (page === "infer" || page === "control" || page === "latency" || page === "capture") {
+    return page;
+  }
+  return "summary";
+}
+
+function isRuntimeStatusFrame(value: unknown): value is RuntimeStatusFrame {
+  if (typeof value !== "object" || value === null) return false;
+  const frame = value as Partial<RuntimeStatusFrame>;
+  return frame.kind === "runtime_snapshot" && typeof frame.full === "boolean" &&
+    typeof frame.state === "object" && frame.state !== null;
+}
+
+function mergeRuntimePatch(current: RuntimeState, patch: Partial<RuntimeState>): RuntimeState {
+  return {
+    ...current,
+    ...patch,
+    executor: patch.executor ?? current.executor,
+    capture: patch.capture ? { ...current.capture, ...patch.capture } : current.capture,
+    statistics: patch.statistics
+      ? { ...(current.statistics ?? {}), ...patch.statistics }
+      : current.statistics,
+    inference: patch.inference
+      ? { ...current.inference, ...patch.inference }
+      : current.inference,
+    config: patch.config ? { ...current.config, ...patch.config } : current.config,
+    pipeline: patch.pipeline
+      ? {
+          ...current.pipeline,
+          ...patch.pipeline,
+          ...(typeof patch.pipeline.deepstream === "object" && patch.pipeline.deepstream !== null
+            ? {
+                deepstream: {
+                  ...((typeof current.pipeline.deepstream === "object" && current.pipeline.deepstream !== null)
+                    ? current.pipeline.deepstream as Record<string, unknown>
+                    : {}),
+                  ...patch.pipeline.deepstream as Record<string, unknown>
+                }
+              }
+            : {})
+        }
+      : current.pipeline,
+    power_saving: patch.power_saving
+      ? { ...(current.power_saving ?? {}), ...patch.power_saving }
+      : current.power_saving,
+    vision: patch.vision ?? current.vision
+  };
+}
+
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
 
 const StudioConsoleView = lazy(() =>
@@ -114,6 +167,7 @@ function StudioApp() {
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RuntimeDeliveryStatus>("disconnected");
+  const [statusTopic, setStatusTopic] = useState<RuntimeStatusTopic>(() => statusTopicFromPage());
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine);
   const loadRequestSeqRef = useRef(0);
@@ -141,6 +195,27 @@ function StudioApp() {
       lastUpdated: new Date(receivedAt)
     }));
   }, []);
+
+  const applyRuntimeFrame = useCallback((frame: RuntimeStatusFrame) => {
+    if (frame.full) {
+      applyRuntimeState(frame.state as RuntimeState);
+      return;
+    }
+    const receivedAt = Date.now();
+    setState((current) => {
+      if (current.runtime === null) {
+        // The initial full REST request owns construction of RuntimeState.
+        // A partial frame may arrive first on a fast local WebSocket.
+        return current;
+      }
+      return {
+        ...current,
+        errors: withoutError(current.errors, "runtime"),
+        runtime: mergeRuntimePatch(current.runtime, frame.state),
+        lastUpdated: new Date(receivedAt)
+      };
+    });
+  }, [applyRuntimeState]);
 
   const applyRuntimeConfig = useCallback((config: RuntimeConfig) => {
     setState((current) => ({
@@ -488,7 +563,7 @@ function StudioApp() {
       if (staleTimer !== null) {
         window.clearInterval(staleTimer);
       }
-      const nextSocket = new WebSocket(statusWebSocketUrl());
+      const nextSocket = new WebSocket(statusWebSocketUrl(statusTopic));
       socket = nextSocket;
       nextSocket.onerror = (event) => {
         if (!active) {
@@ -520,11 +595,15 @@ function StudioApp() {
           return;
         }
         try {
-          const runtime = JSON.parse(String(event.data)) as RuntimeState;
+          const payload = JSON.parse(String(event.data)) as RuntimeState | RuntimeStatusFrame;
           const receivedAt = Date.now();
           latestMessageAt = receivedAt;
           reconnectAttempt = 0;
-          applyRuntimeState(runtime);
+          if (isRuntimeStatusFrame(payload)) {
+            applyRuntimeFrame(payload);
+          } else {
+            applyRuntimeState(payload);
+          }
           setRealtimeStatus("connected");
           reportWebSocketRecovered("status");
         } catch {
@@ -565,7 +644,7 @@ function StudioApp() {
       }
       socket?.close(1000, "client suspended");
     };
-  }, [applyRuntimeState, license?.valid, networkOnline, pageVisible, refreshHealth]);
+  }, [applyRuntimeFrame, applyRuntimeState, license?.valid, networkOnline, pageVisible, refreshHealth, statusTopic]);
 
   const realtimeConnected = realtimeStatus === "connected";
 
@@ -633,6 +712,7 @@ function StudioApp() {
           onRefresh={load}
           onRuntimeConfigChange={applyRuntimeConfig}
           onRuntimeStateChange={applyRuntimeState}
+          onStatusTopicChange={setStatusTopic}
         />
       </Suspense>
       <ToastHost />

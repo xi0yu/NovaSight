@@ -109,6 +109,15 @@ class DeepStreamRuntimePipeline:
             "deepstream": self.backend.status(),
         }
 
+    def summary_status(self) -> dict[str, object]:
+        self.stats.threads = {thread.name: thread.is_alive() for thread in self._threads}
+        return {
+            **asdict(self.stats),
+            "running": self.running,
+            "selected": "deepstream_nvinfer",
+            "deepstream": self.backend.summary_status(),
+        }
+
     def _detection_loop(self) -> None:
         mailbox = self.backend.detection_batch_mailbox
         after_generation = -1

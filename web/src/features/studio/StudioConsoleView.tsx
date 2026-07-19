@@ -26,6 +26,7 @@ import {
   RuntimeConfig,
   RuntimeConfigValue,
   RuntimeState,
+  RuntimeStatusTopic,
   activateMotionProfile,
   disableMotionProfile,
   getCaptureCapabilities,
@@ -136,6 +137,7 @@ type StudioConsoleViewProps = {
   onRefresh: () => Promise<void>;
   onRuntimeConfigChange: (config: RuntimeConfig) => void;
   onRuntimeStateChange: (runtime: RuntimeState) => void;
+  onStatusTopicChange: (topic: RuntimeStatusTopic) => void;
 };
 
 type CapabilityChoice = {
@@ -532,9 +534,18 @@ export function StudioConsoleView({
   onEnsureProjects,
   onRefresh,
   onRuntimeConfigChange,
-  onRuntimeStateChange
+  onRuntimeStateChange,
+  onStatusTopicChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
+
+  useEffect(() => {
+    if (activePage === "infer" || activePage === "control" || activePage === "latency" || activePage === "capture") {
+      onStatusTopicChange(activePage);
+      return;
+    }
+    onStatusTopicChange("summary");
+  }, [activePage, onStatusTopicChange]);
   const [wideThemeGallery, setWideThemeGallery] = useState(
     () => window.matchMedia("(min-width: 1280px)").matches
   );

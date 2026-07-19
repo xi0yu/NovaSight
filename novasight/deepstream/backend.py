@@ -568,6 +568,66 @@ class DeepStreamObjectBackend:
         payload["detection_batch_build_ms_stats"] = _sample_stats(build_samples)
         return payload
 
+    def summary_status(self) -> dict[str, object]:
+        """Return the live fields needed by the Studio shell without diagnostics.
+
+        The full status path snapshots and sorts several rolling timing windows and
+        expands the model/parser contract.  That is useful on inference and latency
+        pages, but wasteful for the always-on status stream.  Keep this snapshot
+        lock-bounded and limited to counters, rates, freshness and preview state.
+        """
+
+        dependency = self.dependency_status()
+        now_ns = time.monotonic_ns()
+        with self._lock:
+            running = self._running and not self._terminal_error
+            return {
+                "selected": self.backend_id,
+                "available": dependency.available,
+                "loaded": running,
+                "configured": True,
+                "reason": dependency.reason,
+                "detail": dependency.detail,
+                "running": running,
+                "terminal_error": self._terminal_error,
+                "last_error": self._last_error,
+                "timestamp_source": self._timestamp_source,
+                "capture_frames": self._capture_frames,
+                "capture_fps": _sample_rate(self._capture_samples, now_ns),
+                "input_frames": self._input_frames,
+                "input_fps": _sample_rate(self._input_frame_samples, now_ns),
+                "output_buffers": self._output_buffers,
+                "output_fps": _sample_rate(self._output_samples, now_ns),
+                "published_batches": self._published_batches,
+                "published_fps": _sample_rate(self._publish_samples, now_ns),
+                "stale_dropped_batches": self._stale_dropped_batches,
+                "non_monotonic_dropped_batches": self._non_monotonic_dropped_batches,
+                "timestamp_rejected_batches": self._timestamp_rejected_batches,
+                "latest_frame_age_ms": (
+                    max(0.0, (now_ns - self._last_capture_ts_ns) / 1e6)
+                    if self._last_capture_ts_ns > 0
+                    else 0.0
+                ),
+                "last_batch_age_ms": self._last_batch_age_ms,
+                "last_frame_id": self._last_frame_id,
+                "preview_enabled": bool(self.pipeline_config.preview_enabled),
+                "preview_active": self._preview_active,
+                "preview_encoder_active": self._preview_encoder_active,
+                "preview_consumers": self._preview_consumers,
+                "preview_requested": self._preview_requested,
+                "preview_available": self._latest_preview_jpeg is not None,
+                "preview_frames": self._preview_frames,
+                "preview_fps": _sample_rate(self._preview_samples, now_ns),
+                "preview_sequence": self._preview_sequence,
+                "preview_last_age_ms": (
+                    max(0.0, (now_ns - self._last_preview_ts_ns) / 1e6)
+                    if self._last_preview_ts_ns > 0
+                    else 0.0
+                ),
+                "preview_reason": self._preview_reason_locked(),
+                "detection_batch_mailbox": self.detection_batch_mailbox.status(),
+            }
+
     def _ensure_parser_library(self) -> None:
         self._parser_auto_build = {
             "attempted": True,

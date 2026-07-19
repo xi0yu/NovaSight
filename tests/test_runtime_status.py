@@ -38,6 +38,86 @@ def test_status_hub_shares_one_pump_across_subscribers() -> None:
     asyncio.run(scenario())
 
 
+def test_status_hub_groups_page_scoped_snapshots_by_topic() -> None:
+    class TopicRuntime:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def state(self) -> EmptyState:
+            return EmptyState()
+
+        def status_snapshot(self, topic: str) -> dict:
+            self.calls.append(topic)
+            return {"kind": "runtime_snapshot", "topic": topic, "state": {}}
+
+    async def scenario() -> None:
+        runtime = TopicRuntime()
+        hub = StatusHub(runtime)
+        summary_a = await hub.subscribe("summary")
+        summary_b = await hub.subscribe("summary")
+        capture = await hub.subscribe("capture")
+        runtime.calls.clear()
+
+        await hub.broadcast()
+
+        assert runtime.calls.count("summary") == 1
+        assert runtime.calls.count("capture") == 1
+        hub.unsubscribe(summary_a)
+        hub.unsubscribe(summary_b)
+        hub.unsubscribe(capture)
+
+    asyncio.run(scenario())
+
+
+def test_runtime_summary_snapshot_avoids_full_pipeline_and_model_registry() -> None:
+    class SummaryPipeline:
+        stats = SimpleNamespace(
+            processed_frames=7,
+            control_observations=6,
+        )
+
+        def status(self) -> dict:
+            raise AssertionError("full pipeline status must not run for summary snapshots")
+
+        def summary_status(self) -> dict:
+            return {
+                "running": True,
+                "selected": "deepstream_nvinfer",
+                "deepstream": {
+                    "available": True,
+                    "running": True,
+                    "capture_frames": 12,
+                    "capture_fps": 10.0,
+                    "input_frames": 11,
+                    "input_fps": 9.0,
+                    "output_buffers": 10,
+                    "output_fps": 8.0,
+                    "published_batches": 9,
+                    "published_fps": 7.0,
+                    "detection_batch_mailbox": {"overwritten_batches": 1},
+                },
+            }
+
+    class Models:
+        def get_active_deployment(self):
+            raise AssertionError("model registry must not run for summary snapshots")
+
+    service = RuntimeService(
+        RuntimeConfig(),
+        models=Models(),
+        executors=SimpleNamespace(status=lambda: {"selected": "kmnet"}),
+    )
+    service.pipeline = SummaryPipeline()
+
+    snapshot = service.status_snapshot("capture")
+
+    assert snapshot["full"] is False
+    assert "active_model" not in snapshot["state"]
+    assert snapshot["state"]["statistics"]["capture_fps"] == 10.0
+    assert snapshot["state"]["statistics"]["inference_fps"] == 8.0
+    assert "configured" not in snapshot["state"]["inference"]
+
+
 def test_runtime_state_takes_control_snapshot_under_control_lock() -> None:
     service = RuntimeService(
         RuntimeConfig(),
