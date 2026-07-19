@@ -958,7 +958,7 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "label": "压枪基础速率 counts/s",
                         "type": "float",
                         "min": 0,
-                        "max": 5000,
+                        "max": 20000,
                         "step": 1,
                         "precision": 0,
                         "restart_required": False,
@@ -975,11 +975,11 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                             "restart_required": False,
                         }
                         for path, label, minimum, maximum, step, precision in (
-                            ("control.recoil.max_rate_counts_s", "压枪最大速率 counts/s", 0, 5000, 1, 0),
+                            ("control.recoil.max_rate_counts_s", "压枪最大速率 counts/s", 0, 20000, 1, 0),
                             ("control.recoil.positive_deadzone_norm", "压枪保持范围", 0, 1, 0.01, 2),
                             ("control.recoil.negative_deadzone_norm", "压枪刹车范围", 0, 1, 0.01, 2),
                             ("control.recoil.full_brake_error_norm", "完全刹车误差范围", 0, 1, 0.01, 2),
-                            ("control.recoil.fast_add_gain_counts_s", "压枪追加强度 counts/s", 0, 5000, 1, 0),
+                            ("control.recoil.fast_add_gain_counts_s", "压枪追加强度 counts/s", 0, 20000, 1, 0),
                             ("control.recoil.max_fast_add_ratio", "追加强度上限比例", 0, 1, 0.01, 2),
                             ("control.recoil.stale_threshold_ms", "压枪数据过期阈值 ms", 0, 5000, 1, 0),
                         )

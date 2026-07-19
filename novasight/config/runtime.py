@@ -1483,13 +1483,13 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
             )
     recoil = cfg.control.recoil
     recoil_bounds = {
-        "base_rate_counts_s": (0.0, 5000.0),
-        "max_rate_counts_s": (0.0, 5000.0),
+        "base_rate_counts_s": (0.0, 20000.0),
+        "max_rate_counts_s": (0.0, 20000.0),
         "startup_ms": (0.0, 1000.0),
         "positive_deadzone_norm": (0.0, 1.0),
         "negative_deadzone_norm": (0.0, 1.0),
         "full_brake_error_norm": (0.0, 1.0),
-        "fast_add_gain_counts_s": (0.0, 5000.0),
+        "fast_add_gain_counts_s": (0.0, 20000.0),
         "max_fast_add_ratio": (0.0, 1.0),
         "stale_threshold_ms": (0.0, 5000.0),
     }

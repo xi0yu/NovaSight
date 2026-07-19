@@ -2865,6 +2865,16 @@ tbody tr:hover {
   font-weight: 700;
 }
 
+.dialog-save-status.dirty {
+  color: var(--status-warning-fg);
+  font-weight: 700;
+}
+
+.dialog-save-button,
+.dialog-close-button {
+  min-width: 112px;
+}
+
 .target-weight-dialog {
   width: min(860px, 100%);
   max-height: min(820px, calc(100vh - 48px));

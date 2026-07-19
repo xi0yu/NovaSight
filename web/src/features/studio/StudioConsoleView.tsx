@@ -150,6 +150,7 @@ type CapabilityChoice = {
 
 type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 type LaunchStepState = "pending" | "running" | "success" | "failed";
+type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
 
 type LaunchStage = {
   title: string;
@@ -541,6 +542,39 @@ function normalizeRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
   return next;
 }
 
+function runtimeConfigValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => runtimeConfigValuesEqual(value, right[index]));
+  }
+  if (
+    left === null
+    || right === null
+    || typeof left !== "object"
+    || typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(
+      (key) => Object.prototype.hasOwnProperty.call(rightRecord, key)
+        && runtimeConfigValuesEqual(leftRecord[key], rightRecord[key])
+    );
+}
+
+function runtimeConfigsEqual(left: RuntimeConfig | null, right: RuntimeConfig | null): boolean {
+  return runtimeConfigValuesEqual(left, right);
+}
+
 export function StudioConsoleView({
   health,
   runtime,
@@ -644,11 +678,15 @@ export function StudioConsoleView({
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
   const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
-  const [pendingConfigWriteCount, setPendingConfigWriteCount] = useState(0);
+  const [configDialogDirty, setConfigDialogDirty] = useState(false);
+  const [configDialogSaving, setConfigDialogSaving] = useState(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
-  const dialogSaving = busy !== null || pendingConfigWriteCount > 0;
+  const dialogSaving = configDialogSaving;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
+  const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
+  const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
+  const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
   const preferLatestModelVersionRef = useRef(false);
@@ -662,6 +700,92 @@ export function StudioConsoleView({
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
   const modelSwitchDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
+
+  const setConfigDialogVisibility = useCallback((dialog: ConfigDialogId, open: boolean) => {
+    if (dialog === "class-config") setClassConfigDialogOpen(open);
+    else if (dialog === "target-weights") setTargetWeightsDialogOpen(open);
+    else if (dialog === "algorithm") setAlgorithmSettingsDialogOpen(open);
+    else if (dialog === "target-advanced") setTargetAdvancedDialogOpen(open);
+    else setTrackerSettingsDialogOpen(open);
+  }, []);
+
+  const finishConfigDialog = useCallback((dialog: ConfigDialogId) => {
+    setConfigDialogVisibility(dialog, false);
+    activeConfigDialogRef.current = null;
+    configDialogBaselineRef.current = null;
+    setConfigDialogDirty(false);
+    setDialogSaveError(null);
+  }, [setConfigDialogVisibility]);
+
+  const openConfigDialog = useCallback((dialog: ConfigDialogId) => {
+    if (dialogSavingRef.current || pendingConfigWritesRef.current > 0) {
+      return;
+    }
+    const source = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfigLatestRef.current);
+    if (!source) {
+      return;
+    }
+    const baseline = normalizeRuntimeConfig(source);
+    activeConfigDialogRef.current = dialog;
+    configDialogBaselineRef.current = structuredClone(baseline) as RuntimeConfig;
+    configDraftRef.current = baseline;
+    setConfigDraft(baseline);
+    setConfigDialogDirty(false);
+    setDialogSaveError(null);
+    setConfigDialogVisibility(dialog, true);
+  }, [setConfigDialogVisibility]);
+
+  const requestCloseConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
+    if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
+      return;
+    }
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+      await Promise.resolve();
+    }
+
+    const draft = configDraftRef.current;
+    const baseline = configDialogBaselineRef.current;
+    if (!draft || !baseline || runtimeConfigsEqual(draft, baseline)) {
+      const latest = cloneRuntimeConfig(runtimeConfigLatestRef.current) ?? draft;
+      configDraftRef.current = latest;
+      setConfigDraft(latest);
+      finishConfigDialog(dialog);
+      return;
+    }
+
+    dialogSavingRef.current = true;
+    setConfigDialogSaving(true);
+    setBusy("config-dialog.save");
+    setDialogSaveError(null);
+    setLocalError(null);
+    try {
+      const result = await updateRuntimeConfig(draft);
+      const applied = normalizeRuntimeConfig(result.config);
+      runtimeConfigLatestRef.current = applied;
+      configDraftRef.current = applied;
+      setConfigDraft(applied);
+      onRuntimeConfigChange(applied);
+      finishConfigDialog(dialog);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setLocalError(`配置保存失败：${message}`);
+      setDialogSaveError(message);
+      reportError(error, { source: "config-dialog", title: "配置保存失败" });
+    } finally {
+      dialogSavingRef.current = false;
+      setConfigDialogSaving(false);
+      setBusy(null);
+    }
+  }, [finishConfigDialog, onRuntimeConfigChange]);
+
+  const stageConfigDialogDraft = useCallback((next: RuntimeConfig) => {
+    configDraftRef.current = next;
+    setConfigDraft(next);
+    setConfigDialogDirty(!runtimeConfigsEqual(configDialogBaselineRef.current, next));
+    setDialogSaveError(null);
+  }, []);
 
   useEffect(() => {
     dialogSavingRef.current = dialogSaving;
@@ -841,7 +965,7 @@ export function StudioConsoleView({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!dialogSavingRef.current) {
-          setClassConfigDialogOpen(false);
+          void requestCloseConfigDialog("class-config");
         }
       } else {
         trapDialogTabKey(event, classConfigDialogRef.current);
@@ -853,7 +977,7 @@ export function StudioConsoleView({
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
-  }, [classConfigDialogOpen]);
+  }, [classConfigDialogOpen, requestCloseConfigDialog]);
 
   useEffect(() => {
     if (!targetWeightsDialogOpen) {
@@ -866,7 +990,7 @@ export function StudioConsoleView({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!dialogSavingRef.current) {
-          setTargetWeightsDialogOpen(false);
+          void requestCloseConfigDialog("target-weights");
         }
       } else {
         trapDialogTabKey(event, targetWeightsDialogRef.current);
@@ -878,7 +1002,7 @@ export function StudioConsoleView({
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
-  }, [targetWeightsDialogOpen]);
+  }, [requestCloseConfigDialog, targetWeightsDialogOpen]);
 
   useEffect(() => {
     if (!launchDialogOpen || launchStatus === "running") {
@@ -1272,7 +1396,8 @@ export function StudioConsoleView({
   const controlModeLabel = activeControlAlgorithm.label;
 
   useEffect(() => {
-    if (!runtimeConfig || pendingConfigWritesRef.current > 0) {
+    runtimeConfigLatestRef.current = runtimeConfig;
+    if (!runtimeConfig || pendingConfigWritesRef.current > 0 || activeConfigDialogRef.current !== null) {
       return;
     }
     const next = normalizeRuntimeConfig(runtimeConfig);
@@ -2385,26 +2510,30 @@ export function StudioConsoleView({
       if (!next) {
         return;
       }
+      const sectionValue = {
+        ...asRecord(next[section])
+      };
+      sectionValue[key] = value;
+      next[section] = sectionValue as RuntimeConfig[string];
+      if (activeConfigDialogRef.current !== null) {
+        stageConfigDialogDraft(next);
+        return;
+      }
       const writeSeq = ++configWriteSeqRef.current;
       pendingConfigWritesRef.current += 1;
-      setPendingConfigWriteCount((count) => count + 1);
       setDialogSaveError(null);
       const keepsEditorInteractive = section === "control" && key === "aim";
       if (!keepsEditorInteractive) {
         setBusy(`${section}.${key}`);
       }
       setLocalError(null);
-      const sectionValue = {
-        ...asRecord(next[section])
-      };
-      sectionValue[key] = value;
-      next[section] = sectionValue as RuntimeConfig[string];
       configDraftRef.current = next;
       setConfigDraft(next);
       try {
         const result = await updateRuntimeConfigField(section, key, value);
         if (writeSeq === configWriteSeqRef.current) {
           const applied = normalizeRuntimeConfig(result.config);
+          runtimeConfigLatestRef.current = applied;
           configDraftRef.current = applied;
           setConfigDraft(applied);
           onRuntimeConfigChange(applied);
@@ -2421,13 +2550,12 @@ export function StudioConsoleView({
         }
       } finally {
         pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
-        setPendingConfigWriteCount((count) => Math.max(0, count - 1));
         if (!keepsEditorInteractive && writeSeq === configWriteSeqRef.current) {
           setBusy(null);
         }
       }
     },
-    [onRuntimeConfigChange, runtimeConfig]
+    [onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
 
   const updateControlGroupField = useCallback(
@@ -2660,26 +2788,10 @@ export function StudioConsoleView({
           class_roles: roleProfiles
         }
       } as RuntimeConfig[string];
-      setBusy("class-profiles.save");
       setLocalError(null);
-      setDialogSaveError(null);
-      configDraftRef.current = next;
-      setConfigDraft(next);
-      try {
-        await updateRuntimeConfig(next);
-        await onRefresh();
-      } catch (err) {
-        const message = getErrorMessage(err);
-        configDraftRef.current = null;
-        setConfigDraft(null);
-        setLocalError(`类别配置同步失败：${message}`);
-        setDialogSaveError(message);
-        reportError(err, { source: "class-profiles", title: "类别配置保存失败" });
-      } finally {
-        setBusy(null);
-      }
+      stageConfigDialogDraft(next);
     },
-    [onRefresh, runtimeConfig]
+    [runtimeConfig, stageConfigDialogDraft]
   );
 
   const createClassProfile = useCallback(async (copyCurrent: boolean) => {
@@ -3903,7 +4015,8 @@ export function StudioConsoleView({
               </dl>
               <button
                 className="console-button primary"
-                onClick={() => setClassConfigDialogOpen(true)}
+                disabled={busy !== null}
+                onClick={() => openConfigDialog("class-config")}
                 type="button"
               >
                 <NovaIcon name="settings" size={16} />
@@ -3998,7 +4111,7 @@ export function StudioConsoleView({
                     </>
                   )}
                 </div>
-                <button className="console-button console-full-button" onClick={() => setAlgorithmSettingsDialogOpen(true)} type="button">
+                <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
                   <NovaIcon name="settings" size={15} />
                   调整算法高级参数
                 </button>
@@ -4089,9 +4202,9 @@ export function StudioConsoleView({
                   {recoilEnabled ? (
                     <>
                       <NumberControl label="压枪启动斜坡 ms" detail="从真实左键按下开始，压枪速率逐步进入基础速率。" value={recoilStartupRampMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("recoil", "startup_ms", value)} />
-                      <NumberControl label="基础压枪速率 counts/s" detail="与观测 FPS 无关的时间速率。" value={recoilBaseRate} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "base_rate_counts_s", value)} />
-                      <NumberControl label="最大压枪速率 counts/s" value={readNumber(recoilConfig.max_rate_counts_s, 0)} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "max_rate_counts_s", value)} />
-                      <NumberControl label="追加强度 counts/s" value={readNumber(recoilConfig.fast_add_gain_counts_s, 0)} min={0} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "fast_add_gain_counts_s", value)} />
+                      <NumberControl label="基础压枪速率 counts/s" detail="与观测 FPS 无关的时间速率。" value={recoilBaseRate} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "base_rate_counts_s", value)} />
+                      <NumberControl label="最大压枪速率 counts/s" value={readNumber(recoilConfig.max_rate_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "max_rate_counts_s", value)} />
+                      <NumberControl label="追加强度 counts/s" value={readNumber(recoilConfig.fast_add_gain_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "fast_add_gain_counts_s", value)} />
                     </>
                   ) : null}
                 </div>
@@ -4111,7 +4224,7 @@ export function StudioConsoleView({
                     </strong>
                     <small>类别偏好已提高，距离影响相应降低；原始值会在计算前自动归一化。</small>
                   </div>
-                  <button className="console-button" onClick={() => setTargetWeightsDialogOpen(true)} type="button">
+                  <button className="console-button" disabled={busy !== null} onClick={() => openConfigDialog("target-weights")} type="button">
                     <NovaIcon name="settings" size={15} />
                     调整权重
                   </button>
@@ -4121,7 +4234,7 @@ export function StudioConsoleView({
                   <div><span>切换门槛</span><b>{targetSwitchPreferenceAdvantage.toFixed(2)}</b></div>
                   <div><span>确认延迟</span><b>{targetSwitchDelayMs.toFixed(0)} ms</b></div>
                 </div>
-                <button className="console-button console-full-button" onClick={() => setTargetAdvancedDialogOpen(true)} type="button">
+                <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("target-advanced")} type="button">
                   <NovaIcon name="settings" size={15} />
                   目标切换高级设置
                 </button>
@@ -4135,7 +4248,7 @@ export function StudioConsoleView({
                   <div><span>位置 / IoU</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)}</b></div>
                   <div><span>最大漏检</span><b>{trackerMaxMissedFrames} 帧</b></div>
                 </div>
-                <button className="console-button console-full-button" onClick={() => setTrackerSettingsDialogOpen(true)} type="button">
+                <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("tracker")} type="button">
                   <NovaIcon name="settings" size={15} />
                   管理 Tracker / Kalman
                 </button>
@@ -4470,9 +4583,10 @@ export function StudioConsoleView({
 
       <AdvancedSettingsDialog
         description="这些参数决定投影、响应曲线、限幅与预测行为。日常使用无需频繁调整。"
+        dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
-        onClose={() => setAlgorithmSettingsDialogOpen(false)}
+        onClose={() => void requestCloseConfigDialog("algorithm")}
         open={algorithmSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
@@ -4521,9 +4635,10 @@ export function StudioConsoleView({
 
       <AdvancedSettingsDialog
         description="控制异常框过滤、候选切换门槛和防抖确认。设置过严会阻止切换，过松会造成目标跳变。"
+        dirty={configDialogDirty}
         eyebrow="参数设置 / 目标选择"
         footerNote="这些设置不会改变框内 aim Y，只影响选择与切换。"
-        onClose={() => setTargetAdvancedDialogOpen(false)}
+        onClose={() => void requestCloseConfigDialog("target-advanced")}
         open={targetAdvancedDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
@@ -4539,9 +4654,10 @@ export function StudioConsoleView({
 
       <AdvancedSettingsDialog
         description="Tracker 负责跨帧身份关联，Kalman 负责位置估计。错误设置可能造成断轨、误关联或位置滞后。"
+        dirty={configDialogDirty}
         eyebrow="参数设置 / Tracker"
         footerNote="关联算法固定为 Hungarian；仅输出 ACTIVE Track。"
-        onClose={() => setTrackerSettingsDialogOpen(false)}
+        onClose={() => void requestCloseConfigDialog("tracker")}
         open={trackerSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
@@ -4567,9 +4683,9 @@ export function StudioConsoleView({
       {targetWeightsDialogOpen ? (
         <div
           className="target-weight-dialog-layer"
-          onMouseDown={(event) => {
+          onClick={(event) => {
             if (event.target === event.currentTarget && !dialogSaving) {
-              setTargetWeightsDialogOpen(false);
+              void requestCloseConfigDialog("target-weights");
             }
           }}
         >
@@ -4589,10 +4705,11 @@ export function StudioConsoleView({
                 <p>权重决定多个候选同时出现时，类别偏好、候选可靠性和准星距离各自占多大影响。</p>
               </div>
               <button
-                aria-label="关闭权重调整"
+                aria-label={configDialogDirty ? "保存并关闭权重调整" : "关闭权重调整"}
                 className="launch-dialog-close"
                 disabled={dialogSaving}
-                onClick={() => setTargetWeightsDialogOpen(false)}
+                onClick={() => void requestCloseConfigDialog("target-weights")}
+                title={configDialogDirty ? "关闭并保存本次修改" : "关闭"}
                 type="button"
               >
                 <NovaIcon name="x-circle" size={18} />
@@ -4652,15 +4769,22 @@ export function StudioConsoleView({
             </div>
 
             <footer className="target-weight-dialog-footer">
-              <span className={dialogSaveError ? "dialog-save-status error" : "dialog-save-status"} role="status" aria-live="polite">
+              <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在自动保存并同步运行配置…"
+                  ? "正在保存本次修改…"
                   : dialogSaveError
                     ? `保存失败 · ${dialogSaveError}`
-                    : "已自动保存 · 修改后立即生效，无需重启主链。"}
+                    : configDialogDirty
+                      ? "有未保存修改 · 关闭时将一次同步到运行配置。"
+                      : "未修改 · 关闭不会请求后端。"}
               </span>
-              <button className="console-button primary" disabled={dialogSaving} onClick={() => setTargetWeightsDialogOpen(false)} type="button">
-                关闭
+              <button
+                className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
+                disabled={dialogSaving}
+                onClick={() => void requestCloseConfigDialog("target-weights")}
+                type="button"
+              >
+                {configDialogDirty ? "关闭并保存" : "关闭"}
               </button>
             </footer>
           </section>
@@ -4670,9 +4794,9 @@ export function StudioConsoleView({
       {classConfigDialogOpen ? (
         <div
           className="class-config-dialog-layer"
-          onMouseDown={(event) => {
+          onClick={(event) => {
             if (event.target === event.currentTarget && !dialogSaving) {
-              setClassConfigDialogOpen(false);
+              void requestCloseConfigDialog("class-config");
             }
           }}
         >
@@ -4692,10 +4816,11 @@ export function StudioConsoleView({
                 <p>把模型类别归入头部、身体或其他瞄点类型，再在人物靶上统一标定三条垂直瞄点线。</p>
               </div>
               <button
-                aria-label="关闭类别配置"
+                aria-label={configDialogDirty ? "保存并关闭类别配置" : "关闭类别配置"}
                 className="launch-dialog-close"
                 disabled={dialogSaving}
-                onClick={() => setClassConfigDialogOpen(false)}
+                onClick={() => void requestCloseConfigDialog("class-config")}
+                title={configDialogDirty ? "关闭并保存本次修改" : "关闭"}
                 type="button"
               >
                 <NovaIcon name="x-circle" size={18} />
@@ -4917,15 +5042,22 @@ export function StudioConsoleView({
             </div>
 
             <footer className="class-config-dialog-footer">
-              <span className={dialogSaveError ? "dialog-save-status error" : "dialog-save-status"} role="status" aria-live="polite">
+              <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在自动保存类别配置…"
+                  ? "正在保存类别配置…"
                   : dialogSaveError
                     ? `保存失败 · ${dialogSaveError}`
-                    : `已自动保存 · 当前配置：${activeDetectionProfile}`}
+                    : configDialogDirty
+                      ? "有未保存修改 · 关闭时将整份类别配置一次保存。"
+                      : `未修改 · 当前配置：${activeDetectionProfile}`}
               </span>
-              <button className="console-button primary" disabled={dialogSaving} onClick={() => setClassConfigDialogOpen(false)} type="button">
-                关闭
+              <button
+                className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
+                disabled={dialogSaving}
+                onClick={() => void requestCloseConfigDialog("class-config")}
+                type="button"
+              >
+                {configDialogDirty ? "关闭并保存" : "关闭"}
               </button>
             </footer>
           </section>

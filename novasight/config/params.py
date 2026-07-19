@@ -230,9 +230,9 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
         "真实鼠标触发持续达到该时间后才允许瞄准算法输出。",
     ),
     "control.recoil.base_rate_counts_s": _spec(
-        "control.recoil.base_rate_counts_s", "压枪基础速率", 0.0, 0.0, 5000.0, 1.0, "counts/s", "开火后的基础 Y 轴压枪速率。"),
+        "control.recoil.base_rate_counts_s", "压枪基础速率", 0.0, 0.0, 20000.0, 1.0, "counts/s", "开火后的基础 Y 轴压枪速率。"),
     "control.recoil.max_rate_counts_s": _spec(
-        "control.recoil.max_rate_counts_s", "压枪最大速率", 0.0, 0.0, 5000.0, 1.0, "counts/s", "压枪速率上限。"),
+        "control.recoil.max_rate_counts_s", "压枪最大速率", 0.0, 0.0, 20000.0, 1.0, "counts/s", "压枪速率上限。"),
     "control.recoil.startup_ms": _spec(
         "control.recoil.startup_ms",
         "压枪启动斜坡",
@@ -254,7 +254,7 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
         "压枪追加强度",
         0.0,
         0.0,
-        5000.0, 1.0, "counts/s", "根据目标误差追加的压枪强度。",
+        20000.0, 1.0, "counts/s", "根据目标误差追加的压枪强度。",
     ),
     "control.recoil.max_fast_add_ratio": _spec(
         "control.recoil.max_fast_add_ratio", "压枪追加上限", 0.30, 0.0, 1.0, 0.01, "ratio", "即时追加最多占最大压枪速率的比例。"),

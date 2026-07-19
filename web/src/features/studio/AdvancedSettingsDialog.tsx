@@ -9,6 +9,7 @@ export function AdvancedSettingsDialog({
   title,
   description,
   footerNote,
+  dirty = false,
   saving = false,
   saveError = null,
   onClose,
@@ -19,6 +20,7 @@ export function AdvancedSettingsDialog({
   title: string;
   description: string;
   footerNote: string;
+  dirty?: boolean;
   saving?: boolean;
   saveError?: string | null;
   onClose: () => void;
@@ -64,7 +66,7 @@ export function AdvancedSettingsDialog({
   return (
     <div
       className="advanced-settings-dialog-layer"
-      onMouseDown={(event) => {
+      onClick={(event) => {
         if (event.target === event.currentTarget && !saving) {
           onClose();
         }
@@ -85,7 +87,14 @@ export function AdvancedSettingsDialog({
             <h2 id={titleId}>{title}</h2>
             <p>{description}</p>
           </div>
-          <button aria-label={`关闭${title}`} className="launch-dialog-close" disabled={saving} onClick={onClose} type="button">
+          <button
+            aria-label={dirty ? `保存并关闭${title}` : `关闭${title}`}
+            className="launch-dialog-close"
+            disabled={saving}
+            onClick={onClose}
+            title={dirty ? "关闭并保存本次修改" : "关闭"}
+            type="button"
+          >
             <NovaIcon name="x-circle" size={18} />
           </button>
         </header>
@@ -96,14 +105,23 @@ export function AdvancedSettingsDialog({
           {children}
         </div>
         <footer className="advanced-settings-dialog-footer">
-          <span className={saveError ? "dialog-save-status error" : "dialog-save-status"} role="status" aria-live="polite">
+          <span className={saveError ? "dialog-save-status error" : dirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
             {saving
-              ? "正在自动保存并同步运行配置…"
+              ? "正在保存本次修改…"
               : saveError
                 ? `保存失败 · ${saveError}`
-                : `已自动保存 · ${footerNote}`}
+                : dirty
+                  ? "有未保存修改 · 关闭时将一次同步到运行配置。"
+                  : `未修改 · ${footerNote}`}
           </span>
-          <button className="console-button primary" disabled={saving} onClick={onClose} type="button">关闭</button>
+          <button
+            className={`console-button ${dirty ? "primary dialog-save-button" : "dialog-close-button"}`}
+            disabled={saving}
+            onClick={onClose}
+            type="button"
+          >
+            {dirty ? "关闭并保存" : "关闭"}
+          </button>
         </footer>
       </section>
     </div>

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { formatNumberDraft, resolveNumberDraft } from "./numberDraft";
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -51,33 +53,44 @@ export function CommitNumberControl({
   digits: number;
   onCommit: (value: number) => Promise<void> | void;
 }) {
-  const [draft, setDraft] = useState(value);
+  const [draftValue, setDraftValue] = useState(value);
+  const [draftText, setDraftText] = useState(() => formatNumberDraft(value, digits));
   const [isEditing, setIsEditing] = useState(false);
   const committingRef = useRef(false);
+  const draftTextRef = useRef(formatNumberDraft(value, digits));
 
   useEffect(() => {
     if (!isEditing) {
-      setDraft(value);
+      const nextText = formatNumberDraft(value, digits);
+      draftTextRef.current = nextText;
+      setDraftValue(value);
+      setDraftText(nextText);
     }
-  }, [isEditing, value]);
+  }, [digits, isEditing, value]);
 
-  const commit = useCallback(() => {
+  const commit = useCallback((candidateText = draftTextRef.current) => {
     if (committingRef.current) {
       return;
     }
-    const next = clampNumber(Number(draft.toFixed(digits)), min, max);
-    if (Math.abs(next - value) >= step / 2) {
+    const next = resolveNumberDraft(candidateText, value, min, max, digits);
+    const nextText = formatNumberDraft(next, digits);
+    draftTextRef.current = nextText;
+    setDraftValue(next);
+    setDraftText(nextText);
+    if (next !== Number(value.toFixed(digits))) {
       committingRef.current = true;
-      setDraft(next);
       void Promise.resolve(onCommit(next)).finally(() => {
         committingRef.current = false;
         setIsEditing(false);
       });
     } else {
-      setDraft(value);
+      const valueText = formatNumberDraft(value, digits);
+      draftTextRef.current = valueText;
+      setDraftValue(value);
+      setDraftText(valueText);
       setIsEditing(false);
     }
-  }, [draft, digits, max, min, onCommit, step, value]);
+  }, [digits, max, min, onCommit, value]);
 
   return (
     <div className="console-row">
@@ -86,30 +99,36 @@ export function CommitNumberControl({
         min={min}
         max={max}
         step={step}
-        value={draft}
-        onBlur={commit}
+        value={draftValue}
+        onBlur={() => commit()}
         onChange={(event) => {
+          const next = clampNumber(Number(event.target.value), min, max);
+          const nextText = formatNumberDraft(next, digits);
           setIsEditing(true);
-          setDraft(clampNumber(Number(event.target.value), min, max));
+          draftTextRef.current = nextText;
+          setDraftValue(next);
+          setDraftText(nextText);
         }}
         onFocus={() => setIsEditing(true)}
         onPointerDown={() => setIsEditing(true)}
-        onPointerUp={commit}
-        onTouchEnd={commit}
+        onPointerUp={() => commit()}
+        onTouchEnd={() => commit()}
       />
       <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={Number.isInteger(draft) ? String(draft) : draft.toFixed(digits)}
-        onBlur={commit}
+        inputMode="decimal"
+        type="text"
+        value={draftText}
+        onBlur={() => commit()}
         onFocus={() => setIsEditing(true)}
         onChange={(event) => {
-          const next = Number(event.target.value);
-          if (Number.isFinite(next)) {
-            setIsEditing(true);
-            setDraft(clampNumber(next, min, max));
+          const nextText = event.target.value;
+          const parsed = Number(nextText);
+          setIsEditing(true);
+          draftTextRef.current = nextText;
+          setDraftText(nextText);
+          if (nextText.trim() !== "" && Number.isFinite(parsed)) {
+            const next = clampNumber(parsed, min, max);
+            setDraftValue(next);
           }
         }}
         onKeyDown={(event) => {
