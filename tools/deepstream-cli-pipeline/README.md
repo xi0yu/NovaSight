@@ -23,3 +23,19 @@ v4l2src -> latest queue -> nvv4l2decoder -> NVMM
 -> latest queue -> nvvidconv ROI+resize -> NVMM NV12
 -> latest queue -> nvstreammux -> nvinfer -> fakesink/fpsdisplaysink
 ```
+
+If Rust is not installed on the Jetson, use the shell wrapper instead:
+
+```bash
+scripts/run_deepstream_gst_pipeline.sh
+```
+
+Override the defaults with environment variables:
+
+```bash
+DEVICE=/dev/video0 FORMAT=MJPG WIDTH=1920 HEIGHT=1080 FPS=120 \
+ROI_LEFT=640 ROI_TOP=220 ROI_SIZE=640 \
+MODEL_WIDTH=640 MODEL_HEIGHT=640 \
+NVINFER_CONFIG=data/runtime/deepstream/active-nvinfer.ini \
+TIMEOUT_SECONDS=30 scripts/run_deepstream_gst_pipeline.sh
+```
