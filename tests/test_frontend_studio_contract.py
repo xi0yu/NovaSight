@@ -546,4 +546,8 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio
     assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio
     assert 'updateControlGroupField("shared", "max_count_slew_x", value)' in studio
+    assert 'candidate_selection_class_weight' in studio
+    assert 'candidate_selection_distance_weight' in studio
+    assert 'candidate_selection_quality_weight' not in studio
+    assert "候选质量内部构成" not in studio
     assert "experimental_angle" not in studio

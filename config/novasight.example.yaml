@@ -174,7 +174,6 @@ control:
   scheduler_interval_ms: 4.0
   target_fov_radius_px: 180
   candidate_selection_class_weight: 0.55
-  candidate_selection_quality_weight: 0.05
   candidate_selection_distance_weight: 0.40
   target_switch_delay_ms: 50
   trigger_mode: always

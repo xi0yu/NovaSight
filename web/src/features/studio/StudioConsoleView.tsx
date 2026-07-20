@@ -1302,25 +1302,12 @@ export function StudioConsoleView({
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
   const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
-  const candidateQualityConfidenceWeight = readNumber(controlConfig.candidate_quality_confidence_weight, 0.7);
-  const candidateQualityAreaWeight = readNumber(controlConfig.candidate_quality_area_weight, 0.3);
   const candidateSelectionClassWeight = readNumber(controlConfig.candidate_selection_class_weight, 0.55);
-  const candidateSelectionQualityWeight = readNumber(controlConfig.candidate_selection_quality_weight, 0.05);
   const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.40);
-  const candidateQualityWeightTotal = candidateQualityConfidenceWeight + candidateQualityAreaWeight;
-  const candidateSelectionWeightTotal = candidateSelectionClassWeight + candidateSelectionQualityWeight + candidateSelectionDistanceWeight;
-  const normalizedQualityConfidenceWeight = candidateQualityWeightTotal > 0
-    ? candidateQualityConfidenceWeight / candidateQualityWeightTotal
-    : 1;
-  const normalizedQualityAreaWeight = candidateQualityWeightTotal > 0
-    ? candidateQualityAreaWeight / candidateQualityWeightTotal
-    : 0;
+  const candidateSelectionWeightTotal = candidateSelectionClassWeight + candidateSelectionDistanceWeight;
   const normalizedSelectionClassWeight = candidateSelectionWeightTotal > 0
     ? candidateSelectionClassWeight / candidateSelectionWeightTotal
     : 0;
-  const normalizedSelectionQualityWeight = candidateSelectionWeightTotal > 0
-    ? candidateSelectionQualityWeight / candidateSelectionWeightTotal
-    : 1;
   const normalizedSelectionDistanceWeight = candidateSelectionWeightTotal > 0
     ? candidateSelectionDistanceWeight / candidateSelectionWeightTotal
     : 0;
@@ -3749,7 +3736,7 @@ export function StudioConsoleView({
                 <span>目标类别</span><b>{readString(target.class_name, "") || NO_SAMPLE}</b>
                 <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
                 <span>Track quality</span><b>{formatOptionalNumber(selectedTrackDebug.track_quality, 3)}</b>
-                <span>类别 / 质量分</span><b>{formatPoint(control.class_score ?? target.class_score, control.quality_score ?? target.quality_score, 3)}</b>
+                <span>类别偏好 / 内部可靠性</span><b>{formatPoint(control.class_score ?? target.class_score, control.quality_score ?? target.quality_score, 3)}</b>
                 <span>距离 / 综合分</span><b>{formatPoint(control.distance_score ?? target.distance_score, control.selection_score ?? target.selection_score, 3)}</b>
                 <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
                 <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
@@ -4244,11 +4231,9 @@ export function StudioConsoleView({
                     <strong>
                       类别 {(normalizedSelectionClassWeight * 100).toFixed(0)}%
                       <i>·</i>
-                      质量 {(normalizedSelectionQualityWeight * 100).toFixed(0)}%
-                      <i>·</i>
                       距离 {(normalizedSelectionDistanceWeight * 100).toFixed(0)}%
                     </strong>
-                    <small>类别偏好已提高，距离影响相应降低；原始值会在计算前自动归一化。</small>
+                    <small>类别偏好与准星距离由此处调整；候选可靠性由系统内部自动处理。</small>
                   </div>
                   <button className="console-button" disabled={busy !== null} onClick={() => openConfigDialog("target-weights")} type="button">
                     <NovaIcon name="settings" size={15} />
@@ -4728,7 +4713,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">目标选择 / 评分策略</span>
                 <h2 id="target-weight-dialog-title">调整目标选择权重</h2>
-                <p>权重决定多个候选同时出现时，类别偏好、候选可靠性和准星距离各自占多大影响。</p>
+                <p>权重决定多个候选同时出现时，类别偏好与准星距离各自占多大影响；候选可靠性由系统内部处理。</p>
               </div>
               <button
                 aria-label={configDialogDirty ? "保存并关闭权重调整" : "关闭权重调整"}
@@ -4750,48 +4735,24 @@ export function StudioConsoleView({
                 <div className="target-weight-section-heading">
                   <div>
                     <span>综合目标分数</span>
-                    <small>三项原始值会自动归一化；当前总和为 {candidateSelectionWeightTotal.toFixed(2)}。</small>
+                    <small>类别与距离两项会自动归一化；当前总和为 {candidateSelectionWeightTotal.toFixed(2)}。</small>
                   </div>
                   <b>类别优先</b>
                 </div>
                 <div className="target-weight-composition" aria-label="综合目标分数权重占比">
                   <i className="class" style={{ flexGrow: normalizedSelectionClassWeight }} />
-                  <i className="quality" style={{ flexGrow: normalizedSelectionQualityWeight }} />
                   <i className="distance" style={{ flexGrow: normalizedSelectionDistanceWeight }} />
                 </div>
                 <div className="target-weight-legend">
                   <span><i className="class" />类别 <b>{(normalizedSelectionClassWeight * 100).toFixed(0)}%</b></span>
-                  <span><i className="quality" />质量 <b>{(normalizedSelectionQualityWeight * 100).toFixed(0)}%</b></span>
                   <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
                 </div>
                 <div className="target-weight-controls">
                   <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_class_weight", value)} />
-                  <NumberControl label="综合分权重：质量" detail="检测置信度、同类别可见尺寸与 Track 可靠性形成的质量分。" value={candidateSelectionQualityWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_quality_weight", value)} />
                   <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_distance_weight", value)} />
                 </div>
               </section>
 
-              <section className="target-weight-section secondary">
-                <div className="target-weight-section-heading">
-                  <div>
-                    <span>候选质量内部构成</span>
-                    <small>质量分只占上方综合分的一部分，并且最终还会被 Track 可靠性限制。</small>
-                  </div>
-                  <b>置信度 {(normalizedQualityConfidenceWeight * 100).toFixed(0)}%</b>
-                </div>
-                <div className="target-weight-composition quality-composition" aria-label="候选质量权重占比">
-                  <i className="confidence" style={{ flexGrow: normalizedQualityConfidenceWeight }} />
-                  <i className="area" style={{ flexGrow: normalizedQualityAreaWeight }} />
-                </div>
-                <div className="target-weight-legend">
-                  <span><i className="confidence" />置信度 <b>{(normalizedQualityConfidenceWeight * 100).toFixed(0)}%</b></span>
-                  <span><i className="area" />同类别可见尺寸 <b>{(normalizedQualityAreaWeight * 100).toFixed(0)}%</b></span>
-                </div>
-                <div className="target-weight-controls two-column">
-                  <NumberControl label="质量权重：置信度" detail="检测器输出的类别置信度。与可见尺寸权重归一化后使用。" value={candidateQualityConfidenceWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_confidence_weight", value)} />
-                  <NumberControl label="质量权重：可见尺寸" detail="bbox 面积相对于当前画面同类别候选面积中位数的平方根；不是相对于整个 ROI。" value={candidateQualityAreaWeight} min={0} max={2} step={0.05} onCommit={(value) => updateConfigField("control", "candidate_quality_area_weight", value)} />
-                </div>
-              </section>
             </div>
 
             <footer className="target-weight-dialog-footer">

@@ -10,7 +10,6 @@ from novasight.runtime.candidates import (
     AssociationCandidateFilter,
     BasicCandidateFilter,
     CandidateQuality,
-    QualityScoreConfig,
     QualityScorer,
     ScoredTrack,
     TrackScoreResult,
@@ -91,10 +90,7 @@ class RuntimeTargetSelector:
         lock_enabled: bool = True,
         lost_grace_frames: int = 5,
         ratio_max_aspect: float = 6.0,
-        quality_confidence_weight: float = 0.7,
-        quality_area_weight: float = 0.3,
         selection_class_weight: float = 0.55,
-        selection_quality_weight: float = 0.05,
         selection_distance_weight: float = 0.40,
         tracker_max_match_distance: float = 1.5,
         tracker_position_cost_weight: float = 0.75,
@@ -236,11 +232,8 @@ class RuntimeTargetSelector:
             control_center_y_px=control_center_y_px,
             class_filter=class_filter,
             ratio_max_aspect=ratio_max_aspect,
-            quality_confidence_weight=quality_confidence_weight,
-            quality_area_weight=quality_area_weight,
             class_priority=class_priority,
             selection_class_weight=selection_class_weight,
-            selection_quality_weight=selection_quality_weight,
             selection_distance_weight=selection_distance_weight,
             sticky_bias=sticky_bias,
             lock_enabled=lock_enabled,
@@ -263,11 +256,8 @@ class RuntimeTargetSelector:
         control_center_y_px: float | None,
         class_filter: str,
         ratio_max_aspect: float,
-        quality_confidence_weight: float,
-        quality_area_weight: float,
         class_priority: Iterable[int],
         selection_class_weight: float,
-        selection_quality_weight: float,
         selection_distance_weight: float,
         sticky_bias: float,
         lock_enabled: bool,
@@ -302,10 +292,7 @@ class RuntimeTargetSelector:
             priority=priority,
             locked=locked,
             sticky_bias=sticky_bias,
-            quality_confidence_weight=quality_confidence_weight,
-            quality_area_weight=quality_area_weight,
             selection_class_weight=selection_class_weight,
-            selection_quality_weight=selection_quality_weight,
             selection_distance_weight=selection_distance_weight,
         )
         scored_candidates = track_filter_result.tracks
@@ -359,10 +346,7 @@ class RuntimeTargetSelector:
             "min_confidence": float(min_confidence),
             "class_filter": str(class_filter),
             "ratio_max_aspect": float(ratio_max_aspect),
-            "quality_confidence_weight": float(quality_confidence_weight),
-            "quality_area_weight": float(quality_area_weight),
             "selection_class_weight": float(selection_class_weight),
-            "selection_quality_weight": float(selection_quality_weight),
             "selection_distance_weight": float(selection_distance_weight),
             "best_selection_score": float(best_scored.selection_score),
             "sticky_bias": float(sticky_bias),
@@ -514,24 +498,15 @@ class RuntimeTargetSelector:
         priority: dict[int, int],
         locked: Track | None,
         sticky_bias: float,
-        quality_confidence_weight: float,
-        quality_area_weight: float,
         selection_class_weight: float,
-        selection_quality_weight: float,
         selection_distance_weight: float,
     ) -> TrackScoreResult:
-        quality = QualityScorer(
-            QualityScoreConfig(
-                confidence_weight=max(0.0, float(quality_confidence_weight)),
-                area_weight=max(0.0, float(quality_area_weight)),
-            )
-        )
+        quality = QualityScorer()
         class_weight = max(0.0, float(selection_class_weight))
-        quality_weight = max(0.0, float(selection_quality_weight))
         distance_weight = max(0.0, float(selection_distance_weight))
-        total_weight = class_weight + quality_weight + distance_weight
+        total_weight = class_weight + distance_weight
         if total_weight <= 0.0:
-            quality_weight = 1.0
+            distance_weight = 1.0
             total_weight = 1.0
         radius = max(1e-6, float(fov_radius_px))
         class_areas: dict[int, list[float]] = {}
@@ -568,7 +543,6 @@ class RuntimeTargetSelector:
             class_score = self._class_preference_score(track, priority)
             selection_score = (
                 class_weight * class_score
-                + quality_weight * candidate_quality.quality_score
                 + distance_weight * distance_score
             ) / total_weight
             scored.append(

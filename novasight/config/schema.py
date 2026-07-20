@@ -1043,15 +1043,6 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "restart_required": False,
                     },
                     {
-                        "path": "control.candidate_selection_quality_weight",
-                        "label": "目标分数：质量权重",
-                        "type": "float",
-                        "min": 0,
-                        "step": 0.01,
-                        "precision": 2,
-                        "restart_required": False,
-                    },
-                    {
                         "path": "control.candidate_selection_distance_weight",
                         "label": "目标分数：距离权重",
                         "type": "float",

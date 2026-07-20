@@ -584,6 +584,39 @@ def test_same_class_fallback_accepts_small_nearest_candidate_over_larger_bbox() 
     assert near["selection_score"] > far["selection_score"]
 
 
+def test_candidate_reliability_does_not_change_primary_selection_score() -> None:
+    selector = RuntimeTargetSelector()
+    detections = [
+        # Both aim points are 40 px from the control center. Confidence and area
+        # intentionally differ so reliability remains observable without
+        # becoming a third primary preference.
+        Detection(0, 0.35, x=270, y=309, w=20, h=50),
+        Detection(0, 0.99, x=320, y=276, w=80, h=200),
+    ]
+    common = {
+        "min_confidence": 0.25,
+        "fov_ratio": 1.0,
+        "aim_ratio": 0.22,
+        "class_priority": [0],
+        "lock_enabled": False,
+        "target_switch_delay_ms": 0,
+    }
+
+    selector.select(_context(1, 1_000_000_000, detections), **common)
+    selector.select(_context(2, 1_050_000_000, detections), **common)
+
+    candidates = selector.last_debug["tracked_filter"]["candidates"]
+    low_reliability = next(item for item in candidates if item["x"] == 270.0)
+    high_reliability = next(item for item in candidates if item["x"] == 320.0)
+    assert low_reliability["quality_score"] < high_reliability["quality_score"]
+    assert low_reliability["distance_score"] == pytest.approx(
+        high_reliability["distance_score"]
+    )
+    assert low_reliability["selection_score"] == pytest.approx(
+        high_reliability["selection_score"]
+    )
+
+
 def test_lost_preferred_head_falls_back_to_nearest_body() -> None:
     selector = RuntimeTargetSelector()
     with_head = [

@@ -5416,21 +5416,9 @@ body::after {
   background: var(--signal-target);
 }
 
-.target-weight-composition .quality,
-.target-weight-legend .quality,
-.target-weight-composition .confidence,
-.target-weight-legend .confidence {
-  background: var(--signal-info);
-}
-
 .target-weight-composition .distance,
 .target-weight-legend .distance {
   background: var(--signal-attention);
-}
-
-.target-weight-composition .area,
-.target-weight-legend .area {
-  background: var(--signal-ink);
 }
 
 [data-theme="tayama"] body {

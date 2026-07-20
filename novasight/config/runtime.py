@@ -372,10 +372,7 @@ class ControlConfig:
     target_lock_enabled: bool = True
     target_sticky_bias: float = 0.25
     candidate_ratio_max_aspect: float = 6.0
-    candidate_quality_confidence_weight: float = 0.7
-    candidate_quality_area_weight: float = 0.3
     candidate_selection_class_weight: float = 0.55
-    candidate_selection_quality_weight: float = 0.05
     candidate_selection_distance_weight: float = 0.40
     tracker_max_match_distance: float = 1.5
     tracker_position_cost_weight: float = 0.75
@@ -622,6 +619,9 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
             "tracker_match_threshold",
             "tracker_mahalanobis_gate",
             "class_priority_quality_margin",
+            "candidate_selection_quality_weight",
+            "candidate_quality_confidence_weight",
+            "candidate_quality_area_weight",
         ):
             control.pop(key, None)
     if isinstance(calibration, dict):
@@ -1511,7 +1511,6 @@ def _validate_runtime_rules(cfg: RuntimeConfig) -> None:
         raise ValueError("runtime config key 'control.candidate_ratio_max_aspect' must be >= 1")
     selection_weight_keys = (
         "candidate_selection_class_weight",
-        "candidate_selection_quality_weight",
         "candidate_selection_distance_weight",
     )
     for key in selection_weight_keys:

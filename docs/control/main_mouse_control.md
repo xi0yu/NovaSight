@@ -46,14 +46,13 @@ Tracker identity remains class-consistent and Hungarian association is unchanged
 selection_score =
     normalized(
         class_weight * class_score
-      + quality_weight * quality_score
       + distance_weight * distance_score
     )
 ```
 
 The first class ID in `inference.detection_class_priority` receives `class_score=1.0`, the second receives `0.5`, and every remaining class receives `0.0`. The default `1,0,...` therefore prefers class 1 over class 0 while treating all other classes equally.
 
-`quality_score` combines detection confidence and square-root visible size normalized against the median area of the same class in the current candidate set. Tracker quality additionally includes identity continuity and Kalman position sigma relative to bbox size. This keeps visible-size evidence without comparing a naturally small head box directly against a body box. `distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. The default component weights are `0.40 / 0.05 / 0.55`. Among fallback candidates of the same class, quality can only overturn distance inside roughly 9% of the selection radius; this makes the nearest body the normal result after a preferred head disappears while retaining confidence, size, and stability as close-range tie evidence.
+`quality_score` combines detection confidence and square-root visible size normalized against the median area of the same class in the current candidate set. It remains diagnostic and is used only as a same-score tie-break; it no longer changes the primary class-plus-distance ranking, avoiding systematic suppression of small head boxes. Tracker quality additionally includes identity continuity and Kalman position sigma relative to bbox size. `distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. The user-facing selection contract is therefore class priority plus distance; confidence, size, and stability remain internal evidence.
 
 The aim rule is shared by every controller: X is always bbox center and Y is `bbox_top + bbox_height * effective_y_ratio`. `control.aim.role_y_ratios` stores exactly three ratios (`head`, `body`, `other`), while `control.aim.class_roles.<detection_profile>.<class_id>` maps model classes to those roles. Unmapped and unknown classes use `other`. Candidate tracking and final control projection resolve the same effective ratio. Legacy shared or V2-local ratios are migrated to all three roles and are not read by the runtime.
 

@@ -3137,17 +3137,8 @@ class RuntimeService:
             lock_enabled=bool(getattr(self.config.control, "target_lock_enabled", True)),
             lost_grace_frames=0,
             ratio_max_aspect=float(getattr(self.config.control, "candidate_ratio_max_aspect", 6.0)),
-            quality_confidence_weight=float(
-                getattr(self.config.control, "candidate_quality_confidence_weight", 0.7)
-            ),
-            quality_area_weight=float(
-                getattr(self.config.control, "candidate_quality_area_weight", 0.3)
-            ),
             selection_class_weight=float(
                 getattr(self.config.control, "candidate_selection_class_weight", 0.55)
-            ),
-            selection_quality_weight=float(
-                getattr(self.config.control, "candidate_selection_quality_weight", 0.05)
             ),
             selection_distance_weight=float(
                 getattr(self.config.control, "candidate_selection_distance_weight", 0.40)

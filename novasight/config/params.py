@@ -310,16 +310,6 @@ CONTROL_PARAM_SPECS: dict[str, ParamSpec] = {
         "ratio",
         "综合目标分数中类别偏好的相对权重。",
     ),
-    "control.candidate_selection_quality_weight": _spec(
-        "control.candidate_selection_quality_weight",
-        "目标质量权重",
-        0.05,
-        0.0,
-        2.0,
-        0.01,
-        "ratio",
-        "综合目标分数中检测与 Track 质量的相对权重。",
-    ),
     "control.candidate_selection_distance_weight": _spec(
         "control.candidate_selection_distance_weight",
         "目标距离权重",

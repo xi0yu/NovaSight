@@ -315,10 +315,12 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.aim.role_y_ratios.body == 0.22
     assert cfg.control.aim.role_y_ratios.other == 0.22
     assert cfg.control.aim.class_roles == {}
-    assert cfg.control.candidate_selection_quality_weight == pytest.approx(0.05)
     assert cfg.control.candidate_selection_class_weight == pytest.approx(0.55)
     assert cfg.control.candidate_selection_distance_weight == pytest.approx(0.40)
-    assert CONTROL_PARAM_SPECS["control.candidate_selection_quality_weight"].default == 0.05
+    assert not hasattr(cfg.control, "candidate_selection_quality_weight")
+    assert not hasattr(cfg.control, "candidate_quality_confidence_weight")
+    assert not hasattr(cfg.control, "candidate_quality_area_weight")
+    assert "control.candidate_selection_quality_weight" not in CONTROL_PARAM_SPECS
     assert CONTROL_PARAM_SPECS["control.candidate_selection_class_weight"].default == 0.55
     assert CONTROL_PARAM_SPECS["control.candidate_selection_distance_weight"].default == 0.40
     assert cfg.control.configured_actuation_delay_s == 0.004
@@ -802,6 +804,9 @@ def test_runtime_config_has_one_kmnet_runtime_path() -> None:
                 "lost_target_timeout_ms": 120,
                 "tracker_confirm_frames": 2,
                 "tracker_matching_distance_px": 140,
+                "candidate_selection_quality_weight": 0.05,
+                "candidate_quality_confidence_weight": 0.7,
+                "candidate_quality_area_weight": 0.3,
             },
             "executor": {"default": "silent"},
             "hardware": {"kind": "makcu", "serial_port": "/dev/ttyUSB0"},
@@ -811,6 +816,9 @@ def test_runtime_config_has_one_kmnet_runtime_path() -> None:
     assert not hasattr(migrated.control, "lost_target_timeout_ms")
     assert not hasattr(migrated.control, "tracker_confirm_frames")
     assert not hasattr(migrated.control, "tracker_matching_distance_px")
+    assert not hasattr(migrated.control, "candidate_selection_quality_weight")
+    assert not hasattr(migrated.control, "candidate_quality_confidence_weight")
+    assert not hasattr(migrated.control, "candidate_quality_area_weight")
     assert not hasattr(migrated, "executor")
     assert not hasattr(migrated.hardware, "kind")
     assert not hasattr(migrated.hardware, "serial_port")
