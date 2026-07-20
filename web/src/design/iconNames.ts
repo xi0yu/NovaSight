@@ -87,7 +87,6 @@ export const iconCategories = {
     "reidentify",
     "target-switch",
     "prediction-line",
-    "target-quality",
   ],
   control: [
     "controller",

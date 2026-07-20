@@ -3735,8 +3735,7 @@ export function StudioConsoleView({
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
                 <span>目标类别</span><b>{readString(target.class_name, "") || NO_SAMPLE}</b>
                 <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
-                <span>Track quality</span><b>{formatOptionalNumber(selectedTrackDebug.track_quality, 3)}</b>
-                <span>类别偏好 / 内部可靠性</span><b>{formatPoint(control.class_score ?? target.class_score, control.quality_score ?? target.quality_score, 3)}</b>
+                <span>类别偏好分</span><b>{formatOptionalNumber(control.class_score ?? target.class_score, 3)}</b>
                 <span>距离 / 综合分</span><b>{formatPoint(control.distance_score ?? target.distance_score, control.selection_score ?? target.selection_score, 3)}</b>
                 <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
                 <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>

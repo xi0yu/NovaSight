@@ -52,11 +52,11 @@ selection_score =
 
 The first class ID in `inference.detection_class_priority` receives `class_score=1.0`, the second receives `0.5`, and every remaining class receives `0.0`. The default `1,0,...` therefore prefers class 1 over class 0 while treating all other classes equally.
 
-`quality_score` combines detection confidence and square-root visible size normalized against the median area of the same class in the current candidate set. It remains diagnostic and is used only as a same-score tie-break; it no longer changes the primary class-plus-distance ranking, avoiding systematic suppression of small head boxes. Tracker quality additionally includes identity continuity and Kalman position sigma relative to bbox size. `distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. The user-facing selection contract is therefore class priority plus distance; confidence, size, and stability remain internal evidence.
+`distance_score` is `1 - distance / selection_radius`, clamped to `[0, 1]`. There is no candidate-quality score, area score, confidence score, reliability tie-break, or Tracker-quality field in target selection. Equal class-and-distance scores are resolved deterministically by track ID. Detection confidence remains only an explicit eligibility threshold, while Tracker identity and prediction confidence remain safety inputs for association and motion prediction rather than target preferences.
 
 The aim rule is shared by every controller: X is always bbox center and Y is `bbox_top + bbox_height * effective_y_ratio`. `control.aim.role_y_ratios` stores exactly three ratios (`head`, `body`, `other`), while `control.aim.class_roles.<detection_profile>.<class_id>` maps model classes to those roles. Unmapped and unknown classes use `other`. Candidate tracking and final control projection resolve the same effective ratio. Legacy shared or V2-local ratios are migrated to all three roles and are not read by the runtime.
 
-Model detections are mapped back into ROI coordinates before selection. Selection radius uses 640-ROI reference pixels, while bbox area remains soft quality evidence rather than a hard rejection gate. This cannot prioritize a class-1 object that the model did not detect.
+Model detections are mapped back into ROI coordinates before selection. Selection radius uses 640-ROI reference pixels. Bbox area does not participate in filtering, scoring, ordering, or tie-breaking. This cannot prioritize a class-1 object that the model did not detect.
 
 Target switching still requires composite-score advantage, Tracker continuity, and the configured confirmation delay. The score chooses a challenger; it does not bypass target-lock safety.
 

@@ -187,8 +187,8 @@ Every answer should include:
 22. Does a calibration or sensitivity mismatch reset runtime control state and
     block unsafe output?
 
-23. Does the tracker separate candidate filtering, quality scoring, association,
-    target selection, and control output?
+23. Does the tracker separate candidate filtering, association, class-and-distance
+    target selection, and control output without an implicit quality preference?
 
 24. Does the tracker handle identity uncertainty as a control state, rather than
     instantly switching target?

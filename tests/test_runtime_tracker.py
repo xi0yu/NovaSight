@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from novasight.contracts import Detection, FrameContext
@@ -363,10 +361,17 @@ def test_hungarian_assignment_finds_global_optimum_where_greedy_fails() -> None:
     assert sum(matrix[row][column] for row, column in assignment) == pytest.approx(3.1)
 
 
-def test_tracker_caps_association_work_and_reports_timing_and_quality() -> None:
+def test_tracker_caps_association_work_without_reranking_input() -> None:
     tracker = _tracker()
     detections = [
-        Detection(0, 0.99 - index * 0.01, x=index * 20, y=200, w=16, h=80)
+        Detection(
+            0,
+            0.26 if index == 0 else 0.99,
+            x=index * 20,
+            y=200,
+            w=8 if index == 0 else 16,
+            h=40 if index == 0 else 80,
+        )
         for index in range(20)
     ]
     context = _context(1, 1_000_000_000, detections)
@@ -391,11 +396,8 @@ def test_tracker_caps_association_work_and_reports_timing_and_quality() -> None:
     assert result.debug["association_candidates_dropped"] == 4
     assert result.debug["max_active_tracks"] == 16
     assert result.debug["max_detections_for_association"] == 16
-    first_track = result.debug["tracks"][0]
-    sigma = first_track["estimate"]["position_sigma_px"]
-    expected_quality = 0.99 / (1.0 + sigma / math.sqrt(16.0 * 80.0))
-    assert first_track["track_quality"] == pytest.approx(expected_quality)
-    assert result.active_tracks[0].quality_score == pytest.approx(expected_quality)
+    assert result.active_tracks[0].box == detections[0].box
+    assert all("track_quality" not in track for track in result.debug["tracks"])
     for key in (
         "tracker_predict_us",
         "association_matrix_us",
@@ -584,12 +586,12 @@ def test_same_class_fallback_accepts_small_nearest_candidate_over_larger_bbox() 
     assert near["selection_score"] > far["selection_score"]
 
 
-def test_candidate_reliability_does_not_change_primary_selection_score() -> None:
+def test_candidate_selection_has_no_quality_fields_or_hidden_quality_tiebreak() -> None:
     selector = RuntimeTargetSelector()
     detections = [
         # Both aim points are 40 px from the control center. Confidence and area
-        # intentionally differ so reliability remains observable without
-        # becoming a third primary preference.
+        # intentionally differ; the first-created track must still win the
+        # exact class-and-distance tie.
         Detection(0, 0.35, x=270, y=309, w=20, h=50),
         Detection(0, 0.99, x=320, y=276, w=80, h=200),
     ]
@@ -606,15 +608,19 @@ def test_candidate_reliability_does_not_change_primary_selection_score() -> None
     selector.select(_context(2, 1_050_000_000, detections), **common)
 
     candidates = selector.last_debug["tracked_filter"]["candidates"]
-    low_reliability = next(item for item in candidates if item["x"] == 270.0)
-    high_reliability = next(item for item in candidates if item["x"] == 320.0)
-    assert low_reliability["quality_score"] < high_reliability["quality_score"]
-    assert low_reliability["distance_score"] == pytest.approx(
-        high_reliability["distance_score"]
+    first = next(item for item in candidates if item["x"] == 270.0)
+    second = next(item for item in candidates if item["x"] == 320.0)
+    for candidate in candidates:
+        assert "quality_score" not in candidate
+        assert "conf_score" not in candidate
+        assert "area_score" not in candidate
+    assert first["distance_score"] == pytest.approx(
+        second["distance_score"]
     )
-    assert low_reliability["selection_score"] == pytest.approx(
-        high_reliability["selection_score"]
+    assert first["selection_score"] == pytest.approx(
+        second["selection_score"]
     )
+    assert selector.last_debug["selected"]["x"] == pytest.approx(270.0)
 
 
 def test_lost_preferred_head_falls_back_to_nearest_body() -> None:

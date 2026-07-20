@@ -327,7 +327,6 @@ const iconAliases: Partial<Record<NovaIconName, IconBase>> = {
   reidentify: "target",
   "target-switch": "arrow",
   "prediction-line": "curve",
-  "target-quality": "check",
   controller: "control",
   pid: "control",
   pd: "control",

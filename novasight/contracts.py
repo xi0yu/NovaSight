@@ -216,7 +216,6 @@ class Track:
     score: float
     box: BBox
     velocity_px_s: tuple[float, float]
-    quality_score: float
     observed_aim_px: tuple[float, float]
     filtered_aim_px: tuple[float, float]
     velocity_valid: bool
@@ -246,7 +245,6 @@ class Track:
         x2: float | None = None,
         y2: float | None = None,
         velocity_px_s: tuple[float, float] | None = None,
-        quality_score: float | None = None,
         observed_aim_px: tuple[float, float] | None = None,
         filtered_aim_px: tuple[float, float] | None = None,
         velocity_valid: bool = False,
@@ -266,11 +264,6 @@ class Track:
         object.__setattr__(self, "box", _coerce_box(x=x, y=y, w=w, h=h, box=box, x1=x1, y1=y1, x2=x2, y2=y2))
         velocity = velocity_px_s or (0.0, 0.0)
         object.__setattr__(self, "velocity_px_s", (float(velocity[0]), float(velocity[1])))
-        object.__setattr__(
-            self,
-            "quality_score",
-            float(self.score if quality_score is None else quality_score),
-        )
         observed_aim = observed_aim_px or (self.box.center_x, self.box.center_y)
         filtered_aim = filtered_aim_px or observed_aim
         object.__setattr__(

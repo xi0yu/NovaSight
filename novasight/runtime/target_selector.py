@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from statistics import median
 import time
 from typing import Iterable
 
@@ -9,8 +8,6 @@ from novasight.contracts import FrameContext, Track
 from novasight.runtime.candidates import (
     AssociationCandidateFilter,
     BasicCandidateFilter,
-    CandidateQuality,
-    QualityScorer,
     ScoredTrack,
     TrackScoreResult,
     parse_allowed_class_ids,
@@ -38,7 +35,6 @@ class TargetSelection:
     lost_count: int = 0
     priority_rank: int | None = None
     distance_px: float | None = None
-    quality_score: float | None = None
     class_score: float | None = None
     distance_score: float | None = None
     selection_score: float | None = None
@@ -325,8 +321,6 @@ class RuntimeTargetSelector:
                 item.selection_score,
                 item.class_score,
                 item.distance_score,
-                item.quality.quality_score,
-                float(item.track.score),
                 -int(item.track.track_id),
             ),
         )
@@ -377,7 +371,6 @@ class RuntimeTargetSelector:
                 locked=selected_locked,
                 priority_rank=self._priority_rank(best, priority),
                 distance_px=self._aim_distance(best, center_x, center_y),
-                quality_score=best_scored.quality.quality_score,
                 class_score=best_scored.class_score,
                 distance_score=best_scored.distance_score,
                 selection_score=best_scored.selection_score,
@@ -416,11 +409,6 @@ class RuntimeTargetSelector:
                             center_x,
                             center_y,
                         ),
-                        quality_score=(
-                            locked_scored.quality.quality_score
-                            if locked_scored is not None
-                            else None
-                        ),
                         class_score=locked_scored.class_score if locked_scored is not None else None,
                         distance_score=(
                             locked_scored.distance_score if locked_scored is not None else None
@@ -439,7 +427,6 @@ class RuntimeTargetSelector:
                     lost_count=self._lost_count,
                     priority_rank=self._priority_rank(best, priority),
                     distance_px=self._aim_distance(best, center_x, center_y),
-                    quality_score=best_scored.quality.quality_score,
                     class_score=best_scored.class_score,
                     distance_score=best_scored.distance_score,
                     selection_score=best_scored.selection_score,
@@ -455,7 +442,6 @@ class RuntimeTargetSelector:
                 locked=False,
                 priority_rank=self._priority_rank(best, priority),
                 distance_px=self._aim_distance(best, center_x, center_y),
-                quality_score=best_scored.quality.quality_score,
                 class_score=best_scored.class_score,
                 distance_score=best_scored.distance_score,
                 selection_score=best_scored.selection_score,
@@ -471,7 +457,7 @@ class RuntimeTargetSelector:
             "reason": "same locked target",
         }
         selection_state = "locked" if selected_locked else "fresh"
-        selection_reason = "按类别、候选质量、归一化距离综合分和锁定切换门控选择目标"
+        selection_reason = "按类别、归一化距离综合分和锁定切换门控选择目标"
         return TargetSelection(
             target=best,
             state=selection_state,
@@ -481,7 +467,6 @@ class RuntimeTargetSelector:
             locked=selected_locked,
             priority_rank=self._priority_rank(best, priority),
             distance_px=self._aim_distance(best, center_x, center_y),
-            quality_score=best_scored.quality.quality_score,
             class_score=best_scored.class_score,
             distance_score=best_scored.distance_score,
             selection_score=best_scored.selection_score,
@@ -501,7 +486,6 @@ class RuntimeTargetSelector:
         selection_class_weight: float,
         selection_distance_weight: float,
     ) -> TrackScoreResult:
-        quality = QualityScorer()
         class_weight = max(0.0, float(selection_class_weight))
         distance_weight = max(0.0, float(selection_distance_weight))
         total_weight = class_weight + distance_weight
@@ -509,29 +493,9 @@ class RuntimeTargetSelector:
             distance_weight = 1.0
             total_weight = 1.0
         radius = max(1e-6, float(fov_radius_px))
-        class_areas: dict[int, list[float]] = {}
-        for track in candidates:
-            class_areas.setdefault(int(track.cls), []).append(max(1.0, float(track.area)))
-        class_reference_areas = {
-            class_id: float(median(areas))
-            for class_id, areas in class_areas.items()
-        }
         scored: list[ScoredTrack] = []
         for track in candidates:
             aim_x, aim_y = track.filtered_aim_px
-            base_quality = quality.score(
-                track,
-                context=context,
-                class_reference_area=class_reference_areas.get(int(track.cls)),
-            )
-            candidate_quality = CandidateQuality(
-                conf_score=base_quality.conf_score,
-                area_score=base_quality.area_score,
-                quality_score=min(
-                    base_quality.quality_score,
-                    max(0.0, min(1.0, float(track.quality_score))),
-                ),
-            )
             distance_px = self._selection_distance(
                 track,
                 locked,
@@ -550,7 +514,6 @@ class RuntimeTargetSelector:
                     frame_id=int(context.frame_id),
                     capture_ts_ns=context.capture_ts_ns,
                     track=track,
-                    quality=candidate_quality,
                     distance_px=self._aim_distance(track, center_x, center_y),
                     aim_x=float(aim_x),
                     aim_y=float(aim_y),

@@ -80,7 +80,6 @@ def _track_from_mapping(value: Any) -> Track | None:
             x2=float(value["x2"]),
             y2=float(value["y2"]),
             velocity_px_s=_velocity(value.get("velocity_px_s")),
-            quality_score=_optional_float(value.get("quality_score")),
             missed_frames=int(value.get("missed_frames", 0) or 0),
             last_seen_ns=int(value.get("last_seen_ns", 0) or 0),
             state_ts_ns=int(value.get("state_ts_ns", 0) or 0),
@@ -105,12 +104,6 @@ def _velocity(value: Any) -> tuple[float, float]:
     if isinstance(value, Mapping):
         return float(value.get("x", 0.0) or 0.0), float(value.get("y", 0.0) or 0.0)
     return 0.0, 0.0
-
-
-def _optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    return float(value)
 
 
 def _metadata_int(metadata: object, *keys: str) -> int | None:

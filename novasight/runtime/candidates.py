@@ -161,24 +161,10 @@ class BasicCandidateFilter:
 
 
 @dataclass(frozen=True)
-class QualityScoreConfig:
-    confidence_weight: float = 0.7
-    area_weight: float = 0.3
-
-
-@dataclass(frozen=True)
-class CandidateQuality:
-    conf_score: float
-    area_score: float
-    quality_score: float
-
-
-@dataclass(frozen=True)
 class ScoredTrack:
     frame_id: int
     capture_ts_ns: int | None
     track: Track
-    quality: CandidateQuality
     distance_px: float
     aim_x: float
     aim_y: float
@@ -206,39 +192,6 @@ class TrackScoreResult:
             "candidates": [scored_track_debug(item) for item in self.tracks[:limit]],
             "rejected": [],
         }
-
-
-class QualityScorer:
-    def __init__(self, config: QualityScoreConfig | None = None) -> None:
-        self.config = config or QualityScoreConfig()
-
-    def score(
-        self,
-        track: Track,
-        *,
-        context: FrameContext,
-        class_reference_area: float | None = None,
-    ) -> CandidateQuality:
-        conf_score = _clamp01(float(track.score))
-        frame_area = max(1.0, float(context.width) * float(context.height))
-        reference_area = (
-            max(1.0, float(class_reference_area))
-            if class_reference_area is not None
-            else frame_area
-        )
-        area_score = _clamp01((float(track.area) / reference_area) ** 0.5)
-        confidence_weight = max(0.0, float(self.config.confidence_weight))
-        area_weight = max(0.0, float(self.config.area_weight))
-        total_weight = confidence_weight + area_weight
-        if total_weight <= 0:
-            total_weight = 1.0
-            confidence_weight = 1.0
-        q = (conf_score * confidence_weight + area_score * area_weight) / total_weight
-        return CandidateQuality(
-            conf_score=conf_score,
-            area_score=area_score,
-            quality_score=_clamp01(q),
-        )
 
 
 def parse_allowed_class_ids(value: str) -> set[int] | None:
@@ -279,9 +232,6 @@ def scored_track_debug(candidate: ScoredTrack) -> dict:
         "distance_px": float(candidate.distance_px),
         "selection_fov_pass": True,
         "ratio_valid": True,
-        "conf_score": float(candidate.quality.conf_score),
-        "area_score": float(candidate.quality.area_score),
-        "quality_score": float(candidate.quality.quality_score),
         "class_score": float(candidate.class_score),
         "distance_score": float(candidate.distance_score),
         "selection_score": float(candidate.selection_score),
@@ -299,7 +249,3 @@ def _bbox_valid(target: Detection, context: FrameContext) -> bool:
     if float(target.x) >= float(context.width) or float(target.y) >= float(context.height):
         return False
     return True
-
-
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))

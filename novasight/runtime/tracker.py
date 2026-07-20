@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import isfinite, log, sqrt
+from math import isfinite, log
 from time import perf_counter_ns
 from typing import Literal
 
@@ -70,7 +70,6 @@ class TrackRecord:
             score=self.confidence,
             box=self.bbox,
             velocity_px_s=(self.velocity_x, self.velocity_y),
-            quality_score=_track_quality(self),
             observed_aim_px=(self.observed_aim_x, self.observed_aim_y),
             filtered_aim_px=(self.filtered_x, self.filtered_y),
             velocity_valid=self.velocity_valid,
@@ -315,18 +314,9 @@ class RuntimeTracker:
 
     @staticmethod
     def _limit_observations(observations: list[TrackObservation]) -> list[TrackObservation]:
-        if len(observations) <= MAX_DETECTIONS_FOR_ASSOCIATION:
-            return list(observations)
-        ranked = sorted(
-            enumerate(observations),
-            key=lambda item: (
-                -float(item[1].confidence),
-                -float(item[1].bbox.area),
-                int(item[1].detection_index),
-            ),
-        )[:MAX_DETECTIONS_FOR_ASSOCIATION]
-        ranked.sort(key=lambda item: item[0])
-        return [observation for _, observation in ranked]
+        # Preserve the inference/NMS order. Resource capping must not introduce
+        # a hidden confidence-or-area preference alongside class and distance.
+        return list(observations[:MAX_DETECTIONS_FOR_ASSOCIATION])
 
     def mark_unavailable(
         self,
@@ -809,7 +799,6 @@ class RuntimeTracker:
             "velocity_y": track.velocity_y,
             "velocity_valid": track.velocity_valid,
             "identity_confidence": track.identity_confidence,
-            "track_quality": _track_quality(track),
             "last_match_cost": track.last_match_cost,
             "normalized_distance": track.last_normalized_distance,
             "iou": track.last_iou,
@@ -910,21 +899,6 @@ def _symmetric_ratio(left: float, right: float) -> float:
     if not isfinite(left) or not isfinite(right) or left <= 0.0 or right <= 0.0:
         return float("inf")
     return max(float(left) / float(right), float(right) / float(left))
-
-
-def _track_quality(track: TrackRecord) -> float:
-    estimate = track.estimate
-    if estimate is None or not isfinite(float(estimate.position_sigma_px)):
-        stability = 1.0
-    else:
-        characteristic_size = max(1.0, sqrt(max(1.0, float(track.bbox.area))))
-        relative_sigma = max(0.0, float(estimate.position_sigma_px)) / characteristic_size
-        stability = 1.0 / (1.0 + relative_sigma)
-    return _clamp01(
-        float(track.confidence)
-        * float(track.identity_confidence)
-        * stability
-    )
 
 
 def _elapsed_us(start_ns: int, end_ns: int) -> float:
