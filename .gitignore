@@ -18,3 +18,4 @@ config/novasight.yaml
 web/node_modules/
 web/dist/
 web/.vite/
+tools/**/target/
