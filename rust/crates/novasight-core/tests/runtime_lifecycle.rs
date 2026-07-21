@@ -176,31 +176,6 @@ async fn stop_is_idempotent_and_snapshot_watch_is_latest_only() {
     assert_eq!(snapshots.borrow().phase, RuntimePhase::Stopped);
 }
 
-#[tokio::test]
-async fn terminal_epoch_fault_is_visible_in_the_latest_snapshot() {
-    let expected_epoch = RuntimeEpoch(1);
-    let stale_epoch = RuntimeEpoch(99);
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_preserving_epochs([
-        one_target_batch(stale_epoch, 1),
-    ]));
-
-    let receipt = runtime.start().await.unwrap();
-    assert_eq!(receipt.epoch, Some(expected_epoch));
-
-    let faulted =
-        wait_for_snapshot(&runtime, |snapshot| snapshot.phase == RuntimePhase::Faulted).await;
-    assert_eq!(faulted.run_intent, RunIntent::Running);
-    assert_eq!(faulted.epoch, Some(expected_epoch));
-    assert!(!faulted.running);
-    let error = faulted
-        .fatal_error
-        .as_ref()
-        .expect("terminal error snapshot");
-    assert_eq!(error.code, "runtime_epoch_mismatch");
-    assert!(error.message.contains("expected epoch 1"));
-    assert!(error.message.contains("received epoch 99"));
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn stop_cancels_before_exhausting_a_ready_replay_source() {
     const BATCH_COUNT: u64 = 256;

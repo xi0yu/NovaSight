@@ -19,7 +19,6 @@ const COMMAND_CAPACITY: usize = 16;
 enum ReplaySeed {
     Fixture,
     Rebind(Arc<[DetectionBatch]>),
-    PreserveEpochs(Arc<[DetectionBatch]>),
 }
 
 /// Replay-only construction inputs retained by the manager so each epoch gets
@@ -44,21 +43,11 @@ impl RuntimeDependencies {
         }
     }
 
-    /// Preserves supplied frame epochs for explicit stale-input fault tests.
-    pub fn replay_preserving_epochs(batches: impl IntoIterator<Item = DetectionBatch>) -> Self {
-        Self {
-            replay_seed: ReplaySeed::PreserveEpochs(batches.into_iter().collect::<Vec<_>>().into()),
-        }
-    }
-
     fn source_for(&self, epoch: RuntimeEpoch) -> ReplayPerceptionSource {
         match &self.replay_seed {
             ReplaySeed::Fixture => ReplayPerceptionSource::new([fixture_batch(epoch)]),
             ReplaySeed::Rebind(batches) => {
                 ReplayPerceptionSource::new(batches.iter().map(|batch| rebind_batch(batch, epoch)))
-            }
-            ReplaySeed::PreserveEpochs(batches) => {
-                ReplayPerceptionSource::new(batches.iter().cloned())
             }
         }
     }

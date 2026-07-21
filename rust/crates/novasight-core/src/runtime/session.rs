@@ -271,3 +271,61 @@ fn fault(
     });
     SessionExit { stats }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Detection, DetectionBatch, FrameStamp, RunIntent};
+
+    #[tokio::test]
+    async fn stale_epoch_batch_faults_without_entering_current_state() {
+        let expected_epoch = RuntimeEpoch(1);
+        let stale_epoch = RuntimeEpoch(99);
+        let detection = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).expect("detection");
+        let stale_batch = DetectionBatch::fixture(
+            FrameStamp::new(stale_epoch, 1, 1),
+            640,
+            640,
+            vec![detection],
+        )
+        .expect("batch");
+
+        let initial = Arc::new(OperationalSnapshot::initial_replay());
+        let (snapshot_tx, _snapshot_rx) = watch::channel(initial);
+        let publisher = EpochSnapshotPublisher::new(snapshot_tx);
+        let mut running = OperationalSnapshot::initial_replay();
+        running.phase = RuntimePhase::Running;
+        running.run_intent = RunIntent::Running;
+        running.epoch = Some(expected_epoch);
+        running.running = true;
+        publisher.claim_and_publish(expected_epoch, running);
+
+        let (cancellation_tx, cancellation_rx) = watch::channel(false);
+        let latest_command = Arc::new(Mutex::new(None));
+        let exit = run_session(
+            expected_epoch,
+            ReplayPerceptionSource::new([stale_batch]),
+            ProportionalReplayControl::new(1.0),
+            Arc::new(RecordingPointerDevice::default()),
+            publisher.clone(),
+            cancellation_rx,
+            latest_command,
+        )
+        .await;
+        drop(cancellation_tx);
+
+        assert_eq!(exit.stats.processed_batches, 0);
+        let faulted = publisher.current();
+        assert_eq!(faulted.phase, RuntimePhase::Faulted);
+        assert_eq!(faulted.run_intent, RunIntent::Running);
+        assert_eq!(faulted.epoch, Some(expected_epoch));
+        assert!(!faulted.running);
+        let error = faulted
+            .fatal_error
+            .as_ref()
+            .expect("terminal error snapshot");
+        assert_eq!(error.code, "runtime_epoch_mismatch");
+        assert!(error.message.contains("expected epoch 1"));
+        assert!(error.message.contains("received epoch 99"));
+    }
+}
