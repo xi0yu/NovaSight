@@ -424,6 +424,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "novasight-core",
+ "serde",
+ "serde_json",
+ "tokio",
  "tower",
 ]
 
