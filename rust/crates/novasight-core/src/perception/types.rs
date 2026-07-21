@@ -205,11 +205,7 @@ impl DetectionBatch {
             let y = f64::from(detection.y);
             let right = x + f64::from(detection.width);
             let bottom = y + f64::from(detection.height);
-            if x < 0.0
-                || y < 0.0
-                || right > width_limit
-                || bottom > height_limit
-            {
+            if x < 0.0 || y < 0.0 || right > width_limit || bottom > height_limit {
                 return Err(AppError::CoordinateSpaceMismatch {
                     object_id: detection.object_id,
                     x,
