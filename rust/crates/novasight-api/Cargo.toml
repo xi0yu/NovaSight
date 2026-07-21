@@ -1,0 +1,10 @@
+[package]
+name = "novasight-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+tower.workspace = true
+novasight-core = { path = "../novasight-core" }

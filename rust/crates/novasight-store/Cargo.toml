@@ -1,0 +1,10 @@
+[package]
+name = "novasight-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_yaml.workspace = true
+novasight-core = { path = "../novasight-core" }
