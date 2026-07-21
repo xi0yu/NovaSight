@@ -92,6 +92,35 @@ async fn restart_allocates_new_epoch() {
     assert!(second.epoch > first.epoch);
 }
 
+#[tokio::test]
+async fn non_empty_replay_rebinds_batches_to_each_restart_epoch() {
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay([one_target_batch(
+        RuntimeEpoch(1),
+        7,
+    )]));
+
+    let first = runtime.start().await.unwrap();
+    wait_for_snapshot(&runtime, |snapshot| snapshot.device_receipts == 1).await;
+    runtime.stop().await.unwrap();
+
+    let second = runtime.start().await.unwrap();
+    assert!(second.epoch > first.epoch);
+    let restarted = wait_for_snapshot(&runtime, |snapshot| {
+        snapshot.epoch == second.epoch
+            && (snapshot.device_receipts == 1 || snapshot.phase == RuntimePhase::Faulted)
+    })
+    .await;
+
+    assert_eq!(restarted.phase, RuntimePhase::Running);
+    assert_eq!(
+        restarted.last_generation,
+        Some(novasight_core::Generation(7))
+    );
+    assert_eq!(restarted.processed_batches, 1);
+    assert_eq!(restarted.device_receipts, 1);
+    assert_eq!(restarted.fatal_error, None);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn concurrent_starts_accept_one_epoch_and_reject_one_conflict() {
     let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
@@ -151,10 +180,9 @@ async fn stop_is_idempotent_and_snapshot_watch_is_latest_only() {
 async fn terminal_epoch_fault_is_visible_in_the_latest_snapshot() {
     let expected_epoch = RuntimeEpoch(1);
     let stale_epoch = RuntimeEpoch(99);
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay(vec![one_target_batch(
-        stale_epoch,
-        1,
-    )]));
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_preserving_epochs([
+        one_target_batch(stale_epoch, 1),
+    ]));
 
     let receipt = runtime.start().await.unwrap();
     assert_eq!(receipt.epoch, Some(expected_epoch));

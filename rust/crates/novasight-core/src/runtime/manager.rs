@@ -18,7 +18,8 @@ const COMMAND_CAPACITY: usize = 16;
 #[derive(Clone)]
 enum ReplaySeed {
     Fixture,
-    Fixed(Arc<[DetectionBatch]>),
+    Rebind(Arc<[DetectionBatch]>),
+    PreserveEpochs(Arc<[DetectionBatch]>),
 }
 
 /// Replay-only construction inputs retained by the manager so each epoch gets
@@ -35,16 +36,30 @@ impl RuntimeDependencies {
         }
     }
 
+    /// Replays the supplied observations in every session, rebinding each
+    /// frame stamp to the newly allocated runtime epoch.
     pub fn replay(batches: impl IntoIterator<Item = DetectionBatch>) -> Self {
         Self {
-            replay_seed: ReplaySeed::Fixed(batches.into_iter().collect::<Vec<_>>().into()),
+            replay_seed: ReplaySeed::Rebind(batches.into_iter().collect::<Vec<_>>().into()),
+        }
+    }
+
+    /// Preserves supplied frame epochs for explicit stale-input fault tests.
+    pub fn replay_preserving_epochs(batches: impl IntoIterator<Item = DetectionBatch>) -> Self {
+        Self {
+            replay_seed: ReplaySeed::PreserveEpochs(batches.into_iter().collect::<Vec<_>>().into()),
         }
     }
 
     fn source_for(&self, epoch: RuntimeEpoch) -> ReplayPerceptionSource {
         match &self.replay_seed {
             ReplaySeed::Fixture => ReplayPerceptionSource::new([fixture_batch(epoch)]),
-            ReplaySeed::Fixed(batches) => ReplayPerceptionSource::new(batches.iter().cloned()),
+            ReplaySeed::Rebind(batches) => {
+                ReplayPerceptionSource::new(batches.iter().map(|batch| rebind_batch(batch, epoch)))
+            }
+            ReplaySeed::PreserveEpochs(batches) => {
+                ReplayPerceptionSource::new(batches.iter().cloned())
+            }
         }
     }
 }
@@ -54,6 +69,21 @@ fn fixture_batch(epoch: RuntimeEpoch) -> DetectionBatch {
         .expect("hard-coded replay detection is valid");
     DetectionBatch::fixture(FrameStamp::new(epoch, 1, 1), 640, 640, vec![detection])
         .expect("hard-coded replay batch is valid")
+}
+
+fn rebind_batch(batch: &DetectionBatch, epoch: RuntimeEpoch) -> DetectionBatch {
+    let stamp = batch.stamp();
+    DetectionBatch::fixture(
+        FrameStamp {
+            epoch,
+            generation: stamp.generation,
+            captured_at: stamp.captured_at,
+        },
+        batch.coordinate_width(),
+        batch.coordinate_height(),
+        batch.detections().to_vec(),
+    )
+    .expect("rebinding an admitted replay batch preserves its validation invariants")
 }
 
 /// Namespace for creating the sole runtime lifecycle owner.
