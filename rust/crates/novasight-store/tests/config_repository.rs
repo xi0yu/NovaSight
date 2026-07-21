@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use novasight_store::config::{ConfigRepository, YamlConfigRepository};
+use novasight_store::config::{AppConfig, ConfigRepository, YamlConfigRepository};
 use serde_yaml::Value;
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -189,6 +189,105 @@ fn stale_expected_revision_is_typed_and_does_not_modify_the_file() {
     assert_eq!(error.expected_revision(), Some(3));
     assert_eq!(error.actual_revision(), Some(4));
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn save_rejects_reserved_keys_in_every_legacy_map_without_modifying_the_file() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nfuture:\n  enabled: true\n").unwrap();
+    let before = fs::read(&path).unwrap();
+
+    for (section, key) in [
+        ("root", "revision"),
+        ("server", "port"),
+        ("replay", "enabled"),
+        ("paths", "database"),
+    ] {
+        let mut config = YamlConfigRepository::load(&path).unwrap();
+        let legacy = match section {
+            "root" => &mut config.legacy,
+            "server" => &mut config.server.legacy,
+            "replay" => &mut config.replay.legacy,
+            "paths" => &mut config.paths.legacy,
+            _ => unreachable!(),
+        };
+        legacy.insert(key.to_owned(), Value::Null);
+
+        let error = YamlConfigRepository::save(&path, &config, 0).unwrap_err();
+
+        assert_eq!(error.code(), "CONFIG_RESERVED_LEGACY_KEY");
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn save_returns_the_same_configuration_that_immediate_reload_observes() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 2\nfuture:\n  enabled: true\nserver:\n  extension: retained\n",
+    )
+    .unwrap();
+
+    let saved = YamlConfigRepository::save(&path, &AppConfig::default(), 2).unwrap();
+    let reloaded = YamlConfigRepository::load(path).unwrap();
+
+    assert_eq!(
+        serde_yaml::to_value(saved).unwrap(),
+        serde_yaml::to_value(reloaded).unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_configuration_paths_are_rejected_without_replacing_the_link() {
+    let directory = TempDirectory::new();
+    let referent = directory.join("referent.yaml");
+    let link = directory.join("novasight.yaml");
+    fs::write(&referent, "revision: 0\nserver:\n  port: 5174\n").unwrap();
+    std::os::unix::fs::symlink(&referent, &link).unwrap();
+
+    let load_error = YamlConfigRepository::load(&link).unwrap_err();
+    let save_error = YamlConfigRepository::save(&link, &AppConfig::default(), 0).unwrap_err();
+
+    assert_eq!(load_error.code(), "CONFIG_SYMLINK_UNSUPPORTED");
+    assert_eq!(save_error.code(), "CONFIG_SYMLINK_UNSUPPORTED");
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read_to_string(referent).unwrap(),
+        "revision: 0\nserver:\n  port: 5174\n"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn save_fails_closed_when_destination_has_unpreservable_extended_metadata() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nserver:\n  port: 5174\n").unwrap();
+    #[cfg(target_os = "linux")]
+    let attribute = "user.novasight.config-test";
+    #[cfg(target_os = "macos")]
+    let attribute = "com.novasight.config-test";
+    xattr::set(&path, attribute, b"retain-access-policy").unwrap();
+    let before = fs::read(&path).unwrap();
+    let config = YamlConfigRepository::load(&path).unwrap();
+
+    let error = YamlConfigRepository::save(&path, &config, 0).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_SECURITY_METADATA_UNSUPPORTED");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(
+        xattr::get(&path, attribute).unwrap().as_deref(),
+        Some(b"retain-access-policy".as_slice())
+    );
 }
 
 #[test]

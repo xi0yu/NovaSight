@@ -5,6 +5,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::collections::BTreeMap;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::fs::MetadataExt;
+
 use serde_yaml::Value;
 
 use super::AppConfig;
@@ -91,6 +96,18 @@ pub enum ConfigError {
         path: PathBuf,
         revision: u64,
     },
+    ReservedLegacyKey {
+        path: PathBuf,
+        section: &'static str,
+        key: String,
+    },
+    SymlinkUnsupported {
+        path: PathBuf,
+    },
+    SecurityMetadataUnsupported {
+        path: PathBuf,
+        reason: String,
+    },
 }
 
 impl ConfigError {
@@ -102,6 +119,9 @@ impl ConfigError {
             Self::Serialize { .. } => "CONFIG_SERIALIZE_ERROR",
             Self::RevisionConflict { .. } => "CONFIG_REVISION_CONFLICT",
             Self::RevisionOverflow { .. } => "CONFIG_REVISION_OVERFLOW",
+            Self::ReservedLegacyKey { .. } => "CONFIG_RESERVED_LEGACY_KEY",
+            Self::SymlinkUnsupported { .. } => "CONFIG_SYMLINK_UNSUPPORTED",
+            Self::SecurityMetadataUnsupported { .. } => "CONFIG_SECURITY_METADATA_UNSUPPORTED",
         }
     }
 
@@ -112,7 +132,10 @@ impl ConfigError {
             | Self::Parse { path, .. }
             | Self::Serialize { path, .. }
             | Self::RevisionConflict { path, .. }
-            | Self::RevisionOverflow { path, .. } => path,
+            | Self::RevisionOverflow { path, .. }
+            | Self::ReservedLegacyKey { path, .. }
+            | Self::SymlinkUnsupported { path }
+            | Self::SecurityMetadataUnsupported { path, .. } => path,
         }
     }
 
@@ -174,6 +197,21 @@ impl fmt::Display for ConfigError {
                 "configuration revision overflow for {} at {revision}",
                 path.display()
             ),
+            Self::ReservedLegacyKey { path, section, key } => write!(
+                formatter,
+                "configuration legacy key {section}.{key} is reserved at {}",
+                path.display()
+            ),
+            Self::SymlinkUnsupported { path } => write!(
+                formatter,
+                "configuration symlinks are unsupported: {}",
+                path.display()
+            ),
+            Self::SecurityMetadataUnsupported { path, reason } => write!(
+                formatter,
+                "configuration security metadata cannot be preserved for {}: {reason}",
+                path.display()
+            ),
         }
     }
 }
@@ -185,12 +223,16 @@ impl Error for ConfigError {
             Self::Parse { source, .. } | Self::Serialize { source, .. } => Some(source),
             Self::NotFound { .. }
             | Self::RevisionConflict { .. }
-            | Self::RevisionOverflow { .. } => None,
+            | Self::RevisionOverflow { .. }
+            | Self::ReservedLegacyKey { .. }
+            | Self::SymlinkUnsupported { .. }
+            | Self::SecurityMetadataUnsupported { .. } => None,
         }
     }
 }
 
 fn load_document(path: &Path) -> Result<(Value, AppConfig), ConfigError> {
+    reject_symlink(path)?;
     let source = fs::read_to_string(path).map_err(|source| read_error(path, source))?;
     let document: Value = serde_yaml::from_str(&source).map_err(|source| ConfigError::Parse {
         path: path.to_owned(),
@@ -222,7 +264,7 @@ fn save_document(
             actual: current.revision,
         });
     }
-
+    validate_legacy_keys(path, config)?;
     let mut next = config.clone();
     next.revision =
         current
@@ -237,13 +279,18 @@ fn save_document(
         source,
     })?;
     merge_value(&mut document, replacement);
+    let persisted =
+        serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Serialize {
+            path: path.to_owned(),
+            source,
+        })?;
     let serialized = serde_yaml::to_string(&document).map_err(|source| ConfigError::Serialize {
         path: path.to_owned(),
         source,
     })?;
 
     atomic_replace(path, serialized.as_bytes(), &directory)?;
-    Ok(next)
+    Ok(persisted)
 }
 
 fn merge_value(document: &mut Value, replacement: Value) {
@@ -262,6 +309,126 @@ fn merge_value(document: &mut Value, replacement: Value) {
     }
 }
 
+fn reject_symlink(path: &Path) -> Result<(), ConfigError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| read_error(path, source))?;
+    if metadata.file_type().is_symlink() {
+        Err(ConfigError::SymlinkUnsupported {
+            path: path.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigError> {
+    for (section, legacy, reserved) in [
+        (
+            "root",
+            &config.legacy,
+            &["schema_version", "revision", "server", "replay", "paths"][..],
+        ),
+        ("server", &config.server.legacy, &["host", "port"][..]),
+        (
+            "replay",
+            &config.replay.legacy,
+            &["enabled", "frame_interval_ms", "output_gate_open"][..],
+        ),
+        (
+            "paths",
+            &config.paths.legacy,
+            &[
+                "data_dir",
+                "model_dir",
+                "database",
+                "license",
+                "python_executable",
+            ][..],
+        ),
+    ] {
+        if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
+            return Err(ConfigError::ReservedLegacyKey {
+                path: path.to_owned(),
+                section,
+                key: (*key).to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn validate_security_metadata(path: &Path, temporary_path: &Path) -> Result<(), ConfigError> {
+    let destination = read_security_metadata(path)?;
+    let temporary = read_security_metadata(temporary_path)?;
+    if destination == temporary {
+        Ok(())
+    } else {
+        Err(ConfigError::SecurityMetadataUnsupported {
+            path: path.to_owned(),
+            reason: "destination owner, group, mode, ACL, or extended attributes differ from the atomic replacement".to_owned(),
+        })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn validate_security_metadata(path: &Path, _temporary_path: &Path) -> Result<(), ConfigError> {
+    Err(ConfigError::SecurityMetadataUnsupported {
+        path: path.to_owned(),
+        reason: "atomic replacement security metadata verification is unsupported on this platform"
+            .to_owned(),
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(PartialEq)]
+struct SecurityMetadata {
+    owner: u32,
+    group: u32,
+    mode: u32,
+    acl: Vec<exacl::AclEntry>,
+    extended_attributes: BTreeMap<OsString, Vec<u8>>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_security_metadata(path: &Path) -> Result<SecurityMetadata, ConfigError> {
+    reject_symlink(path)?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| security_metadata_error(path, "inspect file metadata", source))?;
+    let acl = exacl::getfacl(path, None)
+        .map_err(|source| security_metadata_error(path, "inspect access-control list", source))?;
+    let attributes = xattr::list(path)
+        .map_err(|source| security_metadata_error(path, "list extended attributes", source))?;
+    let mut extended_attributes = BTreeMap::new();
+    for name in attributes {
+        let value = xattr::get(path, &name)
+            .map_err(|source| security_metadata_error(path, "read extended attribute", source))?
+            .ok_or_else(|| ConfigError::SecurityMetadataUnsupported {
+                path: path.to_owned(),
+                reason: format!(
+                    "extended attribute {:?} disappeared while it was inspected",
+                    name
+                ),
+            })?;
+        extended_attributes.insert(name, value);
+    }
+
+    Ok(SecurityMetadata {
+        owner: metadata.uid(),
+        group: metadata.gid(),
+        mode: metadata.mode(),
+        acl,
+        extended_attributes,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn security_metadata_error(path: &Path, operation: &'static str, source: io::Error) -> ConfigError {
+    ConfigError::SecurityMetadataUnsupported {
+        path: path.to_owned(),
+        reason: format!("{operation} failed: {source}"),
+    }
+}
+
 fn atomic_replace(path: &Path, contents: &[u8], directory: &File) -> Result<(), ConfigError> {
     let parent = parent_directory(path);
     let permissions = fs::metadata(path)
@@ -272,6 +439,7 @@ fn atomic_replace(path: &Path, contents: &[u8], directory: &File) -> Result<(), 
 
     fs::set_permissions(&temporary_path, permissions)
         .map_err(|source| io_error("set temporary permissions", &temporary_path, source))?;
+    validate_security_metadata(path, &temporary_path)?;
     temporary_file
         .write_all(contents)
         .map_err(|source| io_error("write temporary file", &temporary_path, source))?;
@@ -282,6 +450,8 @@ fn atomic_replace(path: &Path, contents: &[u8], directory: &File) -> Result<(), 
         .sync_all()
         .map_err(|source| io_error("sync temporary file", &temporary_path, source))?;
     drop(temporary_file);
+
+    validate_security_metadata(path, &temporary_path)?;
 
     fs::rename(&temporary_path, path).map_err(|source| io_error("replace", path, source))?;
     cleanup.disarm();
