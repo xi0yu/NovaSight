@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use novasight_core::{
     AppError, Detection, DetectionBatch, FrameStamp, RunIntent, RuntimeDependencies, RuntimeEpoch,
@@ -45,7 +45,7 @@ async fn wait_for_snapshot(
 
 #[tokio::test]
 async fn initial_snapshot_has_exact_stopped_status() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     let snapshot = runtime.snapshot();
 
     assert_eq!(snapshot.phase, RuntimePhase::Stopped);
@@ -61,7 +61,7 @@ async fn initial_snapshot_has_exact_stopped_status() {
 
 #[tokio::test]
 async fn repeated_start_keeps_one_session_and_stop_blocks_old_receipts() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     let first = runtime.start().await.unwrap();
     let repeated = runtime.start().await.unwrap();
     assert_eq!(first.epoch, repeated.epoch);
@@ -85,7 +85,7 @@ async fn repeated_start_keeps_one_session_and_stop_blocks_old_receipts() {
 
 #[tokio::test]
 async fn restart_allocates_new_epoch() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     let first = runtime.start().await.unwrap();
     runtime.stop().await.unwrap();
     let second = runtime.start().await.unwrap();
@@ -94,10 +94,10 @@ async fn restart_allocates_new_epoch() {
 
 #[tokio::test]
 async fn non_empty_replay_rebinds_batches_to_each_restart_epoch() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay([one_target_batch(
-        RuntimeEpoch(1),
-        7,
-    )]));
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay(
+        [one_target_batch(RuntimeEpoch(1), 7)],
+        Duration::ZERO,
+    ));
 
     let first = runtime.start().await.unwrap();
     wait_for_snapshot(&runtime, |snapshot| snapshot.device_receipts == 1).await;
@@ -123,7 +123,7 @@ async fn non_empty_replay_rebinds_batches_to_each_restart_epoch() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn concurrent_starts_accept_one_epoch_and_reject_one_conflict() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     let barrier = Arc::new(Barrier::new(3));
 
     let first_runtime = runtime.clone();
@@ -163,7 +163,7 @@ async fn concurrent_starts_accept_one_epoch_and_reject_one_conflict() {
 
 #[tokio::test]
 async fn stop_is_idempotent_and_snapshot_watch_is_latest_only() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     let snapshots = runtime.subscribe();
 
     let started = runtime.start().await.unwrap();
@@ -178,7 +178,7 @@ async fn stop_is_idempotent_and_snapshot_watch_is_latest_only() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn command_receipts_bind_the_snapshot_before_queued_opposing_commands() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
 
     let (started, stopped) = tokio::join!(biased; runtime.start(), runtime.stop());
     let started = started.unwrap();
@@ -204,7 +204,7 @@ async fn command_receipts_bind_the_snapshot_before_queued_opposing_commands() {
 async fn stop_cancels_before_exhausting_a_ready_replay_source() {
     const BATCH_COUNT: u64 = 256;
     let batches = (1..=BATCH_COUNT).map(|generation| empty_batch(RuntimeEpoch(1), generation));
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay(batches));
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay(batches, Duration::ZERO));
 
     runtime.start().await.unwrap();
     wait_for_snapshot(&runtime, |snapshot| snapshot.processed_batches > 0).await;
@@ -215,9 +215,38 @@ async fn stop_cancels_before_exhausting_a_ready_replay_source() {
     assert!(stopped.processed_batches < BATCH_COUNT);
 }
 
+#[tokio::test(start_paused = true)]
+async fn paced_replay_waits_between_batches_and_stop_cancels_the_wait() {
+    let batches = [
+        empty_batch(RuntimeEpoch(1), 1),
+        empty_batch(RuntimeEpoch(1), 2),
+        empty_batch(RuntimeEpoch(1), 3),
+    ];
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay(
+        batches,
+        Duration::from_secs(60),
+    ));
+
+    runtime.start().await.unwrap();
+    wait_for_snapshot(&runtime, |snapshot| snapshot.processed_batches == 1).await;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(runtime.snapshot().processed_batches, 1);
+
+    tokio::time::advance(Duration::from_secs(60)).await;
+    wait_for_snapshot(&runtime, |snapshot| snapshot.processed_batches == 2).await;
+
+    tokio::time::timeout(Duration::from_millis(1), runtime.stop())
+        .await
+        .expect("stop must cancel the pacing wait")
+        .unwrap();
+    assert_eq!(runtime.snapshot().processed_batches, 2);
+}
+
 #[tokio::test]
 async fn stopped_epoch_cannot_overwrite_a_restarted_snapshot() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     let first = runtime.start().await.unwrap();
     runtime.stop().await.unwrap();
     let second = runtime.start().await.unwrap();

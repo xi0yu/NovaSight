@@ -1,9 +1,16 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::watch,
+    task::JoinHandle,
+    time::{self, MissedTickBehavior},
+};
 
 use crate::{
     AppError, DeviceCommand, ErrorSnapshot, Generation, NearestCenterTargeting,
@@ -114,6 +121,7 @@ impl RuntimeSession {
     pub(crate) fn spawn(
         epoch: RuntimeEpoch,
         source: ReplayPerceptionSource,
+        frame_interval: Duration,
         control: ProportionalReplayControl,
         device: Arc<RecordingPointerDevice>,
         publisher: EpochSnapshotPublisher,
@@ -123,7 +131,10 @@ impl RuntimeSession {
         let task_latest_command = latest_command.clone();
         let task = tokio::spawn(run_session(
             epoch,
-            source,
+            PacedReplay {
+                source,
+                frame_interval,
+            },
             control,
             device,
             publisher,
@@ -151,9 +162,14 @@ impl RuntimeSession {
     }
 }
 
+struct PacedReplay {
+    source: ReplayPerceptionSource,
+    frame_interval: Duration,
+}
+
 async fn run_session(
     epoch: RuntimeEpoch,
-    mut source: ReplayPerceptionSource,
+    mut replay: PacedReplay,
     control: ProportionalReplayControl,
     device: Arc<RecordingPointerDevice>,
     publisher: EpochSnapshotPublisher,
@@ -162,10 +178,28 @@ async fn run_session(
 ) -> SessionExit {
     let targeting = NearestCenterTargeting;
     let mut stats = SessionStats::default();
+    let mut pace = (!replay.frame_interval.is_zero()).then(|| {
+        let mut interval = time::interval(replay.frame_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        interval
+    });
 
     loop {
         if *cancellation.borrow() {
             return SessionExit { stats };
+        }
+
+        if let Some(interval) = pace.as_mut() {
+            tokio::select! {
+                biased;
+                changed = cancellation.changed() => {
+                    if changed.is_err() || *cancellation.borrow() {
+                        return SessionExit { stats };
+                    }
+                    continue;
+                }
+                _ = interval.tick() => {}
+            }
         }
 
         let next_batch = tokio::select! {
@@ -176,7 +210,7 @@ async fn run_session(
                 }
                 continue;
             }
-            batch = source.next_batch() => batch,
+            batch = replay.source.next_batch() => batch,
         };
 
         let batch = match next_batch {
@@ -304,7 +338,10 @@ mod tests {
         let latest_command = Arc::new(Mutex::new(None));
         let exit = run_session(
             expected_epoch,
-            ReplayPerceptionSource::new([stale_batch]),
+            PacedReplay {
+                source: ReplayPerceptionSource::new([stale_batch]),
+                frame_interval: Duration::ZERO,
+            },
             ProportionalReplayControl::new(1.0),
             Arc::new(RecordingPointerDevice::default()),
             publisher.clone(),

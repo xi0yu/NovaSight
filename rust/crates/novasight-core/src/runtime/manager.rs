@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 use tokio::sync::{mpsc, oneshot, watch};
@@ -26,20 +29,26 @@ enum ReplaySeed {
 #[derive(Clone)]
 pub struct RuntimeDependencies {
     replay_seed: ReplaySeed,
+    frame_interval: Duration,
 }
 
 impl RuntimeDependencies {
-    pub fn replay_fixture() -> Self {
+    pub fn replay_fixture(frame_interval: Duration) -> Self {
         Self {
             replay_seed: ReplaySeed::Fixture,
+            frame_interval,
         }
     }
 
     /// Replays the supplied observations in every session, rebinding each
     /// frame stamp to the newly allocated runtime epoch.
-    pub fn replay(batches: impl IntoIterator<Item = DetectionBatch>) -> Self {
+    pub fn replay(
+        batches: impl IntoIterator<Item = DetectionBatch>,
+        frame_interval: Duration,
+    ) -> Self {
         Self {
             replay_seed: ReplaySeed::Rebind(batches.into_iter().collect::<Vec<_>>().into()),
+            frame_interval,
         }
     }
 
@@ -228,6 +237,7 @@ fn start_session(
     *session = Some(RuntimeSession::spawn(
         epoch,
         source,
+        dependencies.frame_interval,
         ProportionalReplayControl::new(1.0),
         device,
         publisher.clone(),
