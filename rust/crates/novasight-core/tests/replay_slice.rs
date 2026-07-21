@@ -14,9 +14,7 @@ async fn replay_batch_becomes_recorded_device_receipt() {
         vec![Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).unwrap()],
     )
     .unwrap();
-    let target = NearestCenterTargeting::default()
-        .select(&batch)
-        .expect("target");
+    let target = NearestCenterTargeting.select(&batch).expect("target");
     let decision = ProportionalReplayControl::new(1.0)
         .decide(&batch, &target, 1_010_000_000)
         .expect("decision");
@@ -36,7 +34,7 @@ fn validated_domain_types_cannot_bypass_admission_through_deserialization() {
     }
 
     impl<T: ?Sized> AmbiguousIfDeserialize<()> for TraitProbe<T> {}
-    impl<T: ?Sized + serde::de::DeserializeOwned> AmbiguousIfDeserialize<u8> for TraitProbe<T> {}
+    impl<T: serde::de::DeserializeOwned> AmbiguousIfDeserialize<u8> for TraitProbe<T> {}
 
     let _ = <TraitProbe<Detection> as AmbiguousIfDeserialize<_>>::marker;
     let _ = <TraitProbe<DetectionBatch> as AmbiguousIfDeserialize<_>>::marker;
@@ -45,8 +43,7 @@ fn validated_domain_types_cannot_bypass_admission_through_deserialization() {
 
 #[test]
 fn batch_validates_full_box_edges_without_lossy_coordinate_bounds() {
-    let partially_outside =
-        Detection::new(1, 0, 630.0, 100.0, 18.0, 20.0, 0.9).expect("detection");
+    let partially_outside = Detection::new(1, 0, 630.0, 100.0, 18.0, 20.0, 0.9).expect("detection");
     let error = DetectionBatch::new(
         FrameStamp::new(RuntimeEpoch(1), 1, 1),
         640,
@@ -88,10 +85,8 @@ fn batch_rejects_duplicate_object_ids_before_target_selection() {
 
 #[test]
 fn large_geometry_preserves_exact_tie_break_and_rounded_command() {
-    let smaller_id =
-        Detection::new(1, 0, 8_388_608.0, 0.0, 1.0, 2.0, 0.9).expect("detection");
-    let larger_id =
-        Detection::new(2, 0, 8_388_610.0, 0.0, 1.0, 2.0, 0.9).expect("detection");
+    let smaller_id = Detection::new(1, 0, 8_388_608.0, 0.0, 1.0, 2.0, 0.9).expect("detection");
+    let larger_id = Detection::new(2, 0, 8_388_610.0, 0.0, 1.0, 2.0, 0.9).expect("detection");
     let batch = DetectionBatch::new(
         FrameStamp::new(RuntimeEpoch(1), 4, 4),
         16_777_219,
@@ -100,9 +95,7 @@ fn large_geometry_preserves_exact_tie_break_and_rounded_command() {
     )
     .expect("batch");
 
-    let target = NearestCenterTargeting::default()
-        .select(&batch)
-        .expect("target");
+    let target = NearestCenterTargeting.select(&batch).expect("target");
     assert_eq!(target.object_id, 1);
 
     let command = ProportionalReplayControl::new(1.0)
