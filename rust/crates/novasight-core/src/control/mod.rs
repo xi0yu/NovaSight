@@ -98,8 +98,8 @@ impl ProportionalReplayControl {
     }
 }
 
-fn scale_to_counts(delta: f32, gain: f32) -> Result<i32, AppError> {
-    let counts = f64::from(delta) * f64::from(gain);
+fn scale_to_counts(delta: f64, gain: f32) -> Result<i32, AppError> {
+    let counts = delta * f64::from(gain);
     if !counts.is_finite() || counts < f64::from(i32::MIN) || counts > f64::from(i32::MAX) {
         return Err(AppError::DeviceCountOutOfRange);
     }

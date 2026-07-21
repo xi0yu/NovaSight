@@ -8,8 +8,8 @@ pub struct SelectedTarget {
     pub stamp: FrameStamp,
     pub object_id: u64,
     pub class_id: u32,
-    pub center_x: f32,
-    pub center_y: f32,
+    pub center_x: f64,
+    pub center_y: f64,
 }
 
 /// Replay selector choosing the candidate nearest the declared batch center.
@@ -50,7 +50,7 @@ impl NearestCenterTargeting {
     }
 }
 
-fn squared_distance(x: f32, y: f32, center_x: f32, center_y: f32) -> f32 {
+fn squared_distance(x: f64, y: f64, center_x: f64, center_y: f64) -> f64 {
     let delta_x = x - center_x;
     let delta_y = y - center_y;
     delta_x.mul_add(delta_x, delta_y * delta_y)

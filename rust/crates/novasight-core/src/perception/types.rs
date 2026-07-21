@@ -146,12 +146,13 @@ impl Detection {
         self.confidence
     }
 
-    pub fn center_x(&self) -> f32 {
-        self.x + self.width * 0.5
+    /// Computes the center in `f64` so exact `f32` edges are not rounded again.
+    pub fn center_x(&self) -> f64 {
+        f64::from(self.x) + f64::from(self.width) * 0.5
     }
 
-    pub fn center_y(&self) -> f32 {
-        self.y + self.height * 0.5
+    pub fn center_y(&self) -> f64 {
+        f64::from(self.y) + f64::from(self.height) * 0.5
     }
 }
 
@@ -255,10 +256,11 @@ impl DetectionBatch {
         &self.detections
     }
 
-    pub fn center(&self) -> (f32, f32) {
+    /// Computes the declared geometry center without a lossy `u32` to `f32` cast.
+    pub fn center(&self) -> (f64, f64) {
         (
-            self.coordinate_width as f32 * 0.5,
-            self.coordinate_height as f32 * 0.5,
+            f64::from(self.coordinate_width) * 0.5,
+            f64::from(self.coordinate_height) * 0.5,
         )
     }
 }
