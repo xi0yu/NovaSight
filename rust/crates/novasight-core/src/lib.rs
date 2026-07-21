@@ -2,12 +2,14 @@
 
 pub mod control;
 pub mod error;
+pub mod geometry;
 pub mod output;
 pub mod perception;
 pub mod ports;
 pub mod runtime;
 pub mod targeting;
 pub mod telemetry;
+pub mod units;
 
 pub use control::{ControlDecision, ProportionalReplayControl};
 pub use error::AppError;

@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NovaSight Phase 2 Replay Fixture",
+  "description": "Deterministic, versioned replay fixtures for the Phase 2 pure-algorithm Rust port. Every field uses an explicit unit; Rust tests parse this schema and assert exact equality for identity, state, reset, integer, and residual outcomes. Floating-point values are compared with the per-field tolerance declared in this schema.",
+  "version": "1",
+  "epoch_unit": "u64",
+  "generation_unit": "u64",
+  "monotonic_time_unit": "ns",
+  "tolerances": {
+    "geometry_f64_abs": 1e-9,
+    "geometry_f32_abs": 1e-5,
+    "control_far_abs": 1e-6,
+    "control_near_abs": 1e-3,
+    "velocity_abs": 1e-3,
+    "atan_abs": 1e-9
+  },
+  "frame": {
+    "epoch": "u64",
+    "generation": "u64",
+    "frame_id": "u64",
+    "captured_at_ns": "u64",
+    "inference_end_ts_ns": "u64",
+    "control_now_ns": "u64",
+    "coordinate_space": "string",
+    "model_width": "f64",
+    "model_height": "f64",
+    "roi_x": "f64",
+    "roi_y": "f64",
+    "roi_width": "f64",
+    "roi_height": "f64",
+    "capture_width": "f64",
+    "capture_height": "f64",
+    "control_origin_x": "f64",
+    "control_origin_y": "f64",
+    "display_scale_x": "f64",
+    "display_scale_y": "f64"
+  },
+  "detection": {
+    "object_id": "u64",
+    "class_id": "u32",
+    "x": "f64",
+    "y": "f64",
+    "w": "f64",
+    "h": "f64",
+    "confidence": "f32"
+  },
+  "freshness_policy": {
+    "threshold_ms": "f64",
+    "strictest_inputs_ms": ["f64"]
+  },
+  "freshness_outcome": {
+    "admit": "bool",
+    "reason": "string|null",
+    "age_ms": "f64"
+  },
+  "target_state": {
+    "object_id": "u64|null",
+    "lock_reason": "string",
+    "frame_id": "u64|null",
+    "generation": "u64|null"
+  },
+  "control_decision": {
+    "target_object_id": "u64|null",
+    "delta_x_counts": "i32",
+    "delta_y_counts": "i32",
+    "mode": "string",
+    "block_reason": "string|null",
+    "atan_response_x": "f64|null",
+    "atan_response_y": "f64|null",
+    "predicted_x": "f64|null",
+    "predicted_y": "f64|null",
+    "velocity_x": "f64|null",
+    "velocity_y": "f64|null"
+  },
+  "reset_events": ["target_lost", "epoch_change", "coordinate_space_change", "stale_admission", "duplicate_generation", "terminal"]
+}
