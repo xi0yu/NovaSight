@@ -175,7 +175,11 @@ fn project_current_with<T>(
     project(snapshot.as_ref())
 }
 
-async fn send_while_receiving<S, R, E>(outbound: &mut S, inbound: &mut R, message: Message) -> bool
+pub(crate) async fn send_while_receiving<S, R, E>(
+    outbound: &mut S,
+    inbound: &mut R,
+    message: Message,
+) -> bool
 where
     S: Sink<Message> + Unpin,
     R: Stream<Item = Result<Message, E>> + Unpin,

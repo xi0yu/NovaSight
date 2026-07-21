@@ -150,7 +150,7 @@ fn daemon_snapshot_serializes_to_stable_keys() {
         uptime_ms: 42,
     };
     let json = serde_json::to_value(&snapshot).expect("serialize");
-    assert_eq!(json["state"], "Ready");
+    assert_eq!(json["state"], "ready");
     assert_eq!(json["version"], "0.1.0");
     assert_eq!(json["uptime_ms"], 42);
 }

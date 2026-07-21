@@ -563,9 +563,12 @@ dependencies = [
  "axum",
  "futures-util",
  "novasight-core",
+ "novasight-pipeline",
+ "novasight-runtime",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-http",
 ]

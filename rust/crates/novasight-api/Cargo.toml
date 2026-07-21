@@ -10,9 +10,12 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 tower.workspace = true
 tower-http.workspace = true
 novasight-core = { path = "../novasight-core" }
+novasight-runtime = { path = "../novasight-runtime" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+novasight-pipeline = { path = "../novasight-pipeline" }
 tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = "0.29"

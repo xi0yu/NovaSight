@@ -10,7 +10,7 @@ pub fn build_router(state: ApiState) -> Router {
         .layer(studio_cors_layer())
 }
 
-fn studio_cors_layer() -> CorsLayer {
+pub(crate) fn studio_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
             is_allowed_studio_origin(origin)
