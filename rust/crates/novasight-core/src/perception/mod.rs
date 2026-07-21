@@ -1,5 +1,5 @@
 mod replay;
-mod types;
+pub mod types;
 
 pub use replay::ReplayPerceptionSource;
 pub use types::{

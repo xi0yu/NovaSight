@@ -10,6 +10,7 @@ pub mod ports;
 pub mod runtime;
 pub mod targeting;
 pub mod telemetry;
+pub mod tracking;
 pub mod units;
 
 pub use control::{ControlDecision, ProportionalReplayControl};
