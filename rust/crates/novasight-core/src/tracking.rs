@@ -412,11 +412,6 @@ fn distance_to_target(det: &Detection, target: Option<&Track>) -> f64 {
             det.center_x(),
             det.center_y(),
         ),
-        None => euclidean(
-            0.0,
-            0.0,
-            det.center_x(),
-            det.center_y(),
-        ),
+        None => euclidean(0.0, 0.0, det.center_x(), det.center_y()),
     }
 }

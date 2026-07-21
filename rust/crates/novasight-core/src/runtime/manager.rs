@@ -16,6 +16,8 @@ use crate::{
 
 use super::session::{EpochSnapshotPublisher, RuntimeSession, RuntimeSessionEvent, SessionStats};
 
+use crate::control::dual_phase_v2::{DualPhaseConfig, DualPhaseControl};
+
 const COMMAND_CAPACITY: usize = 16;
 const EVENT_CAPACITY: usize = 16;
 
@@ -27,12 +29,29 @@ enum ReplaySeed {
     FaultFirstThenRebind(Arc<[DetectionBatch]>),
 }
 
+/// Algorithm selection for the runtime main chain. The Phase 1
+/// proportional controller remains the default; the dual-phase
+/// predictive controller is the Phase 2 algorithm slice and is
+/// selected through ``RuntimeAlgorithm::dual_phase``.
+#[derive(Clone, Debug)]
+pub enum RuntimeAlgorithm {
+    Proportional(ProportionalReplayControl),
+    DualPhase(DualPhaseControl),
+}
+
+impl Default for RuntimeAlgorithm {
+    fn default() -> Self {
+        RuntimeAlgorithm::Proportional(ProportionalReplayControl::new(1.0))
+    }
+}
+
 /// Replay-only construction inputs retained by the manager so each epoch gets
 /// a fresh source and an exclusively owned dry-run device lease.
 #[derive(Clone)]
 pub struct RuntimeDependencies {
     replay_seed: ReplaySeed,
     frame_interval: Duration,
+    algorithm: RuntimeAlgorithm,
 }
 
 impl RuntimeDependencies {
@@ -40,6 +59,7 @@ impl RuntimeDependencies {
         Self {
             replay_seed: ReplaySeed::Fixture,
             frame_interval,
+            algorithm: RuntimeAlgorithm::default(),
         }
     }
 
@@ -52,6 +72,22 @@ impl RuntimeDependencies {
         Self {
             replay_seed: ReplaySeed::Rebind(batches.into_iter().collect::<Vec<_>>().into()),
             frame_interval,
+            algorithm: RuntimeAlgorithm::default(),
+        }
+    }
+
+    /// Build dependencies that drive the Phase 2 dual-phase control
+    /// algorithm. The proportional path remains available for the
+    /// Phase 1 contract tests.
+    pub fn replay_with_dual_phase(
+        batches: impl IntoIterator<Item = DetectionBatch>,
+        frame_interval: Duration,
+        config: DualPhaseConfig,
+    ) -> Self {
+        Self {
+            replay_seed: ReplaySeed::Rebind(batches.into_iter().collect::<Vec<_>>().into()),
+            frame_interval,
+            algorithm: RuntimeAlgorithm::DualPhase(DualPhaseControl::new(config)),
         }
     }
 
@@ -62,7 +98,12 @@ impl RuntimeDependencies {
                 batches.into_iter().collect::<Vec<_>>().into(),
             ),
             frame_interval: Duration::ZERO,
+            algorithm: RuntimeAlgorithm::default(),
         }
+    }
+
+    pub(crate) fn algorithm(&self) -> &RuntimeAlgorithm {
+        &self.algorithm
     }
 
     fn source_for(&self, epoch: RuntimeEpoch) -> ReplayPerceptionSource {
@@ -320,7 +361,7 @@ fn start_session(
         epoch,
         source,
         dependencies.frame_interval,
-        ProportionalReplayControl::new(1.0),
+        dependencies.algorithm().clone(),
         device,
         publisher.clone(),
         event_tx.clone(),

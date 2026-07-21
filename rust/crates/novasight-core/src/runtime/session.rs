@@ -14,7 +14,7 @@ use tokio::{
 
 use crate::{
     AppError, DeviceCommand, Generation, NearestCenterTargeting, OperationalSnapshot,
-    PerceptionSource, ProportionalReplayControl, RecordingPointerDevice, ReplayPerceptionSource,
+    PerceptionSource, RecordingPointerDevice, ReplayPerceptionSource, RuntimeAlgorithm,
     RuntimeEpoch,
 };
 
@@ -131,7 +131,7 @@ impl RuntimeSession {
         epoch: RuntimeEpoch,
         source: ReplayPerceptionSource,
         frame_interval: Duration,
-        control: ProportionalReplayControl,
+        algorithm: RuntimeAlgorithm,
         device: Arc<RecordingPointerDevice>,
         publisher: EpochSnapshotPublisher,
         event_tx: mpsc::Sender<RuntimeSessionEvent>,
@@ -145,7 +145,7 @@ impl RuntimeSession {
                 source,
                 frame_interval,
             },
-            control,
+            algorithm,
             SessionIo {
                 device,
                 publisher,
@@ -190,7 +190,7 @@ struct SessionIo {
 async fn run_session(
     epoch: RuntimeEpoch,
     mut replay: PacedReplay,
-    control: ProportionalReplayControl,
+    mut algorithm: RuntimeAlgorithm,
     io: SessionIo,
     mut cancellation: watch::Receiver<bool>,
 ) -> SessionExit {
@@ -265,12 +265,10 @@ async fn run_session(
             continue;
         };
 
-        let decision = match control.decide(&batch, &target, batch.stamp().captured_at.0) {
-            Ok(decision) => decision,
+        let command = match decide_with_algorithm(&mut algorithm, &batch, &target, epoch) {
+            Ok(command) => command,
             Err(error) => return fault(epoch, stats, error, &io.event_tx).await,
         };
-        let command = decision.into_command();
-
         let send_result = io.publisher.with_owner(epoch, || {
             if *cancellation.borrow() {
                 return None;
@@ -293,6 +291,64 @@ async fn run_session(
             return SessionExit { stats };
         }
         tokio::task::yield_now().await;
+    }
+}
+
+/// Dispatch the next decision through whichever algorithm the runtime
+/// session owns. The proportional path returns its typed
+/// `ControlDecision` and converts to a `DeviceCommand`; the dual-phase
+/// path produces a `DeviceCommand` directly. Both share the same
+/// `DeviceCommand` shape so the device adapter can stay
+/// algorithm-agnostic.
+fn decide_with_algorithm(
+    algorithm: &mut RuntimeAlgorithm,
+    batch: &crate::perception::types::DetectionBatch,
+    target: &crate::targeting::SelectedTarget,
+    epoch: RuntimeEpoch,
+) -> Result<DeviceCommand, AppError> {
+    match algorithm {
+        RuntimeAlgorithm::Proportional(controller) => controller
+            .decide(batch, target, batch.stamp().captured_at.0)
+            .map(|decision| decision.into_command()),
+        RuntimeAlgorithm::DualPhase(controller) => {
+            let observation = crate::control::dual_phase_v2::ControlObservation {
+                generation: batch.stamp().generation.0,
+                frame_id: batch.stamp().generation.0,
+                target_id: target.object_id,
+                capture_ts_ns: batch.stamp().captured_at.0,
+                inference_end_ts_ns: batch.stamp().captured_at.0 + 5_000_000,
+                control_now_ns: batch.stamp().captured_at.0 + 8_000_000,
+                aim_x: target.center_x,
+                aim_y: target.center_y,
+                crosshair_x: 320.0,
+                crosshair_y: 320.0,
+                target_valid: true,
+                trigger_active: true,
+            };
+            let _ = epoch;
+            let decision = controller.calculate(observation);
+            let issued_at = crate::perception::types::MonotonicNanos(batch.stamp().captured_at.0);
+            Ok(DeviceCommand {
+                epoch,
+                generation: batch.stamp().generation,
+                issued_at,
+                target_object_id: if decision.emit_allowed {
+                    target.object_id
+                } else {
+                    0
+                },
+                delta_x_counts: if decision.emit_allowed {
+                    decision.dx
+                } else {
+                    0
+                },
+                delta_y_counts: if decision.emit_allowed {
+                    decision.dy
+                } else {
+                    0
+                },
+            })
+        }
     }
 }
 
@@ -361,7 +417,7 @@ mod tests {
                 source: ReplayPerceptionSource::new([stale_batch]),
                 frame_interval: Duration::ZERO,
             },
-            ProportionalReplayControl::new(1.0),
+            crate::RuntimeAlgorithm::Proportional(crate::ProportionalReplayControl::new(1.0)),
             SessionIo {
                 device: Arc::new(RecordingPointerDevice::default()),
                 publisher: publisher.clone(),

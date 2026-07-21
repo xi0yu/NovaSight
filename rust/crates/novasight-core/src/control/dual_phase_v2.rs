@@ -172,9 +172,8 @@ impl Quantizer {
     }
 }
 
-/// Phase 2 algorithm instance. Owns its history and the per-axis
-/// quantizers so the runtime cannot bypass the state machine to
 /// reach into a stale decision.
+#[derive(Clone, Debug)]
 pub struct DualPhaseControl {
     config: DualPhaseConfig,
     quantizer_x: Quantizer,

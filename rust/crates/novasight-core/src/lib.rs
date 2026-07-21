@@ -22,8 +22,8 @@ pub use perception::{
 };
 pub use ports::{Clock, PerceptionSource, PointerDevice};
 pub use runtime::{
-    OperationalSnapshot, RunIntent, RuntimeCommandReceipt, RuntimeDependencies, RuntimeHandle,
-    RuntimeManager, RuntimePhase,
+    OperationalSnapshot, RunIntent, RuntimeAlgorithm, RuntimeCommandReceipt, RuntimeDependencies,
+    RuntimeHandle, RuntimeManager, RuntimePhase,
 };
 pub use targeting::{NearestCenterTargeting, SelectedTarget};
 pub use telemetry::ErrorSnapshot;
