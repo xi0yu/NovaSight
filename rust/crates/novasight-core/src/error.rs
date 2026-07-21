@@ -16,13 +16,18 @@ pub enum AppError {
     #[error("detection batch contains {actual} candidates; maximum is {maximum}")]
     TooManyDetections { actual: usize, maximum: usize },
 
+    #[error("detection batch contains duplicate object ID {object_id}")]
+    DuplicateObjectId { object_id: u64 },
+
     #[error(
-        "detection {object_id} center ({center_x}, {center_y}) is outside coordinate space {width}x{height}"
+        "detection {object_id} box ({x}, {y})..({right}, {bottom}) is outside coordinate space {width}x{height}"
     )]
     CoordinateSpaceMismatch {
         object_id: u64,
-        center_x: f32,
-        center_y: f32,
+        x: f64,
+        y: f64,
+        right: f64,
+        bottom: f64,
         width: u32,
         height: u32,
     },

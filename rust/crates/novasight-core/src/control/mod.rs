@@ -1,18 +1,38 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{AppError, DetectionBatch, DeviceCommand, FrameStamp, MonotonicNanos, SelectedTarget};
 
 /// Replay-only control result tied to the observation that produced it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ControlDecision {
-    pub stamp: FrameStamp,
-    pub decided_at: MonotonicNanos,
-    pub target_object_id: u64,
-    pub delta_x_counts: i32,
-    pub delta_y_counts: i32,
+    stamp: FrameStamp,
+    decided_at: MonotonicNanos,
+    target_object_id: u64,
+    delta_x_counts: i32,
+    delta_y_counts: i32,
 }
 
 impl ControlDecision {
+    pub const fn stamp(&self) -> FrameStamp {
+        self.stamp
+    }
+
+    pub const fn decided_at(&self) -> MonotonicNanos {
+        self.decided_at
+    }
+
+    pub const fn target_object_id(&self) -> u64 {
+        self.target_object_id
+    }
+
+    pub const fn delta_x_counts(&self) -> i32 {
+        self.delta_x_counts
+    }
+
+    pub const fn delta_y_counts(&self) -> i32 {
+        self.delta_y_counts
+    }
+
     pub fn into_command(self) -> DeviceCommand {
         DeviceCommand {
             epoch: self.stamp.epoch,

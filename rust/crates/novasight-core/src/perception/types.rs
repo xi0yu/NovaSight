@@ -48,7 +48,7 @@ impl FrameStamp {
 }
 
 /// One finite bounding box in the batch's declared coordinate space.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Detection {
     object_id: u64,
     class_id: u32,
@@ -156,7 +156,7 @@ impl Detection {
 }
 
 /// A bounded set of validated detections sharing one frame and coordinate space.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DetectionBatch {
     stamp: FrameStamp,
     coordinate_width: u32,
@@ -165,8 +165,9 @@ pub struct DetectionBatch {
 }
 
 impl DetectionBatch {
-    /// Admits only non-zero geometry, at most [`MAX_DETECTIONS`] candidates,
-    /// and detection centers within the declared coordinate space.
+    /// Admits only non-zero geometry, unique object IDs, at most
+    /// [`MAX_DETECTIONS`] candidates, and complete bounding boxes within the
+    /// declared coordinate space.
     pub fn new(
         stamp: FrameStamp,
         coordinate_width: u32,
@@ -185,17 +186,35 @@ impl DetectionBatch {
                 maximum: MAX_DETECTIONS,
             });
         }
+        for (index, detection) in detections.iter().enumerate() {
+            if detections[..index]
+                .iter()
+                .any(|prior| prior.object_id == detection.object_id)
+            {
+                return Err(AppError::DuplicateObjectId {
+                    object_id: detection.object_id,
+                });
+            }
+        }
 
-        let width = coordinate_width as f32;
-        let height = coordinate_height as f32;
+        let width_limit = f64::from(coordinate_width);
+        let height_limit = f64::from(coordinate_height);
         for detection in &detections {
-            let center_x = detection.center_x();
-            let center_y = detection.center_y();
-            if !(0.0..width).contains(&center_x) || !(0.0..height).contains(&center_y) {
+            let x = f64::from(detection.x);
+            let y = f64::from(detection.y);
+            let right = x + f64::from(detection.width);
+            let bottom = y + f64::from(detection.height);
+            if x < 0.0
+                || y < 0.0
+                || right > width_limit
+                || bottom > height_limit
+            {
                 return Err(AppError::CoordinateSpaceMismatch {
                     object_id: detection.object_id,
-                    center_x,
-                    center_y,
+                    x,
+                    y,
+                    right,
+                    bottom,
                     width: coordinate_width,
                     height: coordinate_height,
                 });
