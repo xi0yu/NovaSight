@@ -509,22 +509,18 @@ fn read_security_metadata(file: &File, path: &Path) -> Result<SecurityMetadata, 
     })
 }
 
-#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
-const FS_IOC_GETFLAGS: u64 = 0x8008_6601;
-#[cfg(all(target_os = "linux", target_pointer_width = "32"))]
-const FS_IOC_GETFLAGS: u64 = 0x8004_6601;
-
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn inode_flags(file: &File, _metadata: &fs::Metadata, path: &Path) -> Result<u32, ConfigError> {
     let mut flags: libc::c_long = 0;
-    // SAFETY: FS_IOC_GETFLAGS is Linux's shipped _IOR('f', 1, long) request.
-    // `file` owns a live descriptor and `flags` is a correctly sized writable
-    // c_long for the kernel to initialize. The ioctl does not retain the pointer.
+    // SAFETY: libc::FS_IOC_GETFLAGS is generated from the target Linux UAPI's
+    // architecture-correct _IOR('f', 1, long) encoding. `file` owns a live
+    // descriptor and `flags` is a correctly sized writable c_long for the
+    // kernel to initialize. The ioctl does not retain the pointer.
     let result = unsafe {
         libc::ioctl(
             file.as_raw_fd(),
-            FS_IOC_GETFLAGS as _,
+            libc::FS_IOC_GETFLAGS,
             &mut flags as *mut libc::c_long,
         )
     };
