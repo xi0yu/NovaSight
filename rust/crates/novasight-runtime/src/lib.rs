@@ -24,4 +24,4 @@ pub use snapshot::{
     DaemonSnapshot, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshot, SubsystemSnapshots,
 };
 pub use state::{DaemonState, PipelineState};
-pub use supervisor::{RuntimeHandle, RuntimeSupervisor};
+pub use supervisor::{RuntimeDependencies, RuntimeHandle, RuntimeSupervisor};

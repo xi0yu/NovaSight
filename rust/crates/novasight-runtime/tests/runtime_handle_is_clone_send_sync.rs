@@ -16,7 +16,7 @@ fn runtime_handle_is_send_and_sync() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn runtime_handle_subscribes_to_public_snapshots() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     let mut snapshots: watch::Receiver<Arc<RuntimeSnapshot>> = handle.subscribe();
 
     let reply = handle.start().await.expect("start");
@@ -29,7 +29,7 @@ async fn runtime_handle_subscribes_to_public_snapshots() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn runtime_handle_clone_round_trip() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     let cloned = handle.clone();
     // The cloned handle and the original handle must be able to
     // issue independent commands without contention. The supervisor

@@ -14,18 +14,18 @@ async fn shutdown(supervisor: RuntimeSupervisor, handle: &RuntimeHandle) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn start_transitions_stopped_to_running() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
 
     let initial = handle.snapshot();
     assert_eq!(initial.pipeline.state, PipelineState::Stopped);
-    assert_eq!(initial.daemon.state, DaemonState::Starting);
+    assert_eq!(initial.daemon.state, DaemonState::Ready);
 
     let after = handle.start().await.expect("start");
     assert_eq!(after.pipeline.state, PipelineState::Running);
     assert_eq!(after.pipeline.epoch, Some(RuntimeEpoch(1)));
     assert!(after.pipeline.started_at_ms.is_some());
-    assert_eq!(after.subsystems.capture.state, SubsystemState::Running);
-    assert_eq!(after.subsystems.inference.state, SubsystemState::Running);
+    assert_eq!(after.subsystems.capture.state, SubsystemState::Stopped);
+    assert_eq!(after.subsystems.inference.state, SubsystemState::Stopped);
     assert_eq!(after.subsystems.control.state, SubsystemState::Running);
     assert_eq!(after.subsystems.device.state, SubsystemState::Ready);
 
@@ -34,7 +34,7 @@ async fn start_transitions_stopped_to_running() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stop_transitions_running_to_stopped() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     handle.start().await.expect("start");
 
     let after = handle.stop().await.expect("stop");
@@ -50,7 +50,7 @@ async fn stop_transitions_running_to_stopped() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn restart_allocates_a_new_runtime_epoch() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     let first = handle.start().await.expect("start");
     assert_eq!(first.pipeline.epoch, Some(RuntimeEpoch(1)));
 
@@ -63,7 +63,7 @@ async fn restart_allocates_a_new_runtime_epoch() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn emergency_stop_marks_device_unavailable_and_increments_control_restart() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     handle.start().await.expect("start");
 
     let after = handle.emergency_stop().await.expect("emergency_stop");
@@ -86,7 +86,7 @@ async fn emergency_stop_marks_device_unavailable_and_increments_control_restart(
 
 #[tokio::test(flavor = "current_thread")]
 async fn start_is_idempotent_when_already_running() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     let first = handle.start().await.expect("start");
     let second = handle.start().await.expect("start (idempotent)");
     assert_eq!(first.pipeline.epoch, second.pipeline.epoch);
@@ -96,7 +96,7 @@ async fn start_is_idempotent_when_already_running() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stop_is_idempotent_when_already_stopped() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     let first = handle.stop().await.expect("stop from stopped");
     assert_eq!(first.pipeline.state, PipelineState::Stopped);
     let second = handle.stop().await.expect("stop again");

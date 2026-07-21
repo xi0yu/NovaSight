@@ -12,7 +12,7 @@ mod runtime;
 mod slot;
 
 pub use runtime::{
-    PipelineConfig, PipelineError, PipelineIngress, PipelineMetrics, PipelineRuntime,
-    PipelineStatus,
+    PipelineConfig, PipelineError, PipelineEvent, PipelineIngress, PipelineMetrics,
+    PipelineRuntime, PipelineStatus,
 };
 pub use slot::{LatestSlot, SlotClosed, SlotMetrics};

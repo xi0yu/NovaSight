@@ -1,0 +1,392 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+use std::time::{Duration, Instant};
+
+use novasight_core::{
+    Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerDevice,
+    RecordingPointerDevice, RuntimeEpoch,
+};
+use novasight_pipeline::PipelineConfig;
+use novasight_runtime::{PipelineState, RuntimeDependencies, RuntimeErrorKind, RuntimeSupervisor};
+
+#[derive(Debug)]
+struct ManualClock(AtomicU64);
+
+#[derive(Debug, Default)]
+struct BlockingFailDevice {
+    entered: AtomicBool,
+    release: AtomicBool,
+}
+
+impl BlockingFailDevice {
+    async fn wait_until_entered(&self) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !self.entered.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("device send entered");
+    }
+
+    fn release_with_failure(&self) {
+        self.release.store(true, Ordering::Release);
+    }
+}
+
+impl PointerDevice for BlockingFailDevice {
+    fn send(
+        &self,
+        _command: novasight_core::DeviceCommand,
+    ) -> Result<novasight_core::DeviceReceipt, novasight_core::AppError> {
+        self.entered.store(true, Ordering::Release);
+        while !self.release.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Err(novasight_core::AppError::RuntimeTaskTerminated)
+    }
+}
+
+impl ManualClock {
+    fn new(now_ns: u64) -> Self {
+        Self(AtomicU64::new(now_ns))
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> MonotonicNanos {
+        MonotonicNanos(self.0.load(Ordering::Acquire))
+    }
+}
+
+fn batch(epoch: RuntimeEpoch, generation: u64) -> DetectionBatch {
+    DetectionBatch::new(
+        FrameStamp::new(epoch, generation, 1_000_000_000),
+        640,
+        640,
+        vec![Detection::new(41, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection")],
+    )
+    .expect("valid batch")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_start_stop_owns_the_real_pipeline_lifecycle() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+
+    let started = handle.start().await.expect("start real pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    assert_eq!(started.pipeline.state, PipelineState::Running);
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate trigger");
+    handle
+        .submit_detection_batch(batch(epoch, 1))
+        .expect("submit to owned pipeline");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(device.receipts().len(), 1);
+
+    let stopped = handle.stop().await.expect("stop joins pipeline");
+    assert_eq!(stopped.pipeline.state, PipelineState::Stopped);
+    let error = handle
+        .submit_detection_batch(batch(epoch, 2))
+        .expect_err("stopped pipeline rejects ingress");
+    assert_eq!(error.kind, RuntimeErrorKind::PipelineUnavailable);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_fault_is_projected_into_the_supervisor_snapshot() {
+    #[derive(Debug)]
+    struct FailingDevice;
+
+    impl PointerDevice for FailingDevice {
+        fn send(
+            &self,
+            _command: novasight_core::DeviceCommand,
+        ) -> Result<novasight_core::DeviceReceipt, novasight_core::AppError> {
+            Err(novasight_core::AppError::RuntimeTaskTerminated)
+        }
+    }
+
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(FailingDevice);
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+    let started = handle.start().await.expect("start real pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate trigger");
+    handle
+        .submit_detection_batch(batch(epoch, 1))
+        .expect("submit batch");
+
+    let mut snapshots = handle.subscribe();
+    let faulted = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshots.borrow().pipeline.state == PipelineState::Faulted {
+                return snapshots.borrow().as_ref().clone();
+            }
+            snapshots.changed().await.expect("supervisor snapshot");
+        }
+    })
+    .await
+    .expect("fault reaches supervisor");
+    assert!(faulted.pipeline.last_error.is_some());
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pipeline_start_failure_is_published_as_faulted_not_left_starting() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let dependencies = RuntimeDependencies::new(
+        clock,
+        pointer,
+        PipelineConfig {
+            output_interval_ms: 0,
+            ..PipelineConfig::default()
+        },
+    );
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+
+    let error = handle.start().await.expect_err("invalid pipeline config");
+    assert_eq!(error.kind, RuntimeErrorKind::PipelineRejected);
+    let snapshot = handle.snapshot();
+    assert_eq!(snapshot.pipeline.state, PipelineState::Faulted);
+    assert!(snapshot.pipeline.last_error.is_some());
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_fault_cannot_overwrite_a_completed_stop() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(BlockingFailDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
+        clock,
+        pointer,
+        PipelineConfig::default(),
+    ));
+    let started = handle.start().await.expect("start pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate trigger");
+    handle
+        .submit_detection_batch(batch(epoch, 1))
+        .expect("submit batch");
+    device.wait_until_entered().await;
+
+    let stop_handle = handle.clone();
+    let stop_task = tokio::spawn(async move { stop_handle.stop().await });
+    let mut snapshots = handle.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while snapshots.borrow().pipeline.state != PipelineState::Stopping {
+            snapshots.changed().await.expect("stopping snapshot");
+        }
+    })
+    .await
+    .expect("stop reaches stopping state");
+    let stale_trigger_handle = handle.clone();
+    let stale_trigger =
+        tokio::spawn(async move { stale_trigger_handle.set_trigger_active(false).await });
+    device.release_with_failure();
+
+    let stopped = stop_task.await.expect("stop task").expect("stop pipeline");
+    assert_eq!(stopped.pipeline.state, PipelineState::Stopped);
+    assert_eq!(
+        stale_trigger
+            .await
+            .expect("stale trigger task")
+            .expect_err("retired epoch rejects trigger mutation")
+            .kind,
+        RuntimeErrorKind::PipelineUnavailable
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(handle.snapshot().pipeline.state, PipelineState::Stopped);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_fault_cannot_overwrite_a_completed_emergency_stop() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(BlockingFailDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
+        clock,
+        pointer,
+        PipelineConfig::default(),
+    ));
+    let started = handle.start().await.expect("start pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate trigger");
+    handle
+        .submit_detection_batch(batch(epoch, 1))
+        .expect("submit batch");
+    device.wait_until_entered().await;
+
+    let emergency_handle = handle.clone();
+    let emergency_task = tokio::spawn(async move { emergency_handle.emergency_stop().await });
+    let mut snapshots = handle.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while snapshots.borrow().pipeline.state != PipelineState::Stopping {
+            snapshots.changed().await.expect("stopping snapshot");
+        }
+    })
+    .await
+    .expect("emergency stop reaches stopping state");
+    device.release_with_failure();
+
+    let stopped = emergency_task
+        .await
+        .expect("emergency task")
+        .expect("emergency stop");
+    assert_eq!(stopped.pipeline.state, PipelineState::Stopped);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(handle.snapshot().pipeline.state, PipelineState::Stopped);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn trigger_release_does_not_block_the_tokio_executor() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(BlockingFailDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
+        clock,
+        pointer,
+        PipelineConfig::default(),
+    ));
+    let started = handle.start().await.expect("start pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate trigger");
+    handle
+        .submit_detection_batch(batch(epoch, 1))
+        .expect("submit batch");
+    device.wait_until_entered().await;
+
+    let release_handle = handle.clone();
+    let release_task = tokio::spawn(async move { release_handle.set_trigger_active(false).await });
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        tokio::time::sleep(Duration::from_millis(10)),
+    )
+    .await
+    .expect("Tokio timer progresses while release waits for the device lane");
+    assert!(!release_task.is_finished());
+
+    device.release_with_failure();
+    release_task
+        .await
+        .expect("release task")
+        .expect("release trigger");
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_trigger_requests_are_serialized_and_retired_with_the_epoch() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(BlockingFailDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
+        clock,
+        pointer,
+        PipelineConfig::default(),
+    ));
+    let started = handle.start().await.expect("start pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate trigger");
+    handle
+        .submit_detection_batch(batch(epoch, 1))
+        .expect("submit batch");
+    device.wait_until_entered().await;
+
+    let requests = (0..40)
+        .map(|_| {
+            let request_handle = handle.clone();
+            tokio::spawn(async move { request_handle.set_trigger_active(false).await })
+        })
+        .collect::<Vec<_>>();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(requests.iter().all(|request| !request.is_finished()));
+
+    device.release_with_failure();
+    let mut succeeded = 0;
+    let mut retired = 0;
+    for request in requests {
+        match request.await.expect("trigger task") {
+            Ok(()) => succeeded += 1,
+            Err(error) if error.kind == RuntimeErrorKind::PipelineUnavailable => retired += 1,
+            Err(error) => panic!("unexpected trigger error: {error}"),
+        }
+    }
+    assert_eq!(succeeded, 1);
+    assert_eq!(retired, 39);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_supervisor_requests_orderly_pipeline_shutdown() {
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
+    handle.start().await.expect("start pipeline");
+    let mut snapshots = handle.subscribe();
+
+    drop(supervisor);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = snapshots.borrow().clone();
+            if snapshot.daemon.state == novasight_runtime::DaemonState::ShuttingDown
+                && snapshot.pipeline.state == PipelineState::Stopped
+            {
+                break;
+            }
+            snapshots.changed().await.expect("shutdown snapshot");
+        }
+    })
+    .await
+    .expect("drop triggers orderly shutdown");
+    assert_eq!(
+        handle
+            .submit_detection_batch(batch(RuntimeEpoch(1), 2))
+            .expect_err("closed ingress")
+            .kind,
+        RuntimeErrorKind::PipelineUnavailable
+    );
+}

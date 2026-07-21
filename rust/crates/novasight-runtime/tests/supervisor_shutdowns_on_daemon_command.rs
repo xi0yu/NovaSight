@@ -6,7 +6,7 @@ use novasight_runtime::{RuntimeError, RuntimeErrorKind, RuntimeSupervisor};
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_daemon_replies_and_exits_the_supervisor() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
 
     handle
         .shutdown_daemon()
@@ -23,7 +23,7 @@ async fn shutdown_daemon_replies_and_exits_the_supervisor() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn handle_drops_when_supervisor_exits() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
 
     handle.shutdown_daemon().await.expect("shutdown");
     supervisor.join().await.expect("supervisor join");
@@ -39,7 +39,7 @@ async fn handle_drops_when_supervisor_exits() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn handle_clone_still_works_across_tasks() {
-    let (supervisor, handle) = RuntimeSupervisor::spawn();
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
     let handle_b = handle.clone();
     let task = tokio::spawn(async move { handle_b.start().await });
     let result = task.await.expect("join task").expect("start");
@@ -73,6 +73,14 @@ fn error_kind_codes_match_documented_strings() {
     assert_eq!(
         RuntimeErrorKind::RuntimeEpochExhausted.code(),
         "runtime_epoch_exhausted"
+    );
+    assert_eq!(
+        RuntimeErrorKind::PipelineUnavailable.code(),
+        "pipeline_unavailable"
+    );
+    assert_eq!(
+        RuntimeErrorKind::PipelineRejected.code(),
+        "pipeline_rejected"
     );
     assert_eq!(RuntimeErrorKind::Other.code(), "runtime_error");
 }

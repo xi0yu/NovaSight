@@ -22,6 +22,10 @@ pub enum RuntimeErrorKind {
     InvalidPipelineState,
     /// No new runtime epoch can be allocated without wrapping.
     RuntimeEpochExhausted,
+    /// No running pipeline ingress exists for this operation.
+    PipelineUnavailable,
+    /// The owned pipeline rejected an input or lifecycle operation.
+    PipelineRejected,
     /// Generic runtime error. New variants land in later commits.
     Other,
 }
@@ -34,6 +38,8 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::SupervisorReplyLost => "supervisor_reply_lost",
             RuntimeErrorKind::InvalidPipelineState => "invalid_pipeline_state",
             RuntimeErrorKind::RuntimeEpochExhausted => "runtime_epoch_exhausted",
+            RuntimeErrorKind::PipelineUnavailable => "pipeline_unavailable",
+            RuntimeErrorKind::PipelineRejected => "pipeline_rejected",
             RuntimeErrorKind::Other => "runtime_error",
         }
     }
@@ -84,6 +90,17 @@ impl RuntimeError {
             RuntimeErrorKind::RuntimeEpochExhausted,
             "runtime epoch counter is exhausted",
         )
+    }
+
+    pub fn pipeline_unavailable() -> Self {
+        Self::new(
+            RuntimeErrorKind::PipelineUnavailable,
+            "runtime pipeline is not running",
+        )
+    }
+
+    pub fn pipeline_rejected(message: impl Into<String>) -> Self {
+        Self::new(RuntimeErrorKind::PipelineRejected, message)
     }
 
     pub fn summary(&self) -> RuntimeErrorSummary {

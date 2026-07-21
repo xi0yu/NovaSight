@@ -1,6 +1,7 @@
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    mpsc::{Receiver, SyncSender, sync_channel},
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -32,6 +33,12 @@ pub enum PipelineStatus {
     Stopped,
     Faulted,
     Standby,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PipelineEvent {
+    Faulted { message: String },
+    Stopped,
 }
 
 impl PipelineStatus {
@@ -130,16 +137,18 @@ struct SharedState {
     output_gate: AtomicBool,
     trigger_active: AtomicBool,
     device_lane: Mutex<()>,
+    event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
 }
 
 impl SharedState {
-    fn new() -> Self {
+    fn new(event_tx: SyncSender<PipelineEvent>) -> Self {
         Self {
             status: AtomicU8::new(STATUS_STARTING),
             output_gate: AtomicBool::new(false),
             trigger_active: AtomicBool::new(false),
             device_lane: Mutex::new(()),
+            event_tx,
             metrics: AtomicMetrics::default(),
         }
     }
@@ -149,14 +158,18 @@ impl SharedState {
     }
 
     fn fault(&self, message: impl Into<String>) {
+        let message = message.into();
         self.output_gate.store(false, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
         *self
             .metrics
             .last_fault
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.into());
-        self.status.store(STATUS_FAULTED, Ordering::Release);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.clone());
+        let previous = self.status.swap(STATUS_FAULTED, Ordering::AcqRel);
+        if previous != STATUS_FAULTED {
+            let _ = self.event_tx.try_send(PipelineEvent::Faulted { message });
+        }
     }
 }
 
@@ -275,6 +288,7 @@ pub struct PipelineRuntime {
     batch_slot: LatestSlot<DetectionBatch>,
     target_slot: LatestSlot<TargetedObservation>,
     command_slot: LatestSlot<DeviceCommand>,
+    event_rx: Option<Receiver<PipelineEvent>>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -299,7 +313,8 @@ impl PipelineRuntime {
                 actual_ms: config.output_interval_ms,
             });
         }
-        let shared = Arc::new(SharedState::new());
+        let (event_tx, event_rx) = sync_channel(4);
+        let shared = Arc::new(SharedState::new(event_tx));
         let batch_slot = LatestSlot::new();
         let target_slot = LatestSlot::new();
         let command_slot = LatestSlot::new();
@@ -362,6 +377,7 @@ impl PipelineRuntime {
                 batch_slot,
                 target_slot,
                 command_slot,
+                event_rx: Some(event_rx),
                 workers,
             },
             ingress,
@@ -374,6 +390,11 @@ impl PipelineRuntime {
 
     pub fn metrics(&self) -> PipelineMetrics {
         snapshot_metrics(&self.shared, &self.batch_slot, &self.command_slot)
+    }
+
+    /// Transfer the single lifecycle event stream to the supervisor.
+    pub fn take_event_receiver(&mut self) -> Option<Receiver<PipelineEvent>> {
+        self.event_rx.take()
     }
 
     /// Close the output gate first, wake every blocked lane, then join
@@ -399,6 +420,7 @@ impl PipelineRuntime {
             return Err(PipelineError::WorkerPanicked);
         }
         self.shared.status.store(STATUS_STOPPED, Ordering::Release);
+        let _ = self.shared.event_tx.try_send(PipelineEvent::Stopped);
         Ok(self.metrics())
     }
 }

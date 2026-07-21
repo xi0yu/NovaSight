@@ -27,6 +27,10 @@ pub enum RuntimeCommand {
     EmergencyStop {
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
     },
+    SetTriggerActive {
+        active: bool,
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
     ShutdownDaemon {
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },

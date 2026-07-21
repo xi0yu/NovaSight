@@ -6,7 +6,9 @@ use novasight_core::{
     AppError, Clock, Detection, DetectionBatch, DeviceCommand, DeviceReceipt, FrameStamp,
     MonotonicNanos, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
 };
-use novasight_pipeline::{PipelineConfig, PipelineError, PipelineRuntime, PipelineStatus};
+use novasight_pipeline::{
+    PipelineConfig, PipelineError, PipelineEvent, PipelineRuntime, PipelineStatus,
+};
 
 #[derive(Debug)]
 struct FixedClock(AtomicU64);
@@ -152,7 +154,6 @@ fn ingress_rejects_cross_epoch_and_non_monotonic_observations() {
         device,
     )
     .expect("pipeline starts");
-
     assert!(matches!(
         ingress.submit(batch(RuntimeEpoch(99), 1)),
         Err(PipelineError::EpochMismatch {
@@ -186,6 +187,7 @@ fn device_failure_faults_the_pipeline_and_closes_ingress() {
         device,
     )
     .expect("pipeline starts");
+    let events = runtime.take_event_receiver().expect("event receiver");
     ingress.set_trigger_active(true);
     ingress.submit(batch(epoch, 1)).expect("batch accepted");
 
@@ -196,6 +198,10 @@ fn device_failure_faults_the_pipeline_and_closes_ingress() {
 
     assert_eq!(runtime.status(), PipelineStatus::Faulted);
     assert!(runtime.metrics().last_fault.is_some());
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(1)),
+        Ok(PipelineEvent::Faulted { .. })
+    ));
     assert!(matches!(
         ingress.submit(batch(epoch, 2)),
         Err(PipelineError::NotRunning)
