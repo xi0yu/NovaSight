@@ -199,6 +199,64 @@ async fn stop_waits_for_shutdown_and_returns_the_persisted_snapshot() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn opposing_commands_return_the_snapshot_bound_to_each_completion() {
+    let app = app();
+    let start_request = send(
+        app.clone(),
+        Request::post("/api/runtime/start")
+            .body(Body::empty())
+            .expect("request"),
+    );
+    let stop_request = send(
+        app.clone(),
+        Request::post("/api/runtime/stop")
+            .body(Body::empty())
+            .expect("request"),
+    );
+    let (started, stopped) = tokio::join!(biased; start_request, stop_request);
+
+    let started_body = response_json(started).await;
+    let stopped_body = response_json(stopped).await;
+    assert_eq!(started_body["running"], true);
+    assert_eq!(started_body["epoch"], 1);
+    assert_eq!(stopped_body["running"], false);
+    assert_eq!(stopped_body["pipeline"]["phase"], "stopped");
+    assert_eq!(stopped_body["pipeline"]["epoch"], 1);
+
+    let prestarted = send(
+        app.clone(),
+        Request::post("/api/runtime/start")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(prestarted.status(), StatusCode::OK);
+
+    let stop_request = send(
+        app.clone(),
+        Request::post("/api/runtime/stop")
+            .body(Body::empty())
+            .expect("request"),
+    );
+    let start_request = send(
+        app.clone(),
+        Request::post("/api/runtime/start")
+            .body(Body::empty())
+            .expect("request"),
+    );
+    let (stopped, restarted) = tokio::join!(biased; stop_request, start_request);
+
+    let stopped_body = response_json(stopped).await;
+    let restarted_body = response_json(restarted).await;
+    assert_eq!(stopped_body["running"], false);
+    assert_eq!(stopped_body["pipeline"]["phase"], "stopped");
+    assert_eq!(stopped_body["pipeline"]["epoch"], 2);
+    assert_eq!(restarted_body["running"], true);
+    assert_eq!(restarted_body["epoch"], 3);
+    assert_eq!(get_json(app, "/api/runtime/state").await["running"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn concurrent_start_conflict_preserves_typed_http_error_semantics() {
     let app = app();
     let barrier = std::sync::Arc::new(Barrier::new(3));
@@ -252,7 +310,9 @@ async fn concurrent_start_conflict_preserves_typed_http_error_semantics() {
         response_json(conflict).await,
         json!({
             "code": "runtime_command_conflict",
-            "message": "runtime command start conflicts with an in-flight command"
+            "detail": {
+                "message": "runtime command start conflicts with an in-flight command"
+            }
         })
     );
 }

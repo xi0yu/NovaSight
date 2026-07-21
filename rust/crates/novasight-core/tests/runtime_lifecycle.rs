@@ -177,6 +177,30 @@ async fn stop_is_idempotent_and_snapshot_watch_is_latest_only() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn command_receipts_bind_the_snapshot_before_queued_opposing_commands() {
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+
+    let (started, stopped) = tokio::join!(biased; runtime.start(), runtime.stop());
+    let started = started.unwrap();
+    let stopped = stopped.unwrap();
+    assert_eq!(started.snapshot.phase, RuntimePhase::Running);
+    assert!(started.snapshot.running);
+    assert_eq!(stopped.snapshot.phase, RuntimePhase::Stopped);
+    assert!(!stopped.snapshot.running);
+    assert_eq!(runtime.snapshot().phase, RuntimePhase::Stopped);
+
+    runtime.start().await.unwrap();
+    let (stopped, restarted) = tokio::join!(biased; runtime.stop(), runtime.start());
+    let stopped = stopped.unwrap();
+    let restarted = restarted.unwrap();
+    assert_eq!(stopped.snapshot.phase, RuntimePhase::Stopped);
+    assert!(!stopped.snapshot.running);
+    assert_eq!(restarted.snapshot.phase, RuntimePhase::Running);
+    assert!(restarted.snapshot.running);
+    assert_eq!(runtime.snapshot().phase, RuntimePhase::Running);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn stop_cancels_before_exhausting_a_ready_replay_source() {
     const BATCH_COUNT: u64 = 256;
     let batches = (1..=BATCH_COUNT).map(|generation| empty_batch(RuntimeEpoch(1), generation));

@@ -4,12 +4,22 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use novasight_core::AppError;
-
-use crate::dto::ErrorResponse;
+use serde::Serialize;
 
 pub(crate) type ApiResult<T> = Result<T, ApiError>;
 
 pub(crate) struct ApiError(AppError);
+
+#[derive(Serialize)]
+struct AppErrorResponse {
+    code: &'static str,
+    detail: AppErrorDetail,
+}
+
+#[derive(Serialize)]
+struct AppErrorDetail {
+    message: String,
+}
 
 impl From<AppError> for ApiError {
     fn from(error: AppError) -> Self {
@@ -20,7 +30,12 @@ impl From<AppError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = status_for(&self.0);
-        let body = ErrorResponse::new(code_for(&self.0), self.0.to_string());
+        let body = AppErrorResponse {
+            code: code_for(&self.0),
+            detail: AppErrorDetail {
+                message: self.0.to_string(),
+            },
+        };
         (status, Json(body)).into_response()
     }
 }

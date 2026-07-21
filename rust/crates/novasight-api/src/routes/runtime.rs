@@ -24,12 +24,10 @@ async fn state(State(state): State<ApiState>) -> Json<RuntimeStateResponse> {
 
 async fn start(State(state): State<ApiState>) -> ApiResult<Json<RuntimeStartResponse>> {
     let receipt = state.runtime.start().await?;
-    let running = state.runtime.snapshot().running;
-    Ok(Json(RuntimeStartResponse::accepted(receipt, running)))
+    Ok(Json(RuntimeStartResponse::accepted(receipt)))
 }
 
 async fn stop(State(state): State<ApiState>) -> ApiResult<Json<RuntimeStateResponse>> {
-    state.runtime.stop().await?;
-    let snapshot = state.runtime.snapshot();
-    Ok(Json(RuntimeStateResponse::from(snapshot.as_ref())))
+    let receipt = state.runtime.stop().await?;
+    Ok(Json(RuntimeStateResponse::from(receipt.snapshot.as_ref())))
 }

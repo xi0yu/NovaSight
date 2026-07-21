@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{ErrorSnapshot, Generation, RuntimeEpoch};
@@ -49,8 +51,9 @@ impl OperationalSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeCommandReceipt {
     pub epoch: Option<RuntimeEpoch>,
     pub phase: RuntimePhase,
+    pub snapshot: Arc<OperationalSnapshot>,
 }

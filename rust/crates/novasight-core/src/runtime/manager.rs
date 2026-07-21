@@ -286,9 +286,10 @@ async fn stop_session(
     Ok(receipt(&publisher.current()))
 }
 
-fn receipt(snapshot: &OperationalSnapshot) -> RuntimeCommandReceipt {
+fn receipt(snapshot: &Arc<OperationalSnapshot>) -> RuntimeCommandReceipt {
     RuntimeCommandReceipt {
         epoch: snapshot.epoch,
         phase: snapshot.phase,
+        snapshot: snapshot.clone(),
     }
 }

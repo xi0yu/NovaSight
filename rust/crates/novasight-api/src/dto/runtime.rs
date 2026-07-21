@@ -1,3 +1,5 @@
+use std::{borrow::Cow, sync::Arc};
+
 use novasight_core::{ErrorSnapshot, OperationalSnapshot, RunIntent, RuntimeCommandReceipt};
 use serde::Serialize;
 
@@ -5,15 +7,6 @@ use serde::Serialize;
 pub struct ErrorResponse {
     pub code: String,
     pub message: String,
-}
-
-impl ErrorResponse {
-    pub(crate) fn new(code: &'static str, message: String) -> Self {
-        Self {
-            code: code.to_owned(),
-            message,
-        }
-    }
 }
 
 impl From<&ErrorSnapshot> for ErrorResponse {
@@ -38,16 +31,16 @@ pub struct ExecutorCollectionResponse {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ExecutorStatusResponse {
-    pub selected: String,
+    pub selected: Cow<'static, str>,
     pub executors: ExecutorCollectionResponse,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CaptureStateResponse {
     pub available: bool,
-    pub device: String,
+    pub device: Cow<'static, str>,
     pub profile: Option<CaptureProfileResponse>,
-    pub backend: Option<String>,
+    pub backend: Option<Cow<'static, str>>,
     pub fps_capture: f64,
     pub frame_period_ms: f64,
     pub capture_wait_ms: f64,
@@ -58,17 +51,17 @@ pub struct CaptureStateResponse {
     pub preview_output_frames: u64,
     pub preview_dropped: u64,
     pub recoveries: u64,
-    pub last_error: Option<String>,
+    pub last_error: Option<Cow<'static, str>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CaptureProfileResponse {
-    pub pixel_format: String,
+    pub pixel_format: Cow<'static, str>,
     pub width: u32,
     pub height: u32,
     pub fps: f64,
-    pub preference: String,
-    pub selection_reason: String,
+    pub preference: Cow<'static, str>,
+    pub selection_reason: Cow<'static, str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -90,8 +83,8 @@ pub struct InferenceStateResponse {
     pub available: bool,
     pub configured: bool,
     pub running: bool,
-    pub mode: String,
-    pub reason: String,
+    pub mode: Cow<'static, str>,
+    pub reason: Cow<'static, str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -105,39 +98,39 @@ pub struct PipelineStateResponse {
     pub phase: novasight_core::RuntimePhase,
     pub run_intent: bool,
     pub epoch: Option<u64>,
-    pub source: String,
+    pub source: Arc<str>,
     pub last_generation: Option<u64>,
     pub processed_batches: u64,
     pub device_receipts: u64,
-    pub mode: String,
+    pub mode: Cow<'static, str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RuntimePowerSavingResponse {
     pub enabled: bool,
-    pub mode: String,
+    pub mode: Cow<'static, str>,
     pub run_intent: bool,
     pub suspended_by_policy: bool,
     pub running: bool,
-    pub host_id: String,
-    pub target_host_id: String,
+    pub host_id: Cow<'static, str>,
+    pub target_host_id: Cow<'static, str>,
     pub host_online: bool,
     pub heartbeat_age_ms: Option<f64>,
     pub auto_resume: bool,
-    pub reason: String,
+    pub reason: Cow<'static, str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VisionStateResponse {
     pub available: bool,
-    pub mode: String,
-    pub reason: String,
+    pub mode: Cow<'static, str>,
+    pub reason: Cow<'static, str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RuntimeStateResponse {
     pub running: bool,
-    pub source: String,
+    pub source: Arc<str>,
     pub active_model: Option<serde_json::Value>,
     pub executor: ExecutorStatusResponse,
     pub capture: CaptureStateResponse,
@@ -153,12 +146,13 @@ pub struct RuntimeStateResponse {
 impl From<&OperationalSnapshot> for RuntimeStateResponse {
     fn from(snapshot: &OperationalSnapshot) -> Self {
         let run_intent = snapshot.run_intent == RunIntent::Running;
+        let source = Arc::<str>::from(snapshot.source.as_str());
         Self {
             running: snapshot.running,
-            source: snapshot.source.clone(),
+            source: source.clone(),
             active_model: None,
             executor: ExecutorStatusResponse {
-                selected: "dry_run".to_owned(),
+                selected: Cow::Borrowed("dry_run"),
                 executors: ExecutorCollectionResponse {
                     dry_run: ExecutorAvailabilityResponse { available: true },
                     kmnet: ExecutorAvailabilityResponse { available: false },
@@ -166,9 +160,9 @@ impl From<&OperationalSnapshot> for RuntimeStateResponse {
             },
             capture: CaptureStateResponse {
                 available: false,
-                device: "replay".to_owned(),
+                device: Cow::Borrowed("replay"),
                 profile: None,
-                backend: Some("replay".to_owned()),
+                backend: Some(Cow::Borrowed("replay")),
                 fps_capture: 0.0,
                 frame_period_ms: 0.0,
                 capture_wait_ms: 0.0,
@@ -197,8 +191,8 @@ impl From<&OperationalSnapshot> for RuntimeStateResponse {
                 available: false,
                 configured: false,
                 running: snapshot.running,
-                mode: "replay".to_owned(),
-                reason: "TensorRT is unavailable in Phase 1 replay mode".to_owned(),
+                mode: Cow::Borrowed("replay"),
+                reason: Cow::Borrowed("TensorRT is unavailable in Phase 1 replay mode"),
             },
             config: RuntimeConfigSummaryResponse { version: 1 },
             pipeline: PipelineStateResponse {
@@ -206,29 +200,31 @@ impl From<&OperationalSnapshot> for RuntimeStateResponse {
                 phase: snapshot.phase,
                 run_intent,
                 epoch: snapshot.epoch.map(|epoch| epoch.0),
-                source: snapshot.source.clone(),
+                source,
                 last_generation: snapshot.last_generation.map(|generation| generation.0),
                 processed_batches: snapshot.processed_batches,
                 device_receipts: snapshot.device_receipts,
-                mode: "replay".to_owned(),
+                mode: Cow::Borrowed("replay"),
             },
             power_saving: RuntimePowerSavingResponse {
                 enabled: false,
-                mode: "disabled".to_owned(),
+                mode: Cow::Borrowed("disabled"),
                 run_intent,
                 suspended_by_policy: false,
                 running: snapshot.running,
-                host_id: String::new(),
-                target_host_id: String::new(),
+                host_id: Cow::Borrowed(""),
+                target_host_id: Cow::Borrowed(""),
                 host_online: false,
                 heartbeat_age_ms: None,
                 auto_resume: false,
-                reason: "unavailable in Phase 1 replay mode".to_owned(),
+                reason: Cow::Borrowed("unavailable in Phase 1 replay mode"),
             },
             vision: VisionStateResponse {
                 available: false,
-                mode: "replay".to_owned(),
-                reason: "online vision hardware is unavailable in Phase 1 replay mode".to_owned(),
+                mode: Cow::Borrowed("replay"),
+                reason: Cow::Borrowed(
+                    "online vision hardware is unavailable in Phase 1 replay mode",
+                ),
             },
             fatal_error: snapshot.fatal_error.as_ref().map(ErrorResponse::from),
         }
@@ -245,12 +241,12 @@ pub struct RuntimeStartResponse {
 }
 
 impl RuntimeStartResponse {
-    pub(crate) fn accepted(receipt: RuntimeCommandReceipt, running: bool) -> Self {
+    pub(crate) fn accepted(receipt: RuntimeCommandReceipt) -> Self {
         Self {
-            running,
+            running: receipt.snapshot.running,
             accepted: true,
             failed: false,
-            epoch: receipt.epoch.map(|epoch| epoch.0),
+            epoch: receipt.snapshot.epoch.map(|epoch| epoch.0),
             operation_id: None,
         }
     }
