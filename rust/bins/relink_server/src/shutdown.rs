@@ -82,9 +82,7 @@ pub(super) async fn serve(
 
     // Axum must stop accepting work before the runtime session is revoked.
     let _ = shutdown_tx.send(());
-    let stop_result = runtime.stop().await;
-    let server_result = server.await;
-    prioritize_server_error(server_result, stop_result)
+    finish_signal_shutdown(server, &runtime).await
 }
 
 async fn finish_server_exit<T>(
@@ -93,6 +91,25 @@ async fn finish_server_exit<T>(
 ) -> Result<(), ShutdownError> {
     let cleanup_result = cleanup.await;
     prioritize_server_error(server_result, cleanup_result)
+}
+
+async fn finish_signal_shutdown(
+    server: impl Future<Output = io::Result<()>>,
+    runtime: &RuntimeHandle,
+) -> Result<(), ShutdownError> {
+    let prompt_stop_result = runtime.stop().await;
+    let server_result = server.await;
+    let final_stop_result = runtime.stop().await;
+
+    if let Err(prompt_stop_error) = prompt_stop_result {
+        tracing::error!(
+            code = "RUNTIME_STOP_FAILED",
+            error = %prompt_stop_error,
+            "prompt runtime stop failed; final stop was still attempted after server drain"
+        );
+    }
+
+    prioritize_server_error(server_result, final_stop_result)
 }
 
 fn prioritize_server_error<T>(
@@ -144,11 +161,12 @@ mod tests {
             Arc,
             atomic::{AtomicBool, Ordering},
         },
+        time::Duration,
     };
 
-    use novasight_core::AppError;
+    use novasight_core::{AppError, RuntimeDependencies, RuntimeManager, RuntimePhase};
 
-    use super::{ShutdownSignals, finish_server_exit};
+    use super::{ShutdownSignals, finish_server_exit, finish_signal_shutdown};
 
     #[tokio::test]
     async fn signal_receivers_are_registered_during_synchronous_construction() {
@@ -171,5 +189,30 @@ mod tests {
 
         assert!(cleanup_was_awaited.load(Ordering::SeqCst));
         assert_eq!(error.code(), "SERVER_SERVE_FAILED");
+    }
+
+    #[tokio::test]
+    async fn signal_shutdown_stops_a_session_started_by_a_draining_handler() {
+        let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
+        let original = runtime.start().await.expect("start initial session");
+        let handler_runtime = runtime.clone();
+
+        finish_signal_shutdown(
+            async move {
+                assert_eq!(handler_runtime.snapshot().phase, RuntimePhase::Stopped);
+                let restarted = handler_runtime
+                    .start()
+                    .await
+                    .expect("draining handler starts a new session");
+                assert!(restarted.epoch > original.epoch);
+                Ok(())
+            },
+            &runtime,
+        )
+        .await
+        .expect("shutdown cleanup");
+
+        assert_eq!(runtime.snapshot().phase, RuntimePhase::Stopped);
+        assert!(!runtime.snapshot().running);
     }
 }
