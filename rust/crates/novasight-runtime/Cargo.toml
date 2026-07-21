@@ -8,11 +8,13 @@ license.workspace = true
 anyhow.workspace = true
 novasight-core = { path = "../novasight-core" }
 novasight-pipeline = { path = "../novasight-pipeline" }
+novasight-store = { path = "../novasight-store" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+uuid.workspace = true

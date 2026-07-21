@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+mod application;
 pub mod command;
 mod error;
 mod protocol;
@@ -16,6 +17,7 @@ pub mod snapshot;
 mod state;
 pub mod supervisor;
 
+pub use application::{Application, ApplicationError, LoadedApplication};
 pub use command::RuntimeCommand;
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use novasight_core::RuntimeEpoch;

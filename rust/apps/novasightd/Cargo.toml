@@ -10,8 +10,11 @@ name = "novasightd"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+novasight-runtime = { path = "../../crates/novasight-runtime" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+uuid.workspace = true

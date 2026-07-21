@@ -31,7 +31,7 @@ pub enum RuntimeErrorKind {
 }
 
 impl RuntimeErrorKind {
-    pub fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             RuntimeErrorKind::SupervisorUnavailable => "supervisor_unavailable",
             RuntimeErrorKind::SupervisorClosed => "supervisor_closed",
