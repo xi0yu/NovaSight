@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header::ALLOW},
@@ -10,7 +12,7 @@ use tokio::sync::Barrier;
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     build_router(ApiState::new(runtime))
 }
 
