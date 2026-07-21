@@ -328,6 +328,8 @@ def build_dual_phase_control() -> list[dict]:
             target_valid=label != "target_lost",
         )
         decision = algorithm.calculate(observation)
+        telemetry = decision.telemetry
+
         record = {
             "label": label,
             "observation": {
@@ -349,10 +351,47 @@ def build_dual_phase_control() -> list[dict]:
                 "dy": decision.dy,
                 "emit_allowed": decision.emit_allowed,
                 "block_reason": decision.block_reason,
-                "telemetry_keys": sorted(decision.telemetry.keys()),
+                "telemetry_keys": sorted(telemetry.keys()),
+                "velocity_x": float(telemetry.get("velocity_x", 0.0)),
+                "velocity_y": float(telemetry.get("velocity_y", 0.0)),
+                "filtered_error_meas_x": float(
+                    telemetry.get("filtered_error_meas_x", 0.0)
+                ),
+                "filtered_error_meas_y": float(
+                    telemetry.get("filtered_error_meas_y", 0.0)
+                ),
+                "predicted_offset_x": float(
+                    telemetry.get("predicted_offset_x", 0.0)
+                ),
+                "predicted_offset_y": float(
+                    telemetry.get("predicted_offset_y", 0.0)
+                ),
+                "atan_response_x": float(telemetry.get("atan_response_x", 0.0)),
+                "atan_response_y": float(telemetry.get("atan_response_y", 0.0)),
+                "feedback_demand_x": float(
+                    telemetry.get("feedback_demand_x", 0.0)
+                ),
+                "feedback_demand_y": float(
+                    telemetry.get("feedback_demand_y", 0.0)
+                ),
+                "control_mode": str(telemetry.get("control_mode", "FAR")),
+                "control_now_ns": int(telemetry.get("control_now_ns", observation.control_now_ns)),
+                "frame_id": int(telemetry.get("frame_id", observation.frame_id)),
+                "target_id": int(telemetry.get("target_id", observation.target_id)),
+                "target_valid": bool(telemetry.get("target_valid", observation.target_valid)),
+                "trigger_active": bool(telemetry.get("trigger_active", observation.trigger_active)),
+                "history_position_count": int(
+                    telemetry.get("history_position_count", 0)
+                ),
+                "quantizer_residual_x": float(
+                    telemetry.get("quantizer_residual_x", 0.0)
+                ),
+                "quantizer_residual_y": float(
+                    telemetry.get("quantizer_residual_y", 0.0)
+                ),
             },
         }
-        records.append(record)
+    records.append(record)
 
     return records
 

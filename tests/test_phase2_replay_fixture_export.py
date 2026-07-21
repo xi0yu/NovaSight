@@ -109,8 +109,20 @@ def test_dual_phase_control_records_capture_decision_shell() -> None:
         assert "observation" in record
         assert "decision" in record
         decision = record["decision"]
-        assert set(decision) == {"dx", "dy", "emit_allowed", "block_reason", "telemetry_keys"}
+        required = {"dx", "dy", "emit_allowed", "block_reason", "telemetry_keys"}
+        assert required.issubset(decision.keys()), (
+            f"missing keys: {required - set(decision.keys())}"
+        )
         assert isinstance(decision["dx"], int)
         assert isinstance(decision["dy"], int)
         assert isinstance(decision["emit_allowed"], bool)
         assert isinstance(decision["telemetry_keys"], list)
+        # Telemetry intermediate values are typed floats that the Rust
+        # parity tests read; the Python regression just pins the
+        # surface shape and the integer emit contract.
+        for key in ("velocity_x", "velocity_y", "atan_response_x", "atan_response_y",
+                    "filtered_error_meas_x", "filtered_error_meas_y",
+                    "predicted_offset_x", "predicted_offset_y",
+                    "quantizer_residual_x", "quantizer_residual_y"):
+            if key in decision:
+                assert isinstance(decision[key], (int, float)), key

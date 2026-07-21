@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+pub mod dual_phase_v2;
+
 use crate::{AppError, DetectionBatch, DeviceCommand, FrameStamp, MonotonicNanos, SelectedTarget};
 
 /// Replay-only control result tied to the observation that produced it.
