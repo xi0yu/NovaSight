@@ -14,14 +14,17 @@ use crate::{
     RuntimeCommandReceipt, RuntimeEpoch, RuntimePhase,
 };
 
-use super::session::{EpochSnapshotPublisher, RuntimeSession, SessionStats};
+use super::session::{EpochSnapshotPublisher, RuntimeSession, RuntimeSessionEvent, SessionStats};
 
 const COMMAND_CAPACITY: usize = 16;
+const EVENT_CAPACITY: usize = 16;
 
 #[derive(Clone)]
 enum ReplaySeed {
     Fixture,
     Rebind(Arc<[DetectionBatch]>),
+    #[cfg(test)]
+    FaultFirstThenRebind(Arc<[DetectionBatch]>),
 }
 
 /// Replay-only construction inputs retained by the manager so each epoch gets
@@ -52,11 +55,31 @@ impl RuntimeDependencies {
         }
     }
 
+    #[cfg(test)]
+    fn fault_first_then_rebind(batches: impl IntoIterator<Item = DetectionBatch>) -> Self {
+        Self {
+            replay_seed: ReplaySeed::FaultFirstThenRebind(
+                batches.into_iter().collect::<Vec<_>>().into(),
+            ),
+            frame_interval: Duration::ZERO,
+        }
+    }
+
     fn source_for(&self, epoch: RuntimeEpoch) -> ReplayPerceptionSource {
         match &self.replay_seed {
             ReplaySeed::Fixture => ReplayPerceptionSource::new([fixture_batch(epoch)]),
             ReplaySeed::Rebind(batches) => {
                 ReplayPerceptionSource::new(batches.iter().map(|batch| rebind_batch(batch, epoch)))
+            }
+            #[cfg(test)]
+            ReplaySeed::FaultFirstThenRebind(batches) => {
+                if epoch == RuntimeEpoch(1) {
+                    ReplayPerceptionSource::new(batches.iter().cloned())
+                } else {
+                    ReplayPerceptionSource::new(
+                        batches.iter().map(|batch| rebind_batch(batch, epoch)),
+                    )
+                }
             }
         }
     }
@@ -93,7 +116,14 @@ impl RuntimeManager {
         let (snapshot_tx, snapshot_rx) = watch::channel(initial);
         let publisher = EpochSnapshotPublisher::new(snapshot_tx);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
-        tokio::spawn(run_manager(command_rx, publisher, dependencies));
+        let (event_tx, event_rx) = mpsc::channel(EVENT_CAPACITY);
+        tokio::spawn(run_manager(
+            command_rx,
+            event_rx,
+            event_tx,
+            publisher,
+            dependencies,
+        ));
 
         RuntimeHandle {
             command_tx,
@@ -172,20 +202,39 @@ struct RuntimeCommand {
 
 async fn run_manager(
     mut command_rx: mpsc::Receiver<RuntimeCommand>,
+    mut event_rx: mpsc::Receiver<RuntimeSessionEvent>,
+    event_tx: mpsc::Sender<RuntimeSessionEvent>,
     publisher: EpochSnapshotPublisher,
     dependencies: RuntimeDependencies,
 ) {
     let mut next_epoch = 0_u64;
     let mut session: Option<RuntimeSession> = None;
 
-    while let Some(command) = command_rx.recv().await {
-        let result = match command.kind {
-            RuntimeCommandKind::Start => {
-                start_session(&publisher, &dependencies, &mut next_epoch, &mut session)
+    loop {
+        tokio::select! {
+            biased;
+            Some(event) = event_rx.recv() => {
+                handle_session_event(event, &publisher, &mut session).await;
             }
-            RuntimeCommandKind::Stop => stop_session(&publisher, &mut session).await,
-        };
-        let _ = command.reply.send(result);
+            command = command_rx.recv() => {
+                let Some(command) = command else {
+                    break;
+                };
+                let result = match command.kind {
+                    RuntimeCommandKind::Start => {
+                        start_session(
+                            &publisher,
+                            &dependencies,
+                            &event_tx,
+                            &mut next_epoch,
+                            &mut session,
+                        )
+                    }
+                    RuntimeCommandKind::Stop => stop_session(&publisher, &mut session).await,
+                };
+                let _ = command.reply.send(result);
+            }
+        }
     }
 
     if let Some(active_session) = session.take() {
@@ -199,9 +248,42 @@ async fn run_manager(
     }
 }
 
+async fn handle_session_event(
+    event: RuntimeSessionEvent,
+    publisher: &EpochSnapshotPublisher,
+    session: &mut Option<RuntimeSession>,
+) {
+    let RuntimeSessionEvent::Faulted {
+        epoch,
+        error,
+        stats,
+    } = event;
+    let current = publisher.current();
+    if current.epoch != Some(epoch) || session.is_none() {
+        return;
+    }
+
+    let mut faulted = current.as_ref().clone();
+    faulted.phase = RuntimePhase::Faulted;
+    faulted.running = false;
+    faulted.last_generation = stats.last_generation;
+    faulted.processed_batches = stats.processed_batches;
+    faulted.device_receipts = stats.device_receipts;
+    faulted.fatal_error = Some(ErrorSnapshot::from_error(&error));
+
+    // Fault publication and epoch revocation share the ownership gate. Any
+    // accepted send is before this point; no later send can acquire authority.
+    publisher.revoke_and_publish(faulted);
+
+    if let Some(faulted_session) = session.take() {
+        let _ = faulted_session.stop().await;
+    }
+}
+
 fn start_session(
     publisher: &EpochSnapshotPublisher,
     dependencies: &RuntimeDependencies,
+    event_tx: &mpsc::Sender<RuntimeSessionEvent>,
     next_epoch: &mut u64,
     session: &mut Option<RuntimeSession>,
 ) -> Result<RuntimeCommandReceipt, AppError> {
@@ -210,8 +292,8 @@ fn start_session(
         RuntimePhase::Running | RuntimePhase::Standby => {
             return Ok(receipt(&current));
         }
-        RuntimePhase::Stopped => {}
-        RuntimePhase::Starting | RuntimePhase::Stopping | RuntimePhase::Faulted => {
+        RuntimePhase::Stopped | RuntimePhase::Faulted => {}
+        RuntimePhase::Starting | RuntimePhase::Stopping => {
             return Err(AppError::RuntimeCommandConflict { command: "start" });
         }
     }
@@ -241,6 +323,7 @@ fn start_session(
         ProportionalReplayControl::new(1.0),
         device,
         publisher.clone(),
+        event_tx.clone(),
     ));
 
     Ok(receipt(&publisher.current()))
@@ -301,5 +384,77 @@ fn receipt(snapshot: &Arc<OperationalSnapshot>) -> RuntimeCommandReceipt {
         epoch: snapshot.epoch,
         phase: snapshot.phase,
         snapshot: snapshot.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target_batch(epoch: RuntimeEpoch, generation: u64) -> DetectionBatch {
+        let detection = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).expect("detection");
+        DetectionBatch::fixture(
+            FrameStamp::new(epoch, generation, generation),
+            640,
+            640,
+            vec![detection],
+        )
+        .expect("batch")
+    }
+
+    async fn wait_for_snapshot(
+        runtime: &RuntimeHandle,
+        predicate: impl Fn(&OperationalSnapshot) -> bool,
+    ) -> Arc<OperationalSnapshot> {
+        let mut snapshots = runtime.subscribe();
+        loop {
+            let snapshot = snapshots.borrow_and_update().clone();
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+            snapshots
+                .changed()
+                .await
+                .expect("runtime keeps snapshot watch open");
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_cleans_terminal_fault_before_allowing_restart() {
+        let runtime = RuntimeManager::spawn(RuntimeDependencies::fault_first_then_rebind([
+            target_batch(RuntimeEpoch(1), 1),
+            target_batch(RuntimeEpoch(99), 2),
+        ]));
+
+        let first = runtime.start().await.expect("first epoch");
+        let faulted =
+            wait_for_snapshot(&runtime, |snapshot| snapshot.phase == RuntimePhase::Faulted).await;
+        assert_eq!(faulted.epoch, first.epoch);
+        assert_eq!(faulted.processed_batches, 1);
+        assert_eq!(faulted.device_receipts, 1);
+        assert_eq!(
+            faulted
+                .fatal_error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("runtime_epoch_mismatch")
+        );
+
+        let receipts_at_fault = faulted.device_receipts;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(runtime.snapshot().device_receipts, receipts_at_fault);
+
+        let second = runtime.start().await.expect("clean restart after fault");
+        assert!(second.epoch > first.epoch);
+        let restarted = wait_for_snapshot(&runtime, |snapshot| {
+            snapshot.epoch == second.epoch && snapshot.device_receipts == 2
+        })
+        .await;
+        assert_eq!(restarted.phase, RuntimePhase::Running);
+        assert_eq!(restarted.processed_batches, 2);
+        assert_eq!(restarted.fatal_error, None);
+        runtime.stop().await.expect("stop restarted epoch");
     }
 }
