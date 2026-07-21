@@ -85,11 +85,9 @@ rust/
 - Create: `rust/crates/novasight-store/src/lib.rs`
 - Create: `rust/crates/novasight-platform-jetson/Cargo.toml`
 - Create: `rust/crates/novasight-platform-jetson/src/lib.rs`
-- Create: `rust/bins/relink_server/Cargo.toml`
-- Create: `rust/bins/relink_server/src/main.rs`
 
 **Interfaces:**
-- Produces workspace package names `novasight-core`, `novasight-api`, `novasight-store`, `novasight-platform-jetson`, and binary package `relink-server` with binary name `relink_server`.
+- Produces workspace package names `novasight-core`, `novasight-api`, `novasight-store`, and `novasight-platform-jetson`.
 - Existing package `novasight-deepstream-bridge` remains unchanged and in the workspace.
 
 - [ ] **Step 1: Replace the workspace manifest with explicit members and shared dependencies**
@@ -97,7 +95,6 @@ rust/
 ```toml
 [workspace]
 members = [
-  "bins/relink_server",
   "crates/novasight-api",
   "crates/novasight-core",
   "crates/novasight-deepstream-bridge",
@@ -128,11 +125,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 ```
 
-- [ ] **Step 2: Create the five package manifests with path-only internal dependencies**
+- [ ] **Step 2: Create the four library package manifests with path-only internal dependencies**
 
-`novasight-core` depends only on `async-trait`, `serde`, `thiserror`, `tokio`, and `uuid`. `novasight-api` depends on Axum/Tower plus `novasight-core`. `novasight-store` depends on Serde/YAML plus `novasight-core`. `novasight-platform-jetson` depends on `novasight-core`. The binary depends on all four crates plus Clap/Tokio/Tracing.
+`novasight-core` depends only on `async-trait`, `serde`, `thiserror`, `tokio`, and `uuid`. `novasight-api` depends on Axum/Tower plus `novasight-core`. `novasight-store` depends on Serde/YAML plus `novasight-core`. `novasight-platform-jetson` depends on `novasight-core`.
 
-- [ ] **Step 3: Create minimal library roots and a binary that reports missing bootstrap**
+- [ ] **Step 3: Create minimal library roots**
 
 ```rust
 // crates/novasight-core/src/lib.rs
@@ -146,18 +143,12 @@ uuid = { version = "1", features = ["serde", "v4"] }
 
 // crates/novasight-platform-jetson/src/lib.rs
 #![deny(unsafe_op_in_unsafe_fn)]
-
-// bins/relink_server/src/main.rs
-fn main() {
-    eprintln!("relink_server bootstrap is not installed");
-    std::process::exit(2);
-}
 ```
 
 - [ ] **Step 4: Run workspace metadata and check**
 
 Run: `cargo metadata --no-deps --format-version 1` from `rust/`.  
-Expected: all six workspace packages are listed exactly once.
+Expected: the existing bridge and four new library packages are listed exactly once.
 
 Run: `cargo check --workspace`.  
 Expected: PASS.
@@ -165,7 +156,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add rust/Cargo.toml rust/Cargo.lock rust/crates/novasight-{core,api,store,platform-jetson} rust/bins/relink_server
+git add rust/Cargo.toml rust/Cargo.lock rust/crates/novasight-{core,api,store,platform-jetson}
 git commit -m "build(rust): establish NovaSight backend workspace"
 ```
 
@@ -638,9 +629,11 @@ git commit -m "feat(api): stream latest runtime snapshots over WebSocket"
 ### Task 8: Compose and Smoke-Test the relink_server Binary
 
 **Files:**
+- Modify: `rust/Cargo.toml`
+- Create: `rust/bins/relink_server/Cargo.toml`
+- Create: `rust/bins/relink_server/src/main.rs`
 - Create: `rust/bins/relink_server/src/bootstrap.rs`
 - Create: `rust/bins/relink_server/src/shutdown.rs`
-- Modify: `rust/bins/relink_server/src/main.rs`
 - Create: `rust/bins/relink_server/tests/cli.rs`
 
 **Interfaces:**
