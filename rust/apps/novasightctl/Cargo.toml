@@ -1,0 +1,17 @@
+[package]
+name = "novasightctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "novasightctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "net"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

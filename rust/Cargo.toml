@@ -1,10 +1,15 @@
 [workspace]
 members = [
+  "apps/novasightd",
+  "apps/novasightctl",
   "bins/relink_server",
   "crates/novasight-api",
   "crates/novasight-core",
   "crates/novasight-deepstream-bridge",
+  "crates/novasight-pipeline",
   "crates/novasight-platform-jetson",
+  "crates/novasight-runtime",
+  "crates/novasight-client",
   "crates/novasight-store",
 ]
 resolver = "2"
@@ -15,6 +20,7 @@ edition = "2024"
 license = "Proprietary"
 
 [workspace.dependencies]
+anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
@@ -29,4 +35,3 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
-
