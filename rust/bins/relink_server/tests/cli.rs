@@ -157,10 +157,10 @@ fn unused_port() -> u16 {
 fn wait_until_healthy(address: SocketAddr, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok((200, body)) = try_http_request(address, "GET", "/healthz") {
-            if body == "{\"ok\":true}" {
-                return;
-            }
+        if let Ok((200, body)) = try_http_request(address, "GET", "/healthz")
+            && body == "{\"ok\":true}"
+        {
+            return;
         }
         assert!(Instant::now() < deadline, "server did not become healthy");
         thread::sleep(Duration::from_millis(10));
