@@ -1,8 +1,27 @@
 //! `novasight-runtime` — daemon lifecycle, RuntimeSupervisor,
 //! PipelineRuntime orchestration, and API server wiring.
 //!
-//! Commit 1 ships the empty crate skeleton. The supervisor loop,
-//! Application, ApiServer, and preflight module land in subsequent
-//! commits.
+//! Commit 2 introduces the RuntimeSupervisor, RuntimeHandle,
+//! RuntimeCommand, and RuntimeSnapshot type families. The
+//! PipelineRuntime, ConfigService, and HTTP transport land in
+//! later commits; `ReplaceConfig` is intentionally absent from
+//! the command enum until the ConfigService surface exists.
 
 #![forbid(unsafe_code)]
+
+pub mod command;
+mod error;
+mod protocol;
+pub mod snapshot;
+mod state;
+pub mod supervisor;
+
+pub use command::RuntimeCommand;
+pub use error::{RuntimeError, RuntimeErrorKind};
+pub use novasight_core::RuntimeEpoch;
+pub use protocol::{RuntimeErrorSummary, SubsystemState};
+pub use snapshot::{
+    DaemonSnapshot, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshot, SubsystemSnapshots,
+};
+pub use state::{DaemonState, PipelineState};
+pub use supervisor::{RuntimeHandle, RuntimeSupervisor};
