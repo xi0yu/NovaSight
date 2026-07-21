@@ -2,13 +2,24 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
+use std::os::darwin::fs::MetadataExt as DarwinMetadataExt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::fd::AsRawFd;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::MetadataExt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::fs::OpenOptionsExt;
+
+#[cfg(target_os = "linux")]
+use e2p_fileflags::FileFlags;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use xattr::FileExt as XattrFileExt;
 
 use serde_yaml::Value;
 
@@ -41,7 +52,7 @@ impl YamlConfigRepository {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<AppConfig, ConfigError> {
-        load_document(path.as_ref()).map(|(_, config)| config)
+        load_document(path.as_ref()).map(|(_, _, config)| config)
     }
 
     pub fn save(
@@ -104,6 +115,13 @@ pub enum ConfigError {
     SymlinkUnsupported {
         path: PathBuf,
     },
+    HardlinkUnsupported {
+        path: PathBuf,
+        links: u64,
+    },
+    PathChanged {
+        path: PathBuf,
+    },
     SecurityMetadataUnsupported {
         path: PathBuf,
         reason: String,
@@ -121,6 +139,8 @@ impl ConfigError {
             Self::RevisionOverflow { .. } => "CONFIG_REVISION_OVERFLOW",
             Self::ReservedLegacyKey { .. } => "CONFIG_RESERVED_LEGACY_KEY",
             Self::SymlinkUnsupported { .. } => "CONFIG_SYMLINK_UNSUPPORTED",
+            Self::HardlinkUnsupported { .. } => "CONFIG_HARDLINK_UNSUPPORTED",
+            Self::PathChanged { .. } => "CONFIG_PATH_CHANGED",
             Self::SecurityMetadataUnsupported { .. } => "CONFIG_SECURITY_METADATA_UNSUPPORTED",
         }
     }
@@ -135,6 +155,8 @@ impl ConfigError {
             | Self::RevisionOverflow { path, .. }
             | Self::ReservedLegacyKey { path, .. }
             | Self::SymlinkUnsupported { path }
+            | Self::HardlinkUnsupported { path, .. }
+            | Self::PathChanged { path }
             | Self::SecurityMetadataUnsupported { path, .. } => path,
         }
     }
@@ -207,6 +229,16 @@ impl fmt::Display for ConfigError {
                 "configuration symlinks are unsupported: {}",
                 path.display()
             ),
+            Self::HardlinkUnsupported { path, links } => write!(
+                formatter,
+                "configuration has {links} hard links and cannot be atomically replaced: {}",
+                path.display()
+            ),
+            Self::PathChanged { path } => write!(
+                formatter,
+                "configuration path changed while it was being saved: {}",
+                path.display()
+            ),
             Self::SecurityMetadataUnsupported { path, reason } => write!(
                 formatter,
                 "configuration security metadata cannot be preserved for {}: {reason}",
@@ -226,14 +258,19 @@ impl Error for ConfigError {
             | Self::RevisionOverflow { .. }
             | Self::ReservedLegacyKey { .. }
             | Self::SymlinkUnsupported { .. }
+            | Self::HardlinkUnsupported { .. }
+            | Self::PathChanged { .. }
             | Self::SecurityMetadataUnsupported { .. } => None,
         }
     }
 }
 
-fn load_document(path: &Path) -> Result<(Value, AppConfig), ConfigError> {
-    reject_symlink(path)?;
-    let source = fs::read_to_string(path).map_err(|source| read_error(path, source))?;
+fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
+    let file = open_config_file(path)?;
+    let mut source = String::new();
+    (&file)
+        .read_to_string(&mut source)
+        .map_err(|source| io_error("read", path, source))?;
     let document: Value = serde_yaml::from_str(&source).map_err(|source| ConfigError::Parse {
         path: path.to_owned(),
         source,
@@ -242,7 +279,44 @@ fn load_document(path: &Path) -> Result<(Value, AppConfig), ConfigError> {
         path: path.to_owned(),
         source,
     })?;
-    Ok((document, config))
+    Ok((file, document, config))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_config_file(path: &Path) -> Result<File, ConfigError> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|source| {
+            if source.raw_os_error() == Some(libc::ELOOP) {
+                ConfigError::SymlinkUnsupported {
+                    path: path.to_owned(),
+                }
+            } else {
+                read_error(path, source)
+            }
+        })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn open_config_file(path: &Path) -> Result<File, ConfigError> {
+    reject_symlink(path)?;
+    File::open(path).map_err(|source| read_error(path, source))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ensure_save_supported(_path: &Path) -> Result<(), ConfigError> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn ensure_save_supported(path: &Path) -> Result<(), ConfigError> {
+    Err(ConfigError::SecurityMetadataUnsupported {
+        path: path.to_owned(),
+        reason: "atomic replacement security metadata verification is unsupported on this platform"
+            .to_owned(),
+    })
 }
 
 fn save_document(
@@ -250,13 +324,14 @@ fn save_document(
     config: &AppConfig,
     expected_revision: u64,
 ) -> Result<AppConfig, ConfigError> {
+    ensure_save_supported(path)?;
     let parent = parent_directory(path);
     let directory = File::open(parent).map_err(|source| read_error(path, source))?;
     directory
         .lock()
         .map_err(|source| io_error("lock parent directory", parent, source))?;
 
-    let (mut document, current) = load_document(path)?;
+    let (destination, mut document, current) = load_document(path)?;
     if current.revision != expected_revision {
         return Err(ConfigError::RevisionConflict {
             path: path.to_owned(),
@@ -289,7 +364,7 @@ fn save_document(
         source,
     })?;
 
-    atomic_replace(path, serialized.as_bytes(), &directory)?;
+    atomic_replace(path, serialized.as_bytes(), &directory, &destination)?;
     Ok(persisted)
 }
 
@@ -357,26 +432,30 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn validate_security_metadata(path: &Path, temporary_path: &Path) -> Result<(), ConfigError> {
-    let destination = read_security_metadata(path)?;
-    let temporary = read_security_metadata(temporary_path)?;
-    if destination == temporary {
+fn validate_security_metadata(
+    path: &Path,
+    destination: &File,
+    temporary: &File,
+) -> Result<(), ConfigError> {
+    let destination_metadata = read_security_metadata(destination, path)?;
+    let temporary_metadata = read_security_metadata(temporary, path)?;
+    if destination_metadata == temporary_metadata {
         Ok(())
     } else {
         Err(ConfigError::SecurityMetadataUnsupported {
             path: path.to_owned(),
-            reason: "destination owner, group, mode, ACL, or extended attributes differ from the atomic replacement".to_owned(),
+            reason: "destination owner, group, mode, ACL, inode flags, or extended attributes differ from the atomic replacement".to_owned(),
         })
     }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn validate_security_metadata(path: &Path, _temporary_path: &Path) -> Result<(), ConfigError> {
-    Err(ConfigError::SecurityMetadataUnsupported {
-        path: path.to_owned(),
-        reason: "atomic replacement security metadata verification is unsupported on this platform"
-            .to_owned(),
-    })
+fn validate_security_metadata(
+    path: &Path,
+    _destination: &File,
+    _temporary: &File,
+) -> Result<(), ConfigError> {
+    ensure_save_supported(path)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -386,21 +465,30 @@ struct SecurityMetadata {
     group: u32,
     mode: u32,
     acl: Vec<exacl::AclEntry>,
+    inode_flags: u32,
     extended_attributes: BTreeMap<OsString, Vec<u8>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn read_security_metadata(path: &Path) -> Result<SecurityMetadata, ConfigError> {
-    reject_symlink(path)?;
-    let metadata = fs::symlink_metadata(path)
+fn read_security_metadata(file: &File, path: &Path) -> Result<SecurityMetadata, ConfigError> {
+    let metadata = file
+        .metadata()
         .map_err(|source| security_metadata_error(path, "inspect file metadata", source))?;
-    let acl = exacl::getfacl(path, None)
+    if metadata.nlink() != 1 {
+        return Err(ConfigError::HardlinkUnsupported {
+            path: path.to_owned(),
+            links: metadata.nlink(),
+        });
+    }
+    let acl = exacl::getfacl(descriptor_path(file), None)
         .map_err(|source| security_metadata_error(path, "inspect access-control list", source))?;
-    let attributes = xattr::list(path)
+    let attributes = file
+        .list_xattr()
         .map_err(|source| security_metadata_error(path, "list extended attributes", source))?;
     let mut extended_attributes = BTreeMap::new();
     for name in attributes {
-        let value = xattr::get(path, &name)
+        let value = file
+            .get_xattr(&name)
             .map_err(|source| security_metadata_error(path, "read extended attribute", source))?
             .ok_or_else(|| ConfigError::SecurityMetadataUnsupported {
                 path: path.to_owned(),
@@ -417,8 +505,60 @@ fn read_security_metadata(path: &Path) -> Result<SecurityMetadata, ConfigError> 
         group: metadata.gid(),
         mode: metadata.mode(),
         acl,
+        inode_flags: inode_flags(file, &metadata, path)?,
         extended_attributes,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn inode_flags(file: &File, _metadata: &fs::Metadata, path: &Path) -> Result<u32, ConfigError> {
+    file.flags()
+        .map(|flags| flags.bits())
+        .map_err(|source| security_metadata_error(path, "inspect inode flags", source))
+}
+
+#[cfg(target_os = "macos")]
+fn inode_flags(_file: &File, metadata: &fs::Metadata, _path: &Path) -> Result<u32, ConfigError> {
+    Ok(metadata.st_flags())
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_path(file: &File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
+}
+
+#[cfg(target_os = "macos")]
+fn descriptor_path(file: &File) -> PathBuf {
+    PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn verify_path_identity(path: &Path, destination: &File) -> Result<(), ConfigError> {
+    let current = open_config_file(path)?;
+    let expected = destination
+        .metadata()
+        .map_err(|source| security_metadata_error(path, "inspect opened identity", source))?;
+    let actual = current
+        .metadata()
+        .map_err(|source| security_metadata_error(path, "inspect path identity", source))?;
+    if actual.nlink() != 1 {
+        return Err(ConfigError::HardlinkUnsupported {
+            path: path.to_owned(),
+            links: actual.nlink(),
+        });
+    }
+    if expected.dev() == actual.dev() && expected.ino() == actual.ino() {
+        Ok(())
+    } else {
+        Err(ConfigError::PathChanged {
+            path: path.to_owned(),
+        })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn verify_path_identity(path: &Path, _destination: &File) -> Result<(), ConfigError> {
+    ensure_save_supported(path)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -429,17 +569,24 @@ fn security_metadata_error(path: &Path, operation: &'static str, source: io::Err
     }
 }
 
-fn atomic_replace(path: &Path, contents: &[u8], directory: &File) -> Result<(), ConfigError> {
+fn atomic_replace(
+    path: &Path,
+    contents: &[u8],
+    directory: &File,
+    destination: &File,
+) -> Result<(), ConfigError> {
     let parent = parent_directory(path);
-    let permissions = fs::metadata(path)
-        .map_err(|source| io_error("metadata", path, source))?
+    let permissions = destination
+        .metadata()
+        .map_err(|source| io_error("inspect opened metadata", path, source))?
         .permissions();
     let (temporary_path, mut temporary_file) = create_temporary_file(parent, path.file_name())?;
     let mut cleanup = TemporaryCleanup::new(temporary_path.clone());
 
-    fs::set_permissions(&temporary_path, permissions)
+    temporary_file
+        .set_permissions(permissions)
         .map_err(|source| io_error("set temporary permissions", &temporary_path, source))?;
-    validate_security_metadata(path, &temporary_path)?;
+    validate_security_metadata(path, destination, &temporary_file)?;
     temporary_file
         .write_all(contents)
         .map_err(|source| io_error("write temporary file", &temporary_path, source))?;
@@ -449,11 +596,11 @@ fn atomic_replace(path: &Path, contents: &[u8], directory: &File) -> Result<(), 
     temporary_file
         .sync_all()
         .map_err(|source| io_error("sync temporary file", &temporary_path, source))?;
-    drop(temporary_file);
-
-    validate_security_metadata(path, &temporary_path)?;
+    validate_security_metadata(path, destination, &temporary_file)?;
+    verify_path_identity(path, destination)?;
 
     fs::rename(&temporary_path, path).map_err(|source| io_error("replace", path, source))?;
+    drop(temporary_file);
     cleanup.disarm();
 
     directory
@@ -479,6 +626,7 @@ fn create_temporary_file(
         temporary_name.push(format!(".tmp.{}.{sequence}", std::process::id()));
         let temporary_path = parent.join(temporary_name);
         match OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .open(&temporary_path)
@@ -538,5 +686,31 @@ impl Drop for TemporaryCleanup {
         if let Some(path) = self.path.take() {
             let _ = fs::remove_file(path);
         }
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_identity_check_rejects_an_inode_replaced_after_open() {
+        let directory = std::env::temp_dir().join(format!(
+            "novasight-config-identity-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("novasight.yaml");
+        let replacement = directory.join("replacement.yaml");
+        fs::write(&path, "revision: 0\n").unwrap();
+        fs::write(&replacement, "revision: 1\n").unwrap();
+        let opened = open_config_file(&path).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+
+        let error = verify_path_identity(&path, &opened).unwrap_err();
+
+        assert_eq!(error.code(), "CONFIG_PATH_CHANGED");
+        fs::remove_dir_all(directory).unwrap();
     }
 }

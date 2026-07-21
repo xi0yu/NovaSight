@@ -10,5 +10,9 @@ serde_yaml.workspace = true
 novasight-core = { path = "../novasight-core" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
 exacl = "0.13"
 xattr = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+e2p-fileflags = "0.1"

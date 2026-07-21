@@ -266,6 +266,30 @@ fn symlink_configuration_paths_are_rejected_without_replacing_the_link() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn hard_linked_configuration_paths_are_rejected_without_splitting_aliases() {
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    let alias = directory.join("novasight-alias.yaml");
+    let contents = "revision: 0\nserver:\n  port: 5174\n";
+    fs::write(&path, contents).unwrap();
+    fs::hard_link(&path, &alias).unwrap();
+    let config = YamlConfigRepository::load(&path).unwrap();
+
+    let error = YamlConfigRepository::save(&path, &config, 0).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_HARDLINK_UNSUPPORTED");
+    assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+    assert_eq!(fs::read_to_string(&alias).unwrap(), contents);
+    assert_eq!(
+        fs::metadata(&path).unwrap().ino(),
+        fs::metadata(&alias).unwrap().ino()
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn save_fails_closed_when_destination_has_unpreservable_extended_metadata() {
