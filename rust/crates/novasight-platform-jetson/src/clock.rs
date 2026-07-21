@@ -21,11 +21,6 @@ impl Default for SystemMonotonicClock {
 
 impl Clock for SystemMonotonicClock {
     fn now(&self) -> MonotonicNanos {
-        MonotonicNanos(
-            self.origin
-                .elapsed()
-                .as_nanos()
-                .min(u64::MAX as u128) as u64,
-        )
+        MonotonicNanos(self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64)
     }
 }
