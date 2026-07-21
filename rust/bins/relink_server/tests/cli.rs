@@ -2,8 +2,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::{Child, ChildStderr, Command, Output, Stdio};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,7 +57,7 @@ fn disabled_replay_is_rejected_before_binding() {
 
 #[test]
 fn open_output_gate_aborts_startup() {
-    let config = TempConfig::server("open-output-gate", unused_port(), true, true);
+    let config = TempConfig::server("open-output-gate", 0, true, true);
     let output = run_with_config(config.path());
 
     assert!(!output.status.success());
@@ -75,17 +78,16 @@ fn bind_failure_exits_nonzero_with_stable_reason() {
 #[cfg(unix)]
 #[test]
 fn actual_binary_composes_replay_api_websocket_and_sigterm_shutdown() {
-    let port = unused_port();
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let config = TempConfig::server("composition-smoke", port, true, false);
-    let child = binary()
+    let config = TempConfig::server("composition-smoke", 0, true, false);
+    let mut child = binary()
         .args(["--config", config.path().to_str().expect("utf-8 path")])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn relink_server");
+    let stderr = child.stderr.take().expect("capture relink_server stderr");
     let mut server = ChildGuard::new(child);
-
+    let address = wait_for_listening_address(stderr, Duration::from_secs(5));
     wait_until_healthy(address, Duration::from_secs(5));
     let (status, health) = http_request(address, "GET", "/healthz");
     assert_eq!(status, 200);
@@ -146,12 +148,25 @@ fn assert_stderr_code(output: &Output, code: &str) {
     );
 }
 
-fn unused_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve ephemeral port")
-        .local_addr()
-        .expect("ephemeral address")
-        .port()
+fn wait_for_listening_address(stderr: ChildStderr, timeout: Duration) -> SocketAddr {
+    let (address_tx, address_rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let result = BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+            .find_map(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("address="))
+                    .and_then(|address| address.parse().ok())
+            })
+            .ok_or("relink_server exited without reporting its listening address");
+        let _ = address_tx.send(result);
+    });
+
+    address_rx
+        .recv_timeout(timeout)
+        .expect("timed out waiting for relink_server readiness")
+        .expect("relink_server readiness output")
 }
 
 fn wait_until_healthy(address: SocketAddr, timeout: Duration) {
@@ -163,7 +178,7 @@ fn wait_until_healthy(address: SocketAddr, timeout: Duration) {
             return;
         }
         assert!(Instant::now() < deadline, "server did not become healthy");
-        thread::sleep(Duration::from_millis(10));
+        thread::yield_now();
     }
 }
 

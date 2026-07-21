@@ -14,6 +14,7 @@ use crate::{Cli, shutdown};
 pub(super) async fn run(cli: Cli) -> Result<(), BootstrapError> {
     let config = YamlConfigRepository::load(&cli.config)?;
     validate_phase_one(&config)?;
+    let signals = shutdown::ShutdownSignals::register()?;
 
     let clock = SystemMonotonicClock::default();
     let dependencies = replay_dependencies(&clock);
@@ -34,9 +35,9 @@ pub(super) async fn run(cli: Cli) -> Result<(), BootstrapError> {
             address: bind_address,
             source,
         })?;
-    tracing::info!(address = %local_address, "relink_server listening");
+    eprintln!("relink_server listening address={local_address}");
 
-    shutdown::serve(listener, app, runtime).await?;
+    shutdown::serve(listener, app, runtime, signals).await?;
     Ok(())
 }
 
