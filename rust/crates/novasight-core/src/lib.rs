@@ -2,6 +2,7 @@
 
 pub mod control;
 pub mod error;
+pub mod freshness;
 pub mod geometry;
 pub mod output;
 pub mod perception;
