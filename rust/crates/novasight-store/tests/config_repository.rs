@@ -380,3 +380,20 @@ fn path_bound_repository_implements_the_store_neutral_contract() {
     assert_eq!(saved.revision, 12);
     assert_eq!(YamlConfigRepository::load(path).unwrap().server.port, 5176);
 }
+
+#[test]
+fn store_dependencies_do_not_require_native_e2p_libclang_or_pkg_config_tooling() {
+    let manifest = include_str!("../Cargo.toml");
+    let lockfile = include_str!("../../../Cargo.lock");
+
+    for forbidden in ["e2p-fileflags", "e2p-sys", "bindgen", "pkg-config"] {
+        assert!(
+            !manifest.contains(forbidden),
+            "store manifest contains forbidden native build dependency {forbidden}"
+        );
+        assert!(
+            !lockfile.contains(&format!("name = \"{forbidden}\"")),
+            "workspace lockfile contains forbidden native build dependency {forbidden}"
+        );
+    }
+}

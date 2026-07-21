@@ -13,6 +13,3 @@ novasight-core = { path = "../novasight-core" }
 libc = "0.2"
 exacl = "0.13"
 xattr = "1"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-e2p-fileflags = "0.1"

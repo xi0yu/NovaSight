@@ -16,8 +16,6 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::OpenOptionsExt;
 
-#[cfg(target_os = "linux")]
-use e2p_fileflags::FileFlags;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use xattr::FileExt as XattrFileExt;
 
@@ -384,6 +382,7 @@ fn merge_value(document: &mut Value, replacement: Value) {
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn reject_symlink(path: &Path) -> Result<(), ConfigError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| read_error(path, source))?;
     if metadata.file_type().is_symlink() {
@@ -510,11 +509,34 @@ fn read_security_metadata(file: &File, path: &Path) -> Result<SecurityMetadata, 
     })
 }
 
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+const FS_IOC_GETFLAGS: u64 = 0x8008_6601;
+#[cfg(all(target_os = "linux", target_pointer_width = "32"))]
+const FS_IOC_GETFLAGS: u64 = 0x8004_6601;
+
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
 fn inode_flags(file: &File, _metadata: &fs::Metadata, path: &Path) -> Result<u32, ConfigError> {
-    file.flags()
-        .map(|flags| flags.bits())
-        .map_err(|source| security_metadata_error(path, "inspect inode flags", source))
+    let mut flags: libc::c_long = 0;
+    // SAFETY: FS_IOC_GETFLAGS is Linux's shipped _IOR('f', 1, long) request.
+    // `file` owns a live descriptor and `flags` is a correctly sized writable
+    // c_long for the kernel to initialize. The ioctl does not retain the pointer.
+    let result = unsafe {
+        libc::ioctl(
+            file.as_raw_fd(),
+            FS_IOC_GETFLAGS as _,
+            &mut flags as *mut libc::c_long,
+        )
+    };
+    if result < 0 {
+        Err(security_metadata_error(
+            path,
+            "inspect inode flags",
+            io::Error::last_os_error(),
+        ))
+    } else {
+        Ok(flags as u32)
+    }
 }
 
 #[cfg(target_os = "macos")]
