@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -11,13 +11,24 @@ use axum::{
 };
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::{
+    sync::watch,
+    time::{Instant, Interval, MissedTickBehavior},
+};
 
 use novasight_core::OperationalSnapshot;
 
 use crate::{ApiState, dto::RuntimeStateResponse};
 
 const RUNTIME_SNAPSHOT_KIND: &str = "runtime_snapshot";
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(200);
+
+fn heartbeat_interval() -> Interval {
+    let mut heartbeat =
+        tokio::time::interval_at(Instant::now() + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    heartbeat
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -109,27 +120,35 @@ async fn stream_status(
     if !send_while_receiving(&mut outbound, &mut inbound, initial).await {
         return;
     }
+    let mut heartbeat = heartbeat_interval();
 
     loop {
-        tokio::select! {
+        let publish = tokio::select! {
             changed = snapshots.changed() => {
                 if changed.is_err() {
                     return;
                 }
-                let Some(message) = current_message(&mut snapshots, topic) else {
-                    return;
-                };
-                if !send_while_receiving(&mut outbound, &mut inbound, message).await {
-                    return;
-                }
+                true
             }
+            _ = heartbeat.tick() => true,
             incoming = inbound.next() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
-                    Some(Ok(_)) => {}
+                    Some(Ok(_)) => false,
                 }
             }
+        };
+        if !publish {
+            continue;
         }
+
+        let Some(message) = current_message(&mut snapshots, topic) else {
+            return;
+        };
+        if !send_while_receiving(&mut outbound, &mut inbound, message).await {
+            return;
+        }
+        heartbeat.reset();
     }
 }
 
@@ -190,9 +209,11 @@ mod tests {
 
     use futures_util::{Sink, Stream};
     use novasight_core::{OperationalSnapshot, RunIntent, RuntimeEpoch, RuntimePhase};
-    use tokio::sync::{oneshot, watch};
+    use tokio::sync::{mpsc, oneshot, watch};
 
-    use super::{Message, project_current_with, send_while_receiving};
+    use super::{
+        HEARTBEAT_INTERVAL, Message, heartbeat_interval, project_current_with, send_while_receiving,
+    };
 
     fn snapshot(epoch: u64) -> OperationalSnapshot {
         OperationalSnapshot {
@@ -317,5 +338,25 @@ mod tests {
         .expect("close must interrupt blocked outbound send");
 
         assert!(!connected);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_publishes_at_five_hz() {
+        let mut heartbeat = heartbeat_interval();
+        let (tick_tx, mut tick_rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            heartbeat.tick().await;
+            tick_tx.send(()).await.expect("record heartbeat tick");
+        });
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(HEARTBEAT_INTERVAL - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            tick_rx.try_recv().is_err(),
+            "heartbeat must not arrive before 200 ms"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(tick_rx.recv().await, Some(()));
     }
 }

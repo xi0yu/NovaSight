@@ -94,7 +94,7 @@ async fn slow_watch_receiver_skips_intermediate_snapshots() {
 
 #[tokio::test]
 async fn status_route_upgrades_and_sends_current_snapshot_immediately() {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture());
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
     runtime.start().await.expect("start runtime");
     let observed_runtime = runtime.clone();
     let app = build_router(ApiState::new(runtime));
@@ -106,14 +106,15 @@ async fn status_route_upgrades_and_sends_current_snapshot_immediately() {
         axum::serve(listener, app).await.expect("serve test router");
     });
 
-    let payload = tokio::time::timeout(
+    let payloads = tokio::time::timeout(
         Duration::from_secs(3),
-        tokio::task::spawn_blocking(move || receive_first_text_frame(address, "capture")),
+        tokio::task::spawn_blocking(move || receive_text_frames(address, "capture", 1)),
     )
     .await
     .expect("initial WebSocket frame timeout")
     .expect("blocking client task")
     .expect("WebSocket exchange");
+    let payload = payloads.into_iter().next().expect("initial status frame");
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
         observed_runtime.snapshot().running,
@@ -131,7 +132,44 @@ async fn status_route_upgrades_and_sends_current_snapshot_immediately() {
     assert_eq!(frame["state"]["source"], "replay");
 }
 
-fn receive_first_text_frame(address: std::net::SocketAddr, topic: &str) -> std::io::Result<String> {
+#[tokio::test]
+async fn idle_status_route_sends_periodic_liveness_envelopes() {
+    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
+    let app = build_router(ApiState::new(runtime));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve test router");
+    });
+
+    let payloads = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::task::spawn_blocking(move || receive_text_frames(address, "summary", 2)),
+    )
+    .await
+    .expect("heartbeat WebSocket frame timeout")
+    .expect("blocking heartbeat client task")
+    .expect("heartbeat WebSocket exchange");
+    server.abort();
+
+    assert_eq!(payloads.len(), 2);
+    for payload in payloads {
+        let frame: Value = serde_json::from_str(&payload).expect("heartbeat frame JSON");
+        assert_eq!(frame["kind"], "runtime_snapshot");
+        assert_eq!(frame["topic"], "summary");
+        assert_eq!(frame["full"], false);
+        assert_eq!(frame["state"]["running"], false);
+        assert_eq!(frame["state"]["source"], "replay");
+    }
+}
+
+fn receive_text_frames(
+    address: std::net::SocketAddr,
+    topic: &str,
+    frame_count: usize,
+) -> std::io::Result<Vec<String>> {
     let mut stream = TcpStream::connect(address)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     write!(
@@ -158,10 +196,19 @@ fn receive_first_text_frame(address: std::net::SocketAddr, topic: &str) -> std::
         )));
     }
 
+    let mut payloads = Vec::with_capacity(frame_count);
+    for _ in 0..frame_count {
+        payloads.push(read_text_frame(&mut stream)?);
+    }
+    stream.write_all(&[0x88, 0x80, 0, 0, 0, 0])?;
+    Ok(payloads)
+}
+
+fn read_text_frame(stream: &mut TcpStream) -> std::io::Result<String> {
     let mut header = [0_u8; 2];
     stream.read_exact(&mut header)?;
     if header[0] & 0x0f != 0x01 {
-        return Err(std::io::Error::other("first WebSocket frame is not text"));
+        return Err(std::io::Error::other("WebSocket frame is not text"));
     }
     if header[1] & 0x80 != 0 {
         return Err(std::io::Error::other("server frame must not be masked"));
@@ -183,7 +230,5 @@ fn receive_first_text_frame(address: std::net::SocketAddr, topic: &str) -> std::
     };
     let mut payload = vec![0_u8; usize::try_from(payload_length).expect("frame fits in memory")];
     stream.read_exact(&mut payload)?;
-
-    stream.write_all(&[0x88, 0x80, 0, 0, 0, 0])?;
     String::from_utf8(payload).map_err(std::io::Error::other)
 }
