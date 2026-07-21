@@ -2,7 +2,12 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AppError, Generation, MonotonicNanos, PointerDevice, RuntimeEpoch};
+pub mod latest_command;
+pub mod quantizer;
+
+use crate::error::AppError;
+use crate::perception::types::{Generation, MonotonicNanos, RuntimeEpoch};
+use crate::ports::PointerDevice;
 
 /// Fully typed pointer movement derived from one runtime observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
