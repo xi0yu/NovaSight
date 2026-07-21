@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "bins/relink_server",
   "crates/novasight-api",
   "crates/novasight-core",
   "crates/novasight-deepstream-bridge",
