@@ -151,6 +151,47 @@ fn head_movement_under_debounce_keeps_lock_with_held_by_debounce_reason() {
 }
 
 #[test]
+fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let left = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("left");
+    let right = Detection::new(1, 0, 500.0, 300.0, 40.0, 80.0, 0.9).expect("right");
+    let first = core.select(&[left, right]);
+    let stable_track = first.target_track_id.expect("track identity");
+
+    // DeepStream changed list order, so the same spatial candidate now has
+    // frame-local ID 1 while the other candidate has ID 0.
+    let other = Detection::new(0, 0, 500.0, 300.0, 40.0, 80.0, 0.9).expect("other");
+    let same = Detection::new(1, 0, 282.0, 300.0, 40.0, 80.0, 0.9).expect("same");
+    let second = core.select(&[other, same]);
+
+    assert_eq!(second.target_object_id, Some(1));
+    assert_eq!(second.target_track_id, Some(stable_track));
+    assert_eq!(core.locked().expect("locked").age_frames, 2);
+}
+
+#[test]
+fn unsupported_classes_age_out_the_previous_track() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_age: 2,
+        ..TargetingConfig::default()
+    });
+    let target = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("target");
+    let first = core.select(std::slice::from_ref(&target));
+    let first_track = first.target_track_id.expect("first track");
+    let irrelevant = Detection::new(0, 2, 280.0, 300.0, 40.0, 80.0, 0.9).expect("irrelevant");
+    for _ in 0..3 {
+        assert!(
+            core.select(std::slice::from_ref(&irrelevant))
+                .target_track_id
+                .is_none()
+        );
+    }
+
+    let reacquired = core.select(&[target]);
+    assert_ne!(reacquired.target_track_id, Some(first_track));
+}
+
+#[test]
 fn history_is_bounded() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     for index in 0..(novasight_core::tracking::DEFAULT_HISTORY_LIMIT * 4) {

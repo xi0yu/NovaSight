@@ -621,7 +621,92 @@ fn compute_model_fingerprint(manifest: &ModelManifest) -> Result<String, LivePer
     });
     let stable =
         serde_json::to_string(&payload).map_err(LivePerceptionError::SerializeFingerprint)?;
+    let stable = python_json_numbers(&stable);
     Ok(sha256_bytes(stable.as_bytes()))
+}
+
+/// Match Python's stable_json float spelling at the two ryu differences used
+/// by manifests: exponent padding and scientific notation below `1e-4`.
+/// Only JSON number tokens outside strings are rewritten.
+fn python_json_numbers(json: &str) -> String {
+    let bytes = json.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            output.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            output.push(byte);
+            index += 1;
+            continue;
+        }
+        if !byte.is_ascii_digit() && byte != b'-' {
+            output.push(byte);
+            index += 1;
+            continue;
+        }
+        let number_start = index;
+        index += 1;
+        while index < bytes.len()
+            && (bytes[index].is_ascii_digit()
+                || matches!(bytes[index], b'.' | b'e' | b'E' | b'+' | b'-'))
+        {
+            index += 1;
+        }
+        output.extend_from_slice(python_number_token(&bytes[number_start..index]).as_bytes());
+    }
+    String::from_utf8(output).expect("valid JSON remains UTF-8")
+}
+
+fn python_number_token(token: &[u8]) -> String {
+    let token = std::str::from_utf8(token).expect("JSON numbers are ASCII");
+    if let Some(exponent_at) = token.find(['e', 'E']) {
+        let (mantissa, exponent) = token.split_at(exponent_at);
+        let exponent = &exponent[1..];
+        let (sign, digits) = exponent
+            .strip_prefix(['+', '-'])
+            .map_or(("", exponent), |digits| (&exponent[..1], digits));
+        return format!(
+            "{mantissa}e{sign}{}{digits}",
+            if digits.len() == 1 { "0" } else { "" }
+        );
+    }
+    let (sign, unsigned) = token
+        .strip_prefix('-')
+        .map_or(("", token), |value| ("-", value));
+    let Some(fraction) = unsigned.strip_prefix("0.") else {
+        return token.to_owned();
+    };
+    let leading_zeros = fraction.bytes().take_while(|byte| *byte == b'0').count();
+    if leading_zeros < 4 || leading_zeros == fraction.len() {
+        return token.to_owned();
+    }
+    let significant = &fraction[leading_zeros..];
+    let (first, rest) = significant.split_at(1);
+    let mantissa = if rest.is_empty() {
+        first.to_owned()
+    } else {
+        format!("{first}.{rest}")
+    };
+    let exponent = leading_zeros + 1;
+    format!(
+        "{sign}{mantissa}e-{}{exponent}",
+        if exponent < 10 { "0" } else { "" }
+    )
 }
 
 fn validate_nvinfer_manifest_contract(
@@ -966,6 +1051,31 @@ mod tests {
             compute_model_fingerprint(&canonical_manifest()).expect("fingerprint"),
             "3866800678bc7e9031b148c4ec8f5314457c93f211f780557abaea5212e56d9b"
         );
+    }
+
+    #[test]
+    fn fingerprint_matches_python_exponent_float_format() {
+        let mut manifest = canonical_manifest();
+        manifest.output.anchors = vec![vec![1e-7]];
+        assert_eq!(
+            compute_model_fingerprint(&manifest).expect("fingerprint"),
+            "3baa62909243392b4bd0aeec3a23726a23112973a346654f5f6b9fd3b280858d"
+        );
+        assert_eq!(
+            python_json_numbers(r#"{"value":1e-7,"text":"1e-7"}"#),
+            r#"{"value":1e-07,"text":"1e-7"}"#
+        );
+    }
+
+    #[test]
+    fn fingerprint_matches_python_small_fixed_float_format() {
+        let mut manifest = canonical_manifest();
+        manifest.output.anchors = vec![vec![1e-5]];
+        assert_eq!(
+            compute_model_fingerprint(&manifest).expect("fingerprint"),
+            "efdfa2dc09af968ea57a7a7bcbf9c098a7e83335897e8b2e95574dfbbdeb5696"
+        );
+        assert_eq!(python_number_token(b"0.00001234"), "1.234e-05");
     }
 
     #[test]

@@ -1,16 +1,14 @@
 //! Phase 2 deterministic tracker and targeting core.
 //!
 //! The runtime replaces the Python ``RuntimeTracker`` and
-//! ``RuntimeTargetSelector`` modules for the algorithm slice only. Live
-//! DeepStream/TensorRT integration stays in the Python backend; this
-//! module consumes an already-admitted `DetectionBatch` and returns a
-//! typed `TargetSelection`.
+//! ``RuntimeTargetSelector`` modules. It consumes admitted detector
+//! candidates (including frame-local DeepStream identities), owns temporal
+//! association, and returns both the chosen candidate and a stable `TrackId`.
 //!
 //! The implementation is intentionally small and exhaustive:
-//! * no Kalman filter, no Hungarian assignment, no fuzzy gating. The
-//!   Python reference relies on those for live input; the Phase 2 slice
-//!   is replay-only and the test fixtures cover the deterministic
-//!   edges the algorithm must respect.
+//! * no Kalman filter or Hungarian assignment. The bounded nearest-centroid
+//!   association is deterministic and sufficient for the current single-lock
+//!   control contract.
 //! * no unbounded growth. History is bounded by `BoundedHistory` and
 //!   `TargetingCore::reset` is the only way to clear it.
 //! * lost tracks never produce a control target. After a configurable
@@ -30,10 +28,9 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 32;
 /// Maximum age (in frames) before a non-matched track is marked lost.
 pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
 
-/// Hard admission bound for the number of detection candidates per
-/// association step. The Python reference caps at 16; we keep the same
-/// limit so fixtures remain comparable.
-pub const MAX_TRACK_CANDIDATES: usize = 16;
+/// Hard admission bound shared with `DetectionBatch`, preventing the
+/// association surface from diverging from the perception boundary.
+pub const MAX_TRACK_CANDIDATES: usize = crate::perception::types::MAX_DETECTIONS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TrackState {
@@ -198,7 +195,10 @@ fn euclidean(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TargetSelection {
+    /// Frame-local candidate identity used to find the chosen bounding box.
     pub target_object_id: Option<u64>,
+    /// Stable identity allocated and associated by the Rust targeting core.
+    pub target_track_id: Option<TrackId>,
     pub target_class_id: Option<u32>,
     pub lock_reason: Option<LockReason>,
     pub candidates: usize,
@@ -210,6 +210,7 @@ impl TargetSelection {
     pub const fn empty() -> Self {
         Self {
             target_object_id: None,
+            target_track_id: None,
             target_class_id: None,
             lock_reason: None,
             candidates: 0,
@@ -248,6 +249,7 @@ impl Default for TargetingConfig {
 pub struct TargetingCore {
     config: TargetingConfig,
     history: BoundedHistory<Track>,
+    tracks: Vec<Track>,
     locked: Option<Track>,
     lost_count: u64,
     next_track_id: u64,
@@ -258,6 +260,7 @@ impl TargetingCore {
         Self {
             config,
             history: BoundedHistory::new(DEFAULT_HISTORY_LIMIT),
+            tracks: Vec::new(),
             locked: None,
             lost_count: 0,
             next_track_id: 1,
@@ -266,6 +269,7 @@ impl TargetingCore {
 
     pub fn reset(&mut self) {
         self.history = BoundedHistory::new(self.history.limit);
+        self.tracks.clear();
         self.locked = None;
         self.lost_count = 0;
         self.next_track_id = 1;
@@ -300,12 +304,12 @@ impl TargetingCore {
             .cloned()
             .collect();
         if admissible.is_empty() {
-            self.lost_count = self.lost_count.saturating_add(1);
-            self.locked = None;
+            self.miss_locked_target();
             return TargetSelection {
                 candidates,
                 inside_fov: 0,
                 target_object_id: None,
+                target_track_id: None,
                 target_class_id: None,
                 lock_reason: None,
                 lost_count: self.lost_count,
@@ -320,6 +324,7 @@ impl TargetingCore {
             .iter()
             .filter(|det| det.class_id() == 1)
             .collect();
+        let associations = associate(&self.tracks, &admissible).unwrap_or_default();
         class0.sort_by(|a, b| {
             distance_to_target(a, self.locked.as_ref())
                 .partial_cmp(&distance_to_target(b, self.locked.as_ref()))
@@ -345,30 +350,47 @@ impl TargetingCore {
 
         let track = match chosen {
             Some(det) => {
-                let track = Track {
-                    id: TrackId(self.next_track_id),
+                let associated = associations.iter().find_map(|association| {
+                    let prior = self
+                        .tracks
+                        .iter()
+                        .find(|track| track.id == association.track_id)?;
+                    (association.object_id == det.object_id()
+                        && euclidean(
+                            prior.center_x,
+                            prior.center_y,
+                            det.center_x(),
+                            det.center_y(),
+                        ) <= self.config.debounce_distance_px)
+                        .then_some(prior)
+                });
+                let id = associated.map_or_else(
+                    || {
+                        let id = TrackId(self.next_track_id);
+                        self.next_track_id = self.next_track_id.saturating_add(1);
+                        id
+                    },
+                    |track| track.id,
+                );
+                Track {
+                    id,
                     object_id: det.object_id(),
                     class_id: det.class_id(),
                     state: TrackState::Confirmed,
                     center_x: det.center_x(),
                     center_y: det.center_y(),
                     confidence: det.confidence(),
-                    age_frames: self
-                        .locked
-                        .as_ref()
-                        .filter(|prev| prev.object_id == det.object_id())
-                        .map_or(1, |prev| prev.age_frames + 1),
+                    age_frames: associated.map_or(1, |track| track.age_frames.saturating_add(1)),
                     missed_frames: 0,
-                };
-                self.next_track_id = self.next_track_id.saturating_add(1);
-                track
+                }
             }
             None => {
-                self.lost_count = self.lost_count.saturating_add(1);
+                self.miss_locked_target();
                 return TargetSelection {
                     candidates,
                     inside_fov: 0,
                     target_object_id: None,
+                    target_track_id: None,
                     target_class_id: None,
                     lock_reason: None,
                     lost_count: self.lost_count,
@@ -377,12 +399,15 @@ impl TargetingCore {
         };
 
         self.history.push(track.clone());
+        self.tracks.clear();
+        self.tracks.push(track.clone());
         self.lost_count = 0;
         self.locked = Some(track.clone());
         TargetSelection {
             candidates,
             inside_fov: admissible.len(),
             target_object_id: Some(track.object_id),
+            target_track_id: Some(track.id),
             target_class_id: Some(track.class_id),
             lock_reason: Some(reason),
             lost_count: self.lost_count,
@@ -401,6 +426,18 @@ impl TargetingCore {
             }
             None => true,
         }
+    }
+
+    fn miss_locked_target(&mut self) {
+        self.lost_count = self.lost_count.saturating_add(1);
+        for track in &mut self.tracks {
+            track.missed_frames = track.missed_frames.saturating_add(1);
+            if track.missed_frames > self.config.track_max_age {
+                track.state = TrackState::Lost;
+            }
+        }
+        self.tracks.retain(|track| track.state != TrackState::Lost);
+        self.locked = None;
     }
 }
 

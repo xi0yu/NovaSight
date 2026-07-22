@@ -506,29 +506,32 @@ fn spawn_targeting_worker(
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
                     let selection = targeting.select(batch.detections());
-                    let (target_id, aim_x, aim_y) =
-                        match (selection.target_object_id, selection.target_class_id) {
-                            (Some(object_id), Some(class_id)) => {
-                                match batch.detections().iter().find(|item| {
-                                    item.object_id() == object_id && item.class_id() == class_id
-                                }) {
-                                    Some(target) => {
-                                        (Some(object_id), target.center_x(), target.center_y())
-                                    }
-                                    None => {
-                                        shared.fault(
+                    let (target_id, aim_x, aim_y) = match (
+                        selection.target_object_id,
+                        selection.target_track_id,
+                        selection.target_class_id,
+                    ) {
+                        (Some(object_id), Some(track_id), Some(class_id)) => {
+                            match batch.detections().iter().find(|item| {
+                                item.object_id() == object_id && item.class_id() == class_id
+                            }) {
+                                Some(target) => {
+                                    (Some(track_id.0), target.center_x(), target.center_y())
+                                }
+                                None => {
+                                    shared.fault(
                                         "target selection did not belong to its detection batch",
                                     );
-                                        output.close();
-                                        break;
-                                    }
+                                    output.close();
+                                    break;
                                 }
                             }
-                            _ => {
-                                let (center_x, center_y) = batch.center();
-                                (None, center_x, center_y)
-                            }
-                        };
+                        }
+                        _ => {
+                            let (center_x, center_y) = batch.center();
+                            (None, center_x, center_y)
+                        }
+                    };
                     let (crosshair_x, crosshair_y) = batch.center();
                     let now = clock.now().0;
                     let observation = TargetedObservation {

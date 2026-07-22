@@ -59,7 +59,9 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].epoch, epoch);
     assert_eq!(receipts[0].generation, 1);
-    assert_eq!(receipts[0].target_object_id, 41);
+    // Output carries the Rust-owned stable TrackId, not the frame-local
+    // detector candidate identity (41).
+    assert_eq!(receipts[0].target_object_id, 1);
     assert_ne!(receipts[0].delta_x_counts, 0);
 
     let metrics = runtime.shutdown().expect("workers join");
