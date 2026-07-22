@@ -94,6 +94,67 @@ fn create_python_compatible_database(path: &std::path::Path) {
 }
 
 #[test]
+fn catalog_engine_registration_is_reference_only_and_idempotent() {
+    let directory = TestDirectory::new();
+    let model_root = directory.0.join("models");
+    fs::create_dir_all(model_root.join("nested")).unwrap();
+    let engine = model_root.join("nested/detector.engine");
+    fs::write(&engine, b"opaque-tensorrt-engine").unwrap();
+    let catalog =
+        SqliteModelCatalog::open_with_model_root(directory.0.join("novasight.db"), &model_root)
+            .unwrap();
+
+    let created = catalog
+        .register_catalog_engine("nested/detector.engine")
+        .unwrap();
+    assert!(created.created);
+    assert_eq!(created.project.name, "detector");
+    assert_eq!(created.version.source_kind, "onnx");
+    assert_eq!(created.version.input_shape, "engine-probe-required");
+    assert_eq!(created.artifact.kind, "engine");
+    assert_eq!(created.artifact.status, "pending");
+    assert!(created.artifact.checksum.starts_with("deferred:"));
+    assert_eq!(created.artifact.size_bytes, Some(22));
+    assert_eq!(created.engine_path, engine.canonicalize().unwrap());
+
+    let reused = catalog
+        .register_catalog_engine("nested/detector.engine")
+        .unwrap();
+    assert!(!reused.created);
+    assert_eq!(reused.project.id, created.project.id);
+    assert_eq!(reused.version.id, created.version.id);
+    assert_eq!(reused.artifact.id, created.artifact.id);
+    assert_eq!(catalog.list_projects().unwrap().len(), 1);
+    assert_eq!(catalog.list_versions(created.project.id).unwrap().len(), 1);
+    assert_eq!(catalog.list_artifacts(created.version.id).unwrap().len(), 1);
+    assert_eq!(fs::read(engine).unwrap(), b"opaque-tensorrt-engine");
+}
+
+#[test]
+fn catalog_engine_registration_rejects_escape_and_non_engine_paths() {
+    let directory = TestDirectory::new();
+    let model_root = directory.0.join("models");
+    fs::create_dir_all(&model_root).unwrap();
+    fs::write(model_root.join("detector.onnx"), b"onnx").unwrap();
+    let catalog =
+        SqliteModelCatalog::open_with_model_root(directory.0.join("novasight.db"), model_root)
+            .unwrap();
+
+    assert!(matches!(
+        catalog.register_catalog_engine("../outside.engine"),
+        Err(ModelCatalogError::InvalidCatalogModelPath(_))
+    ));
+    assert!(matches!(
+        catalog.register_catalog_engine("detector.onnx"),
+        Err(ModelCatalogError::InvalidCatalogModelPath(_))
+    ));
+    assert!(matches!(
+        catalog.register_catalog_engine("missing.engine"),
+        Err(ModelCatalogError::CatalogModelNotFound(_))
+    ));
+}
+
+#[test]
 fn publish_and_rollback_are_atomic_and_preserve_the_previous_artifact() {
     let directory = TestDirectory::new();
     let path = directory.0.join("novasight.db");

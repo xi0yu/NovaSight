@@ -1018,7 +1018,8 @@ impl IntoResponse for ControlApiError {
                 ModelCatalogError::ProjectNotFound(_)
                 | ModelCatalogError::VersionNotFound(_)
                 | ModelCatalogError::ArtifactNotFound(_)
-                | ModelCatalogError::DeploymentNotFound(_) => (
+                | ModelCatalogError::DeploymentNotFound(_)
+                | ModelCatalogError::CatalogModelNotFound(_) => (
                     StatusCode::NOT_FOUND,
                     "MODEL_CATALOG_NOT_FOUND",
                     error.to_string(),
@@ -1028,6 +1029,11 @@ impl IntoResponse for ControlApiError {
                 | ModelCatalogError::RollbackUnavailable(_) => (
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "MODEL_DEPLOYMENT_INVALID",
+                    error.to_string(),
+                ),
+                ModelCatalogError::InvalidCatalogModelPath(_) => (
+                    StatusCode::BAD_REQUEST,
+                    "MODEL_CATALOG_PATH_INVALID",
                     error.to_string(),
                 ),
                 ModelCatalogError::DeploymentChangedDuringActivation { .. } => (

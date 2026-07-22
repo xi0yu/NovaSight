@@ -98,6 +98,81 @@ impl PerceptionAdapter for CatalogAwareAdapter {
     }
 }
 
+#[tokio::test]
+async fn catalog_register_creates_an_idempotent_external_engine_reference() {
+    let directory = std::env::temp_dir().join(format!(
+        "novasight-model-register-api-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let model_root = directory.join("models");
+    std::fs::create_dir_all(model_root.join("nested")).unwrap();
+    let engine = model_root.join("nested/detector.engine");
+    std::fs::write(&engine, b"opaque-engine").unwrap();
+    let catalog =
+        SqliteModelCatalog::open_with_model_root(directory.join("novasight.db"), &model_root)
+            .unwrap();
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::recording().with_model_catalog(catalog.clone()),
+    );
+    let app = build_control_router_with_control_plane(
+        runtime.clone(),
+        None,
+        None,
+        catalog.clone(),
+        false,
+        None,
+    );
+    let register = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/models/catalog/register")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"relative_path":"nested/detector.engine"}"#))
+            .unwrap()
+    };
+
+    let first = app.clone().oneshot(register()).await.unwrap();
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let first: Value =
+        serde_json::from_slice(&to_bytes(first.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(first["created"], true);
+    assert_eq!(first["project"]["name"], "detector");
+    assert_eq!(first["version"]["input_shape"], "engine-probe-required");
+    assert_eq!(first["artifact"]["kind"], "engine");
+    assert_eq!(first["artifact"]["status"], "pending");
+    assert_eq!(
+        first["engine_path"],
+        engine.canonicalize().unwrap().to_string_lossy().as_ref()
+    );
+
+    let second = app.clone().oneshot(register()).await.unwrap();
+    let second: Value =
+        serde_json::from_slice(&to_bytes(second.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(second["created"], false);
+    assert_eq!(second["artifact"]["id"], first["artifact"]["id"]);
+
+    let invalid = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/models/catalog/register")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"relative_path":"../outside.engine"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), axum::http::StatusCode::BAD_REQUEST);
+    let invalid: Value =
+        serde_json::from_slice(&to_bytes(invalid.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(invalid["code"], "MODEL_CATALOG_PATH_INVALID");
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[derive(Debug)]
 struct StartRejectingCatalogAdapter {
     catalog: SqliteModelCatalog,

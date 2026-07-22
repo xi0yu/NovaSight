@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -58,6 +57,15 @@ pub struct ModelCatalogResponse {
     pub updated_files: usize,
     pub cache_hits: usize,
     pub force: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CatalogEngineRegistration {
+    pub project: ModelProject,
+    pub version: ModelVersion,
+    pub artifact: ModelArtifact,
+    pub engine_path: PathBuf,
+    pub created: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -896,6 +904,153 @@ impl SqliteModelCatalog {
         Ok(response)
     }
 
+    /// Register one existing TensorRT engine by reference. The model body is
+    /// neither copied nor hashed here; its immutable identity is established
+    /// later by the existing ingress/probe transaction before deployment.
+    pub fn register_catalog_engine(
+        &self,
+        relative_path: &str,
+    ) -> Result<CatalogEngineRegistration, ModelCatalogError> {
+        let relative = validate_catalog_relative_path(relative_path)?;
+        let engine_path = self.resolve_catalog_engine(&relative)?;
+        let metadata =
+            engine_path
+                .metadata()
+                .map_err(|source| ModelCatalogError::ReadModelFile {
+                    path: engine_path.clone(),
+                    source,
+                })?;
+        let reference_token = deferred_engine_token(&engine_path, &metadata)?;
+        let deferred_checksum = format!("deferred:{reference_token}");
+        let project_name = safe_catalog_component(
+            engine_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default(),
+            "model",
+        );
+        let version_name = format!("external-{reference_token}");
+        let engine_path_text = engine_path.to_string_lossy().into_owned();
+
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
+
+        if let Some((project, version, mut artifact)) =
+            registered_artifact_by_resolved_path(&transaction, self, &engine_path)?
+        {
+            artifact.size_bytes = Some(metadata.len());
+            transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+            return Ok(CatalogEngineRegistration {
+                project,
+                version,
+                artifact,
+                engine_path,
+                created: false,
+            });
+        }
+
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO model_projects(name, description) VALUES (?1, ?2)",
+                params![
+                    project_name,
+                    "References an existing TensorRT engine under a configured model root."
+                ],
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+        let project = transaction
+            .query_row(
+                "SELECT id, name, description FROM model_projects WHERE name = ?1",
+                [&project_name],
+                |row| {
+                    Ok(ModelProject {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        description: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO model_versions(project_id, version, source_kind, source_path, classes_json, input_shape) VALUES (?1, ?2, 'onnx', ?3, '[\"target\"]', 'engine-probe-required')",
+                params![project.id, version_name, engine_path_text],
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+        let version = transaction
+            .query_row(
+                "SELECT id, project_id, version, source_kind, source_path, classes_json, input_shape FROM model_versions WHERE project_id = ?1 AND version = ?2",
+                params![project.id, version_name],
+                model_version_from_row,
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+
+        transaction
+            .execute(
+                "INSERT INTO model_artifacts(version_id, kind, path, checksum, status) VALUES (?1, 'engine', ?2, ?3, 'pending')",
+                params![version.id, engine_path_text, deferred_checksum],
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+        let artifact_id = transaction.last_insert_rowid();
+        let mut artifact = transaction
+            .query_row(
+                "SELECT id, version_id, kind, path, checksum, status FROM model_artifacts WHERE id = ?1",
+                [artifact_id],
+                model_artifact_from_row,
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+        artifact.size_bytes = Some(metadata.len());
+        transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+        *self
+            .catalog_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+
+        Ok(CatalogEngineRegistration {
+            project,
+            version,
+            artifact,
+            engine_path,
+            created: true,
+        })
+    }
+
+    fn resolve_catalog_engine(&self, relative: &Path) -> Result<PathBuf, ModelCatalogError> {
+        for root in &self.catalog_roots {
+            let candidate = root.join(relative);
+            let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
+            let canonical_root = match root.canonicalize() {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            let canonical_candidate =
+                candidate
+                    .canonicalize()
+                    .map_err(|source| ModelCatalogError::ReadModelFile {
+                        path: candidate.clone(),
+                        source,
+                    })?;
+            if !canonical_candidate.starts_with(&canonical_root) {
+                return Err(ModelCatalogError::ModelPathOutsideRoot {
+                    path: canonical_candidate,
+                    root: canonical_root,
+                });
+            }
+            return Ok(canonical_candidate);
+        }
+        Err(ModelCatalogError::CatalogModelNotFound(
+            relative.to_path_buf(),
+        ))
+    }
+
     fn catalog_registry_rows(&self) -> Result<CatalogRegistryRows, ModelCatalogError> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -1230,6 +1385,120 @@ struct CatalogRegistryRows {
     projects: Vec<ModelProject>,
     versions: Vec<ModelVersion>,
     artifacts: Vec<ModelArtifact>,
+}
+
+fn validate_catalog_relative_path(value: &str) -> Result<PathBuf, ModelCatalogError> {
+    let value = value.trim();
+    let path = Path::new(value);
+    let valid = !value.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("engine"));
+    if !valid {
+        return Err(ModelCatalogError::InvalidCatalogModelPath(value.to_owned()));
+    }
+    Ok(path.to_owned())
+}
+
+fn safe_catalog_component(value: &str, fallback: &str) -> String {
+    let normalized = value
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let normalized = normalized.trim_matches(['.', '_', '-']);
+    if normalized.is_empty() {
+        fallback.to_owned()
+    } else {
+        normalized.to_owned()
+    }
+}
+
+fn deferred_engine_token(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Result<String, ModelCatalogError> {
+    let modified_ns = metadata
+        .modified()
+        .map_err(|source| ModelCatalogError::ReadModelFile {
+            path: path.to_owned(),
+            source,
+        })?
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let identity = format!("{}\0{}\0{modified_ns}", path.display(), metadata.len());
+    let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    Ok(digest[..12].to_owned())
+}
+
+fn registered_artifact_by_resolved_path(
+    transaction: &Transaction<'_>,
+    catalog: &SqliteModelCatalog,
+    expected_path: &Path,
+) -> Result<Option<(ModelProject, ModelVersion, ModelArtifact)>, ModelCatalogError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT p.id, p.name, p.description, v.id, v.project_id, v.version, v.source_kind, v.source_path, v.classes_json, v.input_shape, a.id, a.version_id, a.kind, a.path, a.checksum, a.status FROM model_artifacts a JOIN model_versions v ON v.id = a.version_id JOIN model_projects p ON p.id = v.project_id WHERE a.kind = 'engine'",
+        )
+        .map_err(ModelCatalogError::Sqlite)?;
+    let rows = statement
+        .query_map([], |row| {
+            let classes_json: String = row.get(8)?;
+            let classes = serde_json::from_str(&classes_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok((
+                ModelProject {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                },
+                ModelVersion {
+                    id: row.get(3)?,
+                    project_id: row.get(4)?,
+                    version: row.get(5)?,
+                    source_kind: row.get(6)?,
+                    source_path: row.get(7)?,
+                    classes,
+                    input_shape: row.get(9)?,
+                },
+                ModelArtifact {
+                    id: row.get(10)?,
+                    version_id: row.get(11)?,
+                    kind: row.get(12)?,
+                    path: row.get(13)?,
+                    checksum: row.get(14)?,
+                    status: row.get(15)?,
+                    size_bytes: None,
+                },
+            ))
+        })
+        .map_err(ModelCatalogError::Sqlite)?;
+    for row in rows {
+        let (project, version, artifact) = row.map_err(ModelCatalogError::Sqlite)?;
+        let registered_path =
+            catalog.resolve_artifact_path(&project.name, &version.version, &artifact.path);
+        if canonical_or_original(registered_path) == expected_path {
+            return Ok(Some((project, version, artifact)));
+        }
+    }
+    Ok(None)
 }
 
 fn scan_model_files(
@@ -1807,6 +2076,10 @@ pub enum ModelCatalogError {
         root.display()
     )]
     ModelPathOutsideRoot { path: PathBuf, root: PathBuf },
+    #[error("catalog model path must be a relative .engine path: {0}")]
+    InvalidCatalogModelPath(String),
+    #[error("catalog TensorRT engine was not found under a configured model root: {}", .0.display())]
+    CatalogModelNotFound(PathBuf),
     #[error("model catalog SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("invalid JSON in {table}.{column} for row {row_id}: {source}")]

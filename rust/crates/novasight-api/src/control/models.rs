@@ -8,8 +8,8 @@ use novasight_runtime::{
     ModelProbeInputMode, ModelProfileConfigureRequest,
 };
 use novasight_store::model_catalog::{
-    ConversionJob, Deployment, ModelArtifact, ModelCatalogError, ModelCatalogResponse,
-    ModelProject, ModelVersion, SqliteModelCatalog,
+    CatalogEngineRegistration, ConversionJob, Deployment, ModelArtifact, ModelCatalogError,
+    ModelCatalogResponse, ModelProject, ModelVersion, SqliteModelCatalog,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,7 @@ pub(super) fn routes() -> Router<ControlState> {
     Router::new()
         .route("/api/models/projects", get(model_projects))
         .route("/api/models/catalog", get(get_model_catalog))
+        .route("/api/models/catalog/register", post(register_catalog_model))
         .route(
             "/api/models/projects/{project_id}/versions",
             get(model_versions),
@@ -154,6 +155,24 @@ async fn get_model_catalog(
 ) -> Result<Json<ModelCatalogResponse>, ControlApiError> {
     Ok(Json(
         run(&state, move |catalog| catalog.catalog(query.force)).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogRegisterRequest {
+    relative_path: String,
+}
+
+async fn register_catalog_model(
+    State(state): State<ControlState>,
+    Json(request): Json<CatalogRegisterRequest>,
+) -> Result<Json<CatalogEngineRegistration>, ControlApiError> {
+    Ok(Json(
+        run(&state, move |catalog| {
+            catalog.register_catalog_engine(&request.relative_path)
+        })
+        .await?,
     ))
 }
 
