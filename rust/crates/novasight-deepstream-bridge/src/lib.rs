@@ -10,7 +10,8 @@ use std::ptr::NonNull;
 mod admission;
 
 pub use admission::{
-    AdmissionContext, AdmissionError, AdmittedFrame, PipelineClockSample, admit_snapshot,
+    AdmissionContext, AdmissionError, AdmittedCapture, AdmittedFrame, PipelineClockSample,
+    admit_capture_snapshot, admit_snapshot,
 };
 
 pub const ABI_VERSION: u32 = 1;

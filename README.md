@@ -179,6 +179,44 @@ later removed, the DeepStream backend rebuilds it automatically on the next star
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.
 
+### Rust-owned TensorRT path
+
+The daemon also has an explicit `rust_tensor_rt` backend. It keeps capture,
+decode, crop/resize, and batching in DeepStream/NVMM, but replaces `nvinfer`
+with a latest-only Rust worker that owns the CUDA preprocess allocation,
+TensorRT execution context/stream, host-output lifetime, YOLO decode/NMS, and
+`DetectionBatch` admission:
+
+```text
+nvstreammux -> identity pad probe -> FrameLease
+-> CUDA RGB NCHW preprocess -> TensorRT enqueueV3 + stream synchronization
+-> bounded Rust decoder/NMS -> DetectionBatch -> existing control runtime
+```
+
+Build the three narrow native seams on the Jetson, then build the daemon with
+the feature enabled:
+
+```bash
+scripts/build_deepstream_bridge.sh
+scripts/build_jetson_preprocess.sh
+scripts/build_tensorrt_runtime.sh
+cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features tensorrt
+```
+
+Select it without changing capture or downstream control configuration:
+
+```yaml
+inference:
+  backend: rust_tensor_rt
+```
+
+Startup validates the active engine checksum and manifest, CUDA preprocess
+semantics, named TensorRT output shape, and decoder contract before reporting
+ready. The current Rust decoder intentionally supports raw YOLO and decoded
+`[N,6]` boxes; EfficientNMS and Rockchip three-head manifests fail closed and
+can continue using `deepstream_nvinfer`. The existing Python and nvinfer paths
+remain available as compatibility and rollback routes.
+
 ### Legacy CPU-bridge diagnostics
 
 Run a 60-second capture smoke on Jetson:

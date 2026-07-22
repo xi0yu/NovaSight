@@ -4,7 +4,7 @@ use novasight_core::{Generation, MonotonicNanos, RuntimeEpoch};
 use novasight_deepstream_bridge::{
     ABI_VERSION, AdmissionContext, AdmissionError, Detection, FRAME_DETECTIONS_TRUNCATED,
     FRAME_HAS_UNTRACKED_OBJECT, FRAME_INFERENCE_DONE, FRAME_META_PTS_VALID, FrameSnapshot,
-    PipelineClockSample, admit_snapshot,
+    PipelineClockSample, admit_capture_snapshot, admit_snapshot,
 };
 
 fn context() -> AdmissionContext {
@@ -59,6 +59,32 @@ fn converts_owned_metadata_into_a_validated_pipeline_batch() {
     assert_eq!(batch.detections().len(), 1);
     assert_eq!(batch.detections()[0].object_id(), 9);
     assert_eq!(batch.detections()[0].class_id(), 2);
+}
+
+#[test]
+fn capture_admission_does_not_invent_deepstream_inference_completion() {
+    let mut snapshot = valid_snapshot();
+    snapshot.flags &= !FRAME_INFERENCE_DONE;
+    snapshot.detection_count = 0;
+
+    let capture = admit_capture_snapshot(&snapshot, context()).expect("admit capture identity");
+    assert_eq!(capture.stamp().generation, Generation(100));
+    assert_eq!(capture.stamp().captured_at, MonotonicNanos(4_900_000));
+    assert_eq!(capture.dimensions(), (640, 640));
+}
+
+#[test]
+fn capture_admission_rejects_unexpected_object_metadata() {
+    let mut snapshot = valid_snapshot();
+    snapshot.flags &= !FRAME_INFERENCE_DONE;
+    assert_eq!(
+        admit_capture_snapshot(&snapshot, context()),
+        Err(AdmissionError::UnexpectedCaptureMetadata {
+            detections: 1,
+            truncated: 0,
+            invalid: 0,
+        })
+    );
 }
 
 #[test]

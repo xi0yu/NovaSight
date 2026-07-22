@@ -14,10 +14,12 @@ clap = { workspace = true, features = ["derive"] }
 fs2.workspace = true
 novasight-api = { path = "../../crates/novasight-api" }
 novasight-core = { path = "../../crates/novasight-core" }
+novasight-jetson-preprocess = { path = "../../crates/novasight-jetson-preprocess", optional = true }
 novasight-pipeline = { path = "../../crates/novasight-pipeline" }
 novasight-platform-jetson = { path = "../../crates/novasight-platform-jetson", optional = true }
 novasight-runtime = { path = "../../crates/novasight-runtime" }
 novasight-store = { path = "../../crates/novasight-store" }
+novasight-tensorrt = { path = "../../crates/novasight-tensorrt", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -30,7 +32,12 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 default = []
 deepstream = ["dep:novasight-platform-jetson", "novasight-platform-jetson/deepstream"]
 cuda-preprocess = ["deepstream", "novasight-platform-jetson/cuda-preprocess"]
-tensorrt = ["cuda-preprocess", "novasight-platform-jetson/tensorrt"]
+tensorrt = [
+  "cuda-preprocess",
+  "dep:novasight-jetson-preprocess",
+  "dep:novasight-tensorrt",
+  "novasight-platform-jetson/tensorrt",
+]
 experimental-kmnet-native = ["deepstream"]
 
 [dev-dependencies]

@@ -26,6 +26,7 @@ capture:
   roi_height: 640
 inference:
   enabled: true
+  # Use rust_tensor_rt only in Jetson builds compiled with --features tensorrt.
   backend: deepstream_nvinfer
   device: cuda
   require_gpu: true

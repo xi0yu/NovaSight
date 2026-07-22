@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use novasight_core::{AppError, Detection, DetectionBatch, FrameStamp, MAX_DETECTIONS};
 use thiserror::Error;
 
-use crate::{ExecutionOutputs, HostTensor, TensorRtError};
+use crate::{EngineContract, ExecutionOutputs, HostTensor, TensorRtError};
 
 const MAX_NMS_CANDIDATES: usize = 300;
 const MAX_CLASSES: u32 = 65_536;
@@ -19,6 +19,7 @@ pub enum DecodeContract {
     DecodedBoxes6 {
         output_name: String,
         class_count: u32,
+        normalized_coordinates: bool,
     },
 }
 
@@ -50,6 +51,7 @@ impl DetectionDecoder {
             | DecodeContract::DecodedBoxes6 {
                 output_name,
                 class_count,
+                ..
             } => (output_name, *class_count),
         };
         if output_name.trim().is_empty() {
@@ -113,9 +115,11 @@ impl DetectionDecoder {
             DecodeContract::DecodedBoxes6 {
                 output_name,
                 class_count,
+                normalized_coordinates,
             } => decode_boxes6(
                 outputs.find(output_name)?,
                 *class_count,
+                *normalized_coordinates,
                 self.confidence_threshold,
                 self.max_detections,
                 self.coordinate_width,
@@ -148,6 +152,69 @@ impl DetectionDecoder {
             detections,
         )?)
     }
+
+    /// Rejects an engine before the first frame when its named output cannot
+    /// satisfy this decoder's explicit shape contract.
+    pub fn validate_engine_contract(&self, engine: &EngineContract) -> Result<(), DecodeError> {
+        let (output_name, class_count) = match &self.contract {
+            DecodeContract::RawYolo {
+                output_name,
+                class_count,
+                has_objectness,
+            } => {
+                let output = find_output(engine, output_name)?;
+                let shape = tensor_matrix_shape(output.dimensions())?;
+                let class_count =
+                    usize::try_from(*class_count).map_err(|_| DecodeError::ShapeOverflow)?;
+                let columns = 4_usize
+                    .checked_add(class_count)
+                    .and_then(|value| value.checked_add(if *has_objectness { 1 } else { 0 }))
+                    .ok_or(DecodeError::ShapeOverflow)?;
+                if shape[0] == columns && shape[1] == columns {
+                    return Err(DecodeError::AmbiguousRawYoloShape(shape));
+                }
+                if !shape.contains(&columns) {
+                    return Err(DecodeError::RawYoloShape {
+                        shape,
+                        expected_columns: columns,
+                    });
+                }
+                return Ok(());
+            }
+            DecodeContract::DecodedBoxes6 {
+                output_name,
+                class_count,
+                ..
+            } => (output_name, class_count),
+        };
+        let output = find_output(engine, output_name)?;
+        let shape = tensor_matrix_shape(output.dimensions())?;
+        if shape[1] != 6 {
+            return Err(DecodeError::DecodedBoxesShape(shape));
+        }
+        debug_assert!(*class_count > 0, "constructor validates class count");
+        Ok(())
+    }
+}
+
+fn find_output<'engine>(
+    engine: &'engine EngineContract,
+    name: &str,
+) -> Result<&'engine crate::TensorSpec, DecodeError> {
+    engine
+        .outputs()
+        .iter()
+        .find(|output| output.name() == name)
+        .ok_or_else(|| TensorRtError::MissingOutput(name.to_owned()).into())
+}
+
+fn tensor_matrix_shape(dimensions: &[u64]) -> Result<[usize; 2], DecodeError> {
+    let dimensions = dimensions
+        .iter()
+        .copied()
+        .map(|value| i64::try_from(value).map_err(|_| DecodeError::ShapeOverflow))
+        .collect::<Result<Vec<_>, _>>()?;
+    detection_matrix_shape(&dimensions)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -253,6 +320,7 @@ fn decode_raw_yolo(
 fn decode_boxes6(
     tensor: HostTensor<'_>,
     class_count: u32,
+    normalized_coordinates: bool,
     threshold: f32,
     max_detections: usize,
     width: u32,
@@ -287,7 +355,7 @@ fn decode_boxes6(
         if (raw_class - rounded_class).abs() > 1e-3 || rounded_class >= class_count as f32 {
             continue;
         }
-        if x1.abs().max(y1.abs()).max(x2.abs()).max(y2.abs()) <= 2.0 {
+        if normalized_coordinates {
             x1 *= width as f32;
             x2 *= width as f32;
             y1 *= height as f32;
@@ -490,6 +558,7 @@ mod tests {
             DecodeContract::DecodedBoxes6 {
                 output_name: "output0".to_owned(),
                 class_count: 2,
+                normalized_coordinates: true,
             },
             0.25,
             0.5,
@@ -510,6 +579,27 @@ mod tests {
         assert!((detection.y() - 20.0).abs() < 1e-5);
         assert!((detection.width() - 80.0).abs() < 1e-5);
         assert!((detection.height() - 60.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn decoded_pixel_coordinates_are_never_guessed_as_normalized() {
+        let data = [0.5, 0.5, 1.5, 1.5, 0.9, 0.0];
+        let decoder = DetectionDecoder::new(
+            DecodeContract::DecodedBoxes6 {
+                output_name: "output0".to_owned(),
+                class_count: 1,
+                normalized_coordinates: false,
+            },
+            0.25,
+            0.5,
+            10,
+            200,
+            100,
+        )
+        .unwrap();
+        let batch = decoder.decode(&outputs(&data, &[1, 1, 6])).unwrap();
+        assert_eq!(batch.detections()[0].x(), 0.5);
+        assert_eq!(batch.detections()[0].width(), 1.0);
     }
 
     #[test]
@@ -568,6 +658,7 @@ mod tests {
             DecodeContract::DecodedBoxes6 {
                 output_name: "output0".to_owned(),
                 class_count: 1,
+                normalized_coordinates: false,
             },
             0.5,
             0.5,
@@ -582,6 +673,7 @@ mod tests {
             DecodeContract::DecodedBoxes6 {
                 output_name: "output0".to_owned(),
                 class_count: MAX_CLASSES + 1,
+                normalized_coordinates: false,
             },
             0.5,
             0.5,
@@ -596,6 +688,7 @@ mod tests {
             DecodeContract::DecodedBoxes6 {
                 output_name: "output0".to_owned(),
                 class_count: 1,
+                normalized_coordinates: false,
             },
             0.5,
             0.5,
@@ -618,5 +711,48 @@ mod tests {
                 .unwrap(),
             TensorDtype::Float32
         );
+    }
+
+    #[test]
+    fn engine_output_contract_is_checked_before_inference() {
+        let valid = EngineContract {
+            input: crate::TensorSpec {
+                name: "images".to_owned(),
+                dimensions: [1, 3, 100, 100, 0, 0, 0, 0],
+                rank: 4,
+                dtype: TensorDtype::Float32,
+                nbytes: 120_000,
+            },
+            outputs: vec![crate::TensorSpec {
+                name: "output0".to_owned(),
+                dimensions: [1, 6, 20, 0, 0, 0, 0, 0],
+                rank: 3,
+                dtype: TensorDtype::Float32,
+                nbytes: 480,
+            }],
+        };
+        raw_decoder(false, 2)
+            .validate_engine_contract(&valid)
+            .unwrap();
+
+        let missing = DetectionDecoder::new(
+            DecodeContract::DecodedBoxes6 {
+                output_name: "missing".to_owned(),
+                class_count: 2,
+                normalized_coordinates: false,
+            },
+            0.25,
+            0.5,
+            10,
+            100,
+            100,
+        )
+        .unwrap()
+        .validate_engine_contract(&valid)
+        .unwrap_err();
+        assert!(matches!(
+            missing,
+            DecodeError::TensorRt(TensorRtError::MissingOutput(ref name)) if name == "missing"
+        ));
     }
 }

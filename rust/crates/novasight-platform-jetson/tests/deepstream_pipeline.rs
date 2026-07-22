@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use novasight_platform_jetson::deepstream::{
-    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, ModelInput, PipelineSpecError, Roi,
+    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
+    PipelineSpecError, Roi,
 };
 
 fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
@@ -24,7 +25,9 @@ fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
             width: 640,
             height: 640,
         },
-        nvinfer_config: PathBuf::from("data/runtime/deepstream/active nvinfer.ini"),
+        inference: InferenceStage::DeepStreamNvinfer {
+            config: PathBuf::from("data/runtime/deepstream/active nvinfer.ini"),
+        },
         batched_push_timeout_us: 0,
         inference_element: "primary-infer".to_owned(),
     }
@@ -57,6 +60,18 @@ fn raw_capture_does_not_insert_the_mjpeg_decoder() {
     assert!(pipeline.contains("video/x-raw,format=YUY2"));
     assert!(!pipeline.contains("jpegparse"));
     assert!(!pipeline.contains("nvv4l2decoder"));
+}
+
+#[test]
+fn rust_tensorrt_stage_probes_nvmm_without_nvinfer() {
+    let mut spec = spec(CaptureFormat::Mjpeg);
+    spec.inference = InferenceStage::RustTensorRt;
+    spec.inference_element = "rust-tensorrt-probe".to_owned();
+
+    let pipeline = spec.build().unwrap();
+    assert!(pipeline.contains("nvstreammux name=mux"));
+    assert!(pipeline.contains("identity name=rust-tensorrt-probe silent=true"));
+    assert!(!pipeline.contains("nvinfer"));
 }
 
 #[test]

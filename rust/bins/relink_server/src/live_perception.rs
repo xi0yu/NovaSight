@@ -16,9 +16,11 @@ use novasight_pipeline::{
     validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
+#[cfg(feature = "tensorrt")]
+use novasight_platform_jetson::deepstream::CudaTensorRtConfig;
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
-    DeepStreamSessionConfig, LatestFrameExchange, ModelInput, Roi,
+    DeepStreamSessionConfig, InferenceStage, LatestFrameExchange, ModelInput, Roi,
 };
 use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
 #[cfg(feature = "experimental-kmnet-native")]
@@ -26,11 +28,16 @@ use novasight_platform_jetson::kmnet_native::{
     KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError,
 };
 use novasight_runtime::RuntimeDependencies;
-use novasight_store::config::{AppConfig, CapturePreference, ConfigValidationError, DeviceBackend};
+use novasight_store::config::{
+    AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, InferenceBackend,
+};
 use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
 use novasight_store::model_manifest::ModelManifest;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+#[cfg(feature = "tensorrt")]
+use crate::model_contract::resolve_rust_tensorrt_contract;
 
 pub(super) fn build_live_recording_dependencies(
     config: &AppConfig,
@@ -155,9 +162,35 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             .model_catalog
             .runtime_artifact(candidate.project_id, candidate.artifact_id)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
-        resolve_model_nvinfer_config(&self.config, &model, Some(candidate.parser_preset.as_str()))
+        let backend = self
+            .config
+            .require_production_adapters()
+            .map_err(|error| PerceptionError::new(error.to_string()))?
+            .inference
+            .backend;
+        match backend {
+            InferenceBackend::DeepstreamNvinfer => resolve_model_nvinfer_config(
+                &self.config,
+                &model,
+                Some(candidate.parser_preset.as_str()),
+            )
             .map(|(_, contract)| Some(contract))
-            .map_err(|error| PerceptionError::new(error.to_string()))
+            .map_err(|error| PerceptionError::new(error.to_string())),
+            InferenceBackend::RustTensorRt => {
+                #[cfg(feature = "tensorrt")]
+                return resolve_model_rust_contract(
+                    &self.config,
+                    &model,
+                    candidate.parser_preset.as_str(),
+                )
+                .map(Some)
+                .map_err(|error| PerceptionError::new(error.to_string()));
+                #[cfg(not(feature = "tensorrt"))]
+                Err(PerceptionError::new(
+                    LivePerceptionError::TensorRtNotCompiled.to_string(),
+                ))
+            }
+        }
     }
 
     fn start(
@@ -184,7 +217,26 @@ fn build_deepstream_session_config(
     let format = parse_capture_format(&adapters.capture.pixel_format)?;
     let io_mode = u32::try_from(adapters.inference.deepstream_io_mode)
         .map_err(|_| LivePerceptionError::InvalidIoMode(adapters.inference.deepstream_io_mode))?;
-    let nvinfer_config = resolve_active_nvinfer_config(config, model_catalog)?;
+    #[cfg(feature = "tensorrt")]
+    let (inference, rust_tensorrt) = match adapters.inference.backend {
+        InferenceBackend::DeepstreamNvinfer => (
+            InferenceStage::DeepStreamNvinfer {
+                config: resolve_active_nvinfer_config(config, model_catalog)?,
+            },
+            None,
+        ),
+        InferenceBackend::RustTensorRt => (
+            InferenceStage::RustTensorRt,
+            Some(resolve_active_rust_tensorrt_config(config, model_catalog)?),
+        ),
+    };
+    #[cfg(not(feature = "tensorrt"))]
+    let inference = match adapters.inference.backend {
+        InferenceBackend::DeepstreamNvinfer => InferenceStage::DeepStreamNvinfer {
+            config: resolve_active_nvinfer_config(config, model_catalog)?,
+        },
+        InferenceBackend::RustTensorRt => return Err(LivePerceptionError::TensorRtNotCompiled),
+    };
     let pipeline = DeepStreamPipelineSpec {
         device: adapters.capture.device.clone(),
         capture: CaptureProfile {
@@ -204,7 +256,7 @@ fn build_deepstream_session_config(
             width: adapters.inference.model_width,
             height: adapters.inference.model_height,
         },
-        nvinfer_config,
+        inference,
         batched_push_timeout_us: adapters.inference.deepstream_batched_push_timeout_us,
         inference_element: adapters.inference.deepstream_probe_element.clone(),
     };
@@ -219,6 +271,8 @@ fn build_deepstream_session_config(
         max_batch_age_ns: Some(deadline_ns(adapters.inference.inference_input_deadline_ms)),
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
+        #[cfg(feature = "tensorrt")]
+        rust_tensorrt,
     })
 }
 
@@ -255,19 +309,25 @@ fn resolve_active_nvinfer_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
 ) -> Result<PathBuf, LivePerceptionError> {
+    let model = active_runtime_model(model_catalog)?;
+    resolve_model_nvinfer_config(config, &model, None).map(|(path, _)| path)
+}
+
+fn active_runtime_model(
+    model_catalog: &SqliteModelCatalog,
+) -> Result<RuntimeModelArtifact, LivePerceptionError> {
     let Some(active) = model_catalog
         .active_model()
         .map_err(LivePerceptionError::ModelCatalog)?
     else {
         return Err(LivePerceptionError::ActiveModelMissing);
     };
-    let model = RuntimeModelArtifact {
+    Ok(RuntimeModelArtifact {
         project: active.project,
         version: active.version,
         artifact: active.artifact,
         artifact_path: active.artifact_path,
-    };
-    resolve_model_nvinfer_config(config, &model, None).map(|(path, _)| path)
+    })
 }
 
 fn resolve_model_nvinfer_config(
@@ -279,48 +339,8 @@ fn resolve_model_nvinfer_config(
     let adapters = config
         .require_production_adapters()
         .map_err(LivePerceptionError::Config)?;
-    if model.artifact.kind != "engine" {
-        return Err(LivePerceptionError::ActiveArtifactKind {
-            artifact_id: model.artifact.id,
-            kind: model.artifact.kind.clone(),
-        });
-    }
-    if model.artifact.status != "ready" {
-        return Err(LivePerceptionError::ActiveArtifactNotReady {
-            artifact_id: model.artifact.id,
-            status: model.artifact.status.clone(),
-        });
-    }
-    if !model.artifact_path.is_file() {
-        return Err(LivePerceptionError::EngineMissing(
-            model.artifact_path.clone(),
-        ));
-    }
-    let parsed_manifest = read_model_manifest(&model.artifact_path)?;
+    let parsed_manifest = validate_runtime_model(config, model)?;
     let manifest = &parsed_manifest.document;
-    let actual_sha = validate_model_document(
-        &model.artifact_path,
-        manifest,
-        parsed_manifest.output_class_names_present,
-        adapters.inference.confidence_threshold,
-        adapters.inference.nms_threshold,
-        adapters.inference.model_width,
-        adapters.inference.model_height,
-    )?;
-    let registry_sha = normalize_registry_checksum(&model.artifact.checksum).ok_or_else(|| {
-        LivePerceptionError::RegistryChecksumInvalid {
-            artifact_id: model.artifact.id,
-            checksum: model.artifact.checksum.clone(),
-        }
-    })?;
-    if registry_sha != manifest.artifact.sha256.to_ascii_lowercase() || registry_sha != actual_sha {
-        return Err(LivePerceptionError::RegistryChecksumMismatch {
-            artifact_id: model.artifact.id,
-            registry: registry_sha,
-            manifest: manifest.artifact.sha256.clone(),
-            actual: actual_sha,
-        });
-    }
     let requested_preset = validate_parser_preset(
         requested_preset.unwrap_or(manifest.postprocess.parser_preset.as_str()),
         manifest.output.has_objectness,
@@ -371,6 +391,125 @@ fn resolve_model_nvinfer_config(
         },
     };
     Ok((path, contract))
+}
+
+fn validate_runtime_model(
+    config: &AppConfig,
+    model: &RuntimeModelArtifact,
+) -> Result<ParsedModelManifest, LivePerceptionError> {
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
+    if model.artifact.kind != "engine" {
+        return Err(LivePerceptionError::ActiveArtifactKind {
+            artifact_id: model.artifact.id,
+            kind: model.artifact.kind.clone(),
+        });
+    }
+    if model.artifact.status != "ready" {
+        return Err(LivePerceptionError::ActiveArtifactNotReady {
+            artifact_id: model.artifact.id,
+            status: model.artifact.status.clone(),
+        });
+    }
+    if !model.artifact_path.is_file() {
+        return Err(LivePerceptionError::EngineMissing(
+            model.artifact_path.clone(),
+        ));
+    }
+    let parsed_manifest = read_model_manifest(&model.artifact_path)?;
+    let manifest = &parsed_manifest.document;
+    let actual_sha = validate_model_document(
+        &model.artifact_path,
+        manifest,
+        parsed_manifest.output_class_names_present,
+        adapters.inference.confidence_threshold,
+        adapters.inference.nms_threshold,
+        adapters.inference.model_width,
+        adapters.inference.model_height,
+    )?;
+    let registry_sha = normalize_registry_checksum(&model.artifact.checksum).ok_or_else(|| {
+        LivePerceptionError::RegistryChecksumInvalid {
+            artifact_id: model.artifact.id,
+            checksum: model.artifact.checksum.clone(),
+        }
+    })?;
+    if registry_sha != manifest.artifact.sha256.to_ascii_lowercase() || registry_sha != actual_sha {
+        return Err(LivePerceptionError::RegistryChecksumMismatch {
+            artifact_id: model.artifact.id,
+            registry: registry_sha,
+            manifest: manifest.artifact.sha256.clone(),
+            actual: actual_sha,
+        });
+    }
+    Ok(parsed_manifest)
+}
+
+#[cfg(feature = "tensorrt")]
+fn resolve_active_rust_tensorrt_config(
+    config: &AppConfig,
+    model_catalog: &SqliteModelCatalog,
+) -> Result<CudaTensorRtConfig, LivePerceptionError> {
+    let model = active_runtime_model(model_catalog)?;
+    let parsed = validate_runtime_model(config, &model)?;
+    // Preserve the same parser preset and output-shape validation used by the
+    // legacy-compatible nvinfer path before selecting the Rust implementation.
+    validate_parser_preset(
+        &parsed.document.postprocess.parser_preset,
+        parsed.document.output.has_objectness,
+    )
+    .map_err(|error| manifest_error(error.message()))?;
+    resolve_parser_contract(&parsed.document)?;
+    let contract = resolve_rust_tensorrt_contract(&parsed.document)
+        .map_err(|error| manifest_error(error.to_string()))?;
+    Ok(CudaTensorRtConfig {
+        engine_path: model.artifact_path,
+        input: contract.input,
+        decoder: contract.decoder,
+    })
+}
+
+#[cfg(feature = "tensorrt")]
+fn resolve_model_rust_contract(
+    config: &AppConfig,
+    model: &RuntimeModelArtifact,
+    requested_preset: &str,
+) -> Result<PerceptionModelContract, LivePerceptionError> {
+    let parsed = validate_runtime_model(config, model)?;
+    let manifest = &parsed.document;
+    let requested_preset = validate_parser_preset(requested_preset, manifest.output.has_objectness)
+        .map_err(|error| manifest_error(error.message()))?;
+    resolve_parser_contract(manifest)?;
+    resolve_rust_tensorrt_contract(manifest).map_err(|error| manifest_error(error.to_string()))?;
+    let parser_function = match manifest
+        .postprocess
+        .parser
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "yolo" => "novasight_tensorrt_decode_raw_yolo",
+        "decoded_nms" => "novasight_tensorrt_admit_decoded_boxes",
+        other => return Err(manifest_error(format!("unsupported Rust parser {other}"))),
+    };
+    Ok(PerceptionModelContract {
+        input_shape: manifest
+            .input
+            .shape
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("x"),
+        classes: manifest.output.class_names.clone(),
+        parser: PerceptionParserContract {
+            requested_preset,
+            compatibility: manifest.postprocess.parser.clone(),
+            has_objectness: manifest.output.has_objectness,
+            parser_library: "novasight_rust".to_owned(),
+            parser_function: parser_function.to_owned(),
+            nms_owner: "rust".to_owned(),
+        },
+    })
 }
 
 fn normalize_registry_checksum(value: &str) -> Option<String> {
@@ -1314,6 +1453,9 @@ mod tests {
 pub(super) enum LivePerceptionError {
     #[error("production adapter configuration is invalid: {0}")]
     Config(ConfigValidationError),
+    #[cfg(not(feature = "tensorrt"))]
+    #[error("inference.backend=rust_tensor_rt requires a binary built with --features tensorrt")]
+    TensorRtNotCompiled,
     #[error("model catalog failed: {0}")]
     ModelCatalog(novasight_store::model_catalog::ModelCatalogError),
     #[error("no active model deployment; publish a ready engine before starting perception")]

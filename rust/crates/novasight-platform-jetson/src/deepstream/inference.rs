@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use novasight_tensorrt::{ExecutionOutputs, TensorRtEngine, TensorRtError};
+use novasight_core::DetectionBatch;
+use novasight_tensorrt::{DecodeError, DetectionDecoder, TensorRtEngine, TensorRtError};
 use thiserror::Error;
 
 use super::{CudaFramePreprocessor, FrameLease, PreprocessError, TensorContract};
@@ -13,7 +14,15 @@ use super::{CudaFramePreprocessor, FrameLease, PreprocessError, TensorContract};
 pub struct CudaTensorRtOwner {
     preprocess: CudaFramePreprocessor,
     engine: TensorRtEngine,
+    decoder: DetectionDecoder,
     input: TensorContract,
+}
+
+#[derive(Clone, Debug)]
+pub struct CudaTensorRtConfig {
+    pub engine_path: PathBuf,
+    pub input: TensorContract,
+    pub decoder: DetectionDecoder,
 }
 
 impl std::fmt::Debug for CudaTensorRtOwner {
@@ -28,12 +37,22 @@ impl std::fmt::Debug for CudaTensorRtOwner {
 }
 
 impl CudaTensorRtOwner {
-    pub fn load(engine_path: &Path, input: TensorContract) -> Result<Self, CudaTensorRtOwnerError> {
+    pub fn from_config(config: CudaTensorRtConfig) -> Result<Self, CudaTensorRtOwnerError> {
+        Self::load(&config.engine_path, config.input, config.decoder)
+    }
+
+    pub fn load(
+        engine_path: &Path,
+        input: TensorContract,
+        decoder: DetectionDecoder,
+    ) -> Result<Self, CudaTensorRtOwnerError> {
         let preprocess = CudaFramePreprocessor::linked()?;
         let engine = TensorRtEngine::load(engine_path, input)?;
+        decoder.validate_engine_contract(engine.contract())?;
         Ok(Self {
             preprocess,
             engine,
+            decoder,
             input,
         })
     }
@@ -42,15 +61,13 @@ impl CudaTensorRtOwner {
         self.engine.contract()
     }
 
-    pub fn execute<'owner>(
-        &'owner mut self,
-        frame: &FrameLease,
-    ) -> Result<ExecutionOutputs<'owner>, CudaTensorRtOwnerError> {
+    pub fn infer(&mut self, frame: &FrameLease) -> Result<DetectionBatch, CudaTensorRtOwnerError> {
         let tensor = self.preprocess.prepare(frame, self.input)?;
         // Native execute synchronizes the owner stream before returning. The
         // input allocation can therefore be released immediately while the
         // returned views borrow TensorRT-owned pinned host outputs.
-        Ok(self.engine.execute(&tensor)?)
+        let outputs = self.engine.execute(&tensor)?;
+        Ok(self.decoder.decode(&outputs)?)
     }
 }
 
@@ -60,4 +77,6 @@ pub enum CudaTensorRtOwnerError {
     Preprocess(#[from] PreprocessError),
     #[error(transparent)]
     TensorRt(#[from] TensorRtError),
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
 }

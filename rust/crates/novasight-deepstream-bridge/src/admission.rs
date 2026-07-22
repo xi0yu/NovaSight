@@ -68,6 +68,55 @@ pub struct AdmittedFrame {
     filtered_without_detector_confidence: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdmittedCapture {
+    stamp: FrameStamp,
+    width: u32,
+    height: u32,
+}
+
+impl AdmittedCapture {
+    pub const fn stamp(self) -> FrameStamp {
+        self.stamp
+    }
+
+    pub const fn dimensions(self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+/// Admit frame identity and geometry before Rust-owned inference. Unlike
+/// [`admit_snapshot`], this path deliberately does not claim that DeepStream
+/// inference ran, and it rejects any unexpected object metadata.
+pub fn admit_capture_snapshot(
+    snapshot: &FrameSnapshot,
+    context: AdmissionContext,
+) -> Result<AdmittedCapture, AdmissionError> {
+    let stamp = admit_frame_identity(snapshot, context)?;
+    if snapshot.detection_count != 0
+        || snapshot.truncated_count != 0
+        || snapshot.invalid_object_count != 0
+        || snapshot.has_flag(FRAME_DETECTIONS_TRUNCATED)
+    {
+        return Err(AdmissionError::UnexpectedCaptureMetadata {
+            detections: snapshot.detection_count,
+            truncated: snapshot.truncated_count,
+            invalid: snapshot.invalid_object_count,
+        });
+    }
+    let validated = DetectionBatch::new(
+        stamp,
+        snapshot.pipeline_width,
+        snapshot.pipeline_height,
+        Vec::new(),
+    )?;
+    Ok(AdmittedCapture {
+        stamp: validated.stamp(),
+        width: validated.coordinate_width(),
+        height: validated.coordinate_height(),
+    })
+}
+
 impl AdmittedFrame {
     pub fn batch(&self) -> &DetectionBatch {
         &self.batch
@@ -88,35 +137,10 @@ pub fn admit_snapshot(
     snapshot: &FrameSnapshot,
     context: AdmissionContext,
 ) -> Result<AdmittedFrame, AdmissionError> {
-    if snapshot.abi_version != ABI_VERSION {
-        return Err(AdmissionError::AbiVersion {
-            expected: ABI_VERSION,
-            actual: snapshot.abi_version,
-        });
-    }
-    let expected_size = size_of::<FrameSnapshot>() as u32;
-    if snapshot.struct_size != expected_size {
-        return Err(AdmissionError::StructSize {
-            expected: expected_size,
-            actual: snapshot.struct_size,
-        });
-    }
-    if snapshot.frame_num < 0 {
-        return Err(AdmissionError::NegativeFrameNumber(snapshot.frame_num));
-    }
-    if snapshot.source_id != context.source_id {
-        return Err(AdmissionError::SourceMismatch {
-            expected: context.source_id,
-            actual: snapshot.source_id,
-        });
-    }
     if !snapshot.has_flag(FRAME_INFERENCE_DONE) {
         return Err(AdmissionError::InferenceIncomplete);
     }
-    if !snapshot.has_flag(FRAME_META_PTS_VALID) {
-        return Err(AdmissionError::FramePtsMissing);
-    }
-    let captured_at = context.clock.captured_at(snapshot.frame_pts_ns)?;
+    let stamp = admit_frame_identity(snapshot, context)?;
     let detection_count = usize::try_from(snapshot.detection_count).unwrap_or(usize::MAX);
     if detection_count > MAX_DETECTIONS {
         return Err(AdmissionError::DetectionCount {
@@ -178,11 +202,7 @@ pub fn admit_snapshot(
     }
 
     let batch = DetectionBatch::new(
-        FrameStamp {
-            epoch: context.epoch,
-            generation: context.generation,
-            captured_at,
-        },
+        stamp,
         snapshot.pipeline_width,
         snapshot.pipeline_height,
         detections,
@@ -191,6 +211,42 @@ pub fn admit_snapshot(
     Ok(AdmittedFrame {
         batch,
         filtered_without_detector_confidence,
+    })
+}
+
+fn admit_frame_identity(
+    snapshot: &FrameSnapshot,
+    context: AdmissionContext,
+) -> Result<FrameStamp, AdmissionError> {
+    if snapshot.abi_version != ABI_VERSION {
+        return Err(AdmissionError::AbiVersion {
+            expected: ABI_VERSION,
+            actual: snapshot.abi_version,
+        });
+    }
+    let expected_size = size_of::<FrameSnapshot>() as u32;
+    if snapshot.struct_size != expected_size {
+        return Err(AdmissionError::StructSize {
+            expected: expected_size,
+            actual: snapshot.struct_size,
+        });
+    }
+    if snapshot.frame_num < 0 {
+        return Err(AdmissionError::NegativeFrameNumber(snapshot.frame_num));
+    }
+    if snapshot.source_id != context.source_id {
+        return Err(AdmissionError::SourceMismatch {
+            expected: context.source_id,
+            actual: snapshot.source_id,
+        });
+    }
+    if !snapshot.has_flag(FRAME_META_PTS_VALID) {
+        return Err(AdmissionError::FramePtsMissing);
+    }
+    Ok(FrameStamp {
+        epoch: context.epoch,
+        generation: context.generation,
+        captured_at: context.clock.captured_at(snapshot.frame_pts_ns)?,
     })
 }
 
@@ -225,6 +281,14 @@ pub enum AdmissionError {
     Truncated { omitted: u32 },
     #[error("DeepStream frame contained {count} invalid object metadata entries")]
     InvalidObjectMetadata { count: u32 },
+    #[error(
+        "capture-only frame unexpectedly contained detection metadata: detections={detections}, truncated={truncated}, invalid={invalid}"
+    )]
+    UnexpectedCaptureMetadata {
+        detections: u32,
+        truncated: u32,
+        invalid: u32,
+    },
     #[error("DeepStream object {object_id} has negative class ID {class_id}")]
     NegativeClassId { object_id: u64, class_id: i32 },
     #[error(
@@ -253,6 +317,7 @@ impl AdmissionError {
             Self::DetectionCount { .. } => "deepstream_detection_count_invalid",
             Self::Truncated { .. } => "deepstream_detections_truncated",
             Self::InvalidObjectMetadata { .. } => "deepstream_object_metadata_invalid",
+            Self::UnexpectedCaptureMetadata { .. } => "deepstream_capture_objects_unexpected",
             Self::NegativeClassId { .. } => "deepstream_class_id_invalid",
             Self::ComponentMismatch { .. } => "deepstream_component_mismatch",
             Self::Domain(_) => "deepstream_detection_invalid",

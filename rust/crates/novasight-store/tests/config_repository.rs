@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
 use novasight_store::config::{
-    AppConfig, ConfigRepository, DeepStreamBackend, YamlConfigRepository,
+    AppConfig, ConfigRepository, DeepStreamBackend, InferenceBackend, YamlConfigRepository,
 };
 use serde_yaml::Value;
 
@@ -47,7 +47,7 @@ fn loads_current_project_yaml_without_dropping_legacy_sections() {
     assert_eq!(capture.backend, DeepStreamBackend::DeepstreamNvinfer);
     assert!(capture.latest_only);
     let inference = config.inference.as_ref().unwrap();
-    assert_eq!(inference.backend, DeepStreamBackend::DeepstreamNvinfer);
+    assert_eq!(inference.backend, InferenceBackend::DeepstreamNvinfer);
     assert!(inference.require_gpu);
     assert!(config.device.as_ref().unwrap().auto_connect);
     assert!(config.require_production_adapters().is_err());

@@ -35,13 +35,19 @@ pub struct ModelInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InferenceStage {
+    DeepStreamNvinfer { config: PathBuf },
+    RustTensorRt,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeepStreamPipelineSpec {
     pub device: PathBuf,
     pub capture: CaptureProfile,
     pub io_mode: u32,
     pub roi: Roi,
     pub model_input: ModelInput,
-    pub nvinfer_config: PathBuf,
+    pub inference: InferenceStage,
     pub batched_push_timeout_us: i64,
     pub inference_element: String,
 }
@@ -50,7 +56,6 @@ impl DeepStreamPipelineSpec {
     pub fn build(&self) -> Result<String, PipelineSpecError> {
         self.validate()?;
         let device = gst_string(&self.device);
-        let nvinfer_config = gst_string(&self.nvinfer_config);
         let mut elements = vec![format!(
             "v4l2src name=capture-source device={device} io-mode={} do-timestamp=true",
             self.io_mode
@@ -100,13 +105,22 @@ impl DeepStreamPipelineSpec {
         // A request-pad reference terminates the source branch. GStreamer launch
         // syntax deliberately has no `!` between `mux.sink_0` and the named mux
         // declaration that starts the downstream branch.
+        let inference = match &self.inference {
+            InferenceStage::DeepStreamNvinfer { config } => format!(
+                "nvinfer name={} config-file-path={} batch-size=1",
+                self.inference_element,
+                gst_string(config)
+            ),
+            InferenceStage::RustTensorRt => {
+                format!("identity name={} silent=true", self.inference_element)
+            }
+        };
         Ok(format!(
-            "{} ! mux.sink_0 nvstreammux name=mux batch-size=1 live-source=1 width={} height={} sync-inputs=0 batched-push-timeout={} ! nvinfer name={} config-file-path={nvinfer_config} batch-size=1 ! fakesink name=deepstream-sink sync=false async=false qos=false",
+            "{} ! mux.sink_0 nvstreammux name=mux batch-size=1 live-source=1 width={} height={} sync-inputs=0 batched-push-timeout={} ! {inference} ! fakesink name=deepstream-sink sync=false async=false qos=false",
             elements.join(" ! "),
             self.model_input.width,
             self.model_input.height,
             self.batched_push_timeout_us,
-            self.inference_element,
         ))
     }
 
@@ -114,7 +128,9 @@ impl DeepStreamPipelineSpec {
         if path_is_blank(&self.device) {
             return Err(PipelineSpecError::BlankDevice);
         }
-        if path_is_blank(&self.nvinfer_config) {
+        if let InferenceStage::DeepStreamNvinfer { config } = &self.inference
+            && path_is_blank(config)
+        {
             return Err(PipelineSpecError::BlankNvinferConfig);
         }
         if self.inference_element.trim().is_empty() {

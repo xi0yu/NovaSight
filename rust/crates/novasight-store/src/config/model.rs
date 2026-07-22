@@ -256,7 +256,7 @@ pub struct InferenceConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub backend: DeepStreamBackend,
+    pub backend: InferenceBackend,
     #[serde(default)]
     pub device: ComputeDevice,
     #[serde(default = "default_true")]
@@ -306,7 +306,7 @@ impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            backend: DeepStreamBackend::default(),
+            backend: InferenceBackend::default(),
             device: ComputeDevice::default(),
             require_gpu: true,
             allow_cpu_fallback: false,
@@ -358,11 +358,12 @@ impl InferenceConfig {
                 "must be finite and positive so stale batches cannot unlock runtime readiness",
             ));
         }
-        if self
-            .deepstream_parser_library
-            .to_string_lossy()
-            .trim()
-            .is_empty()
+        if self.backend == InferenceBackend::DeepstreamNvinfer
+            && self
+                .deepstream_parser_library
+                .to_string_lossy()
+                .trim()
+                .is_empty()
         {
             return Err(ConfigValidationError::new(
                 "inference.deepstream_parser_library",
@@ -390,6 +391,7 @@ impl InferenceConfig {
             ));
         }
         if self.production_fields_explicit
+            && self.backend == InferenceBackend::DeepstreamNvinfer
             && self
                 .deepstream_nvinfer_config
                 .to_string_lossy()
@@ -424,6 +426,14 @@ impl InferenceConfig {
 pub enum DeepStreamBackend {
     #[default]
     DeepstreamNvinfer,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceBackend {
+    #[default]
+    DeepstreamNvinfer,
+    RustTensorRt,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -813,4 +823,35 @@ const fn default_kmnet_trigger_poll_interval_ms() -> u64 {
 
 const fn default_kmnet_reconnect_cooldown_ms() -> u64 {
     500
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inference_backend_has_an_explicit_rust_tensorrt_value() {
+        assert_eq!(
+            serde_json::from_str::<InferenceBackend>(r#""rust_tensor_rt""#).unwrap(),
+            InferenceBackend::RustTensorRt
+        );
+        assert_eq!(
+            serde_json::to_string(&InferenceBackend::DeepstreamNvinfer).unwrap(),
+            r#""deepstream_nvinfer""#
+        );
+    }
+
+    #[test]
+    fn rust_tensorrt_backend_does_not_require_nvinfer_artifacts() {
+        let config = InferenceConfig {
+            backend: InferenceBackend::RustTensorRt,
+            deepstream_parser_library: PathBuf::new(),
+            deepstream_nvinfer_config: PathBuf::new(),
+            model_width: 640,
+            model_height: 640,
+            production_fields_explicit: true,
+            ..InferenceConfig::default()
+        };
+        config.validate().unwrap();
+    }
 }

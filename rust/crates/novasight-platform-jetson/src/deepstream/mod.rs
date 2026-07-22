@@ -11,13 +11,16 @@ mod session;
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 pub use frame::{FrameLease, FrameLeaseError, LatestFrameExchange};
 #[cfg(all(feature = "tensorrt", target_os = "linux"))]
-pub use inference::{CudaTensorRtOwner, CudaTensorRtOwnerError};
+pub use inference::{CudaTensorRtConfig, CudaTensorRtOwner, CudaTensorRtOwnerError};
 #[cfg(all(feature = "cuda-preprocess", target_os = "linux"))]
 pub use novasight_jetson_preprocess::{DeviceTensor, PreprocessError, TensorContract, TensorDtype};
 #[cfg(all(feature = "tensorrt", target_os = "linux"))]
-pub use novasight_tensorrt::{EngineContract, ExecutionOutputs, HostTensor, TensorRtError};
+pub use novasight_tensorrt::{
+    DecodeContract, DecodeError, DetectionDecoder, EngineContract, TensorRtError,
+};
 pub use pipeline::{
-    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, ModelInput, PipelineSpecError, Roi,
+    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
+    PipelineSpecError, Roi,
 };
 #[cfg(all(feature = "cuda-preprocess", target_os = "linux"))]
 pub use preprocess::CudaFramePreprocessor;

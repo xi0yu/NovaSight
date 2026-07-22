@@ -12,6 +12,8 @@ use gst::glib::prelude::*;
 use gst::prelude::*;
 use gstreamer as gst;
 use novasight_core::{Clock, Generation, RuntimeEpoch};
+#[cfg(feature = "tensorrt")]
+use novasight_deepstream_bridge::admit_capture_snapshot;
 use novasight_deepstream_bridge::{
     AdmissionContext, PipelineClockSample, admit_snapshot, extract_frame_into, validate_loaded_abi,
 };
@@ -21,8 +23,9 @@ use novasight_pipeline::{
 };
 use thiserror::Error;
 
-use super::DeepStreamPipelineSpec;
-use super::{FrameLease, LatestFrameExchange};
+#[cfg(feature = "tensorrt")]
+use super::{CudaTensorRtConfig, CudaTensorRtOwner};
+use super::{DeepStreamPipelineSpec, FrameLease, InferenceStage, LatestFrameExchange};
 
 const EVENT_CAPACITY: usize = 8;
 const BUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -37,6 +40,8 @@ pub struct DeepStreamSessionConfig {
     pub max_batch_age_ns: Option<u64>,
     pub startup_timeout: Duration,
     pub shutdown_timeout: Duration,
+    #[cfg(feature = "tensorrt")]
+    pub rust_tensorrt: Option<CudaTensorRtConfig>,
 }
 
 impl DeepStreamSessionConfig {
@@ -58,6 +63,22 @@ impl DeepStreamSessionConfig {
         }
         if self.max_batch_age_ns == Some(0) {
             return Err(SessionError::ZeroBatchAge);
+        }
+        #[cfg(feature = "tensorrt")]
+        if matches!(
+            self.pipeline.inference,
+            InferenceStage::DeepStreamNvinfer { .. }
+        ) && self.rust_tensorrt.is_some()
+        {
+            return Err(SessionError::InferenceStageMismatch);
+        }
+        if matches!(self.pipeline.inference, InferenceStage::RustTensorRt) {
+            #[cfg(not(feature = "tensorrt"))]
+            return Err(SessionError::RustTensorRtNotCompiled);
+            #[cfg(feature = "tensorrt")]
+            if self.rust_tensorrt.is_none() {
+                return Err(SessionError::InferenceStageMismatch);
+            }
         }
         Ok(())
     }
@@ -686,6 +707,8 @@ fn start_pipeline(
         max_batch_age_ns: config.max_batch_age_ns,
         monotonic_clock,
         ingress,
+        #[cfg(feature = "tensorrt")]
+        rust_tensorrt: config.rust_tensorrt.clone(),
     };
     let mut perception_worker =
         match spawn_snapshot_worker(Arc::clone(&exchange), Arc::clone(&state), worker_context) {
@@ -759,6 +782,32 @@ struct SnapshotWorkerContext {
     max_batch_age_ns: Option<u64>,
     monotonic_clock: Arc<dyn Clock>,
     ingress: PipelineIngress,
+    #[cfg(feature = "tensorrt")]
+    rust_tensorrt: Option<CudaTensorRtConfig>,
+}
+
+enum SnapshotProcessor {
+    DeepStreamMetadata,
+    #[cfg(feature = "tensorrt")]
+    RustTensorRt(Box<CudaTensorRtOwner>),
+}
+
+impl SnapshotProcessor {
+    #[cfg(feature = "tensorrt")]
+    fn initialize(config: Option<CudaTensorRtConfig>) -> Result<Self, SessionError> {
+        match config {
+            Some(config) => CudaTensorRtOwner::from_config(config)
+                .map(Box::new)
+                .map(Self::RustTensorRt)
+                .map_err(|error| SessionError::InferenceInitialize(error.to_string())),
+            None => Ok(Self::DeepStreamMetadata),
+        }
+    }
+
+    #[cfg(not(feature = "tensorrt"))]
+    fn initialize() -> Self {
+        Self::DeepStreamMetadata
+    }
 }
 
 fn spawn_snapshot_worker(
@@ -766,24 +815,54 @@ fn spawn_snapshot_worker(
     state: Arc<ProbeState>,
     context: SnapshotWorkerContext,
 ) -> Result<JoinHandle<()>, SessionError> {
-    thread::Builder::new()
+    let (initialized_tx, initialized_rx) = sync_channel(1);
+    let worker = thread::Builder::new()
         .name("novasight-perception".to_owned())
         .spawn(move || {
             let worker_state = Arc::clone(&state);
+            #[cfg(feature = "tensorrt")]
+            let processor = SnapshotProcessor::initialize(context.rust_tensorrt.clone());
+            #[cfg(not(feature = "tensorrt"))]
+            let processor: Result<SnapshotProcessor, SessionError> =
+                Ok(SnapshotProcessor::initialize());
+            let mut processor = match processor {
+                Ok(processor) => {
+                    let _ = initialized_tx.send(Ok(()));
+                    processor
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = initialized_tx.send(Err(message.clone()));
+                    worker_state.fault(message);
+                    return;
+                }
+            };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_snapshot_worker(&exchange, &state, &context);
+                run_snapshot_worker(&exchange, &state, &context, &mut processor);
             }));
             if outcome.is_err() {
                 worker_state.fault("DeepStream perception worker panicked");
             }
         })
-        .map_err(SessionError::SpawnPerceptionWorker)
+        .map_err(SessionError::SpawnPerceptionWorker)?;
+    match initialized_rx.recv() {
+        Ok(Ok(())) => Ok(worker),
+        Ok(Err(message)) => {
+            let _ = worker.join();
+            Err(SessionError::InferenceInitialize(message))
+        }
+        Err(_) => {
+            let _ = worker.join();
+            Err(SessionError::InferenceInitializeChannelClosed)
+        }
+    }
 }
 
 fn run_snapshot_worker(
     exchange: &SnapshotExchange,
     state: &ProbeState,
     context: &SnapshotWorkerContext,
+    processor: &mut SnapshotProcessor,
 ) {
     while let Some(mut slot) = exchange.wait_take() {
         if state.closed.load(Ordering::Acquire) {
@@ -807,16 +886,32 @@ fn run_snapshot_worker(
         // successful full initialization of FrameSnapshot. Ownership of this
         // Box stays with the worker until it is recycled into the fixed pool.
         let snapshot = unsafe { slot.snapshot.assume_init_ref() };
-        let admitted = admit_snapshot(
-            snapshot,
-            AdmissionContext {
-                epoch: context.epoch,
-                generation,
-                clock: PipelineClockSample::new(slot.pipeline_running_now_ns, slot.monotonic_now),
-                source_id: context.source_id,
-                inference_component_id: context.inference_component_id,
-            },
-        );
+        let admission_context = AdmissionContext {
+            epoch: context.epoch,
+            generation,
+            clock: PipelineClockSample::new(slot.pipeline_running_now_ns, slot.monotonic_now),
+            source_id: context.source_id,
+            inference_component_id: context.inference_component_id,
+        };
+        let admitted = match processor {
+            SnapshotProcessor::DeepStreamMetadata => admit_snapshot(snapshot, admission_context)
+                .map(|admitted| {
+                    let batch = admitted.into_batch();
+                    (
+                        batch.stamp(),
+                        batch.coordinate_width(),
+                        batch.coordinate_height(),
+                        Some(batch),
+                    )
+                }),
+            #[cfg(feature = "tensorrt")]
+            SnapshotProcessor::RustTensorRt(_) => {
+                admit_capture_snapshot(snapshot, admission_context).map(|admitted| {
+                    let (width, height) = admitted.dimensions();
+                    (admitted.stamp(), width, height, None)
+                })
+            }
+        };
         let admitted = match admitted {
             Ok(admitted) => admitted,
             Err(_) => {
@@ -829,7 +924,8 @@ fn run_snapshot_worker(
             }
         };
         let now = context.monotonic_clock.now();
-        let Some(batch_age_ns) = now.0.checked_sub(admitted.batch().stamp().captured_at.0) else {
+        let (stamp, width, height, deepstream_batch) = admitted;
+        let Some(batch_age_ns) = now.0.checked_sub(stamp.captured_at.0) else {
             state
                 .metrics
                 .admission_rejections
@@ -852,22 +948,34 @@ fn run_snapshot_worker(
             recycle_from_worker(exchange, slot);
             break;
         }
-        let stamp = admitted.batch().stamp();
-        let width = admitted.batch().coordinate_width();
-        let height = admitted.batch().coordinate_height();
         let frame = slot
             .frame
             .take()
             .expect("published DeepStream snapshot owns its GstBuffer lease");
-        let _ = exchange.latest_frames.publish(FrameLease::new(
+        let frame = FrameLease::new(
             frame,
             stamp.epoch,
             stamp.generation,
             stamp.captured_at,
             width,
             height,
-        ));
-        match context.ingress.try_submit(admitted.into_batch()) {
+        );
+        let batch = match processor {
+            SnapshotProcessor::DeepStreamMetadata => {
+                deepstream_batch.expect("DeepStream admission produces its detection batch")
+            }
+            #[cfg(feature = "tensorrt")]
+            SnapshotProcessor::RustTensorRt(owner) => match owner.infer(&frame) {
+                Ok(batch) => batch,
+                Err(error) => {
+                    state.fault(format!("Rust TensorRT inference failed: {error}"));
+                    recycle_from_worker(exchange, slot);
+                    break;
+                }
+            },
+        };
+        let _ = exchange.latest_frames.publish(frame);
+        match context.ingress.try_submit(batch) {
             Ok(()) => {
                 state
                     .metrics
@@ -1089,6 +1197,14 @@ pub enum SessionError {
     Spawn(#[source] std::io::Error),
     #[error("failed to spawn DeepStream perception worker: {0}")]
     SpawnPerceptionWorker(#[source] std::io::Error),
+    #[error("Rust TensorRT stage selected but this binary was not compiled with TensorRT support")]
+    RustTensorRtNotCompiled,
+    #[error("pipeline inference stage does not match its worker configuration")]
+    InferenceStageMismatch,
+    #[error("failed to initialize inference worker: {0}")]
+    InferenceInitialize(String),
+    #[error("inference worker closed its initialization channel")]
+    InferenceInitializeChannelClosed,
     #[error("DeepStream startup channel closed before readiness")]
     StartupChannelClosed,
     #[error("DeepStream startup failed: {0}")]

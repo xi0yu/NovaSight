@@ -42,6 +42,7 @@ impl FrameLease {
         self.buffer.as_ref()
     }
 
+    #[cfg(feature = "cuda-preprocess")]
     pub(crate) fn buffer_ptr(&self) -> u64 {
         u64::try_from(self.buffer.as_ptr().addr())
             .expect("supported Jetson pointer width does not exceed 64 bits")
