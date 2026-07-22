@@ -4466,7 +4466,13 @@ export function StudioConsoleView({
                     <strong>{kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "输出已连接，但按键监听不可用" : "最近一次输出失败"}</strong>
                     <span>{kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口和驱动后重新连接。" : "不依赖硬件按键的控制仍可继续使用。")}</span>
                   </div>
-                  {kmnetRetryable ? <small>修改配置后点击“重新连接”，无需重启主链。</small> : null}
+                  {kmnetRetryable ? (
+                    <small>
+                      {rustControlPlane
+                        ? "修改配置并保存后，重启主链以创建新的设备会话。"
+                        : "修改配置后点击“重新连接”，无需重启主链。"}
+                    </small>
+                  ) : null}
                 </div>
               ) : null}
               <div className="console-action-row kmnet-connection-actions">
@@ -4481,12 +4487,14 @@ export function StudioConsoleView({
                 <span>设备生命周期由 novasightd 所有；启动主链时启用，停止主链后才允许单步诊断。</span>
               </div>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
-              <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
+              <NumberControl label="kmnetport" value={kmnetPort} min={rustControlPlane ? 1 : 0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
               <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
-              <NumberControl label="monitor_port" value={kmnetMonitorPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
+              <NumberControl label="monitor_port" value={kmnetMonitorPort} min={rustControlPlane ? 1024 : 0} max={rustControlPlane ? 49151 : 65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
               <ModuleSwitch
-                label="后端服务启动时自动连接"
-                detail="独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"
+                label={rustControlPlane ? "主链启动时连接设备" : "后端服务启动时自动连接"}
+                detail={rustControlPlane
+                  ? "设备会话归属 Runtime Epoch；停止主链会关闭 kmNet，连接失败则该 epoch 启动失败"
+                  : "独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"}
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
               />

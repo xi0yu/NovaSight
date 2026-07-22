@@ -578,4 +578,8 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert 'updateConfigField("pipeline", "target_class_filter", value)' in studio
     assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
     assert 'Rust 主链使用有界关联与稳健速度短窗' in studio
+    assert 'min={rustControlPlane ? 1024 : 0}' in studio
+    assert 'max={rustControlPlane ? 49151 : 65535}' in studio
+    assert '"主链启动时连接设备"' in studio
+    assert '"修改配置并保存后，重启主链以创建新的设备会话。"' in studio
     assert 'availableControlAlgorithms.map' in studio
