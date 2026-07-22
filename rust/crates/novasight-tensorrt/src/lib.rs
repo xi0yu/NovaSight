@@ -13,6 +13,9 @@ use novasight_core::{Generation, MonotonicNanos, RuntimeEpoch};
 use novasight_jetson_preprocess::{DeviceTensor, TensorContract, TensorDtype};
 use thiserror::Error;
 
+mod decoder;
+pub use decoder::{DecodeContract, DecodeError, DetectionDecoder};
+
 const ABI_VERSION: u32 = 1;
 const MAX_NAME: usize = 128;
 const MAX_RANK: usize = 8;
@@ -289,6 +292,12 @@ impl ExecutionOutputs<'_> {
             .iter()
             .map(|view| HostTensor { view })
     }
+
+    pub fn find(&self, name: &str) -> Result<HostTensor<'_>, TensorRtError> {
+        self.iter()
+            .find(|tensor| tensor.name().is_ok_and(|actual| actual == name))
+            .ok_or_else(|| TensorRtError::MissingOutput(name.to_owned()))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -312,6 +321,43 @@ impl HostTensor<'_> {
     pub fn bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(self.view.host_ptr.cast::<u8>(), self.view.nbytes as usize)
+        }
+    }
+
+    pub fn element_count(&self) -> usize {
+        match self.view.spec.dtype {
+            1 => self.view.nbytes as usize / 4,
+            2 => self.view.nbytes as usize / 2,
+            _ => 0,
+        }
+    }
+
+    pub fn value_f32(&self, index: usize) -> Result<f32, TensorRtError> {
+        if index >= self.element_count() {
+            return Err(TensorRtError::OutputIndex {
+                index,
+                elements: self.element_count(),
+            });
+        }
+        let bytes = self.bytes();
+        match self.dtype()? {
+            TensorDtype::Float32 => {
+                let offset = index * 4;
+                Ok(f32::from_ne_bytes(
+                    bytes[offset..offset + 4]
+                        .try_into()
+                        .expect("validated f32 element width"),
+                ))
+            }
+            TensorDtype::Float16 => {
+                let offset = index * 2;
+                let bits = u16::from_ne_bytes(
+                    bytes[offset..offset + 2]
+                        .try_into()
+                        .expect("validated f16 element width"),
+                );
+                Ok(f16_bits_to_f32(bits))
+            }
         }
     }
 }
@@ -359,6 +405,28 @@ pub enum TensorRtError {
     InvalidEngineOutputCount(u32),
     #[error("TensorRT engine exposes duplicate output name {0}")]
     DuplicateOutputName(String),
+    #[error("TensorRT output {0} is missing")]
+    MissingOutput(String),
+    #[error("TensorRT output index {index} exceeds {elements} elements")]
+    OutputIndex { index: usize, elements: usize },
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exponent = u32::from((bits >> 10) & 0x1f);
+    let fraction = u32::from(bits & 0x03ff);
+    let expanded = match exponent {
+        0 if fraction == 0 => sign,
+        0 => {
+            let shift = fraction.leading_zeros() - 21;
+            let normalized = fraction << shift;
+            let exponent32 = 127_u32 - 14 - shift;
+            sign | (exponent32 << 23) | ((normalized & 0x03ff) << 13)
+        }
+        0x1f => sign | 0x7f80_0000 | (fraction << 13),
+        _ => sign | ((exponent + 112) << 23) | (fraction << 13),
+    };
+    f32::from_bits(expanded)
 }
 
 fn input_matches(spec: &TensorSpec, contract: TensorContract) -> bool {
@@ -818,5 +886,16 @@ mod tests {
         assert_eq!(std::mem::offset_of!(NativeDeviceTensorView, dimensions), 24);
         assert_eq!(std::mem::size_of::<NativeHostTensorView>(), 232);
         assert_eq!(std::mem::offset_of!(NativeHostTensorView, spec), 16);
+    }
+
+    #[test]
+    fn fp16_conversion_handles_finite_subnormal_and_special_values() {
+        assert_eq!(f16_bits_to_f32(0x0000).to_bits(), 0.0_f32.to_bits());
+        assert_eq!(f16_bits_to_f32(0x8000).to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(f16_bits_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_bits_to_f32(0xc000), -2.0);
+        assert_eq!(f16_bits_to_f32(0x0001), 2_f32.powi(-24));
+        assert!(f16_bits_to_f32(0x7c00).is_infinite());
+        assert!(f16_bits_to_f32(0x7e00).is_nan());
     }
 }
