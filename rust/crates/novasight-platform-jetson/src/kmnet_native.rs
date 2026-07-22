@@ -318,38 +318,44 @@ impl ControlSocket {
             self.socket
                 .send(&packet)
                 .map_err(|source| KmNetNativeError::Send { operation, source })?;
-            let mut response = [0_u8; 1024];
-            let received = match self.socket.recv(&mut response) {
-                Ok(received) => received,
-                Err(source)
-                    if attempt + 1 < attempts
-                        && matches!(
-                            source.kind(),
-                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                        ) =>
-                {
+            loop {
+                let mut response = [0_u8; 1024];
+                let received = match self.socket.recv(&mut response) {
+                    Ok(received) => received,
+                    Err(source)
+                        if attempt + 1 < attempts
+                            && matches!(
+                                source.kind(),
+                                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                            ) =>
+                    {
+                        break;
+                    }
+                    Err(source) => return Err(KmNetNativeError::Receive { operation, source }),
+                };
+                if received < HEADER_LEN {
+                    return Err(KmNetNativeError::ShortResponse {
+                        operation,
+                        received,
+                    });
+                }
+                let response_sequence = u32::from_le_bytes(response[8..12].try_into().unwrap());
+                let response_command = u32::from_le_bytes(response[12..16].try_into().unwrap());
+                let sequence_age = self.sequence.wrapping_sub(response_sequence);
+                if sequence_age != 0 && sequence_age < (1_u32 << 31) {
                     continue;
                 }
-                Err(source) => return Err(KmNetNativeError::Receive { operation, source }),
-            };
-            if received < HEADER_LEN {
-                return Err(KmNetNativeError::ShortResponse {
-                    operation,
-                    received,
-                });
+                if response_sequence != self.sequence || response_command != command {
+                    return Err(KmNetNativeError::ResponseMismatch {
+                        operation,
+                        expected_sequence: self.sequence,
+                        actual_sequence: response_sequence,
+                        expected_command: command,
+                        actual_command: response_command,
+                    });
+                }
+                return Ok(());
             }
-            let response_sequence = u32::from_le_bytes(response[8..12].try_into().unwrap());
-            let response_command = u32::from_le_bytes(response[12..16].try_into().unwrap());
-            if response_sequence != self.sequence || response_command != command {
-                return Err(KmNetNativeError::ResponseMismatch {
-                    operation,
-                    expected_sequence: self.sequence,
-                    actual_sequence: response_sequence,
-                    expected_command: command,
-                    actual_command: response_command,
-                });
-            }
-            return Ok(());
         }
         unreachable!("exchange attempts are always non-zero")
     }
