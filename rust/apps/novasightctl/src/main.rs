@@ -277,9 +277,9 @@ enum ConfigCommand {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum CommandOutput {
-    Runtime(RuntimeSnapshot),
-    Config(AppConfig),
-    ConfigUpdate(ConfigUpdate),
+    Runtime(Box<RuntimeSnapshot>),
+    Config(Box<AppConfig>),
+    ConfigUpdate(Box<ConfigUpdate>),
     Model(ModelIngressResult),
     ModelRegistration(CatalogEngineRegistration),
     License(LicenseStatus),
@@ -335,14 +335,38 @@ async fn main() -> ExitCode {
 async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
     let client = ControlClient::new(cli.socket);
     match cli.command {
-        Command::Status => client.status().await.map(CommandOutput::Runtime),
-        Command::Start => client.start().await.map(CommandOutput::Runtime),
-        Command::Stop => client.stop().await.map(CommandOutput::Runtime),
-        Command::Restart => client.restart().await.map(CommandOutput::Runtime),
-        Command::EmergencyStop => client.emergency_stop().await.map(CommandOutput::Runtime),
+        Command::Status => client
+            .status()
+            .await
+            .map(Box::new)
+            .map(CommandOutput::Runtime),
+        Command::Start => client
+            .start()
+            .await
+            .map(Box::new)
+            .map(CommandOutput::Runtime),
+        Command::Stop => client
+            .stop()
+            .await
+            .map(Box::new)
+            .map(CommandOutput::Runtime),
+        Command::Restart => client
+            .restart()
+            .await
+            .map(Box::new)
+            .map(CommandOutput::Runtime),
+        Command::EmergencyStop => client
+            .emergency_stop()
+            .await
+            .map(Box::new)
+            .map(CommandOutput::Runtime),
         Command::Config {
             command: ConfigCommand::Show,
-        } => client.config().await.map(CommandOutput::Config),
+        } => client
+            .config()
+            .await
+            .map(Box::new)
+            .map(CommandOutput::Config),
         Command::Config {
             command:
                 ConfigCommand::Set {
@@ -356,6 +380,7 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             client
                 .update_config_field(section, key, value, expected_revision)
                 .await
+                .map(Box::new)
                 .map(CommandOutput::ConfigUpdate)
         }
         Command::License {
