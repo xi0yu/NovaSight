@@ -32,6 +32,7 @@ use novasight_platform_jetson::kmnet_native::{
 use novasight_runtime::{ConfigService, RuntimeDependencies};
 use novasight_store::config::{
     AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, InferenceBackend,
+    parse_target_class_priority,
 };
 use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
 use novasight_store::model_manifest::ModelManifest;
@@ -142,6 +143,18 @@ fn build_live_dependencies(
                 tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
                 tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
                 tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
+                class_priority: parse_target_class_priority(
+                    &adapters.pipeline.target_class_priority,
+                )
+                .map_err(LivePerceptionError::Config)?,
+                selection_class_weight: adapters.pipeline.target_selection_class_weight,
+                selection_distance_weight: adapters.pipeline.target_selection_distance_weight,
+                sticky_bias: adapters.pipeline.target_sticky_bias,
+                switch_min_preference_advantage: adapters
+                    .pipeline
+                    .target_switch_min_preference_advantage,
+                switch_min_continuity_score: adapters.pipeline.target_switch_min_continuity_score,
+                switch_delay_ms: adapters.pipeline.target_switch_delay_ms,
             },
             control: DualPhaseConfig {
                 freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,

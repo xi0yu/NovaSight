@@ -659,7 +659,11 @@ fn spawn_targeting_worker(
                         .metrics
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
-                    let selection = targeting.select(batch.detections(), batch.center());
+                    let selection = targeting.select_at(
+                        batch.detections(),
+                        batch.center(),
+                        batch.stamp().captured_at.0,
+                    );
                     let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
                     let (target_id, aim_x, aim_y, detection_confidence) = match (
                         selection.target_object_id,

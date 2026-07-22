@@ -192,6 +192,20 @@ pub struct PipelineRuntimeConfig {
     pub tracker_position_cost_weight: f64,
     #[serde(default = "default_tracker_iou_cost_weight")]
     pub tracker_iou_cost_weight: f64,
+    #[serde(default = "default_target_class_priority")]
+    pub target_class_priority: String,
+    #[serde(default = "default_target_selection_class_weight")]
+    pub target_selection_class_weight: f64,
+    #[serde(default = "default_target_selection_distance_weight")]
+    pub target_selection_distance_weight: f64,
+    #[serde(default = "default_target_sticky_bias")]
+    pub target_sticky_bias: f64,
+    #[serde(default = "default_target_switch_min_preference_advantage")]
+    pub target_switch_min_preference_advantage: f64,
+    #[serde(default = "default_target_switch_min_continuity_score")]
+    pub target_switch_min_continuity_score: f64,
+    #[serde(default = "default_target_switch_delay_ms")]
+    pub target_switch_delay_ms: f64,
     #[serde(default = "default_max_command_age_ms")]
     pub max_command_age_ms: u64,
     #[serde(default = "default_output_interval_ms")]
@@ -236,6 +250,14 @@ impl Default for PipelineRuntimeConfig {
             tracker_max_match_distance: default_tracker_max_match_distance(),
             tracker_position_cost_weight: default_tracker_position_cost_weight(),
             tracker_iou_cost_weight: default_tracker_iou_cost_weight(),
+            target_class_priority: default_target_class_priority(),
+            target_selection_class_weight: default_target_selection_class_weight(),
+            target_selection_distance_weight: default_target_selection_distance_weight(),
+            target_sticky_bias: default_target_sticky_bias(),
+            target_switch_min_preference_advantage: default_target_switch_min_preference_advantage(
+            ),
+            target_switch_min_continuity_score: default_target_switch_min_continuity_score(),
+            target_switch_delay_ms: default_target_switch_delay_ms(),
             max_command_age_ms: default_max_command_age_ms(),
             output_interval_ms: default_output_interval_ms(),
             production_fields_explicit: false,
@@ -411,6 +433,49 @@ impl PipelineRuntimeConfig {
                 "tracker position and IoU weights must not both be zero",
             ));
         }
+        parse_target_class_priority(&self.target_class_priority)?;
+        for (field, value) in [
+            (
+                "pipeline.target_selection_class_weight",
+                self.target_selection_class_weight,
+            ),
+            (
+                "pipeline.target_selection_distance_weight",
+                self.target_selection_distance_weight,
+            ),
+        ] {
+            validate_finite_range(field, value, 0.0, 100.0)?;
+        }
+        if self.target_selection_class_weight + self.target_selection_distance_weight <= 0.0 {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_selection_class_weight",
+                "target class and distance weights must not both be zero",
+            ));
+        }
+        validate_finite_range(
+            "pipeline.target_sticky_bias",
+            self.target_sticky_bias,
+            0.0,
+            0.9,
+        )?;
+        validate_finite_range(
+            "pipeline.target_switch_min_preference_advantage",
+            self.target_switch_min_preference_advantage,
+            0.0,
+            1.0,
+        )?;
+        validate_finite_range(
+            "pipeline.target_switch_min_continuity_score",
+            self.target_switch_min_continuity_score,
+            0.0,
+            1.0,
+        )?;
+        validate_finite_range(
+            "pipeline.target_switch_delay_ms",
+            self.target_switch_delay_ms,
+            0.0,
+            10_000.0,
+        )?;
         if !(1..=1_000).contains(&self.max_command_age_ms) {
             return Err(ConfigValidationError::new(
                 "pipeline.max_command_age_ms",
@@ -425,6 +490,32 @@ impl PipelineRuntimeConfig {
         }
         Ok(())
     }
+}
+
+pub fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValidationError> {
+    let mut classes = Vec::new();
+    for item in value.split(',') {
+        let class_id = item.trim().parse::<u32>().map_err(|_| {
+            ConfigValidationError::new(
+                "pipeline.target_class_priority",
+                "must be a comma-separated list of unique class ids",
+            )
+        })?;
+        if classes.contains(&class_id) {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_class_priority",
+                "must not contain duplicate class ids",
+            ));
+        }
+        classes.push(class_id);
+    }
+    if classes.is_empty() {
+        return Err(ConfigValidationError::new(
+            "pipeline.target_class_priority",
+            "must contain at least one class id",
+        ));
+    }
+    Ok(classes)
 }
 
 fn validate_finite_range(
@@ -560,6 +651,34 @@ const fn default_tracker_position_cost_weight() -> f64 {
 
 const fn default_tracker_iou_cost_weight() -> f64 {
     0.25
+}
+
+fn default_target_class_priority() -> String {
+    "0,1".to_owned()
+}
+
+const fn default_target_selection_class_weight() -> f64 {
+    0.55
+}
+
+const fn default_target_selection_distance_weight() -> f64 {
+    0.40
+}
+
+const fn default_target_sticky_bias() -> f64 {
+    0.25
+}
+
+const fn default_target_switch_min_preference_advantage() -> f64 {
+    0.08
+}
+
+const fn default_target_switch_min_continuity_score() -> f64 {
+    0.70
+}
+
+const fn default_target_switch_delay_ms() -> f64 {
+    50.0
 }
 
 const fn default_max_command_age_ms() -> u64 {
@@ -1318,5 +1437,26 @@ mod tests {
         };
         let error = config.validate().expect_err("zero association weights");
         assert_eq!(error.field, "pipeline.tracker_position_cost_weight");
+    }
+
+    #[test]
+    fn target_priority_rejects_duplicates_before_runtime_composition() {
+        let config = PipelineRuntimeConfig {
+            target_class_priority: "0,1,0".to_owned(),
+            ..PipelineRuntimeConfig::default()
+        };
+        let error = config.validate().expect_err("duplicate class priority");
+        assert_eq!(error.field, "pipeline.target_class_priority");
+    }
+
+    #[test]
+    fn target_selection_requires_a_real_scoring_signal() {
+        let config = PipelineRuntimeConfig {
+            target_selection_class_weight: 0.0,
+            target_selection_distance_weight: 0.0,
+            ..PipelineRuntimeConfig::default()
+        };
+        let error = config.validate().expect_err("zero target scoring weights");
+        assert_eq!(error.field, "pipeline.target_selection_class_weight");
     }
 }

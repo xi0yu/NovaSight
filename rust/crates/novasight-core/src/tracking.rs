@@ -6,9 +6,10 @@
 //! association, and returns both the chosen candidate and a stable `TrackId`.
 //!
 //! The implementation is intentionally small and exhaustive:
-//! * no Kalman filter or Hungarian assignment. The bounded single-lock
-//!   association is deterministic; temporal identity confidence combines
-//!   target-height-normalized center distance and bounding-box IoU.
+//! * no Kalman filter or Hungarian assignment. Bounded deterministic
+//!   association retains every admitted candidate needed for switch
+//!   hysteresis; temporal identity confidence combines target-height-
+//!   normalized center distance and bounding-box IoU.
 //! * no unbounded growth. History is bounded by `BoundedHistory` and
 //!   `TargetingCore::reset` is the only way to clear it.
 //! * lost tracks never produce a control target. After a configurable
@@ -245,6 +246,16 @@ pub struct TargetingConfig {
     pub tracker_max_match_distance: f64,
     pub tracker_position_cost_weight: f64,
     pub tracker_iou_cost_weight: f64,
+    /// Descending class preference. The first two ranks receive the same
+    /// 1.0 / 0.5 scores as the Python selector; unlisted classes score zero.
+    pub class_priority: Vec<u32>,
+    pub selection_class_weight: f64,
+    pub selection_distance_weight: f64,
+    /// Distance discount applied only to the currently locked TrackId.
+    pub sticky_bias: f64,
+    pub switch_min_preference_advantage: f64,
+    pub switch_min_continuity_score: f64,
+    pub switch_delay_ms: f64,
 }
 
 impl Default for TargetingConfig {
@@ -257,8 +268,21 @@ impl Default for TargetingConfig {
             tracker_max_match_distance: 1.5,
             tracker_position_cost_weight: 0.75,
             tracker_iou_cost_weight: 0.25,
+            class_priority: vec![0, 1],
+            selection_class_weight: 0.55,
+            selection_distance_weight: 0.40,
+            sticky_bias: 0.25,
+            switch_min_preference_advantage: 0.08,
+            switch_min_continuity_score: 0.70,
+            switch_delay_ms: 50.0,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingSwitch {
+    track_id: TrackId,
+    started_at_ns: u64,
 }
 
 /// Locked target state machine. A new instance starts empty; callers
@@ -270,6 +294,7 @@ pub struct TargetingCore {
     history: BoundedHistory<Track>,
     tracks: Vec<Track>,
     locked: Option<Track>,
+    pending_switch: Option<PendingSwitch>,
     lost_count: u64,
     next_track_id: u64,
 }
@@ -281,6 +306,7 @@ impl TargetingCore {
             history: BoundedHistory::new(DEFAULT_HISTORY_LIMIT),
             tracks: Vec::new(),
             locked: None,
+            pending_switch: None,
             lost_count: 0,
             next_track_id: 1,
         }
@@ -290,6 +316,7 @@ impl TargetingCore {
         self.history = BoundedHistory::new(self.history.limit);
         self.tracks.clear();
         self.locked = None;
+        self.pending_switch = None;
         self.lost_count = 0;
         self.next_track_id = 1;
     }
@@ -306,25 +333,31 @@ impl TargetingCore {
         self.locked.as_ref()
     }
 
-    /// Run one selection step. Detections outside the minimum
-    /// confidence are filtered before association. While a preferred-
-    /// class (class 0 / head) candidate is present and within the
-    /// debounce window from the prior lock, the lock stays on the
-    /// head with `PreferredClass`. Once the head moves further than
-    /// the window, the lock falls back to the next best class-1
-    /// candidate with `FallbackClass`. This mirrors the Python
-    /// `RuntimeTargetSelector` semantics pinned by
-    /// `target-switch-loss.jsonl`.
+    /// Deterministic compatibility entry point for tests and replay fixtures.
+    /// Production callers use [`Self::select_at`] so switch hysteresis is
+    /// measured from the admitted capture timestamp.
     pub fn select(
         &mut self,
         detections: &[Detection],
         observation_center: (f64, f64),
+    ) -> TargetSelection {
+        self.select_at(detections, observation_center, 0)
+    }
+
+    /// Production selection path. `captured_at_ns` is the admitted monotonic
+    /// capture timestamp and therefore cannot be stretched by worker backlog.
+    pub fn select_at(
+        &mut self,
+        detections: &[Detection],
+        observation_center: (f64, f64),
+        captured_at_ns: u64,
     ) -> TargetSelection {
         let candidates = detections.len();
         let admissible: Vec<Detection> = detections
             .iter()
             .filter(|det| {
                 det.confidence() >= self.config.min_confidence
+                    && self.config.class_priority.contains(&det.class_id())
                     && euclidean(
                         det.center_x(),
                         det.center_y(),
@@ -335,6 +368,7 @@ impl TargetingCore {
             .cloned()
             .collect();
         if admissible.is_empty() {
+            self.pending_switch = None;
             self.miss_locked_target();
             return TargetSelection {
                 candidates,
@@ -349,102 +383,123 @@ impl TargetingCore {
             };
         }
 
-        let mut class0: Vec<&Detection> = admissible
-            .iter()
-            .filter(|det| det.class_id() == 0)
-            .collect();
-        let mut class1: Vec<&Detection> = admissible
-            .iter()
-            .filter(|det| det.class_id() == 1)
-            .collect();
         let associations = associate(&self.tracks, &admissible).unwrap_or_default();
-        class0.sort_by(|a, b| {
-            distance_to_target(a, self.locked.as_ref(), observation_center)
-                .partial_cmp(&distance_to_target(
-                    b,
-                    self.locked.as_ref(),
-                    observation_center,
-                ))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.object_id().cmp(&b.object_id()))
-        });
-        class1.sort_by(|a, b| {
-            distance_to_target(a, self.locked.as_ref(), observation_center)
-                .partial_cmp(&distance_to_target(
-                    b,
-                    self.locked.as_ref(),
-                    observation_center,
-                ))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.object_id().cmp(&b.object_id()))
-        });
+        let mut current = Vec::with_capacity(admissible.len());
+        for det in &admissible {
+            let associated = associations.iter().find_map(|association| {
+                let prior = self
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == association.track_id)?;
+                if association.object_id != det.object_id() {
+                    return None;
+                }
+                association_identity_confidence(prior, det, &self.config)
+                    .map(|identity_confidence| (prior, identity_confidence))
+            });
+            let id = associated.map_or_else(
+                || {
+                    let id = TrackId(self.next_track_id);
+                    self.next_track_id = self.next_track_id.saturating_add(1);
+                    id
+                },
+                |(track, _)| track.id,
+            );
+            current.push(Track {
+                id,
+                object_id: det.object_id(),
+                class_id: det.class_id(),
+                state: TrackState::Confirmed,
+                center_x: det.center_x(),
+                center_y: det.center_y(),
+                width: f64::from(det.width()),
+                height: f64::from(det.height()),
+                confidence: det.confidence(),
+                identity_confidence: associated.map_or(1.0, |(_, confidence)| confidence),
+                age_frames: associated.map_or(1, |(track, _)| track.age_frames.saturating_add(1)),
+                missed_frames: 0,
+            });
+        }
 
-        let (chosen, reason) = match (class0.first(), class1.first()) {
-            (Some(head), _) if self.locked.is_none() => (Some(*head), LockReason::PreferredClass),
-            (Some(head), _) if self.head_within_debounce(head) => {
-                (Some(*head), LockReason::PreferredClass)
+        let locked_index = self
+            .locked
+            .as_ref()
+            .and_then(|locked| current.iter().position(|track| track.id == locked.id));
+        let best_index = current
+            .iter()
+            .enumerate()
+            .max_by(|(left_index, left), (right_index, right)| {
+                target_score(left, self.locked.as_ref(), observation_center, &self.config)
+                    .total_cmp(&target_score(
+                        right,
+                        self.locked.as_ref(),
+                        observation_center,
+                        &self.config,
+                    ))
+                    .then_with(|| right.object_id.cmp(&left.object_id))
+                    .then_with(|| right_index.cmp(left_index))
+            })
+            .map(|(index, _)| index)
+            .expect("admissible detections produce current tracks");
+
+        let chosen_index = match locked_index {
+            None => {
+                self.pending_switch = None;
+                best_index
             }
-            (Some(head), None) => (Some(*head), LockReason::PreferredClass),
-            (_, Some(body)) => (Some(*body), LockReason::FallbackClass),
-            (None, None) => (None, LockReason::FallbackClass),
-        };
-
-        let track = match chosen {
-            Some(det) => {
-                let associated = associations.iter().find_map(|association| {
-                    let prior = self
-                        .tracks
-                        .iter()
-                        .find(|track| track.id == association.track_id)?;
-                    if association.object_id != det.object_id() {
-                        return None;
-                    }
-                    association_identity_confidence(prior, det, &self.config)
-                        .map(|identity_confidence| (prior, identity_confidence))
-                });
-                let id = associated.map_or_else(
-                    || {
-                        let id = TrackId(self.next_track_id);
-                        self.next_track_id = self.next_track_id.saturating_add(1);
-                        id
-                    },
-                    |(track, _)| track.id,
+            Some(index) if index == best_index => {
+                self.pending_switch = None;
+                best_index
+            }
+            Some(index) => {
+                let locked_score = target_score(
+                    &current[index],
+                    self.locked.as_ref(),
+                    observation_center,
+                    &self.config,
                 );
-                Track {
-                    id,
-                    object_id: det.object_id(),
-                    class_id: det.class_id(),
-                    state: TrackState::Confirmed,
-                    center_x: det.center_x(),
-                    center_y: det.center_y(),
-                    width: f64::from(det.width()),
-                    height: f64::from(det.height()),
-                    confidence: det.confidence(),
-                    identity_confidence: associated.map_or(1.0, |(_, confidence)| confidence),
-                    age_frames: associated
-                        .map_or(1, |(track, _)| track.age_frames.saturating_add(1)),
-                    missed_frames: 0,
+                let best = &current[best_index];
+                let advantage =
+                    target_score(best, self.locked.as_ref(), observation_center, &self.config)
+                        - locked_score;
+                let continuity = if best.age_frames > 1 {
+                    best.identity_confidence
+                } else {
+                    0.0
+                };
+                if advantage < self.config.switch_min_preference_advantage
+                    || continuity < self.config.switch_min_continuity_score
+                {
+                    self.pending_switch = None;
+                    index
+                } else {
+                    let started_at_ns = self
+                        .pending_switch
+                        .filter(|pending| pending.track_id == best.id)
+                        .map_or(captured_at_ns, |pending| pending.started_at_ns);
+                    let elapsed_ms = captured_at_ns.saturating_sub(started_at_ns) as f64 / 1e6;
+                    if elapsed_ms >= self.config.switch_delay_ms {
+                        self.pending_switch = None;
+                        best_index
+                    } else {
+                        self.pending_switch = Some(PendingSwitch {
+                            track_id: best.id,
+                            started_at_ns,
+                        });
+                        index
+                    }
                 }
             }
-            None => {
-                self.miss_locked_target();
-                return TargetSelection {
-                    candidates,
-                    inside_fov: 0,
-                    target_object_id: None,
-                    target_track_id: None,
-                    target_class_id: None,
-                    target_detection_confidence: None,
-                    target_identity_confidence: None,
-                    lock_reason: None,
-                    lost_count: self.lost_count,
-                };
-            }
+        };
+        let track = current[chosen_index].clone();
+        let reason = if self.config.class_priority.first().copied() == Some(track.class_id) {
+            LockReason::PreferredClass
+        } else {
+            LockReason::FallbackClass
         };
 
         self.history.push(track.clone());
-        self.tracks.clear();
-        self.tracks.push(track.clone());
+        self.tracks = current;
         self.lost_count = 0;
         self.locked = Some(track.clone());
         TargetSelection {
@@ -457,20 +512,6 @@ impl TargetingCore {
             target_identity_confidence: Some(track.identity_confidence),
             lock_reason: Some(reason),
             lost_count: self.lost_count,
-        }
-    }
-
-    fn head_within_debounce(&self, head: &Detection) -> bool {
-        match self.locked.as_ref() {
-            Some(prev) => {
-                euclidean(
-                    prev.center_x,
-                    prev.center_y,
-                    head.center_x(),
-                    head.center_y(),
-                ) <= self.config.debounce_distance_px
-            }
-            None => true,
         }
     }
 
@@ -487,25 +528,48 @@ impl TargetingCore {
     }
 }
 
-fn distance_to_target(
-    det: &Detection,
-    target: Option<&Track>,
+fn target_score(
+    track: &Track,
+    locked: Option<&Track>,
     observation_center: (f64, f64),
+    config: &TargetingConfig,
 ) -> f64 {
-    match target {
-        Some(target) => euclidean(
-            target.center_x,
-            target.center_y,
-            det.center_x(),
-            det.center_y(),
-        ),
-        None => euclidean(
-            observation_center.0,
-            observation_center.1,
-            det.center_x(),
-            det.center_y(),
-        ),
+    let class_score = match config
+        .class_priority
+        .iter()
+        .position(|class_id| *class_id == track.class_id)
+    {
+        Some(0) => 1.0,
+        Some(1) => 0.5,
+        _ => 0.0,
+    };
+    let raw_distance = euclidean(
+        track.center_x,
+        track.center_y,
+        observation_center.0,
+        observation_center.1,
+    );
+    let distance = if locked.is_some_and(|locked| {
+        locked.id == track.id
+            && euclidean(
+                locked.center_x,
+                locked.center_y,
+                track.center_x,
+                track.center_y,
+            ) <= config.debounce_distance_px
+    }) {
+        raw_distance * (1.0 - config.sticky_bias.clamp(0.0, 0.9))
+    } else {
+        raw_distance
+    };
+    let distance_score = 1.0 - (distance / config.target_fov_radius_px.max(1e-6)).clamp(0.0, 1.0);
+    let class_weight = config.selection_class_weight.max(0.0);
+    let distance_weight = config.selection_distance_weight.max(0.0);
+    let total_weight = class_weight + distance_weight;
+    if total_weight <= 0.0 {
+        return distance_score;
     }
+    (class_weight * class_score + distance_weight * distance_score) / total_weight
 }
 
 fn association_identity_confidence(

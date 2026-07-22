@@ -42,6 +42,13 @@ pipeline:
   tracker_max_match_distance: 1.5
   tracker_position_cost_weight: 0.75
   tracker_iou_cost_weight: 0.25
+  target_class_priority: "0,1"
+  target_selection_class_weight: 0.55
+  target_selection_distance_weight: 0.40
+  target_sticky_bias: 0.25
+  target_switch_min_preference_advantage: 0.08
+  target_switch_min_continuity_score: 0.70
+  target_switch_delay_ms: 50.0
   max_command_age_ms: 55
   output_interval_ms: 4
 capture:

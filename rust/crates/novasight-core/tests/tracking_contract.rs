@@ -183,6 +183,41 @@ fn head_movement_under_debounce_keeps_lock_with_held_by_debounce_reason() {
 }
 
 #[test]
+fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        selection_class_weight: 0.10,
+        selection_distance_weight: 0.90,
+        sticky_bias: 0.0,
+        switch_delay_ms: 50.0,
+        ..TargetingConfig::default()
+    });
+    let first = vec![
+        Detection::new(1, 0, 280.0, 240.0, 80.0, 160.0, 0.9).expect("locked"),
+        Detection::new(2, 1, 310.0, 240.0, 80.0, 160.0, 0.9).expect("challenger"),
+    ];
+    assert_eq!(
+        core.select_at(&first, OBSERVATION_CENTER, 1_000_000_000)
+            .target_object_id,
+        Some(1)
+    );
+
+    let challenger_wins = vec![
+        Detection::new(11, 0, 430.0, 240.0, 80.0, 160.0, 0.9).expect("locked moved"),
+        Detection::new(12, 1, 280.0, 240.0, 80.0, 160.0, 0.9).expect("stable challenger"),
+    ];
+    let pending = core.select_at(&challenger_wins, OBSERVATION_CENTER, 1_020_000_000);
+    assert_eq!(pending.target_object_id, Some(11), "delay must hold lock");
+
+    let committed = core.select_at(&challenger_wins, OBSERVATION_CENTER, 1_080_000_000);
+    assert_eq!(
+        committed.target_object_id,
+        Some(12),
+        "capture-time advantage held beyond 50 ms must switch"
+    );
+    assert_eq!(committed.lock_reason, Some(LockReason::FallbackClass));
+}
+
+#[test]
 fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let left = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("left");
