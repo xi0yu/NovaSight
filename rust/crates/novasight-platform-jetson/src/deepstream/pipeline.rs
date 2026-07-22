@@ -39,6 +39,12 @@ pub struct PreviewPipelineConfig {
     pub fps: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrosshairPipelineConfig {
+    pub size: u32,
+    pub fps: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InferenceStage {
     DeepStreamNvinfer { config: PathBuf },
@@ -56,6 +62,7 @@ pub struct DeepStreamPipelineSpec {
     pub batched_push_timeout_us: i64,
     pub inference_element: String,
     pub preview: Option<PreviewPipelineConfig>,
+    pub crosshair: Option<CrosshairPipelineConfig>,
 }
 
 impl DeepStreamPipelineSpec {
@@ -95,7 +102,7 @@ impl DeepStreamPipelineSpec {
                 ]);
             }
         }
-        if self.preview.is_some() {
+        if self.preview.is_some() || self.crosshair.is_some() {
             elements.extend([
                 "tee name=novasight-source-split".to_owned(),
                 LATEST_ONLY_QUEUE.to_owned(),
@@ -134,13 +141,27 @@ impl DeepStreamPipelineSpec {
             self.model_input.height,
             self.batched_push_timeout_us,
         );
-        let Some(preview) = self.preview else {
-            return Ok(main);
-        };
-        Ok(format!(
-            "{main} novasight-source-split. ! {LATEST_ONLY_QUEUE} ! valve name=preview-valve drop=true ! videorate drop-only=true max-rate={} ! nvvidconv name=preview-crop left={} right={right} top={} bottom={bottom} ! video/x-raw(memory:NVMM),format=NV12,width={},height={},framerate={}/1 ! nvjpegenc name=preview-encoder ! fakesink name=preview-sink sync=false async=false qos=false",
-            preview.fps, self.roi.left, self.roi.top, self.roi.width, self.roi.height, preview.fps,
-        ))
+        let mut branches = Vec::new();
+        if let Some(preview) = self.preview {
+            branches.push(format!(
+                "novasight-source-split. ! {LATEST_ONLY_QUEUE} ! valve name=preview-valve drop=true ! videorate drop-only=true max-rate={} ! nvvidconv name=preview-crop left={} right={right} top={} bottom={bottom} ! video/x-raw(memory:NVMM),format=NV12,width={},height={},framerate={}/1 ! nvjpegenc name=preview-encoder ! fakesink name=preview-sink sync=false async=false qos=false",
+                preview.fps, self.roi.left, self.roi.top, self.roi.width, self.roi.height, preview.fps,
+            ));
+        }
+        if let Some(crosshair) = self.crosshair {
+            let left = self.roi.left + (self.roi.width - crosshair.size) / 2;
+            let top = self.roi.top + (self.roi.height - crosshair.size) / 2;
+            let right = left + crosshair.size;
+            let bottom = top + crosshair.size;
+            branches.push(format!(
+                "novasight-source-split. ! {LATEST_ONLY_QUEUE} ! videorate drop-only=true max-rate={} ! nvvidconv name=crosshair-crop left={left} right={right} top={top} bottom={bottom} ! video/x-raw(memory:NVMM),format=NV12,width={},height={},framerate={}/1 ! nvjpegenc name=crosshair-encoder ! fakesink name=crosshair-sink sync=false async=false qos=false",
+                crosshair.fps, crosshair.size, crosshair.size, crosshair.fps,
+            ));
+        }
+        Ok(std::iter::once(main)
+            .chain(branches)
+            .collect::<Vec<_>>()
+            .join(" "))
     }
 
     fn validate(&self) -> Result<(), PipelineSpecError> {
@@ -204,6 +225,21 @@ impl DeepStreamPipelineSpec {
         if self.preview.is_some_and(|preview| preview.fps == 0) {
             return Err(PipelineSpecError::ZeroPreviewFps);
         }
+        if let Some(crosshair) = self.crosshair {
+            if crosshair.fps == 0 {
+                return Err(PipelineSpecError::ZeroCrosshairFps);
+            }
+            if crosshair.size < 32
+                || crosshair.size > self.roi.width
+                || crosshair.size > self.roi.height
+            {
+                return Err(PipelineSpecError::InvalidCrosshairSize {
+                    size: crosshair.size,
+                    roi_width: self.roi.width,
+                    roi_height: self.roi.height,
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -244,4 +280,14 @@ pub enum PipelineSpecError {
     NegativeBatchedPushTimeout(i64),
     #[error("preview FPS must be positive")]
     ZeroPreviewFps,
+    #[error("crosshair observer FPS must be positive")]
+    ZeroCrosshairFps,
+    #[error(
+        "crosshair observer size {size} must be at least 32 and fit ROI {roi_width}x{roi_height}"
+    )]
+    InvalidCrosshairSize {
+        size: u32,
+        roi_width: u32,
+        roi_height: u32,
+    },
 }

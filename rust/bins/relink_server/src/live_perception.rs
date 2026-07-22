@@ -13,7 +13,8 @@ use novasight_core::control::dual_phase_v2::DualPhaseConfig;
 use novasight_core::tracking::TargetingConfig;
 use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
 use novasight_pipeline::{
-    ModelCandidate, ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
+    CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
+    ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
     PerceptionEvent, PerceptionModelContract, PerceptionSession, PipelineConfig, PipelineIngress,
     PreviewHub, validate_parser_preset,
 };
@@ -21,9 +22,9 @@ use novasight_platform_jetson::SystemMonotonicClock;
 #[cfg(feature = "tensorrt")]
 use novasight_platform_jetson::deepstream::CudaTensorRtConfig;
 use novasight_platform_jetson::deepstream::{
-    CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
-    DeepStreamSessionConfig, InferenceStage, LatestFrameExchange, ModelInput,
-    PreviewPipelineConfig, Roi, SessionError, preflight_deepstream_runtime,
+    CaptureFormat, CaptureProfile, CrosshairPipelineConfig, DeepStreamAdapter,
+    DeepStreamPipelineSpec, DeepStreamSessionConfig, InferenceStage, LatestFrameExchange,
+    ModelInput, PreviewPipelineConfig, Roi, SessionError, preflight_deepstream_runtime,
 };
 use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
 #[cfg(feature = "experimental-kmnet-native")]
@@ -121,7 +122,8 @@ pub(super) fn preflight_live_production(
     model_catalog: &SqliteModelCatalog,
 ) -> Result<(), LivePerceptionError> {
     let preview = PreviewHub::new(config.consumers.preview);
-    let session = build_deepstream_session_config(config, model_catalog, preview)?;
+    let crosshair = build_crosshair_hub(config)?;
+    let session = build_deepstream_session_config(config, model_catalog, preview, crosshair)?;
     preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
 }
 
@@ -144,7 +146,8 @@ fn build_live_dependencies(
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
     let latest_frames = LatestFrameExchange::new();
     let preview = PreviewHub::new(adapters.consumers.preview);
-    Ok(RuntimeDependencies::new(
+    let crosshair = build_crosshair_hub(config)?;
+    let mut dependencies = RuntimeDependencies::new(
         clock,
         device,
         PipelineConfig {
@@ -222,7 +225,12 @@ fn build_live_dependencies(
         model_catalog,
         latest_frames,
         preview,
-    })))
+        crosshair: crosshair.clone(),
+    }));
+    if let Some(crosshair) = crosshair {
+        dependencies = dependencies.with_crosshair(crosshair);
+    }
+    Ok(dependencies)
 }
 
 #[derive(Clone, Debug)]
@@ -231,14 +239,20 @@ struct CatalogDeepStreamAdapter {
     model_catalog: SqliteModelCatalog,
     latest_frames: LatestFrameExchange,
     preview: PreviewHub,
+    crosshair: Option<CrosshairHub>,
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
     fn preflight(&self) -> Result<(), PerceptionError> {
         let config = self.config.blocking_snapshot();
-        build_deepstream_session_config(&config, &self.model_catalog, self.preview.clone())
-            .map(|_| ())
-            .map_err(|error| PerceptionError::new(error.to_string()))
+        build_deepstream_session_config(
+            &config,
+            &self.model_catalog,
+            self.preview.clone(),
+            self.crosshair.clone(),
+        )
+        .map(|_| ())
+        .map_err(|error| PerceptionError::new(error.to_string()))
     }
 
     fn preflight_model(
@@ -289,9 +303,13 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
     ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
         let current = self.config.blocking_snapshot();
         self.preview.configure(current.consumers.preview);
-        let config =
-            build_deepstream_session_config(&current, &self.model_catalog, self.preview.clone())
-                .map_err(|error| PerceptionError::new(error.to_string()))?;
+        let config = build_deepstream_session_config(
+            &current,
+            &self.model_catalog,
+            self.preview.clone(),
+            self.crosshair.clone(),
+        )
+        .map_err(|error| PerceptionError::new(error.to_string()))?;
         DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
             .start(epoch, ingress, clock, events)
     }
@@ -301,6 +319,7 @@ fn build_deepstream_session_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
     preview_hub: PreviewHub,
+    crosshair_hub: Option<CrosshairHub>,
 ) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -353,6 +372,10 @@ fn build_deepstream_session_config(
         preview: adapters.consumers.preview.then_some(PreviewPipelineConfig {
             fps: adapters.limits.stream_fps,
         }),
+        crosshair: config.crosshair.enabled.then_some(CrosshairPipelineConfig {
+            size: config.crosshair.search_size,
+            fps: config.crosshair.sample_hz,
+        }),
     };
     pipeline
         .build()
@@ -366,9 +389,36 @@ fn build_deepstream_session_config(
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
         preview: adapters.consumers.preview.then_some(preview_hub),
+        crosshair: crosshair_hub,
         #[cfg(feature = "tensorrt")]
         rust_tensorrt,
     })
+}
+
+fn build_crosshair_hub(config: &AppConfig) -> Result<Option<CrosshairHub>, LivePerceptionError> {
+    if !config.crosshair.enabled {
+        return Ok(None);
+    }
+    let template_path = resolve_data_artifact(
+        &config.paths.data_dir,
+        Path::new("runtime/crosshair/template.json"),
+    )?;
+    Ok(Some(CrosshairHub::new(
+        PipelineCrosshairConfig {
+            enabled: config.crosshair.enabled,
+            use_for_control: config.crosshair.use_for_control,
+            search_size: config.crosshair.search_size,
+            sample_frames: config.crosshair.sample_frames,
+            confirm_duration: Duration::from_secs_f64(
+                config.crosshair.confirm_duration_ms / 1_000.0,
+            ),
+            max_age: Duration::from_secs_f64(config.crosshair.max_age_ms / 1_000.0),
+            max_offset_px: config.crosshair.max_offset_px,
+            min_similarity: config.crosshair.min_similarity,
+            max_step_px: config.crosshair.max_step_px,
+        },
+        template_path,
+    )))
 }
 
 fn resolve_data_artifact(data_dir: &Path, artifact: &Path) -> Result<PathBuf, LivePerceptionError> {

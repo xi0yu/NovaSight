@@ -18,8 +18,8 @@ use novasight_deepstream_bridge::{
     AdmissionContext, PipelineClockSample, admit_snapshot, extract_frame_into, validate_loaded_abi,
 };
 use novasight_pipeline::{
-    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineError, PipelineIngress, PreviewHub,
+    CrosshairEpoch, CrosshairHub, PerceptionAdapter, PerceptionError, PerceptionEvent,
+    PerceptionMetrics, PerceptionSession, PipelineError, PipelineIngress, PreviewHub,
 };
 use thiserror::Error;
 
@@ -41,6 +41,7 @@ pub struct DeepStreamSessionConfig {
     pub startup_timeout: Duration,
     pub shutdown_timeout: Duration,
     pub preview: Option<PreviewHub>,
+    pub crosshair: Option<CrosshairHub>,
     #[cfg(feature = "tensorrt")]
     pub rust_tensorrt: Option<CudaTensorRtConfig>,
 }
@@ -293,6 +294,8 @@ struct StartedPipeline {
     probe_pad: gst::Pad,
     probe_id: gst::PadProbeId,
     preview_probe: Option<(gst::Pad, gst::PadProbeId)>,
+    crosshair_probe: Option<(gst::Pad, gst::PadProbeId)>,
+    crosshair_epoch: Option<CrosshairEpoch>,
     bus: gst::Bus,
     exchange: Arc<SnapshotExchange>,
     perception_worker: JoinHandle<()>,
@@ -542,6 +545,8 @@ fn run_session(
         probe_pad,
         probe_id,
         preview_probe,
+        crosshair_probe,
+        mut crosshair_epoch,
         bus,
         exchange,
         perception_worker,
@@ -567,6 +572,8 @@ fn run_session(
                 &probe_pad,
                 probe_id,
                 preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -584,6 +591,8 @@ fn run_session(
                 &probe_pad,
                 probe_id,
                 preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -605,6 +614,8 @@ fn run_session(
         &probe_pad,
         probe_id,
         preview_probe,
+        crosshair_probe,
+        &mut crosshair_epoch,
         config.shutdown_timeout,
         &state,
         &exchange,
@@ -780,6 +791,13 @@ fn prepare_pipeline(config: &DeepStreamSessionConfig) -> Result<PreparedPipeline
             .static_pad("sink")
             .ok_or(SessionError::MissingPreviewPad)?;
     }
+    if config.pipeline.crosshair.is_some() {
+        pipeline
+            .by_name("crosshair-sink")
+            .ok_or(SessionError::MissingCrosshairElement)?
+            .static_pad("sink")
+            .ok_or(SessionError::MissingCrosshairPad)?;
+    }
     Ok(PreparedPipeline {
         pipeline,
         probe_pad,
@@ -808,6 +826,37 @@ fn finish_started_pipeline(
             return Err(error);
         }
     };
+    let mut crosshair_epoch = match config.crosshair.as_ref() {
+        Some(hub) => {
+            match hub.begin_epoch(epoch, config.pipeline.roi.width, config.pipeline.roi.height) {
+                Ok(owner) => Some(owner),
+                Err(error) => {
+                    probe_pad.remove_probe(probe_id);
+                    if let Some((pad, id)) = preview_probe {
+                        pad.remove_probe(id);
+                    }
+                    exchange.close();
+                    return Err(SessionError::Crosshair(error.to_string()));
+                }
+            }
+        }
+        None => None,
+    };
+    let crosshair_probe = match install_crosshair_probe(
+        &pipeline,
+        crosshair_epoch.as_ref(),
+        Arc::clone(&monotonic_clock),
+    ) {
+        Ok(probe) => probe,
+        Err(error) => {
+            probe_pad.remove_probe(probe_id);
+            if let Some((pad, id)) = preview_probe {
+                pad.remove_probe(id);
+            }
+            exchange.close();
+            return Err(error);
+        }
+    };
 
     let worker_context = SnapshotWorkerContext {
         epoch,
@@ -827,6 +876,10 @@ fn finish_started_pipeline(
                 if let Some((pad, id)) = preview_probe {
                     pad.remove_probe(id);
                 }
+                if let Some((pad, id)) = crosshair_probe {
+                    pad.remove_probe(id);
+                }
+                drop(crosshair_epoch.take());
                 exchange.close();
                 return Err(error);
             }
@@ -840,6 +893,8 @@ fn finish_started_pipeline(
                 &probe_pad,
                 probe_id,
                 preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -857,6 +912,8 @@ fn finish_started_pipeline(
                 &probe_pad,
                 probe_id,
                 preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -872,6 +929,8 @@ fn finish_started_pipeline(
                 &probe_pad,
                 probe_id,
                 preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -887,6 +946,8 @@ fn finish_started_pipeline(
         probe_pad,
         probe_id,
         preview_probe,
+        crosshair_probe,
+        crosshair_epoch,
         bus,
         exchange,
         perception_worker: perception_worker
@@ -920,6 +981,35 @@ fn install_preview_probe(
             gst::PadProbeReturn::Ok
         })
         .ok_or(SessionError::PreviewProbeInstallFailed)?;
+    Ok(Some((pad, id)))
+}
+
+fn install_crosshair_probe(
+    pipeline: &gst::Pipeline,
+    crosshair: Option<&CrosshairEpoch>,
+    clock: Arc<dyn Clock>,
+) -> Result<Option<(gst::Pad, gst::PadProbeId)>, SessionError> {
+    let Some(crosshair) = crosshair else {
+        return Ok(None);
+    };
+    let sink = pipeline
+        .by_name("crosshair-sink")
+        .ok_or(SessionError::MissingCrosshairElement)?;
+    let pad = sink
+        .static_pad("sink")
+        .ok_or(SessionError::MissingCrosshairPad)?;
+    let publisher = crosshair.publisher();
+    let id = pad
+        .add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+            let Some(buffer) = info.buffer() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            if let Ok(map) = buffer.map_readable() {
+                let _ = publisher.publish_jpeg(clock.now().0, map.as_slice().to_vec());
+            }
+            gst::PadProbeReturn::Ok
+        })
+        .ok_or(SessionError::CrosshairProbeInstallFailed)?;
     Ok(Some((pad, id)))
 }
 
@@ -1253,6 +1343,8 @@ fn cleanup_pipeline(
     probe_pad: &gst::Pad,
     probe_id: gst::PadProbeId,
     preview_probe: Option<(gst::Pad, gst::PadProbeId)>,
+    crosshair_probe: Option<(gst::Pad, gst::PadProbeId)>,
+    crosshair_epoch: &mut Option<CrosshairEpoch>,
     timeout: Duration,
     state: &ProbeState,
     exchange: &SnapshotExchange,
@@ -1263,6 +1355,10 @@ fn cleanup_pipeline(
     if let Some((pad, id)) = preview_probe {
         pad.remove_probe(id);
     }
+    if let Some((pad, id)) = crosshair_probe {
+        pad.remove_probe(id);
+    }
+    drop(crosshair_epoch.take());
     exchange.close();
     let mut failures = Vec::new();
     match pipeline.set_state(gst::State::Null) {
@@ -1342,6 +1438,14 @@ pub enum SessionError {
     MissingPreviewPad,
     #[error("failed to install DeepStream JPEG preview probe")]
     PreviewProbeInstallFailed,
+    #[error("DeepStream pipeline is missing the crosshair observer sink")]
+    MissingCrosshairElement,
+    #[error("DeepStream crosshair observer sink is missing its sink pad")]
+    MissingCrosshairPad,
+    #[error("failed to install DeepStream crosshair JPEG probe")]
+    CrosshairProbeInstallFailed,
+    #[error("crosshair observer failed: {0}")]
+    Crosshair(String),
     #[error("DeepStream pipeline state change failed: {0}")]
     StateChange(String),
     #[error("DeepStream shutdown cleanup failed: {0}")]

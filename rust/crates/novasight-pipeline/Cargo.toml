@@ -5,12 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+image.workspace = true
 novasight-core = { path = "../novasight-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "sync"] }

@@ -5,11 +5,14 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
+use image::{Rgb, RgbImage, codecs::jpeg::JpegEncoder};
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, RecordingPointerDevice,
     RuntimeEpoch,
 };
-use novasight_pipeline::{PipelineConfig, PipelineRuntime, PipelineStatus};
+use novasight_pipeline::{
+    CrosshairConfig, CrosshairError, CrosshairHub, PipelineConfig, PipelineRuntime, PipelineStatus,
+};
 
 #[derive(Debug)]
 struct ManualClock(AtomicU64);
@@ -103,4 +106,113 @@ fn pipeline_output_is_closed_until_trigger_is_explicitly_active() {
     assert!(device.receipts().is_empty());
     assert_eq!(runtime.metrics().blocked_decisions, 1);
     runtime.shutdown().expect("workers join");
+}
+
+#[test]
+fn vision_verified_crosshair_changes_the_real_control_origin() {
+    let epoch = RuntimeEpoch(12);
+    let template_path = std::env::temp_dir().join(format!(
+        "novasight-pipeline-crosshair-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let crosshair = CrosshairHub::new(
+        CrosshairConfig {
+            enabled: true,
+            use_for_control: true,
+            search_size: 96,
+            sample_frames: 3,
+            confirm_duration: Duration::ZERO,
+            max_age: Duration::from_secs(1),
+            max_offset_px: 20.0,
+            min_similarity: 0.60,
+            max_step_px: 100.0,
+        },
+        &template_path,
+    );
+    let observer = crosshair.begin_epoch(epoch, 640, 640).unwrap();
+    publish_crosshair_samples(&crosshair, &observer, 0, 3);
+    crosshair.learn().unwrap();
+    publish_crosshair_samples(&crosshair, &observer, 20, 1);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while crosshair.snapshot().state != "confirmed" && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(crosshair.resolve(320.0, 320.0, 640, 640).x, 340.0);
+
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            crosshair: Some(crosshair),
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 1, 1_000_000_000),
+                640,
+                640,
+                vec![Detection::new(1, 0, 310.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(device.receipts()[0].delta_x_counts < 0);
+    runtime.shutdown().unwrap();
+    drop(observer);
+    let _ = std::fs::remove_file(template_path);
+}
+
+fn publish_crosshair_samples(
+    hub: &CrosshairHub,
+    observer: &novasight_pipeline::CrosshairEpoch,
+    offset: i32,
+    count: u64,
+) {
+    let expected = hub.snapshot().processed_frames + count;
+    for sequence in 1..=count {
+        loop {
+            match observer
+                .publisher()
+                .publish_jpeg(sequence, crosshair_jpeg(offset))
+            {
+                Ok(()) => break,
+                Err(CrosshairError::Busy) => thread::sleep(Duration::from_millis(2)),
+                Err(error) => panic!("crosshair sample rejected: {error}"),
+            }
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while hub.snapshot().processed_frames < expected && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn crosshair_jpeg(offset: i32) -> Vec<u8> {
+    let mut image = RgbImage::from_pixel(96, 96, Rgb([20, 20, 20]));
+    let center = 48 + offset;
+    for delta in -12..=12 {
+        image.put_pixel((center + delta) as u32, 48, Rgb([255, 30, 60]));
+        image.put_pixel(center as u32, (48 + delta) as u32, Rgb([255, 30, 60]));
+    }
+    let mut output = Vec::new();
+    JpegEncoder::new_with_quality(&mut output, 95)
+        .encode_image(&image)
+        .unwrap();
+    output
 }

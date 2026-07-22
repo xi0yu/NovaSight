@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use novasight_platform_jetson::deepstream::{
-    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
-    PipelineSpecError, PreviewPipelineConfig, Roi,
+    CaptureFormat, CaptureProfile, CrosshairPipelineConfig, DeepStreamPipelineSpec, InferenceStage,
+    ModelInput, PipelineSpecError, PreviewPipelineConfig, Roi,
 };
 
 fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
@@ -31,7 +31,23 @@ fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
         batched_push_timeout_us: 0,
         inference_element: "primary-infer".to_owned(),
         preview: None,
+        crosshair: None,
     }
+}
+
+#[test]
+fn crosshair_branch_is_independent_latest_only_center_crop() {
+    let mut spec = spec(CaptureFormat::Mjpeg);
+    spec.crosshair = Some(CrosshairPipelineConfig { size: 96, fps: 10 });
+    let pipeline = spec.build().unwrap();
+
+    assert!(pipeline.contains("tee name=novasight-source-split"));
+    assert!(pipeline.contains("videorate drop-only=true max-rate=10"));
+    assert!(pipeline.contains("crosshair-crop left=912 right=1008 top=492 bottom=588"));
+    assert!(pipeline.contains("width=96,height=96,framerate=10/1"));
+    assert!(pipeline.contains("nvjpegenc name=crosshair-encoder"));
+    assert!(pipeline.contains("fakesink name=crosshair-sink"));
+    assert!(!pipeline.contains("preview-valve"));
 }
 
 #[test]

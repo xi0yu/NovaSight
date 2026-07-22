@@ -16,6 +16,7 @@ use novasight_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::CrosshairHub;
 use crate::{LatestSlot, TryPublishError};
 
 const STATUS_STARTING: u8 = 0;
@@ -70,6 +71,9 @@ pub struct PipelineConfig {
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
+    /// Optional vision-verified control origin. The hub owns its template and
+    /// observation state; targeting only performs a cheap resolved-point read.
+    pub crosshair: Option<CrosshairHub>,
 }
 
 impl Default for PipelineConfig {
@@ -81,6 +85,7 @@ impl Default for PipelineConfig {
             max_command_age_ns: 55_000_000,
             output_interval_ms: 4,
             trigger_poll_interval_ms: None,
+            crosshair: None,
         }
     }
 }
@@ -486,6 +491,7 @@ impl PipelineRuntime {
             Arc::clone(&shared),
             Arc::clone(&clock),
             config.targeting.clone(),
+            config.crosshair.clone(),
         )?;
         workers.push(targeting_handle);
 
@@ -715,6 +721,7 @@ fn spawn_targeting_worker(
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
     config: TargetingConfig,
+    crosshair: Option<CrosshairHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
         .name("novasight-targeting".to_owned())
@@ -730,9 +737,21 @@ fn spawn_targeting_worker(
                         .metrics
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
+                    let geometric_center = batch.center();
+                    let reference = crosshair.as_ref().map(|hub| {
+                        hub.resolve(
+                            geometric_center.0,
+                            geometric_center.1,
+                            batch.coordinate_width(),
+                            batch.coordinate_height(),
+                        )
+                    });
+                    let targeting_center = reference
+                        .as_ref()
+                        .map_or(geometric_center, |item| (item.x, item.y));
                     let selection = targeting.select_at(
                         batch.detections(),
-                        batch.center(),
+                        targeting_center,
                         batch.stamp().captured_at.0,
                     );
                     let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
@@ -769,11 +788,11 @@ fn spawn_targeting_worker(
                             }
                         }
                         _ => {
-                            let (center_x, center_y) = batch.center();
+                            let (center_x, center_y) = targeting_center;
                             (None, center_x, center_y, 0.0)
                         }
                     };
-                    let (crosshair_x, crosshair_y) = batch.center();
+                    let (crosshair_x, crosshair_y) = targeting_center;
                     let now = clock.now().0;
                     let observation = TargetedObservation {
                         stamp: batch.stamp(),

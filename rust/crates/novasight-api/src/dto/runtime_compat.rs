@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use novasight_runtime::{
-    AppConfig, PipelineState, PreviewSnapshot, RuntimeErrorSummary, RuntimeSnapshot,
-    SubsystemSnapshot, SubsystemState,
+    AppConfig, CrosshairSnapshot, PipelineState, PreviewSnapshot, RuntimeErrorSummary,
+    RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
 };
 use serde::Serialize;
 
@@ -52,6 +52,7 @@ pub(crate) struct CompatibilityRuntimeState {
     pub inference: InferenceState,
     pub config: ConfigSummary,
     pub pipeline: PipelineSummary,
+    pub vision: VisionState,
     pub fatal_error: Option<RuntimeErrorSummary>,
 }
 
@@ -141,6 +142,18 @@ pub(crate) struct PipelineSummary {
     pub started_at_ms: Option<u64>,
     pub mode: String,
     pub last_error: Option<RuntimeErrorSummary>,
+    pub deepstream: DeepStreamState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DeepStreamState {
+    pub crosshair_active: bool,
+    pub crosshair_reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct VisionState {
+    pub crosshair: Option<CrosshairSnapshot>,
 }
 
 impl CompatibilityRuntimeState {
@@ -150,6 +163,7 @@ impl CompatibilityRuntimeState {
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
         preview: Option<&PreviewSnapshot>,
+        crosshair: Option<&CrosshairSnapshot>,
     ) -> Self {
         let capture_config = config.and_then(|config| config.capture.as_ref());
         let inference_config = config.and_then(|config| config.inference.as_ref());
@@ -333,6 +347,21 @@ impl CompatibilityRuntimeState {
                 started_at_ms: snapshot.pipeline.started_at_ms,
                 mode,
                 last_error: snapshot.pipeline.last_error.clone(),
+                deepstream: DeepStreamState {
+                    crosshair_active: crosshair.is_some_and(|state| state.running),
+                    crosshair_reason: match crosshair {
+                        Some(state) if state.running => String::new(),
+                        Some(state) if !state.enabled => {
+                            "crosshair observer is disabled by configuration".to_owned()
+                        }
+                        Some(_) if !running => "DeepStream pipeline is not running".to_owned(),
+                        Some(_) => "crosshair observer is not running".to_owned(),
+                        None => "crosshair observer is unavailable".to_owned(),
+                    },
+                },
+            },
+            vision: VisionState {
+                crosshair: crosshair.cloned(),
             },
             fatal_error,
         }

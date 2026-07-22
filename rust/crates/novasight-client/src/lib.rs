@@ -15,8 +15,8 @@ use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
 use novasight_core::{CaptureCapabilities, CaptureSelectionPreference, DeviceReceipt};
 use novasight_runtime::{
-    AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
-    ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
+    AppConfig, ConfigFieldUpdate, ConfigUpdate, CrosshairSnapshot, ModelIngressResult,
+    ModelProbeInputMode, ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
 };
 pub use novasight_store::license::LicenseStatus;
 pub use novasight_store::model_catalog::{
@@ -355,6 +355,21 @@ impl ControlClient {
             Some(&PreviewRequest { enabled }),
         )
         .await
+    }
+
+    pub async fn crosshair_status(&self) -> Result<CrosshairSnapshot, ClientError> {
+        self.request(Method::GET, "/api/crosshair", None::<&()>)
+            .await
+    }
+
+    pub async fn learn_crosshair(&self) -> Result<Value, ClientError> {
+        self.request(Method::POST, "/api/crosshair/learn", None::<&()>)
+            .await
+    }
+
+    pub async fn clear_crosshair(&self) -> Result<CrosshairSnapshot, ClientError> {
+        self.request(Method::DELETE, "/api/crosshair/template", None::<&()>)
+            .await
     }
 
     pub async fn capture_capabilities(

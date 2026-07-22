@@ -10,8 +10,8 @@ use novasight_client::{
 };
 use novasight_core::CaptureSelectionPreference;
 use novasight_runtime::{
-    AppConfig, ConfigUpdate, ModelIngressResult, ModelProbeInputMode, ModelProfileConfigureRequest,
-    PreviewSnapshot, RuntimeSnapshot,
+    AppConfig, ConfigUpdate, CrosshairSnapshot, ModelIngressResult, ModelProbeInputMode,
+    ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -70,6 +70,21 @@ enum Command {
         #[command(subcommand)]
         command: PreviewCommand,
     },
+    /// Inspect or mutate the daemon-owned visual crosshair template.
+    Crosshair {
+        #[command(subcommand)]
+        command: CrosshairCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CrosshairCommand {
+    /// Print observation, template, and control-reference readiness.
+    Status,
+    /// Learn a template from the configured number of fresh center samples.
+    Learn,
+    /// Remove the persisted template and return to geometric-center fallback.
+    Clear,
 }
 
 #[derive(Subcommand, Debug)]
@@ -244,6 +259,7 @@ enum CommandOutput {
     DiagnosticMove(DiagnosticMoveResponse),
     CaptureCapabilities(novasight_core::CaptureCapabilities),
     Preview(PreviewSnapshot),
+    Crosshair(CrosshairSnapshot),
     Json(serde_json::Value),
 }
 
@@ -467,6 +483,18 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .set_preview_active(true)
             .await
             .map(CommandOutput::Preview),
+        Command::Crosshair {
+            command: CrosshairCommand::Status,
+        } => client
+            .crosshair_status()
+            .await
+            .map(CommandOutput::Crosshair),
+        Command::Crosshair {
+            command: CrosshairCommand::Learn,
+        } => client.learn_crosshair().await.map(CommandOutput::Json),
+        Command::Crosshair {
+            command: CrosshairCommand::Clear,
+        } => client.clear_crosshair().await.map(CommandOutput::Crosshair),
         Command::Preview {
             command: PreviewCommand::Off,
         } => client

@@ -145,6 +145,16 @@ pub fn build_control_router_with_platform_queries(
             get(preview_status).post(set_preview),
         )
         .route("/api/capture/stream.mjpg", get(preview_stream))
+        .route("/api/crosshair", get(crosshair_status))
+        .route("/api/crosshair/learn", post(learn_crosshair))
+        .route(
+            "/api/crosshair/template",
+            axum::routing::delete(clear_crosshair),
+        )
+        .route(
+            "/api/crosshair/template.png",
+            get(crosshair_template_preview),
+        )
         .route(
             "/api/capture/capabilities",
             get(capture_capabilities).post(post_capture_capabilities),
@@ -430,6 +440,7 @@ async fn compatibility_state(
         effective_revision,
         state.hardware_output_enabled,
         state.runtime.preview_snapshot().as_ref(),
+        state.runtime.crosshair_snapshot().as_ref(),
     )
 }
 
@@ -501,6 +512,59 @@ async fn preview_stream(
             (axum::http::header::CACHE_CONTROL, "no-store, no-cache"),
         ],
         Body::from_stream(stream),
+    )
+        .into_response())
+}
+
+async fn crosshair_status(
+    State(state): State<ControlState>,
+) -> Result<Json<novasight_runtime::CrosshairSnapshot>, ControlApiError> {
+    state
+        .runtime
+        .crosshair_snapshot()
+        .map(Json)
+        .ok_or_else(|| ControlApiError::Runtime(RuntimeError::pipeline_unavailable()))
+}
+
+async fn learn_crosshair(
+    State(state): State<ControlState>,
+) -> Result<Json<serde_json::Value>, ControlApiError> {
+    let template = state.runtime.learn_crosshair()?;
+    let status = state
+        .runtime
+        .crosshair_snapshot()
+        .ok_or_else(|| ControlApiError::Runtime(RuntimeError::pipeline_unavailable()))?;
+    Ok(Json(serde_json::json!({
+        "learned": true,
+        "template": template,
+        "status": status,
+    })))
+}
+
+async fn clear_crosshair(
+    State(state): State<ControlState>,
+) -> Result<Json<novasight_runtime::CrosshairSnapshot>, ControlApiError> {
+    state
+        .runtime
+        .clear_crosshair()
+        .map(Json)
+        .map_err(Into::into)
+}
+
+async fn crosshair_template_preview(
+    State(state): State<ControlState>,
+) -> Result<Response, ControlApiError> {
+    let payload = state.runtime.crosshair_template_preview()?.ok_or_else(|| {
+        ControlApiError::Runtime(RuntimeError::invalid_pipeline_state(
+            "crosshair template unavailable",
+        ))
+    })?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "image/png"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
+        payload,
     )
         .into_response())
 }
@@ -1443,7 +1507,7 @@ mod tests {
 
     use futures_util::{Sink, task::noop_waker};
     use novasight_core::RuntimeEpoch;
-    use novasight_pipeline::PreviewHub;
+    use novasight_pipeline::{CrosshairConfig, CrosshairHub, PreviewHub};
     use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
     use tower::ServiceExt;
 
@@ -1548,5 +1612,91 @@ mod tests {
 
         runtime.shutdown_daemon().await.unwrap();
         supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn crosshair_routes_expose_real_daemon_state_and_reject_unlearnable_input() {
+        let path = std::env::temp_dir().join(format!(
+            "novasight-crosshair-api-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let crosshair = CrosshairHub::new(
+            CrosshairConfig {
+                enabled: true,
+                use_for_control: true,
+                search_size: 96,
+                sample_frames: 3,
+                confirm_duration: Duration::ZERO,
+                max_age: Duration::from_millis(300),
+                max_offset_px: 20.0,
+                min_similarity: 0.68,
+                max_step_px: 2.0,
+            },
+            &path,
+        );
+        let dependencies = RuntimeDependencies::recording().with_crosshair(crosshair);
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
+        let router = build_control_router(runtime.clone());
+
+        let response = router
+            .clone()
+            .oneshot(Request::get("/api/crosshair").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status["enabled"], true);
+        assert_eq!(status["control_reference_reason"], "template_unavailable");
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/api/runtime/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 32 * 1024)
+            .await
+            .unwrap();
+        let runtime_state: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(runtime_state["vision"]["crosshair"]["enabled"], true);
+        assert_eq!(
+            runtime_state["pipeline"]["deepstream"]["crosshair_active"],
+            false
+        );
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/crosshair/learn")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = router
+            .oneshot(
+                Request::delete("/api/crosshair/template")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -19,8 +19,8 @@ pub use novasight_tensorrt::{
     DecodeContract, DecodeError, DetectionDecoder, EngineContract, TensorRtError,
 };
 pub use pipeline::{
-    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
-    PipelineSpecError, PreviewPipelineConfig, Roi,
+    CaptureFormat, CaptureProfile, CrosshairPipelineConfig, DeepStreamPipelineSpec, InferenceStage,
+    ModelInput, PipelineSpecError, PreviewPipelineConfig, Roi,
 };
 #[cfg(all(feature = "cuda-preprocess", target_os = "linux"))]
 pub use preprocess::CudaFramePreprocessor;

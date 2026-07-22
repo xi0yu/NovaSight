@@ -15,9 +15,10 @@ use novasight_core::{
     RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    ModelCandidate, PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics, PipelineRuntime,
-    PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription,
+    CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, PerceptionAdapter,
+    PerceptionEvent, PerceptionMetrics, PerceptionSession, PipelineConfig, PipelineEvent,
+    PipelineIngress, PipelineMetrics, PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot,
+    PreviewSubscription,
 };
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -88,6 +89,7 @@ pub struct RuntimeDependencies {
     model_catalog: Option<SqliteModelCatalog>,
     model_jobs: Option<OfflineModelJobRunner>,
     preview: Option<PreviewHub>,
+    crosshair: Option<CrosshairHub>,
     urgent_stop: Arc<UrgentStopSignal>,
 }
 
@@ -119,6 +121,7 @@ impl RuntimeDependencies {
             model_catalog: None,
             model_jobs: None,
             preview: None,
+            crosshair: None,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
     }
@@ -140,6 +143,12 @@ impl RuntimeDependencies {
 
     pub fn with_preview(mut self, preview: PreviewHub) -> Self {
         self.preview = Some(preview);
+        self
+    }
+
+    pub fn with_crosshair(mut self, crosshair: CrosshairHub) -> Self {
+        self.pipeline.crosshair = Some(crosshair.clone());
+        self.crosshair = Some(crosshair);
         self
     }
 
@@ -421,6 +430,7 @@ impl RuntimeSupervisor {
                 ingress_rx,
                 urgent_stop: Arc::clone(&dependencies.urgent_stop),
                 preview: dependencies.preview.clone(),
+                crosshair: dependencies.crosshair.clone(),
             },
         )
     }
@@ -459,6 +469,7 @@ pub struct RuntimeHandle {
     ingress_rx: watch::Receiver<Option<PipelineIngress>>,
     urgent_stop: Arc<UrgentStopSignal>,
     preview: Option<PreviewHub>,
+    crosshair: Option<CrosshairHub>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -534,6 +545,34 @@ impl RuntimeHandle {
         reply_rx
             .await
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub fn crosshair_snapshot(&self) -> Option<CrosshairSnapshot> {
+        self.crosshair.as_ref().map(CrosshairHub::snapshot)
+    }
+
+    pub fn learn_crosshair(&self) -> Result<CrosshairTemplateSummary, RuntimeError> {
+        self.crosshair
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .learn()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub fn clear_crosshair(&self) -> Result<CrosshairSnapshot, RuntimeError> {
+        self.crosshair
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .clear_template()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub fn crosshair_template_preview(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
+        self.crosshair
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .template_preview_png()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
     }
 
     pub async fn diagnose_device_move(

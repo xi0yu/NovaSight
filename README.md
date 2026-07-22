@@ -280,6 +280,8 @@ novasightctl model publish 1 4 --parser-preset auto
 novasightctl capture capabilities --device /dev/video0
 novasightctl device status
 novasightctl device move 4 -2
+novasightctl crosshair status
+novasightctl crosshair learn
 ```
 
 License activation reads the key from a file so the secret is not exposed in
@@ -288,6 +290,15 @@ move retain the API's compensated activation and supervisor ownership rules.
 On Linux/Jetson, capture capability discovery calls the V4L2 enumeration
 ioctls directly and returns only kernel-reported discrete format, size, and
 frame-rate tuples; it does not spawn or parse `v4l2-ctl`.
+
+When `crosshair.enabled` is true, the production DeepStream graph adds an
+independent latest-only center crop that stays in NVMM until `nvjpegenc`. A
+bounded Rust observer learns and persists the template under
+`paths.data_dir/runtime/crosshair/template.json`; confirmed, fresh observations
+replace the geometric center for both target selection and control only when
+`crosshair.use_for_control` is also true. `GET /api/crosshair`,
+`POST /api/crosshair/learn`, `DELETE /api/crosshair/template`, the Studio, and
+`novasightctl crosshair` all read or mutate that same daemon-owned state.
 
 ### Legacy CPU-bridge diagnostics
 

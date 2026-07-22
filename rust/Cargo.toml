@@ -35,6 +35,7 @@ gstreamer = "0.25"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rsa = { version = "0.9", features = ["sha2"] }
 rusqlite = "0.40.1"
 serde = { version = "1", features = ["derive", "rc"] }
