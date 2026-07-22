@@ -200,7 +200,7 @@ struct AtomicMetrics {
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
-    detections: Mutex<DetectionTelemetry>,
+    detections: Mutex<Arc<DetectionTelemetry>>,
     target_selection: Mutex<TargetSelection>,
     dual_phase: Mutex<DualPhaseDecision>,
     humanized_motion: Mutex<HumanizedMotionTelemetry>,
@@ -272,15 +272,15 @@ impl SharedState {
     }
 
     fn record_detections(&self, batch: &DetectionBatch) {
-        let Ok(mut telemetry) = self.metrics.detections.try_lock() else {
-            return;
-        };
-        telemetry.generation = Some(batch.stamp().generation);
-        telemetry.coordinate_width = batch.coordinate_width();
-        telemetry.coordinate_height = batch.coordinate_height();
-        telemetry.items.clear();
-        telemetry.items.extend(
-            batch
+        // Build the bounded immutable snapshot without holding the publication
+        // lock. Readers only clone an Arc while holding it, so publishing a
+        // real frame cannot be lost to concurrent status polling and the
+        // targeting lane never waits on JSON/vector cloning.
+        let telemetry = DetectionTelemetry {
+            generation: Some(batch.stamp().generation),
+            coordinate_width: batch.coordinate_width(),
+            coordinate_height: batch.coordinate_height(),
+            items: batch
                 .detections()
                 .iter()
                 .take(MAX_TELEMETRY_DETECTIONS)
@@ -292,12 +292,18 @@ impl SharedState {
                     width: detection.width(),
                     height: detection.height(),
                     confidence: detection.confidence(),
-                }),
-        );
-        telemetry.truncated = batch
-            .detections()
-            .len()
-            .saturating_sub(MAX_TELEMETRY_DETECTIONS);
+                })
+                .collect(),
+            truncated: batch
+                .detections()
+                .len()
+                .saturating_sub(MAX_TELEMETRY_DETECTIONS),
+        };
+        *self
+            .metrics
+            .detections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(telemetry);
     }
 
     fn record_recoil(&self, value: RecoilDecision) {
@@ -1308,6 +1314,13 @@ fn snapshot_metrics(
     batches: &LatestSlot<DetectionBatch>,
     commands: &LatestSlot<DeviceCommand>,
 ) -> PipelineMetrics {
+    let detections = Arc::clone(
+        &shared
+            .metrics
+            .detections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
     PipelineMetrics {
         status: shared.status(),
         received_batches: shared.metrics.received_batches.load(Ordering::Relaxed),
@@ -1335,12 +1348,7 @@ fn snapshot_metrics(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone(),
-        detections: shared
-            .metrics
-            .detections
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone(),
+        detections: (*detections).clone(),
         target_selection: shared
             .metrics
             .target_selection
