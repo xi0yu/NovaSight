@@ -34,7 +34,7 @@ use novasight_platform_jetson::kmnet_native::{
 use novasight_runtime::{ConfigService, RuntimeDependencies};
 use novasight_store::config::{
     AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, InferenceBackend,
-    parse_target_class_aim_y_ratios, parse_target_class_priority,
+    parse_target_class_aim_y_ratios, parse_target_class_filter, parse_target_class_priority,
 };
 use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
 use novasight_store::model_manifest::ModelManifest;
@@ -164,6 +164,10 @@ fn build_live_dependencies(
                 tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
                 class_priority: parse_target_class_priority(
                     &adapters.pipeline.target_class_priority,
+                )
+                .map_err(LivePerceptionError::Config)?,
+                allowed_class_ids: parse_target_class_filter(
+                    &adapters.pipeline.target_class_filter,
                 )
                 .map_err(LivePerceptionError::Config)?,
                 selection_class_weight: adapters.pipeline.target_selection_class_weight,

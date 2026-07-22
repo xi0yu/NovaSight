@@ -52,6 +52,7 @@ pipeline:
   tracker_max_size_ratio: 2.5
   tracker_max_association_dt_ms: 150.0
   target_class_priority: "0,1"
+  target_class_filter: all
   target_selection_class_weight: 0.55
   target_selection_distance_weight: 0.40
   target_sticky_bias: 0.25

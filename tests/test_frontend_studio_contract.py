@@ -490,7 +490,7 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     assert "复制当前" in source
     assert "全部选择" in source
     assert "全部取消" in source
-    assert '"detection_class_filter", "none"' in source
+    assert 'updateDetectionClassFilter("none")' in source
     assert "允许当前检测类别" in source
     assert "effective_class_filter" in source
     assert "rejected_class_ids" in source
@@ -574,6 +574,8 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert "target_class_priority: current.join(\",\")" in studio
     assert "rustPipelineConfig.target_class_priority" in studio
     assert "rustPipelineConfig.target_aim_y_ratio" in studio
+    assert "rustPipelineConfig.target_class_filter" in studio
+    assert 'updateConfigField("pipeline", "target_class_filter", value)' in studio
     assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
     assert 'Rust 主链使用有界关联与稳健速度短窗' in studio
     assert 'availableControlAlgorithms.map' in studio

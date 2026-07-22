@@ -1243,7 +1243,12 @@ export function StudioConsoleView({
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
   const detectionProfiles = recordList(inferenceConfig.detection_class_profiles);
   const activeDetectionProfile = readString(inferenceConfig.detection_class_profile, "default");
-  const activeDetectionClass = readString(inferenceConfig.detection_class_filter, "all");
+  const activeDetectionClass = readString(
+    rustControlPlane
+      ? rustPipelineConfig.target_class_filter
+      : inferenceConfig.detection_class_filter,
+    "all"
+  );
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(
@@ -2602,6 +2607,16 @@ export function StudioConsoleView({
     [onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
 
+  const updateDetectionClassFilter = useCallback(
+    async (value: string) => {
+      if (rustControlPlane) {
+        await updateConfigField("pipeline", "target_class_filter", value);
+      }
+      await updateConfigField("inference", "detection_class_filter", value);
+    },
+    [rustControlPlane, updateConfigField]
+  );
+
   const updateControlGroupField = useCallback(
     async (group: "aim" | "calibrated_angular" | "universal_saturated" | "shared" | "recoil", key: string, value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
@@ -2910,9 +2925,7 @@ export function StudioConsoleView({
         selected.add(classId);
       }
       const orderedSelection = orderedClassEditorIds.filter((id) => selected.has(id));
-      await updateConfigField(
-        "inference",
-        "detection_class_filter",
+      await updateDetectionClassFilter(
         orderedSelection.length === classEditorIds.length
           ? "all"
           : orderedSelection.length === 0
@@ -2920,7 +2933,7 @@ export function StudioConsoleView({
             : orderedSelection.join(",")
       );
     },
-    [activeDetectionClass, classEditorIds, orderedClassEditorIds, updateConfigField]
+    [activeDetectionClass, classEditorIds, orderedClassEditorIds, updateDetectionClassFilter]
   );
 
   const persistClassProfiles = useCallback(
@@ -3856,12 +3869,16 @@ export function StudioConsoleView({
                   <button
                     className="console-button primary"
                     disabled={busy !== null}
-                    onClick={() => void updateConfigField("inference", "detection_class_filter", detectedClassFilterValue)}
+                    onClick={() => void updateDetectionClassFilter(detectedClassFilterValue)}
                     type="button"
                   >
                     允许当前检测类别
                   </button>
-                  <small>保留已有选择，并加入本帧检测到的 cls；保存后立即热更新。</small>
+                  <small>
+                    {rustControlPlane
+                      ? "保留已有选择，并加入本帧检测到的 cls；保存后重启主链生效。"
+                      : "保留已有选择，并加入本帧检测到的 cls；保存后立即热更新。"}
+                  </small>
                 </div>
               ) : null}
             </div>
@@ -4932,7 +4949,7 @@ export function StudioConsoleView({
                       <button
                         className="console-button secondary"
                         disabled={busy !== null || selectedDetectionClassIds.size === classEditorIds.length}
-                        onClick={() => void updateConfigField("inference", "detection_class_filter", "all")}
+                        onClick={() => void updateDetectionClassFilter("all")}
                         type="button"
                       >
                         全部选择
@@ -4940,7 +4957,7 @@ export function StudioConsoleView({
                       <button
                         className="console-button"
                         disabled={busy !== null || selectedDetectionClassIds.size === 0}
-                        onClick={() => void updateConfigField("inference", "detection_class_filter", "none")}
+                        onClick={() => void updateDetectionClassFilter("none")}
                         type="button"
                       >
                         全部取消

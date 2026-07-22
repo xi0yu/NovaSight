@@ -16,7 +16,7 @@
 //!   selection returns `target_object_id = None` until a fresh
 //!   candidate re-acquires the lock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -362,6 +362,9 @@ pub struct TargetingConfig {
     /// Descending class preference. The first two ranks receive the same
     /// 1.0 / 0.5 scores as the Python selector; unlisted classes score zero.
     pub class_priority: Vec<u32>,
+    /// Optional class admission allowlist. `None` admits every detector class;
+    /// an empty set intentionally disables target selection.
+    pub allowed_class_ids: Option<BTreeSet<u32>>,
     pub selection_class_weight: f64,
     pub selection_distance_weight: f64,
     /// Distance discount applied only to the currently locked TrackId.
@@ -388,6 +391,7 @@ impl Default for TargetingConfig {
             tracker_max_size_ratio: 2.5,
             tracker_max_association_dt_ms: 150.0,
             class_priority: vec![0, 1],
+            allowed_class_ids: None,
             selection_class_weight: 0.55,
             selection_distance_weight: 0.40,
             sticky_bias: 0.25,
@@ -479,7 +483,11 @@ impl TargetingCore {
             .iter()
             .filter(|det| {
                 det.confidence() >= self.config.min_confidence
-                    && self.config.class_priority.contains(&det.class_id())
+                    && self
+                        .config
+                        .allowed_class_ids
+                        .as_ref()
+                        .is_none_or(|allowed| allowed.contains(&det.class_id()))
                     && detection_aspect_ratio(det) <= self.config.candidate_max_aspect_ratio
                     && euclidean(
                         det.center_x(),

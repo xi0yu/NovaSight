@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -678,6 +678,8 @@ pub struct PipelineRuntimeConfig {
     pub tracker_max_association_dt_ms: f64,
     #[serde(default = "default_target_class_priority")]
     pub target_class_priority: String,
+    #[serde(default = "default_target_class_filter")]
+    pub target_class_filter: String,
     #[serde(default = "default_target_selection_class_weight")]
     pub target_selection_class_weight: f64,
     #[serde(default = "default_target_selection_distance_weight")]
@@ -744,6 +746,7 @@ impl Default for PipelineRuntimeConfig {
             tracker_max_size_ratio: default_tracker_max_size_ratio(),
             tracker_max_association_dt_ms: default_tracker_max_association_dt_ms(),
             target_class_priority: default_target_class_priority(),
+            target_class_filter: default_target_class_filter(),
             target_selection_class_weight: default_target_selection_class_weight(),
             target_selection_distance_weight: default_target_selection_distance_weight(),
             target_sticky_bias: default_target_sticky_bias(),
@@ -952,6 +955,7 @@ impl PipelineRuntimeConfig {
             10_000.0,
         )?;
         parse_target_class_priority(&self.target_class_priority)?;
+        parse_target_class_filter(&self.target_class_filter)?;
         for (field, value) in [
             (
                 "pipeline.target_selection_class_weight",
@@ -1047,6 +1051,40 @@ pub fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValida
         ));
     }
     Ok(classes)
+}
+
+pub fn parse_target_class_filter(
+    value: &str,
+) -> Result<Option<BTreeSet<u32>>, ConfigValidationError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized == "all" {
+        return Ok(None);
+    }
+    if normalized == "none" {
+        return Ok(Some(BTreeSet::new()));
+    }
+    let mut classes = BTreeSet::new();
+    for item in normalized.split(',') {
+        let class_id = item.trim().parse::<u32>().map_err(|_| {
+            ConfigValidationError::new(
+                "pipeline.target_class_filter",
+                "must be all, none, or a comma-separated list of unique class ids within 0..=255",
+            )
+        })?;
+        if class_id > 255 || !classes.insert(class_id) {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_class_filter",
+                "must be all, none, or a comma-separated list of unique class ids within 0..=255",
+            ));
+        }
+    }
+    if classes.is_empty() {
+        return Err(ConfigValidationError::new(
+            "pipeline.target_class_filter",
+            "must be all, none, or a comma-separated list of unique class ids within 0..=255",
+        ));
+    }
+    Ok(Some(classes))
 }
 
 pub fn parse_target_class_aim_y_ratios(
@@ -1237,6 +1275,10 @@ const fn default_tracker_max_association_dt_ms() -> f64 {
 
 fn default_target_class_priority() -> String {
     "0,1".to_owned()
+}
+
+fn default_target_class_filter() -> String {
+    "all".to_owned()
 }
 
 const fn default_target_selection_class_weight() -> f64 {
@@ -2038,6 +2080,28 @@ mod tests {
         };
         let error = config.validate().expect_err("duplicate class priority");
         assert_eq!(error.field, "pipeline.target_class_priority");
+    }
+
+    #[test]
+    fn target_class_filter_preserves_all_none_and_explicit_allowlist() {
+        assert_eq!(parse_target_class_filter("all").unwrap(), None);
+        assert!(
+            parse_target_class_filter("none")
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            parse_target_class_filter("1, 0, 3")
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![0, 1, 3]
+        );
+        assert!(parse_target_class_filter("").is_err());
+        assert!(parse_target_class_filter("0,0").is_err());
+        assert!(parse_target_class_filter("256").is_err());
     }
 
     #[test]

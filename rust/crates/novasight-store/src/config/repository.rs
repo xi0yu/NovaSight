@@ -390,6 +390,7 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "tracker_max_size_ratio",
             "tracker_max_association_dt_ms",
             "target_class_priority",
+            "target_class_filter",
             "target_selection_class_weight",
             "target_selection_distance_weight",
             "target_sticky_bias",

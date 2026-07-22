@@ -3,7 +3,7 @@
 //! negative cases. The fixture reference values come from the Python
 //! `RuntimeTargetSelector`; only the small subset of edges the Phase 2
 //! slice must respect is asserted here.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use novasight_core::perception::types::Detection;
@@ -156,6 +156,41 @@ fn below_confidence_detections_are_filtered_before_targeting() {
     let selection = core.select(&[weak], OBSERVATION_CENTER);
     assert!(selection.target_object_id.is_none());
     assert_eq!(selection.candidates, 1);
+    assert_eq!(selection.inside_fov, 0);
+}
+
+#[test]
+fn explicit_class_filter_is_independent_from_class_priority() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: vec![0, 1],
+        allowed_class_ids: Some(BTreeSet::from([2])),
+        ..TargetingConfig::default()
+    });
+    let preferred_but_blocked =
+        Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("blocked");
+    let unranked_but_allowed =
+        Detection::new(2, 2, 300.0, 280.0, 40.0, 80.0, 0.9).expect("allowed");
+
+    let selection = core.select(
+        &[preferred_but_blocked, unranked_but_allowed],
+        OBSERVATION_CENTER,
+    );
+
+    assert_eq!(selection.target_object_id, Some(2));
+    assert_eq!(selection.inside_fov, 1);
+}
+
+#[test]
+fn empty_class_allowlist_disables_target_selection() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        allowed_class_ids: Some(BTreeSet::new()),
+        ..TargetingConfig::default()
+    });
+    let target = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("target");
+
+    let selection = core.select(&[target], OBSERVATION_CENTER);
+
+    assert!(selection.target_object_id.is_none());
     assert_eq!(selection.inside_fov, 0);
 }
 
@@ -418,9 +453,10 @@ fn association_beyond_normalized_distance_allocates_a_new_identity() {
 }
 
 #[test]
-fn unsupported_classes_age_out_the_previous_track() {
+fn filtered_classes_age_out_the_previous_track() {
     let mut core = TargetingCore::new(TargetingConfig {
         track_max_age: 2,
+        allowed_class_ids: Some(BTreeSet::from([0, 1])),
         ..TargetingConfig::default()
     });
     let target = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("target");

@@ -513,6 +513,7 @@ impl ConfigSchemaResponse {
                             Some("ms"),
                         ),
                         string("pipeline.target_class_priority", "目标类别优先级"),
+                        string("pipeline.target_class_filter", "参与目标选择的类别"),
                         float(
                             "pipeline.target_selection_class_weight",
                             "目标类别评分权重",
