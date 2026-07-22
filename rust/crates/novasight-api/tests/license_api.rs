@@ -66,7 +66,8 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
         LicensePolicy::new(true, None),
     );
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-    let app = build_control_router_with_control_plane(runtime.clone(), None, license, false, None);
+    let app =
+        build_control_router_with_control_plane(runtime.clone(), None, license, None, false, None);
 
     let (status, body) = json_response(app.clone(), "GET", "/api/license", Body::empty()).await;
     assert_eq!(status, StatusCode::OK);
@@ -141,7 +142,8 @@ async fn unlicensed_status_websocket_closes_with_the_python_compatible_code() {
         LicensePolicy::new(true, None),
     );
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-    let app = build_control_router_with_control_plane(runtime.clone(), None, license, false, None);
+    let app =
+        build_control_router_with_control_plane(runtime.clone(), None, license, None, false, None);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -172,7 +174,8 @@ async fn license_gate_enforces_features_on_the_server() {
     );
     license.activate(SIGNED_KEY).unwrap();
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-    let app = build_control_router_with_control_plane(runtime.clone(), None, license, true, None);
+    let app =
+        build_control_router_with_control_plane(runtime.clone(), None, license, None, true, None);
 
     let (status, body) =
         json_response(app.clone(), "GET", "/api/runtime/state", Body::empty()).await;

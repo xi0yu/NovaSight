@@ -20,6 +20,7 @@ use novasight_runtime::{
     RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
+use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -30,6 +31,8 @@ use crate::dto::{
 use crate::websocket::status::send_while_receiving;
 
 const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(200);
+
+mod models;
 
 /// Cuttlefish-style control surface: every mutation delegates to the
 /// single daemon-owned RuntimeHandle and returns its immutable snapshot.
@@ -64,6 +67,7 @@ pub fn build_control_router_with_capabilities(
         runtime,
         config_service,
         None,
+        None,
         hardware_output_enabled,
         shutdown,
     )
@@ -73,6 +77,7 @@ pub fn build_control_router_with_control_plane(
     runtime: RuntimeHandle,
     config_service: impl Into<Option<ConfigService>>,
     license: impl Into<Option<FileLicenseRepository>>,
+    model_catalog: impl Into<Option<SqliteModelCatalog>>,
     hardware_output_enabled: bool,
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
@@ -80,6 +85,7 @@ pub fn build_control_router_with_control_plane(
         runtime,
         config: config_service.into(),
         license: license.into(),
+        model_catalog: model_catalog.into(),
         hardware_output_enabled,
         shutdown: shutdown.into(),
     };
@@ -106,6 +112,7 @@ pub fn build_control_router_with_control_plane(
         .route("/api/v1/events", get(events))
         .route("/api/config", get(config).post(update_legacy_config))
         .route("/api/executors", get(executors))
+        .merge(models::routes())
         .route(
             "/api/executors/kmnet/connect",
             post(device_lifecycle_managed),
@@ -132,6 +139,7 @@ struct ControlState {
     runtime: RuntimeHandle,
     config: Option<ConfigService>,
     license: Option<FileLicenseRepository>,
+    model_catalog: Option<SqliteModelCatalog>,
     hardware_output_enabled: bool,
     shutdown: Option<watch::Receiver<bool>>,
 }
@@ -694,6 +702,9 @@ enum ControlApiError {
     License(LicenseError),
     LicenseTask(tokio::task::JoinError),
     LicenseUnavailable,
+    ModelCatalog(ModelCatalogError),
+    ModelCatalogTask(tokio::task::JoinError),
+    ModelCatalogUnavailable,
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -805,6 +816,28 @@ impl IntoResponse for ControlApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "LICENSE_SERVICE_UNAVAILABLE",
                 "license service is not configured".to_owned(),
+            ),
+            Self::ModelCatalog(error) => match error {
+                ModelCatalogError::ProjectNotFound(_) | ModelCatalogError::VersionNotFound(_) => (
+                    StatusCode::NOT_FOUND,
+                    "MODEL_CATALOG_NOT_FOUND",
+                    error.to_string(),
+                ),
+                _ => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "MODEL_CATALOG_FAILED",
+                    error.to_string(),
+                ),
+            },
+            Self::ModelCatalogTask(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "MODEL_CATALOG_TASK_FAILED",
+                format!("model catalog task failed: {error}"),
+            ),
+            Self::ModelCatalogUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "MODEL_CATALOG_UNAVAILABLE",
+                "model catalog is not configured".to_owned(),
             ),
         };
         let body = ControlErrorBody {

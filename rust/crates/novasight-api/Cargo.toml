@@ -18,6 +18,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 novasight-pipeline = { path = "../novasight-pipeline" }
+rusqlite.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = "0.29"
