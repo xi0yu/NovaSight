@@ -483,6 +483,7 @@ capture:
     assert_eq!(response.status(), StatusCode::OK);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -497,6 +498,39 @@ capture:
         .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(YamlConfigRepository::load(&path).unwrap().revision, 4);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/capture/stop")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let stopped: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(stopped["running"], false);
+    assert_eq!(stopped["state"], "stopped");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/capture/select")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"device":"/dev/video3","preference":"auto_low_latency"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(YamlConfigRepository::load(&path).unwrap().revision, 5);
 
     shutdown(supervisor, &runtime).await;
 }

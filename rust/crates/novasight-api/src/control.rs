@@ -145,6 +145,7 @@ pub fn build_control_router_with_platform_queries(
             get(capture_capabilities).post(post_capture_capabilities),
         )
         .route("/api/capture/select", post(select_capture))
+        .route("/api/capture/stop", post(stop_capture))
         .route("/api/executors", get(executors))
         .merge(models::routes())
         .route(
@@ -348,6 +349,7 @@ async fn legacy_start(
 async fn legacy_stop(
     State(state): State<ControlState>,
 ) -> Result<Json<CompatibilityRuntimeState>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let snapshot = state.runtime.stop().await?;
     Ok(Json(compatibility_state(&state, &snapshot).await))
 }
@@ -587,6 +589,18 @@ async fn select_capture(
     ))
 }
 
+async fn stop_capture(
+    State(state): State<ControlState>,
+) -> Result<Json<serde_json::Value>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let snapshot = state.runtime.stop().await?;
+    let compatibility = compatibility_state(&state, &snapshot).await;
+    Ok(Json(
+        serde_json::to_value(compatibility.capture)
+            .expect("compatibility capture DTO must serialize"),
+    ))
+}
+
 async fn probe_capture_capabilities(
     state: ControlState,
     requested_device: Option<String>,
@@ -659,6 +673,7 @@ async fn start(
 }
 
 async fn stop(State(state): State<ControlState>) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     Ok(Json(state.runtime.stop().await?))
 }
 
