@@ -4,8 +4,8 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use novasight_api::build_control_router_with_shutdown;
-use novasight_runtime::{ApplicationError, LoadedApplication, RuntimeDependencies};
+use novasight_api::build_control_router_with_services;
+use novasight_runtime::{ApplicationError, ConfigService, LoadedApplication, RuntimeDependencies};
 use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
@@ -35,6 +35,7 @@ pub(super) async fn run_daemon(
     let host = loaded.config().server.host.clone();
     let port = loaded.config().server.port;
     let control_socket = loaded.config().server.control_socket.clone();
+    let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
     let listener = TcpListener::bind((host.as_str(), port))
         .await
         .map_err(|source| DaemonRunError::Bind {
@@ -50,8 +51,11 @@ pub(super) async fn run_daemon(
     let mut signals = ShutdownSignals::register()?;
     let application = loaded.start(dependencies);
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
-    let router =
-        build_control_router_with_shutdown(application.runtime(), Some(server_shutdown_rx.clone()));
+    let router = build_control_router_with_services(
+        application.runtime(),
+        Some(config_service),
+        Some(server_shutdown_rx.clone()),
+    );
     let http_server = axum::serve(listener, router.clone())
         .with_graceful_shutdown(async move {
             if !*server_shutdown_rx.borrow() {

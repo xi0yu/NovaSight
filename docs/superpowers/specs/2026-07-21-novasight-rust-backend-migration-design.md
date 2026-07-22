@@ -339,6 +339,8 @@ kmBoxNet 的公开 C++ demo 仅作为协议与行为参考，不直接编译、�
 
 接管 Axum、YAML/SQLite/License/ModelCatalog、capture/model/config/executor/Studio 接口、ConfigImpact planner 和 Deployment transaction。Python 只保留离线 job。
 
+配置控制面的第一条生产纵切已由 Rust daemon 接管：HTTP 与 Unix socket CLI 共用单一 `ConfigService`；`GET/PATCH /api/v1/config` 和 Studio 兼容入口 `GET/POST /api/config` 读写同一份版本化 YAML。字段更新与整份配置更新都必须经过目录锁、revision 比较、完整 typed validation 和原子替换，并保留未知扩展字段。当前 runtime dependency graph 仍是 epoch 启动时构造，因此成功写入只返回 `applied=false`、`restart_required=true`，不得伪装成热更新；后续 ConfigImpact planner 才能逐项开放经过证明的在线应用能力。
+
 ### Phase 6：Rust-controlled LatestFrame + TensorRT
 
 实现持有 GstBuffer/NVMM lifetime 的 FrameLease、Rust LatestFrameExchange、CUDA preprocess C ABI、TensorRT context owner、typed tensor contract、decode/NMS registry。DeepStream object-meta adapter 保留为 A/B 与回滚路径。

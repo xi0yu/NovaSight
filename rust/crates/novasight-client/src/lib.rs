@@ -10,11 +10,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty, Limited};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use novasight_runtime::RuntimeSnapshot;
-use serde::Deserialize;
+use novasight_runtime::{AppConfig, ConfigFieldUpdate, ConfigUpdate, RuntimeSnapshot};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
 use thiserror::Error;
 use tokio::net::UnixStream;
 
@@ -45,41 +46,80 @@ impl ControlClient {
     }
 
     pub async fn status(&self) -> Result<RuntimeSnapshot, ClientError> {
-        self.request(Method::GET, "/api/v1/status").await
-    }
-
-    pub async fn start(&self) -> Result<RuntimeSnapshot, ClientError> {
-        self.request(Method::POST, "/api/v1/runtime/start").await
-    }
-
-    pub async fn stop(&self) -> Result<RuntimeSnapshot, ClientError> {
-        self.request(Method::POST, "/api/v1/runtime/stop").await
-    }
-
-    pub async fn restart(&self) -> Result<RuntimeSnapshot, ClientError> {
-        self.request(Method::POST, "/api/v1/runtime/restart").await
-    }
-
-    pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, ClientError> {
-        self.request(Method::POST, "/api/v1/runtime/emergency-stop")
+        self.request(Method::GET, "/api/v1/status", None::<&()>)
             .await
     }
 
-    async fn request(
+    pub async fn start(&self) -> Result<RuntimeSnapshot, ClientError> {
+        self.request(Method::POST, "/api/v1/runtime/start", None::<&()>)
+            .await
+    }
+
+    pub async fn stop(&self) -> Result<RuntimeSnapshot, ClientError> {
+        self.request(Method::POST, "/api/v1/runtime/stop", None::<&()>)
+            .await
+    }
+
+    pub async fn restart(&self) -> Result<RuntimeSnapshot, ClientError> {
+        self.request(Method::POST, "/api/v1/runtime/restart", None::<&()>)
+            .await
+    }
+
+    pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, ClientError> {
+        self.request(Method::POST, "/api/v1/runtime/emergency-stop", None::<&()>)
+            .await
+    }
+
+    pub async fn config(&self) -> Result<AppConfig, ClientError> {
+        self.request(Method::GET, "/api/v1/config", None::<&()>)
+            .await
+    }
+
+    pub async fn update_config_field(
+        &self,
+        section: impl Into<String>,
+        key: impl Into<String>,
+        value: Value,
+        expected_revision: Option<u64>,
+    ) -> Result<ConfigUpdate, ClientError> {
+        let update = ConfigFieldUpdate {
+            section: section.into(),
+            key: key.into(),
+            value,
+            expected_revision,
+        };
+        self.request(Method::PATCH, "/api/v1/config", Some(&update))
+            .await
+    }
+
+    async fn request<T, B>(
         &self,
         method: Method,
         path: &'static str,
-    ) -> Result<RuntimeSnapshot, ClientError> {
-        tokio::time::timeout(self.request_timeout, self.request_inner(method, path))
+        body: Option<&B>,
+    ) -> Result<T, ClientError>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let body = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(ClientError::EncodeRequest)?;
+        tokio::time::timeout(self.request_timeout, self.request_inner(method, path, body))
             .await
             .map_err(|_| ClientError::Timeout(self.request_timeout))?
     }
 
-    async fn request_inner(
+    async fn request_inner<T>(
         &self,
         method: Method,
         path: &'static str,
-    ) -> Result<RuntimeSnapshot, ClientError> {
+        body: Option<Vec<u8>>,
+    ) -> Result<T, ClientError>
+    where
+        T: DeserializeOwned,
+    {
         let stream =
             UnixStream::connect(&self.socket)
                 .await
@@ -90,12 +130,20 @@ impl ControlClient {
         let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
             .await
             .map_err(ClientError::Handshake)?;
-        let request = Request::builder()
+        let mut request = Request::builder()
             .method(method)
             .uri(path)
             .header("host", "localhost")
-            .header("connection", "close")
-            .body(Empty::<Bytes>::new())
+            .header("connection", "close");
+        let body = match body {
+            Some(body) => {
+                request = request.header("content-type", "application/json");
+                Bytes::from(body)
+            }
+            None => Bytes::new(),
+        };
+        let request = request
+            .body(Full::new(body))
             .map_err(ClientError::BuildRequest)?;
         let exchange = async {
             let response = sender
@@ -123,7 +171,7 @@ impl ControlClient {
         };
 
         if status.is_success() {
-            serde_json::from_slice(&body).map_err(ClientError::DecodeSnapshot)
+            serde_json::from_slice(&body).map_err(ClientError::DecodeResponse)
         } else {
             let error: DaemonErrorBody =
                 serde_json::from_slice(&body).map_err(ClientError::DecodeDaemonError)?;
@@ -156,14 +204,16 @@ pub enum ClientError {
     Handshake(#[source] hyper::Error),
     #[error("failed to build daemon request: {0}")]
     BuildRequest(#[source] hyper::http::Error),
+    #[error("failed to encode daemon request: {0}")]
+    EncodeRequest(#[source] serde_json::Error),
     #[error("daemon request failed: {0}")]
     Request(#[source] hyper::Error),
     #[error("daemon response body failed: {0}")]
     ResponseBody(String),
     #[error("daemon connection failed: {0}")]
     Connection(#[source] hyper::Error),
-    #[error("daemon returned an invalid runtime snapshot: {0}")]
-    DecodeSnapshot(#[source] serde_json::Error),
+    #[error("daemon returned an invalid JSON response: {0}")]
+    DecodeResponse(#[source] serde_json::Error),
     #[error("daemon returned an invalid error body: {0}")]
     DecodeDaemonError(#[source] serde_json::Error),
     #[error("daemon rejected the command ({status} {code}): {message}")]
@@ -181,10 +231,11 @@ impl ClientError {
             Self::Timeout(_) => "daemon_request_timed_out",
             Self::Handshake(_) => "daemon_handshake_failed",
             Self::BuildRequest(_) => "daemon_request_build_failed",
+            Self::EncodeRequest(_) => "daemon_request_encode_failed",
             Self::Request(_) => "daemon_request_failed",
             Self::ResponseBody(_) => "daemon_response_failed",
             Self::Connection(_) => "daemon_connection_failed",
-            Self::DecodeSnapshot(_) => "daemon_snapshot_invalid",
+            Self::DecodeResponse(_) => "daemon_response_invalid",
             Self::DecodeDaemonError(_) => "daemon_error_response_invalid",
             Self::Daemon { .. } => "daemon_command_rejected",
         }

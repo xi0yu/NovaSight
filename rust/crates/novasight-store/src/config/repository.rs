@@ -59,6 +59,24 @@ impl YamlConfigRepository {
     ) -> Result<AppConfig, ConfigError> {
         save_document(path.as_ref(), config, expected_revision)
     }
+
+    pub fn save_field(
+        &self,
+        section: &str,
+        key: &str,
+        value: Value,
+        expected_revision: u64,
+    ) -> Result<AppConfig, ConfigError> {
+        save_document_field(&self.path, section, key, value, expected_revision)
+    }
+
+    pub fn replace_document(
+        &self,
+        replacement: Value,
+        expected_revision: u64,
+    ) -> Result<AppConfig, ConfigError> {
+        replace_document(&self.path, replacement, expected_revision)
+    }
 }
 
 impl ConfigRepository for YamlConfigRepository {
@@ -113,6 +131,16 @@ pub enum ConfigError {
         section: &'static str,
         key: String,
     },
+    InvalidFieldTarget {
+        path: PathBuf,
+        section: String,
+        key: String,
+        reason: &'static str,
+    },
+    InvalidReplacementDocument {
+        path: PathBuf,
+        reason: &'static str,
+    },
     SymlinkUnsupported {
         path: PathBuf,
     },
@@ -140,6 +168,8 @@ impl ConfigError {
             Self::RevisionConflict { .. } => "CONFIG_REVISION_CONFLICT",
             Self::RevisionOverflow { .. } => "CONFIG_REVISION_OVERFLOW",
             Self::ReservedLegacyKey { .. } => "CONFIG_RESERVED_LEGACY_KEY",
+            Self::InvalidFieldTarget { .. } => "CONFIG_INVALID_FIELD_TARGET",
+            Self::InvalidReplacementDocument { .. } => "CONFIG_REPLACEMENT_INVALID",
             Self::SymlinkUnsupported { .. } => "CONFIG_SYMLINK_UNSUPPORTED",
             Self::HardlinkUnsupported { .. } => "CONFIG_HARDLINK_UNSUPPORTED",
             Self::PathChanged { .. } => "CONFIG_PATH_CHANGED",
@@ -157,6 +187,8 @@ impl ConfigError {
             | Self::RevisionConflict { path, .. }
             | Self::RevisionOverflow { path, .. }
             | Self::ReservedLegacyKey { path, .. }
+            | Self::InvalidFieldTarget { path, .. }
+            | Self::InvalidReplacementDocument { path, .. }
             | Self::SymlinkUnsupported { path }
             | Self::HardlinkUnsupported { path, .. }
             | Self::PathChanged { path }
@@ -232,6 +264,21 @@ impl fmt::Display for ConfigError {
                 "configuration legacy key {section}.{key} is reserved at {}",
                 path.display()
             ),
+            Self::InvalidFieldTarget {
+                path,
+                section,
+                key,
+                reason,
+            } => write!(
+                formatter,
+                "configuration field target {section}.{key} is invalid at {}: {reason}",
+                path.display()
+            ),
+            Self::InvalidReplacementDocument { path, reason } => write!(
+                formatter,
+                "configuration replacement is invalid at {}: {reason}",
+                path.display()
+            ),
             Self::SymlinkUnsupported { path } => write!(
                 formatter,
                 "configuration symlinks are unsupported: {}",
@@ -266,6 +313,8 @@ impl Error for ConfigError {
             | Self::RevisionConflict { .. }
             | Self::RevisionOverflow { .. }
             | Self::ReservedLegacyKey { .. }
+            | Self::InvalidFieldTarget { .. }
+            | Self::InvalidReplacementDocument { .. }
             | Self::SymlinkUnsupported { .. }
             | Self::HardlinkUnsupported { .. }
             | Self::PathChanged { .. }
@@ -519,6 +568,185 @@ fn save_document(
         source,
     })?;
 
+    atomic_replace(path, serialized.as_bytes(), &directory, &destination)?;
+    Ok(persisted)
+}
+
+fn save_document_field(
+    path: &Path,
+    section: &str,
+    key: &str,
+    value: Value,
+    expected_revision: u64,
+) -> Result<AppConfig, ConfigError> {
+    validate_field_target(path, section, key)?;
+    ensure_save_supported(path)?;
+    let parent = parent_directory(path);
+    let directory = File::open(parent).map_err(|source| read_error(path, source))?;
+    directory
+        .lock()
+        .map_err(|source| io_error("lock parent directory", parent, source))?;
+
+    let (destination, mut document, current) = load_document(path)?;
+    if current.revision != expected_revision {
+        return Err(ConfigError::RevisionConflict {
+            path: path.to_owned(),
+            expected: expected_revision,
+            actual: current.revision,
+        });
+    }
+    let next_revision =
+        current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| ConfigError::RevisionOverflow {
+                path: path.to_owned(),
+                revision: current.revision,
+            })?;
+    let root = document
+        .as_mapping_mut()
+        .ok_or_else(|| ConfigError::InvalidFieldTarget {
+            path: path.to_owned(),
+            section: section.to_owned(),
+            key: key.to_owned(),
+            reason: "configuration root must be a mapping",
+        })?;
+    let section_key = Value::String(section.to_owned());
+    let section_value = root
+        .entry(section_key)
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    let section_mapping =
+        section_value
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::InvalidFieldTarget {
+                path: path.to_owned(),
+                section: section.to_owned(),
+                key: key.to_owned(),
+                reason: "target section must be a mapping",
+            })?;
+    section_mapping.insert(Value::String(key.to_owned()), value);
+    root.insert(
+        Value::String("revision".to_owned()),
+        Value::Number(next_revision.into()),
+    );
+
+    let mut persisted: AppConfig =
+        serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+    mark_production_fields(&document, &mut persisted);
+    persisted
+        .validate_configured_adapters()
+        .and_then(|()| persisted.validate_explicit_adapter_fields())
+        .map_err(|source| ConfigError::Validation {
+            path: path.to_owned(),
+            source,
+        })?;
+    validate_legacy_keys(path, &persisted)?;
+    let serialized = serde_yaml::to_string(&document).map_err(|source| ConfigError::Serialize {
+        path: path.to_owned(),
+        source,
+    })?;
+    atomic_replace(path, serialized.as_bytes(), &directory, &destination)?;
+    Ok(persisted)
+}
+
+fn validate_field_target(path: &Path, section: &str, key: &str) -> Result<(), ConfigError> {
+    let valid_component = |component: &str| {
+        !component.is_empty()
+            && component.len() <= 128
+            && component
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    };
+    if !valid_component(section) || !valid_component(key) {
+        return Err(ConfigError::InvalidFieldTarget {
+            path: path.to_owned(),
+            section: section.to_owned(),
+            key: key.to_owned(),
+            reason: "section and key must be simple non-empty names of at most 128 characters",
+        });
+    }
+    if matches!(section, "schema_version" | "revision" | "device") {
+        return Err(ConfigError::InvalidFieldTarget {
+            path: path.to_owned(),
+            section: section.to_owned(),
+            key: key.to_owned(),
+            reason: "root scalar and alias fields cannot be updated as sections",
+        });
+    }
+    Ok(())
+}
+
+fn replace_document(
+    path: &Path,
+    mut replacement: Value,
+    expected_revision: u64,
+) -> Result<AppConfig, ConfigError> {
+    if !replacement.is_mapping() {
+        return Err(ConfigError::InvalidReplacementDocument {
+            path: path.to_owned(),
+            reason: "replacement must be a mapping",
+        });
+    }
+    ensure_save_supported(path)?;
+    let parent = parent_directory(path);
+    let directory = File::open(parent).map_err(|source| read_error(path, source))?;
+    directory
+        .lock()
+        .map_err(|source| io_error("lock parent directory", parent, source))?;
+    let (destination, mut document, current) = load_document(path)?;
+    if current.revision != expected_revision {
+        return Err(ConfigError::RevisionConflict {
+            path: path.to_owned(),
+            expected: expected_revision,
+            actual: current.revision,
+        });
+    }
+    let next_revision =
+        current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| ConfigError::RevisionOverflow {
+                path: path.to_owned(),
+                revision: current.revision,
+            })?;
+    normalize_root_alias(path, &mut replacement, "device", "hardware")?;
+    if let Some(mapping) = replacement.as_mapping_mut() {
+        mapping.remove(Value::String("revision".to_owned()));
+        mapping.remove(Value::String("schema_version".to_owned()));
+    }
+    merge_value(&mut document, replacement);
+    let root =
+        document
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::InvalidReplacementDocument {
+                path: path.to_owned(),
+                reason: "persisted configuration root must be a mapping",
+            })?;
+    root.insert(
+        Value::String("revision".to_owned()),
+        Value::Number(next_revision.into()),
+    );
+    let mut persisted: AppConfig =
+        serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+    mark_production_fields(&document, &mut persisted);
+    persisted
+        .validate_configured_adapters()
+        .and_then(|()| persisted.validate_explicit_adapter_fields())
+        .map_err(|source| ConfigError::Validation {
+            path: path.to_owned(),
+            source,
+        })?;
+    validate_legacy_keys(path, &persisted)?;
+    let serialized = serde_yaml::to_string(&document).map_err(|source| ConfigError::Serialize {
+        path: path.to_owned(),
+        source,
+    })?;
     atomic_replace(path, serialized.as_bytes(), &directory, &destination)?;
     Ok(persisted)
 }

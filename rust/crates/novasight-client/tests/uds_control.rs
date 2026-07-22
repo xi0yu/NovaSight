@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use novasight_api::build_control_router;
+use novasight_api::{build_control_router, build_control_router_with_services};
 use novasight_client::{ClientError, ControlClient};
-use novasight_runtime::{PipelineState, RuntimeSupervisor};
+use novasight_runtime::{ConfigService, PipelineState, RuntimeSupervisor};
+use novasight_store::config::YamlConfigRepository;
 
 struct SocketPath(PathBuf);
 
@@ -74,6 +75,46 @@ async fn typed_client_drives_the_same_runtime_over_a_unix_socket() {
         ClientError::Daemon { ref code, .. } if code == "supervisor_closed"
     ));
     server.abort();
+}
+
+#[tokio::test]
+async fn typed_client_reads_and_updates_persisted_config_over_the_same_socket() {
+    let socket = SocketPath::new();
+    let config_path = socket.0.with_extension("yaml");
+    std::fs::write(
+        &config_path,
+        "revision: 9\nserver:\n  port: 5174\nfuture:\n  retained: true\n",
+    )
+    .unwrap();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let service = ConfigService::new(
+        &config_path,
+        YamlConfigRepository::load(&config_path).unwrap(),
+    );
+    let app = build_control_router_with_services(runtime.clone(), Some(service), None);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve Unix control socket")
+    });
+    let client = ControlClient::new(&socket.0);
+
+    assert_eq!(client.config().await.unwrap().revision, 9);
+    let update = client
+        .update_config_field("server", "port", serde_json::json!(6001), Some(9))
+        .await
+        .unwrap();
+    assert_eq!(update.config.revision, 10);
+    assert_eq!(update.config.server.port, 6001);
+    assert!(update.restart_required);
+    assert!(!update.applied);
+    assert_eq!(client.config().await.unwrap().revision, 10);
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    server.abort();
+    std::fs::remove_file(config_path).unwrap();
 }
 
 #[tokio::test]

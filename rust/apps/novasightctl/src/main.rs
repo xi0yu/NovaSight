@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use novasight_client::{ClientError, ControlClient};
-use novasight_runtime::RuntimeSnapshot;
+use novasight_runtime::{AppConfig, ConfigUpdate, RuntimeSnapshot};
+use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -31,6 +32,34 @@ enum Command {
     Restart,
     /// Immediately close output and stop the runtime pipeline.
     EmergencyStop,
+    /// Read or update the daemon's persisted YAML configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCommand {
+    /// Print the current persisted configuration.
+    Show,
+    /// Atomically persist one section field. The value accepts JSON or a plain string.
+    Set {
+        section: String,
+        key: String,
+        value: String,
+        /// Reject the write unless the persisted revision matches this value.
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum CommandOutput {
+    Runtime(RuntimeSnapshot),
+    Config(AppConfig),
+    ConfigUpdate(ConfigUpdate),
 }
 
 fn init_logging() {
@@ -46,7 +75,7 @@ async fn main() -> ExitCode {
     init_logging();
     let cli = Cli::parse();
     match execute(cli).await {
-        Ok(snapshot) => match serde_json::to_string_pretty(&snapshot) {
+        Ok(output) => match serde_json::to_string_pretty(&output) {
             Ok(json) => {
                 println!("{json}");
                 ExitCode::SUCCESS
@@ -63,13 +92,31 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn execute(cli: Cli) -> Result<RuntimeSnapshot, ClientError> {
+async fn execute(cli: Cli) -> Result<CommandOutput, ClientError> {
     let client = ControlClient::new(cli.socket);
     match cli.command {
-        Command::Status => client.status().await,
-        Command::Start => client.start().await,
-        Command::Stop => client.stop().await,
-        Command::Restart => client.restart().await,
-        Command::EmergencyStop => client.emergency_stop().await,
+        Command::Status => client.status().await.map(CommandOutput::Runtime),
+        Command::Start => client.start().await.map(CommandOutput::Runtime),
+        Command::Stop => client.stop().await.map(CommandOutput::Runtime),
+        Command::Restart => client.restart().await.map(CommandOutput::Runtime),
+        Command::EmergencyStop => client.emergency_stop().await.map(CommandOutput::Runtime),
+        Command::Config {
+            command: ConfigCommand::Show,
+        } => client.config().await.map(CommandOutput::Config),
+        Command::Config {
+            command:
+                ConfigCommand::Set {
+                    section,
+                    key,
+                    value,
+                    expected_revision,
+                },
+        } => {
+            let value = serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value));
+            client
+                .update_config_field(section, key, value, expected_revision)
+                .await
+                .map(CommandOutput::ConfigUpdate)
+        }
     }
 }

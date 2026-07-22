@@ -17,5 +17,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 novasight-pipeline = { path = "../novasight-pipeline" }
+novasight-store = { path = "../novasight-store" }
+serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = "0.29"

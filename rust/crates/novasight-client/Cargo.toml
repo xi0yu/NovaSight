@@ -18,4 +18,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ne
 [dev-dependencies]
 axum.workspace = true
 novasight-api = { path = "../novasight-api" }
+novasight-store = { path = "../novasight-store" }
 tokio = { workspace = true, features = ["test-util"] }

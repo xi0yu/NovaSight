@@ -1,15 +1,45 @@
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use novasight_api::{build_control_router, build_control_router_with_shutdown};
+use novasight_api::{
+    build_control_router, build_control_router_with_services, build_control_router_with_shutdown,
+};
 use novasight_core::{Clock, MonotonicNanos, PointerDevice, RecordingPointerDevice};
 use novasight_pipeline::PipelineConfig;
-use novasight_runtime::{PipelineState, RuntimeDependencies, RuntimeHandle, RuntimeSupervisor};
+use novasight_runtime::{
+    ConfigService, PipelineState, RuntimeDependencies, RuntimeHandle, RuntimeSupervisor,
+};
+use novasight_store::config::YamlConfigRepository;
 use serde_json::Value;
 use tower::ServiceExt;
+
+static NEXT_CONFIG_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+struct ConfigDirectory(PathBuf);
+
+impl ConfigDirectory {
+    fn new() -> Self {
+        let unique = NEXT_CONFIG_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "novasight-control-api-config-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for ConfigDirectory {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).unwrap();
+    }
+}
 
 async fn request(runtime: &RuntimeHandle, method: &str, path: &str) -> (StatusCode, Value) {
     let app = build_control_router(runtime.clone());
@@ -34,6 +64,102 @@ async fn request(runtime: &RuntimeHandle, method: &str, path: &str) -> (StatusCo
 async fn shutdown(supervisor: RuntimeSupervisor, runtime: &RuntimeHandle) {
     runtime.shutdown_daemon().await.expect("shutdown daemon");
     supervisor.join().await.expect("join supervisor");
+}
+
+#[tokio::test]
+async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claims() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 2\nserver:\n  port: 5174\nfuture:\n  keep: true\n",
+    )
+    .unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+    let request = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/config")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"section":"server","key":"port","value":6000,"expected_revision":2}"#,
+        ))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["revision"], 3);
+    assert_eq!(body["config"]["server"]["port"], 6000);
+    assert_eq!(body["restart_required"], true);
+    assert_eq!(body["applied"], false);
+    assert_eq!(body["rolled_back"], false);
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(persisted["future"]["keep"].as_bool(), Some(true));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["revision"], 3);
+    assert_eq!(body["server"]["port"], 6000);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn studio_config_alias_uses_the_same_service_and_revision_guard() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nreplay:\n  output_gate_open: false\n").unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/config")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"section":"replay","key":"output_gate_open","value":true}"#,
+        ))
+        .unwrap();
+
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["revision"], 1);
+    assert_eq!(body["config"]["replay"]["output_gate_open"], true);
+    assert_eq!(body["applied"], false);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/config")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"revision":1,"replay":{"output_gate_open":true,"frame_interval_ms":24}}"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["revision"], 2);
+    assert_eq!(body["config"]["replay"]["frame_interval_ms"], 24);
+    assert_eq!(body["restart_required"], true);
+
+    shutdown(supervisor, &runtime).await;
 }
 
 #[tokio::test]

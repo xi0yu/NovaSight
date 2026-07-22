@@ -11,6 +11,7 @@
 
 mod application;
 pub mod command;
+mod config_service;
 mod error;
 mod protocol;
 pub mod snapshot;
@@ -19,8 +20,10 @@ pub mod supervisor;
 
 pub use application::{Application, ApplicationError, LoadedApplication};
 pub use command::RuntimeCommand;
+pub use config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use novasight_core::RuntimeEpoch;
+pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};
 pub use snapshot::{
     DaemonSnapshot, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshot, SubsystemSnapshots,

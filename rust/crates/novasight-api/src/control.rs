@@ -9,7 +9,10 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{Sink, Stream, StreamExt};
-use novasight_runtime::{RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot};
+use novasight_runtime::{
+    AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, RuntimeError,
+    RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
+};
 use serde::Serialize;
 use tokio::sync::watch;
 
@@ -27,15 +30,26 @@ pub fn build_control_router_with_shutdown(
     runtime: RuntimeHandle,
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
+    build_control_router_with_services(runtime, None, shutdown)
+}
+
+pub fn build_control_router_with_services(
+    runtime: RuntimeHandle,
+    config_service: impl Into<Option<ConfigService>>,
+    shutdown: impl Into<Option<watch::Receiver<bool>>>,
+) -> Router {
     Router::new()
         .route("/api/v1/status", get(status))
+        .route("/api/v1/config", get(config).patch(update_config))
         .route("/api/v1/runtime/start", post(start))
         .route("/api/v1/runtime/stop", post(stop))
         .route("/api/v1/runtime/restart", post(restart))
         .route("/api/v1/runtime/emergency-stop", post(emergency_stop))
         .route("/api/v1/events", get(events))
+        .route("/api/config", get(config).post(update_legacy_config))
         .with_state(ControlState {
             runtime,
+            config: config_service.into(),
             shutdown: shutdown.into(),
         })
         .layer(super::app::studio_cors_layer())
@@ -44,7 +58,39 @@ pub fn build_control_router_with_shutdown(
 #[derive(Clone)]
 struct ControlState {
     runtime: RuntimeHandle,
+    config: Option<ConfigService>,
     shutdown: Option<watch::Receiver<bool>>,
+}
+
+async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
+    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    Ok(Json(service.snapshot().await))
+}
+
+async fn update_config(
+    State(state): State<ControlState>,
+    Json(update): Json<ConfigFieldUpdate>,
+) -> Result<Json<ConfigUpdate>, ControlApiError> {
+    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    Ok(Json(service.update_field(update).await?))
+}
+
+async fn update_legacy_config(
+    State(state): State<ControlState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<ConfigUpdate>, ControlApiError> {
+    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    let is_field_update = payload.get("section").is_some()
+        || payload.get("key").is_some()
+        || payload.get("value").is_some();
+    let update = if is_field_update {
+        let update =
+            serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
+        service.update_field(update).await?
+    } else {
+        service.replace(payload).await?
+    };
+    Ok(Json(update))
 }
 
 async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
@@ -168,11 +214,22 @@ async fn shutdown_requested(shutdown: &mut Option<watch::Receiver<bool>>) {
     let _ = receiver.changed().await;
 }
 
-struct ControlApiError(RuntimeError);
+enum ControlApiError {
+    Runtime(RuntimeError),
+    Config(ConfigServiceError),
+    ConfigUnavailable,
+    InvalidFieldUpdate(serde_json::Error),
+}
 
 impl From<RuntimeError> for ControlApiError {
     fn from(error: RuntimeError) -> Self {
-        Self(error)
+        Self::Runtime(error)
+    }
+}
+
+impl From<ConfigServiceError> for ControlApiError {
+    fn from(error: ConfigServiceError) -> Self {
+        Self::Config(error)
     }
 }
 
@@ -184,20 +241,47 @@ struct ControlErrorBody {
 
 impl IntoResponse for ControlApiError {
     fn into_response(self) -> Response {
-        let status = match self.0.kind {
-            RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
-            RuntimeErrorKind::SupervisorUnavailable
-            | RuntimeErrorKind::SupervisorClosed
-            | RuntimeErrorKind::SupervisorReplyLost
-            | RuntimeErrorKind::PipelineUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-            RuntimeErrorKind::PipelineRejected
-            | RuntimeErrorKind::RuntimeEpochExhausted
-            | RuntimeErrorKind::Other => StatusCode::INTERNAL_SERVER_ERROR,
+        let (status, code, message) = match self {
+            Self::Runtime(error) => {
+                let status = match error.kind {
+                    RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
+                    RuntimeErrorKind::SupervisorUnavailable
+                    | RuntimeErrorKind::SupervisorClosed
+                    | RuntimeErrorKind::SupervisorReplyLost
+                    | RuntimeErrorKind::PipelineUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                    RuntimeErrorKind::PipelineRejected
+                    | RuntimeErrorKind::RuntimeEpochExhausted
+                    | RuntimeErrorKind::Other => StatusCode::INTERNAL_SERVER_ERROR,
+                };
+                (status, error.kind.code(), error.message)
+            }
+            Self::Config(error) => {
+                let status = match error.code() {
+                    "CONFIG_REVISION_CONFLICT" => StatusCode::CONFLICT,
+                    "CONFIG_PARSE_ERROR"
+                    | "CONFIG_VALIDATION_ERROR"
+                    | "CONFIG_RESERVED_LEGACY_KEY"
+                    | "CONFIG_INVALID_FIELD_TARGET"
+                    | "CONFIG_FIELD_VALUE_INVALID"
+                    | "CONFIG_REPLACEMENT_INVALID"
+                    | "CONFIG_REPLACEMENT_REVISION_REQUIRED" => StatusCode::BAD_REQUEST,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                };
+                let code = error.code();
+                (status, code, error.to_string())
+            }
+            Self::ConfigUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CONFIG_SERVICE_UNAVAILABLE",
+                "configuration service is not attached to this control surface".to_owned(),
+            ),
+            Self::InvalidFieldUpdate(error) => (
+                StatusCode::BAD_REQUEST,
+                "CONFIG_FIELD_UPDATE_INVALID",
+                format!("expected a field update with section, key, and value: {error}"),
+            ),
         };
-        let body = ControlErrorBody {
-            code: self.0.kind.code(),
-            message: self.0.message,
-        };
+        let body = ControlErrorBody { code, message };
         (status, Json(body)).into_response()
     }
 }

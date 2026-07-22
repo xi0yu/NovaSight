@@ -558,3 +558,124 @@ fn path_bound_repository_implements_the_store_neutral_contract() {
     assert_eq!(saved.revision, 12);
     assert_eq!(YamlConfigRepository::load(path).unwrap().server.port, 5176);
 }
+
+#[test]
+fn field_update_is_atomic_and_preserves_unknown_document_fields() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 4\nserver:\n  port: 5174\n  tls:\n    certificate: keep.pem\nfuture:\n  enabled: true\n",
+    )
+    .unwrap();
+    let repository = YamlConfigRepository::new(&path);
+
+    let saved = repository
+        .save_field("server", "port", Value::Number(6000_u64.into()), 4)
+        .unwrap();
+
+    assert_eq!(saved.revision, 5);
+    assert_eq!(saved.server.port, 6000);
+    let document: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document["revision"].as_u64(), Some(5));
+    assert_eq!(document["server"]["port"].as_u64(), Some(6000));
+    assert_eq!(
+        document["server"]["tls"]["certificate"].as_str(),
+        Some("keep.pem")
+    );
+    assert_eq!(document["future"]["enabled"].as_bool(), Some(true));
+}
+
+#[test]
+fn field_update_rejects_stale_revision_without_modifying_file() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 7\nserver:\n  port: 5174\n").unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let error = YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::Number(6000_u64.into()), 6)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_REVISION_CONFLICT");
+    assert_eq!(error.actual_revision(), Some(7));
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn invalid_field_update_rolls_back_the_complete_document() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nserver:\n  port: 5174\n").unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let error = YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::String("not-a-port".to_owned()), 0)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_PARSE_ERROR");
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn field_update_rejects_ambiguous_or_non_mapping_targets() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nfuture: disabled\n").unwrap();
+    let before = fs::read(&path).unwrap();
+    let repository = YamlConfigRepository::new(&path);
+
+    let non_mapping = repository
+        .save_field("future", "enabled", Value::Bool(true), 0)
+        .unwrap_err();
+    let alias = repository
+        .save_field("device", "host", Value::String("127.0.0.1".to_owned()), 0)
+        .unwrap_err();
+    let nested = repository
+        .save_field("server.tls", "certificate", Value::Null, 0)
+        .unwrap_err();
+
+    assert_eq!(non_mapping.code(), "CONFIG_INVALID_FIELD_TARGET");
+    assert_eq!(alias.code(), "CONFIG_INVALID_FIELD_TARGET");
+    assert_eq!(nested.code(), "CONFIG_INVALID_FIELD_TARGET");
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn document_replacement_uses_revision_guard_and_preserves_unsubmitted_extensions() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(
+        &path,
+        "schema_version: 1\nrevision: 5\nserver:\n  port: 5174\n  tls:\n    certificate: keep.pem\nfuture:\n  retained: true\n",
+    )
+    .unwrap();
+    let replacement: Value =
+        serde_yaml::from_str("schema_version: 999\nrevision: 5\nserver:\n  port: 7000\n").unwrap();
+
+    let saved = YamlConfigRepository::new(&path)
+        .replace_document(replacement, 5)
+        .unwrap();
+
+    assert_eq!(saved.schema_version, 1);
+    assert_eq!(saved.revision, 6);
+    assert_eq!(saved.server.port, 7000);
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(persisted["server"]["tls"]["certificate"], "keep.pem");
+    assert_eq!(persisted["future"]["retained"], true);
+}
+
+#[test]
+fn invalid_document_replacement_does_not_modify_the_file() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nserver:\n  port: 5174\n").unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let error = YamlConfigRepository::new(&path)
+        .replace_document(Value::String("invalid".to_owned()), 0)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_REPLACEMENT_INVALID");
+    assert_eq!(fs::read(path).unwrap(), before);
+}

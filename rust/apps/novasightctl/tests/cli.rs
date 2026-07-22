@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use novasight_api::build_control_router;
-use novasight_runtime::{PipelineState, RuntimeSnapshot, RuntimeSupervisor};
+use novasight_api::{build_control_router, build_control_router_with_services};
+use novasight_runtime::{
+    AppConfig, ConfigService, ConfigUpdate, PipelineState, RuntimeSnapshot, RuntimeSupervisor,
+};
+use novasight_store::config::YamlConfigRepository;
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_novasightctl")
@@ -41,10 +44,74 @@ fn help_documents_the_real_command_surface() {
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 help");
 
     assert!(output.status.success());
-    for command in ["status", "start", "stop", "restart", "emergency-stop"] {
+    for command in [
+        "status",
+        "start",
+        "stop",
+        "restart",
+        "emergency-stop",
+        "config",
+    ] {
         assert!(stdout.contains(command), "help omitted {command}");
     }
     assert!(!stdout.contains("diagnose"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_commands_share_the_daemon_revisioned_config_service() {
+    let socket = SocketPath::new();
+    let config_path = socket.0.with_extension("yaml");
+    std::fs::write(&config_path, "revision: 3\nserver:\n  port: 5174\n").unwrap();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let config = ConfigService::new(
+        &config_path,
+        YamlConfigRepository::load(&config_path).unwrap(),
+    );
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let shown =
+        tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["config", "show"]))
+            .await
+            .unwrap();
+    assert!(shown.status.success());
+    let shown: AppConfig = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown.revision, 3);
+
+    let socket_path = socket.0.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        run_cli_args(
+            &socket_path,
+            &[
+                "config",
+                "set",
+                "server",
+                "port",
+                "6002",
+                "--expected-revision",
+                "3",
+            ],
+        )
+    })
+    .await
+    .unwrap();
+    assert!(updated.status.success());
+    let updated: ConfigUpdate = serde_json::from_slice(&updated.stdout).unwrap();
+    assert_eq!(updated.config.revision, 4);
+    assert_eq!(updated.config.server.port, 6002);
+    assert!(updated.restart_required);
+    assert!(!updated.applied);
+
+    server.abort();
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_file(config_path).unwrap();
 }
 
 #[test]
@@ -95,8 +162,13 @@ async fn commands_print_the_snapshot_returned_by_the_daemon() {
 }
 
 fn run_cli(socket: &Path, command: &str) -> std::process::Output {
+    run_cli_args(socket, &[command])
+}
+
+fn run_cli_args(socket: &Path, arguments: &[&str]) -> std::process::Output {
     Command::new(binary())
-        .args(["--socket", socket.to_str().expect("UTF-8 socket"), command])
+        .args(["--socket", socket.to_str().expect("UTF-8 socket")])
+        .args(arguments)
         .output()
         .expect("run novasightctl")
 }
