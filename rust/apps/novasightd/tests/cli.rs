@@ -4,7 +4,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -214,8 +214,16 @@ fn http_request_with_body(
     body: &str,
     content_type: Option<&str>,
 ) -> (u16, String) {
-    let mut stream =
-        TcpStream::connect_timeout(&address, Duration::from_secs(5)).expect("connect HTTP server");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match TcpStream::connect_timeout(&address, Duration::from_millis(250)) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => panic!("connect HTTP server before deadline: {error}"),
+        }
+    };
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set read timeout");
