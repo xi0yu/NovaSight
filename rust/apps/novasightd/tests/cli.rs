@@ -1,10 +1,10 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -178,29 +178,34 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
         .expect("readiness timeout");
     let (address, control_socket) =
         ready.unwrap_or_else(|| panic!("daemon exited before readiness: {}", log.join(" | ")));
+    assert!(address.ip().is_loopback());
+    assert_ne!(address.port(), 0);
     assert!(control_socket.exists(), "control socket was not created");
+    let (status, health) = unix_http_request(&control_socket, "GET", "/healthz");
+    assert_eq!(status, 200);
+    assert!(health.contains("\"ok\":true"));
 
-    let (status, license) = http_request(address, "GET", "/api/license");
+    let (status, license) = unix_http_request(&control_socket, "GET", "/api/license");
     assert_eq!(status, 200);
     assert!(license.contains("\"configured\":false"));
-    let (status, blocked) = http_request(address, "GET", "/api/v1/status");
+    let (status, blocked) = unix_http_request(&control_socket, "GET", "/api/v1/status");
     assert_eq!(status, 401);
     assert!(blocked.contains("license required"));
-    let (status, activated) = http_json_request(
-        address,
+    let (status, activated) = unix_http_json_request(
+        &control_socket,
         "POST",
         "/api/license/activate",
         r#"{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}"#,
     );
     assert_eq!(status, 200);
     assert!(activated.contains("\"valid\":true"));
-    let (status, initial) = http_request(address, "GET", "/api/v1/status");
+    let (status, initial) = unix_http_request(&control_socket, "GET", "/api/v1/status");
     assert_eq!(status, 200);
     assert!(initial.contains("\"state\":\"stopped\""));
     let (status, started) = unix_http_request(&control_socket, "POST", "/api/v1/runtime/start");
     assert_eq!(status, 200);
     assert!(started.contains("\"state\":\"running\""));
-    let (status, shared) = http_request(address, "GET", "/api/v1/status");
+    let (status, shared) = unix_http_request(&control_socket, "GET", "/api/v1/status");
     assert_eq!(status, 200);
     assert!(shared.contains("\"state\":\"running\""));
 
@@ -219,67 +224,35 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
     );
 }
 
-fn http_request(address: SocketAddr, method: &str, path: &str) -> (u16, String) {
-    http_request_with_body(address, method, path, "", None)
+#[cfg(unix)]
+fn unix_http_request(socket: &Path, method: &str, path: &str) -> (u16, String) {
+    unix_http_request_with_body(socket, method, path, "", None)
 }
 
-fn http_json_request(address: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {
-    http_request_with_body(address, method, path, body, Some("application/json"))
+#[cfg(unix)]
+fn unix_http_json_request(socket: &Path, method: &str, path: &str, body: &str) -> (u16, String) {
+    unix_http_request_with_body(socket, method, path, body, Some("application/json"))
 }
 
-fn http_request_with_body(
-    address: SocketAddr,
+#[cfg(unix)]
+fn unix_http_request_with_body(
+    socket: &Path,
     method: &str,
     path: &str,
     body: &str,
     content_type: Option<&str>,
 ) -> (u16, String) {
-    // A full workspace test can leave the newly spawned daemon briefly
-    // starved after it has bound and reported both listeners. Keep each
-    // connect attempt short, but allow scheduler contention to clear.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut stream = loop {
-        match TcpStream::connect_timeout(&address, Duration::from_millis(250)) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => panic!("connect HTTP server before deadline: {error}"),
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("set read timeout");
-    let content_type = content_type
-        .map(|value| format!("Content-Type: {value}\r\n"))
-        .unwrap_or_default();
-    write!(stream, "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
-        .expect("write HTTP request");
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .expect("read HTTP response");
-    let (headers, body) = response
-        .split_once("\r\n\r\n")
-        .expect("HTTP response headers");
-    let status = headers
-        .split_whitespace()
-        .nth(1)
-        .expect("HTTP status")
-        .parse()
-        .expect("numeric HTTP status");
-    (status, body.to_owned())
-}
-
-#[cfg(unix)]
-fn unix_http_request(socket: &Path, method: &str, path: &str) -> (u16, String) {
     let mut stream = UnixStream::connect(socket).expect("connect Unix control socket");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set read timeout");
+    let content_type = content_type
+        .map(|value| format!("Content-Type: {value}\r\n"))
+        .unwrap_or_default();
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )
     .expect("write Unix HTTP request");
     let mut response = String::new();
