@@ -4,9 +4,11 @@ use novasight_api::{build_control_router, build_control_router_with_services};
 use novasight_client::{ClientError, ControlClient};
 use novasight_core::RuntimeEpoch;
 use novasight_runtime::{
-    ConfigService, PipelineState, PreviewHub, RuntimeDependencies, RuntimeSupervisor,
+    ConfigService, MotionProfileHub, MotionProfileStatus, PipelineState, PreviewHub,
+    RuntimeDependencies, RuntimeSupervisor,
 };
 use novasight_store::config::YamlConfigRepository;
+use novasight_store::motion_profile::MotionProfileRepository;
 
 struct SocketPath(PathBuf);
 
@@ -143,6 +145,55 @@ async fn typed_client_controls_the_daemon_owned_preview_gate() {
     runtime.shutdown_daemon().await.unwrap();
     supervisor.join().await.unwrap();
     server.abort();
+}
+
+#[tokio::test]
+async fn typed_client_uses_the_same_motion_profile_authority_as_web() {
+    let socket = SocketPath::new();
+    let root = socket.0.with_extension("motion");
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
+    let hub = MotionProfileHub::default();
+    let repository = MotionProfileRepository::open(&root).unwrap();
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::recording().with_motion_profiles(hub, repository),
+    );
+    let server_runtime = runtime.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, build_control_router(server_runtime))
+            .await
+            .expect("serve Unix control socket")
+    });
+    let client = ControlClient::new(&socket.0);
+
+    assert_eq!(
+        client.motion_profile_status().await.unwrap(),
+        MotionProfileStatus {
+            enabled: false,
+            trajectory_source: "static".to_owned(),
+            active_profile: String::new(),
+            profile_name: String::new(),
+            sample_count: 0,
+            profile_version: 0,
+            spatial_curve_available: false,
+            effective_runtime_parameters: Default::default(),
+            source: Default::default(),
+            revision: 0,
+        }
+    );
+    assert_eq!(
+        client
+            .activate_builtin_motion()
+            .await
+            .unwrap()
+            .active_profile,
+        "builtin"
+    );
+    assert!(!client.disable_motion_profile().await.unwrap().enabled);
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    server.abort();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

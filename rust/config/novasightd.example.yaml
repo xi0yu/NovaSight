@@ -63,6 +63,21 @@ pipeline:
   candidate_max_aspect_ratio: 6.0
   max_command_age_ms: 55
   output_interval_ms: 4
+control:
+  humanized_motion:
+    enabled: false
+    active_profile: ""
+    spatial_curve_enabled: true
+    side_scale: 1.0
+    max_side_ratio: 0.10
+    near_fade_start_px: 24.0
+    micro_bypass_px: 3.0
+    dynamic_rebase_ratio: 0.25
+    minimum_jerk_fallback: true
+    terminal_feedback_gain: 0.35
+    builtin_fitts_a_ms: 35.0
+    builtin_fitts_b_ms: 55.0
+    builtin_side_ratio: 0.012
 capture:
   device: /dev/video0
   backend: deepstream_nvinfer

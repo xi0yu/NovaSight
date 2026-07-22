@@ -22,6 +22,9 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::humanized_motion::{
+    HumanizedMotionGenerator, HumanizedMotionInput, MotionProfile,
+};
 use crate::error::AppError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -427,6 +430,7 @@ pub struct DualPhaseControl {
     previous_error_y: f64,
     measured_error_history_valid: bool,
     velocity_x: RobustVelocityEstimator,
+    humanized_motion: HumanizedMotionGenerator,
 }
 
 impl DualPhaseControl {
@@ -443,6 +447,7 @@ impl DualPhaseControl {
             previous_error_y: 0.0,
             measured_error_history_valid: false,
             velocity_x: RobustVelocityEstimator::new(config),
+            humanized_motion: HumanizedMotionGenerator::default(),
         }
     }
 
@@ -457,6 +462,7 @@ impl DualPhaseControl {
         self.previous_error_y = 0.0;
         self.measured_error_history_valid = false;
         self.velocity_x.reset(None);
+        self.humanized_motion.reset();
     }
 
     pub fn release_trigger(&mut self) {
@@ -465,6 +471,20 @@ impl DualPhaseControl {
     }
 
     pub fn calculate(&mut self, observation: ControlObservation) -> ControlDecision {
+        self.calculate_with_profile(observation, None, 1.0)
+    }
+
+    /// Calculate against the currently active immutable motion profile.
+    ///
+    /// The profile shapes floating-point demand before quantization. The
+    /// existing per-axis mode limit is then applied again, so a trained curve
+    /// cannot bypass the controller's safety envelope.
+    pub fn calculate_with_profile(
+        &mut self,
+        observation: ControlObservation,
+        profile: Option<&MotionProfile>,
+        target_width_px: f64,
+    ) -> ControlDecision {
         let frame_age_ns = observation.control_now_ns as i128 - observation.capture_ts_ns as i128;
         let inference_end_ns = observation.inference_end_ts_ns as i128;
         if frame_age_ns < 0
@@ -565,12 +585,31 @@ impl DualPhaseControl {
         let predicted_offset_y = 0.0;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
-        let Some((demand_x, demand_y, max_counts_per_axis)) =
+        let Some((base_x, base_y, full_x, full_y, max_counts_per_axis)) =
             self.project_demand(filtered_error_x, filtered_error_y, mode)
         else {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
         };
+
+        let shaped = self.humanized_motion.apply(
+            profile,
+            HumanizedMotionInput {
+                base_x,
+                base_y,
+                full_x,
+                full_y,
+                error_x_px: filtered_error_x,
+                error_y_px: filtered_error_y,
+                target_width_px,
+                target_id: observation.target_id,
+                trigger_active: observation.trigger_active,
+                control_time_ms: observation.control_now_ns as f64 / 1_000_000.0,
+            },
+        );
+        let maximum = f64::from(max_counts_per_axis);
+        let demand_x = shaped.x.clamp(-maximum, maximum);
+        let demand_y = shaped.y.clamp(-maximum, maximum);
 
         let (dx, dy, block_reason) = if observation.trigger_active {
             let dx = match self.quantizer_x.quantize(
@@ -701,7 +740,7 @@ impl DualPhaseControl {
         error_x: f64,
         error_y: f64,
         mode: ControlMode,
-    ) -> Option<(f64, f64, i32)> {
+    ) -> Option<(f64, f64, f64, f64, i32)> {
         let config = self.config;
         if config.source_width == 0
             || config.roi_width == 0
@@ -748,7 +787,13 @@ impl DualPhaseControl {
             (kp * config.atan_scale_counts * (full / config.atan_scale_counts).atan())
                 .clamp(-maximum, maximum)
         };
-        Some((demand(full_x), demand(full_y), maximum.ceil() as i32))
+        Some((
+            demand(full_x),
+            demand(full_y),
+            full_x,
+            full_y,
+            maximum.ceil() as i32,
+        ))
     }
 }
 

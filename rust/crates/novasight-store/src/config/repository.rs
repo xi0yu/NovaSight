@@ -841,6 +841,9 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
                 "revision",
                 "server",
                 "replay",
+                "pipeline",
+                "control",
+                "crosshair",
                 "consumers",
                 "limits",
                 "paths",
@@ -869,6 +872,7 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         ),
         ("consumers", &config.consumers.legacy, &["preview"][..]),
         ("limits", &config.limits.legacy, &["stream_fps"][..]),
+        ("control", &config.control.legacy, &["humanized_motion"][..]),
     ] {
         if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
             return Err(ConfigError::ReservedLegacyKey {
@@ -878,6 +882,26 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
             });
         }
     }
+    validate_reserved_legacy(
+        path,
+        "control.humanized_motion",
+        &config.control.humanized_motion.legacy,
+        &[
+            "enabled",
+            "active_profile",
+            "spatial_curve_enabled",
+            "side_scale",
+            "max_side_ratio",
+            "near_fade_start_px",
+            "micro_bypass_px",
+            "dynamic_rebase_ratio",
+            "minimum_jerk_fallback",
+            "terminal_feedback_gain",
+            "builtin_fitts_a_ms",
+            "builtin_fitts_b_ms",
+            "builtin_side_ratio",
+        ],
+    )?;
     if let Some(capture) = &config.capture {
         validate_reserved_legacy(
             path,

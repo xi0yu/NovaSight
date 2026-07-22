@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 pub mod dual_phase_v2;
+pub mod humanized_motion;
 
 use crate::{AppError, DetectionBatch, DeviceCommand, FrameStamp, MonotonicNanos, SelectedTarget};
 

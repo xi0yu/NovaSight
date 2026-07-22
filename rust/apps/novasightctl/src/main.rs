@@ -5,13 +5,15 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use novasight_client::{
-    CatalogEngineRegistration, ClientError, ControlClient, DeviceButtons, DiagnosticMoveResponse,
-    ExecutorStatus, LicenseStatus, ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
+    ActivatedMotionProfile, CatalogEngineRegistration, ClientError, ControlClient, DeviceButtons,
+    DiagnosticMoveResponse, ExecutorStatus, LicenseStatus, ModelArtifact, ModelProject,
+    ModelSwitchResponse, ModelVersion, MotionProfile, MotionSampleInput, MotionSampleResult,
+    MotionSessionSummary,
 };
 use novasight_core::CaptureSelectionPreference;
 use novasight_runtime::{
     AppConfig, ConfigUpdate, CrosshairSnapshot, ModelIngressResult, ModelProbeInputMode,
-    ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
+    ModelProfileConfigureRequest, MotionProfileStatus, PreviewSnapshot, RuntimeSnapshot,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -75,6 +77,37 @@ enum Command {
         #[command(subcommand)]
         command: CrosshairCommand,
     },
+    /// Train, inspect, and hot-switch daemon-owned human trajectory profiles.
+    Motion {
+        #[command(subcommand)]
+        command: MotionCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MotionCommand {
+    /// Print the effective active trajectory source and immutable profile revision.
+    Status,
+    /// List persisted training sessions.
+    Sessions,
+    /// Create an empty training session.
+    CreateSession { name: String },
+    /// Add one browser-compatible captured sample from a JSON file.
+    AddSample {
+        session_id: String,
+        #[arg(long)]
+        sample: PathBuf,
+    },
+    /// Train a version-4 profile from the valid samples in a session.
+    Train { session_id: String, name: String },
+    /// List immutable trained profiles.
+    Profiles,
+    /// Atomically hot-activate one trained profile.
+    Activate { profile_id: String },
+    /// Activate the deterministic built-in minimum-jerk/Fitts trajectory.
+    Builtin,
+    /// Disable trajectory shaping and use the static controller.
+    Disable,
 }
 
 #[derive(Subcommand, Debug)]
@@ -260,6 +293,12 @@ enum CommandOutput {
     CaptureCapabilities(novasight_core::CaptureCapabilities),
     Preview(PreviewSnapshot),
     Crosshair(CrosshairSnapshot),
+    MotionStatus(MotionProfileStatus),
+    MotionSessions(Vec<MotionSessionSummary>),
+    MotionSample(MotionSampleResult),
+    MotionProfiles(Vec<MotionProfile>),
+    MotionProfile(MotionProfile),
+    MotionActivation(ActivatedMotionProfile),
     Json(serde_json::Value),
 }
 
@@ -495,6 +534,68 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Crosshair {
             command: CrosshairCommand::Clear,
         } => client.clear_crosshair().await.map(CommandOutput::Crosshair),
+        Command::Motion {
+            command: MotionCommand::Status,
+        } => client
+            .motion_profile_status()
+            .await
+            .map(CommandOutput::MotionStatus),
+        Command::Motion {
+            command: MotionCommand::Sessions,
+        } => client
+            .motion_sessions()
+            .await
+            .map(CommandOutput::MotionSessions),
+        Command::Motion {
+            command: MotionCommand::CreateSession { name },
+        } => client
+            .create_motion_session(&name)
+            .await
+            .map(|session| CommandOutput::MotionSessions(vec![session])),
+        Command::Motion {
+            command: MotionCommand::AddSample { session_id, sample },
+        } => {
+            let bytes = std::fs::read(&sample).map_err(|source| CliError::ReadMotionSample {
+                path: sample.clone(),
+                source,
+            })?;
+            let sample = serde_json::from_slice::<MotionSampleInput>(&bytes)
+                .map_err(CliError::DecodeMotionSample)?;
+            client
+                .add_motion_sample(&session_id, &sample)
+                .await
+                .map(CommandOutput::MotionSample)
+        }
+        Command::Motion {
+            command: MotionCommand::Train { session_id, name },
+        } => client
+            .train_motion_profile(&session_id, &name)
+            .await
+            .map(CommandOutput::MotionProfile),
+        Command::Motion {
+            command: MotionCommand::Profiles,
+        } => client
+            .motion_profiles()
+            .await
+            .map(CommandOutput::MotionProfiles),
+        Command::Motion {
+            command: MotionCommand::Activate { profile_id },
+        } => client
+            .activate_motion_profile(&profile_id)
+            .await
+            .map(CommandOutput::MotionActivation),
+        Command::Motion {
+            command: MotionCommand::Builtin,
+        } => client
+            .activate_builtin_motion()
+            .await
+            .map(CommandOutput::MotionStatus),
+        Command::Motion {
+            command: MotionCommand::Disable,
+        } => client
+            .disable_motion_profile()
+            .await
+            .map(CommandOutput::MotionStatus),
         Command::Preview {
             command: PreviewCommand::Off,
         } => client
@@ -527,6 +628,14 @@ enum CliError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to read motion sample {}: {source}", path.display())]
+    ReadMotionSample {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to decode motion sample: {0}")]
+    DecodeMotionSample(#[source] serde_json::Error),
 }
 
 impl CliError {
@@ -537,6 +646,8 @@ impl CliError {
             Self::ReadProfileRequest { .. } => "model_profile_request_read_failed",
             Self::DecodeProfileRequest(_) => "model_profile_request_invalid",
             Self::ReadLicenseKey { .. } => "license_key_read_failed",
+            Self::ReadMotionSample { .. } => "motion_sample_read_failed",
+            Self::DecodeMotionSample(_) => "motion_sample_invalid",
         }
     }
 }

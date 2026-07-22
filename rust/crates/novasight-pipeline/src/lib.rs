@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod crosshair;
+mod motion_profile;
 mod perception;
 mod preview;
 mod runtime;
@@ -18,6 +19,7 @@ pub use crosshair::{
     ControlReference, CrosshairConfig, CrosshairEpoch, CrosshairError, CrosshairFramePublisher,
     CrosshairHub, CrosshairObservation, CrosshairSnapshot, CrosshairTemplateSummary,
 };
+pub use motion_profile::{MotionProfileHub, MotionProfileSource, MotionProfileStatus};
 pub use perception::{
     ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionEvent,
     PerceptionMetrics, PerceptionModelContract, PerceptionSession, validate_parser_preset,

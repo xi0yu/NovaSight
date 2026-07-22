@@ -11,7 +11,8 @@ use novasight_core::{
     RuntimeEpoch,
 };
 use novasight_pipeline::{
-    CrosshairConfig, CrosshairError, CrosshairHub, PipelineConfig, PipelineRuntime, PipelineStatus,
+    CrosshairConfig, CrosshairError, CrosshairHub, MotionProfileHub, PipelineConfig,
+    PipelineRuntime, PipelineStatus,
 };
 
 #[derive(Debug)]
@@ -176,6 +177,56 @@ fn vision_verified_crosshair_changes_the_real_control_origin() {
     runtime.shutdown().unwrap();
     drop(observer);
     let _ = std::fs::remove_file(template_path);
+}
+
+#[test]
+fn hot_active_motion_profile_shapes_the_real_device_command_lane() {
+    let epoch = RuntimeEpoch(13);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let motion = MotionProfileHub::default();
+    motion.activate_builtin();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            motion_profiles: Some(motion),
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+
+    let batch = |generation, captured_at| {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, captured_at),
+            640,
+            640,
+            vec![Detection::new(generation, 0, 380.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
+        )
+        .unwrap()
+    };
+    ingress.submit(batch(1, 1_000_000_000)).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    assert!(
+        device.receipts().is_empty(),
+        "the first observation establishes the trajectory instead of emitting the static jump"
+    );
+
+    clock.0.store(1_038_000_000, Ordering::Release);
+    ingress.submit(batch(2, 1_030_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 1);
+    assert!(receipts[0].delta_x_counts > 0);
+    assert!(receipts[0].delta_x_counts < 600);
+    runtime.shutdown().unwrap();
 }
 
 fn publish_crosshair_samples(

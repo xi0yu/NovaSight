@@ -16,7 +16,7 @@ use novasight_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::CrosshairHub;
+use crate::{CrosshairHub, MotionProfileHub};
 use crate::{LatestSlot, TryPublishError};
 
 const STATUS_STARTING: u8 = 0;
@@ -74,6 +74,8 @@ pub struct PipelineConfig {
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
+    /// Hot-swappable immutable trajectory profile shared with the daemon.
+    pub motion_profiles: Option<MotionProfileHub>,
 }
 
 impl Default for PipelineConfig {
@@ -86,6 +88,7 @@ impl Default for PipelineConfig {
             output_interval_ms: 4,
             trigger_poll_interval_ms: None,
             crosshair: None,
+            motion_profiles: None,
         }
     }
 }
@@ -383,6 +386,7 @@ struct TargetedObservation {
     crosshair_y: f64,
     detection_confidence: f64,
     track_confidence: f64,
+    target_width_px: f64,
     inference_end_ns: u64,
     control_now_ns: u64,
 }
@@ -501,6 +505,7 @@ impl PipelineRuntime {
             Arc::clone(&shared),
             config.epoch,
             config.control,
+            config.motion_profiles.clone(),
         ) {
             Ok(handle) => handle,
             Err(error) => {
@@ -755,7 +760,7 @@ fn spawn_targeting_worker(
                         batch.stamp().captured_at.0,
                     );
                     let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
-                    let (target_id, aim_x, aim_y, detection_confidence) = match (
+                    let (target_id, aim_x, aim_y, detection_confidence, target_width_px) = match (
                         selection.target_object_id,
                         selection.target_track_id,
                         selection.target_class_id,
@@ -777,6 +782,7 @@ fn spawn_targeting_worker(
                                     aim_x,
                                     aim_y,
                                     f64::from(target.confidence()),
+                                    f64::from(target.width()),
                                 ),
                                 None => {
                                     shared.fault(
@@ -789,7 +795,7 @@ fn spawn_targeting_worker(
                         }
                         _ => {
                             let (center_x, center_y) = targeting_center;
-                            (None, center_x, center_y, 0.0)
+                            (None, center_x, center_y, 0.0, 1.0)
                         }
                     };
                     let (crosshair_x, crosshair_y) = targeting_center;
@@ -803,6 +809,7 @@ fn spawn_targeting_worker(
                         crosshair_y,
                         detection_confidence,
                         track_confidence,
+                        target_width_px,
                         inference_end_ns: now,
                         control_now_ns: now,
                     };
@@ -825,6 +832,7 @@ fn spawn_control_worker(
     shared: Arc<SharedState>,
     epoch: RuntimeEpoch,
     config: DualPhaseConfig,
+    motion_profiles: Option<MotionProfileHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
         .name("novasight-control".to_owned())
@@ -837,7 +845,7 @@ fn spawn_control_worker(
                         break;
                     }
                     let target_id = target.target_id.unwrap_or(0);
-                    let decision = control.calculate(ControlObservation {
+                    let observation = ControlObservation {
                         generation: target.stamp.generation.0,
                         frame_id: target.stamp.generation.0,
                         target_id,
@@ -852,7 +860,14 @@ fn spawn_control_worker(
                         track_confidence: target.track_confidence,
                         target_valid: target.target_id.is_some(),
                         trigger_active: shared.trigger_active.load(Ordering::Acquire),
-                    });
+                    };
+                    let active_profile =
+                        motion_profiles.as_ref().and_then(MotionProfileHub::active);
+                    let decision = control.calculate_with_profile(
+                        observation,
+                        active_profile.as_deref(),
+                        target.target_width_px,
+                    );
                     shared
                         .metrics
                         .control_decisions

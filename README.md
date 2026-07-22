@@ -282,6 +282,9 @@ novasightctl device status
 novasightctl device move 4 -2
 novasightctl crosshair status
 novasightctl crosshair learn
+novasightctl motion status
+novasightctl motion profiles
+novasightctl motion builtin
 ```
 
 License activation reads the key from a file so the secret is not exposed in
@@ -299,6 +302,18 @@ replace the geometric center for both target selection and control only when
 `crosshair.use_for_control` is also true. `GET /api/crosshair`,
 `POST /api/crosshair/learn`, `DELETE /api/crosshair/template`, the Studio, and
 `novasightctl crosshair` all read or mutate that same daemon-owned state.
+
+Human trajectory profiles are likewise daemon-owned. The Studio and
+`novasightctl motion` use the same `/api/motion/*` contract to create sessions,
+append bounded high-frequency samples, train version-4 profiles, and atomically
+switch the active immutable profile. Rust separates reaction delay from movement
+time, rejects low-quality paths, fits Fitts timing plus normalized speed and
+two-dimensional side curves, and stores them below
+`paths.data_dir/motion/{sessions,profiles}` using atomic replacement. The active
+profile shapes floating-point demand inside the control worker; FAR/NEAR
+per-axis limits and count quantization remain authoritative afterward. Disabling
+the profile is an exact return to static control, and the retained Python
+implementation remains available only as rollback/reference.
 
 ### Legacy CPU-bridge diagnostics
 

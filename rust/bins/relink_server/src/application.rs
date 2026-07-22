@@ -8,10 +8,13 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
+use novasight_core::control::humanized_motion::MotionRuntimeParameters;
+use novasight_pipeline::MotionProfileHub;
 use novasight_runtime::{
     ConfigService, LoadedApplication, OfflineModelJobRunner, RuntimeDependencies,
 };
 use novasight_store::model_catalog::SqliteModelCatalog;
+use novasight_store::motion_profile::MotionProfileRepository;
 use tracing_subscriber::EnvFilter;
 
 use crate::server;
@@ -165,6 +168,45 @@ pub async fn entry() -> ExitCode {
         }
     };
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
+    let motion_repository =
+        match MotionProfileRepository::open(loaded.config().paths.data_dir.join("motion")) {
+            Ok(repository) => repository,
+            Err(error) => {
+                eprintln!("MOTION_PROFILE_OPEN_FAILED: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let motion_tuning = &loaded.config().control.humanized_motion;
+    let motion_hub = MotionProfileHub::new(
+        motion_tuning.builtin_fitts_a_ms,
+        motion_tuning.builtin_fitts_b_ms,
+        motion_tuning.builtin_side_ratio,
+        MotionRuntimeParameters {
+            spatial_curve_enabled: motion_tuning.spatial_curve_enabled,
+            side_scale: motion_tuning.side_scale,
+            max_side_ratio: motion_tuning.max_side_ratio,
+            near_fade_start_px: motion_tuning.near_fade_start_px,
+            micro_bypass_px: motion_tuning.micro_bypass_px,
+            dynamic_rebase_ratio: motion_tuning.dynamic_rebase_ratio,
+            minimum_jerk_fallback: motion_tuning.minimum_jerk_fallback,
+            terminal_feedback_gain: motion_tuning.terminal_feedback_gain,
+            ..MotionRuntimeParameters::default()
+        },
+    );
+    if motion_tuning.enabled {
+        if motion_tuning.active_profile.is_empty() || motion_tuning.active_profile == "builtin" {
+            motion_hub.activate_builtin_startup();
+        } else if let Ok(profile) = motion_repository.profile(&motion_tuning.active_profile) {
+            if let Err(error) = motion_hub.activate_startup(Some(profile)) {
+                eprintln!("MOTION_PROFILE_INVALID: {error}");
+                return ExitCode::FAILURE;
+            }
+        } else {
+            // Match the established product contract: an enabled persisted
+            // switch never silently degrades to static control.
+            motion_hub.activate_builtin_startup();
+        }
+    }
 
     let (dependencies, mode) = if args.dry_run && args.live_perception {
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
@@ -221,7 +263,9 @@ pub async fn entry() -> ExitCode {
         }
     };
 
-    let dependencies = dependencies.with_model_jobs(model_jobs);
+    let dependencies = dependencies
+        .with_model_jobs(model_jobs)
+        .with_motion_profiles(motion_hub, motion_repository);
     match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
