@@ -27,9 +27,9 @@ class DeploymentCheckSummary:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate NovaSight Phase 9 deployment prerequisites.")
+    parser = argparse.ArgumentParser(description="Validate the NovaSight Rust daemon deployment.")
     parser.add_argument("--unit", default="deploy/novasight.service")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--base-url", default="http://127.0.0.1:5174")
     parser.add_argument("--header", action="append", default=[], help="Extra HTTP header as Name: Value.")
     parser.add_argument("--skip-api", action="store_true", help="Only check the systemd unit file.")
     args = parser.parse_args()
@@ -53,8 +53,7 @@ def run_deployment_check(
 ) -> DeploymentCheckSummary:
     unit = _read_unit(unit_path)
     checks = [
-        _unit_check(unit, "Service", "Type", "notify"),
-        _unit_check(unit, "Service", "WatchdogSec", "10"),
+        _unit_check(unit, "Service", "Type", "simple"),
         _unit_check(unit, "Service", "Restart", "on-failure"),
         _unit_check(unit, "Service", "StandardOutput", "journal"),
         _unit_check(unit, "Service", "StandardError", "journal"),
@@ -64,6 +63,7 @@ def run_deployment_check(
             unit,
             expected="NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock",
         ),
+        _exec_start_check(unit),
     ]
     if not skip_api:
         checks.extend(_api_checks(base_url=base_url, headers=headers))
@@ -113,12 +113,23 @@ def _environment_check(unit: configparser.ConfigParser, *, expected: str) -> Che
     )
 
 
+def _exec_start_check(unit: configparser.ConfigParser) -> CheckResult:
+    actual = unit.get("Service", "ExecStart", fallback="")
+    expected = "/opt/novasight/bin/novasightd"
+    return CheckResult(
+        name="unit.Service.ExecStart.novasightd",
+        passed=actual == expected or actual.startswith(f"{expected} "),
+        detail={
+            "actual": actual,
+            "expected_executable": expected,
+        },
+    )
+
+
 def _api_checks(*, base_url: str, headers: dict[str, str]) -> list[CheckResult]:
     health = _request_json(base_url, "/healthz", headers=headers)
-    system = _request_json(base_url, "/api/v1/system", headers=headers)
-    system_body = system.get("body") if isinstance(system.get("body"), dict) else {}
-    instance_lock = system_body.get("instance_lock") if isinstance(system_body, dict) else {}
-    process = system_body.get("process") if isinstance(system_body, dict) else {}
+    status = _request_json(base_url, "/api/v1/status", headers=headers)
+    status_body = status.get("body") if isinstance(status.get("body"), dict) else {}
     return [
         CheckResult(
             name="api.healthz",
@@ -126,30 +137,14 @@ def _api_checks(*, base_url: str, headers: dict[str, str]) -> list[CheckResult]:
             detail=health,
         ),
         CheckResult(
-            name="api.system.instance_lock",
+            name="api.v1.status.runtime_snapshot",
             passed=(
-                system.get("status_code") == 200
-                and isinstance(instance_lock, dict)
-                and instance_lock.get("configured") is True
-                and instance_lock.get("acquired") is True
-                and instance_lock.get("path") == "/run/novasight/instance.lock"
+                status.get("status_code") == 200
+                and isinstance(status_body.get("daemon"), dict)
+                and isinstance(status_body.get("pipeline"), dict)
+                and isinstance(status_body.get("subsystems"), dict)
             ),
-            detail={
-                "status_code": system.get("status_code"),
-                "instance_lock": instance_lock,
-            },
-        ),
-        CheckResult(
-            name="api.system.process_memory",
-            passed=(
-                system.get("status_code") == 200
-                and isinstance(process, dict)
-                and float(process.get("rss_mb", 0.0)) > 0.0
-            ),
-            detail={
-                "status_code": system.get("status_code"),
-                "process": process,
-            },
+            detail=status,
         ),
     ]
 

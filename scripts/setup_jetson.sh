@@ -141,7 +141,10 @@ else
 fi
 
 echo "==> NovaSight Jetson setup complete"
-echo "Start the backend with:"
+echo "Canonical Rust production build:"
+echo "  scripts/build_deepstream_bridge.sh"
+echo "  cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream"
+echo "  rust/target/release/novasightd --config rust/config/novasightd.example.yaml --check"
+echo "Legacy Python fallback remains available with:"
 echo "  source .venv/bin/activate"
-echo "  cp config/novasight.example.yaml config/novasight.yaml"
 echo "  python3 -m novasight --host 0.0.0.0 --port 5174"

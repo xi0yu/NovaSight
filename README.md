@@ -12,6 +12,9 @@ current authority document.
 
 ## Development
 
+The Rust daemon is the canonical backend. The Python package remains in-tree
+as a rollback path and for allowlisted offline model jobs.
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -19,10 +22,11 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-Start the backend API:
+Start the Rust backend API in explicit no-hardware mode:
 
 ```bash
-python3 -m novasight --host 127.0.0.1 --port 5174
+cargo run --manifest-path rust/Cargo.toml -p novasightd -- \
+  --config rust/config/novasightd.example.yaml --dry-run
 ```
 
 Start the web console in a second shell:
@@ -38,10 +42,15 @@ Open http://127.0.0.1:5173 during development. Vite proxies `/api` and
 Run the full local checks:
 
 ```bash
+cargo test --manifest-path rust/Cargo.toml --workspace
+cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 pytest -q
 pnpm --dir web typecheck
 pnpm --dir web build
 ```
+
+The rollback backend remains directly runnable with
+`python3 -m novasight --host 127.0.0.1 --port 5174`.
 
 ## Runtime Control API
 
@@ -157,8 +166,9 @@ runtime:
 Start with the example config:
 
 ```bash
-cp config/novasight.example.yaml config/novasight.yaml
-python3 -m novasight --host 0.0.0.0 --port 5174
+scripts/build_deepstream_bridge.sh
+cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
+rust/target/release/novasightd --config rust/config/novasightd.example.yaml
 ```
 
 The example config starts the active TensorRT deployment through nvinfer. kmNet

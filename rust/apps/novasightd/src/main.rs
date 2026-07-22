@@ -1,4 +1,8 @@
-//! Compatibility binary. Production deployment uses `relink_server`.
+//! Canonical NovaSight daemon executable.
+//!
+//! The composition code remains shared with the legacy `relink_server`
+//! executable so existing installations retain a rollback path without
+//! creating a second runtime implementation.
 
 use std::process::ExitCode;
 
