@@ -67,6 +67,82 @@ impl ConfigSchemaResponse {
                     ],
                 ),
                 section(
+                    "pipeline",
+                    "Rust 实时控制",
+                    vec![
+                        float(
+                            "pipeline.freshness_threshold_ms",
+                            "观测新鲜度上限",
+                            1.0,
+                            1_000.0,
+                            Some("ms"),
+                        ),
+                        float(
+                            "pipeline.near_threshold_px",
+                            "近目标阈值",
+                            0.0,
+                            10_000.0,
+                            Some("px"),
+                        ),
+                        float(
+                            "pipeline.control_gain",
+                            "像素到鼠标计数增益",
+                            0.000_001,
+                            1_000.0,
+                            None,
+                        ),
+                        integer(
+                            "pipeline.max_counts_per_axis",
+                            "单轴计数上限",
+                            1.0,
+                            i16::MAX as f64,
+                            Some("count"),
+                        ),
+                        float(
+                            "pipeline.residual_cap",
+                            "量化残差上限",
+                            0.0,
+                            1.0,
+                            Some("count"),
+                        ),
+                        float(
+                            "pipeline.target_debounce_distance_px",
+                            "目标锁定防抖距离",
+                            0.000_001,
+                            100_000.0,
+                            Some("px"),
+                        ),
+                        float(
+                            "pipeline.target_min_confidence",
+                            "控制目标最低置信度",
+                            0.0,
+                            1.0,
+                            None,
+                        ),
+                        integer(
+                            "pipeline.target_track_max_age",
+                            "目标最大丢失帧数",
+                            1.0,
+                            120.0,
+                            Some("frame"),
+                        ),
+                        integer(
+                            "pipeline.max_command_age_ms",
+                            "设备命令最大年龄",
+                            1.0,
+                            1_000.0,
+                            Some("ms"),
+                        ),
+                        integer(
+                            "pipeline.output_interval_ms",
+                            "输出调度间隔",
+                            1.0,
+                            10.0,
+                            Some("ms"),
+                        ),
+                    ],
+                ),
+                section(
                     "paths",
                     "持久化路径",
                     vec![
@@ -413,6 +489,7 @@ mod tests {
 
         assert_eq!(value["version"], 1);
         assert_eq!(value["values"]["server"]["port"], 5174);
+        assert_eq!(value["values"]["pipeline"]["max_command_age_ms"], 55);
         assert_eq!(value["values"]["inference"], Value::Null);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "inference"
@@ -420,6 +497,14 @@ mod tests {
                     field["path"] == "inference.backend"
                         && field["options"]
                             == serde_json::json!(["deepstream_nvinfer", "rust_tensor_rt"])
+                })
+        }));
+        assert!(value["sections"].as_array().unwrap().iter().any(|section| {
+            section["id"] == "pipeline"
+                && section["fields"].as_array().unwrap().iter().any(|field| {
+                    field["path"] == "pipeline.output_interval_ms"
+                        && field["min"] == 1.0
+                        && field["max"] == 10.0
                 })
         }));
         assert!(value["sections"].as_array().unwrap().iter().all(|section| {

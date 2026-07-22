@@ -142,6 +142,65 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
 }
 
 #[test]
+fn whole_count_demand_is_not_collapsed_to_the_fractional_residual_cap() {
+    let mut control = DualPhaseControl::new(DualPhaseConfig {
+        gain: 1.0,
+        max_counts_per_axis: 100,
+        residual_cap: 1.0,
+        ..DualPhaseConfig::default()
+    });
+    let decision = control.calculate(ControlObservation {
+        generation: 1,
+        frame_id: 1,
+        target_id: 1,
+        capture_ts_ns: 1_000_000_000,
+        inference_end_ts_ns: 1_001_000_000,
+        control_now_ns: 1_002_000_000,
+        aim_x: 400.0,
+        aim_y: 360.0,
+        crosshair_x: 320.0,
+        crosshair_y: 320.0,
+        target_valid: true,
+        trigger_active: true,
+    });
+
+    assert_eq!((decision.dx, decision.dy), (80, 40));
+    assert_eq!(decision.quantizer_residual_x, 0.0);
+    assert_eq!(decision.quantizer_residual_y, 0.0);
+}
+
+#[test]
+fn fractional_counts_accumulate_and_center_crossing_clears_the_old_direction() {
+    let mut control = DualPhaseControl::new(DualPhaseConfig {
+        gain: 1.0,
+        ..DualPhaseConfig::default()
+    });
+    let observation = |generation, aim_x| ControlObservation {
+        generation,
+        frame_id: generation,
+        target_id: 1,
+        capture_ts_ns: 1_000_000_000 + generation * 10_000_000,
+        inference_end_ts_ns: 1_001_000_000 + generation * 10_000_000,
+        control_now_ns: 1_002_000_000 + generation * 10_000_000,
+        aim_x,
+        aim_y: 320.0,
+        crosshair_x: 320.0,
+        crosshair_y: 320.0,
+        target_valid: true,
+        trigger_active: true,
+    };
+
+    let first = control.calculate(observation(1, 320.6));
+    assert_eq!(first.dx, 0);
+    assert_eq!(first.block_reason, BlockReason::DeadZone);
+    assert!((first.quantizer_residual_x - 0.6).abs() < 1e-9);
+
+    let crossed = control.calculate(observation(2, 319.4));
+    assert!(crossed.dx < 0);
+    assert!(crossed.quantizer_residual_x <= 0.0);
+}
+
+#[test]
 fn second_observation_derives_velocity_from_aim_motion() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let first = ControlObservation {

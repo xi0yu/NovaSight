@@ -150,24 +150,24 @@ impl Quantizer {
         residual_cap: f64,
     ) -> Result<i32, AppError> {
         if !demand.is_finite() {
+            self.reset();
             return Err(AppError::DeviceCountOutOfRange);
+        }
+        if self.accumulator != 0.0 && demand != 0.0 && self.accumulator * demand < 0.0 {
+            self.reset();
         }
         self.accumulator += demand;
-        if self.accumulator > residual_cap {
-            self.accumulator = residual_cap;
-        }
-        if self.accumulator < -residual_cap {
-            self.accumulator = -residual_cap;
-        }
-        let counts = self.accumulator.round();
+        let counts = self.accumulator.trunc().clamp(
+            -f64::from(max_counts_per_axis),
+            f64::from(max_counts_per_axis),
+        );
         if !counts.is_finite() || counts < f64::from(i32::MIN) || counts > f64::from(i32::MAX) {
+            self.reset();
             return Err(AppError::DeviceCountOutOfRange);
         }
-        let mut counts_int = counts as i32;
-        if counts_int.abs() > max_counts_per_axis {
-            counts_int = counts_int.signum() * max_counts_per_axis;
-        }
+        let counts_int = counts as i32;
         self.accumulator -= f64::from(counts_int);
+        self.accumulator = self.accumulator.clamp(-residual_cap, residual_cap);
         Ok(counts_int)
     }
 }
@@ -181,6 +181,10 @@ pub struct DualPhaseControl {
     last_generation: Option<u64>,
     last_frame_id: Option<u64>,
     last_capture_ts_ns: Option<u64>,
+    target_id: Option<u64>,
+    previous_error_x: f64,
+    previous_error_y: f64,
+    measured_error_history_valid: bool,
     last_aim: Option<(f64, f64)>,
     last_capture_for_velocity: Option<u64>,
     velocity_x: f64,
@@ -196,6 +200,10 @@ impl DualPhaseControl {
             last_generation: None,
             last_frame_id: None,
             last_capture_ts_ns: None,
+            target_id: None,
+            previous_error_x: 0.0,
+            previous_error_y: 0.0,
+            measured_error_history_valid: false,
             last_aim: None,
             last_capture_for_velocity: None,
             velocity_x: 0.0,
@@ -209,6 +217,10 @@ impl DualPhaseControl {
         self.last_generation = None;
         self.last_frame_id = None;
         self.last_capture_ts_ns = None;
+        self.target_id = None;
+        self.previous_error_x = 0.0;
+        self.previous_error_y = 0.0;
+        self.measured_error_history_valid = false;
         self.last_aim = None;
         self.last_capture_for_velocity = None;
         self.velocity_x = 0.0;
@@ -253,12 +265,28 @@ impl DualPhaseControl {
         {
             self.velocity_x = 0.0;
             self.velocity_y = 0.0;
+            self.last_aim = None;
+            self.last_capture_for_velocity = None;
+        }
+
+        if self
+            .target_id
+            .is_some_and(|target| target != observation.target_id)
+        {
+            self.release_trigger();
+            self.last_aim = None;
+            self.last_capture_for_velocity = None;
+            self.velocity_x = 0.0;
+            self.velocity_y = 0.0;
+            self.measured_error_history_valid = false;
         }
 
         if !observation.target_valid {
             self.last_generation = Some(observation.generation);
             self.last_frame_id = Some(observation.frame_id);
             self.last_capture_ts_ns = Some(observation.capture_ts_ns);
+            self.target_id = None;
+            self.measured_error_history_valid = false;
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::TargetInvalid);
         }
@@ -277,6 +305,14 @@ impl DualPhaseControl {
 
         let error_x = aim_x - observation.crosshair_x;
         let error_y = aim_y - observation.crosshair_y;
+        if self.measured_error_history_valid {
+            if crossed_center(self.previous_error_x, error_x) {
+                self.quantizer_x.reset();
+            }
+            if crossed_center(self.previous_error_y, error_y) {
+                self.quantizer_y.reset();
+            }
+        }
         let distance = error_x.hypot(error_y);
         let mode = if distance <= self.config.near_threshold_px {
             ControlMode::Near
@@ -314,14 +350,22 @@ impl DualPhaseControl {
         self.last_generation = Some(observation.generation);
         self.last_frame_id = Some(observation.frame_id);
         self.last_capture_ts_ns = Some(observation.capture_ts_ns);
+        self.target_id = Some(observation.target_id);
         self.last_aim = Some((aim_x, aim_y));
         self.last_capture_for_velocity = Some(observation.capture_ts_ns);
+        self.previous_error_x = error_x;
+        self.previous_error_y = error_y;
+        self.measured_error_history_valid = true;
 
         ControlDecision {
             dx,
             dy,
-            emit_allowed: true,
-            block_reason: BlockReason::None,
+            emit_allowed: dx != 0 || dy != 0,
+            block_reason: if dx == 0 && dy == 0 {
+                BlockReason::DeadZone
+            } else {
+                BlockReason::None
+            },
             quantizer_residual_x: self.quantizer_x.accumulator,
             quantizer_residual_y: self.quantizer_y.accumulator,
             mode,
@@ -365,4 +409,8 @@ impl DualPhaseControl {
             predicted_offset_y,
         )
     }
+}
+
+fn crossed_center(previous: f64, current: f64) -> bool {
+    (previous < 0.0 && current >= 0.0) || (previous > 0.0 && current <= 0.0)
 }

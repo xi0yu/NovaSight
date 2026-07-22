@@ -78,8 +78,43 @@ fn loads_the_complete_rust_owned_example() {
     assert_eq!(adapters.inference.deepstream_probe_element, "primary-infer");
     assert!(adapters.device.auto_connect);
     assert_eq!(adapters.device.send_timeout_ms, 25);
+    assert_eq!(adapters.pipeline.freshness_threshold_ms, 55.0);
+    assert_eq!(adapters.pipeline.max_command_age_ms, 55);
+    assert_eq!(adapters.pipeline.output_interval_ms, 4);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
+}
+
+#[test]
+fn production_does_not_silently_invent_rust_pipeline_parameters() {
+    let directory = TempDirectory::new();
+    let example =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let mut document: Value = serde_yaml::from_str(&fs::read_to_string(example).unwrap()).unwrap();
+    document
+        .as_mapping_mut()
+        .unwrap()
+        .remove(Value::String("pipeline".to_owned()));
+    let path = directory.join("missing-pipeline.yaml");
+    fs::write(&path, serde_yaml::to_string(&document).unwrap()).unwrap();
+
+    let config = YamlConfigRepository::load(path).unwrap();
+    let error = config.require_production_adapters().unwrap_err();
+
+    assert_eq!(error.field, "pipeline");
+    assert!(error.message.contains("must be explicit"));
+}
+
+#[test]
+fn invalid_rust_pipeline_safety_bounds_fail_during_load() {
+    let directory = TempDirectory::new();
+    let path = directory.join("invalid-pipeline.yaml");
+    fs::write(&path, "pipeline:\n  output_interval_ms: 11\n").unwrap();
+
+    let error = YamlConfigRepository::load(path).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("pipeline.output_interval_ms"));
 }
 
 #[test]

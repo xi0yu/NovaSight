@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use novasight_core::control::dual_phase_v2::DualPhaseConfig;
+use novasight_core::tracking::TargetingConfig;
 use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
 use novasight_pipeline::{
     ModelCandidate, ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
@@ -132,6 +134,20 @@ fn build_live_dependencies(
         clock,
         device,
         PipelineConfig {
+            targeting: TargetingConfig {
+                debounce_distance_px: adapters.pipeline.target_debounce_distance_px,
+                min_confidence: adapters.pipeline.target_min_confidence,
+                track_max_age: adapters.pipeline.target_track_max_age,
+            },
+            control: DualPhaseConfig {
+                freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,
+                near_threshold_px: adapters.pipeline.near_threshold_px,
+                gain: adapters.pipeline.control_gain,
+                max_counts_per_axis: adapters.pipeline.max_counts_per_axis,
+                residual_cap: adapters.pipeline.residual_cap,
+            },
+            max_command_age_ns: adapters.pipeline.max_command_age_ms * 1_000_000,
+            output_interval_ms: adapters.pipeline.output_interval_ms,
             trigger_poll_interval_ms,
             ..PipelineConfig::default()
         },

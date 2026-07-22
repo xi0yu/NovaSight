@@ -15,6 +15,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub replay: ReplayConfig,
     #[serde(default)]
+    pub pipeline: PipelineRuntimeConfig,
+    #[serde(default)]
     pub paths: PathConfig,
     #[serde(default)]
     pub capture: Option<CaptureConfig>,
@@ -33,6 +35,7 @@ impl Default for AppConfig {
             revision: 0,
             server: ServerConfig::default(),
             replay: ReplayConfig::default(),
+            pipeline: PipelineRuntimeConfig::default(),
             paths: PathConfig::default(),
             capture: None,
             inference: None,
@@ -44,6 +47,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
+        self.pipeline.validate()?;
         if let Some(capture) = &self.capture {
             capture.validate()?;
         }
@@ -70,10 +74,17 @@ impl AppConfig {
             ConfigValidationError::new("hardware", "section is required in production")
         })?;
         self.validate_explicit_adapter_fields()?;
+        if !self.pipeline.production_fields_explicit {
+            return Err(ConfigValidationError::new(
+                "pipeline",
+                "all production runtime fields must be explicit in YAML",
+            ));
+        }
         Ok(ProductionAdapterConfig {
             capture,
             inference,
             device,
+            pipeline: &self.pipeline,
         })
     }
 
@@ -114,6 +125,172 @@ pub struct ProductionAdapterConfig<'a> {
     pub capture: &'a CaptureConfig,
     pub inference: &'a InferenceConfig,
     pub device: &'a DeviceConfig,
+    pub pipeline: &'a PipelineRuntimeConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PipelineRuntimeConfig {
+    #[serde(default = "default_freshness_threshold_ms")]
+    pub freshness_threshold_ms: f64,
+    #[serde(default = "default_near_threshold_px")]
+    pub near_threshold_px: f64,
+    #[serde(default = "default_control_gain")]
+    pub control_gain: f64,
+    #[serde(default = "default_max_counts_per_axis")]
+    pub max_counts_per_axis: i32,
+    #[serde(default = "default_residual_cap")]
+    pub residual_cap: f64,
+    #[serde(default = "default_target_debounce_distance_px")]
+    pub target_debounce_distance_px: f64,
+    #[serde(default = "default_target_min_confidence")]
+    pub target_min_confidence: f32,
+    #[serde(default = "default_target_track_max_age")]
+    pub target_track_max_age: u64,
+    #[serde(default = "default_max_command_age_ms")]
+    pub max_command_age_ms: u64,
+    #[serde(default = "default_output_interval_ms")]
+    pub output_interval_ms: u64,
+    #[serde(skip)]
+    pub(crate) production_fields_explicit: bool,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for PipelineRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            freshness_threshold_ms: default_freshness_threshold_ms(),
+            near_threshold_px: default_near_threshold_px(),
+            control_gain: default_control_gain(),
+            max_counts_per_axis: default_max_counts_per_axis(),
+            residual_cap: default_residual_cap(),
+            target_debounce_distance_px: default_target_debounce_distance_px(),
+            target_min_confidence: default_target_min_confidence(),
+            target_track_max_age: default_target_track_max_age(),
+            max_command_age_ms: default_max_command_age_ms(),
+            output_interval_ms: default_output_interval_ms(),
+            production_fields_explicit: false,
+            legacy: BTreeMap::new(),
+        }
+    }
+}
+
+impl PipelineRuntimeConfig {
+    fn validate(&self) -> Result<(), ConfigValidationError> {
+        validate_finite_range(
+            "pipeline.freshness_threshold_ms",
+            self.freshness_threshold_ms,
+            1.0,
+            1_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.near_threshold_px",
+            self.near_threshold_px,
+            0.0,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.control_gain",
+            self.control_gain,
+            0.000_001,
+            1_000.0,
+        )?;
+        if !(1..=i32::from(i16::MAX)).contains(&self.max_counts_per_axis) {
+            return Err(ConfigValidationError::new(
+                "pipeline.max_counts_per_axis",
+                format!("must be within 1..={}", i16::MAX),
+            ));
+        }
+        validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
+        validate_finite_range(
+            "pipeline.target_debounce_distance_px",
+            self.target_debounce_distance_px,
+            0.000_001,
+            100_000.0,
+        )?;
+        if !self.target_min_confidence.is_finite()
+            || !(0.0..=1.0).contains(&self.target_min_confidence)
+        {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_min_confidence",
+                "must be finite and within 0..=1",
+            ));
+        }
+        if !(1..=120).contains(&self.target_track_max_age) {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_track_max_age",
+                "must be within 1..=120 frames",
+            ));
+        }
+        if !(1..=1_000).contains(&self.max_command_age_ms) {
+            return Err(ConfigValidationError::new(
+                "pipeline.max_command_age_ms",
+                "must be within 1..=1000 ms",
+            ));
+        }
+        if !(1..=10).contains(&self.output_interval_ms) {
+            return Err(ConfigValidationError::new(
+                "pipeline.output_interval_ms",
+                "must be within 1..=10 ms",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_finite_range(
+    field: &'static str,
+    value: f64,
+    minimum: f64,
+    maximum: f64,
+) -> Result<(), ConfigValidationError> {
+    if !value.is_finite() || value < minimum || value > maximum {
+        return Err(ConfigValidationError::new(
+            field,
+            format!("must be finite and within {minimum}..={maximum}"),
+        ));
+    }
+    Ok(())
+}
+
+const fn default_freshness_threshold_ms() -> f64 {
+    55.0
+}
+
+const fn default_near_threshold_px() -> f64 {
+    12.0
+}
+
+const fn default_control_gain() -> f64 {
+    1.0
+}
+
+const fn default_max_counts_per_axis() -> i32 {
+    9_980
+}
+
+const fn default_residual_cap() -> f64 {
+    1.0
+}
+
+const fn default_target_debounce_distance_px() -> f64 {
+    64.0
+}
+
+const fn default_target_min_confidence() -> f32 {
+    0.5
+}
+
+const fn default_target_track_max_age() -> u64 {
+    5
+}
+
+const fn default_max_command_age_ms() -> u64 {
+    55
+}
+
+const fn default_output_interval_ms() -> u64 {
+    4
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

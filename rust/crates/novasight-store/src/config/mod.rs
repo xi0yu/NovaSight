@@ -4,7 +4,7 @@ mod repository;
 pub use model::{
     AppConfig, CaptureConfig, CaptureMemory, CapturePreference, ComputeDevice,
     ConfigValidationError, DeepStreamBackend, DeviceBackend, DeviceConfig, InferenceBackend,
-    InferenceConfig, InferenceInputSource, PathConfig, ProductionAdapterConfig, QueueLeaky,
-    ReplayConfig, ServerConfig,
+    InferenceConfig, InferenceInputSource, PathConfig, PipelineRuntimeConfig,
+    ProductionAdapterConfig, QueueLeaky, ReplayConfig, ServerConfig,
 };
 pub use repository::{ConfigError, ConfigRepository, YamlConfigRepository};

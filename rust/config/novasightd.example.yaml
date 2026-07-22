@@ -8,6 +8,19 @@ replay:
   enabled: true
   frame_interval_ms: 16
   output_gate_open: false
+# This is deliberately smaller than the legacy Python `control` section:
+# every field below is consumed by the current Rust production hot path.
+pipeline:
+  freshness_threshold_ms: 55.0
+  near_threshold_px: 12.0
+  control_gain: 1.0
+  max_counts_per_axis: 9980
+  residual_cap: 1.0
+  target_debounce_distance_px: 64.0
+  target_min_confidence: 0.5
+  target_track_max_age: 5
+  max_command_age_ms: 55
+  output_interval_ms: 4
 capture:
   device: /dev/video0
   backend: deepstream_nvinfer

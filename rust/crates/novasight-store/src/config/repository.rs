@@ -351,6 +351,22 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 }
 
 fn mark_production_fields(document: &Value, config: &mut AppConfig) {
+    config.pipeline.production_fields_explicit = section_has_fields(
+        document,
+        "pipeline",
+        &[
+            "freshness_threshold_ms",
+            "near_threshold_px",
+            "control_gain",
+            "max_counts_per_axis",
+            "residual_cap",
+            "target_debounce_distance_px",
+            "target_min_confidence",
+            "target_track_max_age",
+            "max_command_age_ms",
+            "output_interval_ms",
+        ],
+    );
     if let Some(capture) = &mut config.capture {
         capture.production_fields_explicit = section_has_fields(
             document,
