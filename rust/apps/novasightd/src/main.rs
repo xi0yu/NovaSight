@@ -7,10 +7,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use novasight_runtime::LoadedApplication;
+use novasight_runtime::{LoadedApplication, RuntimeDependencies};
 use tracing_subscriber::EnvFilter;
 
 mod server;
+
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
+mod live_perception;
 
 #[derive(Parser, Debug)]
 #[command(name = "novasightd", about = "NovaSight runtime daemon")]
@@ -26,6 +29,11 @@ struct Args {
     /// Use an in-memory recording output adapter; never sends hardware commands.
     #[arg(long)]
     dry_run: bool,
+
+    /// Run the real Jetson DeepStream perception chain while keeping hardware
+    /// output on the in-memory recording adapter.
+    #[arg(long, requires = "dry_run")]
+    live_perception: bool,
 }
 
 fn init_logging() {
@@ -64,7 +72,29 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match server::run_dry_run(loaded).await {
+    let dependencies = if args.live_perception {
+        #[cfg(all(feature = "deepstream", target_os = "linux"))]
+        {
+            match live_perception::build_live_recording_dependencies(loaded.config()) {
+                Ok(dependencies) => dependencies,
+                Err(error) => {
+                    eprintln!("LIVE_PERCEPTION_CONFIG_INVALID: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+        {
+            eprintln!(
+                "LIVE_PERCEPTION_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
+            );
+            return ExitCode::FAILURE;
+        }
+    } else {
+        RuntimeDependencies::recording()
+    };
+
+    match server::run_dry_run(loaded, dependencies).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

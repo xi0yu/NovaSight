@@ -7,8 +7,8 @@ use novasight_core::{
 use thiserror::Error;
 
 use crate::{
-    ABI_VERSION, FRAME_DETECTIONS_TRUNCATED, FRAME_HAS_UNTRACKED_OBJECT, FRAME_INFERENCE_DONE,
-    FRAME_META_PTS_VALID, FrameSnapshot, MAX_DETECTIONS,
+    ABI_VERSION, FRAME_DETECTIONS_TRUNCATED, FRAME_INFERENCE_DONE, FRAME_META_PTS_VALID,
+    FrameSnapshot, MAX_DETECTIONS,
 };
 
 const DEEPSTREAM_UNTRACKED_OBJECT_ID: u64 = u64::MAX;
@@ -134,24 +134,25 @@ pub fn admit_snapshot(
             count: snapshot.invalid_object_count,
         });
     }
-    if snapshot.has_flag(FRAME_HAS_UNTRACKED_OBJECT) {
-        return Err(AdmissionError::UntrackedObjects);
-    }
-
     let mut detections = Vec::with_capacity(detection_count);
     let mut filtered_without_detector_confidence = 0_u32;
-    for detection in snapshot.detections() {
-        if detection.object_id == DEEPSTREAM_UNTRACKED_OBJECT_ID {
-            return Err(AdmissionError::UntrackedObjectPayload);
-        }
+    for (candidate_index, detection) in snapshot.detections().iter().enumerate() {
+        // Primary nvinfer detections legitimately carry UNTRACKED_OBJECT_ID.
+        // Give those candidates a frame-local identity; temporal association
+        // remains owned by the Rust targeting lane rather than nvtracker.
+        let object_id = if detection.object_id == DEEPSTREAM_UNTRACKED_OBJECT_ID {
+            u64::try_from(candidate_index).expect("snapshot capacity fits in u64")
+        } else {
+            detection.object_id
+        };
         let class_id =
             u32::try_from(detection.class_id).map_err(|_| AdmissionError::NegativeClassId {
-                object_id: detection.object_id,
+                object_id,
                 class_id: detection.class_id,
             })?;
         if detection.component_id != context.inference_component_id {
             return Err(AdmissionError::ComponentMismatch {
-                object_id: detection.object_id,
+                object_id,
                 expected: context.inference_component_id,
                 actual: detection.component_id,
             });
@@ -166,7 +167,7 @@ pub fn admit_snapshot(
             continue;
         }
         detections.push(CoreDetection::new(
-            detection.object_id,
+            object_id,
             class_id,
             detection.left,
             detection.top,
@@ -224,10 +225,6 @@ pub enum AdmissionError {
     Truncated { omitted: u32 },
     #[error("DeepStream frame contained {count} invalid object metadata entries")]
     InvalidObjectMetadata { count: u32 },
-    #[error("DeepStream frame contains untracked objects; stable object IDs are required")]
-    UntrackedObjects,
-    #[error("DeepStream object payload uses UNTRACKED_OBJECT_ID without a consistent frame flag")]
-    UntrackedObjectPayload,
     #[error("DeepStream object {object_id} has negative class ID {class_id}")]
     NegativeClassId { object_id: u64, class_id: i32 },
     #[error(
@@ -256,8 +253,6 @@ impl AdmissionError {
             Self::DetectionCount { .. } => "deepstream_detection_count_invalid",
             Self::Truncated { .. } => "deepstream_detections_truncated",
             Self::InvalidObjectMetadata { .. } => "deepstream_object_metadata_invalid",
-            Self::UntrackedObjects => "deepstream_objects_untracked",
-            Self::UntrackedObjectPayload => "deepstream_object_id_untracked",
             Self::NegativeClassId { .. } => "deepstream_class_id_invalid",
             Self::ComponentMismatch { .. } => "deepstream_component_mismatch",
             Self::Domain(_) => "deepstream_detection_invalid",

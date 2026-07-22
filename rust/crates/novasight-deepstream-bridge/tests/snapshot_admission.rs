@@ -107,14 +107,25 @@ fn requires_clock_evidence_and_rejects_future_pts() {
 }
 
 #[test]
-fn rejects_untracked_sentinel_even_when_the_aggregate_flag_is_missing() {
+fn assigns_frame_local_candidate_identity_to_primary_detector_objects() {
     let mut snapshot = valid_snapshot();
+    snapshot.flags |= FRAME_HAS_UNTRACKED_OBJECT;
+    snapshot.detection_count = 2;
     snapshot.detections[0].object_id = u64::MAX;
+    snapshot.detections[1] = Detection {
+        object_id: u64::MAX,
+        left: 300.0,
+        ..snapshot.detections[0]
+    };
 
-    assert_eq!(
-        admit_snapshot(&snapshot, context()),
-        Err(AdmissionError::UntrackedObjectPayload)
-    );
+    let admitted = admit_snapshot(&snapshot, context()).expect("admit detector candidates");
+    let identities: Vec<_> = admitted
+        .batch()
+        .detections()
+        .iter()
+        .map(|detection| detection.object_id())
+        .collect();
+    assert_eq!(identities, [0, 1]);
 }
 
 #[test]
@@ -144,14 +155,6 @@ fn rejects_incomplete_ambiguous_or_lossy_vendor_metadata() {
                 value
             },
             AdmissionError::InvalidObjectMetadata { count: 1 },
-        ),
-        (
-            {
-                let mut value = valid_snapshot();
-                value.flags |= FRAME_HAS_UNTRACKED_OBJECT;
-                value
-            },
-            AdmissionError::UntrackedObjects,
         ),
     ] {
         assert_eq!(admit_snapshot(&snapshot, context()), Err(expected));

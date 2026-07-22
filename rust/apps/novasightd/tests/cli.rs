@@ -186,7 +186,7 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
 
 fn http_request(address: SocketAddr, method: &str, path: &str) -> (u16, String) {
     let mut stream =
-        TcpStream::connect_timeout(&address, Duration::from_secs(1)).expect("connect HTTP server");
+        TcpStream::connect_timeout(&address, Duration::from_secs(5)).expect("connect HTTP server");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set read timeout");

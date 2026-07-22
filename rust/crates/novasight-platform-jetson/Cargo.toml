@@ -4,5 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+deepstream = [
+  "dep:crossbeam-queue",
+  "dep:gstreamer",
+  "dep:novasight-deepstream-bridge",
+  "dep:novasight-pipeline",
+  "novasight-deepstream-bridge/ffi",
+]
+
 [dependencies]
 novasight-core = { path = "../novasight-core" }
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+crossbeam-queue = { workspace = true, optional = true }
+gstreamer = { workspace = true, optional = true }
+novasight-deepstream-bridge = { path = "../novasight-deepstream-bridge", optional = true }
+novasight-pipeline = { path = "../novasight-pipeline", optional = true }

@@ -10,7 +10,10 @@ use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
 
-pub(super) async fn run_dry_run(loaded: LoadedApplication) -> Result<(), DaemonRunError> {
+pub(super) async fn run_dry_run(
+    loaded: LoadedApplication,
+    dependencies: RuntimeDependencies,
+) -> Result<(), DaemonRunError> {
     let host = loaded.config().server.host.clone();
     let port = loaded.config().server.port;
     let control_socket = loaded.config().server.control_socket.clone();
@@ -27,7 +30,7 @@ pub(super) async fn run_dry_run(loaded: LoadedApplication) -> Result<(), DaemonR
     let (control_listener, _control_socket_guard, _control_directory_lock) =
         bind_control_socket(&control_socket).await?;
     let mut signals = ShutdownSignals::register()?;
-    let application = loaded.start(RuntimeDependencies::recording());
+    let application = loaded.start(dependencies);
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
     let router =
         build_control_router_with_shutdown(application.runtime(), Some(server_shutdown_rx.clone()));
