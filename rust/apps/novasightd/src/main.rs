@@ -1,8 +1,7 @@
 //! Canonical NovaSight daemon executable.
 //!
-//! The composition code remains shared with the legacy `relink_server`
-//! executable so existing installations retain a rollback path without
-//! creating a second runtime implementation.
+//! The composition code lives in the `relink-server` library crate, but this
+//! is the only server executable. Legacy Python remains the rollback path.
 
 use std::process::ExitCode;
 

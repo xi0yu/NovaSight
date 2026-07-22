@@ -2,12 +2,12 @@
 
 状态：已批准设计  
 日期：2026-07-21  
-目标入口：`rust/bins/relink_server`  
+目标入口：`rust/apps/novasightd`
 适用范围：现有 Python/FastAPI 在线后端、DeepStream 实时链、控制算法、设备输出、配置、模型与 Studio 控制面
 
 ## 1. 决策摘要
 
-NovaSight 采用分阶段完整迁移。最终 `relink_server` 是唯一生产入口并独占 HTTP/WS、Runtime、DeepStream、targeting、control、device、配置与模型在线状态。旧 Python/C++ 源码和测试全部保留；Python 仅作为由 Rust 受控启动的离线模型转换、inspection、probe 和 doctor 工具，不作为常驻在线 sidecar。
+NovaSight 采用分阶段完整迁移。最终 `novasightd` 是唯一生产入口并独占 HTTP/WS、Runtime、DeepStream、targeting、control、device、配置与模型在线状态。旧 Python/C++ 源码和测试全部保留；Python 仅作为由 Rust 受控启动的离线模型转换、inspection、probe 和 doctor 工具，不作为常驻在线 sidecar。
 
 生产实现整合进现有根 `rust/` workspace，不继续扩展 `base/relink_server` 原型。`base/relink_server` 原样保留作为历史设计和依赖验证参考；根 workspace 只保留一个 `Cargo.lock`。
 
@@ -53,13 +53,11 @@ rust/
 ├── Cargo.lock
 ├── config/
 │   └── novasightd.example.yaml
+├── apps/
+│   ├── novasightd/
+│   └── novasightctl/
 ├── bins/
-│   └── relink_server/
-│       ├── Cargo.toml
-│       └── src/
-│           ├── main.rs
-│           ├── bootstrap.rs
-│           └── shutdown.rs
+│   └── relink_server/        # composition library; autobins=false
 └── crates/
     ├── novasight-core/
     │   └── src/
@@ -110,12 +108,12 @@ rust/
 - `novasight-api`：只因 HTTP/WS 契约、DTO、鉴权和 compatibility projection 变化而变化。
 - `novasight-store`：只因 YAML/SQLite/License/模型目录、schema migration 和离线 job 协议变化而变化。
 - `novasight-platform-jetson`：只因 Jetson、GStreamer、DeepStream、CUDA、TensorRT、kmNet 或 systemd adapter 变化而变化。所有 vendor `unsafe` 在此 crate 或专用 bridge crate 内。
-- `relink_server`：唯一 composition root；只负责加载配置、执行 migration、创建 adapter、启动 API/Runtime 和协调 shutdown，不包含业务判断。
+- `novasightd`：唯一 executable；共享的 `relink-server` library composition root 只负责加载配置、执行 migration、创建 adapter、启动 API/Runtime 和协调 shutdown，不包含业务判断。
 
 ### 3.2 依赖规则
 
 ```text
-relink_server binary
+novasightd binary
   ├── novasight-api
   ├── novasight-store
   ├── novasight-platform-jetson
@@ -360,9 +358,9 @@ Studio 的基础在线控制也已直接接到同一个新 Rust `RuntimeHandle`�
 
 ### Phase 7：生产入口切换
 
-修改 `deploy/novasight.service` 使用 `relink_server`。旧 Python/C++ 文件、测试和工具全部保留，但不再拥有在线状态。阶段 1–6 默认 replay/shadow/DryRun，禁止 Python 和 Rust 同时拥有设备发送权。
+修改 `deploy/novasight.service` 使用 `novasightd`。旧 Python/C++ 文件、测试和工具全部保留，但不再拥有在线状态。阶段 1–6 默认 replay/shadow/DryRun，禁止 Python 和 Rust 同时拥有设备发送权。
 
-当前 production composition root 已物理归属 `relink-server` library；`relink_server` 是唯一生产 binary，`novasightd` 反向依赖该 library，仅作为非部署兼容壳。两者复用同一套参数、preflight、RuntimeSupervisor、Axum/Unix socket 控制面和 DeepStream/kmNet feature；旧 Phase 1 replay bootstrap 文件保留为迁移证据但不再被 binary 编译。systemd service 已切换到 `/opt/novasight/bin/relink_server`，使用 `Type=simple`（daemon 当前不伪装 sd_notify/watchdog 支持），并由 systemd 创建 `/run/novasight`、`/var/lib/novasight` 和日志目录。正式 Jetson 构建必须对 `relink-server` 启用 `deepstream` feature；`experimental-kmnet-native` 仍遵循 Phase 4 的显式证据门。
+当前 production composition root 已物理归属 `relink-server` library，`novasightd` 是唯一 server binary；library crate 不再生成第二个可启动服务入口。systemd、Web 与 `novasightctl` 复用同一套参数、preflight、RuntimeSupervisor、Axum/Unix socket 控制面和 DeepStream/kmNet feature。旧 Phase 1 replay 文档保留为迁移证据，旧 Python 代码保留为商业回滚资产。systemd service 使用版本化 `/opt/novasight/current/bin/novasightd`，并由 systemd 创建 `/run/novasight`、`/var/lib/novasight` 和日志目录。正式 Jetson 构建必须对 `novasightd` 启用 `deepstream` feature；`experimental-kmnet-native` 仍遵循 Phase 4 的显式证据门。
 
 ## 13. 验证策略
 
@@ -401,7 +399,7 @@ Studio 的基础在线控制也已直接接到同一个新 Rust `RuntimeHandle`�
 
 ## 14. Definition of Done
 
-- `relink_server` 是唯一在线入口，在线主链不需要 Python 进程。
+- `novasightd` 是唯一在线入口；除 daemon-owned kmNet 隔离 helper 外，在线视觉与控制主链不需要 Python 进程。
 - 现有 Studio 主流程、YAML、SQLite、模型和 License 原地兼容。
 - RuntimeManager 是 Run Intent、Runtime Phase 和 Runtime Epoch 的唯一 owner。
 - 所有 frame/batch/command 携带 epoch、generation、monotonic timing 和 bounded age。
