@@ -13,6 +13,7 @@ path = "src/main.rs"
 default = []
 deepstream = ["relink-server/deepstream"]
 cuda-preprocess = ["deepstream", "relink-server/cuda-preprocess"]
+tensorrt = ["cuda-preprocess", "relink-server/tensorrt"]
 experimental-kmnet-native = ["deepstream", "relink-server/experimental-kmnet-native"]
 
 [dependencies]

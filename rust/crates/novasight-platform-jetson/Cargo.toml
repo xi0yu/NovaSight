@@ -18,6 +18,11 @@ cuda-preprocess = [
   "dep:novasight-jetson-preprocess",
   "novasight-jetson-preprocess/ffi",
 ]
+tensorrt = [
+  "cuda-preprocess",
+  "dep:novasight-tensorrt",
+  "novasight-tensorrt/ffi",
+]
 
 [dependencies]
 novasight-core = { path = "../novasight-core" }
@@ -30,4 +35,5 @@ crossbeam-queue = { workspace = true, optional = true }
 gstreamer = { workspace = true, optional = true }
 novasight-deepstream-bridge = { path = "../novasight-deepstream-bridge", optional = true }
 novasight-jetson-preprocess = { path = "../novasight-jetson-preprocess", optional = true }
+novasight-tensorrt = { path = "../novasight-tensorrt", optional = true }
 novasight-pipeline = { path = "../novasight-pipeline", optional = true }

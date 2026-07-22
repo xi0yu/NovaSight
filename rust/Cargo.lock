@@ -974,6 +974,7 @@ dependencies = [
  "novasight-deepstream-bridge",
  "novasight-jetson-preprocess",
  "novasight-pipeline",
+ "novasight-tensorrt",
  "serde",
  "serde_json",
  "thiserror",
@@ -1015,6 +1016,15 @@ dependencies = [
  "sha2",
  "thiserror",
  "xattr",
+]
+
+[[package]]
+name = "novasight-tensorrt"
+version = "0.1.0"
+dependencies = [
+ "novasight-core",
+ "novasight-jetson-preprocess",
+ "thiserror",
 ]
 
 [[package]]

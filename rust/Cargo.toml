@@ -7,6 +7,7 @@ members = [
   "crates/novasight-core",
   "crates/novasight-deepstream-bridge",
   "crates/novasight-jetson-preprocess",
+  "crates/novasight-tensorrt",
   "crates/novasight-pipeline",
   "crates/novasight-platform-jetson",
   "crates/novasight-runtime",

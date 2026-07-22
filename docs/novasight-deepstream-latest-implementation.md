@@ -310,9 +310,20 @@ This integration reuses the existing production Jetson CUDA implementation in
 `novasight_jetson_preprocess_native`; it does not introduce a second CUDA
 kernel. The native ABI accepts both the legacy Python `appsink` source and the
 Rust `deepstream_pad` source while keeping the strongly-held buffer alive.
-RuntimeSupervisor consumption, TensorRT context ownership, and decode/NMS are
-still separate later steps. Until all three are connected and verified on the
-target Jetson, model probe `input_mode=latest` remains fail-closed with 409.
+RuntimeSupervisor consumption and decode/NMS are still separate later steps.
+Until both are connected and verified on the target Jetson, model probe
+`input_mode=latest` remains fail-closed with 409.
+
+The next runtime seam now lives in `native/tensorrt-runtime` and the Rust
+`novasight-tensorrt` crate. Its production Jetson implementation performs real
+engine deserialization, validates one `[1,3,H,W]` FP16/FP32 input, binds the
+preprocessed external CUDA pointer, calls `enqueueV3`, copies every resolved
+output into runtime-owned pinned host memory, and synchronizes the owner stream.
+`CudaTensorRtOwner` composes this with `CudaFramePreprocessor`; a returned
+`ExecutionOutputs` borrow prevents another enqueue from overwriting output
+buffers while decode reads them. Decoder/NMS selection and RuntimeSupervisor
+publication remain deliberately fail-closed until the manifest-driven decoder
+registry is connected.
 
 The committed native layer contains a portable exchange state machine:
 
