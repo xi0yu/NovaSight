@@ -109,66 +109,6 @@ pub async fn entry() -> ExitCode {
         }
     };
 
-    if args.check {
-        if args.dry_run {
-            if let Err(error) = loaded.config().validate_configured_adapters() {
-                eprintln!("PREFLIGHT_CONFIG_INVALID: {error}");
-                return ExitCode::FAILURE;
-            }
-            println!(
-                "PASS mode=dry_run config={} model_ingress_helper=ready hardware_not_started=true",
-                args.config.display()
-            );
-            return ExitCode::SUCCESS;
-        }
-        if let Err(error) = loaded.config().require_production_adapters() {
-            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
-            return ExitCode::FAILURE;
-        }
-        #[cfg(all(feature = "deepstream", target_os = "linux"))]
-        {
-            let model_catalog = match SqliteModelCatalog::open_with_model_root(
-                &loaded.config().paths.database,
-                &loaded.config().paths.model_dir,
-            ) {
-                Ok(catalog) => catalog,
-                Err(error) => {
-                    eprintln!("MODEL_CATALOG_OPEN_FAILED: {error}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            if let Err(error) =
-                live_perception::preflight_live_production(loaded.config(), &model_catalog)
-            {
-                eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
-                return ExitCode::FAILURE;
-            }
-            println!(
-                "PASS mode=production config={} model_ingress_helper=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true capture_not_started=true pointer_not_connected=true",
-                args.config.display()
-            );
-            return ExitCode::SUCCESS;
-        }
-        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
-        {
-            eprintln!(
-                "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
-            );
-            return ExitCode::FAILURE;
-        }
-    }
-
-    let model_catalog = match SqliteModelCatalog::open_with_model_root(
-        &loaded.config().paths.database,
-        &loaded.config().paths.model_dir,
-    ) {
-        Ok(catalog) => catalog,
-        Err(error) => {
-            eprintln!("MODEL_CATALOG_OPEN_FAILED: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
     let motion_repository =
         match MotionProfileRepository::open(loaded.config().paths.data_dir.join("motion")) {
             Ok(repository) => repository,
@@ -197,18 +137,87 @@ pub async fn entry() -> ExitCode {
     if motion_tuning.enabled {
         if motion_tuning.active_profile.is_empty() || motion_tuning.active_profile == "builtin" {
             motion_hub.activate_builtin_startup();
-        } else if let Ok(profile) = motion_repository.profile(&motion_tuning.active_profile) {
+        } else {
+            let profile = match motion_repository.profile(&motion_tuning.active_profile) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    eprintln!(
+                        "MOTION_PROFILE_LOAD_FAILED: profile {}: {error}",
+                        motion_tuning.active_profile
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             if let Err(error) = motion_hub.activate_startup(Some(profile)) {
-                eprintln!("MOTION_PROFILE_INVALID: {error}");
+                eprintln!(
+                    "MOTION_PROFILE_INVALID: profile {}: {error}",
+                    motion_tuning.active_profile
+                );
                 return ExitCode::FAILURE;
             }
-        } else {
-            // Match the established product contract: an enabled persisted
-            // switch never silently degrades to static control.
-            motion_hub.activate_builtin_startup();
         }
     }
 
+    if args.check {
+        if args.dry_run {
+            if let Err(error) = loaded.config().validate_configured_adapters() {
+                eprintln!("PREFLIGHT_CONFIG_INVALID: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "PASS mode=dry_run config={} model_ingress_helper=ready motion_profile=ready hardware_not_started=true",
+                args.config.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        if let Err(error) = loaded.config().require_production_adapters() {
+            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
+            return ExitCode::FAILURE;
+        }
+        #[cfg(all(feature = "deepstream", target_os = "linux"))]
+        {
+            let model_catalog = match SqliteModelCatalog::open_with_model_root(
+                &loaded.config().paths.database,
+                &loaded.config().paths.model_dir,
+            ) {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    eprintln!("MODEL_CATALOG_OPEN_FAILED: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) =
+                live_perception::preflight_live_production(loaded.config(), &model_catalog)
+            {
+                eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "PASS mode=production config={} model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true capture_not_started=true pointer_not_connected=true",
+                args.config.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+        {
+            eprintln!(
+                "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let model_catalog = match SqliteModelCatalog::open_with_model_root(
+        &loaded.config().paths.database,
+        &loaded.config().paths.model_dir,
+    ) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!("MODEL_CATALOG_OPEN_FAILED: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
     let (dependencies, mode) = if args.dry_run && args.live_perception {
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {

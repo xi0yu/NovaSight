@@ -42,8 +42,11 @@ fn temp_config() -> (TempDirectory, PathBuf) {
     fs::write(
         &path,
         format!(
-            "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: {}\npaths:\n  license: {}\n",
+            "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: {}\npaths:\n  data_dir: {}\n  model_dir: {}\n  database: {}\n  license: {}\n",
             socket.display(),
+            directory.join("data").display(),
+            directory.join("data/models").display(),
+            directory.join("data/novasight.db").display(),
             directory.join("license.json").display()
         ),
     )
@@ -96,6 +99,31 @@ fn check_loads_config_and_exits_without_starting_the_daemon() {
     assert!(output.status.success());
     assert!(stdout.contains("PASS mode=dry_run"));
     assert!(stdout.contains("hardware_not_started=true"));
+}
+
+#[test]
+fn check_rejects_a_missing_named_motion_profile_instead_of_silently_using_builtin() {
+    let (_directory, path) = temp_config();
+    let mut config = fs::read_to_string(&path).expect("read config");
+    config.push_str(
+        "control:\n  humanized_motion:\n    enabled: true\n    active_profile: missing-profile\n",
+    );
+    fs::write(&path, config).expect("write motion config");
+
+    let output = Command::new(binary())
+        .args([
+            "--config",
+            path.to_str().expect("UTF-8 path"),
+            "--check",
+            "--dry-run",
+        ])
+        .output()
+        .expect("run check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("MOTION_PROFILE_LOAD_FAILED"));
+    assert!(stderr.contains("missing-profile"));
 }
 
 #[test]
