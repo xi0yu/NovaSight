@@ -9,18 +9,41 @@ use axum::{
 };
 use novasight_api::{
     build_control_router, build_control_router_with_capabilities,
-    build_control_router_with_services, build_control_router_with_shutdown,
+    build_control_router_with_platform_queries, build_control_router_with_services,
+    build_control_router_with_shutdown,
 };
-use novasight_core::{Clock, MonotonicNanos, PointerDevice, RecordingPointerDevice};
+use novasight_core::{
+    CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError, Clock,
+    MonotonicNanos, PointerDevice, RecordingPointerDevice,
+};
 use novasight_pipeline::PipelineConfig;
 use novasight_runtime::{
     ConfigService, PipelineState, RuntimeDependencies, RuntimeHandle, RuntimeSupervisor,
 };
 use novasight_store::config::YamlConfigRepository;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 static NEXT_CONFIG_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct StaticCaptureProbe;
+
+impl CaptureCapabilityProbe for StaticCaptureProbe {
+    fn probe(&self, device: &str) -> Result<CaptureCapabilities, CaptureProbeError> {
+        Ok(CaptureCapabilities {
+            available: true,
+            device: device.to_owned(),
+            capabilities: vec![CaptureCapability {
+                pixel_format: "MJPG".to_owned(),
+                width: 1_920,
+                height: 1_080,
+                fps_list: vec![120, 60],
+            }],
+            reason: String::new(),
+        })
+    }
+}
 
 struct ConfigDirectory(PathBuf);
 
@@ -317,6 +340,63 @@ async fn capture_state_projects_the_configured_device_and_supervisor_state() {
     assert_eq!(capture["running"], false);
     assert_eq!(capture["state"], "stopped");
     assert_eq!(capture["available"], true);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn capture_capabilities_use_the_attached_platform_probe_for_get_and_post() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 3\ncapture:\n  device: /dev/video7\n  backend: deepstream_nvinfer\n",
+    )
+    .unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_platform_queries(
+        runtime.clone(),
+        config,
+        None,
+        None,
+        Arc::new(StaticCaptureProbe) as Arc<dyn CaptureCapabilityProbe>,
+        false,
+        None,
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/capture/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let configured: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(configured["device"], "/dev/video7");
+    assert_eq!(configured["capabilities"][0]["pixel_format"], "MJPG");
+    assert_eq!(configured["capabilities"][0]["fps_list"], json!([120, 60]));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/capture/capabilities")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"device":"/dev/video3"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let requested: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(requested["device"], "/dev/video3");
 
     shutdown(supervisor, &runtime).await;
 }

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod capture;
 pub mod control;
 pub mod error;
 pub mod freshness;
@@ -13,6 +14,9 @@ pub mod telemetry;
 pub mod tracking;
 pub mod units;
 
+pub use capture::{
+    CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
+};
 pub use control::{ControlDecision, ProportionalReplayControl};
 pub use error::AppError;
 pub use output::{DeviceCommand, DeviceReceipt, RecordingPointerDevice};

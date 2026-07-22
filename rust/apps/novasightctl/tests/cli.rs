@@ -1,9 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use novasight_api::{
     build_control_router, build_control_router_with_capabilities,
-    build_control_router_with_control_plane, build_control_router_with_services,
+    build_control_router_with_control_plane, build_control_router_with_platform_queries,
+    build_control_router_with_services,
+};
+use novasight_core::{
+    CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
 };
 use novasight_runtime::{
     AppConfig, ConfigService, ConfigUpdate, PipelineState, RuntimeSnapshot, RuntimeSupervisor,
@@ -39,6 +44,25 @@ fn unique_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+#[derive(Debug)]
+struct CliCaptureProbe;
+
+impl CaptureCapabilityProbe for CliCaptureProbe {
+    fn probe(&self, device: &str) -> Result<CaptureCapabilities, CaptureProbeError> {
+        Ok(CaptureCapabilities {
+            available: true,
+            device: device.to_owned(),
+            capabilities: vec![CaptureCapability {
+                pixel_format: "MJPG".to_owned(),
+                width: 1_920,
+                height: 1_080,
+                fps_list: vec![120, 60],
+            }],
+            reason: String::new(),
+        })
+    }
+}
+
 #[test]
 fn help_documents_the_real_command_surface() {
     let output = Command::new(binary())
@@ -58,10 +82,73 @@ fn help_documents_the_real_command_surface() {
         "license",
         "model",
         "device",
+        "capture",
     ] {
         assert!(stdout.contains(command), "help omitted {command}");
     }
     assert!(!stdout.contains("diagnose"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capture_commands_use_the_same_platform_query_as_the_web_api() {
+    let socket = SocketPath::new();
+    let config_path = socket.0.with_extension("yaml");
+    std::fs::write(
+        &config_path,
+        "revision: 0\ncapture:\n  device: /dev/video8\n  backend: deepstream_nvinfer\n",
+    )
+    .unwrap();
+    let config = ConfigService::new(
+        &config_path,
+        YamlConfigRepository::load(&config_path).unwrap(),
+    );
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_platform_queries(
+        runtime.clone(),
+        config,
+        None,
+        None,
+        Arc::new(CliCaptureProbe) as Arc<dyn CaptureCapabilityProbe>,
+        false,
+        None,
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let status =
+        tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["capture", "status"]))
+            .await
+            .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["device"], "/dev/video8");
+
+    let socket_path = socket.0.clone();
+    let capabilities = tokio::task::spawn_blocking(move || {
+        run_cli_args(
+            &socket_path,
+            &["capture", "capabilities", "--device", "/dev/video3"],
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        capabilities.status.success(),
+        "{}",
+        String::from_utf8_lossy(&capabilities.stderr)
+    );
+    let capabilities: CaptureCapabilities = serde_json::from_slice(&capabilities.stdout).unwrap();
+    assert_eq!(capabilities.device, "/dev/video3");
+    assert_eq!(capabilities.capabilities[0].fps_list, vec![120, 60]);
+
+    server.abort();
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_file(config_path).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
@@ -14,7 +15,9 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{Sink, Stream, StreamExt};
-use novasight_core::DeviceReceipt;
+use novasight_core::{
+    CaptureCapabilities, CaptureCapabilityProbe, CaptureProbeError, DeviceReceipt,
+};
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
     ModelActivationError, ModelIngressError, RuntimeError, RuntimeErrorKind, RuntimeHandle,
@@ -82,11 +85,32 @@ pub fn build_control_router_with_control_plane(
     hardware_output_enabled: bool,
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
+    build_control_router_with_platform_queries(
+        runtime,
+        config_service,
+        license,
+        model_catalog,
+        None,
+        hardware_output_enabled,
+        shutdown,
+    )
+}
+
+pub fn build_control_router_with_platform_queries(
+    runtime: RuntimeHandle,
+    config_service: impl Into<Option<ConfigService>>,
+    license: impl Into<Option<FileLicenseRepository>>,
+    model_catalog: impl Into<Option<SqliteModelCatalog>>,
+    capture_probe: impl Into<Option<Arc<dyn CaptureCapabilityProbe>>>,
+    hardware_output_enabled: bool,
+    shutdown: impl Into<Option<watch::Receiver<bool>>>,
+) -> Router {
     let state = ControlState {
         runtime,
         config: config_service.into(),
         license: license.into(),
         model_catalog: model_catalog.into(),
+        capture_probe: capture_probe.into(),
         hardware_output_enabled,
         shutdown: shutdown.into(),
     };
@@ -114,6 +138,10 @@ pub fn build_control_router_with_control_plane(
         .route("/api/config", get(config).post(update_legacy_config))
         .route("/api/config/schema", get(config_schema))
         .route("/api/capture/state", get(capture_state))
+        .route(
+            "/api/capture/capabilities",
+            get(capture_capabilities).post(post_capture_capabilities),
+        )
         .route("/api/executors", get(executors))
         .merge(models::routes())
         .route(
@@ -143,6 +171,7 @@ struct ControlState {
     config: Option<ConfigService>,
     license: Option<FileLicenseRepository>,
     model_catalog: Option<SqliteModelCatalog>,
+    capture_probe: Option<Arc<dyn CaptureCapabilityProbe>>,
     hardware_output_enabled: bool,
     shutdown: Option<watch::Receiver<bool>>,
 }
@@ -469,6 +498,60 @@ async fn capture_state(State(state): State<ControlState>) -> Json<serde_json::Va
     )
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct CaptureCapabilitiesQuery {
+    device: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CaptureCapabilitiesRequest {
+    device: String,
+}
+
+async fn capture_capabilities(
+    State(state): State<ControlState>,
+    Query(query): Query<CaptureCapabilitiesQuery>,
+) -> Result<Json<CaptureCapabilities>, ControlApiError> {
+    probe_capture_capabilities(state, query.device)
+        .await
+        .map(Json)
+}
+
+async fn post_capture_capabilities(
+    State(state): State<ControlState>,
+    Json(request): Json<CaptureCapabilitiesRequest>,
+) -> Result<Json<CaptureCapabilities>, ControlApiError> {
+    probe_capture_capabilities(state, Some(request.device))
+        .await
+        .map(Json)
+}
+
+async fn probe_capture_capabilities(
+    state: ControlState,
+    requested_device: Option<String>,
+) -> Result<CaptureCapabilities, ControlApiError> {
+    let device = match requested_device {
+        Some(device) => device,
+        None => match &state.config {
+            Some(config) => config
+                .snapshot()
+                .await
+                .capture
+                .map(|capture| capture.device.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "/dev/video0".to_owned()),
+            None => "/dev/video0".to_owned(),
+        },
+    };
+    let probe = state
+        .capture_probe
+        .ok_or(ControlApiError::CaptureProbeUnavailable)?;
+    tokio::task::spawn_blocking(move || probe.probe(&device))
+        .await
+        .map_err(ControlApiError::CaptureProbeTask)?
+        .map_err(ControlApiError::CaptureProbe)
+}
+
 async fn update_config(
     State(state): State<ControlState>,
     Json(update): Json<ConfigFieldUpdate>,
@@ -727,6 +810,9 @@ enum ControlApiError {
     ModelCatalogUnavailable,
     ModelActivation(ModelActivationError),
     ModelIngress(ModelIngressError),
+    CaptureProbe(CaptureProbeError),
+    CaptureProbeTask(tokio::task::JoinError),
+    CaptureProbeUnavailable,
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -1016,6 +1102,26 @@ impl IntoResponse for ControlApiError {
                     error.to_string(),
                 ),
             },
+            Self::CaptureProbe(error) => {
+                let status = match error.code() {
+                    "CAPTURE_DEVICE_INVALID" => StatusCode::BAD_REQUEST,
+                    "CAPTURE_PROBE_UNSUPPORTED_PLATFORM" => StatusCode::SERVICE_UNAVAILABLE,
+                    "CAPTURE_CAPABILITY_IOCTL_FAILED" => StatusCode::BAD_GATEWAY,
+                    "CAPTURE_CAPABILITY_LIMIT_EXCEEDED" => StatusCode::BAD_GATEWAY,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                };
+                (status, error.code(), error.to_string())
+            }
+            Self::CaptureProbeTask(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CAPTURE_PROBE_TASK_FAILED",
+                format!("capture capability task failed: {error}"),
+            ),
+            Self::CaptureProbeUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CAPTURE_PROBE_UNAVAILABLE",
+                "no platform capture capability probe is attached".to_owned(),
+            ),
         };
         let body = ControlErrorBody {
             code,

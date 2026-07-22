@@ -5,8 +5,10 @@ use std::future::IntoFuture;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use novasight_api::build_control_router_with_control_plane;
+use novasight_api::build_control_router_with_platform_queries;
+use novasight_core::CaptureCapabilityProbe;
 use novasight_runtime::{ApplicationError, ConfigService, LoadedApplication, RuntimeDependencies};
 use novasight_store::license::{FileLicenseRepository, LicensePolicy};
 use novasight_store::model_catalog::SqliteModelCatalog;
@@ -66,11 +68,13 @@ pub(super) async fn run_daemon(
     let mut signals = ShutdownSignals::register()?;
     let application = loaded.start(dependencies);
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
-    let router = build_control_router_with_control_plane(
+    let capture_probe = production_capture_probe(mode);
+    let router = build_control_router_with_platform_queries(
         application.runtime(),
         config_service,
         license_repository,
         model_catalog,
+        capture_probe,
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
@@ -137,6 +141,19 @@ pub(super) async fn run_daemon(
             cleanup: Box::new(cleanup),
         }),
     }
+}
+
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
+fn production_capture_probe(mode: DaemonMode) -> Option<Arc<dyn CaptureCapabilityProbe>> {
+    mode.hardware_output_enabled().then(|| {
+        Arc::new(novasight_platform_jetson::v4l2::V4l2CapabilityProbe)
+            as Arc<dyn CaptureCapabilityProbe>
+    })
+}
+
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+fn production_capture_probe(_mode: DaemonMode) -> Option<Arc<dyn CaptureCapabilityProbe>> {
+    None
 }
 
 fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {

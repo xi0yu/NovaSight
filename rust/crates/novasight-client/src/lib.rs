@@ -13,7 +13,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use novasight_core::DeviceReceipt;
+use novasight_core::{CaptureCapabilities, DeviceReceipt};
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
     ModelProfileConfigureRequest, RuntimeSnapshot,
@@ -299,6 +299,27 @@ impl ControlClient {
                 interval_ms: 0,
                 move_kind: "raw",
             }),
+        )
+        .await
+    }
+
+    pub async fn capture_state(&self) -> Result<Value, ClientError> {
+        self.request(Method::GET, "/api/capture/state", None::<&()>)
+            .await
+    }
+
+    pub async fn capture_capabilities(
+        &self,
+        device: &str,
+    ) -> Result<CaptureCapabilities, ClientError> {
+        #[derive(Serialize)]
+        struct CaptureCapabilitiesRequest<'a> {
+            device: &'a str,
+        }
+        self.request(
+            Method::POST,
+            "/api/capture/capabilities",
+            Some(&CaptureCapabilitiesRequest { device }),
         )
         .await
     }

@@ -4,5 +4,6 @@ mod clock;
 pub mod deepstream;
 pub mod kmnet;
 pub mod kmnet_native;
+pub mod v4l2;
 
 pub use clock::SystemMonotonicClock;

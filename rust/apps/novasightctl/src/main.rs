@@ -59,6 +59,11 @@ enum Command {
         #[command(subcommand)]
         command: DeviceCommand,
     },
+    /// Inspect configured capture state or enumerate real V4L2 profiles.
+    Capture {
+        #[command(subcommand)]
+        command: CaptureCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -122,6 +127,17 @@ enum DeviceCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum CaptureCommand {
+    /// Print the supervisor-owned capture state.
+    Status,
+    /// Enumerate discrete V4L2 formats, sizes, and frame rates.
+    Capabilities {
+        #[arg(long, default_value = "/dev/video0")]
+        device: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliProbeInputMode {
     Fixed,
@@ -166,6 +182,8 @@ enum CommandOutput {
     ModelSwitch(ModelSwitchResponse),
     Executor(ExecutorStatus),
     DiagnosticMove(DiagnosticMoveResponse),
+    CaptureCapabilities(novasight_core::CaptureCapabilities),
+    Json(serde_json::Value),
 }
 
 fn init_logging() {
@@ -327,6 +345,15 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .diagnostic_move(dx, dy)
             .await
             .map(CommandOutput::DiagnosticMove),
+        Command::Capture {
+            command: CaptureCommand::Status,
+        } => client.capture_state().await.map(CommandOutput::Json),
+        Command::Capture {
+            command: CaptureCommand::Capabilities { device },
+        } => client
+            .capture_capabilities(&device)
+            .await
+            .map(CommandOutput::CaptureCapabilities),
     }
     .map_err(CliError::Client)
 }

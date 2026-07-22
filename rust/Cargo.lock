@@ -971,6 +971,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
  "gstreamer",
+ "nix",
  "novasight-core",
  "novasight-deepstream-bridge",
  "novasight-jetson-preprocess",
@@ -1036,6 +1037,7 @@ dependencies = [
  "clap",
  "novasight-api",
  "novasight-client",
+ "novasight-core",
  "novasight-runtime",
  "novasight-store",
  "serde",
