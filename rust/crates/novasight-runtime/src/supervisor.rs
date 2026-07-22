@@ -32,7 +32,8 @@ use crate::model_ingress::{
 };
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::snapshot::{
-    DaemonSnapshot, DeviceMetrics, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshots,
+    DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,
+    SubsystemSnapshots,
 };
 use crate::state::{DaemonState, PipelineState};
 
@@ -181,6 +182,7 @@ struct SupervisorState {
     subsystems: SubsystemSnapshots,
     perception_metrics: PerceptionMetrics,
     device_metrics: DeviceMetrics,
+    model: ModelSnapshot,
     started_at_unix_ms: u64,
 }
 
@@ -197,6 +199,7 @@ impl Default for SupervisorState {
             subsystems: SubsystemSnapshots::default(),
             perception_metrics: PerceptionMetrics::default(),
             device_metrics: DeviceMetrics::default(),
+            model: ModelSnapshot::default(),
             started_at_unix_ms: now_ms(),
         }
     }
@@ -219,6 +222,7 @@ impl SupervisorState {
             subsystems: self.subsystems.clone(),
             perception_metrics: self.perception_metrics,
             device_metrics: self.device_metrics,
+            model: self.model.clone(),
             updated_at_ms,
         }
     }
@@ -327,6 +331,22 @@ struct PipelineNotice {
     event: PipelineEvent,
 }
 
+fn initial_model_snapshot(catalog: Option<&SqliteModelCatalog>) -> ModelSnapshot {
+    let Some(catalog) = catalog else {
+        return ModelSnapshot::default();
+    };
+    match catalog.active_model() {
+        Ok(active) => ModelSnapshot {
+            active,
+            catalog_error: None,
+        },
+        Err(error) => ModelSnapshot {
+            active: None,
+            catalog_error: Some(error.to_string()),
+        },
+    }
+}
+
 /// Owns the supervisor task. Runtime commands are issued through the
 /// paired [`RuntimeHandle`].
 pub struct RuntimeSupervisor {
@@ -345,8 +365,10 @@ impl std::fmt::Debug for RuntimeSupervisor {
 impl RuntimeSupervisor {
     /// Spawn the sole lifecycle actor with production-selected adapters.
     pub fn spawn(dependencies: RuntimeDependencies) -> (Self, RuntimeHandle) {
+        let model = initial_model_snapshot(dependencies.model_catalog.as_ref());
         let state = SupervisorState {
             daemon: DaemonState::Ready,
+            model,
             ..SupervisorState::default()
         };
         let initial_snapshot = Arc::new(state.snapshot(now_ms()));
@@ -899,13 +921,18 @@ async fn activate_model_state(
             artifact: candidate.artifact.clone(),
             artifact_path: candidate.artifact_path.clone(),
         };
+        state.model = ModelSnapshot {
+            active: Some(active.clone()),
+            catalog_error: None,
+        };
+        let runtime = publish(snapshot_tx, state, now_ms());
         return Ok(ModelActivationResult {
             action,
             deployment,
             active,
             candidate,
             contract: None,
-            runtime: state.snapshot(now_ms()),
+            runtime,
             restarted: false,
             changed: false,
         });
@@ -1104,7 +1131,7 @@ async fn activate_model_state(
         .await);
     }
 
-    let runtime = if was_running {
+    if was_running {
         match start_state(
             snapshot_tx,
             ingress_tx,
@@ -1115,7 +1142,7 @@ async fn activate_model_state(
         )
         .await
         {
-            Ok(snapshot) => snapshot,
+            Ok(_) => {}
             Err(error) => {
                 return Err(compensate_model_activation(
                     action,
@@ -1133,9 +1160,13 @@ async fn activate_model_state(
                 .await);
             }
         }
-    } else {
-        state.snapshot(now_ms())
+    }
+
+    state.model = ModelSnapshot {
+        active: Some(active_model.clone()),
+        catalog_error: None,
     };
+    let runtime = publish(snapshot_tx, state, now_ms());
 
     Ok(ModelActivationResult {
         action,

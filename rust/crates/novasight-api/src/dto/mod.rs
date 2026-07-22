@@ -1,5 +1,8 @@
+mod config_schema;
 mod runtime;
 mod runtime_compat;
+
+pub(crate) use config_schema::ConfigSchemaResponse;
 
 pub use runtime::{
     CaptureProfileResponse, CaptureStateResponse, ErrorResponse, ExecutorAvailabilityResponse,

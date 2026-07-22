@@ -217,6 +217,21 @@ ready. The current Rust decoder intentionally supports raw YOLO and decoded
 can continue using `deepstream_nvinfer`. The existing Python and nvinfer paths
 remain available as compatibility and rollback routes.
 
+### Rust control-plane contract
+
+`novasightd` serves the same Axum router over TCP and its Unix control socket.
+The production router exposes the persisted Rust configuration contract at
+`GET /api/config/schema` and the supervisor-owned capture projection at
+`GET /api/capture/state`; neither endpoint is backed by the replay-only
+compatibility shim. Every schema field is marked restart-required because the
+Rust daemon persists revisioned configuration but does not claim hot apply.
+
+`GET /api/runtime/state`, `GET /api/v1/status`, `/ws/status`, and
+`novasightctl status` all read the same immutable runtime snapshot. The
+snapshot restores the active model deployment from SQLite during daemon boot
+and updates it only after a model switch has committed successfully. A catalog
+read failure is reported separately from the valid “no active model” state.
+
 ### Legacy CPU-bridge diagnostics
 
 Run a 60-second capture smoke on Jetson:

@@ -45,6 +45,7 @@ pub(crate) struct CompatibilityRuntimeState {
     pub running: bool,
     pub source: String,
     pub active_model: Option<serde_json::Value>,
+    pub model_catalog_error: Option<String>,
     pub executor: ExecutorState,
     pub capture: CaptureState,
     pub statistics: StatisticsState,
@@ -241,7 +242,11 @@ impl CompatibilityRuntimeState {
         Self {
             running,
             source,
-            active_model: None,
+            active_model: snapshot.model.active.as_ref().map(|active| {
+                serde_json::to_value(active)
+                    .expect("active model catalog records must have a JSON representation")
+            }),
+            model_catalog_error: snapshot.model.catalog_error.clone(),
             executor: ExecutorState {
                 selected: selected_device,
                 executors,

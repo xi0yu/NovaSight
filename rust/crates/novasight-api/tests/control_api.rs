@@ -212,6 +212,116 @@ async fn studio_config_alias_uses_the_same_service_and_revision_guard() {
 }
 
 #[tokio::test]
+async fn studio_config_schema_is_the_live_rust_config_contract() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        r#"schema_version: 1
+revision: 4
+server:
+  port: 6000
+inference:
+  enabled: true
+  backend: rust_tensor_rt
+  device: cuda
+  require_gpu: true
+  allow_cpu_fallback: false
+  confidence_threshold: 0.25
+  nms_threshold: 0.45
+  inference_input_deadline_ms: 55.0
+  deepstream_parser_library: ""
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
+  deepstream_component_id: 1
+  deepstream_source_id: 0
+  deepstream_probe_element: primary-infer
+  deepstream_probe_pad: src
+  deepstream_nvinfer_config: ""
+  model_width: 640
+  model_height: 640
+  deepstream_startup_timeout_ms: 10000
+  deepstream_shutdown_timeout_ms: 5000
+  input_source: source.default
+"#,
+    )
+    .unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/config/schema")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let schema: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(schema["version"], 1);
+    assert_eq!(schema["values"]["revision"], 4);
+    assert_eq!(schema["values"]["server"]["port"], 6000);
+    assert_eq!(schema["values"]["inference"]["backend"], "rust_tensor_rt");
+    let inference = schema["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|section| section["id"] == "inference")
+        .unwrap();
+    let backend = inference["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["path"] == "inference.backend")
+        .unwrap();
+    assert_eq!(
+        backend["options"],
+        serde_json::json!(["deepstream_nvinfer", "rust_tensor_rt"])
+    );
+    assert_eq!(backend["restart_required"], true);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn capture_state_projects_the_configured_device_and_supervisor_state() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 3\ncapture:\n  device: /dev/video7\n  backend: deepstream_nvinfer\n",
+    )
+    .unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/capture/state")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let capture: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(capture["device"], "/dev/video7");
+    assert_eq!(capture["backend"], "deepstream_nvinfer");
+    assert_eq!(capture["running"], false);
+    assert_eq!(capture["state"], "stopped");
+    assert_eq!(capture["available"], true);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn studio_lifecycle_aliases_project_the_real_supervisor_and_config() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");

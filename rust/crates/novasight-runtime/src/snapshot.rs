@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use novasight_core::RuntimeEpoch;
 use novasight_pipeline::PerceptionMetrics;
+use novasight_store::model_catalog::ActiveModelDeployment;
 
 use crate::protocol::RuntimeErrorSummary;
 use crate::state::{DaemonState, PipelineState};
@@ -60,6 +61,8 @@ pub struct RuntimeSnapshot {
     pub perception_metrics: PerceptionMetrics,
     #[serde(default)]
     pub device_metrics: DeviceMetrics,
+    #[serde(default)]
+    pub model: ModelSnapshot,
     pub updated_at_ms: u64,
 }
 
@@ -68,4 +71,10 @@ pub struct DeviceMetrics {
     pub diagnostic_move_count: u64,
     pub last_diagnostic_dx: Option<i32>,
     pub last_diagnostic_dy: Option<i32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSnapshot {
+    pub active: Option<ActiveModelDeployment>,
+    pub catalog_error: Option<String>,
 }

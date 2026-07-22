@@ -135,7 +135,7 @@ pub struct ModelCatalogSnapshot {
     pub active_deployment: Option<Deployment>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActiveModelDeployment {
     pub deployment: Deployment,
     pub project: ModelProject,

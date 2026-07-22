@@ -297,6 +297,41 @@ async fn publish_rejects_ready_artifact_without_a_fixed_probe_receipt() {
 }
 
 #[tokio::test]
+async fn runtime_snapshot_restores_the_active_model_from_the_catalog_on_boot() {
+    let directory = std::env::temp_dir().join(format!(
+        "novasight-model-bootstrap-api-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir(&directory).unwrap();
+    let database = directory.join("novasight.db");
+    let catalog = SqliteModelCatalog::open(&database).unwrap();
+    seed_publishable_artifacts(&database);
+    catalog.publish(1, 1).unwrap();
+
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::recording().with_model_catalog(catalog.clone()),
+    );
+    let snapshot = runtime.snapshot();
+    let active = snapshot.model.active.as_ref().unwrap();
+    assert_eq!(active.project.name, "detector");
+    assert_eq!(active.version.version, "v1");
+    assert_eq!(active.artifact.id, 1);
+    assert_eq!(snapshot.model.catalog_error, None);
+
+    let state = get_json(
+        build_control_router_with_control_plane(runtime.clone(), None, None, catalog, false, None),
+        "/api/runtime/state",
+    )
+    .await;
+    assert_eq!(state["active_model"]["artifact"]["id"], 1);
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn publish_while_stopped_preflights_and_commits_without_starting_runtime() {
     let directory = std::env::temp_dir().join(format!(
         "novasight-model-publish-api-{}",
@@ -346,6 +381,31 @@ async fn publish_while_stopped_preflights_and_commits_without_starting_runtime()
         novasight_runtime::PipelineState::Stopped
     );
     assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 1);
+    assert_eq!(
+        runtime
+            .snapshot()
+            .model
+            .active
+            .as_ref()
+            .map(|active| active.artifact.id),
+        Some(1)
+    );
+    let state = get_json(
+        build_control_router_with_control_plane(
+            runtime.clone(),
+            None,
+            None,
+            catalog.clone(),
+            false,
+            None,
+        ),
+        "/api/runtime/state",
+    )
+    .await;
+    assert_eq!(state["active_model"]["project"]["name"], "detector");
+    assert_eq!(state["active_model"]["version"]["version"], "v1");
+    assert_eq!(state["active_model"]["artifact"]["id"], 1);
+    assert_eq!(state["model_catalog_error"], Value::Null);
 
     runtime.shutdown_daemon().await.unwrap();
     supervisor.join().await.unwrap();

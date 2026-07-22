@@ -27,7 +27,7 @@ use tokio::sync::watch;
 
 use crate::dto::{
     CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
-    CompatibilityStatusFrame,
+    CompatibilityStatusFrame, ConfigSchemaResponse,
 };
 use crate::websocket::status::send_while_receiving;
 
@@ -112,6 +112,8 @@ pub fn build_control_router_with_control_plane(
         .route("/api/v1/runtime/emergency-stop", post(emergency_stop))
         .route("/api/v1/events", get(events))
         .route("/api/config", get(config).post(update_legacy_config))
+        .route("/api/config/schema", get(config_schema))
+        .route("/api/capture/state", get(capture_state))
         .route("/api/executors", get(executors))
         .merge(models::routes())
         .route(
@@ -448,6 +450,23 @@ async fn ensure_config_effective(state: &ControlState) -> Result<(), ControlApiE
 async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
     let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
     Ok(Json(service.snapshot().await))
+}
+
+async fn config_schema(
+    State(state): State<ControlState>,
+) -> Result<Json<ConfigSchemaResponse>, ControlApiError> {
+    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    let config = service.snapshot().await;
+    Ok(Json(ConfigSchemaResponse::new(&config)))
+}
+
+async fn capture_state(State(state): State<ControlState>) -> Json<serde_json::Value> {
+    let snapshot = state.runtime.snapshot();
+    let compatibility = compatibility_state(&state, &snapshot).await;
+    Json(
+        serde_json::to_value(compatibility.capture)
+            .expect("compatibility capture DTO must serialize"),
+    )
 }
 
 async fn update_config(
