@@ -42,6 +42,8 @@ pub enum BlockReason {
     CaptureTimestampDiscontinuity,
     /// Target no longer valid (lost track).
     TargetInvalid,
+    /// Runtime projection geometry or controller constants are invalid.
+    GeometryInvalid,
     /// Trigger not held; no command is emitted this step.
     TriggerInactive,
     /// Filtered position fell outside the configured dead-zone.
@@ -56,10 +58,19 @@ pub enum BlockReason {
 pub struct DualPhaseConfig {
     pub freshness_threshold_ms: f64,
     pub near_threshold_px: f64,
-    /// Scale factor that converts error pixels to mouse counts.
-    pub gain: f64,
-    /// Maximum counts per axis per emit step.
-    pub max_counts_per_axis: i32,
+    pub projection_fov_x_deg: f64,
+    pub projection_counts_per_360: f64,
+    pub projection_invert_y: bool,
+    pub atan_scale_counts: f64,
+    pub far_kp: f64,
+    pub far_max_counts_per_update: f64,
+    pub near_kp: f64,
+    pub near_max_counts_per_update: f64,
+    pub source_width: u32,
+    pub roi_width: u32,
+    pub roi_height: u32,
+    pub observation_width: u32,
+    pub observation_height: u32,
     /// Cap on the fractional residual retained across emits.
     pub residual_cap: f64,
 }
@@ -69,8 +80,19 @@ impl Default for DualPhaseConfig {
         Self {
             freshness_threshold_ms: 55.0,
             near_threshold_px: 12.0,
-            gain: 1.0,
-            max_counts_per_axis: 9_980,
+            projection_fov_x_deg: 105.0,
+            projection_counts_per_360: 9_980.0,
+            projection_invert_y: false,
+            atan_scale_counts: 1_024.0,
+            far_kp: 0.90,
+            far_max_counts_per_update: 600.0,
+            near_kp: 0.30,
+            near_max_counts_per_update: 120.0,
+            source_width: 640,
+            roi_width: 640,
+            roi_height: 640,
+            observation_width: 640,
+            observation_height: 640,
             residual_cap: 1.0,
         }
     }
@@ -321,31 +343,35 @@ impl DualPhaseControl {
         };
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
-        let demand_x = filtered_error_x * self.config.gain;
-        let demand_y = filtered_error_y * self.config.gain;
+        let Some((demand_x, demand_y, max_counts_per_axis)) =
+            self.project_demand(filtered_error_x, filtered_error_y, mode)
+        else {
+            self.release_trigger();
+            return ControlDecision::blocked(BlockReason::GeometryInvalid);
+        };
 
-        let dx = match self.quantizer_x.quantize(
-            demand_x,
-            self.config.max_counts_per_axis,
-            self.config.residual_cap,
-        ) {
-            Ok(value) => value,
-            Err(_) => {
-                self.release_trigger();
-                return ControlDecision::blocked(BlockReason::DemandOutOfRange);
-            }
-        };
-        let dy = match self.quantizer_y.quantize(
-            demand_y,
-            self.config.max_counts_per_axis,
-            self.config.residual_cap,
-        ) {
-            Ok(value) => value,
-            Err(_) => {
-                self.release_trigger();
-                return ControlDecision::blocked(BlockReason::DemandOutOfRange);
-            }
-        };
+        let dx =
+            match self
+                .quantizer_x
+                .quantize(demand_x, max_counts_per_axis, self.config.residual_cap)
+            {
+                Ok(value) => value,
+                Err(_) => {
+                    self.release_trigger();
+                    return ControlDecision::blocked(BlockReason::DemandOutOfRange);
+                }
+            };
+        let dy =
+            match self
+                .quantizer_y
+                .quantize(demand_y, max_counts_per_axis, self.config.residual_cap)
+            {
+                Ok(value) => value,
+                Err(_) => {
+                    self.release_trigger();
+                    return ControlDecision::blocked(BlockReason::DemandOutOfRange);
+                }
+            };
 
         self.last_generation = Some(observation.generation);
         self.last_frame_id = Some(observation.frame_id);
@@ -386,8 +412,6 @@ impl DualPhaseControl {
     ) -> (f64, f64, f64, f64) {
         let mut velocity_x = 0.0;
         let mut velocity_y = 0.0;
-        let mut predicted_offset_x = 0.0;
-        let mut predicted_offset_y = 0.0;
         if let (Some((prev_aim_x, prev_aim_y)), Some(prev_capture)) =
             (self.last_aim, self.last_capture_for_velocity)
         {
@@ -396,10 +420,13 @@ impl DualPhaseControl {
                 let dt_ms = dt_ns as f64 / 1_000_000.0;
                 velocity_x = (aim_x - prev_aim_x) / dt_ms;
                 velocity_y = (aim_y - prev_aim_y) / dt_ms;
-                predicted_offset_x = velocity_x * dt_ms;
-                predicted_offset_y = velocity_y * dt_ms;
             }
         }
+        // Keep prediction in shadow until the Rust port owns the Python
+        // confidence/spread/cap contract. Applying one raw frame delta here
+        // would amplify jitter and is less safe than pure feedback.
+        let predicted_offset_x = 0.0;
+        let predicted_offset_y = 0.0;
         self.velocity_x = velocity_x;
         self.velocity_y = velocity_y;
         (
@@ -409,8 +436,79 @@ impl DualPhaseControl {
             predicted_offset_y,
         )
     }
+
+    fn project_demand(
+        &self,
+        error_x: f64,
+        error_y: f64,
+        mode: ControlMode,
+    ) -> Option<(f64, f64, i32)> {
+        let config = self.config;
+        if config.source_width == 0
+            || config.roi_width == 0
+            || config.roi_height == 0
+            || config.observation_width == 0
+            || config.observation_height == 0
+            || !config.projection_fov_x_deg.is_finite()
+            || !(0.0..180.0).contains(&config.projection_fov_x_deg)
+            || !config.projection_counts_per_360.is_finite()
+            || config.projection_counts_per_360 <= 0.0
+            || !config.atan_scale_counts.is_finite()
+            || config.atan_scale_counts <= 0.0
+        {
+            return None;
+        }
+        let source_error_x =
+            error_x * f64::from(config.roi_width) / f64::from(config.observation_width);
+        let source_error_y =
+            error_y * f64::from(config.roi_height) / f64::from(config.observation_height);
+        let fov_x_rad = config.projection_fov_x_deg.to_radians();
+        let focal_px = (f64::from(config.source_width) * 0.5) / (fov_x_rad * 0.5).tan();
+        if !focal_px.is_finite() || focal_px <= 0.0 {
+            return None;
+        }
+        let counts_per_rad = config.projection_counts_per_360 / std::f64::consts::TAU;
+        let full_x = (source_error_x / focal_px).atan() * counts_per_rad;
+        let mut full_y = (source_error_y / focal_px).atan() * counts_per_rad;
+        if config.projection_invert_y {
+            full_y = -full_y;
+        }
+        let (kp, maximum) = match mode {
+            ControlMode::Far => (config.far_kp, config.far_max_counts_per_update),
+            ControlMode::Near => (config.near_kp, config.near_max_counts_per_update),
+        };
+        if !kp.is_finite()
+            || kp < 0.0
+            || !maximum.is_finite()
+            || maximum < 1.0
+            || maximum > f64::from(i16::MAX)
+        {
+            return None;
+        }
+        let demand = |full: f64| {
+            (kp * config.atan_scale_counts * (full / config.atan_scale_counts).atan())
+                .clamp(-maximum, maximum)
+        };
+        Some((demand(full_x), demand(full_y), maximum.ceil() as i32))
+    }
 }
 
 fn crossed_center(previous: f64, current: f64) -> bool {
     (previous < 0.0 && current >= 0.0) || (previous > 0.0 && current <= 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Quantizer;
+
+    #[test]
+    fn quantizer_truncates_whole_counts_and_carries_only_fractional_residual() {
+        let mut quantizer = Quantizer::new();
+        assert_eq!(quantizer.quantize(80.6, 100, 1.0).unwrap(), 80);
+        assert!((quantizer.accumulator - 0.6).abs() < 1e-9);
+        assert_eq!(quantizer.quantize(0.6, 100, 1.0).unwrap(), 1);
+        assert!((quantizer.accumulator - 0.2).abs() < 1e-9);
+        assert_eq!(quantizer.quantize(-0.6, 100, 1.0).unwrap(), 0);
+        assert!((quantizer.accumulator + 0.6).abs() < 1e-9);
+    }
 }

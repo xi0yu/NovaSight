@@ -13,8 +13,14 @@ replay:
 pipeline:
   freshness_threshold_ms: 55.0
   near_threshold_px: 12.0
-  control_gain: 1.0
-  max_counts_per_axis: 9980
+  projection_fov_x_deg: 105.0
+  projection_counts_per_360: 9980.0
+  projection_invert_y: false
+  atan_scale_counts: 1024.0
+  far_kp: 0.90
+  far_max_counts_per_update: 600.0
+  near_kp: 0.30
+  near_max_counts_per_update: 120.0
   residual_cap: 1.0
   target_debounce_distance_px: 64.0
   target_min_confidence: 0.5

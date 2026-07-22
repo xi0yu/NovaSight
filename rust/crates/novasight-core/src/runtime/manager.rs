@@ -36,7 +36,7 @@ enum ReplaySeed {
 #[derive(Clone, Debug)]
 pub enum RuntimeAlgorithm {
     Proportional(ProportionalReplayControl),
-    DualPhase(DualPhaseControl),
+    DualPhase(Box<DualPhaseControl>),
 }
 
 impl Default for RuntimeAlgorithm {
@@ -87,7 +87,7 @@ impl RuntimeDependencies {
         Self {
             replay_seed: ReplaySeed::Rebind(batches.into_iter().collect::<Vec<_>>().into()),
             frame_interval,
-            algorithm: RuntimeAlgorithm::DualPhase(DualPhaseControl::new(config)),
+            algorithm: RuntimeAlgorithm::DualPhase(Box::new(DualPhaseControl::new(config))),
         }
     }
 

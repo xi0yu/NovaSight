@@ -134,10 +134,22 @@ pub struct PipelineRuntimeConfig {
     pub freshness_threshold_ms: f64,
     #[serde(default = "default_near_threshold_px")]
     pub near_threshold_px: f64,
-    #[serde(default = "default_control_gain")]
-    pub control_gain: f64,
-    #[serde(default = "default_max_counts_per_axis")]
-    pub max_counts_per_axis: i32,
+    #[serde(default = "default_projection_fov_x_deg")]
+    pub projection_fov_x_deg: f64,
+    #[serde(default = "default_projection_counts_per_360")]
+    pub projection_counts_per_360: f64,
+    #[serde(default)]
+    pub projection_invert_y: bool,
+    #[serde(default = "default_atan_scale_counts")]
+    pub atan_scale_counts: f64,
+    #[serde(default = "default_far_kp")]
+    pub far_kp: f64,
+    #[serde(default = "default_far_max_counts_per_update")]
+    pub far_max_counts_per_update: f64,
+    #[serde(default = "default_near_kp")]
+    pub near_kp: f64,
+    #[serde(default = "default_near_max_counts_per_update")]
+    pub near_max_counts_per_update: f64,
     #[serde(default = "default_residual_cap")]
     pub residual_cap: f64,
     #[serde(default = "default_target_debounce_distance_px")]
@@ -161,8 +173,14 @@ impl Default for PipelineRuntimeConfig {
         Self {
             freshness_threshold_ms: default_freshness_threshold_ms(),
             near_threshold_px: default_near_threshold_px(),
-            control_gain: default_control_gain(),
-            max_counts_per_axis: default_max_counts_per_axis(),
+            projection_fov_x_deg: default_projection_fov_x_deg(),
+            projection_counts_per_360: default_projection_counts_per_360(),
+            projection_invert_y: false,
+            atan_scale_counts: default_atan_scale_counts(),
+            far_kp: default_far_kp(),
+            far_max_counts_per_update: default_far_max_counts_per_update(),
+            near_kp: default_near_kp(),
+            near_max_counts_per_update: default_near_max_counts_per_update(),
             residual_cap: default_residual_cap(),
             target_debounce_distance_px: default_target_debounce_distance_px(),
             target_min_confidence: default_target_min_confidence(),
@@ -190,17 +208,37 @@ impl PipelineRuntimeConfig {
             10_000.0,
         )?;
         validate_finite_range(
-            "pipeline.control_gain",
-            self.control_gain,
+            "pipeline.projection_fov_x_deg",
+            self.projection_fov_x_deg,
             0.000_001,
-            1_000.0,
+            179.999_999,
         )?;
-        if !(1..=i32::from(i16::MAX)).contains(&self.max_counts_per_axis) {
-            return Err(ConfigValidationError::new(
-                "pipeline.max_counts_per_axis",
-                format!("must be within 1..={}", i16::MAX),
-            ));
-        }
+        validate_finite_range(
+            "pipeline.projection_counts_per_360",
+            self.projection_counts_per_360,
+            0.000_001,
+            1_000_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.atan_scale_counts",
+            self.atan_scale_counts,
+            0.000_001,
+            1_000_000.0,
+        )?;
+        validate_finite_range("pipeline.far_kp", self.far_kp, 0.0, 100.0)?;
+        validate_finite_range(
+            "pipeline.far_max_counts_per_update",
+            self.far_max_counts_per_update,
+            1.0,
+            f64::from(i16::MAX),
+        )?;
+        validate_finite_range("pipeline.near_kp", self.near_kp, 0.0, 100.0)?;
+        validate_finite_range(
+            "pipeline.near_max_counts_per_update",
+            self.near_max_counts_per_update,
+            1.0,
+            f64::from(i16::MAX),
+        )?;
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
             "pipeline.target_debounce_distance_px",
@@ -261,12 +299,32 @@ const fn default_near_threshold_px() -> f64 {
     12.0
 }
 
-const fn default_control_gain() -> f64 {
-    1.0
+const fn default_projection_fov_x_deg() -> f64 {
+    105.0
 }
 
-const fn default_max_counts_per_axis() -> i32 {
-    9_980
+const fn default_projection_counts_per_360() -> f64 {
+    9_980.0
+}
+
+const fn default_atan_scale_counts() -> f64 {
+    1_024.0
+}
+
+const fn default_far_kp() -> f64 {
+    0.90
+}
+
+const fn default_far_max_counts_per_update() -> f64 {
+    600.0
+}
+
+const fn default_near_kp() -> f64 {
+    0.30
+}
+
+const fn default_near_max_counts_per_update() -> f64 {
+    120.0
 }
 
 const fn default_residual_cap() -> f64 {
