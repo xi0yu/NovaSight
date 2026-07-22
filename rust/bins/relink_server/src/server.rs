@@ -1,9 +1,9 @@
 //! Production HTTP, Unix-socket, and shutdown server ownership.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::future::IntoFuture;
 use std::io;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,6 +49,7 @@ pub(super) async fn run_daemon(
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
 ) -> Result<(), DaemonRunError> {
+    let _instance_lock = acquire_instance_lock(mode.hardware_output_enabled())?;
     let host = loaded.config().server.host.clone();
     let port = loaded.config().server.port;
     let control_socket = loaded.config().server.control_socket.clone();
@@ -208,6 +209,74 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
 pub(super) fn preflight_license_policy(mode: DaemonMode) -> Result<(), DaemonRunError> {
     license_policy(mode).map(drop)
 }
+
+pub(super) fn preflight_instance_lock(mode: DaemonMode) -> Result<(), DaemonRunError> {
+    acquire_instance_lock(mode.hardware_output_enabled()).map(drop)
+}
+
+fn acquire_instance_lock(required: bool) -> Result<Option<InstanceLock>, DaemonRunError> {
+    let path = std::env::var_os("NOVASIGHT_INSTANCE_LOCK")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    match path {
+        Some(path) => lock_instance_path(&path).map(Some),
+        None if required => Err(DaemonRunError::InstanceLockMissing),
+        None => Ok(None),
+    }
+}
+
+fn lock_instance_path(path: &Path) -> Result<InstanceLock, DaemonRunError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o640)
+        .open(path)
+        .map_err(|source| DaemonRunError::InstanceLockOpen {
+            path: path.to_owned(),
+            source,
+        })?;
+    let path_metadata =
+        std::fs::symlink_metadata(path).map_err(|source| DaemonRunError::InstanceLockInspect {
+            path: path.to_owned(),
+            source,
+        })?;
+    let opened_metadata =
+        file.metadata()
+            .map_err(|source| DaemonRunError::InstanceLockInspect {
+                path: path.to_owned(),
+                source,
+            })?;
+    if !path_metadata.file_type().is_file()
+        || path_metadata.dev() != opened_metadata.dev()
+        || path_metadata.ino() != opened_metadata.ino()
+        || opened_metadata.nlink() != 1
+    {
+        return Err(DaemonRunError::InstanceLockPathUnsafe(path.to_owned()));
+    }
+    let mode = opened_metadata.mode() & 0o7777;
+    if mode & 0o022 != 0 {
+        return Err(DaemonRunError::InstanceLockPermissions {
+            path: path.to_owned(),
+            mode,
+        });
+    }
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|source| {
+        if source.kind() == io::ErrorKind::WouldBlock {
+            DaemonRunError::InstanceLockInUse(path.to_owned())
+        } else {
+            DaemonRunError::InstanceLockAcquire {
+                path: path.to_owned(),
+                source,
+            }
+        }
+    })?;
+    Ok(InstanceLock(file))
+}
+
+#[derive(Debug)]
+struct InstanceLock(#[allow(dead_code)] File);
 
 async fn monitor_runtime_license(
     repository: FileLicenseRepository,
@@ -495,6 +564,32 @@ pub(super) enum DaemonRunError {
     },
     #[error("configured production license public key is invalid: {0}")]
     LicensePublicKeyInvalid(LicenseError),
+    #[error("production mode requires NOVASIGHT_INSTANCE_LOCK")]
+    InstanceLockMissing,
+    #[error("failed to open instance lock {}: {source}", path.display())]
+    InstanceLockOpen {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to inspect instance lock {}: {source}", path.display())]
+    InstanceLockInspect {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("instance lock path is not a stable regular file: {}", .0.display())]
+    InstanceLockPathUnsafe(PathBuf),
+    #[error("instance lock {} has insecure mode {mode:o}", path.display())]
+    InstanceLockPermissions { path: PathBuf, mode: u32 },
+    #[error("another NovaSight daemon owns instance lock {}", .0.display())]
+    InstanceLockInUse(PathBuf),
+    #[error("failed to acquire instance lock {}: {source}", path.display())]
+    InstanceLockAcquire {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to stop runtime after license invalidation: {0}")]
     LicenseEnforcement(RuntimeError),
     #[error("failed to bind HTTP server at {host}:{port}: {source}")]
@@ -597,6 +692,13 @@ impl DaemonRunError {
             Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::LicensePublicKeyRead { .. } => "LICENSE_PUBLIC_KEY_READ_FAILED",
             Self::LicensePublicKeyInvalid(_) => "LICENSE_PUBLIC_KEY_INVALID",
+            Self::InstanceLockMissing => "INSTANCE_LOCK_MISSING",
+            Self::InstanceLockOpen { .. } => "INSTANCE_LOCK_OPEN_FAILED",
+            Self::InstanceLockInspect { .. } => "INSTANCE_LOCK_INSPECT_FAILED",
+            Self::InstanceLockPathUnsafe(_) => "INSTANCE_LOCK_PATH_UNSAFE",
+            Self::InstanceLockPermissions { .. } => "INSTANCE_LOCK_PERMISSIONS_INSECURE",
+            Self::InstanceLockInUse(_) => "INSTANCE_LOCK_IN_USE",
+            Self::InstanceLockAcquire { .. } => "INSTANCE_LOCK_ACQUIRE_FAILED",
             Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",
@@ -736,6 +838,50 @@ mod tests {
             & 0o7777;
 
         assert_eq!(mode, 0o750);
+    }
+
+    #[test]
+    fn instance_lock_excludes_a_second_daemon_and_releases_with_its_owner() {
+        let path = TestPath::new();
+        let first = lock_instance_path(&path.0).expect("first daemon owns instance lock");
+
+        let error = lock_instance_path(&path.0).expect_err("second daemon must be excluded");
+        assert!(matches!(error, DaemonRunError::InstanceLockInUse(_)));
+
+        drop(first);
+        lock_instance_path(&path.0).expect("lock is reusable after daemon shutdown");
+    }
+
+    #[test]
+    fn instance_lock_rejects_a_symlink_path() {
+        let path = TestPath::new();
+        let target = path.0.with_file_name("target.lock");
+        std::fs::write(&target, "").expect("create target");
+        std::os::unix::fs::symlink(&target, &path.0).expect("create lock symlink");
+
+        let error = lock_instance_path(&path.0).expect_err("symlink lock must fail closed");
+        assert!(matches!(error, DaemonRunError::InstanceLockPathUnsafe(_)));
+    }
+
+    #[test]
+    fn instance_lock_rejects_hardlinks_and_writable_by_others_files() {
+        let hardlink = TestPath::new();
+        let target = hardlink.0.with_file_name("target.lock");
+        std::fs::write(&target, "").expect("create hardlink target");
+        std::fs::hard_link(&target, &hardlink.0).expect("create hardlink");
+        let error = lock_instance_path(&hardlink.0).expect_err("hardlink lock must fail closed");
+        assert!(matches!(error, DaemonRunError::InstanceLockPathUnsafe(_)));
+
+        let writable = TestPath::new();
+        std::fs::write(&writable.0, "").expect("create writable lock");
+        std::fs::set_permissions(&writable.0, std::fs::Permissions::from_mode(0o666))
+            .expect("set insecure permissions");
+        let error =
+            lock_instance_path(&writable.0).expect_err("writable-by-others lock must fail closed");
+        assert!(matches!(
+            error,
+            DaemonRunError::InstanceLockPermissions { .. }
+        ));
     }
 
     #[tokio::test]

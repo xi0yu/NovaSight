@@ -168,6 +168,10 @@ pub async fn entry() -> ExitCode {
                 eprintln!("{}: {error}", error.code());
                 return ExitCode::FAILURE;
             }
+            if let Err(error) = server::preflight_instance_lock(server::DaemonMode::DryRun) {
+                eprintln!("{}: {error}", error.code());
+                return ExitCode::FAILURE;
+            }
             println!(
                 "PASS mode=dry_run config={} model_ingress_helper=ready motion_profile=ready hardware_not_started=true",
                 args.config.display()
@@ -179,6 +183,10 @@ pub async fn entry() -> ExitCode {
             return ExitCode::FAILURE;
         }
         if let Err(error) = server::preflight_license_policy(server::DaemonMode::Production) {
+            eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
+        if let Err(error) = server::preflight_instance_lock(server::DaemonMode::Production) {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
@@ -201,7 +209,7 @@ pub async fn entry() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "PASS mode=production config={} license_verifier=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true capture_not_started=true pointer_not_connected=true",
+                "PASS mode=production config={} license_verifier=ready instance_lock=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true capture_not_started=true pointer_not_connected=true",
                 args.config.display()
             );
             return ExitCode::SUCCESS;

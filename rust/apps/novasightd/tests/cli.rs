@@ -190,7 +190,7 @@ fn production_check_rejects_an_invalid_license_public_key() {
 }
 
 #[test]
-fn valid_license_public_key_reaches_the_platform_build_boundary() {
+fn production_check_requires_the_configured_instance_lock() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let public_key =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/license-public.pem");
@@ -198,6 +198,26 @@ fn valid_license_public_key_reaches_the_platform_build_boundary() {
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", public_key)
+        .env_remove("NOVASIGHT_INSTANCE_LOCK")
+        .output()
+        .expect("run production check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("INSTANCE_LOCK_MISSING"));
+}
+
+#[test]
+fn valid_production_authority_reaches_the_platform_build_boundary() {
+    let directory = TempDirectory::new();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let public_key =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/license-public.pem");
+    let output = Command::new(binary())
+        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", public_key)
+        .env("NOVASIGHT_INSTANCE_LOCK", directory.join("instance.lock"))
         .output()
         .expect("run production check");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");

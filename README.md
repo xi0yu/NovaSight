@@ -172,7 +172,10 @@ cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features d
 cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
 scripts/stage_jetson_release.sh
 sudo build/jetson-release/scripts/install_jetson_release.sh
-sudo /opt/novasight/current/bin/novasightd \
+sudo install -d -m 0755 /run/novasight
+sudo env NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock \
+  NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem \
+  /opt/novasight/current/bin/novasightd \
   --config /etc/novasight/novasight.yaml --check
 ```
 
@@ -213,6 +216,10 @@ public key at `/etc/novasight/license-public.pem` and reference it from
 `NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem`; the unit
 reads this environment file before preflight. `NOVASIGHT_LICENSE_PUBLIC_KEY`
 remains available for environments that can safely supply the PEM text directly.
+Production preflight parses the RSA public key and acquires the configured
+`NOVASIGHT_INSTANCE_LOCK`; the running daemon holds that kernel lock for its
+entire lifetime, so a second configuration cannot become another hardware
+authority by choosing a different HTTP port or control socket.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.
