@@ -135,6 +135,9 @@ if [[ "${RUN_BUILD}" -eq 1 ]]; then
   echo "==> Building canonical Rust daemon and thin CLI"
   cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
   cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
+
+  echo "==> Staging relocatable Jetson release layout"
+  scripts/stage_jetson_release.sh build/jetson-release
 fi
 
 echo "==> Verifying optional legacy Python pyds binding"
@@ -156,9 +159,9 @@ fi
 
 echo "==> NovaSight Jetson setup complete"
 echo "Canonical Rust production preflight:"
-echo "  rust/target/release/novasightd --config rust/config/novasightd.example.yaml --check"
+echo "  build/jetson-release/bin/novasightd --config rust/config/novasightd.example.yaml --check"
 echo "Thin local control client:"
-echo "  rust/target/release/novasightctl --help"
+echo "  build/jetson-release/bin/novasightctl --help"
 echo "Legacy Python fallback remains available with:"
 echo "  source .venv/bin/activate"
 echo "  python3 -m novasight --host 0.0.0.0 --port 5174"

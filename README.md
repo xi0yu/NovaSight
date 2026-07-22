@@ -169,9 +169,15 @@ Start with the example config:
 scripts/build_deepstream_parser.sh
 scripts/build_deepstream_bridge.sh
 cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
-rust/target/release/novasightd --config rust/config/novasightd.example.yaml --check
-rust/target/release/novasightd --config rust/config/novasightd.example.yaml
+cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
+scripts/stage_jetson_release.sh
+build/jetson-release/bin/novasightd --config rust/config/novasightd.example.yaml --check
+build/jetson-release/bin/novasightd --config rust/config/novasightd.example.yaml
 ```
+
+The staged `bin/../lib` layout matches the daemon's production RUNPATH and the
+`/opt/novasight/{bin,lib}` systemd layout. Running the unstaged Cargo binary is
+not a production check because the native bridge is built outside its RUNPATH.
 
 The example config starts the active TensorRT deployment through nvinfer. kmNet
 auto-connect runs independently.
