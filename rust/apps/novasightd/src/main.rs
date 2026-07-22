@@ -54,6 +54,10 @@ async fn main() -> ExitCode {
     }
 
     if !args.dry_run {
+        if let Err(error) = loaded.config().require_production_adapters() {
+            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
+            return ExitCode::FAILURE;
+        }
         eprintln!(
             "DEVICE_BACKEND_NOT_CONFIGURED: production output requires a real device adapter; use --dry-run only for diagnostics"
         );

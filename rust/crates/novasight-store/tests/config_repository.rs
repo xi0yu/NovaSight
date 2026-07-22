@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use novasight_store::config::{AppConfig, ConfigRepository, YamlConfigRepository};
+use novasight_store::config::{
+    AppConfig, ConfigRepository, DeepStreamBackend, YamlConfigRepository,
+};
 use serde_yaml::Value;
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -40,8 +42,16 @@ fn loads_current_project_yaml_without_dropping_legacy_sections() {
     let config = YamlConfigRepository::load(project_config).unwrap();
 
     assert_eq!(config.server.port, 5174);
-    assert!(config.legacy.contains_key("capture"));
-    assert!(config.legacy.contains_key("inference"));
+    let capture = config.capture.as_ref().unwrap();
+    assert_eq!(capture.device, Path::new("/dev/video0"));
+    assert_eq!(capture.backend, DeepStreamBackend::DeepstreamNvinfer);
+    assert!(capture.latest_only);
+    let inference = config.inference.as_ref().unwrap();
+    assert_eq!(inference.backend, DeepStreamBackend::DeepstreamNvinfer);
+    assert!(inference.require_gpu);
+    assert!(config.device.as_ref().unwrap().auto_connect);
+    assert!(config.require_production_adapters().is_err());
+    assert!(config.legacy.contains_key("source"));
 }
 
 #[test]
@@ -62,6 +72,11 @@ fn loads_the_complete_rust_owned_example() {
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
+    let adapters = config.require_production_adapters().unwrap();
+    assert_eq!(adapters.capture.appsink_max_buffers, 1);
+    assert_eq!(adapters.inference.deepstream_component_id, 1);
+    assert_eq!(adapters.inference.deepstream_probe_element, "primary-infer");
+    assert!(!adapters.device.auto_connect);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
 }
@@ -75,7 +90,7 @@ fn missing_file_is_an_error_not_silent_defaults() {
 }
 
 #[test]
-fn defaults_match_the_current_deployment_after_a_document_is_opened() {
+fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
     let directory = TempDirectory::new();
     let path = directory.join("minimal.yaml");
     fs::write(&path, "{}\n").unwrap();
@@ -98,6 +113,11 @@ fn defaults_match_the_current_deployment_after_a_document_is_opened() {
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
     assert_eq!(config.paths.python_executable, Path::new("python3"));
+    assert!(config.capture.is_none());
+    assert!(config.inference.is_none());
+    assert!(config.device.is_none());
+    let error = config.require_production_adapters().unwrap_err();
+    assert_eq!(error.field, "capture");
 }
 
 #[test]
@@ -111,6 +131,138 @@ fn parse_and_io_errors_have_distinct_stable_codes() {
 
     assert_eq!(parse_error.code(), "CONFIG_PARSE_ERROR");
     assert_eq!(io_error.code(), "CONFIG_IO_ERROR");
+}
+
+#[test]
+fn invalid_production_adapter_configuration_fails_closed() {
+    let directory = TempDirectory::new();
+    let path = directory.join("invalid-adapter.yaml");
+    fs::write(
+        &path,
+        "capture:\n  latest_only: false\ninference:\n  allow_cpu_fallback: true\n",
+    )
+    .unwrap();
+
+    let error = YamlConfigRepository::load(path).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("capture.latest_only"));
+}
+
+#[test]
+fn present_production_sections_cannot_invent_adapter_parameters() {
+    let directory = TempDirectory::new();
+    let path = directory.join("empty-adapters.yaml");
+    fs::write(&path, "capture: {}\ninference: {}\nhardware: {}\n").unwrap();
+
+    let config = YamlConfigRepository::load(path).unwrap();
+    let error = config.require_production_adapters().unwrap_err();
+
+    assert_eq!(error.field, "capture");
+    assert!(error.message.contains("must be explicit"));
+}
+
+#[test]
+fn saving_partial_adapter_sections_cannot_materialize_defaults() {
+    let directory = TempDirectory::new();
+    let path = directory.join("partial-adapters.yaml");
+    let original = "revision: 0\ncapture: {}\ninference: {}\nhardware: {}\n";
+    fs::write(&path, original).unwrap();
+    let config = YamlConfigRepository::load(&path).unwrap();
+
+    let error = YamlConfigRepository::save(&path, &config, 0).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("capture"));
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn whitespace_only_parser_library_fails_closed() {
+    let directory = TempDirectory::new();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let path = directory.join("blank-parser.yaml");
+    let document = fs::read_to_string(source).unwrap().replace(
+        "deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so",
+        "deepstream_parser_library: '   '",
+    );
+    fs::write(&path, document).unwrap();
+
+    let error = YamlConfigRepository::load(path).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(
+        error
+            .to_string()
+            .contains("inference.deepstream_parser_library")
+    );
+}
+
+#[test]
+fn each_production_adapter_reports_its_invalid_field() {
+    let directory = TempDirectory::new();
+    let path = directory.join("invalid-adapter-field.yaml");
+    for (document, field) in [
+        (
+            "inference:\n  allow_cpu_fallback: true\n",
+            "inference.device",
+        ),
+        (
+            "hardware:\n  auto_connect: true\n  port: 0\n",
+            "hardware.port",
+        ),
+        ("capture:\n  preference: manual\n", "capture.preference"),
+    ] {
+        fs::write(&path, document).unwrap();
+
+        let error = YamlConfigRepository::load(&path).unwrap_err();
+
+        assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+        assert!(
+            error.to_string().contains(field),
+            "expected {field} in {error}"
+        );
+    }
+}
+
+#[test]
+fn device_alias_migrates_to_hardware_without_duplicate_fields() {
+    let directory = TempDirectory::new();
+    let path = directory.join("device-alias.yaml");
+    fs::write(
+        &path,
+        "revision: 0\ndevice:\n  auto_connect: true\n  host: 10.0.0.8\n  port: 8888\n  uuid: test-box\n  monitor_port: 5001\n",
+    )
+    .unwrap();
+    let config = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(config.device.as_ref().unwrap().host, "10.0.0.8");
+
+    let saved = YamlConfigRepository::save(&path, &config, 0).unwrap();
+    let document: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+    assert_eq!(saved.device.as_ref().unwrap().host, "10.0.0.8");
+    assert!(document.get("device").is_none());
+    assert_eq!(document["hardware"]["host"].as_str(), Some("10.0.0.8"));
+    assert_eq!(
+        YamlConfigRepository::load(path)
+            .unwrap()
+            .device
+            .unwrap()
+            .host,
+        "10.0.0.8"
+    );
+}
+
+#[test]
+fn conflicting_device_and_hardware_sections_fail_closed() {
+    let directory = TempDirectory::new();
+    let path = directory.join("device-conflict.yaml");
+    fs::write(&path, "device: {}\nhardware: {}\n").unwrap();
+
+    let error = YamlConfigRepository::load(path).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("cannot both be present"));
 }
 
 #[test]
@@ -142,6 +294,16 @@ paths:
     directory: deploy/plugins
 capture:
   device: /dev/video9
+  backend: deepstream_nvinfer
+  memory: nvmm
+  preference: auto_high_fps
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+  width: 0
+  height: 0
+  fps: 0
+  pixel_format: ""
 "#,
     )
     .unwrap();
@@ -172,7 +334,10 @@ capture:
 
     let reloaded = YamlConfigRepository::load(path).unwrap();
     assert_eq!(reloaded.revision, 8);
-    assert!(reloaded.legacy.contains_key("capture"));
+    assert_eq!(
+        reloaded.capture.as_ref().unwrap().device,
+        Path::new("/dev/video9")
+    );
     assert!(reloaded.server.legacy.contains_key("tls"));
     assert!(reloaded.replay.legacy.contains_key("decoder"));
     assert!(reloaded.paths.legacy.contains_key("plugins"));

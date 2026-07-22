@@ -92,8 +92,22 @@ fn check_loads_config_and_exits_without_starting_the_daemon() {
 }
 
 #[test]
-fn normal_mode_fails_closed_without_a_real_device_backend() {
+fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
     let (_directory, path) = temp_config();
+    let output = Command::new(binary())
+        .args(["--config", path.to_str().expect("UTF-8 path")])
+        .output()
+        .expect("run production mode");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("PRODUCTION_CONFIG_INVALID"));
+    assert!(stderr.contains("capture"));
+}
+
+#[test]
+fn complete_adapter_config_reaches_the_unimplemented_device_boundary() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let output = Command::new(binary())
         .args(["--config", path.to_str().expect("UTF-8 path")])
         .output()

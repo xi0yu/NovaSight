@@ -8,6 +8,40 @@ replay:
   enabled: true
   frame_interval_ms: 16
   output_gate_open: false
+capture:
+  device: /dev/video0
+  backend: deepstream_nvinfer
+  memory: nvmm
+  preference: auto_high_fps
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+  width: 0
+  height: 0
+  fps: 0
+  pixel_format: ""
+inference:
+  enabled: true
+  backend: deepstream_nvinfer
+  device: cuda
+  require_gpu: true
+  allow_cpu_fallback: false
+  confidence_threshold: 0.25
+  nms_threshold: 0.45
+  inference_input_deadline_ms: 55.0
+  deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
+  deepstream_component_id: 1
+  deepstream_probe_element: primary-infer
+  deepstream_probe_pad: src
+  input_source: source.default
+hardware:
+  auto_connect: false
+  host: 192.168.2.188
+  port: 8888
+  uuid: "12345678"
+  monitor_port: 5001
 paths:
   data_dir: data
   model_dir: data/models

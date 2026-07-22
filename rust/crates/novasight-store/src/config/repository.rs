@@ -5,7 +5,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::os::darwin::fs::MetadataExt as DarwinMetadataExt;
@@ -21,7 +20,7 @@ use xattr::FileExt as XattrFileExt;
 
 use serde_yaml::Value;
 
-use super::AppConfig;
+use super::{AppConfig, ConfigValidationError};
 
 pub trait ConfigRepository {
     type Error: Error + Send + Sync + 'static;
@@ -92,6 +91,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: serde_yaml::Error,
     },
+    Validation {
+        path: PathBuf,
+        source: ConfigValidationError,
+    },
     Serialize {
         path: PathBuf,
         source: serde_yaml::Error,
@@ -132,6 +135,7 @@ impl ConfigError {
             Self::NotFound { .. } => "CONFIG_NOT_FOUND",
             Self::Io { .. } => "CONFIG_IO_ERROR",
             Self::Parse { .. } => "CONFIG_PARSE_ERROR",
+            Self::Validation { .. } => "CONFIG_VALIDATION_ERROR",
             Self::Serialize { .. } => "CONFIG_SERIALIZE_ERROR",
             Self::RevisionConflict { .. } => "CONFIG_REVISION_CONFLICT",
             Self::RevisionOverflow { .. } => "CONFIG_REVISION_OVERFLOW",
@@ -148,6 +152,7 @@ impl ConfigError {
             Self::NotFound { path }
             | Self::Io { path, .. }
             | Self::Parse { path, .. }
+            | Self::Validation { path, .. }
             | Self::Serialize { path, .. }
             | Self::RevisionConflict { path, .. }
             | Self::RevisionOverflow { path, .. }
@@ -196,6 +201,11 @@ impl fmt::Display for ConfigError {
             Self::Parse { path, source } => write!(
                 formatter,
                 "configuration parse failed for {}: {source}",
+                path.display()
+            ),
+            Self::Validation { path, source } => write!(
+                formatter,
+                "configuration validation failed for {}: {source}",
                 path.display()
             ),
             Self::Serialize { path, source } => write!(
@@ -251,6 +261,7 @@ impl Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Parse { source, .. } | Self::Serialize { source, .. } => Some(source),
+            Self::Validation { source, .. } => Some(source),
             Self::NotFound { .. }
             | Self::RevisionConflict { .. }
             | Self::RevisionOverflow { .. }
@@ -269,15 +280,115 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
     (&file)
         .read_to_string(&mut source)
         .map_err(|source| io_error("read", path, source))?;
-    let document: Value = serde_yaml::from_str(&source).map_err(|source| ConfigError::Parse {
-        path: path.to_owned(),
-        source,
-    })?;
-    let config = serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
-        path: path.to_owned(),
-        source,
-    })?;
+    let mut document: Value =
+        serde_yaml::from_str(&source).map_err(|source| ConfigError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+    normalize_root_alias(path, &mut document, "device", "hardware")?;
+    let mut config: AppConfig =
+        serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
+            path: path.to_owned(),
+            source,
+        })?;
+    mark_production_fields(&document, &mut config);
+    config
+        .validate_configured_adapters()
+        .map_err(|source| ConfigError::Validation {
+            path: path.to_owned(),
+            source,
+        })?;
     Ok((file, document, config))
+}
+
+fn mark_production_fields(document: &Value, config: &mut AppConfig) {
+    if let Some(capture) = &mut config.capture {
+        capture.production_fields_explicit = section_has_fields(
+            document,
+            "capture",
+            &[
+                "device",
+                "backend",
+                "memory",
+                "preference",
+                "latest_only",
+                "appsink_max_buffers",
+                "queue_leaky",
+                "width",
+                "height",
+                "fps",
+                "pixel_format",
+            ],
+        );
+    }
+    if let Some(inference) = &mut config.inference {
+        inference.production_fields_explicit = section_has_fields(
+            document,
+            "inference",
+            &[
+                "enabled",
+                "backend",
+                "device",
+                "require_gpu",
+                "allow_cpu_fallback",
+                "confidence_threshold",
+                "nms_threshold",
+                "inference_input_deadline_ms",
+                "deepstream_parser_library",
+                "deepstream_io_mode",
+                "deepstream_batched_push_timeout_us",
+                "deepstream_component_id",
+                "deepstream_probe_element",
+                "deepstream_probe_pad",
+                "input_source",
+            ],
+        );
+    }
+    if let Some(device) = &mut config.device {
+        device.production_fields_explicit = section_has_fields(
+            document,
+            "hardware",
+            &["auto_connect", "host", "port", "uuid", "monitor_port"],
+        );
+    }
+}
+
+fn section_has_fields(document: &Value, section: &str, fields: &[&str]) -> bool {
+    document
+        .get(section)
+        .and_then(Value::as_mapping)
+        .is_some_and(|mapping| {
+            fields
+                .iter()
+                .all(|field| mapping.contains_key(Value::String((*field).to_owned())))
+        })
+}
+
+fn normalize_root_alias(
+    path: &Path,
+    document: &mut Value,
+    alias: &'static str,
+    canonical: &'static str,
+) -> Result<(), ConfigError> {
+    let Some(mapping) = document.as_mapping_mut() else {
+        return Ok(());
+    };
+    let alias_key = Value::String(alias.to_owned());
+    let canonical_key = Value::String(canonical.to_owned());
+    let Some(value) = mapping.remove(&alias_key) else {
+        return Ok(());
+    };
+    if mapping.contains_key(&canonical_key) {
+        return Err(ConfigError::Validation {
+            path: path.to_owned(),
+            source: ConfigValidationError {
+                field: "device",
+                message: "device and hardware cannot both be present".to_owned(),
+            },
+        });
+    }
+    mapping.insert(canonical_key, value);
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -337,6 +448,18 @@ fn save_document(
             actual: current.revision,
         });
     }
+    config
+        .validate_configured_adapters()
+        .map_err(|source| ConfigError::Validation {
+            path: path.to_owned(),
+            source,
+        })?;
+    config
+        .validate_explicit_adapter_fields()
+        .map_err(|source| ConfigError::Validation {
+            path: path.to_owned(),
+            source,
+        })?;
     validate_legacy_keys(path, config)?;
     let mut next = config.clone();
     next.revision =
@@ -352,11 +475,12 @@ fn save_document(
         source,
     })?;
     merge_value(&mut document, replacement);
-    let persisted =
+    let mut persisted: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Serialize {
             path: path.to_owned(),
             source,
         })?;
+    mark_production_fields(&document, &mut persisted);
     let serialized = serde_yaml::to_string(&document).map_err(|source| ConfigError::Serialize {
         path: path.to_owned(),
         source,
@@ -399,7 +523,17 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         (
             "root",
             &config.legacy,
-            &["schema_version", "revision", "server", "replay", "paths"][..],
+            &[
+                "schema_version",
+                "revision",
+                "server",
+                "replay",
+                "paths",
+                "capture",
+                "inference",
+                "hardware",
+                "device",
+            ][..],
         ),
         ("server", &config.server.legacy, &["host", "port"][..]),
         (
@@ -427,7 +561,76 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
             });
         }
     }
+    if let Some(capture) = &config.capture {
+        validate_reserved_legacy(
+            path,
+            "capture",
+            &capture.legacy,
+            &[
+                "device",
+                "backend",
+                "memory",
+                "preference",
+                "latest_only",
+                "appsink_max_buffers",
+                "queue_leaky",
+                "width",
+                "height",
+                "fps",
+                "pixel_format",
+            ],
+        )?;
+    }
+    if let Some(inference) = &config.inference {
+        validate_reserved_legacy(
+            path,
+            "inference",
+            &inference.legacy,
+            &[
+                "enabled",
+                "backend",
+                "device",
+                "require_gpu",
+                "allow_cpu_fallback",
+                "confidence_threshold",
+                "nms_threshold",
+                "inference_input_deadline_ms",
+                "deepstream_parser_library",
+                "deepstream_io_mode",
+                "deepstream_batched_push_timeout_us",
+                "deepstream_component_id",
+                "deepstream_probe_element",
+                "deepstream_probe_pad",
+                "input_source",
+            ],
+        )?;
+    }
+    if let Some(device) = &config.device {
+        validate_reserved_legacy(
+            path,
+            "hardware",
+            &device.legacy,
+            &["auto_connect", "host", "port", "uuid", "monitor_port"],
+        )?;
+    }
     Ok(())
+}
+
+fn validate_reserved_legacy(
+    path: &Path,
+    section: &'static str,
+    legacy: &BTreeMap<String, Value>,
+    reserved: &[&str],
+) -> Result<(), ConfigError> {
+    if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
+        Err(ConfigError::ReservedLegacyKey {
+            path: path.to_owned(),
+            section,
+            key: (*key).to_owned(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

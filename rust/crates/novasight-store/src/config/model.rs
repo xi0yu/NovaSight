@@ -16,6 +16,12 @@ pub struct AppConfig {
     pub replay: ReplayConfig,
     #[serde(default)]
     pub paths: PathConfig,
+    #[serde(default)]
+    pub capture: Option<CaptureConfig>,
+    #[serde(default)]
+    pub inference: Option<InferenceConfig>,
+    #[serde(default, rename = "hardware", alias = "device")]
+    pub device: Option<DeviceConfig>,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
 }
@@ -28,8 +34,417 @@ impl Default for AppConfig {
             server: ServerConfig::default(),
             replay: ReplayConfig::default(),
             paths: PathConfig::default(),
+            capture: None,
+            inference: None,
+            device: None,
             legacy: BTreeMap::new(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
+        if let Some(capture) = &self.capture {
+            capture.validate()?;
+        }
+        if let Some(inference) = &self.inference {
+            inference.validate()?;
+        }
+        if let Some(device) = &self.device {
+            device.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn require_production_adapters(
+        &self,
+    ) -> Result<ProductionAdapterConfig<'_>, ConfigValidationError> {
+        self.validate_configured_adapters()?;
+        let capture = self.capture.as_ref().ok_or_else(|| {
+            ConfigValidationError::new("capture", "section is required in production")
+        })?;
+        let inference = self.inference.as_ref().ok_or_else(|| {
+            ConfigValidationError::new("inference", "section is required in production")
+        })?;
+        let device = self.device.as_ref().ok_or_else(|| {
+            ConfigValidationError::new("hardware", "section is required in production")
+        })?;
+        self.validate_explicit_adapter_fields()?;
+        Ok(ProductionAdapterConfig {
+            capture,
+            inference,
+            device,
+        })
+    }
+
+    pub(super) fn validate_explicit_adapter_fields(&self) -> Result<(), ConfigValidationError> {
+        for (section, explicit) in [
+            (
+                "capture",
+                self.capture
+                    .as_ref()
+                    .is_none_or(|config| config.production_fields_explicit),
+            ),
+            (
+                "inference",
+                self.inference
+                    .as_ref()
+                    .is_none_or(|config| config.production_fields_explicit),
+            ),
+            (
+                "hardware",
+                self.device
+                    .as_ref()
+                    .is_none_or(|config| config.production_fields_explicit),
+            ),
+        ] {
+            if !explicit {
+                return Err(ConfigValidationError::new(
+                    section,
+                    "all production adapter fields must be explicit in YAML",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ProductionAdapterConfig<'a> {
+    pub capture: &'a CaptureConfig,
+    pub inference: &'a InferenceConfig,
+    pub device: &'a DeviceConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigValidationError {
+    pub field: &'static str,
+    pub message: String,
+}
+
+impl ConfigValidationError {
+    fn new(field: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            field,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.field, self.message)
+    }
+}
+
+impl std::error::Error for ConfigValidationError {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CaptureConfig {
+    #[serde(default = "default_capture_device")]
+    pub device: PathBuf,
+    #[serde(default)]
+    pub backend: DeepStreamBackend,
+    #[serde(default)]
+    pub memory: CaptureMemory,
+    #[serde(default)]
+    pub preference: CapturePreference,
+    #[serde(default = "default_true")]
+    pub latest_only: bool,
+    #[serde(default = "default_one_u32")]
+    pub appsink_max_buffers: u32,
+    #[serde(default)]
+    pub queue_leaky: QueueLeaky,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub fps: u32,
+    #[serde(default)]
+    pub pixel_format: String,
+    #[serde(skip)]
+    pub(crate) production_fields_explicit: bool,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            device: default_capture_device(),
+            backend: DeepStreamBackend::default(),
+            memory: CaptureMemory::default(),
+            preference: CapturePreference::default(),
+            latest_only: true,
+            appsink_max_buffers: 1,
+            queue_leaky: QueueLeaky::default(),
+            width: 0,
+            height: 0,
+            fps: 0,
+            pixel_format: String::new(),
+            production_fields_explicit: false,
+            legacy: BTreeMap::new(),
+        }
+    }
+}
+
+impl CaptureConfig {
+    fn validate(&self) -> Result<(), ConfigValidationError> {
+        if self.device.as_os_str().is_empty() {
+            return Err(ConfigValidationError::new(
+                "capture.device",
+                "must not be empty",
+            ));
+        }
+        if !self.latest_only {
+            return Err(ConfigValidationError::new(
+                "capture.latest_only",
+                "must be true",
+            ));
+        }
+        if self.appsink_max_buffers != 1 {
+            return Err(ConfigValidationError::new(
+                "capture.appsink_max_buffers",
+                "must be 1 for capacity-one capture",
+            ));
+        }
+        if self.preference == CapturePreference::Manual
+            && (self.pixel_format.trim().is_empty()
+                || self.width == 0
+                || self.height == 0
+                || self.fps == 0)
+        {
+            return Err(ConfigValidationError::new(
+                "capture.preference",
+                "manual requires pixel_format, width, height, and fps",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InferenceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub backend: DeepStreamBackend,
+    #[serde(default)]
+    pub device: ComputeDevice,
+    #[serde(default = "default_true")]
+    pub require_gpu: bool,
+    #[serde(default)]
+    pub allow_cpu_fallback: bool,
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f64,
+    #[serde(default = "default_nms_threshold")]
+    pub nms_threshold: f64,
+    #[serde(default = "default_inference_deadline_ms")]
+    /// Zero disables this additional deadline; runtime freshness still applies.
+    pub inference_input_deadline_ms: f64,
+    #[serde(default = "default_parser_library")]
+    pub deepstream_parser_library: PathBuf,
+    #[serde(default = "default_deepstream_io_mode")]
+    pub deepstream_io_mode: i32,
+    #[serde(default)]
+    pub deepstream_batched_push_timeout_us: i64,
+    #[serde(default = "default_inference_component_id")]
+    pub deepstream_component_id: i32,
+    #[serde(default = "default_probe_element")]
+    pub deepstream_probe_element: String,
+    #[serde(default = "default_probe_pad")]
+    pub deepstream_probe_pad: String,
+    #[serde(default)]
+    pub input_source: InferenceInputSource,
+    #[serde(skip)]
+    pub(crate) production_fields_explicit: bool,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: DeepStreamBackend::default(),
+            device: ComputeDevice::default(),
+            require_gpu: true,
+            allow_cpu_fallback: false,
+            confidence_threshold: default_confidence_threshold(),
+            nms_threshold: default_nms_threshold(),
+            inference_input_deadline_ms: default_inference_deadline_ms(),
+            deepstream_parser_library: default_parser_library(),
+            deepstream_io_mode: default_deepstream_io_mode(),
+            deepstream_batched_push_timeout_us: 0,
+            deepstream_component_id: default_inference_component_id(),
+            deepstream_probe_element: default_probe_element(),
+            deepstream_probe_pad: default_probe_pad(),
+            input_source: InferenceInputSource::default(),
+            production_fields_explicit: false,
+            legacy: BTreeMap::new(),
+        }
+    }
+}
+
+impl InferenceConfig {
+    fn validate(&self) -> Result<(), ConfigValidationError> {
+        if !self.require_gpu || self.allow_cpu_fallback {
+            return Err(ConfigValidationError::new(
+                "inference.device",
+                "must require CUDA with CPU fallback disabled",
+            ));
+        }
+        for (field, value) in [
+            ("inference.confidence_threshold", self.confidence_threshold),
+            ("inference.nms_threshold", self.nms_threshold),
+        ] {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(ConfigValidationError::new(
+                    field,
+                    "must be finite and in [0, 1]",
+                ));
+            }
+        }
+        if !self.inference_input_deadline_ms.is_finite() || self.inference_input_deadline_ms < 0.0 {
+            return Err(ConfigValidationError::new(
+                "inference.inference_input_deadline_ms",
+                "must be finite and non-negative",
+            ));
+        }
+        if self
+            .deepstream_parser_library
+            .to_string_lossy()
+            .trim()
+            .is_empty()
+        {
+            return Err(ConfigValidationError::new(
+                "inference.deepstream_parser_library",
+                "must not be empty",
+            ));
+        }
+        if self.deepstream_component_id < 0 {
+            return Err(ConfigValidationError::new(
+                "inference.deepstream_component_id",
+                "must be non-negative",
+            ));
+        }
+        if self.deepstream_io_mode < 0 || self.deepstream_batched_push_timeout_us < 0 {
+            return Err(ConfigValidationError::new(
+                "inference.deepstream_io_mode",
+                "I/O mode and batched push timeout must be non-negative",
+            ));
+        }
+        if self.deepstream_probe_element.trim().is_empty()
+            || self.deepstream_probe_pad.trim().is_empty()
+        {
+            return Err(ConfigValidationError::new(
+                "inference.deepstream_probe_element",
+                "probe element and pad must not be empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeepStreamBackend {
+    #[default]
+    DeepstreamNvinfer,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMemory {
+    #[default]
+    Nvmm,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapturePreference {
+    #[default]
+    AutoHighFps,
+    AutoLowLatency,
+    AutoBalanced,
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueLeaky {
+    #[default]
+    Downstream,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputeDevice {
+    #[default]
+    Cuda,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum InferenceInputSource {
+    #[default]
+    #[serde(rename = "source.default")]
+    SourceDefault,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceConfig {
+    #[serde(default)]
+    pub auto_connect: bool,
+    #[serde(default = "default_kmnet_host")]
+    pub host: String,
+    #[serde(default = "default_kmnet_port")]
+    pub port: u16,
+    #[serde(default = "default_kmnet_uuid")]
+    pub uuid: String,
+    #[serde(default = "default_kmnet_monitor_port")]
+    pub monitor_port: u16,
+    #[serde(skip)]
+    pub(crate) production_fields_explicit: bool,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for DeviceConfig {
+    fn default() -> Self {
+        Self {
+            auto_connect: false,
+            host: default_kmnet_host(),
+            port: default_kmnet_port(),
+            uuid: default_kmnet_uuid(),
+            monitor_port: default_kmnet_monitor_port(),
+            production_fields_explicit: false,
+            legacy: BTreeMap::new(),
+        }
+    }
+}
+
+impl DeviceConfig {
+    fn validate(&self) -> Result<(), ConfigValidationError> {
+        if self.auto_connect && self.host.trim().is_empty() {
+            return Err(ConfigValidationError::new(
+                "hardware.host",
+                "must not be empty",
+            ));
+        }
+        if self.auto_connect && self.uuid.trim().is_empty() {
+            return Err(ConfigValidationError::new(
+                "hardware.uuid",
+                "must not be empty",
+            ));
+        }
+        if self.auto_connect && (self.port == 0 || self.monitor_port == 0) {
+            return Err(ConfigValidationError::new(
+                "hardware.port",
+                "port and monitor_port must be non-zero when auto_connect is enabled",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -150,4 +565,64 @@ fn default_license() -> PathBuf {
 
 fn default_python_executable() -> PathBuf {
     PathBuf::from("python3")
+}
+
+fn default_capture_device() -> PathBuf {
+    PathBuf::from("/dev/video0")
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_one_u32() -> u32 {
+    1
+}
+
+const fn default_confidence_threshold() -> f64 {
+    0.25
+}
+
+const fn default_nms_threshold() -> f64 {
+    0.45
+}
+
+const fn default_inference_deadline_ms() -> f64 {
+    55.0
+}
+
+fn default_parser_library() -> PathBuf {
+    PathBuf::from("build/deepstream-parser/libnovasight_parser.so")
+}
+
+const fn default_deepstream_io_mode() -> i32 {
+    2
+}
+
+const fn default_inference_component_id() -> i32 {
+    1
+}
+
+fn default_probe_element() -> String {
+    "primary-infer".to_owned()
+}
+
+fn default_probe_pad() -> String {
+    "src".to_owned()
+}
+
+fn default_kmnet_host() -> String {
+    "192.168.2.188".to_owned()
+}
+
+const fn default_kmnet_port() -> u16 {
+    8888
+}
+
+fn default_kmnet_uuid() -> String {
+    "12345678".to_owned()
+}
+
+const fn default_kmnet_monitor_port() -> u16 {
+    5001
 }
