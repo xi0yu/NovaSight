@@ -109,6 +109,8 @@ enum ModelCommand {
     Inspect { artifact_id: i64 },
     /// Read the current profile from the unified Engine manifest.
     Profile { artifact_id: i64 },
+    /// Derive the DeepStream contract from the bound Engine profile receipt.
+    Recommend { artifact_id: i64 },
     /// Apply explicit preprocessing and decoder semantics from a JSON file.
     Configure {
         artifact_id: i64,
@@ -356,6 +358,12 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .model_profile(artifact_id)
             .await
             .map(CommandOutput::Model),
+        Command::Model {
+            command: ModelCommand::Recommend { artifact_id },
+        } => client
+            .deepstream_recommendation(artifact_id)
+            .await
+            .map(CommandOutput::Json),
         Command::Model {
             command:
                 ModelCommand::Configure {

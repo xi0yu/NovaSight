@@ -162,6 +162,37 @@ async fn rust_control_plane_owns_inspect_configure_probe_and_publish_sequence() 
     let stored = request_json(app.clone(), "GET", "/api/models/artifacts/1/profile", None).await;
     assert_eq!(stored["profile"]["decoder"]["parser_type"], "yolov8_raw");
 
+    let recommendation = request_json(
+        app.clone(),
+        "GET",
+        "/api/models/artifacts/1/deepstream/recommendation",
+        None,
+    )
+    .await;
+    assert_eq!(recommendation["artifact_id"], 1);
+    assert_eq!(recommendation["artifact_path"], "model.engine");
+    assert_eq!(recommendation["recommendation"]["input_name"], "images");
+    assert_eq!(
+        recommendation["recommendation"]["input_shape"],
+        json!([1, 3, 320, 320])
+    );
+    assert_eq!(recommendation["recommendation"]["output_name"], "output0");
+    assert_eq!(recommendation["recommendation"]["class_count"], 1);
+    assert_eq!(
+        recommendation["recommendation"]["runtime_precision"],
+        "fp32"
+    );
+    assert_eq!(recommendation["class_names"], json!(["target"]));
+    assert_eq!(recommendation["output_has_objectness"], false);
+    assert_eq!(
+        recommendation["sources"]["input_contract"],
+        "model_profile_receipt"
+    );
+    assert_eq!(
+        recommendation["io_tensors"][1],
+        json!({"name":"output0","shape":[1,5,2100],"dtype":"float32","mode":"output"})
+    );
+
     let probed = request_json(
         app.clone(),
         "POST",

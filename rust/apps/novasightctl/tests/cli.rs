@@ -340,18 +340,30 @@ async fn device_commands_use_the_supervisor_owned_diagnostic_path() {
 async fn model_profile_command_uses_the_daemon_model_contract() {
     let socket = SocketPath::new();
     let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
-    let app = axum::Router::new().route(
-        "/api/models/artifacts/{artifact_id}/profile",
-        axum::routing::get(
-            |axum::extract::Path(artifact_id): axum::extract::Path<i64>| async move {
-                axum::Json(serde_json::json!({
-                    "artifact_id": artifact_id,
-                    "profile_path": "models/detector/v1/model.engine.manifest.json",
-                    "profile": {"status": "VALIDATED"}
-                }))
-            },
-        ),
-    );
+    let app = axum::Router::new()
+        .route(
+            "/api/models/artifacts/{artifact_id}/profile",
+            axum::routing::get(
+                |axum::extract::Path(artifact_id): axum::extract::Path<i64>| async move {
+                    axum::Json(serde_json::json!({
+                        "artifact_id": artifact_id,
+                        "profile_path": "models/detector/v1/model.engine.manifest.json",
+                        "profile": {"status": "VALIDATED"}
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/api/models/artifacts/{artifact_id}/deepstream/recommendation",
+            axum::routing::get(
+                |axum::extract::Path(artifact_id): axum::extract::Path<i64>| async move {
+                    axum::Json(serde_json::json!({
+                        "artifact_id": artifact_id,
+                        "recommendation": {"input_name": "images", "output_name": "output0"}
+                    }))
+                },
+            ),
+        );
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
             .await
@@ -371,6 +383,21 @@ async fn model_profile_command_uses_the_daemon_model_contract() {
     let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(body["artifact_id"], 7);
     assert_eq!(body["profile"]["status"], "VALIDATED");
+
+    let socket_path = socket.0.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        run_cli_args(&socket_path, &["model", "recommend", "7"])
+    })
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["artifact_id"], 7);
+    assert_eq!(body["recommendation"]["input_name"], "images");
 
     server.abort();
 }

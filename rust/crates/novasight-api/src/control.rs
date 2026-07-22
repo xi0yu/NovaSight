@@ -1074,6 +1074,7 @@ enum ControlApiError {
     ModelCatalogUnavailable,
     ModelActivation(ModelActivationError),
     ModelIngress(ModelIngressError),
+    ModelRecommendationInvalid(String),
     CaptureProbe(CaptureProbeError),
     CaptureProbeTask(tokio::task::JoinError),
     CaptureProbeUnavailable,
@@ -1386,6 +1387,11 @@ impl IntoResponse for ControlApiError {
                     error.to_string(),
                 ),
             },
+            Self::ModelRecommendationInvalid(message) => (
+                StatusCode::CONFLICT,
+                "MODEL_RECOMMENDATION_INVALID",
+                message,
+            ),
             Self::CaptureProbe(error) => {
                 let status = match error.code() {
                     "CAPTURE_DEVICE_INVALID" => StatusCode::BAD_REQUEST,

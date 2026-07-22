@@ -39,6 +39,10 @@ pub(super) fn routes() -> Router<ControlState> {
             get(model_profile).put(configure_model_profile),
         )
         .route(
+            "/api/models/artifacts/{artifact_id}/deepstream/recommendation",
+            get(deepstream_recommendation),
+        )
+        .route(
             "/api/models/artifacts/{artifact_id}/probe",
             post(probe_model),
         )
@@ -90,6 +94,248 @@ async fn configure_model_profile(
         .await
         .map(Json)
         .map_err(ControlApiError::ModelIngress)
+}
+
+#[derive(Serialize)]
+struct DeepStreamRecommendationResponse {
+    artifact_id: i64,
+    artifact_path: String,
+    recommendation: DeepStreamRecommendation,
+    io_tensors: Vec<RecommendedTensor>,
+    class_names: Vec<String>,
+    output_has_objectness: bool,
+    sources: std::collections::BTreeMap<&'static str, &'static str>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DeepStreamRecommendation {
+    model_id: String,
+    display_name: String,
+    runtime_precision: String,
+    input_name: String,
+    input_shape: Vec<u64>,
+    input_dtype: String,
+    input_color_format: String,
+    input_scale_factor: f64,
+    maintain_aspect_ratio: bool,
+    symmetric_padding: bool,
+    output_name: String,
+    output_shape: Vec<u64>,
+    output_dtype: String,
+    class_count: u64,
+    confidence_threshold: f64,
+    nms_iou_threshold: f64,
+}
+
+#[derive(Serialize)]
+struct RecommendedTensor {
+    name: String,
+    shape: Vec<u64>,
+    dtype: String,
+    mode: &'static str,
+}
+
+async fn deepstream_recommendation(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+) -> Result<Json<DeepStreamRecommendationResponse>, ControlApiError> {
+    let artifact = run(&state, move |catalog| {
+        catalog.runtime_artifact_by_id(artifact_id)
+    })
+    .await?;
+    if artifact.artifact.kind != "engine" {
+        return Err(ControlApiError::ModelRecommendationInvalid(
+            "DeepStream recommendation requires a TensorRT .engine artifact".to_owned(),
+        ));
+    }
+    let profile = state
+        .runtime
+        .model_ingress(ModelIngressRequest::GetProfile { artifact_id })
+        .await
+        .map_err(ControlApiError::ModelIngress)?
+        .profile;
+    recommendation_from_profile(artifact, profile)
+        .map(Json)
+        .map_err(ControlApiError::ModelRecommendationInvalid)
+}
+
+fn recommendation_from_profile(
+    artifact: novasight_store::model_catalog::RuntimeModelArtifact,
+    profile: serde_json::Value,
+) -> Result<DeepStreamRecommendationResponse, String> {
+    let object = profile
+        .as_object()
+        .ok_or_else(|| "model profile must be an object".to_owned())?;
+    let input = object_value(object, "input")?;
+    let preprocess = object_value(object, "preprocess")?;
+    let decoder = object_value(object, "decoder")?;
+    let postprocess = object_value(object, "postprocess")?;
+    let output = object
+        .get("outputs")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|outputs| outputs.first())
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "model profile has no output tensor".to_owned())?;
+    let labels = string_list(object.get("labels"), "labels")?;
+    let class_count = integer(decoder, "class_count")?;
+    if class_count == 0 || labels.len() != class_count as usize {
+        return Err(
+            "configure the model class contract before requesting a recommendation".to_owned(),
+        );
+    }
+    let input_name = string(input, "name")?;
+    let input_shape = shape(input, "runtime_shape")?;
+    let input_dtype = string(input, "dtype")?;
+    let output_name = string(output, "name")?;
+    let output_shape = shape(output, "shape")?;
+    let output_dtype = string(output, "dtype")?;
+    let output_has_objectness = boolean(decoder, "has_objectness")?;
+    let warnings = object
+        .get("inspection")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|inspection| inspection.get("warnings"))
+        .map(|value| string_list(Some(value), "inspection.warnings"))
+        .transpose()?
+        .unwrap_or_default();
+    let io_tensors = vec![
+        RecommendedTensor {
+            name: input_name.clone(),
+            shape: input_shape.clone(),
+            dtype: input_dtype.clone(),
+            mode: "input",
+        },
+        RecommendedTensor {
+            name: output_name.clone(),
+            shape: output_shape.clone(),
+            dtype: output_dtype.clone(),
+            mode: "output",
+        },
+    ];
+    Ok(DeepStreamRecommendationResponse {
+        artifact_id: artifact.artifact.id,
+        artifact_path: artifact.artifact.path,
+        recommendation: DeepStreamRecommendation {
+            model_id: string(object, "model_id")?,
+            display_name: string(object, "display_name")?,
+            runtime_precision: runtime_precision(&input_dtype).to_owned(),
+            input_name,
+            input_shape,
+            input_dtype,
+            input_color_format: string(preprocess, "color_format")?,
+            input_scale_factor: number(preprocess, "scale")?,
+            maintain_aspect_ratio: string(preprocess, "resize_mode")? == "letterbox",
+            symmetric_padding: boolean(preprocess, "symmetric_padding")?,
+            output_name,
+            output_shape,
+            output_dtype,
+            class_count,
+            confidence_threshold: number(postprocess, "confidence_threshold")?,
+            nms_iou_threshold: number(postprocess, "nms_threshold")?,
+        },
+        io_tensors,
+        class_names: labels,
+        output_has_objectness,
+        sources: std::collections::BTreeMap::from([
+            ("input_contract", "model_profile_receipt"),
+            ("output_contract", "model_profile_receipt"),
+            ("class_contract", "configured_model_profile"),
+            ("preprocess_contract", "configured_model_profile"),
+        ]),
+        warnings,
+    })
+}
+
+fn object_value<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<&'a serde_json::Map<String, serde_json::Value>, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("model profile field {field} must be an object"))
+}
+
+fn string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<String, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("model profile field {field} must be a non-empty string"))
+}
+
+fn shape(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Vec<u64>, String> {
+    let values = object
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("model profile field {field} must be an array"))?;
+    let shape = values
+        .iter()
+        .map(serde_json::Value::as_u64)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| format!("model profile field {field} must contain positive integers"))?;
+    if shape.is_empty() || shape.contains(&0) {
+        return Err(format!(
+            "model profile field {field} must contain positive integers"
+        ));
+    }
+    Ok(shape)
+}
+
+fn integer(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<u64, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("model profile field {field} must be an unsigned integer"))
+}
+
+fn number(object: &serde_json::Map<String, serde_json::Value>, field: &str) -> Result<f64, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("model profile field {field} must be a finite number"))
+}
+
+fn boolean(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<bool, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| format!("model profile field {field} must be boolean"))
+}
+
+fn string_list(value: Option<&serde_json::Value>, field: &str) -> Result<Vec<String>, String> {
+    value
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("model profile field {field} must be an array"))?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("model profile field {field} must contain strings"))
+        })
+        .collect()
+}
+
+fn runtime_precision(dtype: &str) -> &str {
+    match dtype.to_ascii_lowercase().as_str() {
+        "float16" | "fp16" | "half" => "fp16",
+        "int8" => "int8",
+        _ => "fp32",
+    }
 }
 
 #[derive(Deserialize)]

@@ -430,6 +430,15 @@ impl ControlClient {
         .await
     }
 
+    pub async fn deepstream_recommendation(&self, artifact_id: i64) -> Result<Value, ClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/models/artifacts/{artifact_id}/deepstream/recommendation"),
+            None::<&()>,
+        )
+        .await
+    }
+
     pub async fn configure_model(
         &self,
         artifact_id: i64,
