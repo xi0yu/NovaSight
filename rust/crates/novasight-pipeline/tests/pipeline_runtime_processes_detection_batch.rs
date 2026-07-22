@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use image::{Rgb, RgbImage, codecs::jpeg::JpegEncoder};
 use novasight_core::control::humanized_motion::{HumanizedMotionPhase, HumanizedSpeedCurveSource};
+use novasight_core::control::recoil::{RecoilConfig, RecoilState};
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, RecordingPointerDevice,
     RuntimeEpoch,
@@ -238,6 +239,65 @@ fn hot_active_motion_profile_shapes_the_real_device_command_lane() {
     assert!(telemetry.planned_duration_ms >= 35.0);
     ingress.set_trigger_active(false);
     assert!(!runtime.metrics().humanized_motion.enabled);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
+    let epoch = RuntimeEpoch(14);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            recoil: RecoilConfig {
+                enabled: true,
+                base_rate_counts_s: 600.0,
+                max_rate_counts_s: 600.0,
+                startup_ms: 0.0,
+                ..RecoilConfig::default()
+            },
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 1, 1_000_000_000),
+                640,
+                640,
+                vec![Detection::new(1, 0, 300.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].delta_x_counts, 0);
+    assert_eq!(receipts[0].delta_y_counts, 2);
+    let telemetry = runtime.metrics().recoil;
+    assert_eq!(telemetry.state, RecoilState::Hold);
+    assert_eq!(telemetry.source_generation, Some(1));
+    assert_eq!(telemetry.emitted_counts_y, 2);
+
+    clock.0.store(1_100_000_000, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().recoil.state != RecoilState::Stale && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(runtime.metrics().recoil.state, RecoilState::Stale);
+    assert_eq!(device.receipts().len(), 1);
     runtime.shutdown().unwrap();
 }
 

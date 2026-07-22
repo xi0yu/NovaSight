@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use novasight_core::control::humanized_motion::MotionRuntimeParameters;
+use novasight_core::control::recoil::RecoilConfig;
 use novasight_pipeline::MotionProfileHub;
 use novasight_runtime::{
     ConfigService, LoadedApplication, OfflineModelJobRunner, RuntimeDependencies,
@@ -265,6 +266,18 @@ pub async fn entry() -> ExitCode {
 
     let dependencies = dependencies
         .with_model_jobs(model_jobs)
+        .with_recoil(RecoilConfig {
+            enabled: loaded.config().control.recoil.enabled,
+            base_rate_counts_s: loaded.config().control.recoil.base_rate_counts_s,
+            max_rate_counts_s: loaded.config().control.recoil.max_rate_counts_s,
+            startup_ms: loaded.config().control.recoil.startup_ms,
+            positive_deadzone_norm: loaded.config().control.recoil.positive_deadzone_norm,
+            negative_deadzone_norm: loaded.config().control.recoil.negative_deadzone_norm,
+            full_brake_error_norm: loaded.config().control.recoil.full_brake_error_norm,
+            fast_add_gain_counts_s: loaded.config().control.recoil.fast_add_gain_counts_s,
+            max_fast_add_ratio: loaded.config().control.recoil.max_fast_add_ratio,
+            stale_threshold_ms: loaded.config().control.recoil.stale_threshold_ms,
+        })
         .with_motion_profiles(motion_hub, motion_repository);
     match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,

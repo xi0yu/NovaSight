@@ -61,6 +61,7 @@ impl AppConfig {
     pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
         self.pipeline.validate()?;
         self.control.humanized_motion.validate()?;
+        self.control.recoil.validate()?;
         if let Some(capture) = &self.capture {
             capture.validate()?;
         }
@@ -146,8 +147,144 @@ impl AppConfig {
 pub struct RustControlConfig {
     #[serde(default)]
     pub humanized_motion: HumanizedMotionConfig,
+    #[serde(default)]
+    pub recoil: RecoilConfig,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoilConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub base_rate_counts_s: f64,
+    #[serde(default)]
+    pub max_rate_counts_s: f64,
+    #[serde(default = "default_recoil_startup_ms")]
+    pub startup_ms: f64,
+    #[serde(default = "default_recoil_positive_deadzone")]
+    pub positive_deadzone_norm: f64,
+    #[serde(default = "default_recoil_negative_deadzone")]
+    pub negative_deadzone_norm: f64,
+    #[serde(default = "default_recoil_full_brake")]
+    pub full_brake_error_norm: f64,
+    #[serde(default)]
+    pub fast_add_gain_counts_s: f64,
+    #[serde(default = "default_recoil_fast_add_ratio")]
+    pub max_fast_add_ratio: f64,
+    #[serde(default = "default_recoil_stale_threshold_ms")]
+    pub stale_threshold_ms: f64,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for RecoilConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_rate_counts_s: 0.0,
+            max_rate_counts_s: 0.0,
+            startup_ms: default_recoil_startup_ms(),
+            positive_deadzone_norm: default_recoil_positive_deadzone(),
+            negative_deadzone_norm: default_recoil_negative_deadzone(),
+            full_brake_error_norm: default_recoil_full_brake(),
+            fast_add_gain_counts_s: 0.0,
+            max_fast_add_ratio: default_recoil_fast_add_ratio(),
+            stale_threshold_ms: default_recoil_stale_threshold_ms(),
+            legacy: BTreeMap::new(),
+        }
+    }
+}
+
+impl RecoilConfig {
+    fn validate(&self) -> Result<(), ConfigValidationError> {
+        for (field, value, lower, upper) in [
+            (
+                "control.recoil.base_rate_counts_s",
+                self.base_rate_counts_s,
+                0.0,
+                20_000.0,
+            ),
+            (
+                "control.recoil.max_rate_counts_s",
+                self.max_rate_counts_s,
+                0.0,
+                20_000.0,
+            ),
+            ("control.recoil.startup_ms", self.startup_ms, 0.0, 1_000.0),
+            (
+                "control.recoil.positive_deadzone_norm",
+                self.positive_deadzone_norm,
+                0.0,
+                1.0,
+            ),
+            (
+                "control.recoil.negative_deadzone_norm",
+                self.negative_deadzone_norm,
+                0.0,
+                1.0,
+            ),
+            (
+                "control.recoil.full_brake_error_norm",
+                self.full_brake_error_norm,
+                0.0,
+                1.0,
+            ),
+            (
+                "control.recoil.fast_add_gain_counts_s",
+                self.fast_add_gain_counts_s,
+                0.0,
+                20_000.0,
+            ),
+            (
+                "control.recoil.max_fast_add_ratio",
+                self.max_fast_add_ratio,
+                0.0,
+                1.0,
+            ),
+            (
+                "control.recoil.stale_threshold_ms",
+                self.stale_threshold_ms,
+                0.0,
+                5_000.0,
+            ),
+        ] {
+            validate_finite_range(field, value, lower, upper)?;
+        }
+        if self.max_rate_counts_s < self.base_rate_counts_s {
+            return Err(ConfigValidationError::new(
+                "control.recoil.max_rate_counts_s",
+                "must be at least base_rate_counts_s",
+            ));
+        }
+        if self.full_brake_error_norm <= self.negative_deadzone_norm {
+            return Err(ConfigValidationError::new(
+                "control.recoil.full_brake_error_norm",
+                "must exceed negative_deadzone_norm",
+            ));
+        }
+        Ok(())
+    }
+}
+
+const fn default_recoil_startup_ms() -> f64 {
+    35.0
+}
+const fn default_recoil_positive_deadzone() -> f64 {
+    0.04
+}
+const fn default_recoil_negative_deadzone() -> f64 {
+    0.04
+}
+const fn default_recoil_full_brake() -> f64 {
+    0.12
+}
+const fn default_recoil_fast_add_ratio() -> f64 {
+    0.30
+}
+const fn default_recoil_stale_threshold_ms() -> f64 {
+    55.0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1937,5 +2074,20 @@ mod tests {
         config.crosshair.max_offset_px = 49.0;
         let error = config.validate_configured_adapters().unwrap_err();
         assert_eq!(error.field, "crosshair.max_offset_px");
+    }
+
+    #[test]
+    fn recoil_configuration_is_typed_and_fails_closed_on_unsafe_rates() {
+        let mut config: AppConfig = serde_yaml::from_str(
+            "control:\n  recoil:\n    enabled: true\n    base_rate_counts_s: 600\n    max_rate_counts_s: 1000\n    startup_ms: 35\n",
+        )
+        .unwrap();
+        assert!(config.control.recoil.enabled);
+        assert_eq!(config.control.recoil.stale_threshold_ms, 55.0);
+        config.validate_configured_adapters().unwrap();
+
+        config.control.recoil.max_rate_counts_s = 599.0;
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "control.recoil.max_rate_counts_s");
     }
 }

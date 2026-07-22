@@ -315,6 +315,16 @@ per-axis limits and count quantization remain authoritative afterward. Disabling
 the profile is an exact return to static control, and the retained Python
 implementation remains available only as rollback/reference.
 
+Independent recoil is also owned by the Rust output scheduler. It integrates
+`control.recoil` rates at the configured 1–10 ms device cadence, requires a
+fresh left-button state and a fresh target observation, normalizes vertical
+error by a bounded three-sample target-height median, and stops immediately on
+release, target loss, or stale input. Tracking and recoil meet at one Y-axis
+arbiter: two downward demands never stack, while upward tracking can still
+cancel overshoot. The same immutable runtime snapshot publishes recoil state,
+gate, rate, emitted counts, residual, observation age, and source generation to
+the Studio.
+
 ### Legacy CPU-bridge diagnostics
 
 Run a 60-second capture smoke on Jetson:

@@ -4,6 +4,7 @@ use novasight_core::control::humanized_motion::{
     HumanizedMotionPhase, HumanizedMotionReason, HumanizedSpatialCurveSource,
     HumanizedSpeedCurveSource,
 };
+use novasight_core::control::recoil::{RecoilBlockReason, RecoilState};
 use novasight_runtime::{
     AppConfig, CrosshairSnapshot, PipelineState, PreviewSnapshot, RuntimeErrorSummary,
     RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
@@ -163,11 +164,11 @@ pub(crate) struct VisionState {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionControlState {
-    pub pipeline: HumanizedMotionState,
+    pub pipeline: ControlPipelineState,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct HumanizedMotionState {
+pub(crate) struct ControlPipelineState {
     pub humanized_motion_enabled: bool,
     pub humanized_motion_reason: HumanizedMotionReason,
     pub humanized_motion_phase: Option<HumanizedMotionPhase>,
@@ -176,6 +177,21 @@ pub(crate) struct HumanizedMotionState {
     pub humanized_motion_progress: f64,
     pub humanized_motion_side_offset: f64,
     pub humanized_motion_planned_duration_ms: f64,
+    pub recoil_mode: &'static str,
+    pub recoil_enabled: bool,
+    pub recoil_active: bool,
+    pub recoil_state: RecoilState,
+    pub recoil_base_rate_counts_s: f64,
+    pub recoil_fast_add_rate_counts_s: f64,
+    pub recoil_position_gate: f64,
+    pub recoil_final_rate_counts_s: f64,
+    pub recoil_requested_counts_y: f64,
+    pub recoil_emitted_counts_y: i32,
+    pub recoil_residual_counts_y: f64,
+    pub recoil_error_y_norm: Option<f64>,
+    pub recoil_observation_age_ms: Option<f64>,
+    pub recoil_source_generation: Option<u64>,
+    pub recoil_block_reason: RecoilBlockReason,
 }
 
 impl CompatibilityRuntimeState {
@@ -385,7 +401,7 @@ impl CompatibilityRuntimeState {
             vision: VisionState {
                 crosshair: crosshair.cloned(),
                 control: VisionControlState {
-                    pipeline: HumanizedMotionState {
+                    pipeline: ControlPipelineState {
                         humanized_motion_enabled: snapshot
                             .pipeline_metrics
                             .humanized_motion
@@ -412,6 +428,42 @@ impl CompatibilityRuntimeState {
                             .pipeline_metrics
                             .humanized_motion
                             .planned_duration_ms,
+                        recoil_mode: "independent_target_relative_rate",
+                        recoil_enabled: config.is_some_and(|config| config.control.recoil.enabled),
+                        recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
+                        recoil_state: snapshot.pipeline_metrics.recoil.state,
+                        recoil_base_rate_counts_s: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .base_rate_counts_s,
+                        recoil_fast_add_rate_counts_s: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .fast_add_rate_counts_s,
+                        recoil_position_gate: snapshot.pipeline_metrics.recoil.gate,
+                        recoil_final_rate_counts_s: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .final_rate_counts_s,
+                        recoil_requested_counts_y: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .requested_counts_y,
+                        recoil_emitted_counts_y: snapshot.pipeline_metrics.recoil.emitted_counts_y,
+                        recoil_residual_counts_y: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .residual_counts_y,
+                        recoil_error_y_norm: snapshot.pipeline_metrics.recoil.error_y_norm,
+                        recoil_observation_age_ms: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .observation_age_ms,
+                        recoil_source_generation: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .source_generation,
+                        recoil_block_reason: snapshot.pipeline_metrics.recoil.block_reason,
                     },
                 },
             },
@@ -451,12 +503,13 @@ mod tests {
         HumanizedMotionPhase, HumanizedMotionReason, HumanizedMotionTelemetry,
         HumanizedSpatialCurveSource, HumanizedSpeedCurveSource,
     };
+    use novasight_core::control::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_runtime::RuntimeSnapshot;
 
     use super::CompatibilityRuntimeState;
 
     #[test]
-    fn projects_daemon_owned_motion_telemetry_into_studio_shape() {
+    fn projects_daemon_owned_control_telemetry_into_studio_shape() {
         let mut snapshot = RuntimeSnapshot::default();
         snapshot.pipeline_metrics.humanized_motion = HumanizedMotionTelemetry {
             enabled: true,
@@ -467,6 +520,20 @@ mod tests {
             progress: 0.42,
             side_offset: 0.015,
             planned_duration_ms: 180.0,
+        };
+        snapshot.pipeline_metrics.recoil = RecoilDecision {
+            state: RecoilState::Active,
+            base_rate_counts_s: 600.0,
+            fast_add_rate_counts_s: 25.0,
+            gate: 1.0,
+            final_rate_counts_s: 625.0,
+            requested_counts_y: 2.5,
+            emitted_counts_y: 2,
+            residual_counts_y: 0.5,
+            error_y_norm: Some(0.1),
+            observation_age_ms: Some(7.0),
+            source_generation: Some(9),
+            block_reason: RecoilBlockReason::None,
         };
 
         let value = serde_json::to_value(CompatibilityRuntimeState::new(
@@ -487,5 +554,10 @@ mod tests {
         );
         assert_eq!(pipeline["humanized_motion_progress"], 0.42);
         assert_eq!(pipeline["humanized_motion_planned_duration_ms"], 180.0);
+        assert_eq!(pipeline["recoil_state"], "ACTIVE");
+        assert_eq!(pipeline["recoil_active"], true);
+        assert_eq!(pipeline["recoil_final_rate_counts_s"], 625.0);
+        assert_eq!(pipeline["recoil_source_generation"], 9);
+        assert_eq!(pipeline["recoil_block_reason"], "");
     }
 }

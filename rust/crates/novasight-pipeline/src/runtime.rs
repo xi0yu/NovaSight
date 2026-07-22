@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, TryLockError,
     atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
@@ -10,6 +11,10 @@ use novasight_core::control::dual_phase_v2::{
     ControlObservation, DualPhaseConfig, DualPhaseControl,
 };
 use novasight_core::control::humanized_motion::HumanizedMotionTelemetry;
+use novasight_core::control::recoil::{
+    RecoilConfig, RecoilDecision, RecoilInput, TargetRelativeRecoilController,
+    mix_tracking_and_recoil,
+};
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, Generation, PointerDevice, RuntimeEpoch,
@@ -77,6 +82,17 @@ pub struct PipelineConfig {
     pub crosshair: Option<CrosshairHub>,
     /// Hot-swappable immutable trajectory profile shared with the daemon.
     pub motion_profiles: Option<MotionProfileHub>,
+    /// Independent target-relative recoil branch, evaluated at the output
+    /// scheduler cadence rather than the detector cadence.
+    pub recoil: RecoilConfig,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DeviceWorkerConfig {
+    epoch: RuntimeEpoch,
+    max_command_age_ns: u64,
+    output_interval_ms: u64,
+    recoil: RecoilConfig,
 }
 
 impl Default for PipelineConfig {
@@ -90,6 +106,7 @@ impl Default for PipelineConfig {
             trigger_poll_interval_ms: None,
             crosshair: None,
             motion_profiles: None,
+            recoil: RecoilConfig::default(),
         }
     }
 }
@@ -113,6 +130,7 @@ pub struct PipelineMetrics {
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
     pub humanized_motion: HumanizedMotionTelemetry,
+    pub recoil: RecoilDecision,
 }
 
 #[derive(Debug, Error)]
@@ -129,6 +147,8 @@ pub enum PipelineError {
     InvalidOutputInterval { actual_ms: u64 },
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
+    #[error("invalid recoil configuration: {message}")]
+    InvalidRecoilConfig { message: &'static str },
     #[error("pointer device connection failed: {0}")]
     DeviceConnect(String),
     #[error("pointer device disconnect failed: {0}")]
@@ -156,6 +176,7 @@ struct AtomicMetrics {
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
     humanized_motion: Mutex<HumanizedMotionTelemetry>,
+    recoil: Mutex<RecoilDecision>,
 }
 
 #[derive(Debug)]
@@ -170,6 +191,7 @@ struct SharedState {
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
+    latest_recoil_observation: Mutex<Option<RecoilObservation>>,
 }
 
 impl SharedState {
@@ -185,6 +207,7 @@ impl SharedState {
             device_lane: Mutex::new(()),
             event_tx,
             metrics: AtomicMetrics::default(),
+            latest_recoil_observation: Mutex::new(None),
         }
     }
 
@@ -202,6 +225,19 @@ impl SharedState {
         }
     }
 
+    fn record_recoil(&self, value: RecoilDecision) {
+        match self.metrics.recoil.try_lock() {
+            Ok(mut telemetry) => *telemetry = value,
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
+        }
+    }
+
+    fn clear_control_telemetry(&self) {
+        self.record_humanized_motion(HumanizedMotionTelemetry::default());
+        self.record_recoil(RecoilDecision::default());
+    }
+
     fn fault(&self, message: impl Into<String>) {
         let message = message.into();
         self.output_gate.store(false, Ordering::Release);
@@ -209,7 +245,7 @@ impl SharedState {
         self.buttons_available.store(false, Ordering::Release);
         self.button_left.store(false, Ordering::Release);
         self.button_right.store(false, Ordering::Release);
-        self.record_humanized_motion(HumanizedMotionTelemetry::default());
+        self.clear_control_telemetry();
         *self
             .metrics
             .last_fault
@@ -231,7 +267,7 @@ impl SharedState {
         self.buttons_available.store(false, Ordering::Release);
         self.button_left.store(false, Ordering::Release);
         self.button_right.store(false, Ordering::Release);
-        self.record_humanized_motion(HumanizedMotionTelemetry::default());
+        self.clear_control_telemetry();
     }
 }
 
@@ -278,8 +314,7 @@ impl PipelineIngress {
             .store(false, Ordering::Release);
         self.shared.button_left.store(false, Ordering::Release);
         self.shared.button_right.store(false, Ordering::Release);
-        self.shared
-            .record_humanized_motion(HumanizedMotionTelemetry::default());
+        self.shared.clear_control_telemetry();
     }
 
     /// Synchronously retire every future device side effect for this epoch.
@@ -305,8 +340,7 @@ impl PipelineIngress {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
-            self.shared
-                .record_humanized_motion(HumanizedMotionTelemetry::default());
+            self.shared.clear_control_telemetry();
         }
     }
 
@@ -410,6 +444,14 @@ struct TargetedObservation {
     control_now_ns: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct RecoilObservation {
+    generation: Generation,
+    target_id: u64,
+    capture_ts_ns: u64,
+    error_y_norm: f64,
+}
+
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
 /// ownership of vendor objects and submits caller-owned batches through
 /// [`PipelineIngress`]; targeting, control, and device calls each run on
@@ -497,6 +539,10 @@ impl PipelineRuntime {
         {
             return Err(PipelineError::InvalidTriggerPollInterval { actual_ms });
         }
+        config
+            .recoil
+            .validate()
+            .map_err(|message| PipelineError::InvalidRecoilConfig { message })?;
         device
             .connect()
             .map_err(|error| PipelineError::DeviceConnect(error.to_string()))?;
@@ -540,9 +586,12 @@ impl PipelineRuntime {
             Arc::clone(&shared),
             clock,
             Arc::clone(&device),
-            config.epoch,
-            config.max_command_age_ns,
-            config.output_interval_ms,
+            DeviceWorkerConfig {
+                epoch: config.epoch,
+                max_command_age_ns: config.max_command_age_ns,
+                output_interval_ms: config.output_interval_ms,
+                recoil: config.recoil,
+            },
         ) {
             Ok(handle) => handle,
             Err(error) => {
@@ -697,7 +746,7 @@ fn spawn_trigger_worker(
                                         .lock()
                                         .unwrap_or_else(|poisoned| poisoned.into_inner()),
                                 );
-                                shared.record_humanized_motion(HumanizedMotionTelemetry::default());
+                                shared.clear_control_telemetry();
                             }
                         }
                         Ok(None) => {
@@ -707,7 +756,7 @@ fn spawn_trigger_worker(
                         }
                         Err(error) => {
                             shared.trigger_active.store(false, Ordering::Release);
-                            shared.record_humanized_motion(HumanizedMotionTelemetry::default());
+                            shared.clear_control_telemetry();
                             shared.buttons_available.store(false, Ordering::Release);
                             shared.button_left.store(false, Ordering::Release);
                             shared.button_right.store(false, Ordering::Release);
@@ -755,6 +804,8 @@ fn spawn_targeting_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "targeting", || {
                 let mut targeting = TargetingCore::new(config);
+                let mut recoil_target_id = None;
+                let mut recoil_heights = VecDeque::with_capacity(3);
                 while let Some(batch) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
@@ -781,7 +832,14 @@ fn spawn_targeting_worker(
                         batch.stamp().captured_at.0,
                     );
                     let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
-                    let (target_id, aim_x, aim_y, detection_confidence, target_width_px) = match (
+                    let (
+                        target_id,
+                        aim_x,
+                        aim_y,
+                        detection_confidence,
+                        target_width_px,
+                        target_height_px,
+                    ) = match (
                         selection.target_object_id,
                         selection.target_track_id,
                         selection.target_class_id,
@@ -804,6 +862,7 @@ fn spawn_targeting_worker(
                                     aim_y,
                                     f64::from(target.confidence()),
                                     f64::from(target.width()),
+                                    f64::from(target.height()),
                                 ),
                                 None => {
                                     shared.fault(
@@ -816,11 +875,32 @@ fn spawn_targeting_worker(
                         }
                         _ => {
                             let (center_x, center_y) = targeting_center;
-                            (None, center_x, center_y, 0.0, 1.0)
+                            (None, center_x, center_y, 0.0, 1.0, 1.0)
                         }
                     };
                     let (crosshair_x, crosshair_y) = targeting_center;
                     let now = clock.now().0;
+                    let recoil_observation = target_id.map(|target_id| {
+                        if recoil_target_id != Some(target_id) {
+                            recoil_heights.clear();
+                            recoil_target_id = Some(target_id);
+                        }
+                        if recoil_heights.len() == 3 {
+                            recoil_heights.pop_front();
+                        }
+                        recoil_heights.push_back(target_height_px.max(1.0));
+                        let stable_height = median_height(&recoil_heights);
+                        RecoilObservation {
+                            generation: batch.stamp().generation,
+                            target_id,
+                            capture_ts_ns: batch.stamp().captured_at.0,
+                            error_y_norm: ((aim_y - crosshair_y) / stable_height).clamp(-1.0, 1.0),
+                        }
+                    });
+                    *shared
+                        .latest_recoil_observation
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = recoil_observation;
                     let observation = TargetedObservation {
                         stamp: batch.stamp(),
                         target_id,
@@ -845,6 +925,17 @@ fn spawn_targeting_worker(
             worker: "targeting",
             source,
         })
+}
+
+fn median_height(values: &VecDeque<f64>) -> f64 {
+    let mut ordered = values.iter().copied().collect::<Vec<_>>();
+    ordered.sort_by(f64::total_cmp);
+    let middle = ordered.len() / 2;
+    if ordered.len() % 2 == 0 {
+        (ordered[middle - 1] + ordered[middle]) * 0.5
+    } else {
+        ordered[middle]
+    }
 }
 
 fn spawn_control_worker(
@@ -927,20 +1018,49 @@ fn spawn_device_worker(
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
-    epoch: RuntimeEpoch,
-    max_command_age_ns: u64,
-    output_interval_ms: u64,
+    config: DeviceWorkerConfig,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
         .name("novasight-device".to_owned())
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "device", || {
-                let interval = Duration::from_millis(output_interval_ms);
+                let interval = Duration::from_millis(config.output_interval_ms);
+                let interval_s = config.output_interval_ms as f64 / 1_000.0;
+                let mut last_tick_ns = None;
+                let mut recoil = TargetRelativeRecoilController::new(config.recoil)
+                    .expect("pipeline validates recoil config before worker startup");
                 while input.wait_interval(interval) {
-                    let Some(command) = input.try_take() else {
-                        continue;
-                    };
+                    let now_ns = clock.now().0;
+                    let dt_s = last_tick_ns.map_or(interval_s, |last_tick_ns| {
+                        (now_ns.saturating_sub(last_tick_ns) as f64 / 1_000_000_000.0)
+                            .clamp(0.0, interval_s * 2.0)
+                    });
+                    last_tick_ns = Some(now_ns);
+                    let observation = *shared
+                        .latest_recoil_observation
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let observation_age_ms = observation.map_or(0.0, |observation| {
+                        now_ns.saturating_sub(observation.capture_ts_ns) as f64 / 1_000_000.0
+                    });
+                    let recoil_decision = recoil.calculate(RecoilInput {
+                        firing: shared.buttons_available.load(Ordering::Acquire)
+                            && shared.button_left.load(Ordering::Acquire)
+                            && shared.output_gate.load(Ordering::Acquire)
+                            && shared.external_stop.load(Ordering::Acquire) == 0
+                            && shared.status() == PipelineStatus::Running,
+                        now_ns,
+                        dt_s,
+                        target_valid: observation.is_some(),
+                        target_id: observation.map(|value| value.target_id),
+                        source_generation: observation.map(|value| value.generation.0),
+                        observation_age_ms,
+                        error_y_norm: observation.map_or(0.0, |value| value.error_y_norm),
+                    });
+                    shared.record_recoil(recoil_decision);
+
+                    let tracking = input.try_take().map(|command| *command);
                     let _lane = shared
                         .device_lane
                         .lock()
@@ -956,15 +1076,42 @@ fn spawn_device_worker(
                     if !shared.trigger_active.load(Ordering::Acquire) {
                         continue;
                     }
-                    if command.epoch != epoch {
+                    let command = match tracking {
+                        Some(mut command) => {
+                            if recoil_decision.source_generation == Some(command.generation.0) {
+                                command.delta_y_counts = mix_tracking_and_recoil(
+                                    command.delta_y_counts,
+                                    recoil_decision,
+                                );
+                            }
+                            command
+                        }
+                        None => {
+                            let Some(observation) = observation else {
+                                continue;
+                            };
+                            if !recoil_decision.engaged() || recoil_decision.emitted_counts_y == 0 {
+                                continue;
+                            }
+                            DeviceCommand {
+                                epoch: config.epoch,
+                                generation: observation.generation,
+                                issued_at: novasight_core::MonotonicNanos(now_ns),
+                                target_object_id: observation.target_id,
+                                delta_x_counts: 0,
+                                delta_y_counts: recoil_decision.emitted_counts_y,
+                            }
+                        }
+                    };
+                    if command.epoch != config.epoch {
                         shared.fault(format!(
                             "device lane rejected epoch {}, expected {}",
-                            command.epoch.0, epoch.0
+                            command.epoch.0, config.epoch.0
                         ));
                         break;
                     }
-                    let age = clock.now().0.saturating_sub(command.issued_at.0);
-                    if age > max_command_age_ns {
+                    let age = now_ns.saturating_sub(command.issued_at.0);
+                    if age > config.max_command_age_ns {
                         shared
                             .metrics
                             .stale_commands
@@ -986,7 +1133,7 @@ fn spawn_device_worker(
                     if !shared.trigger_active.load(Ordering::Acquire) {
                         continue;
                     }
-                    match device.send(*command) {
+                    match device.send(command) {
                         Ok(_) => {
                             shared
                                 .metrics
@@ -995,7 +1142,7 @@ fn spawn_device_worker(
                         }
                         Err(error) => {
                             shared.trigger_active.store(false, Ordering::Release);
-                            shared.record_humanized_motion(HumanizedMotionTelemetry::default());
+                            shared.clear_control_telemetry();
                             if !is_recoverable_pointer_error(&error) {
                                 shared.fault(format!("pointer device failed: {error}"));
                                 break;
@@ -1081,6 +1228,11 @@ fn snapshot_metrics(
         humanized_motion: *shared
             .metrics
             .humanized_motion
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        recoil: *shared
+            .metrics
+            .recoil
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     }

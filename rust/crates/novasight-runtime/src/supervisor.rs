@@ -11,6 +11,7 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use novasight_core::control::humanized_motion::MotionProfile;
+use novasight_core::control::recoil::RecoilConfig;
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, MonotonicNanos, PointerDevice,
     RecordingPointerDevice, RuntimeEpoch,
@@ -168,6 +169,11 @@ impl RuntimeDependencies {
         self.pipeline.motion_profiles = Some(hub.clone());
         self.motion_profiles = Some(hub);
         self.motion_repository = Some(repository);
+        self
+    }
+
+    pub fn with_recoil(mut self, config: RecoilConfig) -> Self {
+        self.pipeline.recoil = config;
         self
     }
 

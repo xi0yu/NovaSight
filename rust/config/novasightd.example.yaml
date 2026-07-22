@@ -64,6 +64,17 @@ pipeline:
   max_command_age_ms: 55
   output_interval_ms: 4
 control:
+  recoil:
+    enabled: false
+    base_rate_counts_s: 0.0
+    max_rate_counts_s: 0.0
+    startup_ms: 35.0
+    positive_deadzone_norm: 0.04
+    negative_deadzone_norm: 0.04
+    full_brake_error_norm: 0.12
+    fast_add_gain_counts_s: 0.0
+    max_fast_add_ratio: 0.30
+    stale_threshold_ms: 55.0
   humanized_motion:
     enabled: false
     active_profile: ""
