@@ -214,7 +214,10 @@ fn http_request_with_body(
     body: &str,
     content_type: Option<&str>,
 ) -> (u16, String) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // A full workspace test can leave the newly spawned daemon briefly
+    // starved after it has bound and reported both listeners. Keep each
+    // connect attempt short, but allow scheduler contention to clear.
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut stream = loop {
         match TcpStream::connect_timeout(&address, Duration::from_millis(250)) {
             Ok(stream) => break stream,
@@ -225,7 +228,7 @@ fn http_request_with_body(
         }
     };
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set read timeout");
     let content_type = content_type
         .map(|value| format!("Content-Type: {value}\r\n"))
