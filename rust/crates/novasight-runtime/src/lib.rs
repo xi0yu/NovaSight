@@ -14,6 +14,7 @@ pub mod command;
 mod config_service;
 mod error;
 mod model_activation;
+mod model_ingress;
 mod protocol;
 pub mod snapshot;
 mod state;
@@ -24,6 +25,10 @@ pub use command::RuntimeCommand;
 pub use config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use model_activation::{ModelActivationError, ModelActivationRequest, ModelActivationResult};
+pub use model_ingress::{
+    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelProbeInputMode,
+    ModelProfileConfigureRequest, OfflineModelJobRunner,
+};
 pub use novasight_core::RuntimeEpoch;
 pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};

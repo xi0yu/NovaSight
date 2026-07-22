@@ -17,7 +17,8 @@ use futures_util::{Sink, Stream, StreamExt};
 use novasight_core::DeviceReceipt;
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
-    ModelActivationError, RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
+    ModelActivationError, ModelIngressError, RuntimeError, RuntimeErrorKind, RuntimeHandle,
+    RuntimeSnapshot,
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
@@ -706,6 +707,7 @@ enum ControlApiError {
     ModelCatalogTask(tokio::task::JoinError),
     ModelCatalogUnavailable,
     ModelActivation(ModelActivationError),
+    ModelIngress(ModelIngressError),
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -867,6 +869,7 @@ impl IntoResponse for ControlApiError {
                     ),
                     ModelCatalogError::ArtifactProjectMismatch { .. }
                     | ModelCatalogError::ArtifactNotReady(_)
+                    | ModelCatalogError::IngressManifestInvalid { .. }
                     | ModelCatalogError::RollbackUnavailable(_) => (
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "MODEL_DEPLOYMENT_INVALID",
@@ -913,6 +916,85 @@ impl IntoResponse for ControlApiError {
                     "MODEL_PREFLIGHT_UNAVAILABLE",
                     "model activation requires a configured perception preflight adapter"
                         .to_owned(),
+                ),
+            },
+            Self::ModelIngress(error) => match error {
+                ModelIngressError::InvalidRequest(message) => {
+                    (StatusCode::BAD_REQUEST, "MODEL_PROFILE_INVALID", message)
+                }
+                ModelIngressError::ProfileNotFound(_)
+                | ModelIngressError::Catalog(ModelCatalogError::ProjectNotFound(_))
+                | ModelIngressError::Catalog(ModelCatalogError::VersionNotFound(_))
+                | ModelIngressError::Catalog(ModelCatalogError::ArtifactNotFound(_)) => (
+                    StatusCode::NOT_FOUND,
+                    "MODEL_PROFILE_NOT_FOUND",
+                    error.to_string(),
+                ),
+                ModelIngressError::Catalog(ModelCatalogError::ArtifactCurrentlyDeployed(_)) => (
+                    StatusCode::CONFLICT,
+                    "MODEL_ARTIFACT_ACTIVE",
+                    error.to_string(),
+                ),
+                ModelIngressError::LatestFrameUnavailable => (
+                    StatusCode::CONFLICT,
+                    "MODEL_LATEST_FRAME_UNAVAILABLE",
+                    error.to_string(),
+                ),
+                ModelIngressError::Cancelled => (
+                    StatusCode::CONFLICT,
+                    "MODEL_INGRESS_CANCELLED",
+                    error.to_string(),
+                ),
+                ModelIngressError::TimedOut(_) => (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "MODEL_INGRESS_TIMEOUT",
+                    error.to_string(),
+                ),
+                ModelIngressError::Unavailable
+                | ModelIngressError::InvalidRunner(_)
+                | ModelIngressError::HelperIdentityChanged { .. } => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "MODEL_INGRESS_UNAVAILABLE",
+                    error.to_string(),
+                ),
+                ModelIngressError::WorkerFailed { .. } => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "MODEL_INGRESS_FAILED",
+                    error.to_string(),
+                ),
+                ModelIngressError::Runtime(error) => {
+                    let status = match error.kind {
+                        RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
+                        RuntimeErrorKind::SupervisorUnavailable
+                        | RuntimeErrorKind::SupervisorClosed
+                        | RuntimeErrorKind::SupervisorReplyLost
+                        | RuntimeErrorKind::PipelineUnavailable
+                        | RuntimeErrorKind::DeviceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                        RuntimeErrorKind::InvalidDeviceCommand => StatusCode::BAD_REQUEST,
+                        RuntimeErrorKind::PipelineRejected
+                        | RuntimeErrorKind::RuntimeEpochExhausted
+                        | RuntimeErrorKind::Other => StatusCode::INTERNAL_SERVER_ERROR,
+                    };
+                    (status, error.kind.code(), error.message)
+                }
+                ModelIngressError::Catalog(error) => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "MODEL_INGRESS_CATALOG_REJECTED",
+                    error.to_string(),
+                ),
+                ModelIngressError::Spawn { .. }
+                | ModelIngressError::WriteRequest(_)
+                | ModelIngressError::EncodeRequest(_)
+                | ModelIngressError::Wait(_)
+                | ModelIngressError::ReadOutput(_)
+                | ModelIngressError::ReadProfile(_)
+                | ModelIngressError::OutputLimitExceeded(_)
+                | ModelIngressError::DecodeResponse(_)
+                | ModelIngressError::Protocol(_)
+                | ModelIngressError::Failed(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "MODEL_INGRESS_INTERNAL",
+                    error.to_string(),
                 ),
             },
         };

@@ -3,8 +3,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
+use novasight_store::model_catalog::{
+    ModelCatalogError, ModelIngressCatalogUpdate, SqliteModelCatalog,
+};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
@@ -267,6 +270,99 @@ fn filtered_reads_preserve_python_not_found_semantics() {
     assert!(matches!(
         catalog.list_jobs(Some(999)),
         Err(ModelCatalogError::VersionNotFound(999))
+    ));
+}
+
+#[test]
+fn model_ingress_commit_verifies_engine_identity_and_updates_registry_atomically() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("novasight.db");
+    create_python_compatible_database(&path);
+    let engine_dir = directory.0.join("models/yolo/v1");
+    fs::create_dir_all(&engine_dir).unwrap();
+    let engine = engine_dir.join("model-v2.engine");
+    fs::write(&engine, b"engine-v2").unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(b"engine-v2"));
+    Connection::open(&path)
+        .unwrap()
+        .execute("DELETE FROM deployments", [])
+        .unwrap();
+    let catalog = SqliteModelCatalog::open(&path).unwrap();
+
+    let updated = catalog
+        .commit_model_ingress(ModelIngressCatalogUpdate {
+            artifact_id: 6,
+            status: "pending".to_owned(),
+            checksum: checksum.clone(),
+            classes: Some(vec!["target".to_owned()]),
+            input_shape: Some("1x3x320x320".to_owned()),
+        })
+        .unwrap();
+
+    assert_eq!(updated.artifact.checksum, checksum);
+    assert_eq!(updated.artifact.status, "pending");
+    assert_eq!(updated.version.classes, ["target"]);
+    assert_eq!(updated.version.input_shape, "1x3x320x320");
+
+    let error = catalog
+        .commit_model_ingress(ModelIngressCatalogUpdate {
+            artifact_id: 6,
+            status: "ready".to_owned(),
+            checksum: "sha256:wrong".to_owned(),
+            classes: None,
+            input_shape: None,
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ModelCatalogError::IngressIdentityMismatch { artifact_id: 6, .. }
+    ));
+    assert_eq!(
+        catalog.runtime_artifact_by_id(6).unwrap().artifact.status,
+        "pending"
+    );
+}
+
+#[test]
+fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("novasight.db");
+    create_python_compatible_database(&path);
+    let engine_dir = directory.0.join("models/yolo/v1");
+    fs::create_dir_all(&engine_dir).unwrap();
+    fs::write(engine_dir.join("model.engine"), b"engine").unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(b"engine"));
+    let catalog = SqliteModelCatalog::open(&path).unwrap();
+
+    assert!(catalog.artifact_is_deployed(3).unwrap());
+    assert!(matches!(
+        catalog.commit_model_ingress(ModelIngressCatalogUpdate {
+            artifact_id: 3,
+            status: "pending".to_owned(),
+            checksum,
+            classes: None,
+            input_shape: None,
+        }),
+        Err(ModelCatalogError::VersionCurrentlyDeployed {
+            version_id: 2,
+            deployed_artifact_id: 3
+        })
+    ));
+
+    fs::write(engine_dir.join("model-v2.engine"), b"engine-v2").unwrap();
+    let sibling_checksum = format!("sha256:{:x}", Sha256::digest(b"engine-v2"));
+    assert!(matches!(
+        catalog.commit_model_ingress(ModelIngressCatalogUpdate {
+            artifact_id: 6,
+            status: "pending".to_owned(),
+            checksum: sibling_checksum,
+            classes: Some(vec!["changed".to_owned()]),
+            input_shape: Some("1x3x320x320".to_owned()),
+        }),
+        Err(ModelCatalogError::VersionCurrentlyDeployed {
+            version_id: 2,
+            deployed_artifact_id: 3
+        })
     ));
 }
 

@@ -15,6 +15,7 @@ use crate::error::RuntimeError;
 use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
 };
+use crate::model_ingress::{ModelIngressError, ModelIngressRequest, ModelIngressResult};
 use crate::snapshot::RuntimeSnapshot;
 use crate::supervisor::UrgentStopToken;
 
@@ -36,6 +37,10 @@ pub enum RuntimeCommand {
     ActivateModel {
         request: ModelActivationRequest,
         reply: oneshot::Sender<Result<ModelActivationResult, ModelActivationError>>,
+    },
+    ModelIngress {
+        request: ModelIngressRequest,
+        reply: oneshot::Sender<Result<ModelIngressResult, ModelIngressError>>,
     },
     EmergencyStop {
         urgent: UrgentStopToken,

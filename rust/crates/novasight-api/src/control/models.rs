@@ -3,7 +3,10 @@ use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
 };
-use novasight_runtime::{ModelActivationRequest, ModelActivationResult};
+use novasight_runtime::{
+    ModelActivationRequest, ModelActivationResult, ModelIngressRequest, ModelIngressResult,
+    ModelProbeInputMode, ModelProfileConfigureRequest,
+};
 use novasight_store::model_catalog::{
     ConversionJob, Deployment, ModelArtifact, ModelCatalogError, ModelCatalogResponse,
     ModelProject, ModelVersion, SqliteModelCatalog,
@@ -27,6 +30,18 @@ pub(super) fn routes() -> Router<ControlState> {
         .route("/api/models/jobs", get(model_jobs))
         .route("/api/models/jobs/list", post(model_jobs_for_version))
         .route(
+            "/api/models/artifacts/{artifact_id}/inspect",
+            post(inspect_model),
+        )
+        .route(
+            "/api/models/artifacts/{artifact_id}/profile",
+            get(model_profile).put(configure_model_profile),
+        )
+        .route(
+            "/api/models/artifacts/{artifact_id}/probe",
+            post(probe_model),
+        )
+        .route(
             "/api/models/projects/{project_id}/publish",
             post(publish_model),
         )
@@ -34,6 +49,74 @@ pub(super) fn routes() -> Router<ControlState> {
             "/api/models/projects/{project_id}/rollback",
             post(rollback_model),
         )
+}
+
+async fn inspect_model(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+) -> Result<Json<ModelIngressResult>, ControlApiError> {
+    state
+        .runtime
+        .model_ingress(ModelIngressRequest::Inspect { artifact_id })
+        .await
+        .map(Json)
+        .map_err(ControlApiError::ModelIngress)
+}
+
+async fn model_profile(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+) -> Result<Json<ModelIngressResult>, ControlApiError> {
+    state
+        .runtime
+        .model_ingress(ModelIngressRequest::GetProfile { artifact_id })
+        .await
+        .map(Json)
+        .map_err(ControlApiError::ModelIngress)
+}
+
+async fn configure_model_profile(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+    Json(profile): Json<ModelProfileConfigureRequest>,
+) -> Result<Json<ModelIngressResult>, ControlApiError> {
+    state
+        .runtime
+        .model_ingress(ModelIngressRequest::Configure {
+            artifact_id,
+            profile: Box::new(profile),
+        })
+        .await
+        .map(Json)
+        .map_err(ControlApiError::ModelIngress)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProbeModelRequest {
+    #[serde(default = "default_probe_input_mode")]
+    input_mode: ModelProbeInputMode,
+}
+
+const fn default_probe_input_mode() -> ModelProbeInputMode {
+    ModelProbeInputMode::Fixed
+}
+
+async fn probe_model(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+    Json(request): Json<ProbeModelRequest>,
+) -> Result<Json<ModelIngressResult>, ControlApiError> {
+    super::ensure_config_effective(&state).await?;
+    state
+        .runtime
+        .model_ingress(ModelIngressRequest::Probe {
+            artifact_id,
+            input_mode: request.input_mode,
+        })
+        .await
+        .map(Json)
+        .map_err(ControlApiError::ModelIngress)
 }
 
 async fn run<T>(

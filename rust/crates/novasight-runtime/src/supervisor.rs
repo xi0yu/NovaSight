@@ -26,6 +26,10 @@ use crate::error::{RuntimeError, RuntimeErrorKind};
 use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
 };
+use crate::model_ingress::{
+    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage,
+    ModelManifestTransaction, OfflineModelJobRunner, load_profile, validate_worker_output,
+};
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::snapshot::{
     DaemonSnapshot, DeviceMetrics, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshots,
@@ -80,6 +84,7 @@ pub struct RuntimeDependencies {
     pipeline: PipelineConfig,
     perception: Option<Arc<dyn PerceptionAdapter>>,
     model_catalog: Option<SqliteModelCatalog>,
+    model_jobs: Option<OfflineModelJobRunner>,
     urgent_stop: Arc<UrgentStopSignal>,
 }
 
@@ -109,6 +114,7 @@ impl RuntimeDependencies {
             pipeline,
             perception: None,
             model_catalog: None,
+            model_jobs: None,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
     }
@@ -120,6 +126,11 @@ impl RuntimeDependencies {
 
     pub fn with_model_catalog(mut self, model_catalog: SqliteModelCatalog) -> Self {
         self.model_catalog = Some(model_catalog);
+        self
+    }
+
+    pub fn with_model_jobs(mut self, model_jobs: OfflineModelJobRunner) -> Self {
+        self.model_jobs = Some(model_jobs);
         self
     }
 
@@ -523,6 +534,23 @@ impl RuntimeHandle {
             .map_err(|_| ModelActivationError::Runtime(RuntimeError::supervisor_reply_lost()))?
     }
 
+    pub async fn model_ingress(
+        &self,
+        request: ModelIngressRequest,
+    ) -> Result<ModelIngressResult, ModelIngressError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ModelIngress {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ModelIngressError::Failed("runtime supervisor is closed".to_owned()))?;
+        reply_rx.await.map_err(|_| {
+            ModelIngressError::Failed("runtime supervisor reply was lost".to_owned())
+        })?
+    }
+
     pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
         let urgent = self.urgent_stop.register();
         if let Some(ingress) = self.ingress_rx.borrow().clone() {
@@ -710,6 +738,19 @@ async fn handle_command(
             .await;
             let _ = reply.send(result);
         }
+        RuntimeCommand::ModelIngress { request, reply } => {
+            let result = model_ingress_state(
+                request,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active,
+                dependencies,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
         RuntimeCommand::EmergencyStop { urgent, reply } => {
             ingress_tx.send_replace(None);
             if state.begin_stop() {
@@ -864,6 +905,18 @@ async fn activate_model_state(
             changed: false,
         });
     }
+
+    let receipt_catalog = catalog.clone();
+    let receipt_artifact_id = candidate.artifact.id;
+    tokio::task::spawn_blocking(move || {
+        receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
+    })
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("model validation receipt task failed: {error}"),
+    })?
+    .map_err(ModelActivationError::Catalog)?;
 
     let adapter = dependencies
         .perception
@@ -1089,6 +1142,177 @@ async fn activate_model_state(
         restarted: was_running,
         changed: true,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn model_ingress_state(
+    request: ModelIngressRequest,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ModelIngressResult, ModelIngressError> {
+    let catalog = dependencies
+        .model_catalog
+        .clone()
+        .ok_or(ModelIngressError::Unavailable)?;
+    let artifact_id = request.artifact_id();
+    let artifact_catalog = catalog.clone();
+    let artifact =
+        tokio::task::spawn_blocking(move || artifact_catalog.runtime_artifact_by_id(artifact_id))
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!("artifact lookup task failed: {error}"))
+            })??;
+    if artifact.artifact.kind != "engine" {
+        return Err(ModelIngressError::Catalog(
+            ModelCatalogError::IngressRequiresEngine(artifact_id),
+        ));
+    }
+    let display_root = catalog
+        .path()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .to_owned();
+
+    if matches!(request, ModelIngressRequest::GetProfile { .. }) {
+        return tokio::task::spawn_blocking(move || {
+            load_profile(&artifact, &display_root, 1024 * 1024)
+        })
+        .await
+        .map_err(|error| {
+            ModelIngressError::Failed(format!("profile read task failed: {error}"))
+        })?;
+    }
+
+    let deployed_catalog = catalog.clone();
+    let deployed =
+        tokio::task::spawn_blocking(move || deployed_catalog.artifact_is_deployed(artifact_id))
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!("deployment lookup task failed: {error}"))
+            })??;
+    if deployed {
+        return Err(ModelIngressError::Catalog(
+            ModelCatalogError::ArtifactCurrentlyDeployed(artifact_id),
+        ));
+    }
+    let jobs = dependencies
+        .model_jobs
+        .clone()
+        .ok_or(ModelIngressError::Unavailable)?;
+    let cancellation = Arc::clone(&dependencies.urgent_stop.pending);
+    let was_running = matches!(
+        state.pipeline,
+        PipelineState::Running | PipelineState::Standby
+    );
+    let stage = match &request {
+        ModelIngressRequest::Inspect { .. } => ModelIngressStage::Inspect,
+        ModelIngressRequest::Configure { .. } => ModelIngressStage::Configure,
+        ModelIngressRequest::Probe { .. } => ModelIngressStage::Probe,
+        ModelIngressRequest::GetProfile { .. } => unreachable!("handled above"),
+    };
+    let manifest_engine = artifact.artifact_path.clone();
+    let manifest_transaction = tokio::task::spawn_blocking(move || {
+        ModelManifestTransaction::begin(&manifest_engine, 1024 * 1024)
+    })
+    .await
+    .map_err(|error| {
+        ModelIngressError::Failed(format!("manifest snapshot task failed: {error}"))
+    })??;
+    if stage == ModelIngressStage::Probe && was_running {
+        stop_state(snapshot_tx, ingress_tx, state, active_pipeline).await?;
+    }
+    let worker = match &request {
+        ModelIngressRequest::Inspect { .. } => {
+            jobs.inspect(
+                &artifact.artifact_path,
+                &artifact.project.name,
+                cancellation,
+            )
+            .await
+        }
+        ModelIngressRequest::Configure { profile, .. } => {
+            jobs.configure(&artifact.artifact_path, profile, cancellation)
+                .await
+        }
+        ModelIngressRequest::Probe { input_mode, .. } => {
+            jobs.probe(&artifact.artifact_path, *input_mode, cancellation)
+                .await
+        }
+        ModelIngressRequest::GetProfile { .. } => unreachable!("handled above"),
+    };
+    let result = match worker {
+        Ok(worker) => {
+            let artifact_for_validation = artifact.clone();
+            let validation_root = display_root.clone();
+            let catalog_for_commit = catalog.clone();
+            tokio::task::spawn_blocking(move || {
+                let operation = (|| {
+                    let (result, update) = validate_worker_output(
+                        &artifact_for_validation,
+                        &validation_root,
+                        stage,
+                        worker,
+                    )?;
+                    catalog_for_commit.commit_model_ingress(update)?;
+                    Ok::<_, ModelIngressError>(result)
+                })();
+                match operation {
+                    Ok(result) => {
+                        manifest_transaction.commit();
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        manifest_transaction.rollback().map_err(|rollback| {
+                            ModelIngressError::Failed(format!(
+                                "{error}; manifest rollback also failed: {rollback}"
+                            ))
+                        })?;
+                        Err(error)
+                    }
+                }
+            })
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!("model-ingress commit task failed: {error}"))
+            })?
+        }
+        Err(error) => {
+            tokio::task::spawn_blocking(move || manifest_transaction.rollback())
+                .await
+                .map_err(|join| {
+                    ModelIngressError::Failed(format!("manifest rollback task failed: {join}"))
+                })?
+                .map_err(|rollback| {
+                    ModelIngressError::Failed(format!(
+                        "{error}; manifest rollback also failed: {rollback}"
+                    ))
+                })?;
+            Err(error)
+        }
+    };
+
+    if stage == ModelIngressStage::Probe
+        && was_running
+        && !dependencies.urgent_stop.is_pending()
+        && let Err(recovery) = start_state(
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await
+    {
+        return Err(ModelIngressError::Failed(format!(
+            "model probe completed but previous runtime recovery failed: {recovery}"
+        )));
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]

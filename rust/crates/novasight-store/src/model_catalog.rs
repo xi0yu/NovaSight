@@ -152,6 +152,15 @@ pub struct RuntimeModelArtifact {
     pub artifact_path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelIngressCatalogUpdate {
+    pub artifact_id: i64,
+    pub status: String,
+    pub checksum: String,
+    pub classes: Option<Vec<String>>,
+    pub input_shape: Option<String>,
+}
+
 impl SqliteModelCatalog {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ModelCatalogError> {
         let path = path.into();
@@ -541,6 +550,209 @@ impl SqliteModelCatalog {
             artifact,
             artifact_path,
         })
+    }
+
+    pub fn runtime_artifact_by_id(
+        &self,
+        artifact_id: i64,
+    ) -> Result<RuntimeModelArtifact, ModelCatalogError> {
+        let connection = self.connect()?;
+        let project_id = connection
+            .query_row(
+                "SELECT model_versions.project_id FROM model_artifacts JOIN model_versions ON model_versions.id = model_artifacts.version_id WHERE model_artifacts.id = ?1",
+                [artifact_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(ModelCatalogError::Sqlite)?
+            .ok_or(ModelCatalogError::ArtifactNotFound(artifact_id))?;
+        drop(connection);
+        self.runtime_artifact(project_id, artifact_id)
+    }
+
+    pub fn artifact_is_deployed(&self, artifact_id: i64) -> Result<bool, ModelCatalogError> {
+        let connection = self.connect()?;
+        require_artifact(&connection, artifact_id)?;
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM deployments WHERE artifact_id = ?1)",
+                [artifact_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(ModelCatalogError::Sqlite)
+    }
+
+    pub fn commit_model_ingress(
+        &self,
+        update: ModelIngressCatalogUpdate,
+    ) -> Result<RuntimeModelArtifact, ModelCatalogError> {
+        if !matches!(update.status.as_str(), "pending" | "ready" | "failed") {
+            return Err(ModelCatalogError::InvalidIngressStatus(update.status));
+        }
+        if !update.checksum.starts_with("sha256:") {
+            return Err(ModelCatalogError::InvalidIngressChecksum(update.checksum));
+        }
+        if update.classes.as_ref().is_some_and(|classes| {
+            classes.is_empty() || classes.iter().any(|item| item.trim().is_empty())
+        }) {
+            return Err(ModelCatalogError::InvalidIngressClasses);
+        }
+        if update
+            .input_shape
+            .as_ref()
+            .is_some_and(|shape| shape.trim().is_empty())
+        {
+            return Err(ModelCatalogError::InvalidIngressInputShape);
+        }
+        let artifact = self.runtime_artifact_by_id(update.artifact_id)?;
+        if artifact.artifact.kind != "engine" {
+            return Err(ModelCatalogError::IngressRequiresEngine(update.artifact_id));
+        }
+        let actual_checksum = format!("sha256:{}", sha256_file(&artifact.artifact_path)?);
+        if actual_checksum != update.checksum {
+            return Err(ModelCatalogError::IngressIdentityMismatch {
+                artifact_id: update.artifact_id,
+                expected: actual_checksum,
+                actual: update.checksum,
+            });
+        }
+        if update.status == "ready" {
+            let size_bytes = artifact
+                .artifact_path
+                .metadata()
+                .map_err(|source| ModelCatalogError::ReadModelFile {
+                    path: artifact.artifact_path.clone(),
+                    source,
+                })?
+                .len();
+            let (status, reason) = inspect_model_file(&artifact.artifact_path, size_bytes)?;
+            if status != "ready" {
+                return Err(ModelCatalogError::IngressManifestInvalid {
+                    artifact_id: update.artifact_id,
+                    reason,
+                });
+            }
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
+        let deployed_artifact = transaction
+            .query_row(
+                "SELECT model_artifacts.id FROM deployments JOIN model_artifacts ON model_artifacts.id = deployments.artifact_id WHERE model_artifacts.version_id = ?1 LIMIT 1",
+                [artifact.version.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(ModelCatalogError::Sqlite)?;
+        if let Some(deployed_artifact_id) = deployed_artifact {
+            return Err(ModelCatalogError::VersionCurrentlyDeployed {
+                version_id: artifact.version.id,
+                deployed_artifact_id,
+            });
+        }
+        if let Some(classes) = update.classes {
+            let classes = serde_json::to_string(&classes).map_err(ModelCatalogError::EncodeJson)?;
+            transaction
+                .execute(
+                    "UPDATE model_versions SET classes_json = ?1 WHERE id = ?2",
+                    params![classes, artifact.version.id],
+                )
+                .map_err(ModelCatalogError::Sqlite)?;
+        }
+        if let Some(input_shape) = update.input_shape {
+            transaction
+                .execute(
+                    "UPDATE model_versions SET input_shape = ?1 WHERE id = ?2",
+                    params![input_shape, artifact.version.id],
+                )
+                .map_err(ModelCatalogError::Sqlite)?;
+        }
+        transaction
+            .execute(
+                "UPDATE model_artifacts SET checksum = ?1, status = ?2 WHERE id = ?3",
+                params![update.checksum, update.status, update.artifact_id],
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+        transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+        self.runtime_artifact_by_id(update.artifact_id)
+    }
+
+    pub fn validate_ingress_receipt(
+        &self,
+        artifact_id: i64,
+    ) -> Result<RuntimeModelArtifact, ModelCatalogError> {
+        let artifact = self.runtime_artifact_by_id(artifact_id)?;
+        let size_bytes = artifact
+            .artifact_path
+            .metadata()
+            .map_err(|source| ModelCatalogError::ReadModelFile {
+                path: artifact.artifact_path.clone(),
+                source,
+            })?
+            .len();
+        let (status, reason) = inspect_model_file(&artifact.artifact_path, size_bytes)?;
+        if status != "ready" {
+            return Err(ModelCatalogError::IngressManifestInvalid {
+                artifact_id,
+                reason,
+            });
+        }
+        let manifest_path = artifact.artifact_path.with_file_name(format!(
+            "{}.manifest.json",
+            artifact
+                .artifact_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        ));
+        let manifest: serde_json::Value =
+            serde_json::from_reader(std::fs::File::open(&manifest_path).map_err(|source| {
+                ModelCatalogError::ReadModelFile {
+                    path: manifest_path.clone(),
+                    source,
+                }
+            })?)
+            .map_err(|error| ModelCatalogError::IngressManifestInvalid {
+                artifact_id,
+                reason: format!("model profile receipt is invalid JSON: {error}"),
+            })?;
+        let profile = manifest
+            .get("model_profile")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| ModelCatalogError::IngressManifestInvalid {
+                artifact_id,
+                reason: "validated model_profile receipt is missing".to_owned(),
+            })?;
+        let validation = profile
+            .get("validation")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| ModelCatalogError::IngressManifestInvalid {
+                artifact_id,
+                reason: "model_profile.validation receipt is missing".to_owned(),
+            })?;
+        let valid = profile.get("status").and_then(serde_json::Value::as_str) == Some("VALIDATED")
+            && validation.get("status").and_then(serde_json::Value::as_str) == Some("validated")
+            && [
+                "engine_execution_ok",
+                "decoder_ok",
+                "nms_ok",
+                "detection_batch_ok",
+            ]
+            .iter()
+            .all(|field| validation.get(*field).and_then(serde_json::Value::as_bool) == Some(true))
+            && validation
+                .get("profile_fingerprint")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.starts_with("sha256:") && value.len() > 7);
+        if !valid {
+            return Err(ModelCatalogError::IngressManifestInvalid {
+                artifact_id,
+                reason: "complete fixed-probe validation receipt is missing".to_owned(),
+            });
+        }
+        Ok(artifact)
     }
 
     pub fn deployment(&self, project_id: i64) -> Result<Deployment, ModelCatalogError> {
@@ -962,6 +1174,18 @@ fn require_version(connection: &Connection, version_id: i64) -> Result<(), Model
         .optional()
         .map_err(ModelCatalogError::Sqlite)?
         .ok_or(ModelCatalogError::VersionNotFound(version_id))
+}
+
+fn require_artifact(connection: &Connection, artifact_id: i64) -> Result<(), ModelCatalogError> {
+    connection
+        .query_row(
+            "SELECT 1 FROM model_artifacts WHERE id = ?1",
+            [artifact_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(ModelCatalogError::Sqlite)?
+        .ok_or(ModelCatalogError::ArtifactNotFound(artifact_id))
 }
 
 fn model_version_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelVersion> {
@@ -1608,4 +1832,35 @@ pub enum ModelCatalogError {
     RollbackUnavailable(i64),
     #[error("model deployment for project {project_id} changed during activation")]
     DeploymentChangedDuringActivation { project_id: i64 },
+    #[error("failed to encode model-ingress JSON: {0}")]
+    EncodeJson(#[source] serde_json::Error),
+    #[error("model-ingress status is not allowed: {0}")]
+    InvalidIngressStatus(String),
+    #[error("model-ingress checksum is not a sha256 identity: {0}")]
+    InvalidIngressChecksum(String),
+    #[error("model-ingress labels must be non-empty")]
+    InvalidIngressClasses,
+    #[error("model-ingress input shape must be non-empty")]
+    InvalidIngressInputShape,
+    #[error("model-ingress requires TensorRT engine artifact {0}")]
+    IngressRequiresEngine(i64),
+    #[error("model artifact {0} is currently deployed and cannot be mutated")]
+    ArtifactCurrentlyDeployed(i64),
+    #[error(
+        "model version {version_id} contains deployed artifact {deployed_artifact_id} and cannot be mutated"
+    )]
+    VersionCurrentlyDeployed {
+        version_id: i64,
+        deployed_artifact_id: i64,
+    },
+    #[error(
+        "model artifact {artifact_id} identity changed during ingress: expected {expected}, worker returned {actual}"
+    )]
+    IngressIdentityMismatch {
+        artifact_id: i64,
+        expected: String,
+        actual: String,
+    },
+    #[error("model artifact {artifact_id} runtime manifest is invalid: {reason}")]
+    IngressManifestInvalid { artifact_id: i64, reason: String },
 }

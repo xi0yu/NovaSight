@@ -3,11 +3,12 @@
 //! Production startup fails closed until a real output adapter is
 //! selected. Recording output is available only through `--dry-run`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser;
-use novasight_runtime::{LoadedApplication, RuntimeDependencies};
+use novasight_runtime::{LoadedApplication, OfflineModelJobRunner, RuntimeDependencies};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use tracing_subscriber::EnvFilter;
 
@@ -35,6 +36,22 @@ struct Args {
     /// output on the in-memory recording adapter.
     #[arg(long, requires = "dry_run")]
     live_perception: bool,
+
+    /// Fixed Python executable used only for allowlisted offline model jobs.
+    #[arg(long, default_value = "/usr/bin/python3")]
+    model_job_python: PathBuf,
+
+    /// Fixed helper script for inspect/configure/probe; API callers cannot override it.
+    #[arg(long)]
+    model_job_script: Option<PathBuf>,
+
+    /// Root under which each allowlisted model helper gets a private working directory.
+    #[arg(long, default_value = ".")]
+    model_job_workdir: PathBuf,
+
+    /// Hard timeout applied to every offline model helper process.
+    #[arg(long, default_value_t = 60)]
+    model_job_timeout_seconds: u64,
 }
 
 fn init_logging() {
@@ -57,8 +74,41 @@ async fn main() -> ExitCode {
         }
     };
 
+    let parser_library = loaded
+        .config()
+        .inference
+        .clone()
+        .unwrap_or_default()
+        .deepstream_parser_library;
+    let model_job_script = resolve_model_job_script(args.model_job_script.as_deref());
+    let model_job_code_root = model_job_script
+        .canonicalize()
+        .ok()
+        .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_owned))
+        .unwrap_or_else(|| args.model_job_workdir.clone())
+        .join("novasight");
+    let model_jobs = match OfflineModelJobRunner::new(
+        &args.model_job_python,
+        &model_job_script,
+        &args.model_job_workdir,
+        parser_library,
+        Duration::from_secs(args.model_job_timeout_seconds),
+        1024 * 1024,
+    )
+    .and_then(|runner| runner.pin_python_code(model_job_code_root))
+    {
+        Ok(runner) => runner,
+        Err(error) => {
+            eprintln!("MODEL_INGRESS_CONFIG_INVALID: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     if args.check {
-        println!("PASS config readable path={}", args.config.display());
+        println!(
+            "PASS config readable path={} model_ingress_helper=ready",
+            args.config.display()
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -126,6 +176,7 @@ async fn main() -> ExitCode {
         }
     };
 
+    let dependencies = dependencies.with_model_jobs(model_jobs);
     match server::run_daemon(loaded, dependencies, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -133,4 +184,15 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn resolve_model_job_script(configured: Option<&Path>) -> PathBuf {
+    if let Some(path) = configured {
+        return path.to_owned();
+    }
+    let working_tree_path = PathBuf::from("scripts/model_ingress_job.py");
+    if working_tree_path.is_file() {
+        return working_tree_path;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/model_ingress_job.py")
 }

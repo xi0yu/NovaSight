@@ -15,7 +15,8 @@ use novasight_pipeline::{
 use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use rusqlite::Connection;
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 #[derive(Debug)]
@@ -194,6 +195,41 @@ impl PerceptionAdapter for BlockingPreflightAdapter {
 }
 
 fn seed_publishable_artifacts(database: &std::path::Path) {
+    let model_directory = database.parent().unwrap().join("models/detector/v1");
+    std::fs::create_dir_all(&model_directory).unwrap();
+    let artifacts = [
+        ("model.engine", b"engine-one".as_slice()),
+        ("replacement.engine", b"engine-two".as_slice()),
+    ];
+    for (name, bytes) in artifacts {
+        let checksum = format!("{:x}", Sha256::digest(bytes));
+        std::fs::write(model_directory.join(name), bytes).unwrap();
+        let manifest = json!({
+            "schema_version": 1,
+            "model_id": format!("sha256:{checksum}"),
+            "display_name": "detector",
+            "artifact": {"engine_path": name, "sha256": checksum, "size_bytes": bytes.len()},
+            "input": {"name":"images", "shape":[1,3,640,640], "dtype":"float32"},
+            "output": {"name":"output0", "shape":[1,5,8400], "dtype":"float32", "class_count":1, "class_names":["target"]},
+            "validated": true,
+            "model_profile": {
+                "status": "VALIDATED",
+                "validation": {
+                    "status": "validated",
+                    "engine_execution_ok": true,
+                    "decoder_ok": true,
+                    "nms_ok": true,
+                    "detection_batch_ok": true,
+                    "profile_fingerprint": "sha256:test"
+                }
+            }
+        });
+        std::fs::write(
+            model_directory.join(format!("{name}.manifest.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
     let connection = Connection::open(database).unwrap();
     connection
         .execute(
@@ -202,8 +238,62 @@ fn seed_publishable_artifacts(database: &std::path::Path) {
         )
         .unwrap();
     connection.execute("INSERT INTO model_versions(project_id, version, source_kind, source_path, classes_json, input_shape) VALUES (1, 'v1', 'onnx', 'model.onnx', '[\"target\"]', '1x3x640x640')", []).unwrap();
-    connection.execute("INSERT INTO model_artifacts(version_id, kind, path, checksum, status) VALUES (1, 'engine', 'model.engine', 'sha256:abc', 'ready')", []).unwrap();
-    connection.execute("INSERT INTO model_artifacts(version_id, kind, path, checksum, status) VALUES (1, 'engine', 'replacement.engine', 'sha256:def', 'ready')", []).unwrap();
+    connection.execute("INSERT INTO model_artifacts(version_id, kind, path, checksum, status) VALUES (1, 'engine', 'model.engine', ?1, 'ready')", [format!("sha256:{:x}", Sha256::digest(b"engine-one"))]).unwrap();
+    connection.execute("INSERT INTO model_artifacts(version_id, kind, path, checksum, status) VALUES (1, 'engine', 'replacement.engine', ?1, 'ready')", [format!("sha256:{:x}", Sha256::digest(b"engine-two"))]).unwrap();
+}
+
+#[tokio::test]
+async fn publish_rejects_ready_artifact_without_a_fixed_probe_receipt() {
+    let directory = std::env::temp_dir().join(format!(
+        "novasight-model-receipt-api-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir(&directory).unwrap();
+    let database = directory.join("novasight.db");
+    let catalog = SqliteModelCatalog::open(&database).unwrap();
+    seed_publishable_artifacts(&database);
+    let manifest_path = directory.join("models/detector/v1/model.engine.manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.as_object_mut().unwrap().remove("model_profile");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let dependencies =
+        RuntimeDependencies::recording().with_perception(Arc::new(CatalogAwareAdapter {
+            catalog: catalog.clone(),
+            rejected_artifact_id: 999,
+        }));
+    let (supervisor, runtime) =
+        RuntimeSupervisor::spawn(dependencies.with_model_catalog(catalog.clone()));
+    let app = build_control_router_with_control_plane(
+        runtime.clone(),
+        None,
+        None,
+        catalog.clone(),
+        false,
+        None,
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/models/projects/1/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"artifact_id":1,"parser_preset":"auto"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(catalog.active_model().unwrap().is_none());
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test]

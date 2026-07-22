@@ -3,10 +3,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use novasight_client::{ClientError, ControlClient};
-use novasight_runtime::{AppConfig, ConfigUpdate, RuntimeSnapshot};
+use novasight_runtime::{
+    AppConfig, ConfigUpdate, ModelIngressResult, ModelProbeInputMode, ModelProfileConfigureRequest,
+    RuntimeSnapshot,
+};
 use serde::Serialize;
+use thiserror::Error;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -37,6 +41,46 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Inspect, configure, and diagnostically execute TensorRT model artifacts.
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelCommand {
+    /// Deserialize an Engine and write its initial immutable profile.
+    Inspect { artifact_id: i64 },
+    /// Read the current profile from the unified Engine manifest.
+    Profile { artifact_id: i64 },
+    /// Apply explicit preprocessing and decoder semantics from a JSON file.
+    Configure {
+        artifact_id: i64,
+        #[arg(long)]
+        request: PathBuf,
+    },
+    /// Execute an isolated candidate TensorRT context without publishing it.
+    Probe {
+        artifact_id: i64,
+        #[arg(long, value_enum, default_value_t = CliProbeInputMode::Fixed)]
+        input_mode: CliProbeInputMode,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliProbeInputMode {
+    Fixed,
+    Latest,
+}
+
+impl From<CliProbeInputMode> for ModelProbeInputMode {
+    fn from(value: CliProbeInputMode) -> Self {
+        match value {
+            CliProbeInputMode::Fixed => Self::Fixed,
+            CliProbeInputMode::Latest => Self::Latest,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -60,6 +104,7 @@ enum CommandOutput {
     Runtime(RuntimeSnapshot),
     Config(AppConfig),
     ConfigUpdate(ConfigUpdate),
+    Model(ModelIngressResult),
 }
 
 fn init_logging() {
@@ -92,7 +137,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn execute(cli: Cli) -> Result<CommandOutput, ClientError> {
+async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
     let client = ControlClient::new(cli.socket);
     match cli.command {
         Command::Status => client.status().await.map(CommandOutput::Runtime),
@@ -117,6 +162,71 @@ async fn execute(cli: Cli) -> Result<CommandOutput, ClientError> {
                 .update_config_field(section, key, value, expected_revision)
                 .await
                 .map(CommandOutput::ConfigUpdate)
+        }
+        Command::Model {
+            command: ModelCommand::Inspect { artifact_id },
+        } => client
+            .inspect_model(artifact_id)
+            .await
+            .map(CommandOutput::Model),
+        Command::Model {
+            command: ModelCommand::Profile { artifact_id },
+        } => client
+            .model_profile(artifact_id)
+            .await
+            .map(CommandOutput::Model),
+        Command::Model {
+            command:
+                ModelCommand::Configure {
+                    artifact_id,
+                    request,
+                },
+        } => {
+            let bytes = std::fs::read(&request).map_err(|source| CliError::ReadProfileRequest {
+                path: request.clone(),
+                source,
+            })?;
+            let profile = serde_json::from_slice::<ModelProfileConfigureRequest>(&bytes)
+                .map_err(CliError::DecodeProfileRequest)?;
+            client
+                .configure_model(artifact_id, &profile)
+                .await
+                .map(CommandOutput::Model)
+        }
+        Command::Model {
+            command:
+                ModelCommand::Probe {
+                    artifact_id,
+                    input_mode,
+                },
+        } => client
+            .probe_model(artifact_id, input_mode.into())
+            .await
+            .map(CommandOutput::Model),
+    }
+    .map_err(CliError::Client)
+}
+
+#[derive(Debug, Error)]
+enum CliError {
+    #[error(transparent)]
+    Client(#[from] ClientError),
+    #[error("failed to read model profile request {}: {source}", path.display())]
+    ReadProfileRequest {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to decode model profile request: {0}")]
+    DecodeProfileRequest(#[source] serde_json::Error),
+}
+
+impl CliError {
+    const fn code(&self) -> &'static str {
+        match self {
+            Self::Client(error) => error.code(),
+            Self::ReadProfileRequest { .. } => "model_profile_request_read_failed",
+            Self::DecodeProfileRequest(_) => "model_profile_request_invalid",
         }
     }
 }

@@ -13,7 +13,10 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use novasight_runtime::{AppConfig, ConfigFieldUpdate, ConfigUpdate, RuntimeSnapshot};
+use novasight_runtime::{
+    AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
+    ModelProfileConfigureRequest, RuntimeSnapshot,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
@@ -92,10 +95,58 @@ impl ControlClient {
             .await
     }
 
+    pub async fn inspect_model(&self, artifact_id: i64) -> Result<ModelIngressResult, ClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/models/artifacts/{artifact_id}/inspect"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn model_profile(&self, artifact_id: i64) -> Result<ModelIngressResult, ClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/models/artifacts/{artifact_id}/profile"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn configure_model(
+        &self,
+        artifact_id: i64,
+        profile: &ModelProfileConfigureRequest,
+    ) -> Result<ModelIngressResult, ClientError> {
+        self.request(
+            Method::PUT,
+            &format!("/api/models/artifacts/{artifact_id}/profile"),
+            Some(profile),
+        )
+        .await
+    }
+
+    pub async fn probe_model(
+        &self,
+        artifact_id: i64,
+        input_mode: ModelProbeInputMode,
+    ) -> Result<ModelIngressResult, ClientError> {
+        #[derive(Serialize)]
+        struct ProbeRequest {
+            input_mode: ModelProbeInputMode,
+        }
+        self.request(
+            Method::POST,
+            &format!("/api/models/artifacts/{artifact_id}/probe"),
+            Some(&ProbeRequest { input_mode }),
+        )
+        .await
+    }
+
     async fn request<T, B>(
         &self,
         method: Method,
-        path: &'static str,
+        path: &str,
         body: Option<&B>,
     ) -> Result<T, ClientError>
     where
@@ -114,7 +165,7 @@ impl ControlClient {
     async fn request_inner<T>(
         &self,
         method: Method,
-        path: &'static str,
+        path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<T, ClientError>
     where
