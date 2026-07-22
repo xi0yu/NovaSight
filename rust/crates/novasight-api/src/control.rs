@@ -17,7 +17,7 @@ use futures_util::{Sink, Stream, StreamExt};
 use novasight_core::DeviceReceipt;
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
-    RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
+    ModelActivationError, RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
@@ -705,6 +705,7 @@ enum ControlApiError {
     ModelCatalog(ModelCatalogError),
     ModelCatalogTask(tokio::task::JoinError),
     ModelCatalogUnavailable,
+    ModelActivation(ModelActivationError),
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -818,9 +819,24 @@ impl IntoResponse for ControlApiError {
                 "license service is not configured".to_owned(),
             ),
             Self::ModelCatalog(error) => match error {
-                ModelCatalogError::ProjectNotFound(_) | ModelCatalogError::VersionNotFound(_) => (
+                ModelCatalogError::ProjectNotFound(_)
+                | ModelCatalogError::VersionNotFound(_)
+                | ModelCatalogError::ArtifactNotFound(_)
+                | ModelCatalogError::DeploymentNotFound(_) => (
                     StatusCode::NOT_FOUND,
                     "MODEL_CATALOG_NOT_FOUND",
+                    error.to_string(),
+                ),
+                ModelCatalogError::ArtifactProjectMismatch { .. }
+                | ModelCatalogError::ArtifactNotReady(_)
+                | ModelCatalogError::RollbackUnavailable(_) => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "MODEL_DEPLOYMENT_INVALID",
+                    error.to_string(),
+                ),
+                ModelCatalogError::DeploymentChangedDuringActivation { .. } => (
+                    StatusCode::CONFLICT,
+                    "MODEL_DEPLOYMENT_CONFLICT",
                     error.to_string(),
                 ),
                 _ => (
@@ -839,6 +855,66 @@ impl IntoResponse for ControlApiError {
                 "MODEL_CATALOG_UNAVAILABLE",
                 "model catalog is not configured".to_owned(),
             ),
+            Self::ModelActivation(error) => match error {
+                ModelActivationError::Catalog(error) => match error {
+                    ModelCatalogError::ProjectNotFound(_)
+                    | ModelCatalogError::VersionNotFound(_)
+                    | ModelCatalogError::ArtifactNotFound(_)
+                    | ModelCatalogError::DeploymentNotFound(_) => (
+                        StatusCode::NOT_FOUND,
+                        "MODEL_CATALOG_NOT_FOUND",
+                        error.to_string(),
+                    ),
+                    ModelCatalogError::ArtifactProjectMismatch { .. }
+                    | ModelCatalogError::ArtifactNotReady(_)
+                    | ModelCatalogError::RollbackUnavailable(_) => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "MODEL_DEPLOYMENT_INVALID",
+                        error.to_string(),
+                    ),
+                    ModelCatalogError::DeploymentChangedDuringActivation { .. } => (
+                        StatusCode::CONFLICT,
+                        "MODEL_DEPLOYMENT_CONFLICT",
+                        error.to_string(),
+                    ),
+                    _ => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "MODEL_CATALOG_FAILED",
+                        error.to_string(),
+                    ),
+                },
+                ModelActivationError::Runtime(error) => {
+                    let status = match error.kind {
+                        RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
+                        RuntimeErrorKind::SupervisorUnavailable
+                        | RuntimeErrorKind::SupervisorClosed
+                        | RuntimeErrorKind::SupervisorReplyLost
+                        | RuntimeErrorKind::PipelineUnavailable
+                        | RuntimeErrorKind::DeviceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                        RuntimeErrorKind::InvalidDeviceCommand => StatusCode::BAD_REQUEST,
+                        RuntimeErrorKind::PipelineRejected
+                        | RuntimeErrorKind::RuntimeEpochExhausted
+                        | RuntimeErrorKind::Other => StatusCode::INTERNAL_SERVER_ERROR,
+                    };
+                    (status, error.kind.code(), error.message)
+                }
+                ModelActivationError::Failed { message, .. } => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "MODEL_ACTIVATION_FAILED",
+                    message,
+                ),
+                ModelActivationError::Unavailable => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "MODEL_CATALOG_UNAVAILABLE",
+                    "model catalog is not configured in the runtime supervisor".to_owned(),
+                ),
+                ModelActivationError::PerceptionUnavailable => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "MODEL_PREFLIGHT_UNAVAILABLE",
+                    "model activation requires a configured perception preflight adapter"
+                        .to_owned(),
+                ),
+            },
         };
         let body = ControlErrorBody {
             code,

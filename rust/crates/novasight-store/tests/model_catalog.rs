@@ -119,6 +119,71 @@ fn publish_and_rollback_are_atomic_and_preserve_the_previous_artifact() {
 }
 
 #[test]
+fn failed_first_activation_can_compensate_by_removing_the_new_deployment() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("novasight.db");
+    create_python_compatible_database(&path);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute("DELETE FROM deployments WHERE project_id = 1", [])
+        .unwrap();
+    drop(connection);
+    let catalog = SqliteModelCatalog::open(&path).unwrap();
+
+    let change = catalog.publish_change(1, 3).unwrap();
+    assert!(change.before.is_none());
+    assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 3);
+
+    let restored = catalog.compensate(change).unwrap();
+    assert!(restored.is_none());
+    assert!(catalog.active_model().unwrap().is_none());
+}
+
+#[test]
+fn failed_replacement_restores_the_exact_previous_deployment_and_global_order() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("novasight.db");
+    create_python_compatible_database(&path);
+    let catalog = SqliteModelCatalog::open(&path).unwrap();
+
+    let change = catalog.publish_change(1, 6).unwrap();
+    assert_eq!(change.before.as_ref().unwrap().artifact_id, 3);
+    assert_eq!(change.after.artifact_id, 6);
+
+    let restored = catalog.compensate(change.clone()).unwrap().unwrap();
+    assert_eq!(restored.artifact_id, 3);
+    assert_eq!(restored.previous_artifact_id, None);
+    assert_eq!(restored.updated_seq, change.before.unwrap().updated_seq);
+    assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 3);
+}
+
+#[test]
+fn compensation_does_not_make_an_older_project_globally_active() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("novasight.db");
+    create_python_compatible_database(&path);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO model_projects(id, name, description) VALUES (2, 'secondary', 'other')",
+            [],
+        )
+        .unwrap();
+    connection.execute("INSERT INTO model_versions(id, project_id, version, source_kind, source_path, classes_json, input_shape) VALUES (7, 2, 'v1', 'onnx', 'source.onnx', '[]', '1x3x640x640')", []).unwrap();
+    connection.execute("INSERT INTO model_artifacts(id, version_id, kind, path, checksum, status) VALUES (8, 7, 'engine', 'secondary.engine', 'sha256:ghi', 'ready')", []).unwrap();
+    drop(connection);
+    let catalog = SqliteModelCatalog::open(&path).unwrap();
+    catalog.publish(2, 8).unwrap();
+    assert_eq!(catalog.active_model().unwrap().unwrap().project.id, 2);
+
+    let change = catalog.publish_change(1, 6).unwrap();
+    assert_eq!(catalog.active_model().unwrap().unwrap().project.id, 1);
+    catalog.compensate(change).unwrap();
+
+    assert_eq!(catalog.active_model().unwrap().unwrap().project.id, 2);
+}
+
+#[test]
 fn migrates_the_legacy_python_deployment_table_in_place() {
     let directory = TestDirectory::new();
     let path = directory.0.join("novasight.db");

@@ -251,17 +251,24 @@ Rust 只通过 allowlist job 类型启动 Python：固定 executable、固定脚
 
 ## 9. Deployment 切换事务
 
+Phase 5 采用单 Session、停止重启事务。Jetson capture、DeepStream pipeline 和
+kmNet output 都是独占资源；当前版本不为了追求零停机同时维持两套 live Session。
+
 ```text
-validate ModelArtifact fingerprint and runtime contract
+resolve requested artifact without changing Deployment
+-> validate Engine fingerprint, manifest and requested parser contract while old epoch remains live
 -> close old epoch Output Gate lane
--> prepare candidate RuntimeSession
--> start perception and wait first Fresh Batch ready gate
--> commit Deployment + Effective revision in SQLite transaction
--> atomically publish new RuntimeEpoch snapshot
--> stop/drop old session
+-> stop/drop old RuntimeSession
+-> commit Deployment in one SQLite transaction
+-> create the new RuntimeEpoch and wait for the first Fresh Batch ready gate
+-> publish Running snapshot and open the new epoch Output Gate
 ```
 
-任何失败都销毁 candidate 并恢复旧 Session/Deployment，不留下半加载 engine，不谎报 running。
+候选预检失败时旧 Session 和 Deployment 完全不动。提交后的启动失败使用 CAS
+compensation 恢复旧 Deployment，并重新创建旧模型 Session；响应必须报告失败，不能
+留下半加载 engine 或谎报 running。stop/emergency-stop 通过独立原子取消信号抢先关闭
+Output Gate；模型事务在提交前观察到取消时直接退出，在提交后观察到取消时先补偿且不
+重启任何输出。双 Session 候选热切换只有在硬件资源所有权和收益都被实测证明后才考虑。
 
 ## 10. 错误契约
 

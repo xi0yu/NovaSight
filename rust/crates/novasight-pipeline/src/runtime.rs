@@ -1,6 +1,6 @@
 use std::sync::{
     Arc, Mutex, TryLockError,
-    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     mpsc::{Receiver, SyncSender, sync_channel},
 };
 use std::thread::{self, JoinHandle};
@@ -144,17 +144,19 @@ struct SharedState {
     status: AtomicU8,
     output_gate: AtomicBool,
     trigger_active: AtomicBool,
+    external_stop: Arc<AtomicUsize>,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
 }
 
 impl SharedState {
-    fn new(event_tx: SyncSender<PipelineEvent>) -> Self {
+    fn new(event_tx: SyncSender<PipelineEvent>, external_stop: Arc<AtomicUsize>) -> Self {
         Self {
             status: AtomicU8::new(STATUS_STARTING),
             output_gate: AtomicBool::new(false),
             trigger_active: AtomicBool::new(false),
+            external_stop,
             device_lane: Mutex::new(()),
             event_tx,
             metrics: AtomicMetrics::default(),
@@ -178,6 +180,15 @@ impl SharedState {
         if previous != STATUS_FAULTED {
             let _ = self.event_tx.try_send(PipelineEvent::Faulted { message });
         }
+    }
+
+    fn close_output_gate(&self) {
+        let _lane = self
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.output_gate.store(false, Ordering::Release);
+        self.trigger_active.store(false, Ordering::Release);
     }
 }
 
@@ -213,6 +224,21 @@ impl std::fmt::Debug for PipelineIngress {
 }
 
 impl PipelineIngress {
+    /// Non-blocking stop request used by RuntimeHandle. The shared external
+    /// cancellation flag retires future sends; this clears the local gate and
+    /// trigger cache without waiting for an already-running vendor call.
+    pub fn request_output_stop(&self) {
+        self.shared.output_gate.store(false, Ordering::Release);
+        self.shared.trigger_active.store(false, Ordering::Release);
+    }
+
+    /// Synchronously retire every future device side effect for this epoch.
+    /// RuntimeHandle uses this fast path before enqueueing stop commands so a
+    /// busy supervisor cannot delay the safety boundary.
+    pub fn close_output_gate(&self) {
+        self.shared.close_output_gate();
+    }
+
     /// Update the live trigger cache. Output is disabled by default and
     /// the device lane rechecks this value immediately before sending.
     pub fn set_trigger_active(&self, active: bool) {
@@ -356,6 +382,51 @@ impl PipelineRuntime {
         clock: Arc<dyn Clock>,
         device: Arc<dyn PointerDevice>,
     ) -> Result<(Self, PipelineIngress), PipelineError> {
+        Self::start_with_output_gate(config, clock, device, true)
+    }
+
+    /// Start every worker while keeping device output closed. The runtime
+    /// supervisor uses this during epoch preparation and opens the gate only
+    /// after perception readiness and cancellation checks succeed.
+    pub fn start_suspended(
+        config: PipelineConfig,
+        clock: Arc<dyn Clock>,
+        device: Arc<dyn PointerDevice>,
+    ) -> Result<(Self, PipelineIngress), PipelineError> {
+        Self::start_with_output_gate(config, clock, device, false)
+    }
+
+    pub fn start_suspended_with_cancel(
+        config: PipelineConfig,
+        clock: Arc<dyn Clock>,
+        device: Arc<dyn PointerDevice>,
+        external_stop: Arc<AtomicUsize>,
+    ) -> Result<(Self, PipelineIngress), PipelineError> {
+        Self::start_with_output_gate_and_cancel(config, clock, device, false, external_stop)
+    }
+
+    fn start_with_output_gate(
+        config: PipelineConfig,
+        clock: Arc<dyn Clock>,
+        device: Arc<dyn PointerDevice>,
+        output_gate_open: bool,
+    ) -> Result<(Self, PipelineIngress), PipelineError> {
+        Self::start_with_output_gate_and_cancel(
+            config,
+            clock,
+            device,
+            output_gate_open,
+            Arc::new(AtomicUsize::new(0)),
+        )
+    }
+
+    fn start_with_output_gate_and_cancel(
+        config: PipelineConfig,
+        clock: Arc<dyn Clock>,
+        device: Arc<dyn PointerDevice>,
+        output_gate_open: bool,
+        external_stop: Arc<AtomicUsize>,
+    ) -> Result<(Self, PipelineIngress), PipelineError> {
         if !(1..=10).contains(&config.output_interval_ms) {
             return Err(PipelineError::InvalidOutputInterval {
                 actual_ms: config.output_interval_ms,
@@ -367,7 +438,7 @@ impl PipelineRuntime {
             return Err(PipelineError::InvalidTriggerPollInterval { actual_ms });
         }
         let (event_tx, event_rx) = sync_channel(4);
-        let shared = Arc::new(SharedState::new(event_tx));
+        let shared = Arc::new(SharedState::new(event_tx, external_stop));
         let batch_slot = LatestSlot::new();
         let target_slot = LatestSlot::new();
         let command_slot = LatestSlot::new();
@@ -430,7 +501,9 @@ impl PipelineRuntime {
             workers.push(trigger_handle);
         }
 
-        shared.output_gate.store(true, Ordering::Release);
+        shared
+            .output_gate
+            .store(output_gate_open, Ordering::Release);
         shared.status.store(STATUS_RUNNING, Ordering::Release);
         let ingress = PipelineIngress {
             epoch: config.epoch,
@@ -459,17 +532,22 @@ impl PipelineRuntime {
         snapshot_metrics(&self.shared, &self.batch_slot, &self.command_slot)
     }
 
+    /// Publish a fully prepared epoch to the device lane. Opening is separate
+    /// from worker startup so cancelled model switches never expose candidate
+    /// output.
+    pub fn open_output_gate(&self) {
+        if self.shared.status() == PipelineStatus::Running
+            && self.shared.external_stop.load(Ordering::Acquire) == 0
+        {
+            self.shared.output_gate.store(true, Ordering::Release);
+        }
+    }
+
     /// Prevent every future device side effect without tearing down ingress.
     /// The supervisor calls this before stopping an upstream perception owner,
     /// so reverse-order cleanup cannot leak one last command.
     pub fn close_output_gate(&self) {
-        let _lane = self
-            .shared
-            .device_lane
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.shared.output_gate.store(false, Ordering::Release);
-        self.shared.trigger_active.store(false, Ordering::Release);
+        self.shared.close_output_gate();
     }
 
     /// Transfer the single lifecycle event stream to the supervisor.
@@ -718,10 +796,13 @@ fn spawn_device_worker(
                         .device_lane
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if !shared.output_gate.load(Ordering::Acquire)
+                    if shared.external_stop.load(Ordering::Acquire) != 0
                         || shared.status() != PipelineStatus::Running
                     {
                         break;
+                    }
+                    if !shared.output_gate.load(Ordering::Acquire) {
+                        continue;
                     }
                     if !shared.trigger_active.load(Ordering::Acquire) {
                         continue;

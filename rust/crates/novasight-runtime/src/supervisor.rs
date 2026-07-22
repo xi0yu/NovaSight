@@ -6,7 +6,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,13 +15,17 @@ use novasight_core::{
     RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession, PipelineConfig,
-    PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus,
+    ModelCandidate, PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession,
+    PipelineConfig, PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus,
 };
+use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::command::RuntimeCommand;
 use crate::error::{RuntimeError, RuntimeErrorKind};
+use crate::model_activation::{
+    ModelActivationError, ModelActivationRequest, ModelActivationResult,
+};
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::snapshot::{
     DaemonSnapshot, DeviceMetrics, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshots,
@@ -32,6 +36,42 @@ const COMMAND_CAPACITY: usize = 32;
 const PIPELINE_EVENT_CAPACITY: usize = 8;
 const PERCEPTION_EVENT_CAPACITY: usize = 4;
 
+#[derive(Debug)]
+struct UrgentStopSignal {
+    pending: Arc<AtomicUsize>,
+}
+
+impl UrgentStopSignal {
+    fn new() -> Self {
+        Self {
+            pending: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn register(self: &Arc<Self>) -> UrgentStopToken {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        UrgentStopToken {
+            signal: Arc::clone(self),
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) != 0
+    }
+}
+
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct UrgentStopToken {
+    signal: Arc<UrgentStopSignal>,
+}
+
+impl Drop for UrgentStopToken {
+    fn drop(&mut self) {
+        self.signal.pending.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Concrete resources used to create each runtime epoch.
 #[derive(Clone)]
 pub struct RuntimeDependencies {
@@ -39,6 +79,8 @@ pub struct RuntimeDependencies {
     device: Arc<dyn PointerDevice>,
     pipeline: PipelineConfig,
     perception: Option<Arc<dyn PerceptionAdapter>>,
+    model_catalog: Option<SqliteModelCatalog>,
+    urgent_stop: Arc<UrgentStopSignal>,
 }
 
 impl std::fmt::Debug for RuntimeDependencies {
@@ -66,11 +108,18 @@ impl RuntimeDependencies {
             device,
             pipeline,
             perception: None,
+            model_catalog: None,
+            urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
     }
 
     pub fn with_perception(mut self, perception: Arc<dyn PerceptionAdapter>) -> Self {
         self.perception = Some(perception);
+        self
+    }
+
+    pub fn with_model_catalog(mut self, model_catalog: SqliteModelCatalog) -> Self {
+        self.model_catalog = Some(model_catalog);
         self
     }
 
@@ -303,7 +352,7 @@ impl RuntimeSupervisor {
             snapshot_tx,
             ingress_tx,
             state,
-            dependencies,
+            dependencies.clone(),
         ));
 
         (
@@ -315,6 +364,7 @@ impl RuntimeSupervisor {
                 command_tx,
                 snapshot_rx,
                 ingress_rx,
+                urgent_stop: Arc::clone(&dependencies.urgent_stop),
             },
         )
     }
@@ -351,6 +401,7 @@ pub struct RuntimeHandle {
     command_tx: mpsc::Sender<RuntimeCommand>,
     snapshot_rx: watch::Receiver<Arc<RuntimeSnapshot>>,
     ingress_rx: watch::Receiver<Option<PipelineIngress>>,
+    urgent_stop: Arc<UrgentStopSignal>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -422,8 +473,21 @@ impl RuntimeHandle {
     }
 
     pub async fn stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
-        self.send_command(|reply| RuntimeCommand::Stop { reply })
+        let urgent = self.urgent_stop.register();
+        if let Some(ingress) = self.ingress_rx.borrow().clone() {
+            ingress.request_output_stop();
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::Stop {
+                urgent,
+                reply: reply_tx,
+            })
             .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
     pub async fn restart(&self) -> Result<RuntimeSnapshot, RuntimeError> {
@@ -431,15 +495,63 @@ impl RuntimeHandle {
             .await
     }
 
-    pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
-        self.send_command(|reply| RuntimeCommand::EmergencyStop { reply })
+    pub async fn preflight_perception(&self) -> Result<(), RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::PreflightPerception { reply: reply_tx })
             .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub async fn activate_model(
+        &self,
+        request: ModelActivationRequest,
+    ) -> Result<ModelActivationResult, ModelActivationError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ActivateModel {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ModelActivationError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ModelActivationError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        let urgent = self.urgent_stop.register();
+        if let Some(ingress) = self.ingress_rx.borrow().clone() {
+            ingress.request_output_stop();
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::EmergencyStop {
+                urgent,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
     pub async fn shutdown_daemon(&self) -> Result<(), RuntimeError> {
+        let urgent = self.urgent_stop.register();
+        if let Some(ingress) = self.ingress_rx.borrow().clone() {
+            ingress.request_output_stop();
+        }
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
-            .send(RuntimeCommand::ShutdownDaemon { reply: reply_tx })
+            .send(RuntimeCommand::ShutdownDaemon {
+                urgent,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| RuntimeError::supervisor_closed())?;
         reply_rx
@@ -543,20 +655,27 @@ async fn handle_command(
 ) -> bool {
     match command {
         RuntimeCommand::Start { reply } => {
-            let result = start_state(
-                snapshot_tx,
-                ingress_tx,
-                notice_tx,
-                state,
-                active,
-                dependencies,
-            )
-            .await;
+            let result = if dependencies.urgent_stop.is_pending() {
+                Err(RuntimeError::invalid_pipeline_state(
+                    "start cancelled by a pending stop request",
+                ))
+            } else {
+                start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active,
+                    dependencies,
+                )
+                .await
+            };
             let _ = reply.send(result);
         }
-        RuntimeCommand::Stop { reply } => {
+        RuntimeCommand::Stop { urgent, reply } => {
             let result = stop_state(snapshot_tx, ingress_tx, state, active).await;
             let _ = reply.send(result);
+            drop(urgent);
         }
         RuntimeCommand::Restart { reply } => {
             let result = async {
@@ -574,7 +693,24 @@ async fn handle_command(
             .await;
             let _ = reply.send(result);
         }
-        RuntimeCommand::EmergencyStop { reply } => {
+        RuntimeCommand::PreflightPerception { reply } => {
+            let result = preflight_perception(state, dependencies).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ActivateModel { request, reply } => {
+            let result = activate_model_state(
+                request,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active,
+                dependencies,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::EmergencyStop { urgent, reply } => {
             ingress_tx.send_replace(None);
             if state.begin_stop() {
                 publish(snapshot_tx, state, now_ms());
@@ -593,6 +729,7 @@ async fn handle_command(
                     let _ = reply.send(Err(error));
                 }
             }
+            drop(urgent);
         }
         RuntimeCommand::SetTriggerActive {
             active: requested,
@@ -619,7 +756,7 @@ async fn handle_command(
             .await;
             let _ = reply.send(result);
         }
-        RuntimeCommand::ShutdownDaemon { reply } => {
+        RuntimeCommand::ShutdownDaemon { urgent, reply } => {
             state.daemon = DaemonState::ShuttingDown;
             ingress_tx.send_replace(None);
             if state.begin_stop() {
@@ -633,10 +770,375 @@ async fn handle_command(
             }
             publish(snapshot_tx, state, now_ms());
             let _ = reply.send(result);
+            drop(urgent);
             return true;
         }
     }
     false
+}
+
+async fn preflight_perception(
+    state: &SupervisorState,
+    dependencies: &RuntimeDependencies,
+) -> Result<(), RuntimeError> {
+    if !matches!(
+        state.pipeline,
+        PipelineState::Stopped | PipelineState::Faulted
+    ) {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "perception preflight requires a stopped pipeline",
+        ));
+    }
+    let Some(adapter) = dependencies.perception.clone() else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || adapter.preflight())
+        .await
+        .map_err(|error| {
+            RuntimeError::pipeline_rejected(format!("perception preflight task failed: {error}"))
+        })?
+        .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn activate_model_state(
+    request: ModelActivationRequest,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ModelActivationResult, ModelActivationError> {
+    let catalog = dependencies
+        .model_catalog
+        .clone()
+        .ok_or(ModelActivationError::Unavailable)?;
+    let action = request.label();
+    let project_id = request.project_id();
+    let plan_catalog = catalog.clone();
+    let plan_request = request.clone();
+    let (candidate, parser_preset, no_op) =
+        tokio::task::spawn_blocking(move || -> Result<_, ModelCatalogError> {
+            match plan_request {
+                ModelActivationRequest::Publish {
+                    artifact_id,
+                    parser_preset,
+                    ..
+                } => Ok((
+                    plan_catalog.runtime_artifact(project_id, artifact_id)?,
+                    parser_preset,
+                    None,
+                )),
+                ModelActivationRequest::Rollback { .. } => {
+                    let current = plan_catalog.deployment(project_id)?;
+                    let artifact_id = current.previous_artifact_id.unwrap_or(current.artifact_id);
+                    let candidate = plan_catalog.runtime_artifact(project_id, artifact_id)?;
+                    let no_op = (artifact_id == current.artifact_id).then_some(current);
+                    Ok((candidate, "auto".to_owned(), no_op))
+                }
+            }
+        })
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("catalog planning task failed: {error}"),
+        })??;
+
+    if let Some(deployment) = no_op {
+        let active = novasight_store::model_catalog::ActiveModelDeployment {
+            deployment: deployment.clone(),
+            project: candidate.project.clone(),
+            version: candidate.version.clone(),
+            artifact: candidate.artifact.clone(),
+            artifact_path: candidate.artifact_path.clone(),
+        };
+        return Ok(ModelActivationResult {
+            action,
+            deployment,
+            active,
+            candidate,
+            contract: None,
+            runtime: state.snapshot(now_ms()),
+            restarted: false,
+            changed: false,
+        });
+    }
+
+    let adapter = dependencies
+        .perception
+        .clone()
+        .ok_or(ModelActivationError::PerceptionUnavailable)?;
+    let model = ModelCandidate {
+        project_id,
+        artifact_id: candidate.artifact.id,
+        parser_preset,
+    };
+    let contract = tokio::task::spawn_blocking(move || adapter.preflight_model(&model))
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("candidate validation task failed: {error}"),
+        })?
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("candidate validation failed: {error}"),
+        })?;
+
+    if dependencies.urgent_stop.is_pending() {
+        return Err(ModelActivationError::Failed {
+            action,
+            message: "candidate activation cancelled by a pending stop request".to_owned(),
+        });
+    }
+
+    let was_running = matches!(
+        state.pipeline,
+        PipelineState::Running | PipelineState::Standby
+    );
+    if was_running {
+        stop_state(snapshot_tx, ingress_tx, state, active_pipeline).await?;
+    }
+    if dependencies.urgent_stop.is_pending() {
+        return Err(ModelActivationError::Failed {
+            action,
+            message: "candidate activation cancelled before catalog mutation".to_owned(),
+        });
+    }
+
+    let change_catalog = catalog.clone();
+    let change = tokio::task::spawn_blocking(move || match request {
+        ModelActivationRequest::Publish { artifact_id, .. } => {
+            change_catalog.publish_change(project_id, artifact_id)
+        }
+        ModelActivationRequest::Rollback { .. } => change_catalog.rollback_change(project_id),
+    })
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("catalog mutation task failed: {error}"),
+    });
+    let change = match change {
+        Ok(Ok(change)) => change,
+        Ok(Err(error)) => {
+            if was_running
+                && let Err(recovery) = start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active_pipeline,
+                    dependencies,
+                )
+                .await
+            {
+                return Err(ModelActivationError::Failed {
+                    action,
+                    message: format!(
+                        "catalog mutation failed: {error}; previous runtime recovery failed: {recovery}"
+                    ),
+                });
+            }
+            return Err(ModelActivationError::Catalog(error));
+        }
+        Err(error) => {
+            if was_running {
+                let recovery = start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active_pipeline,
+                    dependencies,
+                )
+                .await;
+                if let Err(recovery) = recovery {
+                    return Err(ModelActivationError::Failed {
+                        action,
+                        message: format!("{error}; previous runtime recovery failed: {recovery}"),
+                    });
+                }
+            }
+            return Err(error);
+        }
+    };
+
+    let resolved_catalog = catalog.clone();
+    let resolved = tokio::task::spawn_blocking(move || resolved_catalog.active_model())
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("active model read task failed: {error}"),
+        })?;
+    let active_model = match resolved {
+        Ok(Some(active))
+            if active.deployment == change.after && active.artifact.id == candidate.artifact.id =>
+        {
+            active
+        }
+        Ok(Some(active)) => {
+            return Err(compensate_model_activation(
+                action,
+                format!(
+                    "catalog resolved artifact {} instead of candidate {}",
+                    active.artifact.id, candidate.artifact.id
+                ),
+                change,
+                was_running,
+                &catalog,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await);
+        }
+        Ok(None) => {
+            return Err(compensate_model_activation(
+                action,
+                "catalog committed a deployment but resolved no active model".to_owned(),
+                change,
+                was_running,
+                &catalog,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await);
+        }
+        Err(error) => {
+            return Err(compensate_model_activation(
+                action,
+                format!("active model read failed: {error}"),
+                change,
+                was_running,
+                &catalog,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await);
+        }
+    };
+
+    if dependencies.urgent_stop.is_pending() {
+        return Err(compensate_model_activation(
+            action,
+            "candidate activation cancelled after catalog mutation".to_owned(),
+            change,
+            was_running,
+            &catalog,
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await);
+    }
+
+    let runtime = if was_running {
+        match start_state(
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Err(compensate_model_activation(
+                    action,
+                    error.to_string(),
+                    change,
+                    was_running,
+                    &catalog,
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active_pipeline,
+                    dependencies,
+                )
+                .await);
+            }
+        }
+    } else {
+        state.snapshot(now_ms())
+    };
+
+    Ok(ModelActivationResult {
+        action,
+        deployment: change.after,
+        active: active_model,
+        candidate,
+        contract,
+        runtime,
+        restarted: was_running,
+        changed: true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compensate_model_activation(
+    action: &'static str,
+    failure: String,
+    change: DeploymentChange,
+    was_running: bool,
+    catalog: &SqliteModelCatalog,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> ModelActivationError {
+    let compensation_catalog = catalog.clone();
+    let compensation =
+        tokio::task::spawn_blocking(move || compensation_catalog.compensate(change)).await;
+    let (compensated, compensation_message) = match compensation {
+        Ok(Ok(_)) => (true, "deployment was restored".to_owned()),
+        Ok(Err(error)) => (false, format!("deployment compensation failed: {error}")),
+        Err(error) => (
+            false,
+            format!("deployment compensation task failed: {error}"),
+        ),
+    };
+    let recovery = if compensated && was_running && !dependencies.urgent_stop.is_pending() {
+        start_state(
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await
+        .err()
+    } else {
+        None
+    };
+    let recovery_message = recovery
+        .map(|error| format!("; previous runtime recovery failed: {error}"))
+        .unwrap_or_default();
+    ModelActivationError::Failed {
+        action,
+        message: format!(
+            "candidate activation failed: {failure}; {compensation_message}{recovery_message}"
+        ),
+    }
 }
 
 async fn diagnose_device_move(
@@ -719,6 +1221,11 @@ async fn start_state(
     active: &mut Option<ActivePipeline>,
     dependencies: &RuntimeDependencies,
 ) -> Result<RuntimeSnapshot, RuntimeError> {
+    if dependencies.urgent_stop.is_pending() {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "runtime start cancelled by a pending stop request",
+        ));
+    }
     let Some(epoch) = state.begin_start()? else {
         return Ok(publish(snapshot_tx, state, now_ms()));
     };
@@ -733,9 +1240,12 @@ async fn start_state(
     let clock = Arc::clone(&dependencies.clock);
     let perception_clock = Arc::clone(&clock);
     let device = Arc::clone(&dependencies.device);
+    let urgent_stop = Arc::clone(&dependencies.urgent_stop.pending);
     let perception_adapter = dependencies.perception.clone();
-    let started =
-        tokio::task::spawn_blocking(move || PipelineRuntime::start(config, clock, device)).await;
+    let started = tokio::task::spawn_blocking(move || {
+        PipelineRuntime::start_suspended_with_cancel(config, clock, device, urgent_stop)
+    })
+    .await;
     let (mut pipeline, ingress) = match started {
         Ok(Ok(started)) => started,
         Ok(Err(error)) => {
@@ -836,6 +1346,44 @@ async fn start_state(
         } else {
             (None, None, None)
         };
+    if dependencies.urgent_stop.is_pending() {
+        let cleanup = tokio::task::spawn_blocking(move || {
+            let mut failures = Vec::new();
+            if let Some(mut perception) = perception
+                && let Err(error) = perception.shutdown()
+            {
+                failures.push(format!("perception shutdown failed: {error}"));
+            }
+            if let Err(error) = pipeline.shutdown() {
+                failures.push(format!("pipeline shutdown failed: {error}"));
+            }
+            failures
+        })
+        .await;
+        if let Some(cancel) = &perception_event_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(bridge) = perception_event_bridge {
+            let _ = bridge.await;
+        }
+        state.finish_stop();
+        publish(snapshot_tx, state, now_ms());
+        let cleanup = cleanup
+            .map_err(|error| format!("cleanup task failed: {error}"))
+            .and_then(|failures| {
+                if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failures.join("; "))
+                }
+            })
+            .err()
+            .map(|message| format!("; {message}"))
+            .unwrap_or_default();
+        return Err(RuntimeError::invalid_pipeline_state(format!(
+            "runtime start cancelled by a pending stop request{cleanup}"
+        )));
+    }
     // Start the blocking receiver only after every epoch-scoped producer has
     // reached its readiness gate. If perception startup fails, shutting down
     // the pipeline closes this receiver without leaving an unjoinable blocking
@@ -846,6 +1394,7 @@ async fn start_state(
             let _ = event_tx.blocking_send(PipelineNotice { epoch, event });
         }
     });
+    pipeline.open_output_gate();
     ingress_tx.send_replace(Some(ingress.clone()));
     *active = Some(ActivePipeline {
         epoch,

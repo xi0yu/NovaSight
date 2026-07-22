@@ -1,6 +1,6 @@
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -215,6 +215,46 @@ fn hardware_trigger_poller_owns_production_output_gate() {
     assert_eq!(device.recording.receipts().len(), 1);
     assert_eq!(device.recording.receipts()[0].generation, 2);
     runtime.shutdown().expect("workers join");
+}
+
+#[test]
+fn external_stop_signal_blocks_device_output_even_after_gate_open() {
+    let epoch = RuntimeEpoch(33);
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let (mut runtime, ingress) = PipelineRuntime::start_suspended_with_cancel(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+        cancelled.clone(),
+    )
+    .expect("pipeline starts suspended");
+    ingress.set_trigger_active(true);
+    ingress.submit(batch(epoch, 1)).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    assert!(
+        device.receipts().is_empty(),
+        "suspended output must stay closed"
+    );
+
+    runtime.open_output_gate();
+    ingress.submit(batch(epoch, 2)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(device.receipts().len(), 1);
+
+    cancelled.store(1, Ordering::Release);
+    ingress.submit(batch(epoch, 3)).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(device.receipts().len(), 1, "cancel must retire output");
+    runtime.shutdown().unwrap();
 }
 
 #[test]

@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
 use novasight_pipeline::{
-    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionSession, PipelineConfig,
-    PipelineIngress,
+    ModelCandidate, ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
+    PerceptionEvent, PerceptionModelContract, PerceptionSession, PipelineConfig, PipelineIngress,
+    validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
@@ -24,7 +25,7 @@ use novasight_platform_jetson::kmnet_native::{
 };
 use novasight_runtime::RuntimeDependencies;
 use novasight_store::config::{AppConfig, CapturePreference, ConfigValidationError, DeviceBackend};
-use novasight_store::model_catalog::SqliteModelCatalog;
+use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
 use novasight_store::model_manifest::ModelManifest;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -121,6 +122,7 @@ fn build_live_dependencies(
             ..PipelineConfig::default()
         },
     )
+    .with_model_catalog(model_catalog.clone())
     .with_perception(Arc::new(CatalogDeepStreamAdapter {
         config: config.clone(),
         model_catalog,
@@ -134,6 +136,25 @@ struct CatalogDeepStreamAdapter {
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
+    fn preflight(&self) -> Result<(), PerceptionError> {
+        build_deepstream_session_config(&self.config, &self.model_catalog)
+            .map(|_| ())
+            .map_err(|error| PerceptionError::new(error.to_string()))
+    }
+
+    fn preflight_model(
+        &self,
+        candidate: &ModelCandidate,
+    ) -> Result<Option<PerceptionModelContract>, PerceptionError> {
+        let model = self
+            .model_catalog
+            .runtime_artifact(candidate.project_id, candidate.artifact_id)
+            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        resolve_model_nvinfer_config(&self.config, &model, Some(candidate.parser_preset.as_str()))
+            .map(|(_, contract)| Some(contract))
+            .map_err(|error| PerceptionError::new(error.to_string()))
+    }
+
     fn start(
         &self,
         epoch: RuntimeEpoch,
@@ -189,7 +210,7 @@ fn build_deepstream_session_config(
         probe_pad: adapters.inference.deepstream_probe_pad.clone(),
         source_id: adapters.inference.deepstream_source_id,
         inference_component_id: adapters.inference.deepstream_component_id,
-        max_batch_age_ns: deadline_ns(adapters.inference.inference_input_deadline_ms),
+        max_batch_age_ns: Some(deadline_ns(adapters.inference.inference_input_deadline_ms)),
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
     })
@@ -228,34 +249,51 @@ fn resolve_active_nvinfer_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
 ) -> Result<PathBuf, LivePerceptionError> {
-    let adapters = config
-        .require_production_adapters()
-        .map_err(LivePerceptionError::Config)?;
     let Some(active) = model_catalog
         .active_model()
         .map_err(LivePerceptionError::ModelCatalog)?
     else {
         return Err(LivePerceptionError::ActiveModelMissing);
     };
-    if active.artifact.kind != "engine" {
+    let model = RuntimeModelArtifact {
+        project: active.project,
+        version: active.version,
+        artifact: active.artifact,
+        artifact_path: active.artifact_path,
+    };
+    resolve_model_nvinfer_config(config, &model, None).map(|(path, _)| path)
+}
+
+fn resolve_model_nvinfer_config(
+    config: &AppConfig,
+    model: &RuntimeModelArtifact,
+    requested_preset: Option<&str>,
+) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
+    let candidate_preflight = requested_preset.is_some();
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
+    if model.artifact.kind != "engine" {
         return Err(LivePerceptionError::ActiveArtifactKind {
-            artifact_id: active.artifact.id,
-            kind: active.artifact.kind,
+            artifact_id: model.artifact.id,
+            kind: model.artifact.kind.clone(),
         });
     }
-    if active.artifact.status != "ready" {
+    if model.artifact.status != "ready" {
         return Err(LivePerceptionError::ActiveArtifactNotReady {
-            artifact_id: active.artifact.id,
-            status: active.artifact.status,
+            artifact_id: model.artifact.id,
+            status: model.artifact.status.clone(),
         });
     }
-    if !active.artifact_path.is_file() {
-        return Err(LivePerceptionError::EngineMissing(active.artifact_path));
+    if !model.artifact_path.is_file() {
+        return Err(LivePerceptionError::EngineMissing(
+            model.artifact_path.clone(),
+        ));
     }
-    let parsed_manifest = read_model_manifest(&active.artifact_path)?;
+    let parsed_manifest = read_model_manifest(&model.artifact_path)?;
     let manifest = &parsed_manifest.document;
     let actual_sha = validate_model_document(
-        &active.artifact_path,
+        &model.artifact_path,
         manifest,
         parsed_manifest.output_class_names_present,
         adapters.inference.confidence_threshold,
@@ -263,24 +301,29 @@ fn resolve_active_nvinfer_config(
         adapters.inference.model_width,
         adapters.inference.model_height,
     )?;
-    let registry_sha = normalize_registry_checksum(&active.artifact.checksum).ok_or_else(|| {
+    let registry_sha = normalize_registry_checksum(&model.artifact.checksum).ok_or_else(|| {
         LivePerceptionError::RegistryChecksumInvalid {
-            artifact_id: active.artifact.id,
-            checksum: active.artifact.checksum.clone(),
+            artifact_id: model.artifact.id,
+            checksum: model.artifact.checksum.clone(),
         }
     })?;
     if registry_sha != manifest.artifact.sha256.to_ascii_lowercase() || registry_sha != actual_sha {
         return Err(LivePerceptionError::RegistryChecksumMismatch {
-            artifact_id: active.artifact.id,
+            artifact_id: model.artifact.id,
             registry: registry_sha,
             manifest: manifest.artifact.sha256.clone(),
             actual: actual_sha,
         });
     }
+    let requested_preset = validate_parser_preset(
+        requested_preset.unwrap_or(manifest.postprocess.parser_preset.as_str()),
+        manifest.output.has_objectness,
+    )
+    .map_err(|error| manifest_error(error.message()))?;
     let parser_library = resolve_process_path(&adapters.inference.deepstream_parser_library)?;
     let source = generate_nvinfer_config(
         manifest,
-        &active.artifact_path,
+        &model.artifact_path,
         &parser_library,
         adapters.inference.deepstream_component_id,
     )?;
@@ -291,9 +334,37 @@ fn resolve_active_nvinfer_config(
         path: runtime_directory.clone(),
         source,
     })?;
-    let path = runtime_directory.join("active-nvinfer.ini");
+    let path = if candidate_preflight {
+        runtime_directory.join(format!("candidate-{}.nvinfer.ini", model.artifact.id))
+    } else {
+        runtime_directory.join("active-nvinfer.ini")
+    };
     write_if_changed(&path, source.as_bytes())?;
-    Ok(path)
+    let parser = resolve_parser_contract(manifest)?;
+    let input_shape = manifest
+        .input
+        .shape
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join("x");
+    let contract = PerceptionModelContract {
+        input_shape,
+        classes: manifest.output.class_names.clone(),
+        parser: PerceptionParserContract {
+            requested_preset,
+            compatibility: if manifest.output.has_objectness {
+                "yolov5".to_owned()
+            } else {
+                "yolov8_yolo11".to_owned()
+            },
+            has_objectness: manifest.output.has_objectness,
+            parser_library: "novasight_builtin".to_owned(),
+            parser_function: parser.function.to_owned(),
+            nms_owner: "deepstream".to_owned(),
+        },
+    };
+    Ok((path, contract))
 }
 
 fn normalize_registry_checksum(value: &str) -> Option<String> {
@@ -427,16 +498,10 @@ fn parse_capture_format(value: &str) -> Result<CaptureFormat, LivePerceptionErro
     }
 }
 
-fn deadline_ns(milliseconds: f64) -> Option<u64> {
-    if milliseconds == 0.0 {
-        None
-    } else {
-        Some(
-            (milliseconds * 1_000_000.0)
-                .round()
-                .clamp(1.0, u64::MAX as f64) as u64,
-        )
-    }
+fn deadline_ns(milliseconds: f64) -> u64 {
+    (milliseconds * 1_000_000.0)
+        .round()
+        .clamp(1.0, u64::MAX as f64) as u64
 }
 
 fn parse_ini_values(source: &str) -> BTreeMap<String, String> {

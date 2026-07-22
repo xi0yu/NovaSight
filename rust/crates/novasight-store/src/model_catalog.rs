@@ -119,6 +119,12 @@ pub struct Deployment {
     pub updated_seq: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeploymentChange {
+    pub before: Option<Deployment>,
+    pub after: Deployment,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelCatalogSnapshot {
     pub projects: Vec<ModelProject>,
@@ -132,6 +138,14 @@ pub struct ModelCatalogSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActiveModelDeployment {
     pub deployment: Deployment,
+    pub project: ModelProject,
+    pub version: ModelVersion,
+    pub artifact: ModelArtifact,
+    pub artifact_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeModelArtifact {
     pub project: ModelProject,
     pub version: ModelVersion,
     pub artifact: ModelArtifact,
@@ -417,6 +431,129 @@ impl SqliteModelCatalog {
         }))
     }
 
+    /// Resolve one requested artifact without changing the active deployment.
+    /// Runtime model switching uses this before output is paused so validation
+    /// failures leave the current session untouched.
+    pub fn runtime_artifact(
+        &self,
+        project_id: i64,
+        artifact_id: i64,
+    ) -> Result<RuntimeModelArtifact, ModelCatalogError> {
+        let connection = self.connect()?;
+        require_project(&connection, project_id)?;
+        let row = connection
+            .query_row(
+                r#"
+                SELECT
+                    model_projects.id, model_projects.name, model_projects.description,
+                    model_versions.id, model_versions.version,
+                    model_versions.source_kind, model_versions.source_path,
+                    model_versions.classes_json, model_versions.input_shape,
+                    model_artifacts.version_id, model_artifacts.kind,
+                    model_artifacts.path, model_artifacts.checksum,
+                    model_artifacts.status
+                FROM model_artifacts
+                JOIN model_versions ON model_versions.id = model_artifacts.version_id
+                JOIN model_projects ON model_projects.id = model_versions.project_id
+                WHERE model_artifacts.id = ?1
+                "#,
+                [artifact_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, String>(13)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(ModelCatalogError::Sqlite)?
+            .ok_or(ModelCatalogError::ArtifactNotFound(artifact_id))?;
+        let (
+            resolved_project_id,
+            project_name,
+            project_description,
+            version_id,
+            version_name,
+            source_kind,
+            source_path,
+            classes_json,
+            input_shape,
+            artifact_version_id,
+            artifact_kind,
+            artifact_path,
+            checksum,
+            status,
+        ) = row;
+        if resolved_project_id != project_id {
+            return Err(ModelCatalogError::ArtifactProjectMismatch {
+                artifact_id,
+                project_id,
+            });
+        }
+        let classes = serde_json::from_str(&classes_json).map_err(|source| {
+            ModelCatalogError::InvalidJsonColumn {
+                table: "model_versions",
+                column: "classes_json",
+                row_id: version_id,
+                source,
+            }
+        })?;
+        let project = ModelProject {
+            id: project_id,
+            name: project_name,
+            description: project_description,
+        };
+        let version = ModelVersion {
+            id: version_id,
+            project_id,
+            version: version_name,
+            source_kind,
+            source_path,
+            classes,
+            input_shape,
+        };
+        let artifact = ModelArtifact {
+            id: artifact_id,
+            version_id: artifact_version_id,
+            kind: artifact_kind,
+            path: artifact_path,
+            checksum,
+            status,
+            size_bytes: None,
+        };
+        let artifact_path =
+            self.resolve_artifact_path(&project.name, &version.version, &artifact.path);
+        Ok(RuntimeModelArtifact {
+            project,
+            version,
+            artifact,
+            artifact_path,
+        })
+    }
+
+    pub fn deployment(&self, project_id: i64) -> Result<Deployment, ModelCatalogError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(ModelCatalogError::Sqlite)?;
+        let deployment = deployment_for_project(&transaction, project_id)?
+            .ok_or(ModelCatalogError::DeploymentNotFound(project_id))?;
+        transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+        Ok(deployment)
+    }
+
     pub fn catalog(&self, force: bool) -> Result<ModelCatalogResponse, ModelCatalogError> {
         if !force {
             let cache = self
@@ -589,6 +726,14 @@ impl SqliteModelCatalog {
         project_id: i64,
         artifact_id: i64,
     ) -> Result<Deployment, ModelCatalogError> {
+        Ok(self.publish_change(project_id, artifact_id)?.after)
+    }
+
+    pub fn publish_change(
+        &self,
+        project_id: i64,
+        artifact_id: i64,
+    ) -> Result<DeploymentChange, ModelCatalogError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -621,6 +766,7 @@ impl SqliteModelCatalog {
             return Err(ModelCatalogError::ArtifactNotReady(artifact_id));
         }
         let existing = deployment_for_project(&transaction, project_id)?;
+        let before = existing.clone();
         let sequence = next_deployment_sequence(&transaction)?;
         let deployment = match existing {
             Some(current) if current.artifact_id == artifact_id => {
@@ -666,10 +812,17 @@ impl SqliteModelCatalog {
             }
         };
         transaction.commit().map_err(ModelCatalogError::Sqlite)?;
-        Ok(deployment)
+        Ok(DeploymentChange {
+            before,
+            after: deployment,
+        })
     }
 
     pub fn rollback(&self, project_id: i64) -> Result<Deployment, ModelCatalogError> {
+        Ok(self.rollback_change(project_id)?.after)
+    }
+
+    pub fn rollback_change(&self, project_id: i64) -> Result<DeploymentChange, ModelCatalogError> {
         let mut connection = self.connect()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -677,8 +830,10 @@ impl SqliteModelCatalog {
         let current = deployment_for_project(&transaction, project_id)?
             .ok_or(ModelCatalogError::DeploymentNotFound(project_id))?;
         let Some(previous) = current.previous_artifact_id else {
-            transaction.commit().map_err(ModelCatalogError::Sqlite)?;
-            return Ok(current);
+            return Ok(DeploymentChange {
+                before: Some(current.clone()),
+                after: current,
+            });
         };
         let sequence = next_deployment_sequence(&transaction)?;
         transaction
@@ -694,7 +849,54 @@ impl SqliteModelCatalog {
             ..current
         };
         transaction.commit().map_err(ModelCatalogError::Sqlite)?;
-        Ok(deployment)
+        Ok(DeploymentChange {
+            before: Some(current),
+            after: deployment,
+        })
+    }
+
+    pub fn compensate(
+        &self,
+        change: DeploymentChange,
+    ) -> Result<Option<Deployment>, ModelCatalogError> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
+        let current = deployment_for_project(&transaction, change.after.project_id)?;
+        if current.as_ref() != Some(&change.after) {
+            return Err(ModelCatalogError::DeploymentChangedDuringActivation {
+                project_id: change.after.project_id,
+            });
+        }
+        let restored = match change.before {
+            Some(before) => {
+                transaction
+                    .execute(
+                        "UPDATE deployments SET artifact_id = ?1, previous_artifact_id = ?2, updated_seq = ?3 WHERE id = ?4 AND project_id = ?5",
+                        params![
+                            before.artifact_id,
+                            before.previous_artifact_id,
+                            before.updated_seq,
+                            before.id,
+                            before.project_id
+                        ],
+                    )
+                    .map_err(ModelCatalogError::Sqlite)?;
+                Some(before)
+            }
+            None => {
+                transaction
+                    .execute(
+                        "DELETE FROM deployments WHERE id = ?1 AND project_id = ?2",
+                        params![change.after.id, change.after.project_id],
+                    )
+                    .map_err(ModelCatalogError::Sqlite)?;
+                None
+            }
+        };
+        transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+        Ok(restored)
     }
 
     fn connect(&self) -> Result<Connection, ModelCatalogError> {
@@ -1402,4 +1604,8 @@ pub enum ModelCatalogError {
     ArtifactNotReady(i64),
     #[error("no model deployment exists for project {0}")]
     DeploymentNotFound(i64),
+    #[error("model project {0} has no previous deployment to restore")]
+    RollbackUnavailable(i64),
+    #[error("model deployment for project {project_id} changed during activation")]
+    DeploymentChangedDuringActivation { project_id: i64 },
 }

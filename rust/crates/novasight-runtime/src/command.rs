@@ -12,7 +12,11 @@ use tokio::sync::oneshot;
 use novasight_core::DeviceReceipt;
 
 use crate::error::RuntimeError;
+use crate::model_activation::{
+    ModelActivationError, ModelActivationRequest, ModelActivationResult,
+};
 use crate::snapshot::RuntimeSnapshot;
+use crate::supervisor::UrgentStopToken;
 
 #[derive(Debug)]
 pub enum RuntimeCommand {
@@ -20,12 +24,21 @@ pub enum RuntimeCommand {
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
     },
     Stop {
+        urgent: UrgentStopToken,
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
     },
     Restart {
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
     },
+    PreflightPerception {
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    ActivateModel {
+        request: ModelActivationRequest,
+        reply: oneshot::Sender<Result<ModelActivationResult, ModelActivationError>>,
+    },
     EmergencyStop {
+        urgent: UrgentStopToken,
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
     },
     SetTriggerActive {
@@ -38,6 +51,7 @@ pub enum RuntimeCommand {
         reply: oneshot::Sender<Result<DeviceReceipt, RuntimeError>>,
     },
     ShutdownDaemon {
+        urgent: UrgentStopToken,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
 }

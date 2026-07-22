@@ -13,7 +13,8 @@ mod runtime;
 mod slot;
 
 pub use perception::{
-    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
+    ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionEvent,
+    PerceptionMetrics, PerceptionModelContract, PerceptionSession, validate_parser_preset,
 };
 
 pub use runtime::{

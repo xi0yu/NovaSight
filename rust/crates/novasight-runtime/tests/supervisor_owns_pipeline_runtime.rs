@@ -158,6 +158,25 @@ impl PerceptionSession for SilentPerceptionSession {
     }
 }
 
+#[derive(Debug)]
+struct FailingPreflightAdapter;
+
+impl PerceptionAdapter for FailingPreflightAdapter {
+    fn preflight(&self) -> Result<(), PerceptionError> {
+        Err(PerceptionError::new("candidate model contract rejected"))
+    }
+
+    fn start(
+        &self,
+        _epoch: RuntimeEpoch,
+        _ingress: PipelineIngress,
+        _clock: Arc<dyn Clock>,
+        _events: SyncSender<PerceptionEvent>,
+    ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+        unreachable!("failed preflight must not start perception")
+    }
+}
+
 fn batch(epoch: RuntimeEpoch, generation: u64) -> DetectionBatch {
     DetectionBatch::new(
         FrameStamp::new(epoch, generation, 1_000_000_000),
@@ -199,6 +218,26 @@ async fn supervisor_start_stop_owns_the_real_pipeline_lifecycle() {
         .submit_detection_batch(batch(epoch, 2))
         .expect_err("stopped pipeline rejects ingress");
     assert_eq!(error.kind, RuntimeErrorKind::PipelineUnavailable);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn perception_preflight_rejects_a_candidate_without_starting_the_pipeline() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_perception(Arc::new(FailingPreflightAdapter));
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+
+    let error = handle
+        .preflight_perception()
+        .await
+        .expect_err("invalid model must fail preflight");
+    assert_eq!(error.kind, RuntimeErrorKind::PipelineRejected);
+    assert!(error.message.contains("candidate model contract rejected"));
+    assert_eq!(handle.snapshot().pipeline.state, PipelineState::Stopped);
 
     handle.shutdown_daemon().await.expect("shutdown daemon");
     supervisor.join().await.expect("supervisor joins");

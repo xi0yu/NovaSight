@@ -95,7 +95,10 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     } else if args.dry_run {
-        (RuntimeDependencies::recording(), server::DaemonMode::DryRun)
+        (
+            RuntimeDependencies::recording().with_model_catalog(model_catalog.clone()),
+            server::DaemonMode::DryRun,
+        )
     } else {
         if let Err(error) = loaded.config().require_production_adapters() {
             eprintln!("PRODUCTION_CONFIG_INVALID: {error}");

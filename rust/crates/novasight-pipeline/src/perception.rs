@@ -7,6 +7,36 @@ use thiserror::Error;
 
 use crate::PipelineIngress;
 
+/// Stable identity passed to the perception adapter before a catalog
+/// deployment is changed. This lets the adapter validate the candidate that
+/// was requested instead of accidentally re-validating the currently active
+/// model.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModelCandidate {
+    pub project_id: i64,
+    pub artifact_id: i64,
+    pub parser_preset: String,
+}
+
+/// Runtime facts obtained from the validated engine manifest. Registry labels
+/// are deliberately not used as the source of truth for these fields.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PerceptionModelContract {
+    pub input_shape: String,
+    pub classes: Vec<String>,
+    pub parser: ParserContract,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ParserContract {
+    pub requested_preset: String,
+    pub compatibility: String,
+    pub has_objectness: bool,
+    pub parser_library: String,
+    pub parser_function: String,
+    pub nms_owner: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PerceptionEvent {
     Faulted { message: String },
@@ -43,8 +73,59 @@ impl PerceptionError {
     }
 }
 
+/// Normalize the Studio parser-preset vocabulary and verify its objectness
+/// semantics against the immutable engine manifest.
+pub fn validate_parser_preset(
+    value: &str,
+    has_objectness: bool,
+) -> Result<String, PerceptionError> {
+    let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+    let preset = match normalized.as_str() {
+        "" | "automatic" | "auto" => "auto",
+        "yolo_v5" | "yolov5_raw" | "yolov5" => "yolov5",
+        "yolo_v8" | "yolov8_raw" | "yolov8" => "yolov8",
+        "yolo_11" | "yolo11_raw" | "yolo11" => "yolo11",
+        "generic" | "custom" | "novasight" | "novasight_generic" => "novasight_generic",
+        _ => {
+            return Err(PerceptionError::new(format!(
+                "unsupported parser preset {value}"
+            )));
+        }
+    };
+    let compatible = match preset {
+        "auto" | "novasight_generic" => true,
+        "yolov5" => has_objectness,
+        "yolov8" | "yolo11" => !has_objectness,
+        _ => false,
+    };
+    if !compatible {
+        return Err(PerceptionError::new(format!(
+            "parser preset {preset} conflicts with manifest objectness={has_objectness}"
+        )));
+    }
+    Ok(preset.to_owned())
+}
+
 /// Factory for one epoch-scoped perception producer.
 pub trait PerceptionAdapter: Send + Sync + 'static {
+    /// Validate the next epoch's external resources without starting capture,
+    /// inference, or output. Adapters with dynamic configuration should do the
+    /// same resolution work here that [`Self::start`] performs.
+    fn preflight(&self) -> Result<(), PerceptionError> {
+        Ok(())
+    }
+
+    /// Validate a specific not-yet-active model. Production adapters must
+    /// resolve `candidate.artifact_id` directly; reading the active deployment
+    /// here would validate the wrong engine during a switch.
+    fn preflight_model(
+        &self,
+        _candidate: &ModelCandidate,
+    ) -> Result<Option<PerceptionModelContract>, PerceptionError> {
+        self.preflight()?;
+        Ok(None)
+    }
+
     fn start(
         &self,
         epoch: RuntimeEpoch,
@@ -62,4 +143,20 @@ pub trait PerceptionSession: Send + 'static {
 
     /// Stop producing before the post-inference pipeline is closed.
     fn shutdown(&mut self) -> Result<(), PerceptionError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_parser_preset;
+
+    #[test]
+    fn parser_presets_preserve_studio_vocabulary_and_objectness_semantics() {
+        for preset in ["auto", "yolov8", "yolo11", "novasight_generic"] {
+            assert_eq!(validate_parser_preset(preset, false).unwrap(), preset);
+        }
+        assert!(validate_parser_preset("yolov5", false).is_err());
+        assert_eq!(validate_parser_preset("yolo_v5", true).unwrap(), "yolov5");
+        assert!(validate_parser_preset("yolov8", true).is_err());
+        assert!(validate_parser_preset("unknown", false).is_err());
+    }
 }

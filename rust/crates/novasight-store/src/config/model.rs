@@ -351,10 +351,11 @@ impl InferenceConfig {
                 ));
             }
         }
-        if !self.inference_input_deadline_ms.is_finite() || self.inference_input_deadline_ms < 0.0 {
+        if !self.inference_input_deadline_ms.is_finite() || self.inference_input_deadline_ms <= 0.0
+        {
             return Err(ConfigValidationError::new(
                 "inference.inference_input_deadline_ms",
-                "must be finite and non-negative",
+                "must be finite and positive so stale batches cannot unlock runtime readiness",
             ));
         }
         if self
