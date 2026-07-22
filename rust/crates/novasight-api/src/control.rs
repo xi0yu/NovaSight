@@ -16,17 +16,18 @@ use axum::{
 };
 use futures_util::{Sink, Stream, StreamExt};
 use novasight_core::{
-    CaptureCapabilities, CaptureCapabilityProbe, CaptureProbeError, DeviceReceipt,
+    CaptureCapabilities, CaptureCapabilityProbe, CaptureProbeError, CaptureSelectionError,
+    CaptureSelectionPreference, DeviceReceipt, select_capture_profile,
 };
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
-    ModelActivationError, ModelIngressError, RuntimeError, RuntimeErrorKind, RuntimeHandle,
-    RuntimeSnapshot,
+    ModelActivationError, ModelIngressError, PipelineState, RuntimeError, RuntimeErrorKind,
+    RuntimeHandle, RuntimeSnapshot,
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 
 use crate::dto::{
     CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
@@ -113,6 +114,7 @@ pub fn build_control_router_with_platform_queries(
         capture_probe: capture_probe.into(),
         hardware_output_enabled,
         shutdown: shutdown.into(),
+        lifecycle_lock: Arc::new(Mutex::new(())),
     };
     let license_gate_enabled = state.license.is_some();
     let router = Router::new()
@@ -142,6 +144,7 @@ pub fn build_control_router_with_platform_queries(
             "/api/capture/capabilities",
             get(capture_capabilities).post(post_capture_capabilities),
         )
+        .route("/api/capture/select", post(select_capture))
         .route("/api/executors", get(executors))
         .merge(models::routes())
         .route(
@@ -174,6 +177,7 @@ struct ControlState {
     capture_probe: Option<Arc<dyn CaptureCapabilityProbe>>,
     hardware_output_enabled: bool,
     shutdown: Option<watch::Receiver<bool>>,
+    lifecycle_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +339,7 @@ async fn legacy_status(State(state): State<ControlState>) -> Json<CompatibilityR
 async fn legacy_start(
     State(state): State<ControlState>,
 ) -> Result<Json<CompatibilityRuntimeStart>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_config_effective(&state).await?;
     let snapshot = state.runtime.start().await?;
     Ok(Json(CompatibilityRuntimeStart::from(&snapshot)))
@@ -424,6 +429,7 @@ async fn diagnostic_device_move(
     State(state): State<ControlState>,
     Json(request): Json<DiagnosticMoveRequest>,
 ) -> Result<Json<DiagnosticMoveResponse>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     if !state.hardware_output_enabled {
         return Err(ControlApiError::HardwareOutputDisabled);
     }
@@ -477,14 +483,20 @@ async fn ensure_config_effective(state: &ControlState) -> Result<(), ControlApiE
 }
 
 async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
-    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
     Ok(Json(service.snapshot().await))
 }
 
 async fn config_schema(
     State(state): State<ControlState>,
 ) -> Result<Json<ConfigSchemaResponse>, ControlApiError> {
-    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
     let config = service.snapshot().await;
     Ok(Json(ConfigSchemaResponse::new(&config)))
 }
@@ -509,6 +521,18 @@ struct CaptureCapabilitiesRequest {
     device: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CaptureSelectRequest {
+    device: String,
+    #[serde(default)]
+    preference: CaptureSelectionPreference,
+    pixel_format: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<u32>,
+}
+
 async fn capture_capabilities(
     State(state): State<ControlState>,
     Query(query): Query<CaptureCapabilitiesQuery>,
@@ -525,6 +549,42 @@ async fn post_capture_capabilities(
     probe_capture_capabilities(state, Some(request.device))
         .await
         .map(Json)
+}
+
+async fn select_capture(
+    State(state): State<ControlState>,
+    Json(request): Json<CaptureSelectRequest>,
+) -> Result<Json<serde_json::Value>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if state.runtime.snapshot().pipeline.state != PipelineState::Stopped {
+        return Err(ControlApiError::CaptureSelectionRequiresStoppedRuntime);
+    }
+    let capabilities = probe_capture_capabilities(state.clone(), Some(request.device)).await?;
+    let manual = match (
+        request.pixel_format.as_deref(),
+        request.width,
+        request.height,
+        request.fps,
+    ) {
+        (Some(pixel_format), Some(width), Some(height), Some(fps)) => {
+            Some((pixel_format, width, height, fps))
+        }
+        _ => None,
+    };
+    let selected = select_capture_profile(&capabilities, request.preference, manual)
+        .map_err(ControlApiError::CaptureSelection)?;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
+    service.apply_capture_profile(&selected).await?;
+
+    let snapshot = state.runtime.snapshot();
+    let compatibility = compatibility_state(&state, &snapshot).await;
+    Ok(Json(
+        serde_json::to_value(compatibility.capture)
+            .expect("compatibility capture DTO must serialize"),
+    ))
 }
 
 async fn probe_capture_capabilities(
@@ -556,7 +616,11 @@ async fn update_config(
     State(state): State<ControlState>,
     Json(update): Json<ConfigFieldUpdate>,
 ) -> Result<Json<ConfigUpdate>, ControlApiError> {
-    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
     Ok(Json(service.update_field(update).await?))
 }
 
@@ -564,7 +628,11 @@ async fn update_legacy_config(
     State(state): State<ControlState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<ConfigUpdate>, ControlApiError> {
-    let service = state.config.ok_or(ControlApiError::ConfigUnavailable)?;
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
     let is_field_update = payload.get("section").is_some()
         || payload.get("key").is_some()
         || payload.get("value").is_some();
@@ -585,6 +653,7 @@ async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
 async fn start(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_config_effective(&state).await?;
     Ok(Json(state.runtime.start().await?))
 }
@@ -596,6 +665,7 @@ async fn stop(State(state): State<ControlState>) -> Result<Json<RuntimeSnapshot>
 async fn restart(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_config_effective(&state).await?;
     Ok(Json(state.runtime.restart().await?))
 }
@@ -813,6 +883,8 @@ enum ControlApiError {
     CaptureProbe(CaptureProbeError),
     CaptureProbeTask(tokio::task::JoinError),
     CaptureProbeUnavailable,
+    CaptureSelection(CaptureSelectionError),
+    CaptureSelectionRequiresStoppedRuntime,
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -868,7 +940,9 @@ impl IntoResponse for ControlApiError {
                     | "CONFIG_INVALID_FIELD_TARGET"
                     | "CONFIG_FIELD_VALUE_INVALID"
                     | "CONFIG_REPLACEMENT_INVALID"
-                    | "CONFIG_REPLACEMENT_REVISION_REQUIRED" => StatusCode::BAD_REQUEST,
+                    | "CONFIG_REPLACEMENT_REVISION_REQUIRED"
+                    | "CAPTURE_NOT_CONFIGURED"
+                    | "CAPTURE_PROFILE_INVALID" => StatusCode::BAD_REQUEST,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
                 let code = error.code();
@@ -1121,6 +1195,16 @@ impl IntoResponse for ControlApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "CAPTURE_PROBE_UNAVAILABLE",
                 "no platform capture capability probe is attached".to_owned(),
+            ),
+            Self::CaptureSelection(error) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CAPTURE_PROFILE_UNSUPPORTED",
+                error.to_string(),
+            ),
+            Self::CaptureSelectionRequiresStoppedRuntime => (
+                StatusCode::CONFLICT,
+                "CAPTURE_SELECTION_REQUIRES_STOPPED_RUNTIME",
+                "stop the runtime before changing its concrete capture profile".to_owned(),
             ),
         };
         let body = ControlErrorBody {

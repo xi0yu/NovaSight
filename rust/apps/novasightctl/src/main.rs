@@ -8,6 +8,7 @@ use novasight_client::{
     ClientError, ControlClient, DiagnosticMoveResponse, ExecutorStatus, LicenseStatus,
     ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
 };
+use novasight_core::CaptureSelectionPreference;
 use novasight_runtime::{
     AppConfig, ConfigUpdate, ModelIngressResult, ModelProbeInputMode, ModelProfileConfigureRequest,
     RuntimeSnapshot,
@@ -136,6 +137,42 @@ enum CaptureCommand {
         #[arg(long, default_value = "/dev/video0")]
         device: String,
     },
+    /// Select and persist one kernel-reported profile for the next runtime start.
+    Select {
+        #[arg(long, default_value = "/dev/video0")]
+        device: String,
+        #[arg(long, value_enum, default_value_t = CliCapturePreference::AutoHighFps)]
+        preference: CliCapturePreference,
+        #[arg(long, requires_all = ["width", "height", "fps"])]
+        pixel_format: Option<String>,
+        #[arg(long, requires_all = ["pixel_format", "height", "fps"])]
+        width: Option<u32>,
+        #[arg(long, requires_all = ["pixel_format", "width", "fps"])]
+        height: Option<u32>,
+        #[arg(long, requires_all = ["pixel_format", "width", "height"])]
+        fps: Option<u32>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum CliCapturePreference {
+    #[default]
+    AutoHighFps,
+    AutoLowLatency,
+    AutoBalanced,
+    Manual,
+}
+
+impl From<CliCapturePreference> for CaptureSelectionPreference {
+    fn from(value: CliCapturePreference) -> Self {
+        match value {
+            CliCapturePreference::AutoHighFps => Self::AutoHighFps,
+            CliCapturePreference::AutoLowLatency => Self::AutoLowLatency,
+            CliCapturePreference::AutoBalanced => Self::AutoBalanced,
+            CliCapturePreference::Manual => Self::Manual,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -354,6 +391,31 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .capture_capabilities(&device)
             .await
             .map(CommandOutput::CaptureCapabilities),
+        Command::Capture {
+            command:
+                CaptureCommand::Select {
+                    device,
+                    preference,
+                    pixel_format,
+                    width,
+                    height,
+                    fps,
+                },
+        } => {
+            let manual = match (pixel_format.as_deref(), width, height, fps) {
+                (Some(format), Some(width), Some(height), Some(fps)) => {
+                    Some((format, width, height, fps))
+                }
+                _ => None,
+            };
+            if (preference == CliCapturePreference::Manual) != manual.is_some() {
+                return Err(CliError::InvalidCaptureSelection);
+            }
+            client
+                .select_capture(&device, preference.into(), manual)
+                .await
+                .map(CommandOutput::Json)
+        }
     }
     .map_err(CliError::Client)
 }
@@ -362,6 +424,10 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
 enum CliError {
     #[error(transparent)]
     Client(#[from] ClientError),
+    #[error(
+        "manual capture selection requires all of --pixel-format, --width, --height, and --fps; automatic preferences accept none of them"
+    )]
+    InvalidCaptureSelection,
     #[error("failed to read model profile request {}: {source}", path.display())]
     ReadProfileRequest {
         path: PathBuf,
@@ -382,6 +448,7 @@ impl CliError {
     const fn code(&self) -> &'static str {
         match self {
             Self::Client(error) => error.code(),
+            Self::InvalidCaptureSelection => "CAPTURE_SELECTION_ARGUMENTS_INVALID",
             Self::ReadProfileRequest { .. } => "model_profile_request_read_failed",
             Self::DecodeProfileRequest(_) => "model_profile_request_invalid",
             Self::ReadLicenseKey { .. } => "license_key_read_failed",

@@ -13,7 +13,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use novasight_core::{CaptureCapabilities, DeviceReceipt};
+use novasight_core::{CaptureCapabilities, CaptureSelectionPreference, DeviceReceipt};
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
     ModelProfileConfigureRequest, RuntimeSnapshot,
@@ -320,6 +320,45 @@ impl ControlClient {
             Method::POST,
             "/api/capture/capabilities",
             Some(&CaptureCapabilitiesRequest { device }),
+        )
+        .await
+    }
+
+    pub async fn select_capture(
+        &self,
+        device: &str,
+        preference: CaptureSelectionPreference,
+        manual: Option<(&str, u32, u32, u32)>,
+    ) -> Result<Value, ClientError> {
+        #[derive(Serialize)]
+        struct CaptureSelectRequest<'a> {
+            device: &'a str,
+            preference: CaptureSelectionPreference,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pixel_format: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            width: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            height: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            fps: Option<u32>,
+        }
+        let (pixel_format, width, height, fps) = manual
+            .map(|(format, width, height, fps)| {
+                (Some(format), Some(width), Some(height), Some(fps))
+            })
+            .unwrap_or((None, None, None, None));
+        self.request(
+            Method::POST,
+            "/api/capture/select",
+            Some(&CaptureSelectRequest {
+                device,
+                preference,
+                pixel_format,
+                width,
+                height,
+                fps,
+            }),
         )
         .await
     }

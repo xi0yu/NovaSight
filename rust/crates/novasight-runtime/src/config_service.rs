@@ -1,7 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use novasight_store::config::{AppConfig, ConfigError, YamlConfigRepository};
+use novasight_core::SelectedCaptureProfile;
+use novasight_store::config::{
+    AppConfig, CapturePreference, ConfigError, ConfigRepository, YamlConfigRepository,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -34,7 +38,7 @@ pub struct ConfigService {
 struct ConfigServiceInner {
     repository: YamlConfigRepository,
     current: RwLock<AppConfig>,
-    effective_revision: u64,
+    effective_revision: AtomicU64,
     update_lock: Mutex<()>,
 }
 
@@ -45,7 +49,7 @@ impl ConfigService {
             inner: Arc::new(ConfigServiceInner {
                 repository: YamlConfigRepository::new(path),
                 current: RwLock::new(initial),
-                effective_revision,
+                effective_revision: AtomicU64::new(effective_revision),
                 update_lock: Mutex::new(()),
             }),
         }
@@ -56,19 +60,85 @@ impl ConfigService {
     }
 
     pub fn effective_revision(&self) -> u64 {
-        self.inner.effective_revision
+        self.inner.effective_revision.load(Ordering::Acquire)
+    }
+
+    /// Read the daemon's current configuration from a blocking adapter task.
+    /// Runtime preflight and startup use `spawn_blocking`, so they can safely
+    /// consume the same revision that the control plane owns.
+    pub fn blocking_snapshot(&self) -> AppConfig {
+        self.inner.current.blocking_read().clone()
     }
 
     pub async fn ensure_effective(&self) -> Result<(), ConfigServiceError> {
         let desired_revision = self.inner.current.read().await.revision;
-        if desired_revision == self.inner.effective_revision {
+        let effective_revision = self.effective_revision();
+        if desired_revision == effective_revision {
             Ok(())
         } else {
             Err(ConfigServiceError::RestartRequired {
-                effective_revision: self.inner.effective_revision,
+                effective_revision,
                 desired_revision,
             })
         }
+    }
+
+    /// Persist a kernel-validated concrete capture profile and make that
+    /// capture-only revision visible to the stopped runtime immediately.
+    /// Other pending configuration edits are never swept into the effective
+    /// revision by this operation.
+    pub async fn apply_capture_profile(
+        &self,
+        selected: &SelectedCaptureProfile,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let _update_guard = self.inner.update_lock.lock().await;
+        let current = self.inner.current.read().await.clone();
+        let effective_revision = self.effective_revision();
+        if current.revision != effective_revision {
+            return Err(ConfigServiceError::RestartRequired {
+                effective_revision,
+                desired_revision: current.revision,
+            });
+        }
+        let mut candidate = current.clone();
+        let capture = candidate
+            .capture
+            .as_mut()
+            .ok_or(ConfigServiceError::CaptureNotConfigured)?;
+        capture.device = PathBuf::from(&selected.device);
+        capture.preference = CapturePreference::Manual;
+        capture.pixel_format.clone_from(&selected.pixel_format);
+        capture.width = selected.width;
+        capture.height = selected.height;
+        capture.fps = selected.fps;
+        candidate
+            .validate_configured_adapters()
+            .map_err(ConfigServiceError::CaptureValidation)?;
+
+        let repository = self.inner.repository.clone();
+        let config = tokio::task::spawn_blocking(move || {
+            repository.save_config(&candidate, current.revision)
+        })
+        .await
+        .map_err(ConfigServiceError::SaveTask)??;
+        *self.inner.current.write().await = config.clone();
+        self.inner
+            .effective_revision
+            .store(config.revision, Ordering::Release);
+        Ok(ConfigUpdate {
+            config,
+            restart_required: false,
+            applied: true,
+            rolled_back: false,
+            message: format!(
+                "capture profile applied: {} {}x{}@{} ({})",
+                selected.pixel_format,
+                selected.width,
+                selected.height,
+                selected.fps,
+                selected.selection_reason
+            ),
+        })
     }
 
     pub async fn update_field(
@@ -133,6 +203,10 @@ pub enum ConfigServiceError {
     SerializeFieldValue(serde_yaml::Error),
     #[error("configuration replacement must include its current numeric revision")]
     ReplacementRevisionRequired,
+    #[error("capture adapter is not configured")]
+    CaptureNotConfigured,
+    #[error("selected capture profile is incompatible with the current configuration: {0}")]
+    CaptureValidation(novasight_store::config::ConfigValidationError),
     #[error(
         "novasightd restart required: process uses configuration revision {effective_revision}, persisted revision is {desired_revision}"
     )]
@@ -150,6 +224,8 @@ impl ConfigServiceError {
             Self::Config(error) => error.code(),
             Self::SerializeFieldValue(_) => "CONFIG_FIELD_VALUE_INVALID",
             Self::ReplacementRevisionRequired => "CONFIG_REPLACEMENT_REVISION_REQUIRED",
+            Self::CaptureNotConfigured => "CAPTURE_NOT_CONFIGURED",
+            Self::CaptureValidation(_) => "CAPTURE_PROFILE_INVALID",
             Self::RestartRequired { .. } => "CONFIG_RESTART_REQUIRED",
             Self::SaveTask(_) => "CONFIG_SAVE_TASK_FAILED",
         }

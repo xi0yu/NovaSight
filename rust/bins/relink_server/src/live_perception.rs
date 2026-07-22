@@ -27,7 +27,7 @@ use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostCon
 use novasight_platform_jetson::kmnet_native::{
     KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError,
 };
-use novasight_runtime::RuntimeDependencies;
+use novasight_runtime::{ConfigService, RuntimeDependencies};
 use novasight_store::config::{
     AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, InferenceBackend,
 };
@@ -41,14 +41,16 @@ use crate::model_contract::resolve_rust_tensorrt_contract;
 
 pub(super) fn build_live_recording_dependencies(
     config: &AppConfig,
+    config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
-    build_live_dependencies(config, model_catalog, device, None)
+    build_live_dependencies(config, config_service, model_catalog, device, None)
 }
 
 pub(super) fn build_live_production_dependencies(
     config: &AppConfig,
+    config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
@@ -101,6 +103,7 @@ pub(super) fn build_live_production_dependencies(
     };
     build_live_dependencies(
         config,
+        config_service,
         model_catalog,
         device,
         Some(adapters.device.trigger_poll_interval_ms),
@@ -109,6 +112,7 @@ pub(super) fn build_live_production_dependencies(
 
 fn build_live_dependencies(
     config: &AppConfig,
+    config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     device: Arc<dyn PointerDevice>,
     trigger_poll_interval_ms: Option<u64>,
@@ -134,7 +138,7 @@ fn build_live_dependencies(
     )
     .with_model_catalog(model_catalog.clone())
     .with_perception(Arc::new(CatalogDeepStreamAdapter {
-        config: config.clone(),
+        config: config_service,
         model_catalog,
         latest_frames,
     })))
@@ -142,14 +146,15 @@ fn build_live_dependencies(
 
 #[derive(Clone, Debug)]
 struct CatalogDeepStreamAdapter {
-    config: AppConfig,
+    config: ConfigService,
     model_catalog: SqliteModelCatalog,
     latest_frames: LatestFrameExchange,
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
     fn preflight(&self) -> Result<(), PerceptionError> {
-        build_deepstream_session_config(&self.config, &self.model_catalog)
+        let config = self.config.blocking_snapshot();
+        build_deepstream_session_config(&config, &self.model_catalog)
             .map(|_| ())
             .map_err(|error| PerceptionError::new(error.to_string()))
     }
@@ -158,19 +163,19 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         &self,
         candidate: &ModelCandidate,
     ) -> Result<Option<PerceptionModelContract>, PerceptionError> {
+        let config = self.config.blocking_snapshot();
         let model = self
             .model_catalog
             .runtime_artifact(candidate.project_id, candidate.artifact_id)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
-        let backend = self
-            .config
+        let backend = config
             .require_production_adapters()
             .map_err(|error| PerceptionError::new(error.to_string()))?
             .inference
             .backend;
         match backend {
             InferenceBackend::DeepstreamNvinfer => resolve_model_nvinfer_config(
-                &self.config,
+                &config,
                 &model,
                 Some(candidate.parser_preset.as_str()),
             )
@@ -179,7 +184,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             InferenceBackend::RustTensorRt => {
                 #[cfg(feature = "tensorrt")]
                 return resolve_model_rust_contract(
-                    &self.config,
+                    &config,
                     &model,
                     candidate.parser_preset.as_str(),
                 )
@@ -200,7 +205,8 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         clock: Arc<dyn Clock>,
         events: std::sync::mpsc::SyncSender<PerceptionEvent>,
     ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
-        let config = build_deepstream_session_config(&self.config, &self.model_catalog)
+        let current = self.config.blocking_snapshot();
+        let config = build_deepstream_session_config(&current, &self.model_catalog)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
         DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
             .start(epoch, ingress, clock, events)

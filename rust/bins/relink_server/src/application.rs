@@ -8,7 +8,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use novasight_runtime::{LoadedApplication, OfflineModelJobRunner, RuntimeDependencies};
+use novasight_runtime::{
+    ConfigService, LoadedApplication, OfflineModelJobRunner, RuntimeDependencies,
+};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use tracing_subscriber::EnvFilter;
 
@@ -121,12 +123,14 @@ pub async fn entry() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
 
     let (dependencies, mode) = if args.dry_run && args.live_perception {
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {
             match live_perception::build_live_recording_dependencies(
                 loaded.config(),
+                config_service.clone(),
                 model_catalog.clone(),
             ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::DryRun),
@@ -157,6 +161,7 @@ pub async fn entry() -> ExitCode {
         {
             match live_perception::build_live_production_dependencies(
                 loaded.config(),
+                config_service.clone(),
                 model_catalog.clone(),
             ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::Production),
@@ -176,7 +181,7 @@ pub async fn entry() -> ExitCode {
     };
 
     let dependencies = dependencies.with_model_jobs(model_jobs);
-    match server::run_daemon(loaded, dependencies, model_catalog, mode).await {
+    match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

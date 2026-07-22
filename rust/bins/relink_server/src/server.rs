@@ -44,13 +44,13 @@ impl DaemonMode {
 pub(super) async fn run_daemon(
     loaded: LoadedApplication,
     dependencies: RuntimeDependencies,
+    config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
 ) -> Result<(), DaemonRunError> {
     let host = loaded.config().server.host.clone();
     let port = loaded.config().server.port;
     let control_socket = loaded.config().server.control_socket.clone();
-    let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
     let license_repository =
         FileLicenseRepository::new(loaded.config().paths.license.clone(), license_policy(mode)?);
     let listener = TcpListener::bind((host.as_str(), port))

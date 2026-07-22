@@ -402,6 +402,106 @@ async fn capture_capabilities_use_the_attached_platform_probe_for_get_and_post()
 }
 
 #[tokio::test]
+async fn capture_selection_persists_a_concrete_profile_and_remains_startable() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        r#"revision: 3
+capture:
+  device: /dev/video7
+  backend: deepstream_nvinfer
+  memory: nvmm
+  preference: manual
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+  width: 1920
+  height: 1080
+  fps: 60
+  pixel_format: NV12
+  roi_left: 0
+  roi_top: 0
+  roi_width: 640
+  roi_height: 640
+"#,
+    )
+    .unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_platform_queries(
+        runtime.clone(),
+        config,
+        None,
+        None,
+        Arc::new(StaticCaptureProbe) as Arc<dyn CaptureCapabilityProbe>,
+        false,
+        None,
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/capture/select")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"device":"/dev/video3","preference":"auto_high_fps"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let selected: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(selected["available"], true);
+    assert_eq!(selected["device"], "/dev/video3");
+    assert_eq!(selected["profile"]["pixel_format"], "MJPG");
+    assert_eq!(selected["profile"]["fps"], 120);
+    assert_eq!(selected["profile"]["preference"], "manual");
+
+    let persisted = YamlConfigRepository::load(&path).unwrap();
+    let capture = persisted.capture.unwrap();
+    assert_eq!(persisted.revision, 4);
+    assert_eq!(capture.device, PathBuf::from("/dev/video3"));
+    assert_eq!(capture.pixel_format, "MJPG");
+    assert_eq!(capture.fps, 120);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/capture/select")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"device":"/dev/video3","preference":"auto_low_latency"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(YamlConfigRepository::load(&path).unwrap().revision, 4);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn studio_lifecycle_aliases_project_the_real_supervisor_and_config() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");

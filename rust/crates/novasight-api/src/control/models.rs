@@ -257,6 +257,7 @@ async fn publish_model(
     State(state): State<ControlState>,
     Json(request): Json<PublishModelRequest>,
 ) -> Result<Json<ModelSwitchResponse>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     super::ensure_config_effective(&state).await?;
     let backend = configured_inference_backend(&state).await;
     let result = state
@@ -275,6 +276,7 @@ async fn rollback_model(
     Path(project_id): Path<i64>,
     State(state): State<ControlState>,
 ) -> Result<Json<ModelSwitchResponse>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     super::ensure_config_effective(&state).await?;
     let backend = configured_inference_backend(&state).await;
     let result = state

@@ -95,7 +95,24 @@ async fn capture_commands_use_the_same_platform_query_as_the_web_api() {
     let config_path = socket.0.with_extension("yaml");
     std::fs::write(
         &config_path,
-        "revision: 0\ncapture:\n  device: /dev/video8\n  backend: deepstream_nvinfer\n",
+        r#"revision: 0
+capture:
+  device: /dev/video8
+  backend: deepstream_nvinfer
+  memory: nvmm
+  preference: manual
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+  width: 1920
+  height: 1080
+  fps: 60
+  pixel_format: NV12
+  roi_left: 0
+  roi_top: 0
+  roi_width: 640
+  roi_height: 640
+"#,
     )
     .unwrap();
     let config = ConfigService::new(
@@ -144,6 +161,32 @@ async fn capture_commands_use_the_same_platform_query_as_the_web_api() {
     let capabilities: CaptureCapabilities = serde_json::from_slice(&capabilities.stdout).unwrap();
     assert_eq!(capabilities.device, "/dev/video3");
     assert_eq!(capabilities.capabilities[0].fps_list, vec![120, 60]);
+
+    let socket_path = socket.0.clone();
+    let selected = tokio::task::spawn_blocking(move || {
+        run_cli_args(
+            &socket_path,
+            &[
+                "capture",
+                "select",
+                "--device",
+                "/dev/video3",
+                "--preference",
+                "auto_high_fps",
+            ],
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let selected: serde_json::Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(selected["device"], "/dev/video3");
+    assert_eq!(selected["profile"]["pixel_format"], "MJPG");
+    assert_eq!(selected["profile"]["fps"], 120);
 
     server.abort();
     runtime.shutdown_daemon().await.unwrap();

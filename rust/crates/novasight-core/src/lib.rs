@@ -16,6 +16,8 @@ pub mod units;
 
 pub use capture::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
+    CaptureSelectionError, CaptureSelectionPreference, SelectedCaptureProfile,
+    select_capture_profile,
 };
 pub use control::{ControlDecision, ProportionalReplayControl};
 pub use error::AppError;
