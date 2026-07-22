@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerDevice};
 use thiserror::Error;
@@ -19,7 +19,10 @@ const CMD_MOUSE_MOVE: u32 = 0xaede_7345;
 const CMD_MONITOR: u32 = 0x2738_8020;
 const HEADER_LEN: usize = 16;
 const MOVE_PACKET_LEN: usize = HEADER_LEN + 56;
-const MONITOR_PACKET_MIN_LEN: usize = 8;
+// Upstream's packed monitor datagram is one 8-byte mouse report followed by
+// one 12-byte keyboard report.  We only consume the mouse buttons today, but
+// accepting a truncated datagram would turn corruption into trigger state.
+const MONITOR_PACKET_LEN: usize = 20;
 const MONITOR_PORT_RANGE: std::ops::RangeInclusive<u16> = 1024..=49_151;
 
 #[derive(Clone, Debug)]
@@ -51,6 +54,7 @@ struct ControlSocket {
     socket: UdpSocket,
     mac: u32,
     sequence: u32,
+    random_state: u32,
 }
 
 impl KmNetNativeDevice {
@@ -83,8 +87,9 @@ impl KmNetNativeDevice {
             mac,
             // The public reference starts the first connect request at zero.
             sequence: u32::MAX,
+            random_state: random_seed(mac),
         };
-        control.exchange(CMD_CONNECT, 0, &[], "connect")?;
+        control.exchange(CMD_CONNECT, None, &[], "connect")?;
 
         let monitor_socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, config.monitor_port))
             .map_err(KmNetNativeError::MonitorBind)?;
@@ -92,7 +97,7 @@ impl KmNetNativeDevice {
             .set_read_timeout(Some(config.request_timeout))
             .map_err(KmNetNativeError::Configure)?;
         let monitor_value = u32::from(config.monitor_port) | (0xaa55_u32 << 16);
-        control.exchange(CMD_MONITOR, monitor_value, &[], "monitor")?;
+        control.exchange(CMD_MONITOR, Some(monitor_value), &[], "monitor")?;
         control
             .socket
             .set_read_timeout(Some(config.request_timeout))
@@ -144,7 +149,7 @@ impl PointerDevice for KmNetNativeDevice {
         self.control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .exchange(CMD_MOUSE_MOVE, 0, &payload, "move")
+            .exchange(CMD_MOUSE_MOVE, None, &payload, "move")
             .map_err(|error| pointer_error(error.code(), error.to_string()))?;
         let attempt = self.successful_sends.fetch_add(1, Ordering::Relaxed) + 1;
         Ok(DeviceReceipt::accepted(attempt, command))
@@ -197,11 +202,12 @@ impl ControlSocket {
     fn exchange(
         &mut self,
         command: u32,
-        random: u32,
+        random_override: Option<u32>,
         payload: &[u8],
         operation: &'static str,
     ) -> Result<(), KmNetNativeError> {
         self.sequence = self.sequence.wrapping_add(1);
+        let random = random_override.unwrap_or_else(|| self.next_random());
         let packet = encode_packet(self.mac, random, self.sequence, command, payload);
         debug_assert!(packet.len() == HEADER_LEN || packet.len() == MOVE_PACKET_LEN);
         self.socket
@@ -231,6 +237,32 @@ impl ControlSocket {
         }
         Ok(())
     }
+
+    fn next_random(&mut self) -> u32 {
+        // The vendor protocol refreshes this field for ordinary commands.  It
+        // is packet diversity, not an authentication primitive, so a local
+        // xorshift stream is sufficient and avoids adding a crypto dependency
+        // to the realtime device adapter.
+        let mut value = self.random_state;
+        value ^= value << 13;
+        value ^= value >> 17;
+        value ^= value << 5;
+        if value == 0 {
+            value = 0xa5a5_5a5a;
+        }
+        self.random_state = value;
+        value
+    }
+}
+
+fn random_seed(mac: u32) -> u32 {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let folded_time = since_epoch as u32 ^ (since_epoch >> 32) as u32;
+    let seed = folded_time ^ std::process::id().rotate_left(11) ^ mac.rotate_right(7);
+    if seed == 0 { 0x6d2b_79f5 } else { seed }
 }
 
 fn encode_packet(mac: u32, random: u32, sequence: u32, command: u32, payload: &[u8]) -> Vec<u8> {
@@ -258,7 +290,7 @@ fn spawn_monitor(
             while !stop.load(Ordering::Acquire) {
                 match socket.recv_from(&mut packet) {
                     Ok((received, peer))
-                        if received >= MONITOR_PACKET_MIN_LEN
+                        if received >= MONITOR_PACKET_LEN
                             && peer.ip() == std::net::IpAddr::V4(expected_host) =>
                     {
                         buttons.store(packet[1], Ordering::Release);
@@ -434,6 +466,7 @@ mod tests {
         let monitor_port = available_monitor_port();
         let responder = thread::spawn(move || {
             let mut packet = [0_u8; 1024];
+            let mut ordinary_randoms = Vec::new();
             for (expected_sequence, expected_command) in [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE]
                 .into_iter()
                 .enumerate()
@@ -450,23 +483,31 @@ mod tests {
                 );
                 if expected_command == CMD_MONITOR {
                     let encoded_port = u32::from_le_bytes(packet[4..8].try_into().unwrap());
-                    assert_eq!(encoded_port & 0xffff, u32::from(monitor_port));
+                    assert_eq!(encoded_port, 0xaa55_0000 | u32::from(monitor_port));
+                    assert_eq!(received, 16);
+                } else {
+                    ordinary_randoms.push(u32::from_le_bytes(packet[4..8].try_into().unwrap()));
                 }
                 server.send_to(&packet[..received], peer).unwrap();
                 if expected_command == CMD_MONITOR {
                     let monitor = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                    let mut report = [0_u8; 20];
+                    report[0] = 1;
+                    report[1] = 0x02;
+                    report[8] = 2;
                     monitor
-                        .send_to(
-                            &[1, 0x02, 0, 0, 0, 0, 0, 0],
-                            (Ipv4Addr::LOCALHOST, monitor_port),
-                        )
+                        .send_to(&report, (Ipv4Addr::LOCALHOST, monitor_port))
                         .unwrap();
                 }
                 if expected_command == CMD_MOUSE_MOVE {
+                    assert_eq!(received, 72);
                     assert_eq!(i32::from_le_bytes(packet[20..24].try_into().unwrap()), 12);
                     assert_eq!(i32::from_le_bytes(packet[24..28].try_into().unwrap()), -7);
                 }
             }
+            assert_eq!(ordinary_randoms.len(), 2);
+            assert!(ordinary_randoms.iter().all(|value| *value != 0));
+            assert_ne!(ordinary_randoms[0], ordinary_randoms[1]);
         });
         let device = KmNetNativeDevice::connect(KmNetNativeConfig {
             host: Ipv4Addr::LOCALHOST,
