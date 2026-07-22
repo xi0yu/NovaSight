@@ -1,7 +1,9 @@
+use std::time::Duration;
+
 use axum::{
     Json, Router,
     extract::{
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
@@ -10,13 +12,19 @@ use axum::{
 };
 use futures_util::{Sink, Stream, StreamExt};
 use novasight_runtime::{
-    AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, RuntimeError,
-    RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
+    AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
+    RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
+use crate::dto::{
+    CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
+    CompatibilityStatusFrame,
+};
 use crate::websocket::status::send_while_receiving;
+
+const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Cuttlefish-style control surface: every mutation delegates to the
 /// single daemon-owned RuntimeHandle and returns its immutable snapshot.
@@ -39,6 +47,11 @@ pub fn build_control_router_with_services(
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
     Router::new()
+        .route("/healthz", get(health))
+        .route("/api/runtime/state", get(legacy_status))
+        .route("/api/runtime/start", post(legacy_start))
+        .route("/api/runtime/stop", post(legacy_stop))
+        .route("/ws/status", get(legacy_events))
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
         .route("/api/v1/runtime/start", post(start))
@@ -60,6 +73,52 @@ struct ControlState {
     runtime: RuntimeHandle,
     config: Option<ConfigService>,
     shutdown: Option<watch::Receiver<bool>>,
+}
+
+async fn health(State(state): State<ControlState>) -> Json<CompatibilityHealth> {
+    let daemon = state.runtime.snapshot().daemon.state;
+    Json(CompatibilityHealth {
+        ok: daemon == DaemonState::Ready,
+    })
+}
+
+async fn legacy_status(State(state): State<ControlState>) -> Json<CompatibilityRuntimeState> {
+    let snapshot = state.runtime.snapshot();
+    Json(compatibility_state(&state, &snapshot).await)
+}
+
+async fn legacy_start(
+    State(state): State<ControlState>,
+) -> Result<Json<CompatibilityRuntimeStart>, ControlApiError> {
+    ensure_config_effective(&state).await?;
+    let snapshot = state.runtime.start().await?;
+    Ok(Json(CompatibilityRuntimeStart::from(&snapshot)))
+}
+
+async fn legacy_stop(
+    State(state): State<ControlState>,
+) -> Result<Json<CompatibilityRuntimeState>, ControlApiError> {
+    let snapshot = state.runtime.stop().await?;
+    Ok(Json(compatibility_state(&state, &snapshot).await))
+}
+
+async fn compatibility_state(
+    state: &ControlState,
+    snapshot: &RuntimeSnapshot,
+) -> CompatibilityRuntimeState {
+    let config = match &state.config {
+        Some(service) => Some(service.snapshot().await),
+        None => None,
+    };
+    let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
+    CompatibilityRuntimeState::new(snapshot, config.as_ref(), effective_revision)
+}
+
+async fn ensure_config_effective(state: &ControlState) -> Result<(), ControlApiError> {
+    if let Some(service) = &state.config {
+        service.ensure_effective().await?;
+    }
+    Ok(())
 }
 
 async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
@@ -100,6 +159,7 @@ async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
 async fn start(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    ensure_config_effective(&state).await?;
     Ok(Json(state.runtime.start().await?))
 }
 
@@ -110,6 +170,7 @@ async fn stop(State(state): State<ControlState>) -> Result<Json<RuntimeSnapshot>
 async fn restart(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    ensure_config_effective(&state).await?;
     Ok(Json(state.runtime.restart().await?))
 }
 
@@ -121,6 +182,80 @@ async fn emergency_stop(
 
 async fn events(websocket: WebSocketUpgrade, State(state): State<ControlState>) -> Response {
     websocket.on_upgrade(move |socket| stream_events(socket, state.runtime, state.shutdown))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CompatibilityStatusQuery {
+    topic: Option<String>,
+}
+
+async fn legacy_events(
+    websocket: WebSocketUpgrade,
+    Query(query): Query<CompatibilityStatusQuery>,
+    State(state): State<ControlState>,
+) -> Response {
+    websocket.on_upgrade(move |socket| stream_legacy_events(socket, state, query))
+}
+
+async fn stream_legacy_events(
+    socket: WebSocket,
+    state: ControlState,
+    query: CompatibilityStatusQuery,
+) {
+    let mut snapshots = state.runtime.subscribe();
+    let mut shutdown = state.shutdown.clone();
+    let topic = normalize_compatibility_topic(query.topic.as_deref());
+    let mut heartbeat = tokio::time::interval(COMPATIBILITY_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    heartbeat.tick().await;
+    let (mut outbound, mut inbound) = socket.split();
+    loop {
+        let current = snapshots.borrow_and_update().clone();
+        let frame = CompatibilityStatusFrame {
+            kind: "runtime_snapshot",
+            topic: topic.clone(),
+            full: true,
+            state: compatibility_state(&state, current.as_ref()).await,
+        };
+        let Ok(payload) = serde_json::to_string(&frame) else {
+            return;
+        };
+        match send_or_shutdown(
+            &mut outbound,
+            &mut inbound,
+            Message::Text(payload.into()),
+            &mut shutdown,
+        )
+        .await
+        {
+            SendOutcome::Sent => {}
+            SendOutcome::Closed | SendOutcome::Shutdown => return,
+        }
+
+        tokio::select! {
+            changed = snapshots.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            _ = heartbeat.tick() => {}
+            incoming = inbound.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                    Some(Ok(_)) => {}
+                }
+            }
+            () = shutdown_requested(&mut shutdown) => return,
+        }
+    }
+}
+
+fn normalize_compatibility_topic(topic: Option<&str>) -> String {
+    let topic = topic.unwrap_or_default().trim().to_ascii_lowercase();
+    match topic.as_str() {
+        "summary" | "capture" | "infer" | "control" | "latency" => topic,
+        _ => "full".to_owned(),
+    }
 }
 
 #[derive(Serialize)]
@@ -258,6 +393,7 @@ impl IntoResponse for ControlApiError {
             Self::Config(error) => {
                 let status = match error.code() {
                     "CONFIG_REVISION_CONFLICT" => StatusCode::CONFLICT,
+                    "CONFIG_RESTART_REQUIRED" => StatusCode::CONFLICT,
                     "CONFIG_PARSE_ERROR"
                     | "CONFIG_VALIDATION_ERROR"
                     | "CONFIG_RESERVED_LEGACY_KEY"

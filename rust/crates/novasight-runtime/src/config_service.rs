@@ -34,15 +34,18 @@ pub struct ConfigService {
 struct ConfigServiceInner {
     repository: YamlConfigRepository,
     current: RwLock<AppConfig>,
+    effective_revision: u64,
     update_lock: Mutex<()>,
 }
 
 impl ConfigService {
     pub fn new(path: impl Into<PathBuf>, initial: AppConfig) -> Self {
+        let effective_revision = initial.revision;
         Self {
             inner: Arc::new(ConfigServiceInner {
                 repository: YamlConfigRepository::new(path),
                 current: RwLock::new(initial),
+                effective_revision,
                 update_lock: Mutex::new(()),
             }),
         }
@@ -50,6 +53,22 @@ impl ConfigService {
 
     pub async fn snapshot(&self) -> AppConfig {
         self.inner.current.read().await.clone()
+    }
+
+    pub fn effective_revision(&self) -> u64 {
+        self.inner.effective_revision
+    }
+
+    pub async fn ensure_effective(&self) -> Result<(), ConfigServiceError> {
+        let desired_revision = self.inner.current.read().await.revision;
+        if desired_revision == self.inner.effective_revision {
+            Ok(())
+        } else {
+            Err(ConfigServiceError::RestartRequired {
+                effective_revision: self.inner.effective_revision,
+                desired_revision,
+            })
+        }
     }
 
     pub async fn update_field(
@@ -114,6 +133,13 @@ pub enum ConfigServiceError {
     SerializeFieldValue(serde_yaml::Error),
     #[error("configuration replacement must include its current numeric revision")]
     ReplacementRevisionRequired,
+    #[error(
+        "novasightd restart required: process uses configuration revision {effective_revision}, persisted revision is {desired_revision}"
+    )]
+    RestartRequired {
+        effective_revision: u64,
+        desired_revision: u64,
+    },
     #[error("configuration save task failed: {0}")]
     SaveTask(tokio::task::JoinError),
 }
@@ -124,6 +150,7 @@ impl ConfigServiceError {
             Self::Config(error) => error.code(),
             Self::SerializeFieldValue(_) => "CONFIG_FIELD_VALUE_INVALID",
             Self::ReplacementRevisionRequired => "CONFIG_REPLACEMENT_REVISION_REQUIRED",
+            Self::RestartRequired { .. } => "CONFIG_RESTART_REQUIRED",
             Self::SaveTask(_) => "CONFIG_SAVE_TASK_FAILED",
         }
     }

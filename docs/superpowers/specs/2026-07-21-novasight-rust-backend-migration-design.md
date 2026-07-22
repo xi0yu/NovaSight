@@ -341,6 +341,10 @@ kmBoxNet 的公开 C++ demo 仅作为协议与行为参考，不直接编译、�
 
 配置控制面的第一条生产纵切已由 Rust daemon 接管：HTTP 与 Unix socket CLI 共用单一 `ConfigService`；`GET/PATCH /api/v1/config` 和 Studio 兼容入口 `GET/POST /api/config` 读写同一份版本化 YAML。字段更新与整份配置更新都必须经过目录锁、revision 比较、完整 typed validation 和原子替换，并保留未知扩展字段。当前 runtime dependency graph 仍是 epoch 启动时构造，因此成功写入只返回 `applied=false`、`restart_required=true`，不得伪装成热更新；后续 ConfigImpact planner 才能逐项开放经过证明的在线应用能力。
 
+`ConfigService` 同时记录 daemon 启动时的 effective revision。若磁盘期望 revision 已推进但进程尚未重新装配，v1 与 Studio 兼容的 start/restart 必须返回 `409 CONFIG_RESTART_REQUIRED`，不得用旧 capture/inference/device dependency graph 启动。stop 与 emergency-stop 始终可用，确保配置待重启状态不会妨碍关闭输出。
+
+Studio 的基础在线控制也已直接接到同一个新 Rust `RuntimeHandle`：`/healthz`、`/api/runtime/state|start|stop` 和 `/ws/status` 只投影 daemon 的真实 lifecycle snapshot、subsystem state、epoch、错误、perception counters 与当前 YAML revision。兼容 DTO 可以明确表示尚未配置、不可用或尚无指标，但禁止沿用 Phase 1 固定 replay/不可用假数据。v1 与 Studio 兼容入口只是两种 wire projection，不得形成第二个 runtime owner。
+
 ### Phase 6：Rust-controlled LatestFrame + TensorRT
 
 实现持有 GstBuffer/NVMM lifetime 的 FrameLease、Rust LatestFrameExchange、CUDA preprocess C ABI、TensorRT context owner、typed tensor contract、decode/NMS registry。DeepStream object-meta adapter 保留为 A/B 与回滚路径。

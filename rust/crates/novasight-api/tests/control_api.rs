@@ -151,7 +151,7 @@ async fn studio_config_alias_uses_the_same_service_and_revision_guard() {
             r#"{"revision":1,"replay":{"output_gate_open":true,"frame_interval_ms":24}}"#,
         ))
         .unwrap();
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
@@ -159,6 +159,188 @@ async fn studio_config_alias_uses_the_same_service_and_revision_guard() {
     assert_eq!(body["config"]["replay"]["frame_interval_ms"], 24);
     assert_eq!(body["restart_required"], true);
 
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "CONFIG_RESTART_REQUIRED");
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "CONFIG_RESTART_REQUIRED");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/runtime/state")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(state["config"]["version"], 2);
+    assert_eq!(state["config"]["effective_version"], 0);
+    assert_eq!(state["config"]["restart_required"], true);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn studio_lifecycle_aliases_project_the_real_supervisor_and_config() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 5\nreplay:\n  enabled: true\ncapture:\n  device: /dev/video9\n  backend: deepstream_nvinfer\n",
+    )
+    .unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let health: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(health["ok"], true);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let started: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(started["running"], true);
+    assert_eq!(started["accepted"], true);
+    assert_eq!(started["epoch"], 1);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/runtime/state")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(state["running"], true);
+    assert_eq!(state["pipeline"]["state"], "running");
+    assert_eq!(state["pipeline"]["epoch"], 1);
+    assert_eq!(state["config"]["version"], 5);
+    assert_eq!(state["config"]["effective_version"], 5);
+    assert_eq!(state["config"]["restart_required"], false);
+    assert_eq!(state["capture"]["device"], "/dev/video9");
+    assert_eq!(state["capture"]["backend"], "deepstream_nvinfer");
+    assert_eq!(state["statistics"]["capture_counter"], 0);
+    assert_eq!(
+        state["statistics"]["capture_counter"],
+        serde_json::to_value(runtime.snapshot().perception_metrics.probed_buffers).unwrap()
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runtime/stop")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let stopped: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(stopped["running"], false);
+    assert_eq!(stopped["pipeline"]["state"], "stopped");
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn studio_status_websocket_streams_real_supervisor_changes() {
+    use futures_util::StreamExt;
+
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, "revision: 8\nreplay:\n  enabled: true\n").unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().unwrap();
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve control API");
+    });
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/ws/status?topic=summary"))
+            .await
+            .expect("connect Studio status socket");
+
+    let initial = socket.next().await.unwrap().unwrap();
+    let initial: Value = serde_json::from_str(initial.to_text().unwrap()).unwrap();
+    assert_eq!(initial["kind"], "runtime_snapshot");
+    assert_eq!(initial["topic"], "summary");
+    assert_eq!(initial["full"], true);
+    assert_eq!(initial["state"]["running"], false);
+    assert_eq!(initial["state"]["config"]["version"], 8);
+
+    runtime.start().await.unwrap();
+    let running = loop {
+        let frame = socket.next().await.unwrap().unwrap();
+        let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        if frame["state"]["running"] == true {
+            break frame;
+        }
+    };
+    assert_eq!(running["state"]["pipeline"]["epoch"], 1);
+    assert_eq!(running["state"]["pipeline"]["state"], "running");
+
+    socket.close(None).await.unwrap();
+    server.abort();
     shutdown(supervisor, &runtime).await;
 }
 
