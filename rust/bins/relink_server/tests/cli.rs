@@ -34,6 +34,7 @@ fn check_runs_the_shared_config_and_model_helper_preflight() {
         .arg("--config")
         .arg(config)
         .arg("--check")
+        .arg("--dry-run")
         .arg("--model-job-script")
         .arg(helper)
         .arg("--model-job-workdir")
@@ -46,7 +47,9 @@ fn check_runs_the_shared_config_and_model_helper_preflight() {
         "preflight failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("model_ingress_helper=ready"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("model_ingress_helper=ready"));
+    assert!(stdout.contains("hardware_not_started=true"));
 }
 
 fn binary() -> Command {

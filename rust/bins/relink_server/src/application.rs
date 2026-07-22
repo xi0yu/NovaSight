@@ -106,11 +106,52 @@ pub async fn entry() -> ExitCode {
     };
 
     if args.check {
-        println!(
-            "PASS config readable path={} model_ingress_helper=ready",
-            args.config.display()
-        );
-        return ExitCode::SUCCESS;
+        if args.dry_run {
+            if let Err(error) = loaded.config().validate_configured_adapters() {
+                eprintln!("PREFLIGHT_CONFIG_INVALID: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "PASS mode=dry_run config={} model_ingress_helper=ready hardware_not_started=true",
+                args.config.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        if let Err(error) = loaded.config().require_production_adapters() {
+            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
+            return ExitCode::FAILURE;
+        }
+        #[cfg(all(feature = "deepstream", target_os = "linux"))]
+        {
+            let model_catalog = match SqliteModelCatalog::open_with_model_root(
+                &loaded.config().paths.database,
+                &loaded.config().paths.model_dir,
+            ) {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    eprintln!("MODEL_CATALOG_OPEN_FAILED: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) =
+                live_perception::preflight_live_production(loaded.config(), &model_catalog)
+            {
+                eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "PASS mode=production config={} model_ingress_helper=ready model_contract=ready deepstream_pipeline=buildable hardware_not_started=true",
+                args.config.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+        {
+            eprintln!(
+                "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     let model_catalog = match SqliteModelCatalog::open_with_model_root(

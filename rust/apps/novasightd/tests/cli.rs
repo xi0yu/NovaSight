@@ -83,13 +83,33 @@ fn missing_config_exits_nonzero_with_stable_code() {
 fn check_loads_config_and_exits_without_starting_the_daemon() {
     let (_directory, path) = temp_config();
     let output = Command::new(binary())
-        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .args([
+            "--config",
+            path.to_str().expect("UTF-8 path"),
+            "--check",
+            "--dry-run",
+        ])
         .output()
         .expect("run check");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
 
     assert!(output.status.success());
-    assert!(stdout.contains("PASS config readable"));
+    assert!(stdout.contains("PASS mode=dry_run"));
+    assert!(stdout.contains("hardware_not_started=true"));
+}
+
+#[test]
+fn production_check_rejects_incomplete_adapter_configuration() {
+    let (_directory, path) = temp_config();
+    let output = Command::new(binary())
+        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .output()
+        .expect("run production check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("PRODUCTION_CONFIG_INVALID"));
+    assert!(stderr.contains("capture"));
 }
 
 #[test]

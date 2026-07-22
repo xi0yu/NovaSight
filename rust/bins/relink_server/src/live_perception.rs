@@ -114,6 +114,16 @@ pub(super) fn build_live_production_dependencies(
     )
 }
 
+/// Validate the production vision contract without opening capture, loading a
+/// GStreamer pipeline, or connecting the pointer device.
+pub(super) fn preflight_live_production(
+    config: &AppConfig,
+    model_catalog: &SqliteModelCatalog,
+) -> Result<(), LivePerceptionError> {
+    let preview = PreviewHub::new(config.consumers.preview);
+    build_deepstream_session_config(config, model_catalog, preview).map(|_| ())
+}
+
 fn build_live_dependencies(
     config: &AppConfig,
     config_service: ConfigService,
