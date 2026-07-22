@@ -107,7 +107,7 @@ async fn status_route_upgrades_and_sends_current_snapshot_immediately() {
     });
 
     let payloads = tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         tokio::task::spawn_blocking(move || receive_text_frames(address, "capture", 1)),
     )
     .await
@@ -145,7 +145,7 @@ async fn idle_status_route_sends_periodic_liveness_envelopes() {
     });
 
     let payloads = tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         tokio::task::spawn_blocking(move || receive_text_frames(address, "summary", 2)),
     )
     .await

@@ -4,18 +4,18 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
+Type=simple
 WorkingDirectory=/opt/novasight
-Environment=PYTHONUNBUFFERED=1
 Environment=NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock
 RuntimeDirectory=novasight
 RuntimeDirectoryMode=0755
+StateDirectory=novasight
+StateDirectoryMode=0750
 LogsDirectory=novasight
 LogsDirectoryMode=0755
-ExecStart=/opt/novasight/.venv/bin/novasight --host 0.0.0.0 --port 8000 --config /etc/novasight/novasight.yaml --data-dir /var/lib/novasight
+ExecStart=/opt/novasight/bin/relink_server --config /etc/novasight/novasight.yaml --model-job-python /usr/bin/python3 --model-job-script /opt/novasight/scripts/model_ingress_job.py --model-job-workdir /var/lib/novasight
 Restart=on-failure
 RestartSec=2
-WatchdogSec=10
 KillSignal=SIGINT
 TimeoutStopSec=20
 StandardOutput=journal

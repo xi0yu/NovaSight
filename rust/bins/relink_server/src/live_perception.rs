@@ -1,3 +1,5 @@
+//! Jetson production adapter composition.
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;

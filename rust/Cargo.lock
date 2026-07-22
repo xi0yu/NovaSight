@@ -1028,22 +1028,8 @@ dependencies = [
 name = "novasightd"
 version = "0.1.0"
 dependencies = [
- "axum",
- "clap",
- "fs2",
- "novasight-api",
- "novasight-core",
- "novasight-pipeline",
- "novasight-platform-jetson",
- "novasight-runtime",
- "novasight-store",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
+ "relink-server",
  "tokio",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -1306,15 +1292,21 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "fs2",
  "novasight-api",
  "novasight-core",
+ "novasight-pipeline",
  "novasight-platform-jetson",
+ "novasight-runtime",
  "novasight-store",
+ "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

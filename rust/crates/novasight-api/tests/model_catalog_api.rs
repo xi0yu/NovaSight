@@ -919,7 +919,13 @@ async fn overlapping_urgent_stops_keep_activation_cancelled_until_both_are_ackno
     tokio::task::yield_now().await;
     let stop_runtime = runtime.clone();
     let stop = tokio::spawn(async move { stop_runtime.stop().await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.pending_urgent_stop_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both urgent stop requests registered before releasing activation");
 
     adapter.release.store(true, Ordering::Release);
     let publish_response = publish.await.unwrap();

@@ -426,6 +426,11 @@ impl std::fmt::Debug for RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    #[doc(hidden)]
+    pub fn pending_urgent_stop_count(&self) -> usize {
+        self.urgent_stop.pending.load(Ordering::Acquire)
+    }
+
     pub fn snapshot(&self) -> RuntimeSnapshot {
         self.snapshot_rx.borrow().as_ref().clone()
     }

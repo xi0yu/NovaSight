@@ -362,6 +362,8 @@ Studio 的基础在线控制也已直接接到同一个新 Rust `RuntimeHandle`�
 
 修改 `deploy/novasight.service` 使用 `relink_server`。旧 Python/C++ 文件、测试和工具全部保留，但不再拥有在线状态。阶段 1–6 默认 replay/shadow/DryRun，禁止 Python 和 Rust 同时拥有设备发送权。
 
+当前 production composition root 已物理归属 `relink-server` library；`relink_server` 是唯一生产 binary，`novasightd` 反向依赖该 library，仅作为非部署兼容壳。两者复用同一套参数、preflight、RuntimeSupervisor、Axum/Unix socket 控制面和 DeepStream/kmNet feature；旧 Phase 1 replay bootstrap 文件保留为迁移证据但不再被 binary 编译。systemd service 已切换到 `/opt/novasight/bin/relink_server`，使用 `Type=simple`（daemon 当前不伪装 sd_notify/watchdog 支持），并由 systemd 创建 `/run/novasight`、`/var/lib/novasight` 和日志目录。正式 Jetson 构建必须对 `relink-server` 启用 `deepstream` feature；`experimental-kmnet-native` 仍遵循 Phase 4 的显式证据门。
+
 ## 13. 验证策略
 
 ### 13.1 行为契约

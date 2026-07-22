@@ -1,3 +1,5 @@
+//! Production HTTP, Unix-socket, and shutdown server ownership.
+
 use std::fs::File;
 use std::future::IntoFuture;
 use std::io;
