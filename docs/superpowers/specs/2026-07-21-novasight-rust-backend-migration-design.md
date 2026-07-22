@@ -331,6 +331,10 @@ ReplaySource -> Perception -> Targeting -> Control
 
 接入 DryRun/Recording/kmNet adapters，完成 live trigger cache、发送前复查、timeout、cooldown、disconnect、reconnect 和 crash isolation。
 
+Phase 4 使用同一 `PointerDevice` 端口保留两种可替换实现：`python_host` 是迁移期生产默认，Rust daemon 负责 helper 生命周期、超时、冷却和重连；`native_udp` 是独立 Rust 协议实现，在完成目标 Jetson、目标盒子固件和断网/重启故障注入之前必须显式启用，不得成为默认。两种实现都不得把设备状态所有权交回旧 Python backend。
+
+kmBoxNet 的公开 C++ demo 仅作为协议与行为参考，不直接编译、复制或随 NovaSight 分发。该仓库没有标准开源许可证，其版权声明限制源码只能对接官方 kmbox 硬件；商业发布前必须取得厂商对协议实现、分发和商业用途的书面授权。保留 Python vendor extension 是兼容与回滚资产，不是在线业务架构的第二套权威实现。
+
 ### Phase 5：控制面全量接管
 
 接管 Axum、YAML/SQLite/License/ModelCatalog、capture/model/config/executor/Studio 接口、ConfigImpact planner 和 Deployment transaction。Python 只保留离线 job。

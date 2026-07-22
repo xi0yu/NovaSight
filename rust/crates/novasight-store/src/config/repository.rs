@@ -355,10 +355,20 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
         );
     }
     if let Some(device) = &mut config.device {
-        device.production_fields_explicit = section_has_fields(
-            document,
-            "hardware",
-            &[
+        let fields: &[&str] = match device.backend {
+            super::DeviceBackend::NativeUdp => &[
+                "auto_connect",
+                "backend",
+                "host",
+                "port",
+                "uuid",
+                "monitor_port",
+                "connect_timeout_ms",
+                "send_timeout_ms",
+                "monitor_timeout_ms",
+                "trigger_poll_interval_ms",
+            ],
+            super::DeviceBackend::PythonHost => &[
                 "auto_connect",
                 "backend",
                 "host",
@@ -369,8 +379,10 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
                 "connect_timeout_ms",
                 "send_timeout_ms",
                 "reconnect_cooldown_ms",
+                "trigger_poll_interval_ms",
             ],
-        );
+        };
+        device.production_fields_explicit = section_has_fields(document, "hardware", fields);
     }
 }
 
@@ -641,6 +653,8 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
                 "helper_module",
                 "connect_timeout_ms",
                 "send_timeout_ms",
+                "monitor_timeout_ms",
+                "trigger_poll_interval_ms",
                 "reconnect_cooldown_ms",
             ],
         )?;

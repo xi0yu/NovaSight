@@ -48,7 +48,8 @@ inference:
   input_source: source.default
 hardware:
   auto_connect: true
-  backend: native_udp
+  # native_udp remains opt-in until verified against the target Jetson and box firmware.
+  backend: python_host
   host: 192.168.2.188
   port: 8888
   uuid: "12345678"
@@ -56,6 +57,8 @@ hardware:
   helper_module: novasight.executors.kmnet_host
   connect_timeout_ms: 3000
   send_timeout_ms: 25
+  monitor_timeout_ms: 250
+  trigger_poll_interval_ms: 4
   reconnect_cooldown_ms: 500
 paths:
   data_dir: data

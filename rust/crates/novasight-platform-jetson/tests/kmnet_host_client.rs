@@ -122,3 +122,25 @@ fn rejects_counts_outside_the_kmnet_signed_16_bit_contract() {
 
     assert!(error.to_string().contains("signed 16-bit"));
 }
+
+#[test]
+fn unavailable_button_api_is_fail_closed_and_destroys_the_session() {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    op = request['op']
+    result = {'protocol': 1} if op == 'hello' else ({'available': False, 'left': False, 'right': False} if op == 'buttons' else {})
+    print(json.dumps({'id': request['id'], 'ok': True, 'result': result, 'error': None}), flush=True)
+"#;
+    let client = KmNetHostClient::connect(config(script)).expect("connect helper");
+
+    let error = client
+        .trigger_active()
+        .expect_err("missing hardware trigger must fail closed");
+    assert!(error.to_string().contains("does not expose"));
+    let retry = client
+        .trigger_active()
+        .expect_err("failed protocol session enters cooldown");
+    assert!(retry.to_string().contains("cooldown"));
+}

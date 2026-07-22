@@ -232,7 +232,7 @@ fn device_alias_migrates_to_hardware_without_duplicate_fields() {
     let path = directory.join("device-alias.yaml");
     fs::write(
         &path,
-        "revision: 0\ndevice:\n  auto_connect: true\n  backend: native_udp\n  host: 10.0.0.8\n  port: 8888\n  uuid: test-box\n  monitor_port: 5001\n  helper_module: novasight.executors.kmnet_host\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  reconnect_cooldown_ms: 500\n",
+        "revision: 0\ndevice:\n  auto_connect: true\n  backend: native_udp\n  host: 10.0.0.8\n  port: 8888\n  uuid: test-box\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
     )
     .unwrap();
     let config = YamlConfigRepository::load(&path).unwrap();

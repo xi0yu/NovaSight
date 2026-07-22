@@ -483,6 +483,10 @@ pub struct DeviceConfig {
     pub connect_timeout_ms: u64,
     #[serde(default = "default_kmnet_send_timeout_ms")]
     pub send_timeout_ms: u64,
+    #[serde(default = "default_kmnet_monitor_timeout_ms")]
+    pub monitor_timeout_ms: u64,
+    #[serde(default = "default_kmnet_trigger_poll_interval_ms")]
+    pub trigger_poll_interval_ms: u64,
     #[serde(default = "default_kmnet_reconnect_cooldown_ms")]
     pub reconnect_cooldown_ms: u64,
     #[serde(skip)]
@@ -503,6 +507,8 @@ impl Default for DeviceConfig {
             helper_module: default_kmnet_helper_module(),
             connect_timeout_ms: default_kmnet_connect_timeout_ms(),
             send_timeout_ms: default_kmnet_send_timeout_ms(),
+            monitor_timeout_ms: default_kmnet_monitor_timeout_ms(),
+            trigger_poll_interval_ms: default_kmnet_trigger_poll_interval_ms(),
             reconnect_cooldown_ms: default_kmnet_reconnect_cooldown_ms(),
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
@@ -539,14 +545,40 @@ impl DeviceConfig {
                 "must not be empty",
             ));
         }
-        if self.auto_connect
-            && (self.connect_timeout_ms == 0
-                || self.send_timeout_ms == 0
-                || self.reconnect_cooldown_ms == 0)
-        {
+        if self.auto_connect && self.connect_timeout_ms == 0 {
+            return Err(ConfigValidationError::new(
+                "hardware.connect_timeout_ms",
+                "must be non-zero",
+            ));
+        }
+        if self.auto_connect && self.send_timeout_ms == 0 {
             return Err(ConfigValidationError::new(
                 "hardware.send_timeout_ms",
-                "connect, send, and reconnect cooldown durations must be non-zero",
+                "must be non-zero",
+            ));
+        }
+        if self.auto_connect && !(1..=50).contains(&self.trigger_poll_interval_ms) {
+            return Err(ConfigValidationError::new(
+                "hardware.trigger_poll_interval_ms",
+                "must be within 1..=50",
+            ));
+        }
+        if self.auto_connect
+            && self.backend == DeviceBackend::NativeUdp
+            && self.monitor_timeout_ms == 0
+        {
+            return Err(ConfigValidationError::new(
+                "hardware.monitor_timeout_ms",
+                "must be non-zero for native_udp",
+            ));
+        }
+        if self.auto_connect
+            && self.backend == DeviceBackend::PythonHost
+            && self.reconnect_cooldown_ms == 0
+        {
+            return Err(ConfigValidationError::new(
+                "hardware.reconnect_cooldown_ms",
+                "must be non-zero for python_host",
             ));
         }
         Ok(())
@@ -556,8 +588,8 @@ impl DeviceConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceBackend {
-    #[default]
     NativeUdp,
+    #[default]
     PythonHost,
 }
 
@@ -762,6 +794,14 @@ const fn default_kmnet_connect_timeout_ms() -> u64 {
 
 const fn default_kmnet_send_timeout_ms() -> u64 {
     25
+}
+
+const fn default_kmnet_monitor_timeout_ms() -> u64 {
+    250
+}
+
+const fn default_kmnet_trigger_poll_interval_ms() -> u64 {
+    4
 }
 
 const fn default_kmnet_reconnect_cooldown_ms() -> u64 {

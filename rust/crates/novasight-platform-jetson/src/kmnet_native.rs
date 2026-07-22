@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerDevice};
 use thiserror::Error;
@@ -29,6 +29,7 @@ pub struct KmNetNativeConfig {
     pub monitor_port: u16,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
+    pub monitor_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -36,6 +37,8 @@ pub struct KmNetNativeDevice {
     control: Mutex<ControlSocket>,
     buttons: Arc<AtomicU8>,
     monitor_healthy: Arc<AtomicBool>,
+    last_monitor_update: Arc<Mutex<Instant>>,
+    monitor_timeout: Duration,
     stop: Arc<AtomicBool>,
     monitor: Mutex<Option<JoinHandle<()>>>,
     successful_sends: AtomicU64,
@@ -55,7 +58,10 @@ impl KmNetNativeDevice {
                 "control and monitor ports must be non-zero",
             ));
         }
-        if config.connect_timeout.is_zero() || config.request_timeout.is_zero() {
+        if config.connect_timeout.is_zero()
+            || config.request_timeout.is_zero()
+            || config.monitor_timeout.is_zero()
+        {
             return Err(KmNetNativeError::InvalidConfig("timeouts must be non-zero"));
         }
         let mac = parse_uuid(&config.uuid)?;
@@ -68,7 +74,8 @@ impl KmNetNativeDevice {
         let mut control = ControlSocket {
             socket,
             mac,
-            sequence: 0,
+            // The public reference starts the first connect request at zero.
+            sequence: u32::MAX,
         };
         control.exchange(CMD_CONNECT, 0, &[], "connect")?;
 
@@ -86,17 +93,22 @@ impl KmNetNativeDevice {
 
         let buttons = Arc::new(AtomicU8::new(0));
         let monitor_healthy = Arc::new(AtomicBool::new(true));
+        let last_monitor_update = Arc::new(Mutex::new(Instant::now()));
         let stop = Arc::new(AtomicBool::new(false));
         let monitor = spawn_monitor(
             monitor_socket,
             Arc::clone(&buttons),
             Arc::clone(&monitor_healthy),
+            Arc::clone(&last_monitor_update),
             Arc::clone(&stop),
+            config.host,
         )?;
         Ok(Self {
             control: Mutex::new(control),
             buttons,
             monitor_healthy,
+            last_monitor_update,
+            monitor_timeout: config.monitor_timeout,
             stop,
             monitor: Mutex::new(Some(monitor)),
             successful_sends: AtomicU64::new(0),
@@ -135,6 +147,19 @@ impl PointerDevice for KmNetNativeDevice {
             return Err(pointer_error(
                 "monitor_failed",
                 "kmNet monitor socket terminated".to_owned(),
+            ));
+        }
+        let last_update = *self
+            .last_monitor_update
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last_update.elapsed() > self.monitor_timeout {
+            return Err(pointer_error(
+                "monitor_stale",
+                format!(
+                    "kmNet monitor has been silent for more than {:?}",
+                    self.monitor_timeout
+                ),
             ));
         }
         Ok(Some(self.buttons.load(Ordering::Acquire) & 0x03 != 0))
@@ -204,7 +229,9 @@ fn spawn_monitor(
     socket: UdpSocket,
     buttons: Arc<AtomicU8>,
     healthy: Arc<AtomicBool>,
+    last_update: Arc<Mutex<Instant>>,
     stop: Arc<AtomicBool>,
+    expected_host: Ipv4Addr,
 ) -> Result<JoinHandle<()>, KmNetNativeError> {
     thread::Builder::new()
         .name("novasight-kmnet-monitor".to_owned())
@@ -212,8 +239,14 @@ fn spawn_monitor(
             let mut packet = [0_u8; 1024];
             while !stop.load(Ordering::Acquire) {
                 match socket.recv_from(&mut packet) {
-                    Ok((received, _)) if received >= MONITOR_PACKET_MIN_LEN => {
+                    Ok((received, peer))
+                        if received >= MONITOR_PACKET_MIN_LEN
+                            && peer.ip() == std::net::IpAddr::V4(expected_host) =>
+                    {
                         buttons.store(packet[1], Ordering::Release);
+                        *last_update
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
                     }
                     Ok(_) => {}
                     Err(error)
@@ -341,9 +374,16 @@ mod tests {
         drop(monitor_probe);
         let responder = thread::spawn(move || {
             let mut packet = [0_u8; 1024];
-            for expected_command in [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE] {
+            for (expected_sequence, expected_command) in [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE]
+                .into_iter()
+                .enumerate()
+            {
                 let (received, peer) = server.recv_from(&mut packet).unwrap();
                 assert!(received >= 16);
+                assert_eq!(
+                    u32::from_le_bytes(packet[8..12].try_into().unwrap()),
+                    u32::try_from(expected_sequence).unwrap()
+                );
                 assert_eq!(
                     u32::from_le_bytes(packet[12..16].try_into().unwrap()),
                     expected_command
@@ -375,6 +415,7 @@ mod tests {
             monitor_port,
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(2),
+            monitor_timeout: Duration::from_millis(50),
         })
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -382,6 +423,14 @@ mod tests {
             thread::yield_now();
         }
         assert_eq!(device.trigger_active().unwrap(), Some(true));
+        thread::sleep(Duration::from_millis(70));
+        assert!(
+            device
+                .trigger_active()
+                .expect_err("silent monitor cache must expire")
+                .to_string()
+                .contains("silent")
+        );
         device
             .send(DeviceCommand {
                 epoch: RuntimeEpoch(1),

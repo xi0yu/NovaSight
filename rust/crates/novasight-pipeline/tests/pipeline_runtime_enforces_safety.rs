@@ -118,6 +118,28 @@ struct HardwareTriggerDevice {
     recording: RecordingPointerDevice,
 }
 
+#[derive(Debug, Default)]
+struct RecoveringTriggerDevice {
+    polls: AtomicU64,
+    recording: RecordingPointerDevice,
+}
+
+impl PointerDevice for RecoveringTriggerDevice {
+    fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        self.recording.send(command)
+    }
+
+    fn trigger_active(&self) -> Result<Option<bool>, AppError> {
+        if self.polls.fetch_add(1, Ordering::AcqRel) == 0 {
+            return Err(AppError::PointerDevice {
+                code: "driver_timeout",
+                message: "transient test timeout".to_owned(),
+            });
+        }
+        Ok(Some(true))
+    }
+}
+
 impl PointerDevice for HardwareTriggerDevice {
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
         self.recording.send(command)
@@ -192,6 +214,37 @@ fn hardware_trigger_poller_owns_production_output_gate() {
     }
     assert_eq!(device.recording.receipts().len(), 1);
     assert_eq!(device.recording.receipts()[0].generation, 2);
+    runtime.shutdown().expect("workers join");
+}
+
+#[test]
+fn transient_trigger_failure_recovers_without_restarting_the_pipeline() {
+    let epoch = RuntimeEpoch(32);
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device = Arc::new(RecoveringTriggerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            trigger_poll_interval_ms: Some(1),
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+    )
+    .expect("pipeline starts");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !ingress.trigger_active() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert!(ingress.trigger_active());
+    assert_eq!(runtime.status(), PipelineStatus::Running);
+    ingress.submit(batch(epoch, 1)).expect("batch accepted");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.recording.receipts().is_empty() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(device.recording.receipts().len(), 1);
     runtime.shutdown().expect("workers join");
 }
 

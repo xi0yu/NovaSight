@@ -527,8 +527,11 @@ fn spawn_trigger_worker(
                             break;
                         }
                         Err(error) => {
-                            shared.fault(format!("pointer trigger failed: {error}"));
-                            break;
+                            shared.trigger_active.store(false, Ordering::Release);
+                            if !is_recoverable_pointer_error(&error) {
+                                shared.fault(format!("pointer trigger failed: {error}"));
+                                break;
+                            }
                         }
                     }
                     thread::sleep(interval);
@@ -761,8 +764,11 @@ fn spawn_device_worker(
                                 .fetch_add(1, Ordering::Relaxed);
                         }
                         Err(error) => {
-                            shared.fault(format!("pointer device failed: {error}"));
-                            break;
+                            shared.trigger_active.store(false, Ordering::Release);
+                            if !is_recoverable_pointer_error(&error) {
+                                shared.fault(format!("pointer device failed: {error}"));
+                                break;
+                            }
                         }
                     }
                 }
@@ -772,6 +778,23 @@ fn spawn_device_worker(
             worker: "device",
             source,
         })
+}
+
+fn is_recoverable_pointer_error(error: &novasight_core::AppError) -> bool {
+    matches!(
+        error,
+        novasight_core::AppError::PointerDevice {
+            code: "driver_timeout"
+                | "helper_exited"
+                | "helper_spawn_failed"
+                | "reconnect_cooldown"
+                | "driver_send_failed"
+                | "driver_protocol_failed"
+                | "monitor_failed"
+                | "monitor_stale",
+            ..
+        }
+    )
 }
 
 fn close_slots(

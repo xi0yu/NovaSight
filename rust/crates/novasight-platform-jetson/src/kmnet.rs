@@ -158,10 +158,13 @@ impl KmNetHostClient {
             .session
             .as_mut()
             .expect("session was connected above")
-            .request("buttons", json!({}), self.config.request_timeout);
-        match result {
-            Ok(value) => {
-                state.last_failure = None;
+            .request("buttons", json!({}), self.config.request_timeout)
+            .and_then(|value| {
+                if value.get("available").and_then(Value::as_bool) != Some(true) {
+                    return Err(KmNetError::Protocol(
+                        "helper does not expose a hardware trigger".to_owned(),
+                    ));
+                }
                 let left = value.get("left").and_then(Value::as_bool).ok_or_else(|| {
                     KmNetError::Protocol("buttons result is missing boolean left".to_owned())
                 })?;
@@ -169,6 +172,11 @@ impl KmNetHostClient {
                     KmNetError::Protocol("buttons result is missing boolean right".to_owned())
                 })?;
                 Ok(left || right)
+            });
+        match result {
+            Ok(active) => {
+                state.last_failure = None;
+                Ok(active)
             }
             Err(error) => {
                 if let Some(mut session) = state.session.take() {

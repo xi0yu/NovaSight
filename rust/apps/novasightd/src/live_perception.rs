@@ -54,6 +54,7 @@ pub(super) fn build_live_production_dependencies(
                     monitor_port: adapters.device.monitor_port,
                     connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
                     request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
+                    monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
                 })
                 .map_err(LivePerceptionError::NativeKmNet)?,
             )
@@ -77,7 +78,11 @@ pub(super) fn build_live_production_dependencies(
             .map_err(LivePerceptionError::KmNet)?,
         ),
     };
-    build_live_dependencies(config, device, Some(4))
+    build_live_dependencies(
+        config,
+        device,
+        Some(adapters.device.trigger_poll_interval_ms),
+    )
 }
 
 fn build_live_dependencies(

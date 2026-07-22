@@ -25,6 +25,3 @@ crossbeam-queue = { workspace = true, optional = true }
 gstreamer = { workspace = true, optional = true }
 novasight-deepstream-bridge = { path = "../novasight-deepstream-bridge", optional = true }
 novasight-pipeline = { path = "../novasight-pipeline", optional = true }
-
-[dev-dependencies]
-serde_json.workspace = true
