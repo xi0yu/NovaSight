@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod perception;
+mod preview;
 mod runtime;
 mod slot;
 
@@ -16,6 +17,7 @@ pub use perception::{
     ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionEvent,
     PerceptionMetrics, PerceptionModelContract, PerceptionSession, validate_parser_preset,
 };
+pub use preview::{PreviewError, PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription};
 
 pub use runtime::{
     PipelineConfig, PipelineError, PipelineEvent, PipelineIngress, PipelineMetrics,

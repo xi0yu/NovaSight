@@ -20,7 +20,7 @@ pub use novasight_tensorrt::{
 };
 pub use pipeline::{
     CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
-    PipelineSpecError, Roi,
+    PipelineSpecError, PreviewPipelineConfig, Roi,
 };
 #[cfg(all(feature = "cuda-preprocess", target_os = "linux"))]
 pub use preprocess::CudaFramePreprocessor;

@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use novasight_api::{build_control_router, build_control_router_with_services};
 use novasight_client::{ClientError, ControlClient};
-use novasight_runtime::{ConfigService, PipelineState, RuntimeSupervisor};
+use novasight_core::RuntimeEpoch;
+use novasight_runtime::{
+    ConfigService, PipelineState, PreviewHub, RuntimeDependencies, RuntimeSupervisor,
+};
 use novasight_store::config::YamlConfigRepository;
 
 struct SocketPath(PathBuf);
@@ -115,6 +118,31 @@ async fn typed_client_reads_and_updates_persisted_config_over_the_same_socket() 
     supervisor.join().await.unwrap();
     server.abort();
     std::fs::remove_file(config_path).unwrap();
+}
+
+#[tokio::test]
+async fn typed_client_controls_the_daemon_owned_preview_gate() {
+    let socket = SocketPath::new();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
+    let preview = PreviewHub::new(true);
+    preview.begin_epoch(RuntimeEpoch(3));
+    let (supervisor, runtime) =
+        RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_preview(preview));
+    let server_runtime = runtime.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, build_control_router(server_runtime))
+            .await
+            .expect("serve Unix control socket")
+    });
+    let client = ControlClient::new(&socket.0);
+
+    assert!(!client.preview_status().await.unwrap().active);
+    assert!(client.set_preview_active(true).await.unwrap().active);
+    assert!(!client.set_preview_active(false).await.unwrap().active);
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    server.abort();
 }
 
 #[tokio::test]

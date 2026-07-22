@@ -15,14 +15,15 @@ use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch}
 use novasight_pipeline::{
     ModelCandidate, ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
     PerceptionEvent, PerceptionModelContract, PerceptionSession, PipelineConfig, PipelineIngress,
-    validate_parser_preset,
+    PreviewHub, validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 #[cfg(feature = "tensorrt")]
 use novasight_platform_jetson::deepstream::CudaTensorRtConfig;
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
-    DeepStreamSessionConfig, InferenceStage, LatestFrameExchange, ModelInput, Roi,
+    DeepStreamSessionConfig, InferenceStage, LatestFrameExchange, ModelInput,
+    PreviewPipelineConfig, Roi,
 };
 use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
 #[cfg(feature = "experimental-kmnet-native")]
@@ -131,6 +132,7 @@ fn build_live_dependencies(
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
     let latest_frames = LatestFrameExchange::new();
+    let preview = PreviewHub::new(adapters.consumers.preview);
     Ok(RuntimeDependencies::new(
         clock,
         device,
@@ -203,10 +205,12 @@ fn build_live_dependencies(
         },
     )
     .with_model_catalog(model_catalog.clone())
+    .with_preview(preview.clone())
     .with_perception(Arc::new(CatalogDeepStreamAdapter {
         config: config_service,
         model_catalog,
         latest_frames,
+        preview,
     })))
 }
 
@@ -215,12 +219,13 @@ struct CatalogDeepStreamAdapter {
     config: ConfigService,
     model_catalog: SqliteModelCatalog,
     latest_frames: LatestFrameExchange,
+    preview: PreviewHub,
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
     fn preflight(&self) -> Result<(), PerceptionError> {
         let config = self.config.blocking_snapshot();
-        build_deepstream_session_config(&config, &self.model_catalog)
+        build_deepstream_session_config(&config, &self.model_catalog, self.preview.clone())
             .map(|_| ())
             .map_err(|error| PerceptionError::new(error.to_string()))
     }
@@ -272,8 +277,10 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         events: std::sync::mpsc::SyncSender<PerceptionEvent>,
     ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
         let current = self.config.blocking_snapshot();
-        let config = build_deepstream_session_config(&current, &self.model_catalog)
-            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        self.preview.configure(current.consumers.preview);
+        let config =
+            build_deepstream_session_config(&current, &self.model_catalog, self.preview.clone())
+                .map_err(|error| PerceptionError::new(error.to_string()))?;
         DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
             .start(epoch, ingress, clock, events)
     }
@@ -282,6 +289,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
 fn build_deepstream_session_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
+    preview_hub: PreviewHub,
 ) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -331,6 +339,9 @@ fn build_deepstream_session_config(
         inference,
         batched_push_timeout_us: adapters.inference.deepstream_batched_push_timeout_us,
         inference_element: adapters.inference.deepstream_probe_element.clone(),
+        preview: adapters.consumers.preview.then_some(PreviewPipelineConfig {
+            fps: adapters.limits.stream_fps,
+        }),
     };
     pipeline
         .build()
@@ -343,6 +354,7 @@ fn build_deepstream_session_config(
         max_batch_age_ns: Some(deadline_ns(adapters.inference.inference_input_deadline_ms)),
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
+        preview: adapters.consumers.preview.then_some(preview_hub),
         #[cfg(feature = "tensorrt")]
         rust_tensorrt,
     })

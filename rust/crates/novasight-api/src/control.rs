@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::{
         Query, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
@@ -140,6 +140,11 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/config", get(config).post(update_legacy_config))
         .route("/api/config/schema", get(config_schema))
         .route("/api/capture/state", get(capture_state))
+        .route(
+            "/api/capture/preview",
+            get(preview_status).post(set_preview),
+        )
+        .route("/api/capture/stream.mjpg", get(preview_stream))
         .route(
             "/api/capture/capabilities",
             get(capture_capabilities).post(post_capture_capabilities),
@@ -368,7 +373,80 @@ async fn compatibility_state(
         config.as_ref(),
         effective_revision,
         state.hardware_output_enabled,
+        state.runtime.preview_snapshot().as_ref(),
     )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewRequest {
+    enabled: bool,
+}
+
+async fn preview_status(
+    State(state): State<ControlState>,
+) -> Result<Json<novasight_runtime::PreviewSnapshot>, ControlApiError> {
+    state
+        .runtime
+        .preview_snapshot()
+        .map(Json)
+        .ok_or_else(|| ControlApiError::Runtime(RuntimeError::pipeline_unavailable()))
+}
+
+async fn set_preview(
+    State(state): State<ControlState>,
+    Json(request): Json<PreviewRequest>,
+) -> Result<Json<novasight_runtime::PreviewSnapshot>, ControlApiError> {
+    state
+        .runtime
+        .set_preview_active(request.enabled)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PreviewStreamQuery {
+    fps: Option<u32>,
+}
+
+async fn preview_stream(
+    State(state): State<ControlState>,
+    Query(query): Query<PreviewStreamQuery>,
+) -> Result<Response, ControlApiError> {
+    let configured_fps = match state.config.as_ref() {
+        Some(config) => config.snapshot().await.limits.stream_fps,
+        None => 30,
+    };
+    let configured_fps = configured_fps.max(1);
+    let fps = query.fps.unwrap_or(configured_fps).clamp(1, configured_fps);
+    let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
+    let subscription = state.runtime.subscribe_preview()?;
+    let stream = futures_util::stream::unfold(subscription, move |mut subscription| async move {
+        tokio::time::sleep(interval).await;
+        let frame = subscription.next().await?;
+        let mut part = Vec::with_capacity(frame.jpeg.len() + 96);
+        part.extend_from_slice(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ");
+        part.extend_from_slice(frame.jpeg.len().to_string().as_bytes());
+        part.extend_from_slice(b"\r\n\r\n");
+        part.extend_from_slice(&frame.jpeg);
+        part.extend_from_slice(b"\r\n");
+        Some((
+            Ok::<Bytes, std::convert::Infallible>(Bytes::from(part)),
+            subscription,
+        ))
+    });
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "multipart/x-mixed-replace; boundary=frame",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store, no-cache"),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response())
 }
 
 async fn executors(State(state): State<ControlState>) -> Json<serde_json::Value> {
@@ -1247,6 +1325,10 @@ mod tests {
     };
 
     use futures_util::{Sink, task::noop_waker};
+    use novasight_core::RuntimeEpoch;
+    use novasight_pipeline::PreviewHub;
+    use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -1304,5 +1386,50 @@ mod tests {
             .expect("daemon shutdown must not wait for a backpressured peer");
 
         assert_eq!(outcome, SendOutcome::Shutdown);
+    }
+
+    #[tokio::test]
+    async fn preview_routes_control_and_lease_the_daemon_owned_hub() {
+        let preview = PreviewHub::new(true);
+        preview.begin_epoch(RuntimeEpoch(9));
+        let dependencies = RuntimeDependencies::recording().with_preview(preview.clone());
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
+        let router = build_control_router(runtime.clone());
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/capture/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response["preview_active"], true);
+        assert!(preview.snapshot().active);
+        assert_eq!(preview.snapshot().consumers, 0);
+
+        let response = router
+            .oneshot(
+                Request::get("/api/capture/stream.mjpg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(preview.snapshot().consumers, 1);
+        assert!(preview.encoder_requested(RuntimeEpoch(9)));
+        drop(response);
+        assert_eq!(preview.snapshot().consumers, 0);
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
     }
 }

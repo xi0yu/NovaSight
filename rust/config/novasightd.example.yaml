@@ -8,6 +8,12 @@ replay:
   enabled: true
   frame_interval_ms: 16
   output_gate_open: false
+consumers:
+  # The JPEG branch is built only when explicitly enabled. It remains behind
+  # a closed valve until both the API switch and a stream subscriber are active.
+  preview: true
+limits:
+  stream_fps: 30
 # This is deliberately smaller than the legacy Python `control` section:
 # every field below is consumed by the current Rust production hot path.
 pipeline:

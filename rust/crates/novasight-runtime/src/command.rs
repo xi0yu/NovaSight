@@ -18,6 +18,7 @@ use crate::model_activation::{
 use crate::model_ingress::{ModelIngressError, ModelIngressRequest, ModelIngressResult};
 use crate::snapshot::RuntimeSnapshot;
 use crate::supervisor::UrgentStopToken;
+use novasight_pipeline::PreviewSnapshot;
 
 #[derive(Debug)]
 pub enum RuntimeCommand {
@@ -49,6 +50,10 @@ pub enum RuntimeCommand {
     SetTriggerActive {
         active: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    SetPreviewActive {
+        active: bool,
+        reply: oneshot::Sender<Result<PreviewSnapshot, RuntimeError>>,
     },
     DiagnoseDeviceMove {
         delta_x_counts: i32,

@@ -16,7 +16,7 @@ use hyper_util::rt::TokioIo;
 use novasight_core::{CaptureCapabilities, CaptureSelectionPreference, DeviceReceipt};
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
-    ModelProfileConfigureRequest, RuntimeSnapshot,
+    ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
 };
 pub use novasight_store::license::LicenseStatus;
 pub use novasight_store::model_catalog::{
@@ -324,6 +324,24 @@ impl ControlClient {
     pub async fn capture_state(&self) -> Result<Value, ClientError> {
         self.request(Method::GET, "/api/capture/state", None::<&()>)
             .await
+    }
+
+    pub async fn preview_status(&self) -> Result<PreviewSnapshot, ClientError> {
+        self.request(Method::GET, "/api/capture/preview", None::<&()>)
+            .await
+    }
+
+    pub async fn set_preview_active(&self, enabled: bool) -> Result<PreviewSnapshot, ClientError> {
+        #[derive(Serialize)]
+        struct PreviewRequest {
+            enabled: bool,
+        }
+        self.request(
+            Method::POST,
+            "/api/capture/preview",
+            Some(&PreviewRequest { enabled }),
+        )
+        .await
     }
 
     pub async fn capture_capabilities(

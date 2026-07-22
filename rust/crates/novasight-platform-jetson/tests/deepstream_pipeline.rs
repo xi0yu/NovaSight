@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
-    PipelineSpecError, Roi,
+    PipelineSpecError, PreviewPipelineConfig, Roi,
 };
 
 fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
@@ -30,7 +30,26 @@ fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
         },
         batched_push_timeout_us: 0,
         inference_element: "primary-infer".to_owned(),
+        preview: None,
     }
+}
+
+#[test]
+fn preview_branch_is_latest_only_hardware_jpeg_and_closed_by_default() {
+    let mut spec = spec(CaptureFormat::Mjpeg);
+    spec.preview = Some(PreviewPipelineConfig { fps: 30 });
+    let pipeline = spec.build().unwrap();
+
+    assert!(pipeline.contains("tee name=novasight-source-split"));
+    assert!(pipeline.contains("novasight-source-split. ! queue max-size-buffers=1"));
+    assert!(pipeline.contains("valve name=preview-valve drop=true"));
+    assert!(pipeline.contains("videorate drop-only=true max-rate=30"));
+    assert!(
+        pipeline
+            .contains("video/x-raw(memory:NVMM),format=NV12,width=640,height=640,framerate=30/1")
+    );
+    assert!(pipeline.contains("nvjpegenc name=preview-encoder"));
+    assert!(pipeline.contains("fakesink name=preview-sink"));
 }
 
 #[test]

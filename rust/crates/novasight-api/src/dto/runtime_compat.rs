@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use novasight_runtime::{
-    AppConfig, PipelineState, RuntimeErrorSummary, RuntimeSnapshot, SubsystemSnapshot,
-    SubsystemState,
+    AppConfig, PipelineState, PreviewSnapshot, RuntimeErrorSummary, RuntimeSnapshot,
+    SubsystemSnapshot, SubsystemState,
 };
 use serde::Serialize;
 
@@ -115,6 +115,14 @@ pub(crate) struct InferenceState {
     pub state: SubsystemState,
     pub selected: Option<String>,
     pub reason: Option<String>,
+    pub preview_enabled: bool,
+    pub preview_active: bool,
+    pub preview_encoder_active: bool,
+    pub preview_consumers: usize,
+    pub preview_available: bool,
+    pub preview_sequence: u64,
+    pub preview_reason: String,
+    pub preview_transport: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -141,6 +149,7 @@ impl CompatibilityRuntimeState {
         config: Option<&AppConfig>,
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
+        preview: Option<&PreviewSnapshot>,
     ) -> Self {
         let capture_config = config.and_then(|config| config.capture.as_ref());
         let inference_config = config.and_then(|config| config.inference.as_ref());
@@ -294,6 +303,16 @@ impl CompatibilityRuntimeState {
                     .last_error
                     .as_ref()
                     .map(|error| error.message.clone()),
+                preview_enabled: preview.is_some_and(|preview| preview.enabled),
+                preview_active: preview.is_some_and(|preview| preview.active),
+                preview_encoder_active: preview.is_some_and(|preview| preview.encoder_active),
+                preview_consumers: preview.map_or(0, |preview| preview.consumers),
+                preview_available: preview.is_some_and(|preview| preview.available),
+                preview_sequence: preview.map_or(0, |preview| preview.sequence),
+                preview_reason: preview
+                    .map(|preview| preview.reason.clone())
+                    .unwrap_or_else(|| "hardware preview is unavailable".to_owned()),
+                preview_transport: preview.map(|preview| preview.transport.clone()),
             },
             config: ConfigSummary {
                 version: config.map_or(0, |config| config.revision),

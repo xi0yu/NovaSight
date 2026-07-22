@@ -30,6 +30,7 @@ pub use model_ingress::{
     ModelProfileConfigureRequest, OfflineModelJobRunner,
 };
 pub use novasight_core::RuntimeEpoch;
+pub use novasight_pipeline::{PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription};
 pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};
 pub use snapshot::{

@@ -16,7 +16,8 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     ModelCandidate, PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineConfig, PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus,
+    PipelineConfig, PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus, PreviewHub,
+    PreviewSnapshot, PreviewSubscription,
 };
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -86,6 +87,7 @@ pub struct RuntimeDependencies {
     perception: Option<Arc<dyn PerceptionAdapter>>,
     model_catalog: Option<SqliteModelCatalog>,
     model_jobs: Option<OfflineModelJobRunner>,
+    preview: Option<PreviewHub>,
     urgent_stop: Arc<UrgentStopSignal>,
 }
 
@@ -116,6 +118,7 @@ impl RuntimeDependencies {
             perception: None,
             model_catalog: None,
             model_jobs: None,
+            preview: None,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
     }
@@ -132,6 +135,11 @@ impl RuntimeDependencies {
 
     pub fn with_model_jobs(mut self, model_jobs: OfflineModelJobRunner) -> Self {
         self.model_jobs = Some(model_jobs);
+        self
+    }
+
+    pub fn with_preview(mut self, preview: PreviewHub) -> Self {
+        self.preview = Some(preview);
         self
     }
 
@@ -398,6 +406,7 @@ impl RuntimeSupervisor {
                 snapshot_rx,
                 ingress_rx,
                 urgent_stop: Arc::clone(&dependencies.urgent_stop),
+                preview: dependencies.preview.clone(),
             },
         )
     }
@@ -435,6 +444,7 @@ pub struct RuntimeHandle {
     snapshot_rx: watch::Receiver<Arc<RuntimeSnapshot>>,
     ingress_rx: watch::Receiver<Option<PipelineIngress>>,
     urgent_stop: Arc<UrgentStopSignal>,
+    preview: Option<PreviewHub>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -476,6 +486,32 @@ impl RuntimeHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
             .send(RuntimeCommand::SetTriggerActive {
+                active,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
+        self.preview.as_ref().map(PreviewHub::snapshot)
+    }
+
+    pub fn subscribe_preview(&self) -> Result<PreviewSubscription, RuntimeError> {
+        self.preview
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .subscribe()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub async fn set_preview_active(&self, active: bool) -> Result<PreviewSnapshot, RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::SetPreviewActive {
                 active,
                 reply: reply_tx,
             })
@@ -807,6 +843,21 @@ async fn handle_command(
                 Ok(ingress) => set_trigger_state(ingress, requested).await,
                 Err(error) => Err(error),
             };
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::SetPreviewActive {
+            active: requested,
+            reply,
+        } => {
+            let result = dependencies
+                .preview
+                .as_ref()
+                .ok_or_else(RuntimeError::pipeline_unavailable)
+                .and_then(|preview| {
+                    preview
+                        .set_active(requested)
+                        .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+                });
             let _ = reply.send(result);
         }
         RuntimeCommand::DiagnoseDeviceMove {

@@ -19,7 +19,7 @@ use novasight_deepstream_bridge::{
 };
 use novasight_pipeline::{
     PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineError, PipelineIngress,
+    PipelineError, PipelineIngress, PreviewHub,
 };
 use thiserror::Error;
 
@@ -40,6 +40,7 @@ pub struct DeepStreamSessionConfig {
     pub max_batch_age_ns: Option<u64>,
     pub startup_timeout: Duration,
     pub shutdown_timeout: Duration,
+    pub preview: Option<PreviewHub>,
     #[cfg(feature = "tensorrt")]
     pub rust_tensorrt: Option<CudaTensorRtConfig>,
 }
@@ -291,9 +292,21 @@ struct StartedPipeline {
     pipeline: gst::Pipeline,
     probe_pad: gst::Pad,
     probe_id: gst::PadProbeId,
+    preview_probe: Option<(gst::Pad, gst::PadProbeId)>,
     bus: gst::Bus,
     exchange: Arc<SnapshotExchange>,
     perception_worker: JoinHandle<()>,
+}
+
+struct PreviewEpochGuard {
+    hub: PreviewHub,
+    epoch: RuntimeEpoch,
+}
+
+impl Drop for PreviewEpochGuard {
+    fn drop(&mut self) {
+        self.hub.end_epoch(self.epoch);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -507,6 +520,7 @@ fn run_session(
         pipeline,
         probe_pad,
         probe_id,
+        preview_probe,
         bus,
         exchange,
         perception_worker,
@@ -517,6 +531,10 @@ fn run_session(
             return Err(error);
         }
     };
+    let _preview_epoch = config.preview.as_ref().map(|hub| PreviewEpochGuard {
+        hub: hub.clone(),
+        epoch,
+    });
     let mut perception_worker = Some(perception_worker);
 
     let ready = wait_until_ready(&pipeline, &bus, &commands, &state, config.startup_timeout);
@@ -527,6 +545,7 @@ fn run_session(
                 &pipeline,
                 &probe_pad,
                 probe_id,
+                preview_probe,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -543,6 +562,7 @@ fn run_session(
                 &pipeline,
                 &probe_pad,
                 probe_id,
+                preview_probe,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -551,11 +571,19 @@ fn run_session(
         ));
     }
 
-    let outcome = monitor_pipeline(&bus, &commands, &state);
+    let outcome = monitor_pipeline(
+        &pipeline,
+        &bus,
+        &commands,
+        &state,
+        config.preview.as_ref(),
+        epoch,
+    );
     let cleanup = cleanup_pipeline(
         &pipeline,
         &probe_pad,
         probe_id,
+        preview_probe,
         config.shutdown_timeout,
         &state,
         &exchange,
@@ -700,6 +728,15 @@ fn start_pipeline(
         })
         .ok_or(SessionError::ProbeInstallFailed)?;
 
+    let preview_probe = match install_preview_probe(&pipeline, config.preview.as_ref(), epoch) {
+        Ok(probe) => probe,
+        Err(error) => {
+            probe_pad.remove_probe(probe_id);
+            exchange.close();
+            return Err(error);
+        }
+    };
+
     let worker_context = SnapshotWorkerContext {
         epoch,
         source_id,
@@ -715,6 +752,9 @@ fn start_pipeline(
             Ok(worker) => Some(worker),
             Err(error) => {
                 probe_pad.remove_probe(probe_id);
+                if let Some((pad, id)) = preview_probe {
+                    pad.remove_probe(id);
+                }
                 exchange.close();
                 return Err(error);
             }
@@ -727,6 +767,7 @@ fn start_pipeline(
                 &pipeline,
                 &probe_pad,
                 probe_id,
+                preview_probe,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -743,6 +784,7 @@ fn start_pipeline(
                 &pipeline,
                 &probe_pad,
                 probe_id,
+                preview_probe,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -757,6 +799,7 @@ fn start_pipeline(
                 &pipeline,
                 &probe_pad,
                 probe_id,
+                preview_probe,
                 config.shutdown_timeout,
                 &state,
                 &exchange,
@@ -764,15 +807,48 @@ fn start_pipeline(
             ),
         ));
     }
+    if let Some(preview) = config.preview.as_ref() {
+        preview.begin_epoch(epoch);
+    }
     Ok(StartedPipeline {
         pipeline,
         probe_pad,
         probe_id,
+        preview_probe,
         bus,
         exchange,
         perception_worker: perception_worker
             .expect("perception worker remains owned after successful startup"),
     })
+}
+
+fn install_preview_probe(
+    pipeline: &gst::Pipeline,
+    preview: Option<&PreviewHub>,
+    epoch: RuntimeEpoch,
+) -> Result<Option<(gst::Pad, gst::PadProbeId)>, SessionError> {
+    let Some(preview) = preview else {
+        return Ok(None);
+    };
+    let sink = pipeline
+        .by_name("preview-sink")
+        .ok_or(SessionError::MissingPreviewElement("preview-sink"))?;
+    let pad = sink
+        .static_pad("sink")
+        .ok_or(SessionError::MissingPreviewPad)?;
+    let publisher = preview.clone();
+    let id = pad
+        .add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
+            let Some(buffer) = info.buffer() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            if let Ok(map) = buffer.map_readable() {
+                let _ = publisher.publish_jpeg(epoch, map.as_slice().to_vec());
+            }
+            gst::PadProbeReturn::Ok
+        })
+        .ok_or(SessionError::PreviewProbeInstallFailed)?;
+    Ok(Some((pad, id)))
 }
 
 struct SnapshotWorkerContext {
@@ -1042,11 +1118,26 @@ fn wait_until_ready(
 }
 
 fn monitor_pipeline(
+    pipeline: &gst::Pipeline,
     bus: &gst::Bus,
     commands: &Receiver<SessionCommand>,
     state: &ProbeState,
+    preview: Option<&PreviewHub>,
+    epoch: RuntimeEpoch,
 ) -> Result<(), SessionError> {
+    let mut encoder_active = false;
     loop {
+        if let Some(preview) = preview {
+            let requested = preview.encoder_requested(epoch);
+            if requested != encoder_active {
+                let valve = pipeline
+                    .by_name("preview-valve")
+                    .ok_or(SessionError::MissingPreviewElement("preview-valve"))?;
+                valve.set_property("drop", !requested);
+                encoder_active = requested;
+                preview.set_encoder_active(epoch, requested);
+            }
+        }
         match commands.try_recv() {
             Ok(SessionCommand::Stop) | Err(TryRecvError::Disconnected) => return Ok(()),
             Err(TryRecvError::Empty) => {}
@@ -1084,10 +1175,12 @@ fn poll_terminal_bus(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cleanup_pipeline(
     pipeline: &gst::Pipeline,
     probe_pad: &gst::Pad,
     probe_id: gst::PadProbeId,
+    preview_probe: Option<(gst::Pad, gst::PadProbeId)>,
     timeout: Duration,
     state: &ProbeState,
     exchange: &SnapshotExchange,
@@ -1095,6 +1188,9 @@ fn cleanup_pipeline(
 ) -> Result<(), SessionError> {
     state.closed.store(true, Ordering::Release);
     probe_pad.remove_probe(probe_id);
+    if let Some((pad, id)) = preview_probe {
+        pad.remove_probe(id);
+    }
     exchange.close();
     let mut failures = Vec::new();
     match pipeline.set_state(gst::State::Null) {
@@ -1168,6 +1264,12 @@ pub enum SessionError {
     MissingProbePad { element: String, pad: String },
     #[error("failed to install DeepStream metadata probe")]
     ProbeInstallFailed,
+    #[error("DeepStream pipeline is missing preview element {0}")]
+    MissingPreviewElement(&'static str),
+    #[error("DeepStream preview sink is missing its sink pad")]
+    MissingPreviewPad,
+    #[error("failed to install DeepStream JPEG preview probe")]
+    PreviewProbeInstallFailed,
     #[error("DeepStream pipeline state change failed: {0}")]
     StateChange(String),
     #[error("DeepStream shutdown cleanup failed: {0}")]

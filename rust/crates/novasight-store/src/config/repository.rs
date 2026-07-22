@@ -841,6 +841,8 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
                 "revision",
                 "server",
                 "replay",
+                "consumers",
+                "limits",
                 "paths",
                 "capture",
                 "inference",
@@ -865,6 +867,8 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
                 "python_executable",
             ][..],
         ),
+        ("consumers", &config.consumers.legacy, &["preview"][..]),
+        ("limits", &config.limits.legacy, &["stream_fps"][..]),
     ] {
         if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
             return Err(ConfigError::ReservedLegacyKey {

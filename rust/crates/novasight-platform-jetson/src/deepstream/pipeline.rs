@@ -34,6 +34,11 @@ pub struct ModelInput {
     pub height: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreviewPipelineConfig {
+    pub fps: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InferenceStage {
     DeepStreamNvinfer { config: PathBuf },
@@ -50,6 +55,7 @@ pub struct DeepStreamPipelineSpec {
     pub inference: InferenceStage,
     pub batched_push_timeout_us: i64,
     pub inference_element: String,
+    pub preview: Option<PreviewPipelineConfig>,
 }
 
 impl DeepStreamPipelineSpec {
@@ -89,6 +95,12 @@ impl DeepStreamPipelineSpec {
                 ]);
             }
         }
+        if self.preview.is_some() {
+            elements.extend([
+                "tee name=novasight-source-split".to_owned(),
+                LATEST_ONLY_QUEUE.to_owned(),
+            ]);
+        }
         let right = self.roi.left + self.roi.width;
         let bottom = self.roi.top + self.roi.height;
         elements.extend([
@@ -115,12 +127,19 @@ impl DeepStreamPipelineSpec {
                 format!("identity name={} silent=true", self.inference_element)
             }
         };
-        Ok(format!(
+        let main = format!(
             "{} ! mux.sink_0 nvstreammux name=mux batch-size=1 live-source=1 width={} height={} sync-inputs=0 batched-push-timeout={} ! {inference} ! fakesink name=deepstream-sink sync=false async=false qos=false",
             elements.join(" ! "),
             self.model_input.width,
             self.model_input.height,
             self.batched_push_timeout_us,
+        );
+        let Some(preview) = self.preview else {
+            return Ok(main);
+        };
+        Ok(format!(
+            "{main} novasight-source-split. ! {LATEST_ONLY_QUEUE} ! valve name=preview-valve drop=true ! videorate drop-only=true max-rate={} ! nvvidconv name=preview-crop left={} right={right} top={} bottom={bottom} ! video/x-raw(memory:NVMM),format=NV12,width={},height={},framerate={}/1 ! nvjpegenc name=preview-encoder ! fakesink name=preview-sink sync=false async=false qos=false",
+            preview.fps, self.roi.left, self.roi.top, self.roi.width, self.roi.height, preview.fps,
         ))
     }
 
@@ -182,6 +201,9 @@ impl DeepStreamPipelineSpec {
                 self.batched_push_timeout_us,
             ));
         }
+        if self.preview.is_some_and(|preview| preview.fps == 0) {
+            return Err(PipelineSpecError::ZeroPreviewFps);
+        }
         Ok(())
     }
 }
@@ -220,4 +242,6 @@ pub enum PipelineSpecError {
     },
     #[error("batched push timeout must be non-negative, got {0}")]
     NegativeBatchedPushTimeout(i64),
+    #[error("preview FPS must be positive")]
+    ZeroPreviewFps,
 }

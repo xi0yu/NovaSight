@@ -19,6 +19,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub paths: PathConfig,
     #[serde(default)]
+    pub consumers: ConsumerConfig,
+    #[serde(default)]
+    pub limits: LimitsConfig,
+    #[serde(default)]
     pub capture: Option<CaptureConfig>,
     #[serde(default)]
     pub inference: Option<InferenceConfig>,
@@ -37,6 +41,8 @@ impl Default for AppConfig {
             replay: ReplayConfig::default(),
             pipeline: PipelineRuntimeConfig::default(),
             paths: PathConfig::default(),
+            consumers: ConsumerConfig::default(),
+            limits: LimitsConfig::default(),
             capture: None,
             inference: None,
             device: None,
@@ -56,6 +62,12 @@ impl AppConfig {
         }
         if let Some(device) = &self.device {
             device.validate()?;
+        }
+        if self.limits.stream_fps == 0 {
+            return Err(ConfigValidationError::new(
+                "limits.stream_fps",
+                "must be positive",
+            ));
         }
         Ok(())
     }
@@ -85,6 +97,8 @@ impl AppConfig {
             inference,
             device,
             pipeline: &self.pipeline,
+            consumers: &self.consumers,
+            limits: &self.limits,
         })
     }
 
@@ -126,6 +140,37 @@ pub struct ProductionAdapterConfig<'a> {
     pub inference: &'a InferenceConfig,
     pub device: &'a DeviceConfig,
     pub pipeline: &'a PipelineRuntimeConfig,
+    pub consumers: &'a ConsumerConfig,
+    pub limits: &'a LimitsConfig,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ConsumerConfig {
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LimitsConfig {
+    #[serde(default = "default_stream_fps")]
+    pub stream_fps: u32,
+    #[serde(default, flatten)]
+    pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            stream_fps: default_stream_fps(),
+            legacy: BTreeMap::new(),
+        }
+    }
+}
+
+const fn default_stream_fps() -> u32 {
+    30
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1580,5 +1625,19 @@ mod tests {
         assert_eq!(parsed.get(&1), Some(&0.30));
         assert!(parse_target_class_aim_y_ratios("0:1.1").is_err());
         assert!(parse_target_class_aim_y_ratios("0:0.2,0:0.3").is_err());
+    }
+
+    #[test]
+    fn preview_configuration_is_typed_and_rejects_zero_fps() {
+        let mut config: AppConfig =
+            serde_yaml::from_str("consumers:\n  preview: true\nlimits:\n  stream_fps: 24\n")
+                .unwrap();
+        assert!(config.consumers.preview);
+        assert_eq!(config.limits.stream_fps, 24);
+        config.validate_configured_adapters().unwrap();
+
+        config.limits.stream_fps = 0;
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "limits.stream_fps");
     }
 }

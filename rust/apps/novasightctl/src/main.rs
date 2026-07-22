@@ -11,7 +11,7 @@ use novasight_client::{
 use novasight_core::CaptureSelectionPreference;
 use novasight_runtime::{
     AppConfig, ConfigUpdate, ModelIngressResult, ModelProbeInputMode, ModelProfileConfigureRequest,
-    RuntimeSnapshot,
+    PreviewSnapshot, RuntimeSnapshot,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -65,6 +65,21 @@ enum Command {
         #[command(subcommand)]
         command: CaptureCommand,
     },
+    /// Inspect or gate the hardware JPEG preview branch.
+    Preview {
+        #[command(subcommand)]
+        command: PreviewCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PreviewCommand {
+    /// Print preview availability, subscribers, and encoder state.
+    Status,
+    /// Permit preview encoding when at least one stream viewer is connected.
+    On,
+    /// Close the preview valve and discard the latest JPEG.
+    Off,
 }
 
 #[derive(Subcommand, Debug)]
@@ -223,6 +238,7 @@ enum CommandOutput {
     Executor(ExecutorStatus),
     DiagnosticMove(DiagnosticMoveResponse),
     CaptureCapabilities(novasight_core::CaptureCapabilities),
+    Preview(PreviewSnapshot),
     Json(serde_json::Value),
 }
 
@@ -425,6 +441,21 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
                 .await
                 .map(CommandOutput::Json)
         }
+        Command::Preview {
+            command: PreviewCommand::Status,
+        } => client.preview_status().await.map(CommandOutput::Preview),
+        Command::Preview {
+            command: PreviewCommand::On,
+        } => client
+            .set_preview_active(true)
+            .await
+            .map(CommandOutput::Preview),
+        Command::Preview {
+            command: PreviewCommand::Off,
+        } => client
+            .set_preview_active(false)
+            .await
+            .map(CommandOutput::Preview),
     }
     .map_err(CliError::Client)
 }

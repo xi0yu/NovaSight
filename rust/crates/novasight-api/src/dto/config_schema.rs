@@ -67,6 +67,22 @@ impl ConfigSchemaResponse {
                     ],
                 ),
                 section(
+                    "consumers",
+                    "预览消费者",
+                    vec![boolean("consumers.preview", "启用硬件 JPEG 预览")],
+                ),
+                section(
+                    "limits",
+                    "流量限制",
+                    vec![integer(
+                        "limits.stream_fps",
+                        "预览帧率上限",
+                        1.0,
+                        u32::MAX as f64,
+                        Some("Hz"),
+                    )],
+                ),
+                section(
                     "pipeline",
                     "Rust 实时控制",
                     vec![
