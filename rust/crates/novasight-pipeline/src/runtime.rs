@@ -9,6 +9,7 @@ use std::time::Duration;
 use novasight_core::control::dual_phase_v2::{
     ControlObservation, DualPhaseConfig, DualPhaseControl,
 };
+use novasight_core::control::humanized_motion::HumanizedMotionTelemetry;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, Generation, PointerDevice, RuntimeEpoch,
@@ -93,7 +94,7 @@ impl Default for PipelineConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PipelineMetrics {
     pub status: PipelineStatus,
     pub received_batches: u64,
@@ -111,6 +112,7 @@ pub struct PipelineMetrics {
     pub live_workers: u64,
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
+    pub humanized_motion: HumanizedMotionTelemetry,
 }
 
 #[derive(Debug, Error)]
@@ -153,6 +155,7 @@ struct AtomicMetrics {
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
+    humanized_motion: Mutex<HumanizedMotionTelemetry>,
 }
 
 #[derive(Debug)]
@@ -189,6 +192,16 @@ impl SharedState {
         PipelineStatus::from_atomic(self.status.load(Ordering::Acquire))
     }
 
+    /// Telemetry must never stall the realtime control lane. A concurrent
+    /// status snapshot may keep the previous complete sample for one poll.
+    fn record_humanized_motion(&self, value: HumanizedMotionTelemetry) {
+        match self.metrics.humanized_motion.try_lock() {
+            Ok(mut telemetry) => *telemetry = value,
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
+        }
+    }
+
     fn fault(&self, message: impl Into<String>) {
         let message = message.into();
         self.output_gate.store(false, Ordering::Release);
@@ -196,6 +209,7 @@ impl SharedState {
         self.buttons_available.store(false, Ordering::Release);
         self.button_left.store(false, Ordering::Release);
         self.button_right.store(false, Ordering::Release);
+        self.record_humanized_motion(HumanizedMotionTelemetry::default());
         *self
             .metrics
             .last_fault
@@ -217,6 +231,7 @@ impl SharedState {
         self.buttons_available.store(false, Ordering::Release);
         self.button_left.store(false, Ordering::Release);
         self.button_right.store(false, Ordering::Release);
+        self.record_humanized_motion(HumanizedMotionTelemetry::default());
     }
 }
 
@@ -263,6 +278,8 @@ impl PipelineIngress {
             .store(false, Ordering::Release);
         self.shared.button_left.store(false, Ordering::Release);
         self.shared.button_right.store(false, Ordering::Release);
+        self.shared
+            .record_humanized_motion(HumanizedMotionTelemetry::default());
     }
 
     /// Synchronously retire every future device side effect for this epoch.
@@ -288,6 +305,8 @@ impl PipelineIngress {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
+            self.shared
+                .record_humanized_motion(HumanizedMotionTelemetry::default());
         }
     }
 
@@ -678,6 +697,7 @@ fn spawn_trigger_worker(
                                         .lock()
                                         .unwrap_or_else(|poisoned| poisoned.into_inner()),
                                 );
+                                shared.record_humanized_motion(HumanizedMotionTelemetry::default());
                             }
                         }
                         Ok(None) => {
@@ -687,6 +707,7 @@ fn spawn_trigger_worker(
                         }
                         Err(error) => {
                             shared.trigger_active.store(false, Ordering::Release);
+                            shared.record_humanized_motion(HumanizedMotionTelemetry::default());
                             shared.buttons_available.store(false, Ordering::Release);
                             shared.button_left.store(false, Ordering::Release);
                             shared.button_right.store(false, Ordering::Release);
@@ -868,6 +889,7 @@ fn spawn_control_worker(
                         active_profile.as_deref(),
                         target.target_width_px,
                     );
+                    shared.record_humanized_motion(decision.humanized_motion);
                     shared
                         .metrics
                         .control_decisions
@@ -973,6 +995,7 @@ fn spawn_device_worker(
                         }
                         Err(error) => {
                             shared.trigger_active.store(false, Ordering::Release);
+                            shared.record_humanized_motion(HumanizedMotionTelemetry::default());
                             if !is_recoverable_pointer_error(&error) {
                                 shared.fault(format!("pointer device failed: {error}"));
                                 break;
@@ -1055,5 +1078,10 @@ fn snapshot_metrics(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone(),
+        humanized_motion: *shared
+            .metrics
+            .humanized_motion
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
     }
 }

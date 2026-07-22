@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 use crate::control::humanized_motion::{
-    HumanizedMotionGenerator, HumanizedMotionInput, MotionProfile,
+    HumanizedMotionGenerator, HumanizedMotionInput, HumanizedMotionTelemetry, MotionProfile,
 };
 use crate::error::AppError;
 
@@ -162,10 +162,11 @@ pub struct ControlDecision {
     pub reference_dt_ms: f64,
     pub filtered_error_x: f64,
     pub filtered_error_y: f64,
+    pub humanized_motion: HumanizedMotionTelemetry,
 }
 
 impl ControlDecision {
-    pub const fn blocked(reason: BlockReason) -> Self {
+    pub fn blocked(reason: BlockReason) -> Self {
         Self {
             dx: 0,
             dy: 0,
@@ -182,6 +183,7 @@ impl ControlDecision {
             reference_dt_ms: 0.0,
             filtered_error_x: 0.0,
             filtered_error_y: 0.0,
+            humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
 }
@@ -669,6 +671,7 @@ impl DualPhaseControl {
             reference_dt_ms,
             filtered_error_x,
             filtered_error_y,
+            humanized_motion: shaped.telemetry,
         }
     }
 

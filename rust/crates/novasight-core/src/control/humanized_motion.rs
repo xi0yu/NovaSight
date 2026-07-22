@@ -201,13 +201,59 @@ pub struct HumanizedMotionInput {
     pub control_time_ms: f64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanizedMotionReason {
+    #[default]
+    DisabledOrNotTriggered,
+    NonFiniteInput,
+    MicroBypass,
+    Active,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanizedMotionPhase {
+    Startup,
+    Acceleration,
+    Braking,
+    FineCorrection,
+    ClosedLoopCorrection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanizedSpeedCurveSource {
+    MinimumJerk,
+    TrainedProgress,
+    Linear,
+    MicroBypass,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanizedSpatialCurveSource {
+    CubicBezier,
+    MicroBypass,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HumanizedMotionTelemetry {
+    pub enabled: bool,
+    pub reason: HumanizedMotionReason,
+    pub phase: Option<HumanizedMotionPhase>,
+    pub speed_curve_source: Option<HumanizedSpeedCurveSource>,
+    pub spatial_curve_source: Option<HumanizedSpatialCurveSource>,
+    pub progress: f64,
+    pub side_offset: f64,
+    pub planned_duration_ms: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HumanizedMotionResult {
     pub x: f64,
     pub y: f64,
-    pub enabled: bool,
-    pub progress: f64,
-    pub side_offset: f64,
+    pub telemetry: HumanizedMotionTelemetry,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -243,33 +289,49 @@ impl HumanizedMotionGenerator {
         let Some(profile) = profile else {
             self.profile_id = None;
             self.reset();
-            return identity(input, false);
+            return identity(input, HumanizedMotionReason::DisabledOrNotTriggered);
         };
         if self.profile_id.as_deref() != Some(profile.profile_id.as_str()) {
             self.profile_id = Some(profile.profile_id.clone());
             self.reset();
         }
-        if !input.trigger_active
-            || ![
-                input.base_x,
-                input.base_y,
-                input.full_x,
-                input.full_y,
-                input.error_x_px,
-                input.error_y_px,
-                input.control_time_ms,
-            ]
-            .into_iter()
-            .all(f64::is_finite)
+        if !input.trigger_active {
+            self.reset();
+            return identity(input, HumanizedMotionReason::DisabledOrNotTriggered);
+        }
+        if ![
+            input.base_x,
+            input.base_y,
+            input.full_x,
+            input.full_y,
+            input.error_x_px,
+            input.error_y_px,
+            input.control_time_ms,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
         {
             self.reset();
-            return identity(input, false);
+            return identity(input, HumanizedMotionReason::NonFiniteInput);
         }
         let params = &profile.runtime_parameters;
         let error_magnitude = input.error_x_px.hypot(input.error_y_px);
         if error_magnitude <= params.micro_bypass_px {
             self.reset();
-            return identity(input, true);
+            return HumanizedMotionResult {
+                x: input.base_x,
+                y: input.base_y,
+                telemetry: HumanizedMotionTelemetry {
+                    enabled: true,
+                    reason: HumanizedMotionReason::MicroBypass,
+                    phase: Some(HumanizedMotionPhase::ClosedLoopCorrection),
+                    speed_curve_source: Some(HumanizedSpeedCurveSource::MicroBypass),
+                    spatial_curve_source: Some(HumanizedSpatialCurveSource::MicroBypass),
+                    progress: 1.0,
+                    side_offset: 0.0,
+                    planned_duration_ms: 0.0,
+                },
+            };
         }
         let current_magnitude = input.full_x.hypot(input.full_y);
         let rebase = self.target_id != Some(input.target_id)
@@ -348,9 +410,20 @@ impl HumanizedMotionGenerator {
         HumanizedMotionResult {
             x,
             y,
-            enabled: true,
-            progress,
-            side_offset: side_position,
+            telemetry: HumanizedMotionTelemetry {
+                enabled: true,
+                reason: HumanizedMotionReason::Active,
+                phase: Some(if progress >= 1.0 {
+                    HumanizedMotionPhase::ClosedLoopCorrection
+                } else {
+                    motion_phase(progress)
+                }),
+                speed_curve_source: Some(speed_curve_source(profile, error_magnitude)),
+                spatial_curve_source: Some(HumanizedSpatialCurveSource::CubicBezier),
+                progress,
+                side_offset: side_position,
+                planned_duration_ms: self.planned_duration_ms,
+            },
         }
     }
 
@@ -371,13 +444,40 @@ impl HumanizedMotionGenerator {
     }
 }
 
-fn identity(input: HumanizedMotionInput, enabled: bool) -> HumanizedMotionResult {
+fn identity(input: HumanizedMotionInput, reason: HumanizedMotionReason) -> HumanizedMotionResult {
     HumanizedMotionResult {
         x: input.base_x,
         y: input.base_y,
-        enabled,
-        progress: if enabled { 1.0 } else { 0.0 },
-        side_offset: 0.0,
+        telemetry: HumanizedMotionTelemetry {
+            reason,
+            ..HumanizedMotionTelemetry::default()
+        },
+    }
+}
+
+fn speed_curve_source(profile: &MotionProfile, distance: f64) -> HumanizedSpeedCurveSource {
+    let raw = distance_profile(profile, distance)
+        .map(|value| &value.progress_curve)
+        .filter(|value| value.len() >= 2)
+        .unwrap_or(&profile.progress_curve);
+    if raw.len() >= 2 {
+        HumanizedSpeedCurveSource::TrainedProgress
+    } else if profile.runtime_parameters.minimum_jerk_fallback {
+        HumanizedSpeedCurveSource::MinimumJerk
+    } else {
+        HumanizedSpeedCurveSource::Linear
+    }
+}
+
+fn motion_phase(progress: f64) -> HumanizedMotionPhase {
+    if progress < 0.2 {
+        HumanizedMotionPhase::Startup
+    } else if progress < 0.55 {
+        HumanizedMotionPhase::Acceleration
+    } else if progress < 0.78 {
+        HumanizedMotionPhase::Braking
+    } else {
+        HumanizedMotionPhase::FineCorrection
     }
 }
 
@@ -577,7 +677,7 @@ mod tests {
         let mut generator = HumanizedMotionGenerator::default();
         let result = generator.apply(None, input(10.0, 1));
         assert_eq!((result.x, result.y), (80.0, 0.0));
-        assert!(!result.enabled);
+        assert!(!result.telemetry.enabled);
     }
 
     #[test]
@@ -590,7 +690,7 @@ mod tests {
         let switched = generator.apply(Some(&profile), input(50.0, 2));
         assert_eq!(first.x, 0.0);
         assert!(second.x > 0.0);
-        assert!(second.progress > first.progress);
+        assert!(second.telemetry.progress > first.telemetry.progress);
         assert_eq!(switched.x, 0.0);
     }
 }

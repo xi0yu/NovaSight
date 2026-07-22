@@ -50,7 +50,7 @@ pub struct SubsystemSnapshots {
     pub device: SubsystemSnapshot,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeSnapshot {
     pub daemon: DaemonSnapshot,
     pub pipeline: PipelineSnapshot,

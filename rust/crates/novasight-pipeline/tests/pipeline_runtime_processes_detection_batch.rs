@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::{Rgb, RgbImage, codecs::jpeg::JpegEncoder};
+use novasight_core::control::humanized_motion::{HumanizedMotionPhase, HumanizedSpeedCurveSource};
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, RecordingPointerDevice,
     RuntimeEpoch,
@@ -226,6 +227,17 @@ fn hot_active_motion_profile_shapes_the_real_device_command_lane() {
     assert_eq!(receipts.len(), 1);
     assert!(receipts[0].delta_x_counts > 0);
     assert!(receipts[0].delta_x_counts < 600);
+    let telemetry = runtime.metrics().humanized_motion;
+    assert!(telemetry.enabled);
+    assert_eq!(telemetry.phase, Some(HumanizedMotionPhase::Acceleration));
+    assert_eq!(
+        telemetry.speed_curve_source,
+        Some(HumanizedSpeedCurveSource::MinimumJerk)
+    );
+    assert!(telemetry.progress > 0.0);
+    assert!(telemetry.planned_duration_ms >= 35.0);
+    ingress.set_trigger_active(false);
+    assert!(!runtime.metrics().humanized_motion.enabled);
     runtime.shutdown().unwrap();
 }
 

@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
 
+use novasight_core::control::humanized_motion::{
+    HumanizedMotionPhase, HumanizedMotionReason, HumanizedSpatialCurveSource,
+    HumanizedSpeedCurveSource,
+};
 use novasight_runtime::{
     AppConfig, CrosshairSnapshot, PipelineState, PreviewSnapshot, RuntimeErrorSummary,
     RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
@@ -154,6 +158,24 @@ pub(crate) struct DeepStreamState {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionState {
     pub crosshair: Option<CrosshairSnapshot>,
+    pub control: VisionControlState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct VisionControlState {
+    pub pipeline: HumanizedMotionState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct HumanizedMotionState {
+    pub humanized_motion_enabled: bool,
+    pub humanized_motion_reason: HumanizedMotionReason,
+    pub humanized_motion_phase: Option<HumanizedMotionPhase>,
+    pub humanized_motion_speed_curve_source: Option<HumanizedSpeedCurveSource>,
+    pub humanized_motion_spatial_curve_source: Option<HumanizedSpatialCurveSource>,
+    pub humanized_motion_progress: f64,
+    pub humanized_motion_side_offset: f64,
+    pub humanized_motion_planned_duration_ms: f64,
 }
 
 impl CompatibilityRuntimeState {
@@ -362,6 +384,36 @@ impl CompatibilityRuntimeState {
             },
             vision: VisionState {
                 crosshair: crosshair.cloned(),
+                control: VisionControlState {
+                    pipeline: HumanizedMotionState {
+                        humanized_motion_enabled: snapshot
+                            .pipeline_metrics
+                            .humanized_motion
+                            .enabled,
+                        humanized_motion_reason: snapshot.pipeline_metrics.humanized_motion.reason,
+                        humanized_motion_phase: snapshot.pipeline_metrics.humanized_motion.phase,
+                        humanized_motion_speed_curve_source: snapshot
+                            .pipeline_metrics
+                            .humanized_motion
+                            .speed_curve_source,
+                        humanized_motion_spatial_curve_source: snapshot
+                            .pipeline_metrics
+                            .humanized_motion
+                            .spatial_curve_source,
+                        humanized_motion_progress: snapshot
+                            .pipeline_metrics
+                            .humanized_motion
+                            .progress,
+                        humanized_motion_side_offset: snapshot
+                            .pipeline_metrics
+                            .humanized_motion
+                            .side_offset,
+                        humanized_motion_planned_duration_ms: snapshot
+                            .pipeline_metrics
+                            .humanized_motion
+                            .planned_duration_ms,
+                    },
+                },
             },
             fatal_error,
         }
@@ -391,4 +443,49 @@ fn serialized_label(value: &impl Serialize) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use novasight_core::control::humanized_motion::{
+        HumanizedMotionPhase, HumanizedMotionReason, HumanizedMotionTelemetry,
+        HumanizedSpatialCurveSource, HumanizedSpeedCurveSource,
+    };
+    use novasight_runtime::RuntimeSnapshot;
+
+    use super::CompatibilityRuntimeState;
+
+    #[test]
+    fn projects_daemon_owned_motion_telemetry_into_studio_shape() {
+        let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline_metrics.humanized_motion = HumanizedMotionTelemetry {
+            enabled: true,
+            reason: HumanizedMotionReason::Active,
+            phase: Some(HumanizedMotionPhase::Acceleration),
+            speed_curve_source: Some(HumanizedSpeedCurveSource::TrainedProgress),
+            spatial_curve_source: Some(HumanizedSpatialCurveSource::CubicBezier),
+            progress: 0.42,
+            side_offset: 0.015,
+            planned_duration_ms: 180.0,
+        };
+
+        let value = serde_json::to_value(CompatibilityRuntimeState::new(
+            &snapshot, None, None, false, None, None,
+        ))
+        .unwrap();
+        let pipeline = &value["vision"]["control"]["pipeline"];
+        assert_eq!(pipeline["humanized_motion_enabled"], true);
+        assert_eq!(pipeline["humanized_motion_reason"], "active");
+        assert_eq!(pipeline["humanized_motion_phase"], "acceleration");
+        assert_eq!(
+            pipeline["humanized_motion_speed_curve_source"],
+            "trained_progress"
+        );
+        assert_eq!(
+            pipeline["humanized_motion_spatial_curve_source"],
+            "cubic_bezier"
+        );
+        assert_eq!(pipeline["humanized_motion_progress"], 0.42);
+        assert_eq!(pipeline["humanized_motion_planned_duration_ms"], 180.0);
+    }
 }
