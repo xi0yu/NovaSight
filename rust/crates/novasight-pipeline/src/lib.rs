@@ -27,7 +27,7 @@ pub use perception::{
 pub use preview::{PreviewError, PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription};
 
 pub use runtime::{
-    PipelineConfig, PipelineError, PipelineEvent, PipelineIngress, PipelineMetrics,
-    PipelineRuntime, PipelineStatus,
+    DetectionTelemetry, DetectionTelemetryItem, PipelineConfig, PipelineError, PipelineEvent,
+    PipelineIngress, PipelineMetrics, PipelineRuntime, PipelineStatus,
 };
 pub use slot::{LatestSlot, SlotClosed, SlotMetrics, TryPublishError};

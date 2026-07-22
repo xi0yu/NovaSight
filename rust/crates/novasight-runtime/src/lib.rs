@@ -31,8 +31,8 @@ pub use model_ingress::{
 };
 pub use novasight_core::RuntimeEpoch;
 pub use novasight_pipeline::{
-    CrosshairSnapshot, CrosshairTemplateSummary, MotionProfileHub, MotionProfileStatus,
-    PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription,
+    CrosshairSnapshot, CrosshairTemplateSummary, DetectionTelemetryItem, MotionProfileHub,
+    MotionProfileStatus, PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription,
 };
 pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};

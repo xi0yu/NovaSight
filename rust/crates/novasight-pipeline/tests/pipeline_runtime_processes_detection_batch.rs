@@ -82,12 +82,62 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
     assert_eq!(live_metrics.target_selection.target_track_id.unwrap().0, 1);
     assert_eq!(live_metrics.target_selection.target_box_x, Some(380.0));
     assert_eq!(live_metrics.target_selection.target_aim_y, Some(338.8));
+    assert_eq!(
+        live_metrics.detections.generation.map(|value| value.0),
+        Some(1)
+    );
+    assert_eq!(live_metrics.detections.coordinate_width, 640);
+    assert_eq!(live_metrics.detections.items.len(), 1);
+    assert_eq!(live_metrics.detections.items[0].object_id, 41);
+    assert_eq!(live_metrics.detections.truncated, 0);
 
     let metrics = runtime.shutdown().expect("workers join");
     assert_eq!(metrics.status, PipelineStatus::Stopped);
     assert_eq!(metrics.received_batches, 1);
     assert_eq!(metrics.device_receipts, 1);
     assert_eq!(metrics.live_workers, 0);
+}
+
+#[test]
+fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
+    let epoch = RuntimeEpoch(8);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn novasight_core::PointerDevice> =
+        Arc::new(RecordingPointerDevice::default());
+    let config = PipelineConfig {
+        epoch,
+        ..PipelineConfig::default()
+    };
+    let (mut runtime, ingress) =
+        PipelineRuntime::start(config, clock, pointer).expect("pipeline starts");
+    let detections = (0..65)
+        .map(|object_id| {
+            Detection::new(object_id, 0, 300.0, 300.0, 20.0, 20.0, 0.9).expect("valid detection")
+        })
+        .collect();
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 1, 1_000_000_000),
+                640,
+                640,
+                detections,
+            )
+            .expect("valid bounded batch"),
+        )
+        .expect("pipeline accepts batch");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().targeting_batches == 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let metrics = runtime.metrics();
+    assert_eq!(metrics.target_selection.candidates, 65);
+    assert_eq!(metrics.detections.items.len(), 64);
+    assert_eq!(metrics.detections.truncated, 1);
+    assert_eq!(metrics.detections.items[63].object_id, 63);
+
+    runtime.shutdown().expect("workers join");
 }
 
 #[test]

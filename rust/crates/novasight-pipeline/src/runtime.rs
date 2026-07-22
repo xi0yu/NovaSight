@@ -31,6 +31,7 @@ const STATUS_STOPPING: u8 = 2;
 const STATUS_STOPPED: u8 = 3;
 const STATUS_FAULTED: u8 = 4;
 const STATUS_STANDBY: u8 = 5;
+const MAX_TELEMETRY_DETECTIONS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PipelineStatus {
@@ -130,10 +131,31 @@ pub struct PipelineMetrics {
     pub live_workers: u64,
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
+    pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
     pub dual_phase: DualPhaseDecision,
     pub humanized_motion: HumanizedMotionTelemetry,
     pub recoil: RecoilDecision,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DetectionTelemetry {
+    pub generation: Option<Generation>,
+    pub coordinate_width: u32,
+    pub coordinate_height: u32,
+    pub items: Vec<DetectionTelemetryItem>,
+    pub truncated: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DetectionTelemetryItem {
+    pub object_id: u64,
+    pub class_id: u32,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub confidence: f32,
 }
 
 #[derive(Debug, Error)]
@@ -178,6 +200,7 @@ struct AtomicMetrics {
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
+    detections: Mutex<DetectionTelemetry>,
     target_selection: Mutex<TargetSelection>,
     dual_phase: Mutex<DualPhaseDecision>,
     humanized_motion: Mutex<HumanizedMotionTelemetry>,
@@ -246,6 +269,35 @@ impl SharedState {
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
         }
+    }
+
+    fn record_detections(&self, batch: &DetectionBatch) {
+        let Ok(mut telemetry) = self.metrics.detections.try_lock() else {
+            return;
+        };
+        telemetry.generation = Some(batch.stamp().generation);
+        telemetry.coordinate_width = batch.coordinate_width();
+        telemetry.coordinate_height = batch.coordinate_height();
+        telemetry.items.clear();
+        telemetry.items.extend(
+            batch
+                .detections()
+                .iter()
+                .take(MAX_TELEMETRY_DETECTIONS)
+                .map(|detection| DetectionTelemetryItem {
+                    object_id: detection.object_id(),
+                    class_id: detection.class_id(),
+                    x: detection.x(),
+                    y: detection.y(),
+                    width: detection.width(),
+                    height: detection.height(),
+                    confidence: detection.confidence(),
+                }),
+        );
+        telemetry.truncated = batch
+            .detections()
+            .len()
+            .saturating_sub(MAX_TELEMETRY_DETECTIONS);
     }
 
     fn record_recoil(&self, value: RecoilDecision) {
@@ -863,6 +915,7 @@ fn spawn_targeting_worker(
                         .metrics
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
+                    shared.record_detections(&batch);
                     let geometric_center = batch.center();
                     let reference = crosshair.as_ref().map(|hub| {
                         hub.resolve(
@@ -1279,6 +1332,12 @@ fn snapshot_metrics(
         last_fault: shared
             .metrics
             .last_fault
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+        detections: shared
+            .metrics
+            .detections
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone(),

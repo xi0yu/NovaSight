@@ -8,8 +8,8 @@ use novasight_core::control::humanized_motion::{
 use novasight_core::control::recoil::{RecoilBlockReason, RecoilState};
 use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
-    AppConfig, CrosshairSnapshot, PipelineState, PreviewSnapshot, RuntimeErrorSummary,
-    RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
+    AppConfig, CrosshairSnapshot, DetectionTelemetryItem, PipelineState, PreviewSnapshot,
+    RuntimeErrorSummary, RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
 };
 use serde::Serialize;
 
@@ -162,13 +162,30 @@ pub(crate) struct DeepStreamState {
 pub(crate) struct VisionState {
     pub crosshair: Option<CrosshairSnapshot>,
     pub detections: usize,
+    pub detection_items: Vec<VisionDetectionState>,
+    pub detection_items_truncated: usize,
     pub target: Option<VisionTargetState>,
     pub target_pipeline: TargetPipelineState,
     pub control: VisionControlState,
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct VisionDetectionState {
+    pub object_id: u64,
+    pub class_id: u32,
+    pub cls: u32,
+    pub score: f32,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub cx: f64,
+    pub cy: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionTargetState {
+    pub target_detection_index: Option<usize>,
     pub track_id: u64,
     pub class_id: u32,
     pub cls: u32,
@@ -322,7 +339,15 @@ impl CompatibilityRuntimeState {
         let dual_phase = snapshot.pipeline_metrics.dual_phase;
         let target_selection = &snapshot.pipeline_metrics.target_selection;
         let has_target_sample = snapshot.pipeline_metrics.targeting_batches > 0;
-        let target = vision_target_state(target_selection);
+        let target_detection_index = target_selection.target_object_id.and_then(|object_id| {
+            snapshot
+                .pipeline_metrics
+                .detections
+                .items
+                .iter()
+                .position(|detection| detection.object_id == object_id)
+        });
+        let target = vision_target_state(target_selection, target_detection_index);
         let target_pipeline = target_pipeline_state(target_selection, has_target_sample);
         let effective_class_filter = config
             .map(|config| config.pipeline.target_class_filter.clone())
@@ -524,6 +549,14 @@ impl CompatibilityRuntimeState {
             vision: VisionState {
                 crosshair: crosshair.cloned(),
                 detections: target_selection.candidates,
+                detection_items: snapshot
+                    .pipeline_metrics
+                    .detections
+                    .items
+                    .iter()
+                    .map(vision_detection_state)
+                    .collect(),
+                detection_items_truncated: snapshot.pipeline_metrics.detections.truncated,
                 target,
                 target_pipeline,
                 control: VisionControlState {
@@ -685,7 +718,25 @@ impl CompatibilityRuntimeState {
     }
 }
 
-fn vision_target_state(selection: &TargetSelection) -> Option<VisionTargetState> {
+fn vision_detection_state(detection: &DetectionTelemetryItem) -> VisionDetectionState {
+    VisionDetectionState {
+        object_id: detection.object_id,
+        class_id: detection.class_id,
+        cls: detection.class_id,
+        score: detection.confidence,
+        x: detection.x,
+        y: detection.y,
+        w: detection.width,
+        h: detection.height,
+        cx: f64::from(detection.x) + f64::from(detection.width) * 0.5,
+        cy: f64::from(detection.y) + f64::from(detection.height) * 0.5,
+    }
+}
+
+fn vision_target_state(
+    selection: &TargetSelection,
+    target_detection_index: Option<usize>,
+) -> Option<VisionTargetState> {
     let track_id = selection.target_track_id?.0;
     let class_id = selection.target_class_id?;
     let score = selection.target_detection_confidence?;
@@ -697,6 +748,7 @@ fn vision_target_state(selection: &TargetSelection) -> Option<VisionTargetState>
     let aim_x = selection.target_aim_x?;
     let aim_y = selection.target_aim_y?;
     Some(VisionTargetState {
+        target_detection_index,
         track_id,
         class_id,
         cls: class_id,
@@ -824,6 +876,7 @@ mod tests {
     };
     use novasight_core::control::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
+    use novasight_pipeline::DetectionTelemetryItem;
     use novasight_runtime::{AppConfig, RuntimeSnapshot};
 
     use super::CompatibilityRuntimeState;
@@ -894,7 +947,17 @@ mod tests {
             block_reason: RecoilBlockReason::None,
         };
         snapshot.pipeline_metrics.targeting_batches = 1;
+        snapshot.pipeline_metrics.detections.items = vec![DetectionTelemetryItem {
+            object_id: 91,
+            class_id: 2,
+            x: 300.0,
+            y: 200.0,
+            width: 60.0,
+            height: 120.0,
+            confidence: 0.91,
+        }];
         snapshot.pipeline_metrics.target_selection = TargetSelection {
+            target_object_id: Some(91),
             target_track_id: Some(TrackId(17)),
             target_class_id: Some(2),
             target_detection_confidence: Some(0.91),
@@ -932,11 +995,14 @@ mod tests {
             4
         );
         assert_eq!(target["track_id"], 17);
+        assert_eq!(target["target_detection_index"], 0);
         assert_eq!(target["class_id"], 2);
         assert_eq!(target["x2"], 360.0);
         assert_eq!(target["observed_aim_y"], 240.0);
         assert_eq!(target_pipeline["code"], "TARGET_SELECTED");
         assert_eq!(target_pipeline["counts"]["eligible_candidates"], 1);
+        assert_eq!(value["vision"]["detection_items"][0]["object_id"], 91);
+        assert_eq!(value["vision"]["detection_items"][0]["cx"], 330.0);
         assert_eq!(
             pipeline["control_mode"],
             "dual_phase_atan_robust_predictive_v2"
