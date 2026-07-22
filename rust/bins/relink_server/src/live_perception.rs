@@ -143,6 +143,9 @@ fn build_live_dependencies(
                 tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
                 tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
                 tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
+                tracker_scale_cost_weight: adapters.pipeline.tracker_scale_cost_weight,
+                tracker_max_size_ratio: adapters.pipeline.tracker_max_size_ratio,
+                tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
                 class_priority: parse_target_class_priority(
                     &adapters.pipeline.target_class_priority,
                 )

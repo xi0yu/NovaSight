@@ -299,7 +299,7 @@ fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
     let moved = Detection::new(2, 0, 320.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
     let selection = core.select(&[moved], OBSERVATION_CENTER);
     let tracked = core.locked().expect("continued track");
-    let expected = 1.0 - (0.75 * 0.25 + 0.25 * (1.0 - 1.0 / 3.0));
+    let expected = 1.0 - (0.75 * 0.25 + 0.25 * (1.0 - 1.0 / 3.0)) / 1.15;
     assert!((tracked.confidence - 0.95).abs() < f32::EPSILON);
     assert!((tracked.identity_confidence - expected).abs() < 1e-12);
     assert_eq!(selection.target_detection_confidence, Some(0.95));
@@ -311,6 +311,93 @@ fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
             .abs()
             < 1e-12
     );
+}
+
+#[test]
+fn rectangular_minimum_cost_assignment_preserves_both_feasible_identities() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        target_fov_radius_px: 200.0,
+        ..TargetingConfig::default()
+    });
+    let first = vec![
+        Detection::new(1, 0, 200.0, 270.0, 40.0, 100.0, 0.9).expect("left"),
+        Detection::new(2, 0, 300.0, 270.0, 40.0, 100.0, 0.9).expect("locked"),
+    ];
+    let locked_id = core
+        .select(&first, OBSERVATION_CENTER)
+        .target_track_id
+        .expect("locked id");
+    let squeezed = vec![
+        Detection::new(11, 0, 290.0, 270.0, 40.0, 100.0, 0.9).expect("left moved"),
+        Detection::new(12, 0, 400.0, 270.0, 40.0, 100.0, 0.9).expect("locked moved"),
+    ];
+    let selection = core.select(&squeezed, OBSERVATION_CENTER);
+    assert_eq!(selection.target_track_id, Some(locked_id));
+    assert_eq!(
+        selection.target_object_id,
+        Some(12),
+        "minimum-cost assignment must not let the locked track steal detection 11"
+    );
+}
+
+#[test]
+fn scale_jump_and_expired_capture_gap_allocate_new_identities() {
+    let mut scale_core = TargetingCore::new(TargetingConfig {
+        tracker_max_size_ratio: 2.5,
+        ..TargetingConfig::default()
+    });
+    let first = Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("first");
+    let first_id = scale_core
+        .select_at(&[first], OBSERVATION_CENTER, 1_000_000_000)
+        .target_track_id
+        .expect("first id");
+    let resized = Detection::new(2, 0, 300.0, 300.0, 20.0, 25.0, 0.9).expect("resized");
+    assert_ne!(
+        scale_core
+            .select_at(&[resized], OBSERVATION_CENTER, 1_010_000_000)
+            .target_track_id,
+        Some(first_id)
+    );
+
+    let mut time_core = TargetingCore::new(TargetingConfig {
+        tracker_max_association_dt_ms: 150.0,
+        ..TargetingConfig::default()
+    });
+    let first = Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("first");
+    let first_id = time_core
+        .select_at(&[first], OBSERVATION_CENTER, 2_000_000_000)
+        .target_track_id
+        .expect("first id");
+    let same = Detection::new(2, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("same");
+    assert_ne!(
+        time_core
+            .select_at(&[same], OBSERVATION_CENTER, 2_151_000_000)
+            .target_track_id,
+        Some(first_id)
+    );
+}
+
+#[test]
+fn temporarily_missing_challenger_keeps_identity_within_frame_grace() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_age: 2,
+        ..TargetingConfig::default()
+    });
+    let first = vec![
+        Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
+        Detection::new(2, 1, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger"),
+    ];
+    core.select(&first, OBSERVATION_CENTER);
+    let locked_only = Detection::new(11, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked");
+    core.select(&[locked_only], OBSERVATION_CENTER);
+    let challenger =
+        Detection::new(12, 1, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger returns");
+    let selection = core.select(&[challenger], OBSERVATION_CENTER);
+    assert_eq!(
+        selection.target_track_id,
+        Some(novasight_core::tracking::TrackId(2))
+    );
+    assert!(selection.target_identity_confidence.expect("continuity") > 0.9);
 }
 
 #[test]

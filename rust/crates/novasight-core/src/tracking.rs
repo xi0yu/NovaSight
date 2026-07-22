@@ -6,10 +6,9 @@
 //! association, and returns both the chosen candidate and a stable `TrackId`.
 //!
 //! The implementation is intentionally small and exhaustive:
-//! * no Kalman filter or Hungarian assignment. Bounded deterministic
-//!   association retains every admitted candidate needed for switch
-//!   hysteresis; temporal identity confidence combines target-height-
-//!   normalized center distance and bounding-box IoU.
+//! * no Kalman filter. A compact rectangular minimum-cost assignment is
+//!   bounded to 16 tracks and detections; temporal identity confidence
+//!   combines target-height-normalized distance, bounding-box IoU, and scale.
 //! * no unbounded growth. History is bounded by `BoundedHistory` and
 //!   `TargetingCore::reset` is the only way to clear it.
 //! * lost tracks never produce a control target. After a configurable
@@ -34,6 +33,8 @@ pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
 /// Hard admission bound shared with `DetectionBatch`, preventing the
 /// association surface from diverging from the perception boundary.
 pub const MAX_TRACK_CANDIDATES: usize = crate::perception::types::MAX_DETECTIONS;
+/// Python-compatible bound for association work and retained live candidates.
+pub const MAX_ACTIVE_TRACKS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TrackState {
@@ -68,6 +69,7 @@ pub struct Track {
     pub confidence: f32,
     /// Association continuity in 0..=1, where one is an exact spatial match.
     pub identity_confidence: f64,
+    pub last_seen_ns: u64,
     pub age_frames: u64,
     pub missed_frames: u64,
 }
@@ -128,12 +130,25 @@ pub struct Association {
     pub center_x: f64,
     pub center_y: f64,
     pub confidence: f32,
+    pub identity_confidence: f64,
 }
 
-/// Deterministic nearest-centroid association. Equal distance is broken
-/// by ascending `object_id`. Detection objects with duplicate ids are
-/// rejected up front.
-pub fn associate(tracks: &[Track], detections: &[Detection]) -> Result<Vec<Association>, AppError> {
+#[derive(Clone, Copy, Debug)]
+struct AssociationEdge {
+    track_index: usize,
+    detection_index: usize,
+    cost: f64,
+    identity_confidence: f64,
+}
+
+/// Deterministic bounded minimum-cost association, avoiding TrackId-order
+/// greedy capture when multiple same-class targets converge.
+fn associate(
+    tracks: &[Track],
+    detections: &[Detection],
+    config: &TargetingConfig,
+    captured_at_ns: u64,
+) -> Result<Vec<Association>, AppError> {
     if detections.len() > MAX_TRACK_CANDIDATES {
         return Err(AppError::TooManyDetections {
             actual: detections.len(),
@@ -152,47 +167,135 @@ pub fn associate(tracks: &[Track], detections: &[Detection]) -> Result<Vec<Assoc
     let mut sorted_tracks = tracks.to_vec();
     sorted_tracks.sort_by_key(|track| track.id.0);
 
-    let mut used = vec![false; sorted_detections.len()];
-    let mut out = Vec::with_capacity(sorted_tracks.len().min(sorted_detections.len()));
-    for track in &sorted_tracks {
+    let mut edges = Vec::with_capacity(sorted_tracks.len() * sorted_detections.len());
+    for (track_index, track) in sorted_tracks.iter().enumerate() {
         if track.state == TrackState::Lost {
             continue;
         }
-        let mut best: Option<(usize, f64)> = None;
-        for (index, detection) in sorted_detections.iter().enumerate() {
-            if used[index] {
-                continue;
+        for (detection_index, detection) in sorted_detections.iter().enumerate() {
+            if let Some((cost, identity_confidence)) =
+                association_edge(track, detection, config, captured_at_ns)
+            {
+                edges.push(AssociationEdge {
+                    track_index,
+                    detection_index,
+                    cost,
+                    identity_confidence,
+                });
             }
-            if detection.class_id() != track.class_id {
-                continue;
-            }
-            let distance = euclidean(
-                track.center_x,
-                track.center_y,
-                detection.center_x(),
-                detection.center_y(),
-            );
-            if !distance.is_finite() {
-                continue;
-            }
-            match best {
-                Some((_, current)) if current <= distance => {}
-                _ => best = Some((index, distance)),
-            }
-        }
-        if let Some((index, _)) = best {
-            used[index] = true;
-            let detection = &sorted_detections[index];
-            out.push(Association {
-                track_id: track.id,
-                object_id: detection.object_id(),
-                center_x: detection.center_x(),
-                center_y: detection.center_y(),
-                confidence: detection.confidence(),
-            });
         }
     }
+    const FORBIDDEN_COST: f64 = 1_000_000.0;
+    let mut matrix = vec![vec![FORBIDDEN_COST; sorted_detections.len()]; sorted_tracks.len()];
+    for edge in &edges {
+        matrix[edge.track_index][edge.detection_index] = edge.cost;
+    }
+    let mut out = Vec::with_capacity(sorted_tracks.len().min(sorted_detections.len()));
+    for (track_index, detection_index) in linear_sum_assignment(&matrix) {
+        let Some(edge) = edges.iter().find(|edge| {
+            edge.track_index == track_index && edge.detection_index == detection_index
+        }) else {
+            continue;
+        };
+        let track = &sorted_tracks[track_index];
+        let detection = &sorted_detections[detection_index];
+        out.push(Association {
+            track_id: track.id,
+            object_id: detection.object_id(),
+            center_x: detection.center_x(),
+            center_y: detection.center_y(),
+            confidence: detection.confidence(),
+            identity_confidence: edge.identity_confidence,
+        });
+    }
+    out.sort_by_key(|association| association.track_id.0);
     Ok(out)
+}
+
+/// Deterministic rectangular minimum-cost assignment in O(n^3). The caller
+/// caps both dimensions at [`MAX_ACTIVE_TRACKS`].
+fn linear_sum_assignment(costs: &[Vec<f64>]) -> Vec<(usize, usize)> {
+    if costs.is_empty() || costs[0].is_empty() {
+        return Vec::new();
+    }
+    let row_count = costs.len();
+    let column_count = costs[0].len();
+    debug_assert!(costs.iter().all(|row| row.len() == column_count));
+    let transposed = row_count > column_count;
+    let matrix: Vec<Vec<f64>> = if transposed {
+        (0..column_count)
+            .map(|column| (0..row_count).map(|row| costs[row][column]).collect())
+            .collect()
+    } else {
+        costs.to_vec()
+    };
+    let rows = matrix.len();
+    let columns = matrix[0].len();
+    let mut u = vec![0.0; rows + 1];
+    let mut v = vec![0.0; columns + 1];
+    let mut p = vec![0_usize; columns + 1];
+    let mut way = vec![0_usize; columns + 1];
+    for row in 1..=rows {
+        p[0] = row;
+        let mut min_values = vec![f64::INFINITY; columns + 1];
+        let mut used = vec![false; columns + 1];
+        let mut column0 = 0;
+        loop {
+            used[column0] = true;
+            let row0 = p[column0];
+            let mut delta = f64::INFINITY;
+            let mut column1 = 0;
+            for column in 1..=columns {
+                if used[column] {
+                    continue;
+                }
+                let current = matrix[row0 - 1][column - 1] - u[row0] - v[column];
+                if current < min_values[column] {
+                    min_values[column] = current;
+                    way[column] = column0;
+                }
+                if min_values[column] < delta {
+                    delta = min_values[column];
+                    column1 = column;
+                }
+            }
+            for column in 0..=columns {
+                if used[column] {
+                    u[p[column]] += delta;
+                    v[column] -= delta;
+                } else {
+                    min_values[column] -= delta;
+                }
+            }
+            column0 = column1;
+            if p[column0] == 0 {
+                break;
+            }
+        }
+        loop {
+            let column1 = way[column0];
+            p[column0] = p[column1];
+            column0 = column1;
+            if column0 == 0 {
+                break;
+            }
+        }
+    }
+    let mut assignment = Vec::with_capacity(rows);
+    for (column, &assigned_row) in p.iter().enumerate().take(columns + 1).skip(1) {
+        if assigned_row == 0 {
+            continue;
+        }
+        let row_index = assigned_row - 1;
+        let column_index = column - 1;
+        assignment.push(if transposed {
+            (column_index, row_index)
+        } else {
+            (row_index, column_index)
+        });
+    }
+    assignment.sort_unstable();
+    assignment
 }
 
 fn euclidean(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
@@ -253,6 +356,9 @@ pub struct TargetingConfig {
     pub tracker_max_match_distance: f64,
     pub tracker_position_cost_weight: f64,
     pub tracker_iou_cost_weight: f64,
+    pub tracker_scale_cost_weight: f64,
+    pub tracker_max_size_ratio: f64,
+    pub tracker_max_association_dt_ms: f64,
     /// Descending class preference. The first two ranks receive the same
     /// 1.0 / 0.5 scores as the Python selector; unlisted classes score zero.
     pub class_priority: Vec<u32>,
@@ -278,6 +384,9 @@ impl Default for TargetingConfig {
             tracker_max_match_distance: 1.5,
             tracker_position_cost_weight: 0.75,
             tracker_iou_cost_weight: 0.25,
+            tracker_scale_cost_weight: 0.15,
+            tracker_max_size_ratio: 2.5,
+            tracker_max_association_dt_ms: 150.0,
             class_priority: vec![0, 1],
             selection_class_weight: 0.55,
             selection_distance_weight: 0.40,
@@ -379,6 +488,7 @@ impl TargetingCore {
                         observation_center.1,
                     ) <= self.config.target_fov_radius_px
             })
+            .take(MAX_ACTIVE_TRACKS)
             .cloned()
             .collect();
         if admissible.is_empty() {
@@ -399,7 +509,8 @@ impl TargetingCore {
             };
         }
 
-        let associations = associate(&self.tracks, &admissible).unwrap_or_default();
+        let associations =
+            associate(&self.tracks, &admissible, &self.config, captured_at_ns).unwrap_or_default();
         let mut current = Vec::with_capacity(admissible.len());
         for det in &admissible {
             let associated = associations.iter().find_map(|association| {
@@ -410,8 +521,7 @@ impl TargetingCore {
                 if association.object_id != det.object_id() {
                     return None;
                 }
-                association_identity_confidence(prior, det, &self.config)
-                    .map(|identity_confidence| (prior, identity_confidence))
+                Some((prior, association.identity_confidence))
             });
             let id = associated.map_or_else(
                 || {
@@ -432,6 +542,7 @@ impl TargetingCore {
                 height: f64::from(det.height()),
                 confidence: det.confidence(),
                 identity_confidence: associated.map_or(1.0, |(_, confidence)| confidence),
+                last_seen_ns: captured_at_ns,
                 age_frames: associated.map_or(1, |(track, _)| track.age_frames.saturating_add(1)),
                 missed_frames: 0,
             });
@@ -528,7 +639,21 @@ impl TargetingCore {
             + f64::from(selected_detection.height()) * aim_y_ratio;
 
         self.history.push(track.clone());
+        let current_ids: Vec<TrackId> = current.iter().map(|item| item.id).collect();
+        let remaining = MAX_ACTIVE_TRACKS.saturating_sub(current.len());
+        let retained: Vec<Track> = self
+            .tracks
+            .iter()
+            .filter(|prior| !current_ids.contains(&prior.id))
+            .filter_map(|prior| {
+                let mut retained = prior.clone();
+                retained.missed_frames = retained.missed_frames.saturating_add(1);
+                (retained.missed_frames <= self.config.track_max_age).then_some(retained)
+            })
+            .take(remaining)
+            .collect();
         self.tracks = current;
+        self.tracks.extend(retained);
         self.lost_count = 0;
         self.locked = Some(track.clone());
         TargetSelection {
@@ -616,11 +741,21 @@ fn detection_aspect_ratio(detection: &Detection) -> f64 {
     (width / height).max(height / width)
 }
 
-fn association_identity_confidence(
+fn association_edge(
     track: &Track,
     detection: &Detection,
     config: &TargetingConfig,
-) -> Option<f64> {
+    captured_at_ns: u64,
+) -> Option<(f64, f64)> {
+    if track.class_id != detection.class_id() {
+        return None;
+    }
+    if captured_at_ns > 0 && track.last_seen_ns > 0 {
+        let elapsed_ms = captured_at_ns.saturating_sub(track.last_seen_ns) as f64 / 1e6;
+        if elapsed_ms > config.tracker_max_association_dt_ms {
+            return None;
+        }
+    }
     let reference_height = track.height.max(f64::from(detection.height()));
     if !reference_height.is_finite() || reference_height <= 0.0 {
         return None;
@@ -634,16 +769,33 @@ fn association_identity_confidence(
     if !normalized_distance.is_finite() || normalized_distance > config.tracker_max_match_distance {
         return None;
     }
+    let width_ratio = symmetric_ratio(track.width, f64::from(detection.width()))?;
+    let height_ratio = symmetric_ratio(track.height, f64::from(detection.height()))?;
+    if width_ratio > config.tracker_max_size_ratio || height_ratio > config.tracker_max_size_ratio {
+        return None;
+    }
     let position_weight = config.tracker_position_cost_weight.max(0.0);
     let iou_weight = config.tracker_iou_cost_weight.max(0.0);
-    let total_weight = position_weight + iou_weight;
+    let scale_weight = config.tracker_scale_cost_weight.max(0.0);
+    let total_weight = position_weight + iou_weight + scale_weight;
     if !total_weight.is_finite() || total_weight <= 0.0 {
         return None;
     }
     let overlap = track_detection_iou(track, detection);
-    let cost =
-        (position_weight * normalized_distance + iou_weight * (1.0 - overlap)) / total_weight;
-    Some((1.0 - cost).clamp(0.0, 1.0))
+    let scale_cost = (track.width / f64::from(detection.width())).ln().abs()
+        + (track.height / f64::from(detection.height())).ln().abs();
+    let cost = (position_weight * normalized_distance
+        + iou_weight * (1.0 - overlap)
+        + scale_weight * scale_cost)
+        / total_weight;
+    Some((cost, (1.0 - cost).clamp(0.0, 1.0)))
+}
+
+fn symmetric_ratio(left: f64, right: f64) -> Option<f64> {
+    if !left.is_finite() || !right.is_finite() || left <= 0.0 || right <= 0.0 {
+        return None;
+    }
+    Some((left / right).max(right / left))
 }
 
 fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {

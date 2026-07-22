@@ -192,6 +192,12 @@ pub struct PipelineRuntimeConfig {
     pub tracker_position_cost_weight: f64,
     #[serde(default = "default_tracker_iou_cost_weight")]
     pub tracker_iou_cost_weight: f64,
+    #[serde(default = "default_tracker_scale_cost_weight")]
+    pub tracker_scale_cost_weight: f64,
+    #[serde(default = "default_tracker_max_size_ratio")]
+    pub tracker_max_size_ratio: f64,
+    #[serde(default = "default_tracker_max_association_dt_ms")]
+    pub tracker_max_association_dt_ms: f64,
     #[serde(default = "default_target_class_priority")]
     pub target_class_priority: String,
     #[serde(default = "default_target_selection_class_weight")]
@@ -256,6 +262,9 @@ impl Default for PipelineRuntimeConfig {
             tracker_max_match_distance: default_tracker_max_match_distance(),
             tracker_position_cost_weight: default_tracker_position_cost_weight(),
             tracker_iou_cost_weight: default_tracker_iou_cost_weight(),
+            tracker_scale_cost_weight: default_tracker_scale_cost_weight(),
+            tracker_max_size_ratio: default_tracker_max_size_ratio(),
+            tracker_max_association_dt_ms: default_tracker_max_association_dt_ms(),
             target_class_priority: default_target_class_priority(),
             target_selection_class_weight: default_target_selection_class_weight(),
             target_selection_distance_weight: default_target_selection_distance_weight(),
@@ -436,12 +445,34 @@ impl PipelineRuntimeConfig {
             0.0,
             100.0,
         )?;
-        if self.tracker_position_cost_weight + self.tracker_iou_cost_weight <= 0.0 {
+        validate_finite_range(
+            "pipeline.tracker_scale_cost_weight",
+            self.tracker_scale_cost_weight,
+            0.0,
+            100.0,
+        )?;
+        if self.tracker_position_cost_weight
+            + self.tracker_iou_cost_weight
+            + self.tracker_scale_cost_weight
+            <= 0.0
+        {
             return Err(ConfigValidationError::new(
                 "pipeline.tracker_position_cost_weight",
-                "tracker position and IoU weights must not both be zero",
+                "tracker position, IoU, and scale weights must not all be zero",
             ));
         }
+        validate_finite_range(
+            "pipeline.tracker_max_size_ratio",
+            self.tracker_max_size_ratio,
+            1.0,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_max_association_dt_ms",
+            self.tracker_max_association_dt_ms,
+            1.0,
+            10_000.0,
+        )?;
         parse_target_class_priority(&self.target_class_priority)?;
         for (field, value) in [
             (
@@ -712,6 +743,18 @@ const fn default_tracker_position_cost_weight() -> f64 {
 
 const fn default_tracker_iou_cost_weight() -> f64 {
     0.25
+}
+
+const fn default_tracker_scale_cost_weight() -> f64 {
+    0.15
+}
+
+const fn default_tracker_max_size_ratio() -> f64 {
+    2.5
+}
+
+const fn default_tracker_max_association_dt_ms() -> f64 {
+    150.0
 }
 
 fn default_target_class_priority() -> String {
@@ -1502,6 +1545,7 @@ mod tests {
         let config = PipelineRuntimeConfig {
             tracker_position_cost_weight: 0.0,
             tracker_iou_cost_weight: 0.0,
+            tracker_scale_cost_weight: 0.0,
             ..PipelineRuntimeConfig::default()
         };
         let error = config.validate().expect_err("zero association weights");

@@ -269,6 +269,27 @@ impl ConfigSchemaResponse {
                             100.0,
                             None,
                         ),
+                        float(
+                            "pipeline.tracker_scale_cost_weight",
+                            "跟踪尺度代价权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.tracker_max_size_ratio",
+                            "跟踪最大尺寸变化倍数",
+                            1.0,
+                            100.0,
+                            Some("ratio"),
+                        ),
+                        float(
+                            "pipeline.tracker_max_association_dt_ms",
+                            "跟踪最大关联时间间隔",
+                            1.0,
+                            10_000.0,
+                            Some("ms"),
+                        ),
                         string("pipeline.target_class_priority", "目标类别优先级"),
                         float(
                             "pipeline.target_selection_class_weight",

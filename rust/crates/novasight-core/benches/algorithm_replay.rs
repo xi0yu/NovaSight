@@ -81,13 +81,15 @@ fn main() {
                 .collect();
             let start = Instant::now();
             let _ = freshness_evaluate(&policy, capture.0, now.0);
-            let selection = tracking.select(&detections, (320.0, 320.0));
+            let selection = tracking.select_at(&detections, (320.0, 320.0), capture.0);
             if let Some(target) = selection.target_object_id {
                 let target_class = selection.target_class_id.expect("class");
-                let matched = detections
-                    .iter()
-                    .find(|det| det.object_id() == target && det.class_id() == target_class)
-                    .expect("matched detection");
+                assert!(
+                    detections
+                        .iter()
+                        .any(|det| det.object_id() == target && det.class_id() == target_class),
+                    "selected target must belong to the frame"
+                );
                 let observation = ControlObservation {
                     generation: frame["generation"].as_u64().expect("generation"),
                     frame_id: frame["frame_id"].as_u64().expect("frame_id"),
@@ -97,8 +99,8 @@ fn main() {
                         .as_u64()
                         .expect("inference_end_ts_ns"),
                     control_now_ns: now.0,
-                    aim_x: matched.center_x(),
-                    aim_y: matched.center_y(),
+                    aim_x: selection.target_aim_x.expect("aim x"),
+                    aim_y: selection.target_aim_y.expect("aim y"),
                     crosshair_x: 320.0,
                     crosshair_y: 320.0,
                     detection_confidence: 1.0,
@@ -126,4 +128,42 @@ fn main() {
     println!("  p50: {p50} ns");
     println!("  p95: {p95} ns");
     println!("  p99: {p99} ns");
+
+    let mut crowded_tracking = TargetingCore::new(TargetingConfig::default());
+    let mut crowded_samples = Vec::with_capacity(ITERATIONS);
+    for iteration in 0..ITERATIONS {
+        let detections: Vec<Detection> = (0..16)
+            .map(|index| {
+                let column = index % 4;
+                let row = index / 4;
+                Detection::new(
+                    (iteration * 16 + index) as u64,
+                    0,
+                    260.0 + column as f32 * 40.0 + (iteration % 2) as f32,
+                    240.0 + row as f32 * 40.0,
+                    30.0,
+                    60.0,
+                    0.9,
+                )
+                .expect("crowded detection")
+            })
+            .collect();
+        let start = Instant::now();
+        let selection = crowded_tracking.select_at(
+            &detections,
+            (320.0, 320.0),
+            10_000_000_000 + iteration as u64 * 1_000_000,
+        );
+        assert!(selection.target_track_id.is_some());
+        crowded_samples.push(start.elapsed().as_nanos());
+    }
+    let crowded_p50 = percentile(&mut crowded_samples.clone(), 0.50);
+    let mut crowded_sorted = crowded_samples;
+    crowded_sorted.sort_unstable();
+    let crowded_p95 = percentile(&mut crowded_sorted.clone(), 0.95);
+    let crowded_p99 = percentile(&mut crowded_sorted, 0.99);
+    println!("16x16 association microbench: {ITERATIONS} iterations");
+    println!("  p50: {crowded_p50} ns");
+    println!("  p95: {crowded_p95} ns");
+    println!("  p99: {crowded_p99} ns");
 }

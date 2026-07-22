@@ -42,6 +42,9 @@ pipeline:
   tracker_max_match_distance: 1.5
   tracker_position_cost_weight: 0.75
   tracker_iou_cost_weight: 0.25
+  tracker_scale_cost_weight: 0.15
+  tracker_max_size_ratio: 2.5
+  tracker_max_association_dt_ms: 150.0
   target_class_priority: "0,1"
   target_selection_class_weight: 0.55
   target_selection_distance_weight: 0.40
