@@ -40,6 +40,7 @@ impl DaemonMode {
 pub(super) async fn run_daemon(
     loaded: LoadedApplication,
     dependencies: RuntimeDependencies,
+    model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
 ) -> Result<(), DaemonRunError> {
     let host = loaded.config().server.host.clone();
@@ -48,11 +49,6 @@ pub(super) async fn run_daemon(
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
     let license_repository =
         FileLicenseRepository::new(loaded.config().paths.license.clone(), license_policy(mode)?);
-    let model_catalog = SqliteModelCatalog::open_with_model_root(
-        &loaded.config().paths.database,
-        &loaded.config().paths.model_dir,
-    )
-    .map_err(DaemonRunError::ModelCatalog)?;
     let listener = TcpListener::bind((host.as_str(), port))
         .await
         .map_err(|source| DaemonRunError::Bind {
@@ -365,8 +361,6 @@ impl ShutdownSignals {
 
 #[derive(Debug, Error)]
 pub(super) enum DaemonRunError {
-    #[error("failed to open model catalog: {0}")]
-    ModelCatalog(novasight_store::model_catalog::ModelCatalogError),
     #[error("production mode requires NOVASIGHT_LICENSE_PUBLIC_KEY")]
     LicensePublicKeyMissing,
     #[error("failed to bind HTTP server at {host}:{port}: {source}")]
@@ -466,7 +460,6 @@ pub(super) enum DaemonRunError {
 impl DaemonRunError {
     pub(super) const fn code(&self) -> &'static str {
         match self {
-            Self::ModelCatalog(_) => "MODEL_CATALOG_OPEN_FAILED",
             Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",

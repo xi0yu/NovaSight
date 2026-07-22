@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use novasight_runtime::{LoadedApplication, RuntimeDependencies};
+use novasight_store::model_catalog::SqliteModelCatalog;
 use tracing_subscriber::EnvFilter;
 
 mod server;
@@ -61,10 +62,24 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let model_catalog = match SqliteModelCatalog::open_with_model_root(
+        &loaded.config().paths.database,
+        &loaded.config().paths.model_dir,
+    ) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!("MODEL_CATALOG_OPEN_FAILED: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let (dependencies, mode) = if args.dry_run && args.live_perception {
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {
-            match live_perception::build_live_recording_dependencies(loaded.config()) {
+            match live_perception::build_live_recording_dependencies(
+                loaded.config(),
+                model_catalog.clone(),
+            ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::DryRun),
                 Err(error) => {
                     eprintln!("LIVE_PERCEPTION_CONFIG_INVALID: {error}");
@@ -88,7 +103,10 @@ async fn main() -> ExitCode {
         }
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {
-            match live_perception::build_live_production_dependencies(loaded.config()) {
+            match live_perception::build_live_production_dependencies(
+                loaded.config(),
+                model_catalog.clone(),
+            ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::Production),
                 Err(error) => {
                     eprintln!("PRODUCTION_RUNTIME_INVALID: {error}");
@@ -105,7 +123,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    match server::run_daemon(loaded, dependencies, mode).await {
+    match server::run_daemon(loaded, dependencies, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

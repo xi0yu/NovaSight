@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::model_manifest::ModelManifest;
+
 #[derive(Clone, Debug)]
 pub struct SqliteModelCatalog {
     path: PathBuf,
@@ -125,6 +127,15 @@ pub struct ModelCatalogSnapshot {
     pub jobs: Vec<ConversionJob>,
     pub deployments: Vec<Deployment>,
     pub active_deployment: Option<Deployment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveModelDeployment {
+    pub deployment: Deployment,
+    pub project: ModelProject,
+    pub version: ModelVersion,
+    pub artifact: ModelArtifact,
+    pub artifact_path: PathBuf,
 }
 
 impl SqliteModelCatalog {
@@ -296,6 +307,114 @@ impl SqliteModelCatalog {
             deployments,
             active_deployment,
         })
+    }
+
+    pub fn active_model(&self) -> Result<Option<ActiveModelDeployment>, ModelCatalogError> {
+        let connection = self.connect()?;
+        let row = connection
+            .query_row(
+                r#"
+                SELECT
+                    deployments.id, deployments.project_id, deployments.artifact_id,
+                    deployments.previous_artifact_id, deployments.updated_seq,
+                    model_projects.name, model_projects.description,
+                    model_versions.id, model_versions.version, model_versions.source_kind,
+                    model_versions.source_path, model_versions.classes_json,
+                    model_versions.input_shape,
+                    model_artifacts.kind, model_artifacts.path,
+                    model_artifacts.checksum, model_artifacts.status
+                FROM deployments
+                JOIN model_artifacts ON model_artifacts.id = deployments.artifact_id
+                JOIN model_versions ON model_versions.id = model_artifacts.version_id
+                JOIN model_projects ON model_projects.id = model_versions.project_id
+                ORDER BY deployments.updated_seq DESC, deployments.id DESC
+                LIMIT 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        Deployment {
+                            id: row.get(0)?,
+                            project_id: row.get(1)?,
+                            artifact_id: row.get(2)?,
+                            previous_artifact_id: row.get(3)?,
+                            updated_seq: row.get(4)?,
+                        },
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, String>(14)?,
+                        row.get::<_, String>(15)?,
+                        row.get::<_, String>(16)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(ModelCatalogError::Sqlite)?;
+        let Some((
+            deployment,
+            project_name,
+            project_description,
+            version_id,
+            version_name,
+            source_kind,
+            source_path,
+            classes_json,
+            input_shape,
+            artifact_kind,
+            artifact_path,
+            checksum,
+            artifact_status,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let classes = serde_json::from_str(&classes_json).map_err(|source| {
+            ModelCatalogError::InvalidJsonColumn {
+                table: "model_versions",
+                column: "classes_json",
+                row_id: version_id,
+                source,
+            }
+        })?;
+        let project = ModelProject {
+            id: deployment.project_id,
+            name: project_name,
+            description: project_description,
+        };
+        let version = ModelVersion {
+            id: version_id,
+            project_id: deployment.project_id,
+            version: version_name,
+            source_kind,
+            source_path,
+            classes,
+            input_shape,
+        };
+        let artifact = ModelArtifact {
+            id: deployment.artifact_id,
+            version_id,
+            kind: artifact_kind,
+            path: artifact_path,
+            checksum,
+            status: artifact_status,
+            size_bytes: None,
+        };
+        let artifact_path =
+            self.resolve_artifact_path(&project.name, &version.version, &artifact.path);
+        Ok(Some(ActiveModelDeployment {
+            deployment,
+            project,
+            version,
+            artifact,
+            artifact_path,
+        }))
     }
 
     pub fn catalog(&self, force: bool) -> Result<ModelCatalogResponse, ModelCatalogError> {
@@ -752,192 +871,6 @@ fn scan_model_files(
     Ok(())
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct CatalogManifest {
-    #[serde(default = "default_manifest_schema_version")]
-    schema_version: u32,
-    model_id: String,
-    display_name: String,
-    artifact: CatalogManifestArtifact,
-    #[serde(default)]
-    runtime: CatalogManifestRuntime,
-    input: CatalogManifestInput,
-    output: CatalogManifestOutput,
-    #[serde(default)]
-    postprocess: CatalogManifestPostprocess,
-    #[serde(default)]
-    validated: bool,
-    #[serde(default)]
-    model_fingerprint: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogManifestArtifact {
-    engine_path: String,
-    sha256: String,
-    size_bytes: u64,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogManifestRuntime {
-    #[serde(default = "default_manifest_backend")]
-    backend: String,
-    #[serde(default = "default_manifest_precision")]
-    precision: String,
-    #[serde(default = "default_manifest_batch_size")]
-    batch_size: u32,
-}
-
-impl Default for CatalogManifestRuntime {
-    fn default() -> Self {
-        Self {
-            backend: default_manifest_backend(),
-            precision: default_manifest_precision(),
-            batch_size: default_manifest_batch_size(),
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogManifestInput {
-    name: String,
-    shape: Vec<u64>,
-    dtype: String,
-    #[serde(default = "default_manifest_layout")]
-    layout: String,
-    #[serde(default = "default_manifest_color_format")]
-    color_format: String,
-    #[serde(default = "default_manifest_scale_factor")]
-    scale_factor: f64,
-    #[serde(default)]
-    maintain_aspect_ratio: bool,
-    #[serde(default)]
-    symmetric_padding: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogManifestTensor {
-    name: String,
-    shape: Vec<u64>,
-    dtype: String,
-    #[serde(default = "default_manifest_layout")]
-    layout: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogManifestOutput {
-    name: String,
-    shape: Vec<u64>,
-    dtype: String,
-    #[serde(default = "default_manifest_layout")]
-    layout: String,
-    #[serde(default = "default_manifest_output_format")]
-    format: String,
-    #[serde(default)]
-    class_count: u32,
-    #[serde(default)]
-    class_names: Vec<String>,
-    #[serde(default)]
-    has_objectness: bool,
-    #[serde(default = "default_true")]
-    scores_are_sigmoid: bool,
-    #[serde(default = "default_manifest_coordinate_mode")]
-    coordinate_mode: String,
-    #[serde(default)]
-    bindings: Vec<CatalogManifestTensor>,
-    #[serde(default)]
-    strides: Vec<u32>,
-    #[serde(default)]
-    anchors: Vec<Vec<f64>>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogManifestPostprocess {
-    #[serde(default = "default_manifest_parser")]
-    parser: String,
-    #[serde(default = "default_manifest_parser_preset")]
-    parser_preset: String,
-    #[serde(default = "default_manifest_confidence")]
-    confidence_threshold: f64,
-    #[serde(default = "default_manifest_nms")]
-    nms_iou_threshold: f64,
-    #[serde(default = "default_true")]
-    class_aware_nms: bool,
-    #[serde(default = "default_manifest_max_detections")]
-    max_detections: u32,
-}
-
-impl Default for CatalogManifestPostprocess {
-    fn default() -> Self {
-        Self {
-            parser: default_manifest_parser(),
-            parser_preset: default_manifest_parser_preset(),
-            confidence_threshold: default_manifest_confidence(),
-            nms_iou_threshold: default_manifest_nms(),
-            class_aware_nms: true,
-            max_detections: default_manifest_max_detections(),
-        }
-    }
-}
-
-const fn default_manifest_schema_version() -> u32 {
-    1
-}
-fn default_manifest_backend() -> String {
-    "custom_tensorrt".to_owned()
-}
-fn default_manifest_precision() -> String {
-    "fp16".to_owned()
-}
-const fn default_manifest_batch_size() -> u32 {
-    1
-}
-fn default_manifest_layout() -> String {
-    "NCHW".to_owned()
-}
-fn default_manifest_color_format() -> String {
-    "RGB".to_owned()
-}
-const fn default_manifest_scale_factor() -> f64 {
-    1.0 / 255.0
-}
-fn default_manifest_output_format() -> String {
-    "yolo_cxcywh_class_scores".to_owned()
-}
-const fn default_true() -> bool {
-    true
-}
-fn default_manifest_coordinate_mode() -> String {
-    "pixel".to_owned()
-}
-fn default_manifest_parser() -> String {
-    "yolo".to_owned()
-}
-fn default_manifest_parser_preset() -> String {
-    "auto".to_owned()
-}
-const fn default_manifest_confidence() -> f64 {
-    0.25
-}
-const fn default_manifest_nms() -> f64 {
-    0.45
-}
-const fn default_manifest_max_detections() -> u32 {
-    300
-}
-
 fn inspect_model_file(
     artifact_path: &Path,
     size_bytes: u64,
@@ -995,7 +928,7 @@ fn inspect_model_file(
         .get("output")
         .and_then(|value| value.as_object())
         .is_some_and(|output| output.contains_key("class_names"));
-    let manifest: CatalogManifest = match serde_json::from_value(manifest) {
+    let manifest: ModelManifest = match serde_json::from_value(manifest) {
         Ok(manifest) => manifest,
         Err(error) => {
             return Ok((
@@ -1060,7 +993,7 @@ fn inspect_model_file(
 }
 
 fn manifest_fingerprint(
-    manifest: &CatalogManifest,
+    manifest: &ModelManifest,
     include_class_names: bool,
 ) -> Result<String, serde_json::Error> {
     let mut output = serde_json::Map::new();
@@ -1450,6 +1383,13 @@ pub enum ModelCatalogError {
     ModelPathOutsideRoot { path: PathBuf, root: PathBuf },
     #[error("model catalog SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("invalid JSON in {table}.{column} for row {row_id}: {source}")]
+    InvalidJsonColumn {
+        table: &'static str,
+        column: &'static str,
+        row_id: i64,
+        source: serde_json::Error,
+    },
     #[error("unknown model project id: {0}")]
     ProjectNotFound(i64),
     #[error("unknown model version id: {0}")]

@@ -7,8 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use novasight_core::{Clock, PointerDevice, RecordingPointerDevice};
-use novasight_pipeline::PipelineConfig;
+use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
+use novasight_pipeline::{
+    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionSession, PipelineConfig,
+    PipelineIngress,
+};
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
@@ -21,19 +24,22 @@ use novasight_platform_jetson::kmnet_native::{
 };
 use novasight_runtime::RuntimeDependencies;
 use novasight_store::config::{AppConfig, CapturePreference, ConfigValidationError, DeviceBackend};
-use serde::{Deserialize, Serialize};
+use novasight_store::model_catalog::SqliteModelCatalog;
+use novasight_store::model_manifest::ModelManifest;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub(super) fn build_live_recording_dependencies(
     config: &AppConfig,
+    model_catalog: SqliteModelCatalog,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
-    build_live_dependencies(config, device, None)
+    build_live_dependencies(config, model_catalog, device, None)
 }
 
 pub(super) fn build_live_production_dependencies(
     config: &AppConfig,
+    model_catalog: SqliteModelCatalog,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -85,6 +91,7 @@ pub(super) fn build_live_production_dependencies(
     };
     build_live_dependencies(
         config,
+        model_catalog,
         device,
         Some(adapters.device.trigger_poll_interval_ms),
     )
@@ -92,6 +99,7 @@ pub(super) fn build_live_production_dependencies(
 
 fn build_live_dependencies(
     config: &AppConfig,
+    model_catalog: SqliteModelCatalog,
     device: Arc<dyn PointerDevice>,
     trigger_poll_interval_ms: Option<u64>,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
@@ -104,27 +112,52 @@ fn build_live_dependencies(
     if adapters.capture.preference != CapturePreference::Manual {
         return Err(LivePerceptionError::AutomaticCaptureUnsupported);
     }
+    let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
+    Ok(RuntimeDependencies::new(
+        clock,
+        device,
+        PipelineConfig {
+            trigger_poll_interval_ms,
+            ..PipelineConfig::default()
+        },
+    )
+    .with_perception(Arc::new(CatalogDeepStreamAdapter {
+        config: config.clone(),
+        model_catalog,
+    })))
+}
+
+#[derive(Clone, Debug)]
+struct CatalogDeepStreamAdapter {
+    config: AppConfig,
+    model_catalog: SqliteModelCatalog,
+}
+
+impl PerceptionAdapter for CatalogDeepStreamAdapter {
+    fn start(
+        &self,
+        epoch: RuntimeEpoch,
+        ingress: PipelineIngress,
+        clock: Arc<dyn Clock>,
+        events: std::sync::mpsc::SyncSender<PerceptionEvent>,
+    ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+        let config = build_deepstream_session_config(&self.config, &self.model_catalog)
+            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        DeepStreamAdapter::new(config).start(epoch, ingress, clock, events)
+    }
+}
+
+fn build_deepstream_session_config(
+    config: &AppConfig,
+    model_catalog: &SqliteModelCatalog,
+) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
     let format = parse_capture_format(&adapters.capture.pixel_format)?;
     let io_mode = u32::try_from(adapters.inference.deepstream_io_mode)
         .map_err(|_| LivePerceptionError::InvalidIoMode(adapters.inference.deepstream_io_mode))?;
-    let nvinfer_config = resolve_data_artifact(
-        &config.paths.data_dir,
-        &adapters.inference.deepstream_nvinfer_config,
-    )?;
-    if !nvinfer_config.is_file() {
-        return Err(LivePerceptionError::NvinferConfigMissing(nvinfer_config));
-    }
-    let parser_library = resolve_process_path(&adapters.inference.deepstream_parser_library)?;
-    validate_nvinfer_contract(
-        &nvinfer_config,
-        &parser_library,
-        adapters.inference.confidence_threshold,
-        adapters.inference.nms_threshold,
-        adapters.inference.model_width,
-        adapters.inference.model_height,
-        adapters.inference.deepstream_component_id,
-    )?;
-
+    let nvinfer_config = resolve_active_nvinfer_config(config, model_catalog)?;
     let pipeline = DeepStreamPipelineSpec {
         device: adapters.capture.device.clone(),
         capture: CaptureProfile {
@@ -151,8 +184,7 @@ fn build_live_dependencies(
     pipeline
         .build()
         .map_err(|error| LivePerceptionError::Pipeline(error.to_string()))?;
-
-    let session = DeepStreamSessionConfig {
+    Ok(DeepStreamSessionConfig {
         pipeline,
         probe_pad: adapters.inference.deepstream_probe_pad.clone(),
         source_id: adapters.inference.deepstream_source_id,
@@ -160,17 +192,7 @@ fn build_live_dependencies(
         max_batch_age_ns: deadline_ns(adapters.inference.inference_input_deadline_ms),
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
-    };
-    let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
-    Ok(RuntimeDependencies::new(
-        clock,
-        device,
-        PipelineConfig {
-            trigger_poll_interval_ms,
-            ..PipelineConfig::default()
-        },
-    )
-    .with_perception(Arc::new(DeepStreamAdapter::new(session))))
+    })
 }
 
 fn resolve_data_artifact(data_dir: &Path, artifact: &Path) -> Result<PathBuf, LivePerceptionError> {
@@ -202,6 +224,198 @@ fn resolve_process_path(path: &Path) -> Result<PathBuf, LivePerceptionError> {
     Ok(resolved)
 }
 
+fn resolve_active_nvinfer_config(
+    config: &AppConfig,
+    model_catalog: &SqliteModelCatalog,
+) -> Result<PathBuf, LivePerceptionError> {
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
+    let Some(active) = model_catalog
+        .active_model()
+        .map_err(LivePerceptionError::ModelCatalog)?
+    else {
+        return Err(LivePerceptionError::ActiveModelMissing);
+    };
+    if active.artifact.kind != "engine" {
+        return Err(LivePerceptionError::ActiveArtifactKind {
+            artifact_id: active.artifact.id,
+            kind: active.artifact.kind,
+        });
+    }
+    if active.artifact.status != "ready" {
+        return Err(LivePerceptionError::ActiveArtifactNotReady {
+            artifact_id: active.artifact.id,
+            status: active.artifact.status,
+        });
+    }
+    if !active.artifact_path.is_file() {
+        return Err(LivePerceptionError::EngineMissing(active.artifact_path));
+    }
+    let parsed_manifest = read_model_manifest(&active.artifact_path)?;
+    let manifest = &parsed_manifest.document;
+    let actual_sha = validate_model_document(
+        &active.artifact_path,
+        manifest,
+        parsed_manifest.output_class_names_present,
+        adapters.inference.confidence_threshold,
+        adapters.inference.nms_threshold,
+        adapters.inference.model_width,
+        adapters.inference.model_height,
+    )?;
+    let registry_sha = normalize_registry_checksum(&active.artifact.checksum).ok_or_else(|| {
+        LivePerceptionError::RegistryChecksumInvalid {
+            artifact_id: active.artifact.id,
+            checksum: active.artifact.checksum.clone(),
+        }
+    })?;
+    if registry_sha != manifest.artifact.sha256.to_ascii_lowercase() || registry_sha != actual_sha {
+        return Err(LivePerceptionError::RegistryChecksumMismatch {
+            artifact_id: active.artifact.id,
+            registry: registry_sha,
+            manifest: manifest.artifact.sha256.clone(),
+            actual: actual_sha,
+        });
+    }
+    let parser_library = resolve_process_path(&adapters.inference.deepstream_parser_library)?;
+    let source = generate_nvinfer_config(
+        manifest,
+        &active.artifact_path,
+        &parser_library,
+        adapters.inference.deepstream_component_id,
+    )?;
+    validate_nvinfer_manifest_contract(&source, manifest)?;
+    let runtime_directory =
+        resolve_data_artifact(&config.paths.data_dir, Path::new("runtime/deepstream"))?;
+    fs::create_dir_all(&runtime_directory).map_err(|source| LivePerceptionError::WriteNvinfer {
+        path: runtime_directory.clone(),
+        source,
+    })?;
+    let path = runtime_directory.join("active-nvinfer.ini");
+    write_if_changed(&path, source.as_bytes())?;
+    Ok(path)
+}
+
+fn normalize_registry_checksum(value: &str) -> Option<String> {
+    let checksum = value.trim();
+    let checksum = checksum
+        .strip_prefix("sha256:")
+        .or_else(|| checksum.strip_prefix("SHA256:"))
+        .unwrap_or(checksum);
+    (checksum.len() == 64 && checksum.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| checksum.to_ascii_lowercase())
+}
+
+fn generate_nvinfer_config(
+    manifest: &ModelManifest,
+    engine: &Path,
+    parser_library: &Path,
+    component_id: i32,
+) -> Result<String, LivePerceptionError> {
+    let parser = resolve_parser_contract(manifest)?;
+    let network_mode = match manifest
+        .runtime
+        .precision
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "fp32" => 0,
+        "int8" => 1,
+        "fp16" => 2,
+        value => return Err(manifest_error(format!("unsupported precision {value}"))),
+    };
+    let color_format = match manifest
+        .input
+        .color_format
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "RGB" => 0,
+        "BGR" => 1,
+        "GRAY" | "GREY" => 2,
+        value => return Err(manifest_error(format!("unsupported color format {value}"))),
+    };
+    let output_names = if manifest.output.bindings.is_empty() {
+        manifest.output.name.clone()
+    } else {
+        manifest
+            .output
+            .bindings
+            .iter()
+            .map(|binding| binding.name.as_str())
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    let engine = engine
+        .canonicalize()
+        .map_err(|source| LivePerceptionError::ReadEngine {
+            path: engine.to_owned(),
+            source,
+        })?;
+    let parser_library = parser_library.canonicalize().map_err(|source| {
+        LivePerceptionError::CanonicalizeParser {
+            path: parser_library.to_owned(),
+            source,
+        }
+    })?;
+    let engine_value = safe_nvinfer_path("model-engine-file", &engine)?;
+    let parser_value = safe_nvinfer_path("custom-lib-path", &parser_library)?;
+    let source = format!(
+        "# Generated by NovaSight Rust. Do not hand-edit.\n# novasight-model-fingerprint={}\n[property]\ngpu-id=0\nmodel-engine-file={}\nbatch-size=1\nnetwork-mode={}\nnetwork-type=0\nprocess-mode=1\ngie-unique-id={}\ninterval=0\nnum-detected-classes={}\nnet-scale-factor={:.17}\nmodel-color-format={}\nmaintain-aspect-ratio={}\nsymmetric-padding={}\noutput-tensor-meta=0\noutput-blob-names={}\ncustom-lib-path={}\nparse-bbox-func-name={}\ncluster-mode={}\n\n[class-attrs-all]\npre-cluster-threshold={:.8}\nnms-iou-threshold={:.8}\ntopk={}\n",
+        manifest.model_fingerprint,
+        engine_value,
+        network_mode,
+        component_id,
+        manifest.output.class_count,
+        manifest.input.scale_factor,
+        color_format,
+        i32::from(manifest.input.maintain_aspect_ratio),
+        i32::from(manifest.input.symmetric_padding),
+        output_names,
+        parser_value,
+        parser.function,
+        parser.cluster_mode,
+        manifest.postprocess.confidence_threshold,
+        manifest.postprocess.nms_iou_threshold,
+        manifest.postprocess.max_detections.max(1),
+    );
+    let values = parse_ini_values(&source);
+    validate_ini_string(&values, "model-engine-file", engine_value)?;
+    validate_ini_string(&values, "custom-lib-path", parser_value)?;
+    Ok(source)
+}
+
+fn safe_nvinfer_path<'a>(
+    label: &'static str,
+    path: &'a Path,
+) -> Result<&'a str, LivePerceptionError> {
+    let value = path
+        .to_str()
+        .filter(|value| !value.contains(['\r', '\n']))
+        .ok_or_else(|| LivePerceptionError::InvalidNvinferPath {
+            label,
+            path: path.to_owned(),
+        })?;
+    Ok(value)
+}
+
+fn write_if_changed(path: &Path, contents: &[u8]) -> Result<(), LivePerceptionError> {
+    if fs::read(path).ok().as_deref() == Some(contents) {
+        return Ok(());
+    }
+    let temporary = path.with_extension(format!("ini.{}.tmp", std::process::id()));
+    fs::write(&temporary, contents).map_err(|source| LivePerceptionError::WriteNvinfer {
+        path: temporary.clone(),
+        source,
+    })?;
+    fs::rename(&temporary, path).map_err(|source| LivePerceptionError::WriteNvinfer {
+        path: path.to_owned(),
+        source,
+    })
+}
+
 fn parse_capture_format(value: &str) -> Result<CaptureFormat, LivePerceptionError> {
     match value.trim().to_ascii_uppercase().as_str() {
         "MJPEG" | "MJPG" => Ok(CaptureFormat::Mjpeg),
@@ -225,73 +439,6 @@ fn deadline_ns(milliseconds: f64) -> Option<u64> {
     }
 }
 
-fn validate_nvinfer_contract(
-    path: &Path,
-    expected_parser: &Path,
-    confidence_threshold: f64,
-    nms_threshold: f64,
-    model_width: u32,
-    model_height: u32,
-    component_id: i32,
-) -> Result<(), LivePerceptionError> {
-    let source = fs::read_to_string(path).map_err(|source| LivePerceptionError::ReadNvinfer {
-        path: path.to_owned(),
-        source,
-    })?;
-    let values = parse_ini_values(&source);
-    let parser = required_value(&values, "custom-lib-path", path)?;
-    let parser = PathBuf::from(parser);
-    let parser = if parser.is_absolute() {
-        parser
-    } else {
-        path.parent().unwrap_or_else(|| Path::new(".")).join(parser)
-    };
-    let actual_parser =
-        parser
-            .canonicalize()
-            .map_err(|source| LivePerceptionError::CanonicalizeParser {
-                path: parser,
-                source,
-            })?;
-    let expected_parser = expected_parser.canonicalize().map_err(|source| {
-        LivePerceptionError::CanonicalizeParser {
-            path: expected_parser.to_owned(),
-            source,
-        }
-    })?;
-    if actual_parser != expected_parser {
-        return Err(LivePerceptionError::ParserMismatch {
-            expected: expected_parser,
-            actual: actual_parser,
-        });
-    }
-    validate_threshold(&values, "pre-cluster-threshold", confidence_threshold, path)?;
-    validate_threshold(&values, "nms-iou-threshold", nms_threshold, path)?;
-    validate_integer(&values, "gie-unique-id", i64::from(component_id), path)?;
-    let engine = resolve_ini_path(path, required_value(&values, "model-engine-file", path)?);
-    if !engine.is_file() {
-        return Err(LivePerceptionError::EngineMissing(engine));
-    }
-    validate_model_manifest(
-        &engine,
-        &source,
-        confidence_threshold,
-        nms_threshold,
-        model_width,
-        model_height,
-    )?;
-    Ok(())
-}
-
-fn resolve_ini_path(config: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path
-    } else {
-        config.parent().unwrap_or_else(|| Path::new(".")).join(path)
-    }
-}
-
 fn parse_ini_values(source: &str) -> BTreeMap<String, String> {
     source
         .lines()
@@ -310,76 +457,12 @@ fn parse_ini_values(source: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn required_value<'a>(
-    values: &'a BTreeMap<String, String>,
-    key: &'static str,
-    path: &Path,
-) -> Result<&'a str, LivePerceptionError> {
-    values
-        .get(key)
-        .map(String::as_str)
-        .ok_or_else(|| LivePerceptionError::NvinferKeyMissing {
-            path: path.to_owned(),
-            key,
-        })
+struct ParsedModelManifest {
+    document: ModelManifest,
+    output_class_names_present: bool,
 }
 
-fn validate_threshold(
-    values: &BTreeMap<String, String>,
-    key: &'static str,
-    expected: f64,
-    path: &Path,
-) -> Result<(), LivePerceptionError> {
-    let raw = required_value(values, key, path)?;
-    let actual = raw
-        .parse::<f64>()
-        .map_err(|_| LivePerceptionError::NvinferValueInvalid {
-            path: path.to_owned(),
-            key,
-            value: raw.to_owned(),
-        })?;
-    if (actual - expected).abs() > 1e-6 {
-        return Err(LivePerceptionError::ThresholdMismatch {
-            key,
-            expected,
-            actual,
-        });
-    }
-    Ok(())
-}
-
-fn validate_integer(
-    values: &BTreeMap<String, String>,
-    key: &'static str,
-    expected: i64,
-    path: &Path,
-) -> Result<(), LivePerceptionError> {
-    let raw = required_value(values, key, path)?;
-    let actual = raw
-        .parse::<i64>()
-        .map_err(|_| LivePerceptionError::NvinferValueInvalid {
-            path: path.to_owned(),
-            key,
-            value: raw.to_owned(),
-        })?;
-    if actual != expected {
-        return Err(LivePerceptionError::IntegerMismatch {
-            key,
-            expected,
-            actual,
-        });
-    }
-    Ok(())
-}
-
-fn validate_model_manifest(
-    engine: &Path,
-    nvinfer_source: &str,
-    confidence_threshold: f64,
-    nms_threshold: f64,
-    model_width: u32,
-    model_height: u32,
-) -> Result<(), LivePerceptionError> {
+fn read_model_manifest(engine: &Path) -> Result<ParsedModelManifest, LivePerceptionError> {
     let file_name = engine
         .file_name()
         .ok_or_else(|| LivePerceptionError::EngineFileName(engine.to_owned()))?;
@@ -389,33 +472,47 @@ fn validate_model_manifest(
             path: manifest.clone(),
             source,
         })?;
-    let document: ModelManifest =
+    let raw: serde_json::Value =
         serde_json::from_str(&source).map_err(|source| LivePerceptionError::ParseManifest {
             path: manifest.clone(),
             source,
         })?;
+    let output_class_names_present = raw
+        .get("output")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|output| output.contains_key("class_names"));
+    let document =
+        serde_json::from_value(raw).map_err(|source| LivePerceptionError::ParseManifest {
+            path: manifest,
+            source,
+        })?;
+    Ok(ParsedModelManifest {
+        document,
+        output_class_names_present,
+    })
+}
+
+fn validate_model_document(
+    engine: &Path,
+    document: &ModelManifest,
+    output_class_names_present: bool,
+    confidence_threshold: f64,
+    nms_threshold: f64,
+    model_width: u32,
+    model_height: u32,
+) -> Result<String, LivePerceptionError> {
     validate_manifest_shape(&document, model_width, model_height)?;
     if !document.validated {
         return Err(manifest_error("model manifest must have validated=true"));
     }
     let fingerprint = require_nonempty(&document.model_fingerprint, "model_fingerprint")?;
-    let computed_fingerprint = compute_model_fingerprint(&document)?;
-    if fingerprint != computed_fingerprint {
+    let computed_fingerprint = compute_model_fingerprint(document)?;
+    let legacy_fingerprint = (!output_class_names_present)
+        .then(|| compute_model_fingerprint_with_class_names(document, false))
+        .transpose()?;
+    if fingerprint != computed_fingerprint && legacy_fingerprint.as_deref() != Some(fingerprint) {
         return Err(manifest_error(format!(
             "model_fingerprint {fingerprint} does not match canonical content {computed_fingerprint}"
-        )));
-    }
-    let configured_fingerprint = nvinfer_source
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("# novasight-model-fingerprint="))
-        .ok_or_else(|| {
-            LivePerceptionError::ManifestContract(
-                "nvinfer config has no novasight-model-fingerprint header".to_owned(),
-            )
-        })?;
-    if configured_fingerprint != fingerprint {
-        return Err(LivePerceptionError::ManifestContract(format!(
-            "nvinfer fingerprint {configured_fingerprint} does not match manifest {fingerprint}"
         )));
     }
     validate_manifest_threshold(
@@ -457,8 +554,7 @@ fn validate_model_manifest(
             document.artifact.sha256
         )));
     }
-    validate_nvinfer_manifest_contract(nvinfer_source, &document)?;
-    Ok(())
+    Ok(actual_sha)
 }
 
 fn validate_manifest_threshold(
@@ -472,81 +568,6 @@ fn validate_manifest_threshold(
         )));
     }
     Ok(())
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelManifest {
-    schema_version: u32,
-    model_id: String,
-    display_name: String,
-    artifact: ManifestArtifact,
-    runtime: ManifestRuntime,
-    input: ManifestInput,
-    output: ManifestOutput,
-    postprocess: ManifestPostprocess,
-    validated: bool,
-    model_fingerprint: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestArtifact {
-    engine_path: String,
-    sha256: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestRuntime {
-    precision: String,
-    batch_size: u32,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ManifestTensor {
-    name: String,
-    shape: Vec<u64>,
-    dtype: String,
-    layout: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestInput {
-    name: String,
-    shape: Vec<u64>,
-    dtype: String,
-    layout: String,
-    color_format: String,
-    scale_factor: f64,
-    maintain_aspect_ratio: bool,
-    symmetric_padding: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestOutput {
-    name: String,
-    shape: Vec<u64>,
-    dtype: String,
-    layout: String,
-    format: String,
-    class_count: u32,
-    class_names: Vec<String>,
-    has_objectness: bool,
-    coordinate_mode: String,
-    #[serde(default)]
-    bindings: Vec<ManifestTensor>,
-    #[serde(default)]
-    strides: Vec<u32>,
-    #[serde(default)]
-    anchors: Vec<Vec<f64>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestPostprocess {
-    parser: String,
-    parser_preset: String,
-    confidence_threshold: f64,
-    nms_iou_threshold: f64,
-    max_detections: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -652,6 +673,13 @@ fn require_nonempty<'a>(value: &'a str, field: &str) -> Result<&'a str, LivePerc
 }
 
 fn compute_model_fingerprint(manifest: &ModelManifest) -> Result<String, LivePerceptionError> {
+    compute_model_fingerprint_with_class_names(manifest, true)
+}
+
+fn compute_model_fingerprint_with_class_names(
+    manifest: &ModelManifest,
+    include_class_names: bool,
+) -> Result<String, LivePerceptionError> {
     let mut output = serde_json::json!({
         "name": manifest.output.name,
         "shape": manifest.output.shape,
@@ -661,11 +689,16 @@ fn compute_model_fingerprint(manifest: &ModelManifest) -> Result<String, LivePer
         "class_count": manifest.output.class_count,
         "has_objectness": manifest.output.has_objectness,
         "coordinate_mode": manifest.output.coordinate_mode,
-        "class_names": manifest.output.class_names,
     });
     let output = output
         .as_object_mut()
         .expect("json object construction is infallible");
+    if include_class_names {
+        output.insert(
+            "class_names".to_owned(),
+            serde_json::json!(manifest.output.class_names),
+        );
+    }
     if !manifest.output.bindings.is_empty() {
         output.insert(
             "bindings".to_owned(),
@@ -1071,6 +1104,9 @@ fn encode_sha256(digest: impl IntoIterator<Item = u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use novasight_store::model_manifest::{
+        ManifestArtifact, ManifestInput, ManifestOutput, ManifestPostprocess, ManifestRuntime,
+    };
 
     fn canonical_manifest() -> ModelManifest {
         ModelManifest {
@@ -1083,6 +1119,7 @@ mod tests {
                 size_bytes: 123,
             },
             runtime: ManifestRuntime {
+                backend: "custom_tensorrt".to_owned(),
                 precision: "fp16".to_owned(),
                 batch_size: 1,
             },
@@ -1105,6 +1142,7 @@ mod tests {
                 class_count: 80,
                 class_names: (0..80).map(|value| value.to_string()).collect(),
                 has_objectness: false,
+                scores_are_sigmoid: true,
                 coordinate_mode: "pixel".to_owned(),
                 bindings: Vec::new(),
                 strides: Vec::new(),
@@ -1115,6 +1153,7 @@ mod tests {
                 parser_preset: "yolov8".to_owned(),
                 confidence_threshold: 0.25,
                 nms_iou_threshold: 0.45,
+                class_aware_nms: true,
                 max_detections: 300,
             },
             validated: true,
@@ -1156,6 +1195,35 @@ mod tests {
     }
 
     #[test]
+    fn registry_checksum_accepts_python_prefix_and_normalizes_hex_case() {
+        let checksum = "AB".repeat(32);
+        assert_eq!(
+            normalize_registry_checksum(&format!("sha256:{checksum}")),
+            Some("ab".repeat(32))
+        );
+        assert_eq!(normalize_registry_checksum("sha256:abc"), None);
+        assert_eq!(normalize_registry_checksum(&"z".repeat(64)), None);
+    }
+
+    #[test]
+    fn legacy_fingerprint_can_omit_defaulted_class_names() {
+        assert_eq!(
+            compute_model_fingerprint_with_class_names(&canonical_manifest(), false)
+                .expect("legacy fingerprint"),
+            "e10aff7d0417c57aed26c2bf1c8f405b5f22cecade74ec2df3515cbbe0c47ae6"
+        );
+    }
+
+    #[test]
+    fn nvinfer_paths_reject_line_injection() {
+        assert!(safe_nvinfer_path("engine", Path::new("/tmp/model\ninterval=99")).is_err());
+        assert_eq!(
+            safe_nvinfer_path("engine", Path::new("/tmp/model.engine")).unwrap(),
+            "/tmp/model.engine"
+        );
+    }
+
+    #[test]
     fn nvinfer_contract_rejects_parser_semantic_drift() {
         let manifest = canonical_manifest();
         let valid = format!(
@@ -1175,6 +1243,25 @@ mod tests {
 pub(super) enum LivePerceptionError {
     #[error("production adapter configuration is invalid: {0}")]
     Config(ConfigValidationError),
+    #[error("model catalog failed: {0}")]
+    ModelCatalog(novasight_store::model_catalog::ModelCatalogError),
+    #[error("no active model deployment; publish a ready engine before starting perception")]
+    ActiveModelMissing,
+    #[error("active model artifact {artifact_id} must be an engine, got {kind}")]
+    ActiveArtifactKind { artifact_id: i64, kind: String },
+    #[error("active model artifact {artifact_id} is not ready: {status}")]
+    ActiveArtifactNotReady { artifact_id: i64, status: String },
+    #[error("active model artifact {artifact_id} has invalid registry checksum {checksum}")]
+    RegistryChecksumInvalid { artifact_id: i64, checksum: String },
+    #[error(
+        "active model artifact {artifact_id} checksum mismatch: registry={registry}, manifest={manifest}, actual={actual}"
+    )]
+    RegistryChecksumMismatch {
+        artifact_id: i64,
+        registry: String,
+        manifest: String,
+        actual: String,
+    },
     #[error("live DeepStream requires inference.enabled=true")]
     InferenceDisabled,
     #[error("live DeepStream currently requires capture.preference=manual")]
@@ -1198,25 +1285,15 @@ pub(super) enum LivePerceptionError {
     UnsupportedCaptureFormat(String),
     #[error("invalid DeepStream I/O mode: {0}")]
     InvalidIoMode(i32),
-    #[error("nvinfer configuration file does not exist: {}", .0.display())]
-    NvinferConfigMissing(PathBuf),
     #[error("DeepStream parser library does not exist: {}", .0.display())]
     ParserLibraryMissing(PathBuf),
     #[error("failed to read current working directory: {0}")]
     CurrentDirectory(std::io::Error),
-    #[error("failed to read nvinfer configuration {}: {source}", path.display())]
-    ReadNvinfer {
+    #[error("failed to write generated nvinfer configuration {}: {source}", path.display())]
+    WriteNvinfer {
         path: PathBuf,
         #[source]
         source: std::io::Error,
-    },
-    #[error("nvinfer configuration {} is missing required key {key}", path.display())]
-    NvinferKeyMissing { path: PathBuf, key: &'static str },
-    #[error("nvinfer configuration {} has invalid {key} value {value}", path.display())]
-    NvinferValueInvalid {
-        path: PathBuf,
-        key: &'static str,
-        value: String,
     },
     #[error("failed to resolve DeepStream parser library {}: {source}", path.display())]
     CanonicalizeParser {
@@ -1224,20 +1301,8 @@ pub(super) enum LivePerceptionError {
         #[source]
         source: std::io::Error,
     },
-    #[error("nvinfer parser mismatch: expected {}, got {}", expected.display(), actual.display())]
-    ParserMismatch { expected: PathBuf, actual: PathBuf },
-    #[error("nvinfer {key} mismatch: expected {expected}, got {actual}")]
-    ThresholdMismatch {
-        key: &'static str,
-        expected: f64,
-        actual: f64,
-    },
-    #[error("nvinfer {key} mismatch: expected {expected}, got {actual}")]
-    IntegerMismatch {
-        key: &'static str,
-        expected: i64,
-        actual: i64,
-    },
+    #[error("generated nvinfer {label} path is not safe UTF-8: {}", path.display())]
+    InvalidNvinferPath { label: &'static str, path: PathBuf },
     #[error("TensorRT engine does not exist: {}", .0.display())]
     EngineMissing(PathBuf),
     #[error("TensorRT engine path has no file name: {}", .0.display())]

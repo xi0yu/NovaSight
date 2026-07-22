@@ -105,6 +105,7 @@ fn publish_and_rollback_are_atomic_and_preserve_the_previous_artifact() {
         catalog.snapshot().unwrap().active_deployment,
         Some(published)
     );
+    assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 6);
 
     let rolled_back = catalog.rollback(1).unwrap();
     assert_eq!(rolled_back.artifact_id, 3);
@@ -114,6 +115,7 @@ fn publish_and_rollback_are_atomic_and_preserve_the_previous_artifact() {
         catalog.snapshot().unwrap().active_deployment,
         Some(rolled_back)
     );
+    assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 3);
 }
 
 #[test]
@@ -166,6 +168,19 @@ fn reads_the_existing_python_catalog_without_copying_or_rewriting_it() {
     assert_eq!(snapshot.jobs[0].command, ["trtexec", "--fp16"]);
     assert_eq!(snapshot.deployments[0].artifact_id, 3);
     assert_eq!(snapshot.active_deployment.unwrap().updated_seq, 7);
+
+    let active = SqliteModelCatalog::open(&path)
+        .unwrap()
+        .active_model()
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.project.name, "yolo");
+    assert_eq!(active.version.classes, ["person", "car"]);
+    assert_eq!(active.artifact.id, 3);
+    assert_eq!(
+        active.artifact_path,
+        directory.0.join("models/yolo/v1/model.engine")
+    );
 }
 
 #[test]
