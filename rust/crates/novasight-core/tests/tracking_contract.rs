@@ -178,6 +178,8 @@ fn explicit_class_filter_is_independent_from_class_priority() {
 
     assert_eq!(selection.target_object_id, Some(2));
     assert_eq!(selection.inside_fov, 1);
+    assert_eq!(selection.rejected_by_class, 1);
+    assert_eq!(selection.rejected_class_ids, vec![0]);
 }
 
 #[test]
@@ -237,6 +239,10 @@ fn control_aim_point_is_separate_from_association_center_and_supports_class_over
     let selection = core.select(&[target], OBSERVATION_CENTER);
     assert_eq!(selection.target_aim_x, Some(320.0));
     assert_eq!(selection.target_aim_y, Some(230.0));
+    assert_eq!(selection.target_box_x, Some(280.0));
+    assert_eq!(selection.target_box_y, Some(200.0));
+    assert_eq!(selection.target_box_width, Some(80.0));
+    assert_eq!(selection.target_box_height, Some(100.0));
     assert_eq!(core.locked().expect("track").center_y, 250.0);
 }
 

@@ -1515,6 +1515,9 @@ export function StudioConsoleView({
   const detections = readNumber(vision.detections, 0);
   const target = asRecord(vision.target);
   const activeRuntimeClassId = readNullableNumber(target.cls ?? target.class_id);
+  const activeRuntimeClassLabel = readString(target.class_name, "") || (
+    activeRuntimeClassId !== null ? `cls ${Math.round(activeRuntimeClassId)}` : ""
+  );
   const runtimeDetectionClassIds = recordArray(vision.detection_items).flatMap((item) => {
     const classId = readNullableNumber(item.cls ?? item.class_id);
     return classId !== null && Number.isInteger(classId) ? [classId] : [];
@@ -3821,7 +3824,7 @@ export function StudioConsoleView({
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
             <Metric title="目标链路" value={targetPipelineCode || NO_SAMPLE} small={targetPipelineStage || NO_SAMPLE} />
-            <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={readString(target.class_name, "") || "target"} />
+            <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={activeRuntimeClassLabel || "target"} />
             <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx, 1)} small="px" />
             <Metric title="实际发送" value={execution.sent === true ? formatPoint(controlActualDx, controlActualDy, 0) : NO_SAMPLE} small="counts" />
           </div>
@@ -3847,7 +3850,7 @@ export function StudioConsoleView({
                 <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                 <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
-                <span>目标类别</span><b>{readString(target.class_name, "") || NO_SAMPLE}</b>
+                <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
                 <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
                 <span>类别偏好分</span><b>{formatOptionalNumber(control.class_score ?? target.class_score, 3)}</b>
                 <span>距离 / 综合分</span><b>{formatPoint(control.distance_score ?? target.distance_score, control.selection_score ?? target.selection_score, 3)}</b>

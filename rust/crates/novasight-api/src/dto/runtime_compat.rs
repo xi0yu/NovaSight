@@ -6,6 +6,7 @@ use novasight_core::control::humanized_motion::{
     HumanizedSpeedCurveSource,
 };
 use novasight_core::control::recoil::{RecoilBlockReason, RecoilState};
+use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
     AppConfig, CrosshairSnapshot, PipelineState, PreviewSnapshot, RuntimeErrorSummary,
     RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
@@ -160,7 +161,45 @@ pub(crate) struct DeepStreamState {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionState {
     pub crosshair: Option<CrosshairSnapshot>,
+    pub detections: usize,
+    pub target: Option<VisionTargetState>,
+    pub target_pipeline: TargetPipelineState,
     pub control: VisionControlState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct VisionTargetState {
+    pub track_id: u64,
+    pub class_id: u32,
+    pub cls: u32,
+    pub score: f32,
+    pub identity_confidence: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub box_cx: f64,
+    pub box_cy: f64,
+    pub cx: f64,
+    pub cy: f64,
+    pub observed_aim_x: f64,
+    pub observed_aim_y: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TargetPipelineState {
+    pub code: &'static str,
+    pub stage: &'static str,
+    pub message: &'static str,
+    pub rejection_reasons: Vec<&'static str>,
+    pub counts: TargetPipelineCounts,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct TargetPipelineCounts {
+    pub raw_candidates: usize,
+    pub eligible_candidates: usize,
+    pub selected_targets: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -175,8 +214,26 @@ pub(crate) struct VisionControlState {
     pub trigger_active: Option<bool>,
     pub reason: Option<&'static str>,
     pub no_send_reason: Option<&'static str>,
+    pub candidates: usize,
+    pub selector_state: &'static str,
+    pub selection_reason: Option<&'static str>,
+    pub candidate_filter: CandidateFilterState,
     pub mouse_observation: MouseObservationState,
     pub pipeline: ControlPipelineState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CandidateFilterState {
+    pub effective_class_filter: String,
+    pub basic: BasicCandidateFilterState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct BasicCandidateFilterState {
+    pub raw_candidates: usize,
+    pub filtered_candidates: usize,
+    pub rejected_candidates: usize,
+    pub rejected_class_ids: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -263,6 +320,13 @@ impl CompatibilityRuntimeState {
         let inference_config = config.and_then(|config| config.inference.as_ref());
         let device_config = config.and_then(|config| config.device.as_ref());
         let dual_phase = snapshot.pipeline_metrics.dual_phase;
+        let target_selection = &snapshot.pipeline_metrics.target_selection;
+        let has_target_sample = snapshot.pipeline_metrics.targeting_batches > 0;
+        let target = vision_target_state(target_selection);
+        let target_pipeline = target_pipeline_state(target_selection, has_target_sample);
+        let effective_class_filter = config
+            .map(|config| config.pipeline.target_class_filter.clone())
+            .unwrap_or_else(|| "all".to_owned());
         let control_sample = dual_phase.sample_available;
         let control_reason = control_sample.then_some(block_reason_label(dual_phase.block_reason));
         let running = snapshot.pipeline.state == PipelineState::Running;
@@ -459,6 +523,9 @@ impl CompatibilityRuntimeState {
             },
             vision: VisionState {
                 crosshair: crosshair.cloned(),
+                detections: target_selection.candidates,
+                target,
+                target_pipeline,
                 control: VisionControlState {
                     global_state: if control_sample { "CALCULATED" } else { "IDLE" },
                     output_enabled: snapshot.pipeline_metrics.output_gate_open,
@@ -472,6 +539,27 @@ impl CompatibilityRuntimeState {
                     trigger_active: control_sample.then_some(dual_phase.trigger_active),
                     reason: control_reason,
                     no_send_reason: control_reason.filter(|reason| !reason.is_empty()),
+                    candidates: target_selection.inside_fov,
+                    selector_state: if target_selection.target_track_id.is_some() {
+                        "LOCKED"
+                    } else {
+                        "SEARCHING"
+                    },
+                    selection_reason: target_selection.lock_reason.map(lock_reason_label),
+                    candidate_filter: CandidateFilterState {
+                        effective_class_filter,
+                        basic: BasicCandidateFilterState {
+                            raw_candidates: target_selection.candidates,
+                            filtered_candidates: target_selection
+                                .candidates
+                                .saturating_sub(target_selection.rejected_by_confidence)
+                                .saturating_sub(target_selection.rejected_by_class),
+                            rejected_candidates: target_selection
+                                .rejected_by_confidence
+                                .saturating_add(target_selection.rejected_by_class),
+                            rejected_class_ids: target_selection.rejected_class_ids.clone(),
+                        },
+                    },
                     mouse_observation: MouseObservationState {
                         control_width_px: control_sample.then_some(dual_phase.observation_width),
                         control_height_px: control_sample.then_some(dual_phase.observation_height),
@@ -597,6 +685,89 @@ impl CompatibilityRuntimeState {
     }
 }
 
+fn vision_target_state(selection: &TargetSelection) -> Option<VisionTargetState> {
+    let track_id = selection.target_track_id?.0;
+    let class_id = selection.target_class_id?;
+    let score = selection.target_detection_confidence?;
+    let identity_confidence = selection.target_identity_confidence?;
+    let x1 = selection.target_box_x?;
+    let y1 = selection.target_box_y?;
+    let width = selection.target_box_width?;
+    let height = selection.target_box_height?;
+    let aim_x = selection.target_aim_x?;
+    let aim_y = selection.target_aim_y?;
+    Some(VisionTargetState {
+        track_id,
+        class_id,
+        cls: class_id,
+        score,
+        identity_confidence,
+        x1,
+        y1,
+        x2: x1 + width,
+        y2: y1 + height,
+        box_cx: x1 + width * 0.5,
+        box_cy: y1 + height * 0.5,
+        cx: x1 + width * 0.5,
+        cy: y1 + height * 0.5,
+        observed_aim_x: aim_x,
+        observed_aim_y: aim_y,
+    })
+}
+
+fn target_pipeline_state(selection: &TargetSelection, has_sample: bool) -> TargetPipelineState {
+    let mut rejection_reasons = Vec::with_capacity(4);
+    if selection.rejected_by_confidence > 0 {
+        rejection_reasons.push("confidence");
+    }
+    if selection.rejected_by_class > 0 {
+        rejection_reasons.push("class_filter");
+    }
+    if selection.rejected_by_aspect_ratio > 0 {
+        rejection_reasons.push("ratio_check");
+    }
+    if selection.rejected_by_fov > 0 {
+        rejection_reasons.push("selection_fov");
+    }
+    let (code, stage, message) = if !has_sample {
+        ("NO_SAMPLE", "targeting", "等待 Rust targeting 样本")
+    } else if selection.target_track_id.is_some() {
+        ("TARGET_SELECTED", "selection", "Rust selector 已选择目标")
+    } else if selection.candidates == 0 {
+        ("NO_CANDIDATES", "targeting", "当前帧没有检测候选")
+    } else if selection.rejected_by_class > 0 && selection.inside_fov == 0 {
+        (
+            "BASIC_CANDIDATE_REJECTED",
+            "class_filter",
+            "候选类别未通过 Rust allowlist",
+        )
+    } else {
+        (
+            "ASSOCIATION_CANDIDATE_REJECTED",
+            "targeting",
+            "候选未通过 Rust targeting 准入门",
+        )
+    };
+    TargetPipelineState {
+        code,
+        stage,
+        message,
+        rejection_reasons,
+        counts: TargetPipelineCounts {
+            raw_candidates: selection.candidates,
+            eligible_candidates: selection.inside_fov,
+            selected_targets: usize::from(selection.target_track_id.is_some()),
+        },
+    }
+}
+
+const fn lock_reason_label(reason: LockReason) -> &'static str {
+    match reason {
+        LockReason::PreferredClass => "PREFERRED_CLASS",
+        LockReason::FallbackClass => "FALLBACK_CLASS",
+    }
+}
+
 const fn control_mode_label(mode: ControlMode) -> &'static str {
     match mode {
         ControlMode::Far => "FAR",
@@ -652,7 +823,8 @@ mod tests {
         HumanizedSpatialCurveSource, HumanizedSpeedCurveSource,
     };
     use novasight_core::control::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
-    use novasight_runtime::RuntimeSnapshot;
+    use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
+    use novasight_runtime::{AppConfig, RuntimeSnapshot};
 
     use super::CompatibilityRuntimeState;
 
@@ -721,6 +893,26 @@ mod tests {
             source_generation: Some(9),
             block_reason: RecoilBlockReason::None,
         };
+        snapshot.pipeline_metrics.targeting_batches = 1;
+        snapshot.pipeline_metrics.target_selection = TargetSelection {
+            target_track_id: Some(TrackId(17)),
+            target_class_id: Some(2),
+            target_detection_confidence: Some(0.91),
+            target_identity_confidence: Some(0.82),
+            target_aim_x: Some(330.0),
+            target_aim_y: Some(240.0),
+            target_box_x: Some(300.0),
+            target_box_y: Some(200.0),
+            target_box_width: Some(60.0),
+            target_box_height: Some(120.0),
+            lock_reason: Some(LockReason::FallbackClass),
+            candidates: 3,
+            inside_fov: 1,
+            rejected_class_ids: vec![4],
+            rejected_by_class: 1,
+            rejected_by_fov: 1,
+            ..TargetSelection::default()
+        };
 
         let value = serde_json::to_value(CompatibilityRuntimeState::new(
             &snapshot, None, None, false, None, None,
@@ -728,9 +920,23 @@ mod tests {
         .unwrap();
         let pipeline = &value["vision"]["control"]["pipeline"];
         let control = &value["vision"]["control"];
+        let target = &value["vision"]["target"];
+        let target_pipeline = &value["vision"]["target_pipeline"];
         assert_eq!(control["will_emit"], true);
         assert_eq!(control["aim_x"], 331.6);
         assert_eq!(control["mouse_observation"]["measurement_dt_s"], 0.008);
+        assert_eq!(control["selector_state"], "LOCKED");
+        assert_eq!(control["selection_reason"], "FALLBACK_CLASS");
+        assert_eq!(
+            control["candidate_filter"]["basic"]["rejected_class_ids"][0],
+            4
+        );
+        assert_eq!(target["track_id"], 17);
+        assert_eq!(target["class_id"], 2);
+        assert_eq!(target["x2"], 360.0);
+        assert_eq!(target["observed_aim_y"], 240.0);
+        assert_eq!(target_pipeline["code"], "TARGET_SELECTED");
+        assert_eq!(target_pipeline["counts"]["eligible_candidates"], 1);
         assert_eq!(
             pipeline["control_mode"],
             "dual_phase_atan_robust_predictive_v2"
@@ -759,5 +965,48 @@ mod tests {
         assert_eq!(pipeline["recoil_final_rate_counts_s"], 625.0);
         assert_eq!(pipeline["recoil_source_generation"], 9);
         assert_eq!(pipeline["recoil_block_reason"], "");
+    }
+
+    #[test]
+    fn projects_rust_class_rejections_without_inventing_a_target() {
+        let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline_metrics.targeting_batches = 1;
+        snapshot.pipeline_metrics.target_selection = TargetSelection {
+            candidates: 3,
+            rejected_class_ids: vec![0, 2],
+            rejected_by_class: 2,
+            rejected_by_confidence: 1,
+            ..TargetSelection::default()
+        };
+        let mut config = AppConfig::default();
+        config.pipeline.target_class_filter = "1".to_owned();
+
+        let value = serde_json::to_value(CompatibilityRuntimeState::new(
+            &snapshot,
+            Some(&config),
+            Some(0),
+            false,
+            None,
+            None,
+        ))
+        .unwrap();
+
+        assert!(value["vision"]["target"].is_null());
+        assert_eq!(
+            value["vision"]["target_pipeline"]["code"],
+            "BASIC_CANDIDATE_REJECTED"
+        );
+        assert_eq!(
+            value["vision"]["target_pipeline"]["rejection_reasons"],
+            serde_json::json!(["confidence", "class_filter"])
+        );
+        assert_eq!(
+            value["vision"]["control"]["candidate_filter"]["effective_class_filter"],
+            "1"
+        );
+        assert_eq!(
+            value["vision"]["control"]["candidate_filter"]["basic"]["rejected_class_ids"],
+            serde_json::json!([0, 2])
+        );
     }
 }

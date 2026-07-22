@@ -304,7 +304,7 @@ fn euclidean(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TargetSelection {
     /// Frame-local candidate identity used to find the chosen bounding box.
     pub target_object_id: Option<u64>,
@@ -316,9 +316,18 @@ pub struct TargetSelection {
     /// Control aim point. Association continues to use the geometric center.
     pub target_aim_x: Option<f64>,
     pub target_aim_y: Option<f64>,
+    pub target_box_x: Option<f64>,
+    pub target_box_y: Option<f64>,
+    pub target_box_width: Option<f64>,
+    pub target_box_height: Option<f64>,
     pub lock_reason: Option<LockReason>,
     pub candidates: usize,
     pub inside_fov: usize,
+    pub rejected_class_ids: Vec<u32>,
+    pub rejected_by_confidence: usize,
+    pub rejected_by_class: usize,
+    pub rejected_by_aspect_ratio: usize,
+    pub rejected_by_fov: usize,
     pub lost_count: u64,
 }
 
@@ -332,9 +341,18 @@ impl TargetSelection {
             target_identity_confidence: None,
             target_aim_x: None,
             target_aim_y: None,
+            target_box_x: None,
+            target_box_y: None,
+            target_box_width: None,
+            target_box_height: None,
             lock_reason: None,
             candidates: 0,
             inside_fov: 0,
+            rejected_class_ids: Vec::new(),
+            rejected_by_confidence: 0,
+            rejected_by_class: 0,
+            rejected_by_aspect_ratio: 0,
+            rejected_by_fov: 0,
             lost_count: 0,
         }
     }
@@ -479,26 +497,46 @@ impl TargetingCore {
         captured_at_ns: u64,
     ) -> TargetSelection {
         let candidates = detections.len();
-        let admissible: Vec<Detection> = detections
-            .iter()
-            .filter(|det| {
-                det.confidence() >= self.config.min_confidence
-                    && self
-                        .config
-                        .allowed_class_ids
-                        .as_ref()
-                        .is_none_or(|allowed| allowed.contains(&det.class_id()))
-                    && detection_aspect_ratio(det) <= self.config.candidate_max_aspect_ratio
-                    && euclidean(
-                        det.center_x(),
-                        det.center_y(),
-                        observation_center.0,
-                        observation_center.1,
-                    ) <= self.config.target_fov_radius_px
-            })
-            .take(MAX_ACTIVE_TRACKS)
-            .cloned()
-            .collect();
+        let mut rejected_class_ids = BTreeSet::new();
+        let mut rejected_by_confidence = 0;
+        let mut rejected_by_class = 0;
+        let mut rejected_by_aspect_ratio = 0;
+        let mut rejected_by_fov = 0;
+        let mut admissible = Vec::with_capacity(detections.len().min(MAX_ACTIVE_TRACKS));
+        for detection in detections {
+            if detection.confidence() < self.config.min_confidence {
+                rejected_by_confidence += 1;
+                continue;
+            }
+            if self
+                .config
+                .allowed_class_ids
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains(&detection.class_id()))
+            {
+                rejected_by_class += 1;
+                rejected_class_ids.insert(detection.class_id());
+                continue;
+            }
+            if detection_aspect_ratio(detection) > self.config.candidate_max_aspect_ratio {
+                rejected_by_aspect_ratio += 1;
+                continue;
+            }
+            if euclidean(
+                detection.center_x(),
+                detection.center_y(),
+                observation_center.0,
+                observation_center.1,
+            ) > self.config.target_fov_radius_px
+            {
+                rejected_by_fov += 1;
+                continue;
+            }
+            if admissible.len() < MAX_ACTIVE_TRACKS {
+                admissible.push(detection.clone());
+            }
+        }
+        let rejected_class_ids = rejected_class_ids.into_iter().collect::<Vec<_>>();
         if admissible.is_empty() {
             self.pending_switch = None;
             self.miss_locked_target();
@@ -512,7 +550,16 @@ impl TargetingCore {
                 target_identity_confidence: None,
                 target_aim_x: None,
                 target_aim_y: None,
+                target_box_x: None,
+                target_box_y: None,
+                target_box_width: None,
+                target_box_height: None,
                 lock_reason: None,
+                rejected_class_ids,
+                rejected_by_confidence,
+                rejected_by_class,
+                rejected_by_aspect_ratio,
+                rejected_by_fov,
                 lost_count: self.lost_count,
             };
         }
@@ -674,7 +721,16 @@ impl TargetingCore {
             target_identity_confidence: Some(track.identity_confidence),
             target_aim_x: Some(aim_x),
             target_aim_y: Some(aim_y),
+            target_box_x: Some(f64::from(selected_detection.x())),
+            target_box_y: Some(f64::from(selected_detection.y())),
+            target_box_width: Some(f64::from(selected_detection.width())),
+            target_box_height: Some(f64::from(selected_detection.height())),
             lock_reason: Some(reason),
+            rejected_class_ids,
+            rejected_by_confidence,
+            rejected_by_class,
+            rejected_by_aspect_ratio,
+            rejected_by_fov,
             lost_count: self.lost_count,
         }
     }

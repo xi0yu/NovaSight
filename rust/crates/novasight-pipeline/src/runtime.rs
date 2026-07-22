@@ -15,7 +15,7 @@ use novasight_core::control::recoil::{
     RecoilConfig, RecoilDecision, RecoilInput, TargetRelativeRecoilController,
     mix_tracking_and_recoil,
 };
-use novasight_core::tracking::{TargetingConfig, TargetingCore};
+use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, Generation, PointerDevice, RuntimeEpoch,
 };
@@ -130,6 +130,7 @@ pub struct PipelineMetrics {
     pub live_workers: u64,
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
+    pub target_selection: TargetSelection,
     pub dual_phase: DualPhaseDecision,
     pub humanized_motion: HumanizedMotionTelemetry,
     pub recoil: RecoilDecision,
@@ -177,6 +178,7 @@ struct AtomicMetrics {
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
+    target_selection: Mutex<TargetSelection>,
     dual_phase: Mutex<DualPhaseDecision>,
     humanized_motion: Mutex<HumanizedMotionTelemetry>,
     recoil: Mutex<RecoilDecision>,
@@ -232,6 +234,14 @@ impl SharedState {
 
     fn record_dual_phase(&self, value: DualPhaseDecision) {
         match self.metrics.dual_phase.try_lock() {
+            Ok(mut telemetry) => *telemetry = value,
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
+        }
+    }
+
+    fn record_target_selection(&self, value: TargetSelection) {
+        match self.metrics.target_selection.try_lock() {
             Ok(mut telemetry) => *telemetry = value,
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
@@ -870,6 +880,7 @@ fn spawn_targeting_worker(
                         targeting_center,
                         batch.stamp().captured_at.0,
                     );
+                    shared.record_target_selection(selection.clone());
                     let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
                     let (
                         target_id,
@@ -1268,6 +1279,12 @@ fn snapshot_metrics(
         last_fault: shared
             .metrics
             .last_fault
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+        target_selection: shared
+            .metrics
+            .target_selection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone(),
