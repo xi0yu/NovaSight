@@ -668,31 +668,61 @@ async fn activate_motion_profile(
     State(state): State<ControlState>,
     AxumPath(profile_id): AxumPath<String>,
 ) -> Result<Json<ActivatedMotionProfile>, ControlApiError> {
-    let (profile, runtime) = run_motion_operation(state.runtime, move |runtime| {
-        runtime.activate_motion_profile(&profile_id)
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let profile = run_motion_operation(state.runtime.clone(), move |runtime| {
+        runtime.motion_profile(&profile_id)
     })
     .await?;
+    let revision = persist_motion_profile_selection(&state, true, &profile.profile_id).await?;
+    let runtime = state
+        .runtime
+        .activate_loaded_motion_profile(profile.clone())?;
+    commit_motion_profile_selection(&state, revision).await?;
     Ok(Json(ActivatedMotionProfile { profile, runtime }))
 }
 
 async fn activate_builtin_motion(
     State(state): State<ControlState>,
 ) -> Result<Json<novasight_runtime::MotionProfileStatus>, ControlApiError> {
-    state
-        .runtime
-        .activate_builtin_motion()
-        .map(Json)
-        .map_err(Into::into)
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let revision = persist_motion_profile_selection(&state, true, "builtin").await?;
+    let status = state.runtime.activate_builtin_motion()?;
+    commit_motion_profile_selection(&state, revision).await?;
+    Ok(Json(status))
 }
 
 async fn disable_motion_profile(
     State(state): State<ControlState>,
 ) -> Result<Json<novasight_runtime::MotionProfileStatus>, ControlApiError> {
-    state
-        .runtime
-        .disable_motion_profile()
-        .map(Json)
-        .map_err(Into::into)
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let revision = persist_motion_profile_selection(&state, false, "").await?;
+    let status = state.runtime.disable_motion_profile()?;
+    commit_motion_profile_selection(&state, revision).await?;
+    Ok(Json(status))
+}
+
+async fn persist_motion_profile_selection(
+    state: &ControlState,
+    enabled: bool,
+    active_profile: &str,
+) -> Result<Option<u64>, ControlApiError> {
+    let Some(service) = state.config.as_ref() else {
+        return Ok(None);
+    };
+    let update = service
+        .persist_motion_profile_selection(enabled, active_profile)
+        .await?;
+    Ok(Some(update.config.revision))
+}
+
+async fn commit_motion_profile_selection(
+    state: &ControlState,
+    revision: Option<u64>,
+) -> Result<(), ControlApiError> {
+    if let (Some(service), Some(revision)) = (state.config.as_ref(), revision) {
+        service.commit_effective_revision(revision).await?;
+    }
+    Ok(())
 }
 
 async fn motion_profile_status(
@@ -1697,7 +1727,7 @@ mod tests {
     use novasight_core::RuntimeEpoch;
     use novasight_pipeline::{CrosshairConfig, CrosshairHub, MotionProfileHub, PreviewHub};
     use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
-    use novasight_store::motion_profile::MotionProfileRepository;
+    use novasight_store::{config::YamlConfigRepository, motion_profile::MotionProfileRepository};
     use tower::ServiceExt;
 
     use super::*;
@@ -1904,7 +1934,14 @@ mod tests {
         let dependencies =
             RuntimeDependencies::recording().with_motion_profiles(hub.clone(), repository.clone());
         let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
-        let router = build_control_router(runtime.clone());
+        let config_path = root.join("novasight.yaml");
+        std::fs::write(&config_path, "revision: 0\n").unwrap();
+        let config = ConfigService::new(
+            &config_path,
+            YamlConfigRepository::load(&config_path).unwrap(),
+        );
+        let router =
+            build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
 
         let response = router
             .clone()
@@ -1985,6 +2022,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(hub.active().unwrap().profile_id, profile_id);
+        let persisted = YamlConfigRepository::load(&config_path).unwrap();
+        assert!(persisted.control.humanized_motion.enabled);
+        assert_eq!(
+            persisted.control.humanized_motion.active_profile,
+            profile_id
+        );
+        assert_eq!(config.effective_revision(), persisted.revision);
 
         let response = router
             .clone()
@@ -2001,6 +2045,57 @@ mod tests {
         let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status["trajectory_source"], "trained");
         assert_eq!(status["active_profile"], profile_id);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/motion/runtime/builtin/activate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let persisted = YamlConfigRepository::load(&config_path).unwrap();
+        assert!(persisted.control.humanized_motion.enabled);
+        assert_eq!(persisted.control.humanized_motion.active_profile, "builtin");
+        assert_eq!(config.effective_revision(), persisted.revision);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/motion/profiles/disable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let persisted = YamlConfigRepository::load(&config_path).unwrap();
+        assert!(!persisted.control.humanized_motion.enabled);
+        assert!(persisted.control.humanized_motion.active_profile.is_empty());
+        assert_eq!(config.effective_revision(), persisted.revision);
+        assert!(hub.active().is_none());
+
+        config
+            .update_field(ConfigFieldUpdate {
+                section: "pipeline".to_owned(),
+                key: "freshness_threshold_ms".to_owned(),
+                value: serde_json::json!(40.0),
+                expected_revision: Some(persisted.revision),
+            })
+            .await
+            .unwrap();
+        let response = router
+            .oneshot(
+                Request::post("/api/motion/runtime/builtin/activate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(hub.active().is_none());
 
         runtime.shutdown_daemon().await.unwrap();
         supervisor.join().await.unwrap();

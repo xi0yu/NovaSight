@@ -163,6 +163,48 @@ impl ConfigService {
         })
     }
 
+    /// Atomically persist the complete humanized-motion selection before the
+    /// API applies it to the shared realtime profile hub. The caller commits
+    /// the resulting revision as effective only after that runtime mutation
+    /// succeeds.
+    pub async fn persist_motion_profile_selection(
+        &self,
+        enabled: bool,
+        active_profile: &str,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let _update_guard = self.inner.update_lock.lock().await;
+        let current = self.inner.current.read().await.clone();
+        let effective_revision = self.effective_revision();
+        if current.revision != effective_revision {
+            return Err(ConfigServiceError::RestartRequired {
+                effective_revision,
+                desired_revision: current.revision,
+            });
+        }
+        let mut candidate = current.clone();
+        candidate.control.humanized_motion.enabled = enabled;
+        candidate.control.humanized_motion.active_profile = active_profile.to_owned();
+        candidate
+            .validate_configured_adapters()
+            .map_err(ConfigServiceError::MotionProfileValidation)?;
+
+        let repository = self.inner.repository.clone();
+        let config = tokio::task::spawn_blocking(move || {
+            repository.save_config(&candidate, current.revision)
+        })
+        .await
+        .map_err(ConfigServiceError::SaveTask)??;
+        *self.inner.current.write().await = config.clone();
+        Ok(ConfigUpdate {
+            config,
+            restart_required: true,
+            applied: false,
+            rolled_back: false,
+            message: "motion profile selection persisted; runtime application is pending"
+                .to_owned(),
+        })
+    }
+
     pub async fn update_field(
         &self,
         update: ConfigFieldUpdate,
@@ -242,6 +284,8 @@ pub enum ConfigServiceError {
     CaptureNotConfigured,
     #[error("selected capture profile is incompatible with the current configuration: {0}")]
     CaptureValidation(novasight_store::config::ConfigValidationError),
+    #[error("motion profile selection is incompatible with the current configuration: {0}")]
+    MotionProfileValidation(novasight_store::config::ConfigValidationError),
     #[error(
         "novasightd restart required: process uses configuration revision {effective_revision}, persisted revision is {desired_revision}"
     )]
@@ -261,6 +305,7 @@ impl ConfigServiceError {
             Self::ReplacementRevisionRequired => "CONFIG_REPLACEMENT_REVISION_REQUIRED",
             Self::CaptureNotConfigured => "CAPTURE_NOT_CONFIGURED",
             Self::CaptureValidation(_) => "CAPTURE_PROFILE_INVALID",
+            Self::MotionProfileValidation(_) => "MOTION_PROFILE_CONFIG_INVALID",
             Self::RestartRequired { .. } => "CONFIG_RESTART_REQUIRED",
             Self::SaveTask(_) => "CONFIG_SAVE_TASK_FAILED",
         }

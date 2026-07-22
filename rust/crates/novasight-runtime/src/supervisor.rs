@@ -661,15 +661,24 @@ impl RuntimeHandle {
         &self,
         profile_id: &str,
     ) -> Result<(MotionProfile, MotionProfileStatus), RuntimeError> {
-        let profile = self
-            .motion_repository()?
-            .profile(profile_id)
-            .map_err(motion_error)?;
-        let status = self
-            .motion_hub()?
-            .activate(profile.clone())
-            .map_err(RuntimeError::invalid_pipeline_state)?;
+        let profile = self.motion_profile(profile_id)?;
+        let status = self.activate_loaded_motion_profile(profile.clone())?;
         Ok((profile, status))
+    }
+
+    pub fn motion_profile(&self, profile_id: &str) -> Result<MotionProfile, RuntimeError> {
+        self.motion_repository()?
+            .profile(profile_id)
+            .map_err(motion_error)
+    }
+
+    pub fn activate_loaded_motion_profile(
+        &self,
+        profile: MotionProfile,
+    ) -> Result<MotionProfileStatus, RuntimeError> {
+        self.motion_hub()?
+            .activate(profile)
+            .map_err(RuntimeError::invalid_pipeline_state)
     }
 
     pub fn activate_builtin_motion(&self) -> Result<MotionProfileStatus, RuntimeError> {
