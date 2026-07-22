@@ -124,6 +124,7 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     let (status, body) = json_response(app.clone(), "DELETE", "/api/license", Body::empty()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["configured"], false);
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 
     let (status, body) = json_response(app, "POST", "/api/runtime/stop", Body::empty()).await;
     assert_eq!(status, StatusCode::OK);
@@ -181,6 +182,12 @@ async fn license_gate_enforces_features_on_the_server() {
         json_response(app.clone(), "GET", "/api/runtime/state", Body::empty()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["running"], false);
+
+    let (status, body) =
+        json_response(app.clone(), "POST", "/api/runtime/start", Body::empty()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["required_feature"], "hardware_control");
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 
     let (status, body) = json_response(app.clone(), "GET", "/api/executors", Body::empty()).await;
     assert_eq!(status, StatusCode::FORBIDDEN);

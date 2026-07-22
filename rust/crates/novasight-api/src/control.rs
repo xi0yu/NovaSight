@@ -207,28 +207,56 @@ async fn activate_license(
     State(state): State<ControlState>,
     Json(request): Json<LicenseActivationRequest>,
 ) -> Result<Json<LicenseStatus>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let license = state
         .license
         .as_ref()
         .ok_or(ControlApiError::LicenseUnavailable)?;
-    Ok(Json(
-        run_license_operation(license.clone(), move |repository| {
-            repository.activate(&request.key)
-        })
-        .await?,
-    ))
+    let status = run_license_operation(license.clone(), move |repository| {
+        repository.activate(&request.key)
+    })
+    .await?;
+    stop_if_license_disallows_runtime(&state, &status).await?;
+    Ok(Json(status))
 }
 
 async fn clear_license(
     State(state): State<ControlState>,
 ) -> Result<Json<LicenseStatus>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let license = state
         .license
         .as_ref()
         .ok_or(ControlApiError::LicenseUnavailable)?;
-    Ok(Json(
-        run_license_operation(license.clone(), |repository| repository.clear()).await?,
-    ))
+    let status = run_license_operation(license.clone(), |repository| repository.clear()).await?;
+    stop_if_license_disallows_runtime(&state, &status).await?;
+    Ok(Json(status))
+}
+
+async fn stop_if_license_disallows_runtime(
+    state: &ControlState,
+    status: &LicenseStatus,
+) -> Result<(), ControlApiError> {
+    if !license_authorizes_runtime(status, state.hardware_output_enabled)
+        && matches!(
+            state.runtime.snapshot().pipeline.state,
+            PipelineState::Starting | PipelineState::Running | PipelineState::Standby
+        )
+    {
+        state.runtime.emergency_stop().await?;
+    }
+    Ok(())
+}
+
+fn license_authorizes_runtime(status: &LicenseStatus, hardware_output_enabled: bool) -> bool {
+    status.configured
+        && status.valid
+        && status.features.iter().any(|feature| feature == "runtime")
+        && (!hardware_output_enabled
+            || status
+                .features
+                .iter()
+                .any(|feature| feature == "hardware_control"))
 }
 
 async fn run_license_operation(
@@ -285,7 +313,33 @@ async fn require_license(
         )
             .into_response();
     }
+    if state.hardware_output_enabled
+        && is_runtime_start(method, path)
+        && !status
+            .features
+            .iter()
+            .any(|candidate| candidate == "hardware_control")
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "code": "LICENSE_FEATURE_REQUIRED",
+                "detail": "license feature hardware_control is required",
+                "required_feature": "hardware_control",
+                "license": status,
+            })),
+        )
+            .into_response();
+    }
     next.run(request).await
+}
+
+fn is_runtime_start(method: &Method, path: &str) -> bool {
+    *method == Method::POST
+        && matches!(
+            path,
+            "/api/runtime/start" | "/api/v1/runtime/start" | "/api/v1/runtime/restart"
+        )
 }
 
 fn is_license_open_path(method: &Method, path: &str) -> bool {
@@ -346,6 +400,7 @@ async fn legacy_start(
     State(state): State<ControlState>,
 ) -> Result<Json<CompatibilityRuntimeStart>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    ensure_runtime_license(&state).await?;
     ensure_config_effective(&state).await?;
     let snapshot = state.runtime.start().await?;
     Ok(Json(CompatibilityRuntimeStart::from(&snapshot)))
@@ -562,6 +617,29 @@ async fn ensure_config_effective(state: &ControlState) -> Result<(), ControlApiE
     Ok(())
 }
 
+async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiError> {
+    let Some(repository) = state.license.as_ref() else {
+        return Ok(());
+    };
+    let status =
+        run_license_operation(repository.clone(), |repository| repository.status()).await?;
+    if !status.configured || !status.valid {
+        return Err(ControlApiError::LicenseRequired);
+    }
+    if !status.features.iter().any(|feature| feature == "runtime") {
+        return Err(ControlApiError::LicenseFeatureRequired("runtime"));
+    }
+    if state.hardware_output_enabled
+        && !status
+            .features
+            .iter()
+            .any(|feature| feature == "hardware_control")
+    {
+        return Err(ControlApiError::LicenseFeatureRequired("hardware_control"));
+    }
+    Ok(())
+}
+
 async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
     let service = state
         .config
@@ -746,6 +824,7 @@ async fn start(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    ensure_runtime_license(&state).await?;
     ensure_config_effective(&state).await?;
     Ok(Json(state.runtime.start().await?))
 }
@@ -759,6 +838,7 @@ async fn restart(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    ensure_runtime_license(&state).await?;
     ensure_config_effective(&state).await?;
     Ok(Json(state.runtime.restart().await?))
 }
@@ -968,6 +1048,8 @@ enum ControlApiError {
     License(LicenseError),
     LicenseTask(tokio::task::JoinError),
     LicenseUnavailable,
+    LicenseRequired,
+    LicenseFeatureRequired(&'static str),
     ModelCatalog(ModelCatalogError),
     ModelCatalogTask(tokio::task::JoinError),
     ModelCatalogUnavailable,
@@ -1091,6 +1173,16 @@ impl IntoResponse for ControlApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "LICENSE_SERVICE_UNAVAILABLE",
                 "license service is not configured".to_owned(),
+            ),
+            Self::LicenseRequired => (
+                StatusCode::UNAUTHORIZED,
+                "LICENSE_REQUIRED",
+                "a valid license is required".to_owned(),
+            ),
+            Self::LicenseFeatureRequired(feature) => (
+                StatusCode::FORBIDDEN,
+                "LICENSE_FEATURE_REQUIRED",
+                format!("license feature {feature} is required"),
             ),
             Self::ModelCatalog(error) => match error {
                 ModelCatalogError::ProjectNotFound(_)

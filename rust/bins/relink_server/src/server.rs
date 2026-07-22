@@ -6,10 +6,14 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use novasight_api::build_control_router_with_platform_queries;
 use novasight_core::CaptureCapabilityProbe;
-use novasight_runtime::{ApplicationError, ConfigService, LoadedApplication, RuntimeDependencies};
+use novasight_runtime::{
+    ApplicationError, ConfigService, LoadedApplication, PipelineState, RuntimeDependencies,
+    RuntimeError, RuntimeHandle,
+};
 use novasight_store::license::{FileLicenseRepository, LicensePolicy};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use thiserror::Error;
@@ -69,10 +73,11 @@ pub(super) async fn run_daemon(
     let application = loaded.start(dependencies);
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
     let capture_probe = production_capture_probe(mode);
+    let runtime = application.runtime();
     let router = build_control_router_with_platform_queries(
-        application.runtime(),
+        runtime.clone(),
         config_service,
-        license_repository,
+        license_repository.clone(),
         model_catalog,
         capture_probe,
         mode.hardware_output_enabled(),
@@ -95,6 +100,13 @@ pub(super) async fn run_daemon(
         .into_future();
     let mut http_server = Box::pin(http_server);
     let mut control_server = Box::pin(control_server);
+    let mut license_watchdog = Box::pin(monitor_runtime_license(
+        license_repository,
+        runtime,
+        mode.hardware_output_enabled(),
+        server_shutdown_tx.subscribe(),
+        Duration::from_secs(1),
+    ));
 
     if mode == DaemonMode::DryRun {
         tracing::warn!(
@@ -110,25 +122,37 @@ pub(super) async fn run_daemon(
     let first_exit = tokio::select! {
         result = http_server.as_mut() => FirstExit::Http(result),
         result = control_server.as_mut() => FirstExit::Control(result),
+        result = license_watchdog.as_mut() => FirstExit::License(result),
         () = signals.wait() => FirstExit::Signal,
     };
     server_shutdown_tx.send_replace(true);
-    let service_result = match first_exit {
+    let (service_result, license_result) = match first_exit {
         FirstExit::Signal => {
-            let (http, control) = tokio::join!(http_server.as_mut(), control_server.as_mut());
-            combine_server_results(http, control)
+            let (http, control, license) = tokio::join!(
+                http_server.as_mut(),
+                control_server.as_mut(),
+                license_watchdog.as_mut()
+            );
+            (combine_server_results(http, control), license)
         }
         FirstExit::Http(http) => {
-            let control = control_server.as_mut().await;
-            combine_server_results(http, control)
+            let (control, license) =
+                tokio::join!(control_server.as_mut(), license_watchdog.as_mut());
+            (combine_server_results(http, control), license)
         }
         FirstExit::Control(control) => {
-            let http = http_server.as_mut().await;
-            combine_server_results(http, control)
+            let (http, license) = tokio::join!(http_server.as_mut(), license_watchdog.as_mut());
+            (combine_server_results(http, control), license)
+        }
+        FirstExit::License(license) => {
+            let (http, control) = tokio::join!(http_server.as_mut(), control_server.as_mut());
+            (combine_server_results(http, control), license)
         }
     };
+    let service_result = service_result.and(license_result);
     drop(http_server);
     drop(control_server);
+    drop(license_watchdog);
     let shutdown_result = application
         .shutdown()
         .await
@@ -167,10 +191,71 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
     Ok(LicensePolicy::new(allow_test_key, public_key))
 }
 
+async fn monitor_runtime_license(
+    repository: FileLicenseRepository,
+    runtime: RuntimeHandle,
+    hardware_output_enabled: bool,
+    mut shutdown: watch::Receiver<bool>,
+    interval: Duration,
+) -> Result<(), DaemonRunError> {
+    let mut tick = tokio::time::interval(interval);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+            _ = tick.tick() => {
+                let status_repository = repository.clone();
+                let authorization = tokio::task::spawn_blocking(move || {
+                    status_repository.status().map(|status| {
+                        let runtime = status.features.iter().any(|feature| feature == "runtime");
+                        let hardware = status
+                            .features
+                            .iter()
+                            .any(|feature| feature == "hardware_control");
+                        let authorized = status.configured
+                            && status.valid
+                            && runtime
+                            && (!hardware_output_enabled || hardware);
+                        (authorized, status.message)
+                    })
+                })
+                .await;
+                let (authorized, reason) = match authorization {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(error)) => (false, error.to_string()),
+                    Err(error) => (false, format!("license verification task failed: {error}")),
+                };
+                let pipeline = runtime.snapshot().pipeline.state;
+                if !authorized
+                    && matches!(
+                        pipeline,
+                        PipelineState::Starting | PipelineState::Running | PipelineState::Standby
+                    )
+                {
+                    tracing::error!(
+                        reason = %if reason.is_empty() { "license is missing or lacks required runtime features" } else { &reason },
+                        "runtime license became invalid; closing hardware output"
+                    );
+                    runtime
+                        .emergency_stop()
+                        .await
+                        .map_err(DaemonRunError::LicenseEnforcement)?;
+                }
+            }
+        }
+    }
+}
+
 enum FirstExit {
     Signal,
     Http(Result<(), io::Error>),
     Control(Result<(), io::Error>),
+    License(Result<(), DaemonRunError>),
 }
 
 fn combine_server_results(
@@ -382,6 +467,8 @@ impl ShutdownSignals {
 pub(super) enum DaemonRunError {
     #[error("production mode requires NOVASIGHT_LICENSE_PUBLIC_KEY")]
     LicensePublicKeyMissing,
+    #[error("failed to stop runtime after license invalidation: {0}")]
+    LicenseEnforcement(RuntimeError),
     #[error("failed to bind HTTP server at {host}:{port}: {source}")]
     Bind {
         host: String,
@@ -480,6 +567,7 @@ impl DaemonRunError {
     pub(super) const fn code(&self) -> &'static str {
         match self {
             Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
+            Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",
             Self::Signal(_) => "SHUTDOWN_SIGNAL_FAILED",
@@ -618,5 +706,58 @@ mod tests {
             & 0o7777;
 
         assert_eq!(mode, 0o750);
+    }
+
+    #[tokio::test]
+    async fn license_watchdog_emergency_stops_a_running_pipeline_after_clear() {
+        let path = TestPath::new();
+        let repository = FileLicenseRepository::new(
+            path.0.with_file_name("license.json"),
+            LicensePolicy::new(true, None),
+        );
+        repository
+            .activate("NOVASIGHT-TEST-MAX-ACCESS-2026")
+            .expect("activate test license");
+        let (supervisor, runtime) = novasight_runtime::RuntimeSupervisor::spawn_recording();
+        runtime.start().await.expect("start licensed pipeline");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let watchdog = tokio::spawn(monitor_runtime_license(
+            repository.clone(),
+            runtime.clone(),
+            true,
+            shutdown_rx,
+            Duration::from_millis(5),
+        ));
+
+        repository.clear().expect("clear active license");
+        let mut snapshots = runtime.subscribe();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if snapshots.borrow().pipeline.state == PipelineState::Stopped {
+                    break;
+                }
+                snapshots.changed().await.expect("runtime snapshot");
+            }
+        })
+        .await
+        .expect("license watchdog stops runtime");
+        assert_eq!(
+            runtime
+                .snapshot()
+                .subsystems
+                .control
+                .last_error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("emergency_stop")
+        );
+
+        shutdown_tx.send_replace(true);
+        watchdog
+            .await
+            .expect("watchdog joins")
+            .expect("watchdog exits");
+        runtime.shutdown_daemon().await.expect("shutdown runtime");
+        supervisor.join().await.expect("supervisor joins");
     }
 }
