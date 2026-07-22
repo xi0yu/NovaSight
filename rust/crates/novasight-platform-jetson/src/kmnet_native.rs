@@ -578,14 +578,13 @@ mod tests {
     #[test]
     fn native_device_exchanges_real_udp_packets_and_caches_monitor_buttons() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(15)))
-            .unwrap();
         let server_port = server.local_addr().unwrap().port();
         let monitor_port = available_monitor_port();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
         let responder = thread::spawn(move || {
             let mut packet = [0_u8; 1024];
             let mut ordinary_randoms = Vec::new();
+            ready_tx.send(()).unwrap();
             for (expected_sequence, expected_command) in [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE]
                 .into_iter()
                 .enumerate()
@@ -638,6 +637,9 @@ mod tests {
             monitor_timeout: Duration::from_secs(2),
         })
         .unwrap();
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("mock device responder must be scheduled before the client handshake");
         device.connect().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while device.trigger_active().unwrap() != Some(true) && Instant::now() < deadline {
