@@ -83,6 +83,21 @@ const CONTROL_ALGORITHM_OPTIONS = [
   }
 ] as const;
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
+const RUST_DUAL_PHASE_PATHS: Record<string, string> = {
+  "projection.fov_x_deg": "projection_fov_x_deg",
+  "projection.counts_per_360": "projection_counts_per_360",
+  "mode.near_threshold_px": "near_threshold_px",
+  "atan.far.kp": "far_kp",
+  "atan.near.kp": "near_kp",
+  "atan.scale_counts": "atan_scale_counts",
+  "atan.far.max_counts_per_update": "far_max_counts_per_update",
+  "atan.near.max_counts_per_update": "near_max_counts_per_update",
+  "prediction.lead_frames": "prediction_lead_frames",
+  "velocity.smoothing_frames": "velocity_smoothing_frames",
+  "velocity.history_reset_gap_ms": "velocity_history_reset_gap_ms",
+  "prediction.far.absolute_cap_px": "prediction_far_absolute_cap_px",
+  "prediction.near.absolute_cap_px": "prediction_near_absolute_cap_px"
+};
 const ModelManagerDialog = lazy(() =>
   import("../models/ModelManagerDialog").then((module) => ({
     default: module.ModelManagerDialog
@@ -1036,6 +1051,11 @@ export function StudioConsoleView({
   const inferenceConfig = nestedRecord(config, "inference");
   const preprocessConfig = nestedRecord(config, "preprocess");
   const controlConfig = nestedRecord(config, "control");
+  const rustPipelineConfig = nestedRecord(config, "pipeline");
+  const rustControlPlane = Object.prototype.hasOwnProperty.call(
+    rustPipelineConfig,
+    "projection_fov_x_deg"
+  );
   const hardwareConfig = nestedRecord(config, "hardware");
   const powerSavingConfig = nestedRecord(config, "power_saving");
   const consumersConfig = nestedRecord(config, "consumers");
@@ -1246,7 +1266,9 @@ export function StudioConsoleView({
     runtimeInferenceReason,
     runtimeMainlineRunning
   ]);
-  const controlMode = readString(controlConfig.active_algorithm ?? controlConfig.mode, DEFAULT_CONTROL_ALGORITHM);
+  const controlMode = rustControlPlane
+    ? DEFAULT_CONTROL_ALGORITHM
+    : readString(controlConfig.active_algorithm ?? controlConfig.mode, DEFAULT_CONTROL_ALGORITHM);
   const algorithmConfigs = nestedRecord(controlConfig, "algorithms");
   const algorithmConfig = (algorithmId: string): Record<string, unknown> => {
     const namespaced = nestedRecord(algorithmConfigs, algorithmId);
@@ -1291,10 +1313,10 @@ export function StudioConsoleView({
   };
   const classRoleProfiles = profileRoleRecords(aimConfig.class_roles);
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
-  const targetFovRadiusPx = readNumber(controlConfig.target_fov_radius_px, 180);
-  const candidateRatioMaxAspect = readNumber(controlConfig.candidate_ratio_max_aspect, 6);
-  const candidateSelectionClassWeight = readNumber(controlConfig.candidate_selection_class_weight, 0.55);
-  const candidateSelectionDistanceWeight = readNumber(controlConfig.candidate_selection_distance_weight, 0.40);
+  const targetFovRadiusPx = readNumber(rustControlPlane ? rustPipelineConfig.target_fov_radius_px : controlConfig.target_fov_radius_px, 180);
+  const candidateRatioMaxAspect = readNumber(rustControlPlane ? rustPipelineConfig.candidate_max_aspect_ratio : controlConfig.candidate_ratio_max_aspect, 6);
+  const candidateSelectionClassWeight = readNumber(rustControlPlane ? rustPipelineConfig.target_selection_class_weight : controlConfig.candidate_selection_class_weight, 0.55);
+  const candidateSelectionDistanceWeight = readNumber(rustControlPlane ? rustPipelineConfig.target_selection_distance_weight : controlConfig.candidate_selection_distance_weight, 0.40);
   const candidateSelectionWeightTotal = candidateSelectionClassWeight + candidateSelectionDistanceWeight;
   const normalizedSelectionClassWeight = candidateSelectionWeightTotal > 0
     ? candidateSelectionClassWeight / candidateSelectionWeightTotal
@@ -1302,13 +1324,13 @@ export function StudioConsoleView({
   const normalizedSelectionDistanceWeight = candidateSelectionWeightTotal > 0
     ? candidateSelectionDistanceWeight / candidateSelectionWeightTotal
     : 0;
-  const trackerMaxMatchDistance = readNumber(controlConfig.tracker_max_match_distance, 1.5);
-  const trackerPositionCostWeight = readNumber(controlConfig.tracker_position_cost_weight, 0.75);
-  const trackerIouCostWeight = readNumber(controlConfig.tracker_iou_cost_weight, 0.25);
-  const trackerMaxMissedFrames = readNumber(controlConfig.tracker_max_missed_frames, 2);
-  const targetSwitchPreferenceAdvantage = readNumber(controlConfig.target_switch_min_preference_advantage, 0.08);
-  const targetSwitchContinuityScore = readNumber(controlConfig.target_switch_min_continuity_score, 0.7);
-  const targetSwitchDelayMs = readNumber(controlConfig.target_switch_delay_ms, 50);
+  const trackerMaxMatchDistance = readNumber(rustControlPlane ? rustPipelineConfig.tracker_max_match_distance : controlConfig.tracker_max_match_distance, 1.5);
+  const trackerPositionCostWeight = readNumber(rustControlPlane ? rustPipelineConfig.tracker_position_cost_weight : controlConfig.tracker_position_cost_weight, 0.75);
+  const trackerIouCostWeight = readNumber(rustControlPlane ? rustPipelineConfig.tracker_iou_cost_weight : controlConfig.tracker_iou_cost_weight, 0.25);
+  const trackerMaxMissedFrames = readNumber(rustControlPlane ? rustPipelineConfig.target_track_max_age : controlConfig.tracker_max_missed_frames, 2);
+  const targetSwitchPreferenceAdvantage = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_min_preference_advantage : controlConfig.target_switch_min_preference_advantage, 0.08);
+  const targetSwitchContinuityScore = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_min_continuity_score : controlConfig.target_switch_min_continuity_score, 0.7);
+  const targetSwitchDelayMs = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_delay_ms : controlConfig.target_switch_delay_ms, 50);
   const kalmanAccelerationNoise = readNumber(controlConfig.kalman_acceleration_noise, 1200);
   const kalmanMeasurementNoiseX = readNumber(controlConfig.kalman_measurement_noise_x, 16);
   const kalmanMeasurementNoiseY = readNumber(controlConfig.kalman_measurement_noise_y, 16);
@@ -1326,19 +1348,19 @@ export function StudioConsoleView({
   const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 60);
   const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 50);
   const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 40);
-  const dualPhaseFovX = readNumber(dualPhaseProjectionConfig.fov_x_deg, 105);
-  const dualPhaseCountsPer360 = readNumber(dualPhaseProjectionConfig.counts_per_360, 9980);
-  const dualPhaseNearThreshold = readNumber(dualPhaseModeConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(dualPhaseFarConfig.kp, 0.90);
-  const dualPhaseNearKp = readNumber(dualPhaseNearConfig.kp, 0.30);
-  const dualPhaseAtanScale = readNumber(dualPhaseAtanConfig.scale_counts, 1024);
-  const dualPhaseFarMaxCounts = readNumber(dualPhaseFarConfig.max_counts_per_update, 600);
-  const dualPhaseNearMaxCounts = readNumber(dualPhaseNearConfig.max_counts_per_update, 120);
-  const dualPhaseLeadFrames = readNumber(dualPhasePredictionConfig.lead_frames, 1.0);
-  const dualPhaseVelocitySmoothingFrames = readNumber(dualPhaseVelocityConfig.smoothing_frames, 3.0);
-  const dualPhaseHistoryResetGapMs = readNumber(dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
-  const dualPhaseFarPredictionCap = readNumber(dualPhasePredictionFarConfig.absolute_cap_px, 10.0);
-  const dualPhaseNearPredictionCap = readNumber(dualPhasePredictionNearConfig.absolute_cap_px, 3.0);
+  const dualPhaseFovX = readNumber(rustControlPlane ? rustPipelineConfig.projection_fov_x_deg : dualPhaseProjectionConfig.fov_x_deg, 105);
+  const dualPhaseCountsPer360 = readNumber(rustControlPlane ? rustPipelineConfig.projection_counts_per_360 : dualPhaseProjectionConfig.counts_per_360, 9980);
+  const dualPhaseNearThreshold = readNumber(rustControlPlane ? rustPipelineConfig.near_threshold_px : dualPhaseModeConfig.near_threshold_px, 12);
+  const dualPhaseFarKp = readNumber(rustControlPlane ? rustPipelineConfig.far_kp : dualPhaseFarConfig.kp, 0.90);
+  const dualPhaseNearKp = readNumber(rustControlPlane ? rustPipelineConfig.near_kp : dualPhaseNearConfig.kp, 0.30);
+  const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 1024);
+  const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 600);
+  const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 120);
+  const dualPhaseLeadFrames = readNumber(rustControlPlane ? rustPipelineConfig.prediction_lead_frames : dualPhasePredictionConfig.lead_frames, 1.0);
+  const dualPhaseVelocitySmoothingFrames = readNumber(rustControlPlane ? rustPipelineConfig.velocity_smoothing_frames : dualPhaseVelocityConfig.smoothing_frames, 3.0);
+  const dualPhaseHistoryResetGapMs = readNumber(rustControlPlane ? rustPipelineConfig.velocity_history_reset_gap_ms : dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
+  const dualPhaseFarPredictionCap = readNumber(rustControlPlane ? rustPipelineConfig.prediction_far_absolute_cap_px : dualPhasePredictionFarConfig.absolute_cap_px, 10.0);
+  const dualPhaseNearPredictionCap = readNumber(rustControlPlane ? rustPipelineConfig.prediction_near_absolute_cap_px : dualPhasePredictionNearConfig.absolute_cap_px, 3.0);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -1348,7 +1370,7 @@ export function StudioConsoleView({
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilStartupRampMs = readNumber(recoilConfig.startup_ms, 35);
   const recoilBaseRate = readNumber(recoilConfig.base_rate_counts_s, 0);
-  const triggerMode = readString(controlConfig.trigger_mode, "always");
+  const triggerMode = rustControlPlane ? "hardware" : readString(controlConfig.trigger_mode, "always");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -1366,9 +1388,12 @@ export function StudioConsoleView({
   const outputEnabled = readBoolean(controlConfig.output_enabled, true);
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
   const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
-  const schedulerIntervalMs = readNumber(controlConfig.scheduler_interval_ms, 4);
+  const schedulerIntervalMs = readNumber(rustControlPlane ? rustPipelineConfig.output_interval_ms : controlConfig.scheduler_interval_ms, 4);
   const dualPhaseActive = controlMode === "dual_phase_atan_robust_predictive_v2";
-  const activeControlAlgorithm = CONTROL_ALGORITHM_OPTIONS.find((item) => item.id === controlMode)
+  const availableControlAlgorithms = rustControlPlane
+    ? CONTROL_ALGORITHM_OPTIONS.filter((item) => item.id === DEFAULT_CONTROL_ALGORITHM)
+    : CONTROL_ALGORITHM_OPTIONS;
+  const activeControlAlgorithm = availableControlAlgorithms.find((item) => item.id === controlMode)
     ?? CONTROL_ALGORITHM_OPTIONS[2];
   const controlModeLabel = activeControlAlgorithm.label;
 
@@ -2572,9 +2597,35 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
+  const updateControlOrPipelineField = useCallback(
+    async (
+      controlKey: string,
+      pipelineKey: string,
+      value: RuntimeConfigValue
+    ) => {
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const pipelineConfig = nestedRecord(base, "pipeline");
+      if (Object.prototype.hasOwnProperty.call(pipelineConfig, "projection_fov_x_deg")) {
+        await updateConfigField("pipeline", pipelineKey, value);
+        return;
+      }
+      await updateConfigField("control", controlKey, value);
+    },
+    [runtimeConfig, updateConfigField]
+  );
+
   const updateDualPhasePath = useCallback(
     async (path: string[], value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const pipelineConfig = nestedRecord(base, "pipeline");
+      const rustField = RUST_DUAL_PHASE_PATHS[path.join(".")];
+      if (
+        rustField
+        && Object.prototype.hasOwnProperty.call(pipelineConfig, "projection_fov_x_deg")
+      ) {
+        await updateConfigField("pipeline", rustField, value);
+        return;
+      }
       const control = nestedRecord(base, "control");
       const algorithms = nestedRecord(control, "algorithms");
       const algorithmId = readString(
@@ -3960,11 +4011,15 @@ export function StudioConsoleView({
               <div className="console-card">
                 <SectionTitle title="控制模式" />
                 <div className="mini-segmented control-algorithm-segmented" role="group" aria-label="控制模式">
-                  {CONTROL_ALGORITHM_OPTIONS.map((algorithm) => (
+                  {availableControlAlgorithms.map((algorithm) => (
                     <button
                       className={controlMode === algorithm.id ? "active" : ""}
                       key={algorithm.id}
-                      onClick={() => void updateConfigField("control", "active_algorithm", algorithm.id)}
+                      onClick={() => {
+                        if (!rustControlPlane) {
+                          void updateConfigField("control", "active_algorithm", algorithm.id);
+                        }
+                      }}
                       type="button"
                     >
                       {algorithm.label}
@@ -3973,11 +4028,11 @@ export function StudioConsoleView({
                 </div>
                 <p className="console-section-note">{activeControlAlgorithm.description}</p>
                 <label>触发方式</label>
-                <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
+                <select disabled={rustControlPlane} value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
                   <option value="hardware">kmNet 硬件按键触发</option>
                   <option value="always">检测到目标后自动控制</option>
                 </select>
-                {triggerMode === "hardware" ? (
+                {triggerMode === "hardware" && !rustControlPlane ? (
                   <NumberControl
                     label="按下后启动延迟 ms"
                     detail="kmNet 硬件触发键持续按下达到此时间后，才允许控制输出。自动控制模式不使用该参数。"
@@ -3987,6 +4042,9 @@ export function StudioConsoleView({
                     step={1}
                     onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)}
                   />
+                ) : null}
+                {rustControlPlane ? (
+                  <p className="console-section-note">Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态，不读取旧 Python 触发延迟参数。</p>
                 ) : null}
                 <div className="control-aim-source-note">
                   <span>
@@ -4004,7 +4062,7 @@ export function StudioConsoleView({
                     <span>输出交付</span><b>Latest Replace</b>
                     <span>每个推理结果</span><b>覆盖尚未发送的旧命令</b>
                     <span>待发送容量</span><b>1 条完整命令</b>
-                    <span>设备发送校验</span><b>MouseCommandExecutor</b>
+                    <span>设备发送校验</span><b>{rustControlPlane ? "Rust DeviceLane" : "MouseCommandExecutor"}</b>
                     <span>误差死区</span><b>不使用</b>
                   </div>
                 ) : (
@@ -4144,7 +4202,7 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
-                <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updateConfigField("control", "target_fov_radius_px", value)} />
+                <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updateControlOrPipelineField("target_fov_radius_px", "target_fov_radius_px", value)} />
                 <div className="target-weight-summary">
                   <div>
                     <span>当前综合分权重</span>
@@ -4285,12 +4343,17 @@ export function StudioConsoleView({
               />
               <label>命令调度</label>
               {dualPhaseActive ? (
-                <div className="console-kv compact-kv">
-                  <span>执行层</span><b>Latest Replace Scheduler</b>
-                  <span>行为</span><b>新观测覆盖未发送的旧命令</b>
-                  <span>待发送容量</span><b>1 条完整命令</b>
-                  <span>最终校验</span><b>MouseCommandExecutor</b>
-                </div>
+                <>
+                  <div className="console-kv compact-kv">
+                    <span>执行层</span><b>Latest Replace Scheduler</b>
+                    <span>行为</span><b>新观测覆盖未发送的旧命令</b>
+                    <span>待发送容量</span><b>1 条完整命令</b>
+                    <span>最终校验</span><b>{rustControlPlane ? "Rust DeviceLane" : "MouseCommandExecutor"}</b>
+                  </div>
+                  {rustControlPlane ? (
+                    <NumberControl label="Rust 输出调度间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={1} onCommit={(value) => updateConfigField("pipeline", "output_interval_ms", Math.round(value))} />
+                  ) : null}
+                </>
               ) : (
                 <>
                   <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接调用一次 kmNet" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
@@ -4467,10 +4530,10 @@ export function StudioConsoleView({
         title="目标切换高级设置"
       >
         <div className="advanced-settings-grid two-column">
-          <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateConfigField("control", "candidate_ratio_max_aspect", value)} />
-          <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_preference_advantage", value)} />
-          <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "target_switch_min_continuity_score", value)} />
-          <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateConfigField("control", "target_switch_delay_ms", value)} />
+          <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateControlOrPipelineField("candidate_ratio_max_aspect", "candidate_max_aspect_ratio", value)} />
+          <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("target_switch_min_preference_advantage", "target_switch_min_preference_advantage", value)} />
+          <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("target_switch_min_continuity_score", "target_switch_min_continuity_score", value)} />
+          <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateControlOrPipelineField("target_switch_delay_ms", "target_switch_delay_ms", value)} />
         </div>
       </AdvancedSettingsDialog>
 
@@ -4486,20 +4549,22 @@ export function StudioConsoleView({
         title="Tracker / Kalman 高级设置"
       >
         <div className="advanced-settings-grid two-column">
-          <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateConfigField("control", "tracker_max_match_distance", value)} />
-          <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_position_cost_weight", value)} />
-          <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateConfigField("control", "tracker_iou_cost_weight", value)} />
-          <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateConfigField("control", "tracker_max_missed_frames", Math.round(value))} />
+          <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateControlOrPipelineField("tracker_max_match_distance", "tracker_max_match_distance", value)} />
+          <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("tracker_position_cost_weight", "tracker_position_cost_weight", value)} />
+          <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("tracker_iou_cost_weight", "tracker_iou_cost_weight", value)} />
+          <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_age", Math.round(value))} />
         </div>
         <div className="advanced-settings-divider">
-          <span>Kalman 估计器</span>
-          <small>{dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
+          <span>{rustControlPlane ? "Rust Tracker" : "Kalman 估计器"}</span>
+          <small>{rustControlPlane ? "Rust 主链使用有界关联与稳健速度短窗；不读取旧 Python Kalman 参数。" : dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
         </div>
-        <div className="advanced-settings-grid two-column">
-          <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
-          <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
-          <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
-        </div>
+        {!rustControlPlane ? (
+          <div className="advanced-settings-grid two-column">
+            <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
+            <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
+            <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
+          </div>
+        ) : null}
       </AdvancedSettingsDialog>
 
       {targetWeightsDialogOpen ? (
@@ -4559,8 +4624,8 @@ export function StudioConsoleView({
                   <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
                 </div>
                 <div className="target-weight-controls">
-                  <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_class_weight", value)} />
-                  <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateConfigField("control", "candidate_selection_distance_weight", value)} />
+                  <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateControlOrPipelineField("candidate_selection_class_weight", "target_selection_class_weight", value)} />
+                  <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateControlOrPipelineField("candidate_selection_distance_weight", "target_selection_distance_weight", value)} />
                 </div>
               </section>
 

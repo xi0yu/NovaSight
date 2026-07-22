@@ -459,8 +459,8 @@ def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
 
     assert "<span>关联算法</span><b>Hungarian</b>" in source
     assert "<span>输出状态</span><b>仅 ACTIVE</b>" in source
-    assert 'updateConfigField("control", "tracker_max_match_distance", value)' in source
-    assert 'updateConfigField("control", "tracker_max_missed_frames", Math.round(value))' in source
+    assert 'updateControlOrPipelineField("tracker_max_match_distance", "tracker_max_match_distance", value)' in source
+    assert 'updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_age", Math.round(value))' in source
     assert "experimental_angle_hungarian_enabled" not in source
     assert 'label="Track 确认帧数"' not in source
     assert 'label="Track 匹配距离 px"' not in source
@@ -554,3 +554,19 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert "内部可靠性" not in studio
     assert "control.quality_score" not in studio
     assert "experimental_angle" not in studio
+
+
+def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
+    studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert '"projection.fov_x_deg": "projection_fov_x_deg"' in studio
+    assert '"atan.far.kp": "far_kp"' in studio
+    assert '"prediction.lead_frames": "prediction_lead_frames"' in studio
+    assert 'await updateConfigField("pipeline", rustField, value)' in studio
+    assert 'await updateConfigField("pipeline", pipelineKey, value)' in studio
+    assert 'rustPipelineConfig.target_selection_class_weight' in studio
+    assert 'rustPipelineConfig.target_track_max_age' in studio
+    assert 'updateConfigField("pipeline", "output_interval_ms"' in studio
+    assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
+    assert 'Rust 主链使用有界关联与稳健速度短窗' in studio
+    assert 'availableControlAlgorithms.map' in studio
