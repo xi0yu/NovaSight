@@ -92,6 +92,8 @@ fn check_loads_config_and_exits_without_starting_the_daemon() {
             "--check",
             "--dry-run",
         ])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
         .expect("run check");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
@@ -117,6 +119,8 @@ fn check_rejects_a_missing_named_motion_profile_instead_of_silently_using_builti
             "--check",
             "--dry-run",
         ])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
         .expect("run check");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
@@ -155,12 +159,47 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 }
 
 #[test]
-fn complete_adapter_config_reaches_the_platform_build_boundary() {
+fn production_check_rejects_a_missing_license_public_key_before_platform_startup() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let output = Command::new(binary())
         .args(["--config", path.to_str().expect("UTF-8 path")])
+        .arg("--check")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
         .expect("run production mode");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("LICENSE_PUBLIC_KEY_MISSING"));
+}
+
+#[test]
+fn production_check_rejects_an_invalid_license_public_key() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let output = Command::new(binary())
+        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .env("NOVASIGHT_LICENSE_PUBLIC_KEY", "not a PEM public key")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+        .output()
+        .expect("run production check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("LICENSE_PUBLIC_KEY_INVALID"));
+}
+
+#[test]
+fn valid_license_public_key_reaches_the_platform_build_boundary() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let public_key =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/license-public.pem");
+    let output = Command::new(binary())
+        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", public_key)
+        .output()
+        .expect("run production check");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
 
     assert!(!output.status.success());
@@ -173,6 +212,8 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
     let (_directory, path) = temp_config();
     let mut child = Command::new(binary())
         .args(["--config", path.to_str().expect("UTF-8 path"), "--dry-run"])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

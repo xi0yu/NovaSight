@@ -44,6 +44,16 @@ impl LicensePolicy {
             public_key_pem,
         }
     }
+
+    /// Validate the verifier before daemon readiness. Production requires a
+    /// key; dry-run may omit it but still rejects malformed configured PEM.
+    pub fn validate_public_key(&self, required: bool) -> Result<(), LicenseError> {
+        match self.public_key_pem.as_deref() {
+            Some(pem) => parse_public_key(pem).map(|_| ()),
+            None if required => Err(LicenseError::PublicKeyMissing),
+            None => Ok(()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -524,14 +534,7 @@ fn verify_signed_key(
     }
     let payload_bytes = decode_base64url(payload, "payload")?;
     let signature_bytes = decode_base64url(signature, "signature")?;
-    let public_key = match RsaPublicKey::from_public_key_pem(public_key_pem) {
-        Ok(key) => key,
-        Err(spki_error) => RsaPublicKey::from_pkcs1_pem(public_key_pem).map_err(|pkcs1_error| {
-            LicenseError::PublicKeyInvalid(format!(
-                "cannot parse RSA public key as SPKI ({spki_error}) or PKCS#1 ({pkcs1_error})"
-            ))
-        })?,
-    };
+    let public_key = parse_public_key(public_key_pem)?;
     let signature = Signature::try_from(signature_bytes.as_slice()).map_err(|error| {
         LicenseError::InvalidKey(format!("invalid RSA signature length: {error}"))
     })?;
@@ -555,6 +558,17 @@ fn verify_signed_key(
         payload.to_owned(),
         key.rsplit_once('.').unwrap().1.to_owned(),
     ))
+}
+
+fn parse_public_key(public_key_pem: &str) -> Result<RsaPublicKey, LicenseError> {
+    Ok(match RsaPublicKey::from_public_key_pem(public_key_pem) {
+        Ok(key) => key,
+        Err(spki_error) => RsaPublicKey::from_pkcs1_pem(public_key_pem).map_err(|pkcs1_error| {
+            LicenseError::PublicKeyInvalid(format!(
+                "cannot parse RSA public key as SPKI ({spki_error}) or PKCS#1 ({pkcs1_error})"
+            ))
+        })?,
+    })
 }
 
 fn decode_base64url(value: &str, field: &str) -> Result<Vec<u8>, LicenseError> {

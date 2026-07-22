@@ -14,7 +14,7 @@ use novasight_runtime::{
     ApplicationError, ConfigService, LoadedApplication, PipelineState, RuntimeDependencies,
     RuntimeError, RuntimeHandle,
 };
-use novasight_store::license::{FileLicenseRepository, LicensePolicy};
+use novasight_store::license::{FileLicenseRepository, LicenseError, LicensePolicy};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
@@ -23,7 +23,6 @@ use tokio::sync::watch;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
     DryRun,
-    #[cfg(all(feature = "deepstream", target_os = "linux"))]
     Production,
 }
 
@@ -31,7 +30,6 @@ impl DaemonMode {
     const fn label(self) -> &'static str {
         match self {
             Self::DryRun => "dry-run",
-            #[cfg(all(feature = "deepstream", target_os = "linux"))]
             Self::Production => "production",
         }
     }
@@ -39,7 +37,6 @@ impl DaemonMode {
     const fn hardware_output_enabled(self) -> bool {
         match self {
             Self::DryRun => false,
-            #[cfg(all(feature = "deepstream", target_os = "linux"))]
             Self::Production => true,
         }
     }
@@ -200,10 +197,16 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
             })
             .transpose()?,
     };
-    if mode.hardware_output_enabled() && public_key.is_none() {
-        return Err(DaemonRunError::LicensePublicKeyMissing);
+    let policy = LicensePolicy::new(allow_test_key, public_key);
+    match policy.validate_public_key(mode.hardware_output_enabled()) {
+        Ok(()) => Ok(policy),
+        Err(LicenseError::PublicKeyMissing) => Err(DaemonRunError::LicensePublicKeyMissing),
+        Err(error) => Err(DaemonRunError::LicensePublicKeyInvalid(error)),
     }
-    Ok(LicensePolicy::new(allow_test_key, public_key))
+}
+
+pub(super) fn preflight_license_policy(mode: DaemonMode) -> Result<(), DaemonRunError> {
+    license_policy(mode).map(drop)
 }
 
 async fn monitor_runtime_license(
@@ -490,6 +493,8 @@ pub(super) enum DaemonRunError {
         #[source]
         source: io::Error,
     },
+    #[error("configured production license public key is invalid: {0}")]
+    LicensePublicKeyInvalid(LicenseError),
     #[error("failed to stop runtime after license invalidation: {0}")]
     LicenseEnforcement(RuntimeError),
     #[error("failed to bind HTTP server at {host}:{port}: {source}")]
@@ -591,6 +596,7 @@ impl DaemonRunError {
         match self {
             Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::LicensePublicKeyRead { .. } => "LICENSE_PUBLIC_KEY_READ_FAILED",
+            Self::LicensePublicKeyInvalid(_) => "LICENSE_PUBLIC_KEY_INVALID",
             Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",
