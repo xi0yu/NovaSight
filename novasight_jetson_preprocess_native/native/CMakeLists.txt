@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.18)
 
 project(novasight_jetson_preprocess_native LANGUAGES CXX)
 
+option(NOVASIGHT_JETSON_PREPROCESS_BUILD_TESTS
+    "Build portable preprocess C ABI contract tests" ON)
+
 set(NOVASIGHT_JETSON_PREPROCESS_IMPL "reference" CACHE STRING
     "Native preprocess implementation: reference, jetson_scaffold, or jetson")
 set_property(CACHE NOVASIGHT_JETSON_PREPROCESS_IMPL PROPERTY STRINGS
@@ -239,3 +242,37 @@ add_custom_command(TARGET novasight_jetson_preprocess_native POST_BUILD
         $<TARGET_FILE_DIR:novasight_jetson_preprocess_native>/libnovasight_jetson_preprocess_native.so
     COMMENT "Writing legacy NovaSight Jetson preprocess library alias"
 )
+
+if(NOVASIGHT_JETSON_PREPROCESS_BUILD_TESTS)
+    enable_testing()
+    if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "reference")
+        # This test deliberately passes a synthetic non-null GstBuffer pointer
+        # to prove portable schema validation. Never run that pointer through
+        # the production Jetson importer.
+        add_executable(novasight_jetson_preprocess_abi_contract_test
+            tests/abi_contract_test.cpp
+        )
+        target_compile_features(novasight_jetson_preprocess_abi_contract_test PRIVATE cxx_std_17)
+        target_link_libraries(novasight_jetson_preprocess_abi_contract_test
+            PRIVATE novasight_jetson_preprocess_native
+        )
+        add_test(
+            NAME novasight_jetson_preprocess_abi_contract
+            COMMAND novasight_jetson_preprocess_abi_contract_test
+        )
+    endif()
+    add_executable(novasight_jetson_preprocess_support_contract_test
+        tests/jetson_support_contract_test.cpp
+        src/jetson/novasight_jetson_preprocess_native_jetson_support.cpp
+    )
+    target_compile_features(novasight_jetson_preprocess_support_contract_test PRIVATE cxx_std_17)
+    target_include_directories(novasight_jetson_preprocess_support_contract_test
+        PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/../include
+            ${CMAKE_CURRENT_LIST_DIR}/src/jetson
+    )
+    add_test(
+        NAME novasight_jetson_preprocess_support_contract
+        COMMAND novasight_jetson_preprocess_support_contract_test
+    )
+endif()

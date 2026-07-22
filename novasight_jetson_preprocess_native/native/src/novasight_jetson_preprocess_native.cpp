@@ -1,6 +1,7 @@
 #include "novasight_jetson_preprocess_native.h"
 
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -14,7 +15,7 @@ struct PayloadValidation {
     std::string detail;
 };
 
-void write_json(char* output, size_t output_size, const char* json) {
+void write_json(char* output, size_t output_size, const char* json) noexcept {
     if (output == nullptr || output_size == 0) {
         return;
     }
@@ -126,8 +127,9 @@ bool read_int_field(const std::string& json, const char* key, long long* value) 
         return false;
     }
     char* end = nullptr;
+    errno = 0;
     const long long parsed = std::strtoll(cursor, &end, 10);
-    if (end == cursor || !json_value_terminator(*end)) {
+    if (end == cursor || errno == ERANGE || !json_value_terminator(*end)) {
         return false;
     }
     *value = parsed;
@@ -230,8 +232,9 @@ bool read_int_array_field(
             }
         }
         char* end = nullptr;
+        errno = 0;
         const long long parsed = std::strtoll(cursor, &end, 10);
-        if (end == cursor || !json_value_terminator(*end)) {
+        if (end == cursor || errno == ERANGE || !json_value_terminator(*end)) {
             return false;
         }
         parsed_values.push_back(parsed);
@@ -306,11 +309,11 @@ PayloadValidation validate_payload(const char* payload_json) {
 
     std::string resource_source;
     if (!read_string_field(json, "resource_source", &resource_source)
-        || resource_source != "appsink") {
+        || (resource_source != "appsink" && resource_source != "deepstream_pad")) {
         return {
             false,
             "unsupported_resource_source",
-            "Expected resource_source=appsink."
+            "Expected resource_source=appsink or deepstream_pad."
         };
     }
 
@@ -407,6 +410,7 @@ PayloadValidation validate_payload(const char* payload_json) {
             "Expected model_shape object with batch/channels/height/width."
         };
     }
+    std::vector<long long> model_shape;
     for (const char* key : {"batch", "channels", "height", "width"}) {
         long long value = 0;
         if (!read_int_field(model_shape_json, key, &value) || value <= 0) {
@@ -416,6 +420,7 @@ PayloadValidation validate_payload(const char* payload_json) {
                 std::string("Expected positive integer field: model_shape.") + key + "."
             };
         }
+        model_shape.push_back(value);
     }
 
     std::vector<long long> nchw;
@@ -428,17 +433,28 @@ PayloadValidation validate_payload(const char* payload_json) {
     if (nchw[1] != 1 && nchw[1] != 3 && nchw[1] != 4) {
         return {false, "unsupported_channels", "NCHW channel count must be 1, 3, or 4."};
     }
+    if (model_shape != nchw) {
+        return {
+            false,
+            "model_shape_mismatch",
+            "Expected model_shape to match nchw exactly."
+        };
+    }
+    const bool expected_resize = width != nchw[3] || height != nchw[2];
+    if (needs_resize != expected_resize) {
+        return {
+            false,
+            "needs_resize_mismatch",
+            "Expected needs_resize to match frame and model geometry."
+        };
+    }
 
     return {true, "", ""};
 }
 
 }  // namespace
 
-extern "C" uint32_t novasight_abi_version(void) {
-    return NOVASIGHT_JETSON_PREPROCESS_ABI_VERSION;
-}
-
-extern "C" int novasight_status_json(char* status_json, size_t status_json_size) {
+int status_json_impl(char* status_json, size_t status_json_size) {
     write_json(
         status_json,
         status_json_size,
@@ -452,14 +468,14 @@ extern "C" int novasight_status_json(char* status_json, size_t status_json_size)
         "\"capabilities\":{"
         "\"memory\":[\"dmabuf\",\"nvmm\"],"
         "\"resource_kind\":[\"gstreamer_sample\"],"
-        "\"resource_source\":[\"appsink\"],"
+        "\"resource_source\":[\"appsink\",\"deepstream_pad\"],"
         "\"formats\":[\"NV12\"],"
         "\"dtypes\":[\"float32\",\"float16\"]},"
         "\"abi_version\":1}");
     return 0;
 }
 
-extern "C" int novasight_prepare_tensor_json(
+int prepare_tensor_impl(
     const char* payload_json,
     char* result_json,
     size_t result_json_size
@@ -482,6 +498,40 @@ extern "C" int novasight_prepare_tensor_json(
         "Implement DMABUF/NvBufSurface/EGL/CUDA to NCHW TensorRT input "
         "conversion and return device_ptr/nbytes.\"}");
     return 3;
+}
+
+extern "C" uint32_t novasight_abi_version(void) {
+    return NOVASIGHT_JETSON_PREPROCESS_ABI_VERSION;
+}
+
+extern "C" int novasight_status_json(char* status_json, size_t status_json_size) {
+    try {
+        return status_json_impl(status_json, status_json_size);
+    } catch (...) {
+        write_json(
+            status_json,
+            status_json_size,
+            "{\"available\":false,\"ready\":false,\"reason\":\"native_exception\"}"
+        );
+        return 2;
+    }
+}
+
+extern "C" int novasight_prepare_tensor_json(
+    const char* payload_json,
+    char* result_json,
+    size_t result_json_size
+) {
+    try {
+        return prepare_tensor_impl(payload_json, result_json, result_json_size);
+    } catch (...) {
+        write_json(
+            result_json,
+            result_json_size,
+            "{\"reason\":\"native_exception\",\"detail\":\"unexpected reference ABI failure\"}"
+        );
+        return 2;
+    }
 }
 
 extern "C" int novasight_release_tensor(uint64_t release_token) {

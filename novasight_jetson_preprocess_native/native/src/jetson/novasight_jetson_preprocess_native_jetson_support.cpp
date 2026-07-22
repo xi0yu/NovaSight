@@ -3,8 +3,11 @@
 #include "novasight_jetson_preprocess_native.h"
 
 #include <cctype>
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace novasight::jetson_preprocess {
 namespace {
@@ -97,8 +100,10 @@ bool read_int_field(const std::string& json, const char* key, int* value) {
         return false;
     }
     char* end = nullptr;
+    errno = 0;
     const long parsed = std::strtol(cursor, &end, 10);
-    if (end == cursor || !json_value_terminator(*end)) {
+    if (end == cursor || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX
+        || !json_value_terminator(*end)) {
         return false;
     }
     *value = static_cast<int>(parsed);
@@ -110,9 +115,13 @@ bool read_uint64_field(const std::string& json, const char* key, uint64_t* value
     if (cursor == nullptr || std::strncmp(cursor, "null", 4) == 0) {
         return false;
     }
+    if (*cursor == '-') {
+        return false;
+    }
     char* end = nullptr;
+    errno = 0;
     const unsigned long long parsed = std::strtoull(cursor, &end, 10);
-    if (end == cursor || !json_value_terminator(*end)) {
+    if (end == cursor || errno == ERANGE || !json_value_terminator(*end)) {
         return false;
     }
     *value = static_cast<uint64_t>(parsed);
@@ -215,8 +224,10 @@ bool read_int_array_field(
             }
         }
         char* end = nullptr;
+        errno = 0;
         const long parsed = std::strtol(cursor, &end, 10);
-        if (end == cursor || !json_value_terminator(*end)) {
+        if (end == cursor || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX
+            || !json_value_terminator(*end)) {
             return false;
         }
         parsed_values.push_back(static_cast<int>(parsed));
@@ -281,28 +292,53 @@ RequestValidation invalid(
 
 }  // namespace
 
-void write_json(char* output, size_t output_size, const std::string& json) {
+void write_fallback_json(char* output, size_t output_size, const char* json) noexcept {
     if (output == nullptr || output_size == 0) {
         return;
     }
-    const size_t length = json.size();
+    if (json == nullptr) {
+        json = "";
+    }
+    const size_t length = std::strlen(json);
     const size_t copy_length = length < output_size - 1 ? length : output_size - 1;
-    std::memcpy(output, json.c_str(), copy_length);
+    std::memcpy(output, json, copy_length);
     output[copy_length] = '\0';
 }
 
-void write_error_json(
+bool write_json(char* output, size_t output_size, const std::string& json) noexcept {
+    if (output == nullptr || output_size == 0) {
+        return false;
+    }
+    if (json.size() >= output_size) {
+        output[0] = '\0';
+        return false;
+    }
+    std::memcpy(output, json.data(), json.size());
+    output[json.size()] = '\0';
+    return true;
+}
+
+bool write_error_json(
     char* output,
     size_t output_size,
     const std::string& reason,
     const std::string& detail
-) {
-    write_json(
-        output,
-        output_size,
-        "{\"reason\":\"" + json_escape(reason) + "\","
-        "\"detail\":\"" + json_escape(detail) + "\"}"
-    );
+) noexcept {
+    try {
+        return write_json(
+            output,
+            output_size,
+            "{\"reason\":\"" + json_escape(reason) + "\","
+            "\"detail\":\"" + json_escape(detail) + "\"}"
+        );
+    } catch (...) {
+        write_fallback_json(
+            output,
+            output_size,
+            "{\"reason\":\"native_exception\",\"detail\":\"failed to serialize error\"}"
+        );
+        return false;
+    }
 }
 
 int dtype_size_bytes(const std::string& dtype) {
@@ -328,7 +364,11 @@ uint64_t tensor_nbytes(const TensorRequest& request) {
         if (dim <= 0) {
             return 0;
         }
-        total *= static_cast<uint64_t>(dim);
+        const uint64_t factor = static_cast<uint64_t>(dim);
+        if (total > std::numeric_limits<uint64_t>::max() / factor) {
+            return 0;
+        }
+        total *= factor;
     }
     return total;
 }
@@ -339,7 +379,7 @@ RequestValidation parse_tensor_request(const char* payload_json) {
     }
     const std::string json(payload_json);
     TensorRequest request;
-    if (!read_int_field(json, "frame_id", &request.frame_id) || request.frame_id <= 0) {
+    if (!read_uint64_field(json, "frame_id", &request.frame_id) || request.frame_id == 0) {
         return invalid(
             "frame_id_required",
             "Native Jetson preprocessing requires a positive frame_id.",
@@ -380,8 +420,13 @@ RequestValidation parse_tensor_request(const char* payload_json) {
         );
     }
     if (!read_string_field(json, "resource_source", &request.resource_source)
-        || request.resource_source != "appsink") {
-        return invalid("unsupported_resource_source", "Expected resource_source=appsink.", request);
+        || (request.resource_source != "appsink"
+            && request.resource_source != "deepstream_pad")) {
+        return invalid(
+            "unsupported_resource_source",
+            "Expected resource_source=appsink or deepstream_pad.",
+            request
+        );
     }
     if (!read_string_field(json, "resource_pixel_format", &request.resource_pixel_format)
         || request.resource_pixel_format != "NV12") {
@@ -474,6 +519,7 @@ RequestValidation parse_tensor_request(const char* payload_json) {
             request
         );
     }
+    std::vector<int> model_shape;
     for (const char* key : {"batch", "channels", "height", "width"}) {
         int value = 0;
         if (!read_int_field(model_shape_json, key, &value) || value <= 0) {
@@ -483,6 +529,7 @@ RequestValidation parse_tensor_request(const char* payload_json) {
                 request
             );
         }
+        model_shape.push_back(value);
     }
     if (!read_int_array_field(json, "nchw", &request.nchw) || request.nchw.size() != 4) {
         return invalid("invalid_nchw", "Expected nchw=[N,C,H,W].", request);
@@ -494,6 +541,22 @@ RequestValidation parse_tensor_request(const char* payload_json) {
     }
     if (request.nchw[1] != 1 && request.nchw[1] != 3 && request.nchw[1] != 4) {
         return invalid("unsupported_channels", "NCHW channel count must be 1, 3, or 4.", request);
+    }
+    if (model_shape != request.nchw) {
+        return invalid(
+            "model_shape_mismatch",
+            "Expected model_shape to match nchw exactly.",
+            request
+        );
+    }
+    const bool expected_resize = request.width != request.nchw[3]
+                                 || request.height != request.nchw[2];
+    if (request.needs_resize != expected_resize) {
+        return invalid(
+            "needs_resize_mismatch",
+            "Expected needs_resize to match frame and model geometry.",
+            request
+        );
     }
     return {true, "", "", request};
 }
@@ -511,7 +574,7 @@ std::string unavailable_status_json(
            "\"capabilities\":{"
            "\"memory\":[\"dmabuf\",\"nvmm\"],"
            "\"resource_kind\":[\"gstreamer_sample\"],"
-           "\"resource_source\":[\"appsink\"],"
+           "\"resource_source\":[\"appsink\",\"deepstream_pad\"],"
            "\"formats\":[\"NV12\"],"
            "\"dtypes\":[\"float32\",\"float16\"]},"
            "\"abi_version\":" + std::to_string(NOVASIGHT_JETSON_PREPROCESS_ABI_VERSION) + "}";

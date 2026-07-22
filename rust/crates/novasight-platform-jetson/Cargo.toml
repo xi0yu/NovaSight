@@ -13,6 +13,11 @@ deepstream = [
   "dep:novasight-pipeline",
   "novasight-deepstream-bridge/ffi",
 ]
+cuda-preprocess = [
+  "deepstream",
+  "dep:novasight-jetson-preprocess",
+  "novasight-jetson-preprocess/ffi",
+]
 
 [dependencies]
 novasight-core = { path = "../novasight-core" }
@@ -24,4 +29,5 @@ thiserror.workspace = true
 crossbeam-queue = { workspace = true, optional = true }
 gstreamer = { workspace = true, optional = true }
 novasight-deepstream-bridge = { path = "../novasight-deepstream-bridge", optional = true }
+novasight-jetson-preprocess = { path = "../novasight-jetson-preprocess", optional = true }
 novasight-pipeline = { path = "../novasight-pipeline", optional = true }

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 deepstream = ["relink-server/deepstream"]
+cuda-preprocess = ["deepstream", "relink-server/cuda-preprocess"]
 experimental-kmnet-native = ["deepstream", "relink-server/experimental-kmnet-native"]
 
 [dependencies]

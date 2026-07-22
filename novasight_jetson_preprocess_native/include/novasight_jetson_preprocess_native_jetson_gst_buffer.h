@@ -22,8 +22,8 @@ typedef enum {
 // so the legacy __has_attribute() / gmacros.h preprocessing problem does
 // not affect it.
 //
-// In: gst_buffer_ptr is the integer pointer value Python captured from the
-// GstBuffer object (gpointer / Python GObject pointer address).
+// In: gst_buffer_ptr is the integer pointer value borrowed from the live
+// GstBuffer held by the caller's frame lease.
 // Out: *surface_out receives a borrowed NvBufSurface* if the call
 // succeeds, or nullptr on failure. *map_owner_out is an opaque handle that
 // the caller must release via novasight_gst_release_surface; on success

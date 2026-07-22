@@ -10,7 +10,7 @@
 namespace novasight::jetson_preprocess {
 
 struct TensorRequest {
-    int frame_id = 0;
+    uint64_t frame_id = 0;
     uint64_t capture_ts_ns = 0;
     int dmabuf_fd = -1;
     uint64_t gst_buffer_ptr = 0;
@@ -44,13 +44,15 @@ RequestValidation parse_tensor_request(const char* payload_json);
 int dtype_size_bytes(const std::string& dtype);
 uint64_t tensor_nbytes(const TensorRequest& request);
 
-void write_json(char* output, size_t output_size, const std::string& json);
-void write_error_json(
+bool write_json(char* output, size_t output_size, const std::string& json) noexcept;
+bool write_error_json(
     char* output,
     size_t output_size,
     const std::string& reason,
     const std::string& detail
-);
+) noexcept;
+
+void write_fallback_json(char* output, size_t output_size, const char* json) noexcept;
 
 std::string unavailable_status_json(
     const std::string& backend,

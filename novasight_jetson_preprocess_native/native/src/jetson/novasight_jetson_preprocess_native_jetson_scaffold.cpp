@@ -38,7 +38,7 @@ extern "C" int novasight_status_json(char* status_json, size_t status_json_size)
         "\"capabilities\":{"
         "\"memory\":[\"dmabuf\",\"nvmm\"],"
         "\"resource_kind\":[\"gstreamer_sample\"],"
-        "\"resource_source\":[\"appsink\"],"
+        "\"resource_source\":[\"appsink\",\"deepstream_pad\"],"
         "\"formats\":[\"NV12\"],"
         "\"dtypes\":[\"float32\",\"float16\"]},"
         "\"abi_version\":1}");

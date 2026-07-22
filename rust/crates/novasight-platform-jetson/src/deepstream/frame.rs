@@ -42,6 +42,11 @@ impl FrameLease {
         self.buffer.as_ref()
     }
 
+    pub(crate) fn buffer_ptr(&self) -> u64 {
+        u64::try_from(self.buffer.as_ptr().addr())
+            .expect("supported Jetson pointer width does not exceed 64 bits")
+    }
+
     pub const fn epoch(&self) -> RuntimeEpoch {
         self.epoch
     }

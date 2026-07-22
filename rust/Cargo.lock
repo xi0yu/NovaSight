@@ -943,6 +943,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "novasight-jetson-preprocess"
+version = "0.1.0"
+dependencies = [
+ "novasight-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "novasight-pipeline"
 version = "0.1.0"
 dependencies = [
@@ -962,6 +972,7 @@ dependencies = [
  "gstreamer",
  "novasight-core",
  "novasight-deepstream-bridge",
+ "novasight-jetson-preprocess",
  "novasight-pipeline",
  "serde",
  "serde_json",

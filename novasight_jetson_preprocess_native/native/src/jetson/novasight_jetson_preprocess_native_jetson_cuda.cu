@@ -16,11 +16,14 @@
 #include <nvbufsurface.h>
 #include <nvbufsurftransform.h>
 #include <algorithm>
+#include <climits>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -32,6 +35,7 @@ using Clock = std::chrono::steady_clock;
 struct DeviceAllocation {
     void* ptr = nullptr;
     uint64_t nbytes = 0;
+    bool releasing = false;
 };
 
 std::mutex g_allocations_mutex;
@@ -39,14 +43,14 @@ std::unordered_map<uint64_t, DeviceAllocation> g_allocations;
 uint64_t g_next_release_token = 1;
 
 __device__ int scaled_source_index(int dst_index, int dst_size, int src_size) {
-    int value = (dst_index * src_size) / dst_size;
+    const int64_t value = (static_cast<int64_t>(dst_index) * src_size) / dst_size;
     if (value < 0) {
         return 0;
     }
     if (value >= src_size) {
         return src_size - 1;
     }
-    return value;
+    return static_cast<int>(value);
 }
 
 __device__ void write_tensor_value(
@@ -140,12 +144,57 @@ double elapsed_ms(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-uint64_t register_allocation(void* ptr, uint64_t nbytes) {
+uint64_t reserve_release_token() {
     std::lock_guard<std::mutex> lock(g_allocations_mutex);
-    const uint64_t token = g_next_release_token++;
-    g_allocations[token] = DeviceAllocation{ptr, nbytes};
+    if (g_next_release_token == 0
+        || g_next_release_token == std::numeric_limits<uint64_t>::max()) {
+        return 0;
+    }
+    const uint64_t token = g_next_release_token;
+    ++g_next_release_token;
     return token;
 }
+
+void register_allocation(uint64_t token, void* ptr, uint64_t nbytes) {
+    std::lock_guard<std::mutex> lock(g_allocations_mutex);
+    const auto inserted = g_allocations.emplace(
+        token,
+        DeviceAllocation{ptr, nbytes, false}
+    );
+    if (!inserted.second) {
+        throw std::runtime_error("duplicate CUDA tensor release token");
+    }
+}
+
+struct PrepareResources {
+    NvBufSurface* rgba_surface = nullptr;
+    CUgraphicsResource cuda_resource = nullptr;
+    void* output_device = nullptr;
+    unsigned char* rgba_linear_owner = nullptr;
+    bool rgba_egl_mapped = false;
+    void* gst_map_owner = nullptr;
+
+    ~PrepareResources() noexcept {
+        if (rgba_linear_owner != nullptr) {
+            cudaFree(rgba_linear_owner);
+        }
+        if (cuda_resource != nullptr) {
+            cuGraphicsUnregisterResource(cuda_resource);
+        }
+        if (rgba_egl_mapped && rgba_surface != nullptr) {
+            NvBufSurfaceUnMapEglImage(rgba_surface, 0);
+        }
+        if (rgba_surface != nullptr) {
+            NvBufSurfaceDestroy(rgba_surface);
+        }
+        if (output_device != nullptr) {
+            cudaFree(output_device);
+        }
+        if (gst_map_owner != nullptr) {
+            novasight_gst_release_surface(gst_map_owner);
+        }
+    }
+};
 
 bool valid_egl_image(EGLImageKHR image) {
     return image != nullptr && image != EGL_NO_IMAGE_KHR;
@@ -167,6 +216,10 @@ bool copy_array_frame_to_linear_rgba(
 ) {
     if (egl_frame.planeCount < 1 || egl_frame.frame.pArray[0] == nullptr) {
         *detail = "CUDA array EGL frame does not expose an RGBA plane.";
+        return false;
+    }
+    if (width <= 0 || width > INT_MAX / 4) {
+        *detail = "RGBA width exceeds the supported pitch range.";
         return false;
     }
     *rgba_pitch = width * 4;
@@ -245,7 +298,8 @@ bool validate_rgba_plane_layout(
         *detail = "RGBA plane pointer is null.";
         return false;
     }
-    if (rgba_pitch < width * 4) {
+    const int64_t minimum_pitch = static_cast<int64_t>(width) * 4;
+    if (rgba_pitch < minimum_pitch) {
         std::ostringstream stream;
         stream << "RGBA pitch is smaller than width*4: rgba_pitch=" << rgba_pitch
                << ", width=" << width << ".";
@@ -356,14 +410,10 @@ std::string success_json(
 
 }  // namespace
 
-extern "C" uint32_t novasight_abi_version(void) {
-    return NOVASIGHT_JETSON_PREPROCESS_ABI_VERSION;
-}
-
-extern "C" int novasight_status_json(char* status_json, size_t status_json_size) {
+int status_json_impl(char* status_json, size_t status_json_size) {
     std::string detail;
     if (!ensure_cuda_context(&detail)) {
-        novasight::jetson_preprocess::write_json(
+        return novasight::jetson_preprocess::write_json(
             status_json,
             status_json_size,
             novasight::jetson_preprocess::unavailable_status_json(
@@ -371,10 +421,9 @@ extern "C" int novasight_status_json(char* status_json, size_t status_json_size)
                 "cuda_context_unavailable",
                 detail
             )
-        );
-        return 0;
+        ) ? 0 : 1;
     }
-    novasight::jetson_preprocess::write_json(
+    return novasight::jetson_preprocess::write_json(
         status_json,
         status_json_size,
         "{\"available\":true,"
@@ -385,15 +434,14 @@ extern "C" int novasight_status_json(char* status_json, size_t status_json_size)
         "\"capabilities\":{"
         "\"memory\":[\"dmabuf\",\"nvmm\"],"
         "\"resource_kind\":[\"gstreamer_sample\"],"
-        "\"resource_source\":[\"appsink\"],"
+        "\"resource_source\":[\"appsink\",\"deepstream_pad\"],"
         "\"formats\":[\"NV12\"],"
         "\"dtypes\":[\"float32\",\"float16\"]},"
         "\"abi_version\":1}"
-    );
-    return 0;
+    ) ? 0 : 1;
 }
 
-extern "C" int novasight_prepare_tensor_json(
+int prepare_tensor_impl(
     const char* payload_json,
     char* result_json,
     size_t result_json_size
@@ -437,6 +485,15 @@ extern "C" int novasight_prepare_tensor_json(
         );
         return 1;
     }
+    if (request.nchw[3] > INT_MAX / 4) {
+        novasight::jetson_preprocess::write_error_json(
+            result_json,
+            result_json_size,
+            "unsupported_tensor_geometry",
+            "Tensor width exceeds the supported RGBA pitch range."
+        );
+        return 1;
+    }
 
     std::string detail;
     if (!ensure_cuda_context(&detail)) {
@@ -450,19 +507,13 @@ extern "C" int novasight_prepare_tensor_json(
     }
 
     NvBufSurface* surface = nullptr;
-    void* gst_map_owner = nullptr;
+    PrepareResources resources;
     std::string source_reason;
     std::string source_detail;
-    auto cleanup_source_surface = [&]() {
-        if (gst_map_owner != nullptr) {
-            novasight_gst_release_surface(gst_map_owner);
-            gst_map_owner = nullptr;
-        }
-    };
     if (!resolve_source_surface_from_request(
             request,
             &surface,
-            &gst_map_owner,
+            &resources.gst_map_owner,
             &source_reason,
             &source_detail
         )) {
@@ -481,7 +532,6 @@ extern "C" int novasight_prepare_tensor_json(
             "invalid_nvbufsurface",
             "NvBufSurface has no surfaceList entry."
         );
-        cleanup_source_surface();
         return 1;
     }
     if (surface->surfaceList[0].colorFormat != NVBUF_COLOR_FORMAT_NV12) {
@@ -491,7 +541,6 @@ extern "C" int novasight_prepare_tensor_json(
             "unsupported_nvbufsurface_format",
             "NvBufSurface colorFormat is not NVBUF_COLOR_FORMAT_NV12."
         );
-        cleanup_source_surface();
         return 1;
     }
     const int surface_width = static_cast<int>(surface->surfaceList[0].width);
@@ -508,11 +557,9 @@ extern "C" int novasight_prepare_tensor_json(
             "nvbufsurface_geometry_mismatch",
             geometry_detail.str()
         );
-        cleanup_source_surface();
         return 1;
     }
 
-    NvBufSurface* rgba_surface = nullptr;
     NvBufSurfaceCreateParams create_params{};
     create_params.gpuId = surface->gpuId;
     create_params.width = static_cast<uint32_t>(request.nchw[3]);
@@ -521,21 +568,17 @@ extern "C" int novasight_prepare_tensor_json(
     create_params.colorFormat = NVBUF_COLOR_FORMAT_RGBA;
     create_params.layout = NVBUF_LAYOUT_PITCH;
     create_params.memType = NVBUF_MEM_DEFAULT;
-    if (NvBufSurfaceCreate(&rgba_surface, 1, &create_params) != 0 || rgba_surface == nullptr) {
+    if (NvBufSurfaceCreate(&resources.rgba_surface, 1, &create_params) != 0
+        || resources.rgba_surface == nullptr) {
         novasight::jetson_preprocess::write_error_json(
             result_json,
             result_json_size,
             "nvbufsurface_create_rgba_failed",
             "NvBufSurfaceCreate failed for intermediate RGBA tensor source."
         );
-        cleanup_source_surface();
         return 1;
     }
 
-    CUgraphicsResource cuda_resource = nullptr;
-    void* output_device = nullptr;
-    unsigned char* rgba_linear_owner = nullptr;
-    bool rgba_egl_mapped = false;
     double nvbufsurftransform_ms = 0.0;
     double egl_cuda_map_ms = 0.0;
     double cuda_kernel_ms = 0.0;
@@ -562,7 +605,7 @@ extern "C" int novasight_prepare_tensor_json(
 
         const auto transform_start = Clock::now();
         const NvBufSurfTransform_Error transform_error =
-            NvBufSurfTransform(surface, rgba_surface, &transform_params);
+            NvBufSurfTransform(surface, resources.rgba_surface, &transform_params);
         const auto transform_done = Clock::now();
         nvbufsurftransform_ms = elapsed_ms(transform_start, transform_done);
         if (transform_error != NvBufSurfTransformError_Success) {
@@ -575,7 +618,7 @@ extern "C" int novasight_prepare_tensor_json(
             break;
         }
         const auto map_start = Clock::now();
-        if (NvBufSurfaceMapEglImage(rgba_surface, 0) != 0) {
+        if (NvBufSurfaceMapEglImage(resources.rgba_surface, 0) != 0) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
                 result_json_size,
@@ -584,9 +627,9 @@ extern "C" int novasight_prepare_tensor_json(
             );
             break;
         }
-        rgba_egl_mapped = true;
+        resources.rgba_egl_mapped = true;
 
-        EGLImageKHR egl_image = rgba_surface->surfaceList[0].mappedAddr.eglImage;
+        EGLImageKHR egl_image = resources.rgba_surface->surfaceList[0].mappedAddr.eglImage;
         if (!valid_egl_image(egl_image)) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
@@ -598,7 +641,7 @@ extern "C" int novasight_prepare_tensor_json(
         }
 
         CUresult cu_result = cuGraphicsEGLRegisterImage(
-            &cuda_resource,
+            &resources.cuda_resource,
             egl_image,
             CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY
         );
@@ -613,7 +656,12 @@ extern "C" int novasight_prepare_tensor_json(
         }
 
         CUeglFrame egl_frame{};
-        cu_result = cuGraphicsResourceGetMappedEglFrame(&egl_frame, cuda_resource, 0, 0);
+        cu_result = cuGraphicsResourceGetMappedEglFrame(
+            &egl_frame,
+            resources.cuda_resource,
+            0,
+            0
+        );
         if (cu_result != CUDA_SUCCESS) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
@@ -631,7 +679,7 @@ extern "C" int novasight_prepare_tensor_json(
                 request.nchw[3],
                 request.nchw[2],
                 &rgba_plane,
-                &rgba_linear_owner,
+                &resources.rgba_linear_owner,
                 &rgba_pitch,
                 &detail
             )) {
@@ -670,7 +718,19 @@ extern "C" int novasight_prepare_tensor_json(
             );
             break;
         }
-        cudaError_t err = cudaMalloc(&output_device, static_cast<size_t>(nbytes));
+        if (nbytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+            novasight::jetson_preprocess::write_error_json(
+                result_json,
+                result_json_size,
+                "tensor_nbytes_exceeds_host_size",
+                "Tensor allocation exceeds size_t capacity."
+            );
+            break;
+        }
+        cudaError_t err = cudaMalloc(
+            &resources.output_device,
+            static_cast<size_t>(nbytes)
+        );
         if (err != cudaSuccess) {
             novasight::jetson_preprocess::write_error_json(
                 result_json,
@@ -678,15 +738,26 @@ extern "C" int novasight_prepare_tensor_json(
                 "cuda_malloc_output_failed",
                 cuda_error_string(err)
             );
-            output_device = nullptr;
+            resources.output_device = nullptr;
             break;
         }
 
         const dim3 block(16, 16);
-        const dim3 grid(
-            (request.nchw[3] + block.x - 1) / block.x,
-            (request.nchw[2] + block.y - 1) / block.y
-        );
+        const uint64_t grid_x = (static_cast<uint64_t>(request.nchw[3]) + block.x - 1)
+                                / block.x;
+        const uint64_t grid_y = (static_cast<uint64_t>(request.nchw[2]) + block.y - 1)
+                                / block.y;
+        if (grid_x > std::numeric_limits<unsigned>::max()
+            || grid_y > std::numeric_limits<unsigned>::max()) {
+            novasight::jetson_preprocess::write_error_json(
+                result_json,
+                result_json_size,
+                "cuda_grid_too_large",
+                "Tensor geometry exceeds CUDA grid dimensions."
+            );
+            break;
+        }
+        const dim3 grid(static_cast<unsigned>(grid_x), static_cast<unsigned>(grid_y));
         const int dtype_code = request.dtype == "float16" ? 16 : 32;
         const auto kernel_start = Clock::now();
         rgba_to_nchw_kernel<<<grid, block>>>(
@@ -694,7 +765,7 @@ extern "C" int novasight_prepare_tensor_json(
             request.nchw[3],
             request.nchw[2],
             rgba_pitch,
-            output_device,
+            resources.output_device,
             request.nchw[2],
             request.nchw[3],
             request.nchw[1],
@@ -723,43 +794,49 @@ extern "C" int novasight_prepare_tensor_json(
             break;
         }
 
-        const uint64_t release_token = register_allocation(output_device, nbytes);
-        novasight::jetson_preprocess::write_json(
-            result_json,
-            result_json_size,
-            success_json(
-                request,
-                output_device,
-                nbytes,
-                release_token,
-                nvbufsurftransform_ms,
-                egl_cuda_map_ms,
-                cuda_kernel_ms,
-                elapsed_ms(total_start, Clock::now())
-            )
+        const uint64_t release_token = reserve_release_token();
+        if (release_token == 0) {
+            novasight::jetson_preprocess::write_error_json(
+                result_json,
+                result_json_size,
+                "release_token_exhausted",
+                "CUDA tensor release-token space is exhausted."
+            );
+            break;
+        }
+        const std::string receipt = success_json(
+            request,
+            resources.output_device,
+            nbytes,
+            release_token,
+            nvbufsurftransform_ms,
+            egl_cuda_map_ms,
+            cuda_kernel_ms,
+            elapsed_ms(total_start, Clock::now())
         );
-        output_device = nullptr;
+        if (result_json == nullptr || receipt.size() >= result_json_size) {
+            novasight::jetson_preprocess::write_fallback_json(
+                result_json,
+                result_json_size,
+                "{\"reason\":\"result_buffer_too_small\",\"detail\":\"success receipt did not fit\"}"
+            );
+            break;
+        }
+        if (!novasight::jetson_preprocess::write_json(
+                result_json,
+                result_json_size,
+                receipt
+            )) {
+            throw std::runtime_error("validated CUDA tensor receipt could not be written");
+        }
+        register_allocation(release_token, resources.output_device, nbytes);
+        resources.output_device = nullptr;
         return_code = 0;
     } while (false);
-
-    if (rgba_linear_owner != nullptr) {
-        cudaFree(rgba_linear_owner);
-    }
-    if (cuda_resource != nullptr) {
-        cuGraphicsUnregisterResource(cuda_resource);
-    }
-    if (rgba_egl_mapped) {
-        NvBufSurfaceUnMapEglImage(rgba_surface, 0);
-    }
-    NvBufSurfaceDestroy(rgba_surface);
-    if (output_device != nullptr) {
-        cudaFree(output_device);
-    }
-    cleanup_source_surface();
     return return_code;
 }
 
-extern "C" int novasight_release_tensor(uint64_t release_token) {
+int release_tensor_impl(uint64_t release_token) {
     DeviceAllocation allocation;
     {
         std::lock_guard<std::mutex> lock(g_allocations_mutex);
@@ -767,12 +844,69 @@ extern "C" int novasight_release_tensor(uint64_t release_token) {
         if (found == g_allocations.end()) {
             return 1;
         }
+        if (found->second.releasing) {
+            return 2;
+        }
+        found->second.releasing = true;
         allocation = found->second;
-        g_allocations.erase(found);
     }
     if (allocation.ptr == nullptr) {
         return 1;
     }
     const cudaError_t err = cudaFree(allocation.ptr);
+    {
+        std::lock_guard<std::mutex> lock(g_allocations_mutex);
+        const auto found = g_allocations.find(release_token);
+        if (found == g_allocations.end()) {
+            return 3;
+        }
+        if (err == cudaSuccess) {
+            g_allocations.erase(found);
+        } else {
+            found->second.releasing = false;
+        }
+    }
     return err == cudaSuccess ? 0 : 1;
+}
+
+extern "C" uint32_t novasight_abi_version(void) {
+    return NOVASIGHT_JETSON_PREPROCESS_ABI_VERSION;
+}
+
+extern "C" int novasight_status_json(char* status_json, size_t status_json_size) {
+    try {
+        return status_json_impl(status_json, status_json_size);
+    } catch (...) {
+        novasight::jetson_preprocess::write_fallback_json(
+            status_json,
+            status_json_size,
+            "{\"available\":false,\"ready\":false,\"reason\":\"native_exception\"}"
+        );
+        return 2;
+    }
+}
+
+extern "C" int novasight_prepare_tensor_json(
+    const char* payload_json,
+    char* result_json,
+    size_t result_json_size
+) {
+    try {
+        return prepare_tensor_impl(payload_json, result_json, result_json_size);
+    } catch (...) {
+        novasight::jetson_preprocess::write_fallback_json(
+            result_json,
+            result_json_size,
+            "{\"reason\":\"native_exception\",\"detail\":\"unexpected preprocess failure\"}"
+        );
+        return 2;
+    }
+}
+
+extern "C" int novasight_release_tensor(uint64_t release_token) {
+    try {
+        return release_tensor_impl(release_token);
+    } catch (...) {
+        return 3;
+    }
 }

@@ -27,7 +27,8 @@ The reference validator currently accepts:
 - positive `frame_id` and `capture_ts_ns`
 - `resource_kind=gstreamer_sample`
 - `resource_memory=dmabuf` or `resource_memory=nvmm`
-- `resource_source=appsink`
+- `resource_source=appsink` for the legacy Python capture path, or
+  `resource_source=deepstream_pad` while Rust holds the source `GstBuffer`
 - `pixel_format=NV12`
 - `dtype=float32` or `dtype=float16`
 - a non-negative `dmabuf_fd` or a positive `gst_buffer_ptr`
@@ -84,8 +85,10 @@ cmake --build build-jetson
 ```
 
 The bundled source imports `dmabuf_fd` with NvBufSurface when available. When
-GStreamer exposes NVMM without a DMABUF fd, it maps the live `GstBuffer*` from
-`gst_buffer_ptr` to `NvBufSurface` for the duration of the prepare call. It then
+GStreamer exposes NVMM without a DMABUF fd, either appsink or the Rust
+DeepStream pad adapter may pass the live, strongly-held `GstBuffer*` as
+`gst_buffer_ptr`. The native code maps it to `NvBufSurface` only for the
+duration of the prepare call. It then
 maps the surface to EGL/CUDA, converts NV12 to normalized NCHW FP32/FP16 device
 memory, and returns a `release_token` for the CUDA allocation. It still must be
 compiled and verified on the actual Jetson/GStreamer surface layout before

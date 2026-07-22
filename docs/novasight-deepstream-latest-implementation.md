@@ -288,6 +288,32 @@ The first production code is in:
 native/latest-frame-exchange/
 ```
 
+The Rust migration now owns the live resource seam directly:
+
+```text
+novasight-platform-jetson::deepstream::FrameLease
+-> LatestFrameExchange (capacity one)
+-> CudaFramePreprocessor
+-> novasight-jetson-preprocess::DeviceTensor
+```
+
+`FrameLease` holds a strong `GstBuffer` reference and is cleared on runtime
+stop after its sole publisher joins. `CudaFramePreprocessor` borrows that lease
+for the complete synchronous native map/transform/kernel interval. The
+`novasight-jetson-preprocess` module hides the legacy JSON C ABI, validates the
+native readiness receipt and the exact RGB NCHW shape/dtype/nbytes result, and
+owns `novasight_release_tensor` through `DeviceTensor` RAII. The linked adapter
+is enabled only with the explicit Rust `cuda-preprocess` feature and expects
+`libnovasight_preprocess.so` from `scripts/build_jetson_preprocess.sh`.
+
+This integration reuses the existing production Jetson CUDA implementation in
+`novasight_jetson_preprocess_native`; it does not introduce a second CUDA
+kernel. The native ABI accepts both the legacy Python `appsink` source and the
+Rust `deepstream_pad` source while keeping the strongly-held buffer alive.
+RuntimeSupervisor consumption, TensorRT context ownership, and decode/NMS are
+still separate later steps. Until all three are connected and verified on the
+target Jetson, model probe `input_mode=latest` remains fail-closed with 409.
+
 The committed native layer contains a portable exchange state machine:
 
 - `LatestFrameExchange`
