@@ -555,7 +555,14 @@ impl TargetingCore {
             }
         }
         self.tracks.retain(|track| track.state != TrackState::Lost);
-        self.locked = None;
+        if let Some(locked) = &mut self.locked {
+            locked.missed_frames = locked.missed_frames.saturating_add(1);
+            if locked.missed_frames > self.config.track_max_age
+                || !self.tracks.iter().any(|track| track.id == locked.id)
+            {
+                self.locked = None;
+            }
+        }
     }
 }
 

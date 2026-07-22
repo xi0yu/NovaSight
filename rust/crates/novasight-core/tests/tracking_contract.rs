@@ -101,7 +101,7 @@ fn target_switch_loss_fixture_matches_targeting_core() {
 }
 
 #[test]
-fn empty_detections_clear_the_lock_and_increment_lost_count() {
+fn empty_detections_hold_lock_identity_without_emitting_a_stale_target() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     let first = core.select(&[head], OBSERVATION_CENTER);
@@ -109,7 +109,29 @@ fn empty_detections_clear_the_lock_and_increment_lost_count() {
     let empty = core.select(&[], OBSERVATION_CENTER);
     assert!(empty.target_object_id.is_none());
     assert_eq!(empty.lost_count, 1);
-    assert!(core.locked().is_none());
+    assert_eq!(core.locked().expect("grace lock").missed_frames, 1);
+}
+
+#[test]
+fn detection_reacquired_inside_grace_keeps_the_same_track_id() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_age: 2,
+        ..TargetingConfig::default()
+    });
+    let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.9).expect("first");
+    let track_id = core
+        .select(&[first], OBSERVATION_CENTER)
+        .target_track_id
+        .expect("track id");
+    assert!(
+        core.select(&[], OBSERVATION_CENTER)
+            .target_track_id
+            .is_none()
+    );
+    let reacquired = Detection::new(2, 0, 284.0, 280.0, 80.0, 100.0, 0.9).expect("reacquired");
+    let selection = core.select(&[reacquired], OBSERVATION_CENTER);
+    assert_eq!(selection.target_track_id, Some(track_id));
+    assert_eq!(selection.lost_count, 0);
 }
 
 #[test]
