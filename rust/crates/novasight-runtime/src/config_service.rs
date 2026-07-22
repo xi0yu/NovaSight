@@ -83,6 +83,28 @@ impl ConfigService {
         }
     }
 
+    /// Commit a persisted revision only after its runtime-side mutation has
+    /// succeeded. Keeping this separate from persistence prevents a failed hot
+    /// apply from being reported as effective.
+    pub async fn commit_effective_revision(
+        &self,
+        applied_revision: u64,
+    ) -> Result<(), ConfigServiceError> {
+        let _update_guard = self.inner.update_lock.lock().await;
+        let desired_revision = self.inner.current.read().await.revision;
+        let effective_revision = self.effective_revision();
+        if desired_revision != applied_revision {
+            return Err(ConfigServiceError::RestartRequired {
+                effective_revision,
+                desired_revision,
+            });
+        }
+        self.inner
+            .effective_revision
+            .store(applied_revision, Ordering::Release);
+        Ok(())
+    }
+
     /// Persist a kernel-validated concrete capture profile and make that
     /// capture-only revision visible to the stopped runtime immediately.
     /// Other pending configuration edits are never swept into the effective
@@ -170,18 +192,13 @@ impl ConfigService {
         .await
         .map_err(ConfigServiceError::SaveTask)??;
         *self.inner.current.write().await = config.clone();
-        if hot_output_gate {
-            self.inner
-                .effective_revision
-                .store(config.revision, Ordering::Release);
-        }
         Ok(ConfigUpdate {
             config,
-            restart_required: !hot_output_gate,
-            applied: hot_output_gate,
+            restart_required: true,
+            applied: false,
             rolled_back: false,
             message: if hot_output_gate {
-                "output gate persisted and applied to the live runtime".to_owned()
+                "output gate persisted; runtime application is pending".to_owned()
             } else {
                 "configuration persisted; restart novasightd to apply it".to_owned()
             },

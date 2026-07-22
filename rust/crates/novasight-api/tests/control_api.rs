@@ -240,6 +240,37 @@ async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
 }
 
 #[tokio::test]
+async fn failed_output_gate_hot_apply_never_advances_the_effective_revision() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\n").unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    runtime.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("join supervisor");
+    let app = build_control_router_with_services(runtime, Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(config.snapshot().await.revision, 1);
+    assert_eq!(config.effective_revision(), 0);
+    assert!(config.ensure_effective().await.is_err());
+}
+
+#[tokio::test]
 async fn studio_config_alias_uses_the_same_service_and_revision_guard() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");

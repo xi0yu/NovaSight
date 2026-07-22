@@ -1029,12 +1029,9 @@ async fn update_config(
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
-    let result = service.update_field(update).await?;
+    let mut result = service.update_field(update).await?;
     if hot_output_gate {
-        state
-            .runtime
-            .set_output_enabled(result.config.control.output_enabled)
-            .await?;
+        apply_output_gate_update(&state, service, &mut result).await?;
     }
     Ok(Json(result))
 }
@@ -1051,7 +1048,7 @@ async fn update_legacy_config(
     let is_field_update = payload.get("section").is_some()
         || payload.get("key").is_some()
         || payload.get("value").is_some();
-    let (update, hot_output_gate) = if is_field_update {
+    let (mut update, hot_output_gate) = if is_field_update {
         let field_update: ConfigFieldUpdate =
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
         let hot_output_gate =
@@ -1061,12 +1058,27 @@ async fn update_legacy_config(
         (service.replace(payload).await?, false)
     };
     if hot_output_gate {
-        state
-            .runtime
-            .set_output_enabled(update.config.control.output_enabled)
-            .await?;
+        apply_output_gate_update(&state, service, &mut update).await?;
     }
     Ok(Json(update))
+}
+
+async fn apply_output_gate_update(
+    state: &ControlState,
+    service: &ConfigService,
+    update: &mut ConfigUpdate,
+) -> Result<(), ControlApiError> {
+    state
+        .runtime
+        .set_output_enabled(update.config.control.output_enabled)
+        .await?;
+    service
+        .commit_effective_revision(update.config.revision)
+        .await?;
+    update.applied = true;
+    update.restart_required = false;
+    update.message = "output gate persisted and applied to the live runtime".to_owned();
+    Ok(())
 }
 
 async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
