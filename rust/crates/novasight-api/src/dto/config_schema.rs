@@ -228,6 +228,13 @@ impl ConfigSchemaResponse {
                             Some("px"),
                         ),
                         float(
+                            "pipeline.target_fov_radius_px",
+                            "目标选择半径",
+                            0.000_001,
+                            100_000.0,
+                            Some("px"),
+                        ),
+                        float(
                             "pipeline.target_min_confidence",
                             "控制目标最低置信度",
                             0.0,

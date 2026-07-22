@@ -180,6 +180,8 @@ pub struct PipelineRuntimeConfig {
     pub residual_cap: f64,
     #[serde(default = "default_target_debounce_distance_px")]
     pub target_debounce_distance_px: f64,
+    #[serde(default = "default_target_fov_radius_px")]
+    pub target_fov_radius_px: f64,
     #[serde(default = "default_target_min_confidence")]
     pub target_min_confidence: f32,
     #[serde(default = "default_target_track_max_age")]
@@ -228,6 +230,7 @@ impl Default for PipelineRuntimeConfig {
             prediction_near_relative_cap: default_prediction_near_relative_cap(),
             residual_cap: default_residual_cap(),
             target_debounce_distance_px: default_target_debounce_distance_px(),
+            target_fov_radius_px: default_target_fov_radius_px(),
             target_min_confidence: default_target_min_confidence(),
             target_track_max_age: default_target_track_max_age(),
             tracker_max_match_distance: default_tracker_max_match_distance(),
@@ -361,6 +364,12 @@ impl PipelineRuntimeConfig {
         validate_finite_range(
             "pipeline.target_debounce_distance_px",
             self.target_debounce_distance_px,
+            0.000_001,
+            100_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.target_fov_radius_px",
+            self.target_fov_radius_px,
             0.000_001,
             100_000.0,
         )?;
@@ -527,6 +536,10 @@ const fn default_residual_cap() -> f64 {
 
 const fn default_target_debounce_distance_px() -> f64 {
     64.0
+}
+
+const fn default_target_fov_radius_px() -> f64 {
+    180.0
 }
 
 const fn default_target_min_confidence() -> f32 {

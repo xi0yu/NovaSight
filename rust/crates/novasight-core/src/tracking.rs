@@ -239,6 +239,8 @@ pub struct TargetingConfig {
     pub min_confidence: f32,
     /// Number of consecutive missed frames before a track is dropped.
     pub track_max_age: u64,
+    /// Radial admission gate around the declared observation center.
+    pub target_fov_radius_px: f64,
     /// Maximum center displacement measured in target-height units.
     pub tracker_max_match_distance: f64,
     pub tracker_position_cost_weight: f64,
@@ -251,6 +253,7 @@ impl Default for TargetingConfig {
             debounce_distance_px: 64.0,
             min_confidence: 0.5,
             track_max_age: DEFAULT_TRACK_MAX_AGE,
+            target_fov_radius_px: 180.0,
             tracker_max_match_distance: 1.5,
             tracker_position_cost_weight: 0.75,
             tracker_iou_cost_weight: 0.25,
@@ -312,11 +315,23 @@ impl TargetingCore {
     /// candidate with `FallbackClass`. This mirrors the Python
     /// `RuntimeTargetSelector` semantics pinned by
     /// `target-switch-loss.jsonl`.
-    pub fn select(&mut self, detections: &[Detection]) -> TargetSelection {
+    pub fn select(
+        &mut self,
+        detections: &[Detection],
+        observation_center: (f64, f64),
+    ) -> TargetSelection {
         let candidates = detections.len();
         let admissible: Vec<Detection> = detections
             .iter()
-            .filter(|det| det.confidence() >= self.config.min_confidence)
+            .filter(|det| {
+                det.confidence() >= self.config.min_confidence
+                    && euclidean(
+                        det.center_x(),
+                        det.center_y(),
+                        observation_center.0,
+                        observation_center.1,
+                    ) <= self.config.target_fov_radius_px
+            })
             .cloned()
             .collect();
         if admissible.is_empty() {
@@ -344,14 +359,22 @@ impl TargetingCore {
             .collect();
         let associations = associate(&self.tracks, &admissible).unwrap_or_default();
         class0.sort_by(|a, b| {
-            distance_to_target(a, self.locked.as_ref())
-                .partial_cmp(&distance_to_target(b, self.locked.as_ref()))
+            distance_to_target(a, self.locked.as_ref(), observation_center)
+                .partial_cmp(&distance_to_target(
+                    b,
+                    self.locked.as_ref(),
+                    observation_center,
+                ))
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.object_id().cmp(&b.object_id()))
         });
         class1.sort_by(|a, b| {
-            distance_to_target(a, self.locked.as_ref())
-                .partial_cmp(&distance_to_target(b, self.locked.as_ref()))
+            distance_to_target(a, self.locked.as_ref(), observation_center)
+                .partial_cmp(&distance_to_target(
+                    b,
+                    self.locked.as_ref(),
+                    observation_center,
+                ))
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.object_id().cmp(&b.object_id()))
         });
@@ -464,7 +487,11 @@ impl TargetingCore {
     }
 }
 
-fn distance_to_target(det: &Detection, target: Option<&Track>) -> f64 {
+fn distance_to_target(
+    det: &Detection,
+    target: Option<&Track>,
+    observation_center: (f64, f64),
+) -> f64 {
     match target {
         Some(target) => euclidean(
             target.center_x,
@@ -472,7 +499,12 @@ fn distance_to_target(det: &Detection, target: Option<&Track>) -> f64 {
             det.center_x(),
             det.center_y(),
         ),
-        None => euclidean(0.0, 0.0, det.center_x(), det.center_y()),
+        None => euclidean(
+            observation_center.0,
+            observation_center.1,
+            det.center_x(),
+            det.center_y(),
+        ),
     }
 }
 

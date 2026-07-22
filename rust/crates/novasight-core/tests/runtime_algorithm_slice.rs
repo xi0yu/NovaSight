@@ -83,7 +83,7 @@ fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
             .map(detection_from_value)
             .collect();
         let mut tracking = TargetingCore::new(TargetingConfig::default());
-        let selection = tracking.select(&detections);
+        let selection = tracking.select(&detections, (320.0, 320.0));
         let target = selection.target_object_id.expect("target");
         let target_class = selection.target_class_id.expect("class");
         let matched = detections
@@ -136,7 +136,7 @@ fn moving_target_records_emit_typed_decisions() {
             .iter()
             .map(detection_from_value)
             .collect();
-        let selection = tracking.select(&detections);
+        let selection = tracking.select(&detections, (320.0, 320.0));
         if let Some(target) = selection.target_object_id {
             let target_class = selection.target_class_id.expect("class");
             let matched = detections

@@ -9,6 +9,8 @@ use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{LockReason, TargetingConfig, TargetingCore};
 use serde_json::Value;
 
+const OBSERVATION_CENTER: (f64, f64) = (320.0, 320.0);
+
 fn fixture_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -70,7 +72,7 @@ fn target_switch_loss_fixture_matches_targeting_core() {
 
     for record in &records {
         let detections = detections_from_value(&record["detections"]);
-        let selection = core.select(&detections);
+        let selection = core.select(&detections, OBSERVATION_CENTER);
         let expected = &record["expected_target"];
         let expected_object_id = expected["object_id"].as_u64().expect("object_id");
         let expected_class_id = expected["class_id"].as_u64().expect("class_id") as u32;
@@ -101,9 +103,9 @@ fn target_switch_loss_fixture_matches_targeting_core() {
 fn empty_detections_clear_the_lock_and_increment_lost_count() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
-    let first = core.select(&[head]);
+    let first = core.select(&[head], OBSERVATION_CENTER);
     assert!(first.target_object_id.is_some());
-    let empty = core.select(&[]);
+    let empty = core.select(&[], OBSERVATION_CENTER);
     assert!(empty.target_object_id.is_none());
     assert_eq!(empty.lost_count, 1);
     assert!(core.locked().is_none());
@@ -113,7 +115,7 @@ fn empty_detections_clear_the_lock_and_increment_lost_count() {
 fn reset_clears_state_and_history() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
-    core.select(&[head]);
+    core.select(&[head], OBSERVATION_CENTER);
     assert!(core.history_iter().next().is_some());
     core.reset();
     assert!(core.history_iter().next().is_none());
@@ -128,10 +130,40 @@ fn below_confidence_detections_are_filtered_before_targeting() {
         ..TargetingConfig::default()
     });
     let weak = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.1).expect("weak");
-    let selection = core.select(&[weak]);
+    let selection = core.select(&[weak], OBSERVATION_CENTER);
     assert!(selection.target_object_id.is_none());
     assert_eq!(selection.candidates, 1);
     assert_eq!(selection.inside_fov, 0);
+}
+
+#[test]
+fn first_lock_is_ranked_from_declared_observation_center_not_origin() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        target_fov_radius_px: 1_000.0,
+        ..TargetingConfig::default()
+    });
+    let near_origin = Detection::new(1, 0, 90.0, 90.0, 20.0, 20.0, 0.9).expect("origin");
+    let near_center = Detection::new(2, 0, 290.0, 290.0, 20.0, 20.0, 0.9).expect("center");
+
+    let selected = core.select(&[near_origin, near_center], OBSERVATION_CENTER);
+
+    assert_eq!(selected.target_object_id, Some(2));
+}
+
+#[test]
+fn target_fov_radius_is_a_real_radial_admission_gate() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        target_fov_radius_px: 180.0,
+        ..TargetingConfig::default()
+    });
+    let outside = Detection::new(1, 0, 530.0, 310.0, 20.0, 20.0, 0.99).expect("outside");
+    let inside = Detection::new(2, 0, 310.0, 310.0, 20.0, 20.0, 0.60).expect("inside");
+
+    let selected = core.select(&[outside, inside], OBSERVATION_CENTER);
+
+    assert_eq!(selected.candidates, 2);
+    assert_eq!(selected.inside_fov, 1);
+    assert_eq!(selected.target_object_id, Some(2));
 }
 
 #[test]
@@ -141,11 +173,11 @@ fn head_movement_under_debounce_keeps_lock_with_held_by_debounce_reason() {
         ..TargetingConfig::default()
     });
     let frame1 = vec![Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).expect("d1")];
-    let first = core.select(&frame1);
+    let first = core.select(&frame1, OBSERVATION_CENTER);
     assert_eq!(first.lock_reason, Some(LockReason::PreferredClass));
     // Head moved 20 px, still within debounce window.
     let frame2 = vec![Detection::new(1, 0, 320.0, 300.0, 40.0, 80.0, 0.9).expect("d2")];
-    let second = core.select(&frame2);
+    let second = core.select(&frame2, OBSERVATION_CENTER);
     assert_eq!(second.target_object_id, Some(1));
     assert_eq!(second.lock_reason, Some(LockReason::PreferredClass));
 }
@@ -155,14 +187,14 @@ fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let left = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("left");
     let right = Detection::new(1, 0, 500.0, 300.0, 40.0, 80.0, 0.9).expect("right");
-    let first = core.select(&[left, right]);
+    let first = core.select(&[left, right], OBSERVATION_CENTER);
     let stable_track = first.target_track_id.expect("track identity");
 
     // DeepStream changed list order, so the same spatial candidate now has
     // frame-local ID 1 while the other candidate has ID 0.
     let other = Detection::new(0, 0, 500.0, 300.0, 40.0, 80.0, 0.9).expect("other");
     let same = Detection::new(1, 0, 282.0, 300.0, 40.0, 80.0, 0.9).expect("same");
-    let second = core.select(&[other, same]);
+    let second = core.select(&[other, same], OBSERVATION_CENTER);
 
     assert_eq!(second.target_object_id, Some(1));
     assert_eq!(second.target_track_id, Some(stable_track));
@@ -173,13 +205,13 @@ fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
 fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.55).expect("first");
-    core.select(&[first]);
+    core.select(&[first], OBSERVATION_CENTER);
     let acquired = core.locked().expect("acquired track");
     assert!((acquired.confidence - 0.55).abs() < f32::EPSILON);
     assert_eq!(acquired.identity_confidence, 1.0);
 
     let moved = Detection::new(2, 0, 320.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
-    let selection = core.select(&[moved]);
+    let selection = core.select(&[moved], OBSERVATION_CENTER);
     let tracked = core.locked().expect("continued track");
     let expected = 1.0 - (0.75 * 0.25 + 0.25 * (1.0 - 1.0 / 3.0));
     assert!((tracked.confidence - 0.95).abs() < f32::EPSILON);
@@ -197,14 +229,17 @@ fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
 
 #[test]
 fn association_beyond_normalized_distance_allocates_a_new_identity() {
-    let mut core = TargetingCore::new(TargetingConfig::default());
+    let mut core = TargetingCore::new(TargetingConfig {
+        target_fov_radius_px: 1_000.0,
+        ..TargetingConfig::default()
+    });
     let first = Detection::new(1, 0, 100.0, 100.0, 40.0, 80.0, 0.9).expect("first");
     let first_track = core
-        .select(&[first])
+        .select(&[first], OBSERVATION_CENTER)
         .target_track_id
         .expect("first identity");
     let jumped = Detection::new(2, 0, 221.0, 100.0, 40.0, 80.0, 0.9).expect("jumped");
-    let next = core.select(&[jumped]);
+    let next = core.select(&[jumped], OBSERVATION_CENTER);
     assert_ne!(next.target_track_id, Some(first_track));
     assert_eq!(core.locked().expect("new track").identity_confidence, 1.0);
 }
@@ -216,18 +251,18 @@ fn unsupported_classes_age_out_the_previous_track() {
         ..TargetingConfig::default()
     });
     let target = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("target");
-    let first = core.select(std::slice::from_ref(&target));
+    let first = core.select(std::slice::from_ref(&target), OBSERVATION_CENTER);
     let first_track = first.target_track_id.expect("first track");
     let irrelevant = Detection::new(0, 2, 280.0, 300.0, 40.0, 80.0, 0.9).expect("irrelevant");
     for _ in 0..3 {
         assert!(
-            core.select(std::slice::from_ref(&irrelevant))
+            core.select(std::slice::from_ref(&irrelevant), OBSERVATION_CENTER)
                 .target_track_id
                 .is_none()
         );
     }
 
-    let reacquired = core.select(&[target]);
+    let reacquired = core.select(&[target], OBSERVATION_CENTER);
     assert_ne!(reacquired.target_track_id, Some(first_track));
 }
 
@@ -237,7 +272,7 @@ fn history_is_bounded() {
     for index in 0..(novasight_core::tracking::DEFAULT_HISTORY_LIMIT * 4) {
         let x = 300.0 + index as f32;
         let detection = Detection::new(1, 0, x, 300.0, 40.0, 80.0, 0.9).expect("d");
-        core.select(&[detection]);
+        core.select(&[detection], OBSERVATION_CENTER);
     }
     let count = core.history_iter().count();
     assert!(count <= novasight_core::tracking::DEFAULT_HISTORY_LIMIT);
@@ -247,13 +282,13 @@ fn history_is_bounded() {
 fn lost_track_cannot_produce_a_target_object_id() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
-    core.select(&[head]);
+    core.select(&[head], OBSERVATION_CENTER);
     // Two empty frames in a row force the lock to Lost; the next
     // admissible frame restarts the targeting state cleanly.
-    core.select(&[]);
-    core.select(&[]);
+    core.select(&[], OBSERVATION_CENTER);
+    core.select(&[], OBSERVATION_CENTER);
     let body = Detection::new(2, 1, 320.0, 360.0, 30.0, 60.0, 0.9).expect("body");
-    let next = core.select(&[body]);
+    let next = core.select(&[body], OBSERVATION_CENTER);
     assert_eq!(next.target_object_id, Some(2));
     assert_eq!(next.target_class_id, Some(1));
 }

@@ -380,6 +380,7 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "prediction_near_relative_cap",
             "residual_cap",
             "target_debounce_distance_px",
+            "target_fov_radius_px",
             "target_min_confidence",
             "target_track_max_age",
             "tracker_max_match_distance",

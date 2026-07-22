@@ -81,7 +81,7 @@ fn main() {
                 .collect();
             let start = Instant::now();
             let _ = freshness_evaluate(&policy, capture.0, now.0);
-            let selection = tracking.select(&detections);
+            let selection = tracking.select(&detections, (320.0, 320.0));
             if let Some(target) = selection.target_object_id {
                 let target_class = selection.target_class_id.expect("class");
                 let matched = detections
