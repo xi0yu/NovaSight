@@ -241,6 +241,27 @@ impl ConfigSchemaResponse {
                             120.0,
                             Some("frame"),
                         ),
+                        float(
+                            "pipeline.tracker_max_match_distance",
+                            "跟踪最大匹配距离",
+                            0.000_001,
+                            100.0,
+                            Some("target-height"),
+                        ),
+                        float(
+                            "pipeline.tracker_position_cost_weight",
+                            "跟踪位置代价权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.tracker_iou_cost_weight",
+                            "跟踪 IoU 代价权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
                         integer(
                             "pipeline.max_command_age_ms",
                             "设备命令最大年龄",

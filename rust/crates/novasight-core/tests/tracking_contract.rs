@@ -170,6 +170,46 @@ fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
 }
 
 #[test]
+fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let first = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.55).expect("first");
+    core.select(&[first]);
+    let acquired = core.locked().expect("acquired track");
+    assert!((acquired.confidence - 0.55).abs() < f32::EPSILON);
+    assert_eq!(acquired.identity_confidence, 1.0);
+
+    let moved = Detection::new(2, 0, 320.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
+    let selection = core.select(&[moved]);
+    let tracked = core.locked().expect("continued track");
+    let expected = 1.0 - (0.75 * 0.25 + 0.25 * (1.0 - 1.0 / 3.0));
+    assert!((tracked.confidence - 0.95).abs() < f32::EPSILON);
+    assert!((tracked.identity_confidence - expected).abs() < 1e-12);
+    assert_eq!(selection.target_detection_confidence, Some(0.95));
+    assert!(
+        (selection
+            .target_identity_confidence
+            .expect("selection identity confidence")
+            - expected)
+            .abs()
+            < 1e-12
+    );
+}
+
+#[test]
+fn association_beyond_normalized_distance_allocates_a_new_identity() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let first = Detection::new(1, 0, 100.0, 100.0, 40.0, 80.0, 0.9).expect("first");
+    let first_track = core
+        .select(&[first])
+        .target_track_id
+        .expect("first identity");
+    let jumped = Detection::new(2, 0, 221.0, 100.0, 40.0, 80.0, 0.9).expect("jumped");
+    let next = core.select(&[jumped]);
+    assert_ne!(next.target_track_id, Some(first_track));
+    assert_eq!(core.locked().expect("new track").identity_confidence, 1.0);
+}
+
+#[test]
 fn unsupported_classes_age_out_the_previous_track() {
     let mut core = TargetingCore::new(TargetingConfig {
         track_max_age: 2,

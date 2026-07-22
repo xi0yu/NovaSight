@@ -138,6 +138,9 @@ fn build_live_dependencies(
                 debounce_distance_px: adapters.pipeline.target_debounce_distance_px,
                 min_confidence: adapters.pipeline.target_min_confidence,
                 track_max_age: adapters.pipeline.target_track_max_age,
+                tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
+                tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
+                tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
             },
             control: DualPhaseConfig {
                 freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,

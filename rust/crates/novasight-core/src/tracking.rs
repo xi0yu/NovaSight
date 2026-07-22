@@ -6,9 +6,9 @@
 //! association, and returns both the chosen candidate and a stable `TrackId`.
 //!
 //! The implementation is intentionally small and exhaustive:
-//! * no Kalman filter or Hungarian assignment. The bounded nearest-centroid
-//!   association is deterministic and sufficient for the current single-lock
-//!   control contract.
+//! * no Kalman filter or Hungarian assignment. The bounded single-lock
+//!   association is deterministic; temporal identity confidence combines
+//!   target-height-normalized center distance and bounding-box IoU.
 //! * no unbounded growth. History is bounded by `BoundedHistory` and
 //!   `TargetingCore::reset` is the only way to clear it.
 //! * lost tracks never produce a control target. After a configurable
@@ -59,7 +59,12 @@ pub struct Track {
     pub state: TrackState,
     pub center_x: f64,
     pub center_y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// Latest detector score, kept separate from temporal identity quality.
     pub confidence: f32,
+    /// Association continuity in 0..=1, where one is an exact spatial match.
+    pub identity_confidence: f64,
     pub age_frames: u64,
     pub missed_frames: u64,
 }
@@ -200,6 +205,8 @@ pub struct TargetSelection {
     /// Stable identity allocated and associated by the Rust targeting core.
     pub target_track_id: Option<TrackId>,
     pub target_class_id: Option<u32>,
+    pub target_detection_confidence: Option<f32>,
+    pub target_identity_confidence: Option<f64>,
     pub lock_reason: Option<LockReason>,
     pub candidates: usize,
     pub inside_fov: usize,
@@ -212,6 +219,8 @@ impl TargetSelection {
             target_object_id: None,
             target_track_id: None,
             target_class_id: None,
+            target_detection_confidence: None,
+            target_identity_confidence: None,
             lock_reason: None,
             candidates: 0,
             inside_fov: 0,
@@ -230,6 +239,10 @@ pub struct TargetingConfig {
     pub min_confidence: f32,
     /// Number of consecutive missed frames before a track is dropped.
     pub track_max_age: u64,
+    /// Maximum center displacement measured in target-height units.
+    pub tracker_max_match_distance: f64,
+    pub tracker_position_cost_weight: f64,
+    pub tracker_iou_cost_weight: f64,
 }
 
 impl Default for TargetingConfig {
@@ -238,6 +251,9 @@ impl Default for TargetingConfig {
             debounce_distance_px: 64.0,
             min_confidence: 0.5,
             track_max_age: DEFAULT_TRACK_MAX_AGE,
+            tracker_max_match_distance: 1.5,
+            tracker_position_cost_weight: 0.75,
+            tracker_iou_cost_weight: 0.25,
         }
     }
 }
@@ -311,6 +327,8 @@ impl TargetingCore {
                 target_object_id: None,
                 target_track_id: None,
                 target_class_id: None,
+                target_detection_confidence: None,
+                target_identity_confidence: None,
                 lock_reason: None,
                 lost_count: self.lost_count,
             };
@@ -355,14 +373,11 @@ impl TargetingCore {
                         .tracks
                         .iter()
                         .find(|track| track.id == association.track_id)?;
-                    (association.object_id == det.object_id()
-                        && euclidean(
-                            prior.center_x,
-                            prior.center_y,
-                            det.center_x(),
-                            det.center_y(),
-                        ) <= self.config.debounce_distance_px)
-                        .then_some(prior)
+                    if association.object_id != det.object_id() {
+                        return None;
+                    }
+                    association_identity_confidence(prior, det, &self.config)
+                        .map(|identity_confidence| (prior, identity_confidence))
                 });
                 let id = associated.map_or_else(
                     || {
@@ -370,7 +385,7 @@ impl TargetingCore {
                         self.next_track_id = self.next_track_id.saturating_add(1);
                         id
                     },
-                    |track| track.id,
+                    |(track, _)| track.id,
                 );
                 Track {
                     id,
@@ -379,8 +394,12 @@ impl TargetingCore {
                     state: TrackState::Confirmed,
                     center_x: det.center_x(),
                     center_y: det.center_y(),
+                    width: f64::from(det.width()),
+                    height: f64::from(det.height()),
                     confidence: det.confidence(),
-                    age_frames: associated.map_or(1, |track| track.age_frames.saturating_add(1)),
+                    identity_confidence: associated.map_or(1.0, |(_, confidence)| confidence),
+                    age_frames: associated
+                        .map_or(1, |(track, _)| track.age_frames.saturating_add(1)),
                     missed_frames: 0,
                 }
             }
@@ -392,6 +411,8 @@ impl TargetingCore {
                     target_object_id: None,
                     target_track_id: None,
                     target_class_id: None,
+                    target_detection_confidence: None,
+                    target_identity_confidence: None,
                     lock_reason: None,
                     lost_count: self.lost_count,
                 };
@@ -409,6 +430,8 @@ impl TargetingCore {
             target_object_id: Some(track.object_id),
             target_track_id: Some(track.id),
             target_class_id: Some(track.class_id),
+            target_detection_confidence: Some(track.confidence),
+            target_identity_confidence: Some(track.identity_confidence),
             lock_reason: Some(reason),
             lost_count: self.lost_count,
         }
@@ -450,5 +473,59 @@ fn distance_to_target(det: &Detection, target: Option<&Track>) -> f64 {
             det.center_y(),
         ),
         None => euclidean(0.0, 0.0, det.center_x(), det.center_y()),
+    }
+}
+
+fn association_identity_confidence(
+    track: &Track,
+    detection: &Detection,
+    config: &TargetingConfig,
+) -> Option<f64> {
+    let reference_height = track.height.max(f64::from(detection.height()));
+    if !reference_height.is_finite() || reference_height <= 0.0 {
+        return None;
+    }
+    let normalized_distance = euclidean(
+        track.center_x,
+        track.center_y,
+        detection.center_x(),
+        detection.center_y(),
+    ) / reference_height;
+    if !normalized_distance.is_finite() || normalized_distance > config.tracker_max_match_distance {
+        return None;
+    }
+    let position_weight = config.tracker_position_cost_weight.max(0.0);
+    let iou_weight = config.tracker_iou_cost_weight.max(0.0);
+    let total_weight = position_weight + iou_weight;
+    if !total_weight.is_finite() || total_weight <= 0.0 {
+        return None;
+    }
+    let overlap = track_detection_iou(track, detection);
+    let cost =
+        (position_weight * normalized_distance + iou_weight * (1.0 - overlap)) / total_weight;
+    Some((1.0 - cost).clamp(0.0, 1.0))
+}
+
+fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {
+    let track_left = track.center_x - track.width * 0.5;
+    let track_top = track.center_y - track.height * 0.5;
+    let track_right = track.center_x + track.width * 0.5;
+    let track_bottom = track.center_y + track.height * 0.5;
+    let detection_left = f64::from(detection.x());
+    let detection_top = f64::from(detection.y());
+    let detection_right = detection_left + f64::from(detection.width());
+    let detection_bottom = detection_top + f64::from(detection.height());
+    let intersection_width =
+        (track_right.min(detection_right) - track_left.max(detection_left)).max(0.0);
+    let intersection_height =
+        (track_bottom.min(detection_bottom) - track_top.max(detection_top)).max(0.0);
+    let intersection = intersection_width * intersection_height;
+    let union = track.width * track.height
+        + f64::from(detection.width()) * f64::from(detection.height())
+        - intersection;
+    if union > 0.0 {
+        (intersection / union).clamp(0.0, 1.0)
+    } else {
+        0.0
     }
 }

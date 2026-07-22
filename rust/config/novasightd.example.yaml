@@ -38,6 +38,9 @@ pipeline:
   target_debounce_distance_px: 64.0
   target_min_confidence: 0.5
   target_track_max_age: 5
+  tracker_max_match_distance: 1.5
+  tracker_position_cost_weight: 0.75
+  tracker_iou_cost_weight: 0.25
   max_command_age_ms: 55
   output_interval_ms: 4
 capture:

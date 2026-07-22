@@ -660,6 +660,7 @@ fn spawn_targeting_worker(
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
                     let selection = targeting.select(batch.detections());
+                    let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
                     let (target_id, aim_x, aim_y, detection_confidence) = match (
                         selection.target_object_id,
                         selection.target_track_id,
@@ -689,9 +690,6 @@ fn spawn_targeting_worker(
                             (None, center_x, center_y, 0.0)
                         }
                     };
-                    let track_confidence = targeting
-                        .locked()
-                        .map_or(0.0, |track| f64::from(track.confidence));
                     let (crosshair_x, crosshair_y) = batch.center();
                     let now = clock.now().0;
                     let observation = TargetedObservation {

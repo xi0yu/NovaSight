@@ -107,7 +107,7 @@ fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
             detection_confidence: f64::from(matched.confidence()),
             track_confidence: tracking
                 .locked()
-                .map_or(0.0, |track| f64::from(track.confidence)),
+                .map_or(0.0, |track| track.identity_confidence),
             target_valid: true,
             trigger_active: true,
         };
@@ -159,7 +159,7 @@ fn moving_target_records_emit_typed_decisions() {
                 detection_confidence: f64::from(matched.confidence()),
                 track_confidence: tracking
                     .locked()
-                    .map_or(0.0, |track| f64::from(track.confidence)),
+                    .map_or(0.0, |track| track.identity_confidence),
                 target_valid: true,
                 trigger_active: true,
             };

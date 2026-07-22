@@ -184,6 +184,12 @@ pub struct PipelineRuntimeConfig {
     pub target_min_confidence: f32,
     #[serde(default = "default_target_track_max_age")]
     pub target_track_max_age: u64,
+    #[serde(default = "default_tracker_max_match_distance")]
+    pub tracker_max_match_distance: f64,
+    #[serde(default = "default_tracker_position_cost_weight")]
+    pub tracker_position_cost_weight: f64,
+    #[serde(default = "default_tracker_iou_cost_weight")]
+    pub tracker_iou_cost_weight: f64,
     #[serde(default = "default_max_command_age_ms")]
     pub max_command_age_ms: u64,
     #[serde(default = "default_output_interval_ms")]
@@ -224,6 +230,9 @@ impl Default for PipelineRuntimeConfig {
             target_debounce_distance_px: default_target_debounce_distance_px(),
             target_min_confidence: default_target_min_confidence(),
             target_track_max_age: default_target_track_max_age(),
+            tracker_max_match_distance: default_tracker_max_match_distance(),
+            tracker_position_cost_weight: default_tracker_position_cost_weight(),
+            tracker_iou_cost_weight: default_tracker_iou_cost_weight(),
             max_command_age_ms: default_max_command_age_ms(),
             output_interval_ms: default_output_interval_ms(),
             production_fields_explicit: false,
@@ -369,6 +378,30 @@ impl PipelineRuntimeConfig {
                 "must be within 1..=120 frames",
             ));
         }
+        validate_finite_range(
+            "pipeline.tracker_max_match_distance",
+            self.tracker_max_match_distance,
+            0.000_001,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_position_cost_weight",
+            self.tracker_position_cost_weight,
+            0.0,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_iou_cost_weight",
+            self.tracker_iou_cost_weight,
+            0.0,
+            100.0,
+        )?;
+        if self.tracker_position_cost_weight + self.tracker_iou_cost_weight <= 0.0 {
+            return Err(ConfigValidationError::new(
+                "pipeline.tracker_position_cost_weight",
+                "tracker position and IoU weights must not both be zero",
+            ));
+        }
         if !(1..=1_000).contains(&self.max_command_age_ms) {
             return Err(ConfigValidationError::new(
                 "pipeline.max_command_age_ms",
@@ -502,6 +535,18 @@ const fn default_target_min_confidence() -> f32 {
 
 const fn default_target_track_max_age() -> u64 {
     5
+}
+
+const fn default_tracker_max_match_distance() -> f64 {
+    1.5
+}
+
+const fn default_tracker_position_cost_weight() -> f64 {
+    0.75
+}
+
+const fn default_tracker_iou_cost_weight() -> f64 {
+    0.25
 }
 
 const fn default_max_command_age_ms() -> u64 {
@@ -1249,5 +1294,16 @@ mod tests {
             ..InferenceConfig::default()
         };
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn tracker_association_requires_at_least_one_real_cost_signal() {
+        let config = PipelineRuntimeConfig {
+            tracker_position_cost_weight: 0.0,
+            tracker_iou_cost_weight: 0.0,
+            ..PipelineRuntimeConfig::default()
+        };
+        let error = config.validate().expect_err("zero association weights");
+        assert_eq!(error.field, "pipeline.tracker_position_cost_weight");
     }
 }
