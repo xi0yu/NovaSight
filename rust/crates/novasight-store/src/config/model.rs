@@ -163,6 +163,14 @@ pub struct CaptureConfig {
     pub fps: u32,
     #[serde(default)]
     pub pixel_format: String,
+    #[serde(default)]
+    pub roi_left: u32,
+    #[serde(default)]
+    pub roi_top: u32,
+    #[serde(default)]
+    pub roi_width: u32,
+    #[serde(default)]
+    pub roi_height: u32,
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
@@ -183,6 +191,10 @@ impl Default for CaptureConfig {
             height: 0,
             fps: 0,
             pixel_format: String::new(),
+            roi_left: 0,
+            roi_top: 0,
+            roi_width: 0,
+            roi_height: 0,
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
         }
@@ -213,11 +225,26 @@ impl CaptureConfig {
             && (self.pixel_format.trim().is_empty()
                 || self.width == 0
                 || self.height == 0
-                || self.fps == 0)
+                || self.fps == 0
+                || self.roi_width == 0
+                || self.roi_height == 0)
         {
             return Err(ConfigValidationError::new(
                 "capture.preference",
                 "manual requires pixel_format, width, height, and fps",
+            ));
+        }
+        let roi_right = self.roi_left.checked_add(self.roi_width);
+        let roi_bottom = self.roi_top.checked_add(self.roi_height);
+        if self.preference == CapturePreference::Manual
+            && (roi_right.is_none()
+                || roi_bottom.is_none()
+                || roi_right.is_some_and(|right| right > self.width)
+                || roi_bottom.is_some_and(|bottom| bottom > self.height))
+        {
+            return Err(ConfigValidationError::new(
+                "capture.roi",
+                "must fit inside the manual capture dimensions without overflow",
             ));
         }
         Ok(())
@@ -251,10 +278,22 @@ pub struct InferenceConfig {
     pub deepstream_batched_push_timeout_us: i64,
     #[serde(default = "default_inference_component_id")]
     pub deepstream_component_id: i32,
+    #[serde(default)]
+    pub deepstream_source_id: u32,
     #[serde(default = "default_probe_element")]
     pub deepstream_probe_element: String,
     #[serde(default = "default_probe_pad")]
     pub deepstream_probe_pad: String,
+    #[serde(default = "default_nvinfer_config")]
+    pub deepstream_nvinfer_config: PathBuf,
+    #[serde(default)]
+    pub model_width: u32,
+    #[serde(default)]
+    pub model_height: u32,
+    #[serde(default = "default_deepstream_startup_timeout_ms")]
+    pub deepstream_startup_timeout_ms: u64,
+    #[serde(default = "default_deepstream_shutdown_timeout_ms")]
+    pub deepstream_shutdown_timeout_ms: u64,
     #[serde(default)]
     pub input_source: InferenceInputSource,
     #[serde(skip)]
@@ -278,8 +317,14 @@ impl Default for InferenceConfig {
             deepstream_io_mode: default_deepstream_io_mode(),
             deepstream_batched_push_timeout_us: 0,
             deepstream_component_id: default_inference_component_id(),
+            deepstream_source_id: 0,
             deepstream_probe_element: default_probe_element(),
             deepstream_probe_pad: default_probe_pad(),
+            deepstream_nvinfer_config: default_nvinfer_config(),
+            model_width: 0,
+            model_height: 0,
+            deepstream_startup_timeout_ms: default_deepstream_startup_timeout_ms(),
+            deepstream_shutdown_timeout_ms: default_deepstream_shutdown_timeout_ms(),
             input_source: InferenceInputSource::default(),
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
@@ -341,6 +386,32 @@ impl InferenceConfig {
             return Err(ConfigValidationError::new(
                 "inference.deepstream_probe_element",
                 "probe element and pad must not be empty",
+            ));
+        }
+        if self.production_fields_explicit
+            && self
+                .deepstream_nvinfer_config
+                .to_string_lossy()
+                .trim()
+                .is_empty()
+        {
+            return Err(ConfigValidationError::new(
+                "inference.deepstream_nvinfer_config",
+                "must not be empty",
+            ));
+        }
+        if self.production_fields_explicit && (self.model_width == 0 || self.model_height == 0) {
+            return Err(ConfigValidationError::new(
+                "inference.model_width",
+                "model width and height must be positive",
+            ));
+        }
+        if self.production_fields_explicit
+            && (self.deepstream_startup_timeout_ms == 0 || self.deepstream_shutdown_timeout_ms == 0)
+        {
+            return Err(ConfigValidationError::new(
+                "inference.deepstream_startup_timeout_ms",
+                "startup and shutdown timeouts must be positive",
             ));
         }
         Ok(())
@@ -609,6 +680,18 @@ fn default_probe_element() -> String {
 
 fn default_probe_pad() -> String {
     "src".to_owned()
+}
+
+fn default_nvinfer_config() -> PathBuf {
+    PathBuf::from("data/runtime/deepstream/active-nvinfer.ini")
+}
+
+const fn default_deepstream_startup_timeout_ms() -> u64 {
+    10_000
+}
+
+const fn default_deepstream_shutdown_timeout_ms() -> u64 {
+    5_000
 }
 
 fn default_kmnet_host() -> String {

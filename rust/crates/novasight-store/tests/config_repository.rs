@@ -304,6 +304,10 @@ capture:
   height: 0
   fps: 0
   pixel_format: ""
+  roi_left: 0
+  roi_top: 0
+  roi_width: 0
+  roi_height: 0
 "#,
     )
     .unwrap();

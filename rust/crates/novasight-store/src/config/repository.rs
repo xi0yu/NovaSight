@@ -318,6 +318,10 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
                 "height",
                 "fps",
                 "pixel_format",
+                "roi_left",
+                "roi_top",
+                "roi_width",
+                "roi_height",
             ],
         );
     }
@@ -338,8 +342,14 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
                 "deepstream_io_mode",
                 "deepstream_batched_push_timeout_us",
                 "deepstream_component_id",
+                "deepstream_source_id",
                 "deepstream_probe_element",
                 "deepstream_probe_pad",
+                "deepstream_nvinfer_config",
+                "model_width",
+                "model_height",
+                "deepstream_startup_timeout_ms",
+                "deepstream_shutdown_timeout_ms",
                 "input_source",
             ],
         );
