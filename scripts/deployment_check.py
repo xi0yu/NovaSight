@@ -63,6 +63,13 @@ def run_deployment_check(
             unit,
             expected="NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock",
         ),
+        _unit_check(
+            unit,
+            "Service",
+            "EnvironmentFile",
+            "-/etc/novasight/novasight.env",
+        ),
+        _exec_start_pre_check(unit),
         _exec_start_check(unit),
     ]
     if not skip_api:
@@ -122,6 +129,25 @@ def _exec_start_check(unit: configparser.ConfigParser) -> CheckResult:
         detail={
             "actual": actual,
             "expected_executable": expected,
+        },
+    )
+
+
+def _exec_start_pre_check(unit: configparser.ConfigParser) -> CheckResult:
+    actual = unit.get("Service", "ExecStartPre", fallback="")
+    executable = "/opt/novasight/bin/novasightd"
+    required = (
+        "--config /etc/novasight/novasight.yaml",
+        "--model-job-script /opt/novasight/scripts/model_ingress_job.py",
+        "--check",
+    )
+    return CheckResult(
+        name="unit.Service.ExecStartPre.production_preflight",
+        passed=actual.startswith(f"{executable} ") and all(value in actual for value in required),
+        detail={
+            "actual": actual,
+            "expected_executable": executable,
+            "required_arguments": list(required),
         },
     )
 

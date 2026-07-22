@@ -182,9 +182,24 @@ fn production_capture_probe(_mode: DaemonMode) -> Option<Arc<dyn CaptureCapabili
 
 fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
     let allow_test_key = mode == DaemonMode::DryRun;
-    let public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
+    let inline_public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    let public_key = match inline_public_key {
+        Some(public_key) => Some(public_key),
+        None => std::env::var_os("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .map(|path| {
+                std::fs::read_to_string(&path).map_err(|source| {
+                    DaemonRunError::LicensePublicKeyRead {
+                        path: path.clone(),
+                        source,
+                    }
+                })
+            })
+            .transpose()?,
+    };
     if mode.hardware_output_enabled() && public_key.is_none() {
         return Err(DaemonRunError::LicensePublicKeyMissing);
     }
@@ -465,8 +480,16 @@ impl ShutdownSignals {
 
 #[derive(Debug, Error)]
 pub(super) enum DaemonRunError {
-    #[error("production mode requires NOVASIGHT_LICENSE_PUBLIC_KEY")]
+    #[error(
+        "production mode requires NOVASIGHT_LICENSE_PUBLIC_KEY or NOVASIGHT_LICENSE_PUBLIC_KEY_FILE"
+    )]
     LicensePublicKeyMissing,
+    #[error("failed to read license public key {}: {source}", path.display())]
+    LicensePublicKeyRead {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to stop runtime after license invalidation: {0}")]
     LicenseEnforcement(RuntimeError),
     #[error("failed to bind HTTP server at {host}:{port}: {source}")]
@@ -567,6 +590,7 @@ impl DaemonRunError {
     pub(super) const fn code(&self) -> &'static str {
         match self {
             Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
+            Self::LicensePublicKeyRead { .. } => "LICENSE_PUBLIC_KEY_READ_FAILED",
             Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",

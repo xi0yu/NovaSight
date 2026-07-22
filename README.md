@@ -166,8 +166,10 @@ runtime:
 Start with the example config:
 
 ```bash
+scripts/build_deepstream_parser.sh
 scripts/build_deepstream_bridge.sh
 cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
+rust/target/release/novasightd --config rust/config/novasightd.example.yaml --check
 rust/target/release/novasightd --config rust/config/novasightd.example.yaml
 ```
 
@@ -183,8 +185,14 @@ scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl
 scripts/verify_deepstream_60s.py --seconds 60
 ```
 
-Jetson setup builds `libnovasight_parser.so` by default. If the build artifact is
-later removed, the DeepStream backend rebuilds it automatically on the next start.
+Jetson setup builds `libnovasight_parser.so` by default. The Rust daemon never
+compiles native code at runtime: a missing parser, bridge, plugin, or ABI mismatch
+makes `--check` and the systemd `ExecStartPre` fail closed. Put the production
+public key at `/etc/novasight/license-public.pem` and reference it from
+`/etc/novasight/novasight.env` with
+`NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem`; the unit
+reads this environment file before preflight. `NOVASIGHT_LICENSE_PUBLIC_KEY`
+remains available for environments that can safely supply the PEM text directly.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.
