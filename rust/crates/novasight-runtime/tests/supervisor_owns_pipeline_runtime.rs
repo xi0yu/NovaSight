@@ -1,6 +1,7 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc::SyncSender,
 };
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,10 @@ use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerDevice,
     RecordingPointerDevice, RuntimeEpoch,
 };
-use novasight_pipeline::PipelineConfig;
+use novasight_pipeline::{
+    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
+    PipelineConfig, PipelineIngress,
+};
 use novasight_runtime::{PipelineState, RuntimeDependencies, RuntimeErrorKind, RuntimeSupervisor};
 
 #[derive(Debug)]
@@ -61,6 +65,99 @@ impl Clock for ManualClock {
     }
 }
 
+#[derive(Debug, Default)]
+struct RecordingPerceptionAdapter {
+    starts: AtomicU64,
+    shutdowns: Arc<AtomicU64>,
+    epochs: Mutex<Vec<RuntimeEpoch>>,
+    events: Mutex<Option<SyncSender<PerceptionEvent>>>,
+    pipeline_open_during_shutdown: Arc<AtomicBool>,
+}
+
+impl PerceptionAdapter for RecordingPerceptionAdapter {
+    fn start(
+        &self,
+        epoch: RuntimeEpoch,
+        ingress: PipelineIngress,
+        _clock: Arc<dyn Clock>,
+        events: SyncSender<PerceptionEvent>,
+    ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+        ingress
+            .submit(batch(epoch, 1))
+            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        self.starts.fetch_add(1, Ordering::AcqRel);
+        self.epochs.lock().unwrap().push(epoch);
+        *self.events.lock().unwrap() = Some(events.clone());
+        Ok(Box::new(RecordingPerceptionSession {
+            epoch,
+            ingress,
+            events,
+            shutdowns: Arc::clone(&self.shutdowns),
+            pipeline_open_during_shutdown: Arc::clone(&self.pipeline_open_during_shutdown),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct RecordingPerceptionSession {
+    epoch: RuntimeEpoch,
+    ingress: PipelineIngress,
+    events: SyncSender<PerceptionEvent>,
+    shutdowns: Arc<AtomicU64>,
+    pipeline_open_during_shutdown: Arc<AtomicBool>,
+}
+
+impl PerceptionSession for RecordingPerceptionSession {
+    fn shutdown(&mut self) -> Result<(), PerceptionError> {
+        if self.ingress.submit(batch(self.epoch, 2)).is_ok() {
+            self.pipeline_open_during_shutdown
+                .store(true, Ordering::Release);
+        }
+        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+        let _ = self.events.try_send(PerceptionEvent::Stopped);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct SilentPerceptionAdapter {
+    retained_senders: Mutex<Vec<SyncSender<PerceptionEvent>>>,
+}
+
+impl PerceptionAdapter for SilentPerceptionAdapter {
+    fn start(
+        &self,
+        epoch: RuntimeEpoch,
+        ingress: PipelineIngress,
+        _clock: Arc<dyn Clock>,
+        events: SyncSender<PerceptionEvent>,
+    ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+        ingress
+            .submit(batch(epoch, 1))
+            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        self.retained_senders.lock().unwrap().push(events);
+        Ok(Box::new(SilentPerceptionSession))
+    }
+}
+
+#[derive(Debug)]
+struct SilentPerceptionSession;
+
+impl PerceptionSession for SilentPerceptionSession {
+    fn metrics(&self) -> PerceptionMetrics {
+        PerceptionMetrics {
+            probed_buffers: 7,
+            published_batches: 5,
+            overwritten_snapshots: 2,
+            ..PerceptionMetrics::default()
+        }
+    }
+
+    fn shutdown(&mut self) -> Result<(), PerceptionError> {
+        Ok(())
+    }
+}
+
 fn batch(epoch: RuntimeEpoch, generation: u64) -> DetectionBatch {
     DetectionBatch::new(
         FrameStamp::new(epoch, generation, 1_000_000_000),
@@ -102,6 +199,130 @@ async fn supervisor_start_stop_owns_the_real_pipeline_lifecycle() {
         .submit_detection_batch(batch(epoch, 2))
         .expect_err("stopped pipeline rejects ingress");
     assert_eq!(error.kind, RuntimeErrorKind::PipelineUnavailable);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_owns_the_epoch_scoped_perception_session() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let perception = Arc::new(RecordingPerceptionAdapter::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_perception(perception.clone());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+
+    let started = handle.start().await.expect("start perception and pipeline");
+    let epoch = started.pipeline.epoch.expect("runtime epoch");
+    assert_eq!(perception.starts.load(Ordering::Acquire), 1);
+    assert_eq!(*perception.epochs.lock().unwrap(), vec![epoch]);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    handle
+        .set_trigger_active(true)
+        .await
+        .expect("activate output before shutdown safety check");
+
+    let stopped = handle.stop().await.expect("stop perception and pipeline");
+    assert_eq!(stopped.pipeline.state, PipelineState::Stopped);
+    assert_eq!(perception.shutdowns.load(Ordering::Acquire), 1);
+    assert!(
+        perception
+            .pipeline_open_during_shutdown
+            .load(Ordering::Acquire),
+        "perception must stop before its downstream ingress is closed"
+    );
+    assert!(
+        device.receipts().is_empty(),
+        "output gate must close before perception can publish during shutdown"
+    );
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_does_not_depend_on_a_perception_adapter_sending_a_terminal_event() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let perception = Arc::new(SilentPerceptionAdapter::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_perception(perception.clone());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+    handle
+        .start()
+        .await
+        .expect("start silent perception adapter");
+    let mut snapshots = handle.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshots.borrow().perception_metrics.probed_buffers == 7 {
+                break;
+            }
+            snapshots.changed().await.expect("metrics snapshot update");
+        }
+    })
+    .await
+    .expect("perception metrics reach the public snapshot");
+    assert_eq!(handle.snapshot().perception_metrics.published_batches, 5);
+    assert_eq!(
+        handle.snapshot().perception_metrics.overwritten_snapshots,
+        2
+    );
+
+    let stopped = tokio::time::timeout(Duration::from_secs(1), handle.stop())
+        .await
+        .expect("stop must cancel the perception event bridge")
+        .expect("stop succeeds");
+    assert_eq!(stopped.pipeline.state, PipelineState::Stopped);
+    assert_eq!(perception.retained_senders.lock().unwrap().len(), 1);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn perception_fault_closes_the_epoch_and_faults_the_supervisor() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let perception = Arc::new(RecordingPerceptionAdapter::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_perception(perception.clone());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+    handle.start().await.expect("start perception and pipeline");
+    let events = perception
+        .events
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("perception event sender");
+
+    events
+        .send(PerceptionEvent::Faulted {
+            message: "simulated DeepStream bus error".to_owned(),
+        })
+        .unwrap();
+    let mut snapshots = handle.subscribe();
+    let faulted = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshots.borrow().pipeline.state == PipelineState::Faulted {
+                return snapshots.borrow().as_ref().clone();
+            }
+            snapshots.changed().await.expect("supervisor snapshot");
+        }
+    })
+    .await
+    .expect("perception fault reaches supervisor");
+
+    assert_eq!(perception.shutdowns.load(Ordering::Acquire), 1);
+    assert!(
+        faulted
+            .pipeline
+            .last_error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("DeepStream bus error"))
+    );
 
     handle.shutdown_daemon().await.expect("shutdown daemon");
     supervisor.join().await.expect("supervisor joins");

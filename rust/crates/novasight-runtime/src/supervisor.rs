@@ -4,14 +4,18 @@
 //! Detection producers submit caller-owned batches through the same
 //! handle; worker objects and platform adapters never escape.
 
-use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use novasight_core::{
     Clock, DetectionBatch, MonotonicNanos, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    PipelineConfig, PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus,
+    PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession, PipelineConfig,
+    PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -23,6 +27,7 @@ use crate::state::{DaemonState, PipelineState};
 
 const COMMAND_CAPACITY: usize = 32;
 const PIPELINE_EVENT_CAPACITY: usize = 8;
+const PERCEPTION_EVENT_CAPACITY: usize = 4;
 
 /// Concrete resources used to create each runtime epoch.
 #[derive(Clone)]
@@ -30,6 +35,7 @@ pub struct RuntimeDependencies {
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
     pipeline: PipelineConfig,
+    perception: Option<Arc<dyn PerceptionAdapter>>,
 }
 
 impl std::fmt::Debug for RuntimeDependencies {
@@ -38,6 +44,10 @@ impl std::fmt::Debug for RuntimeDependencies {
             .field("pipeline", &self.pipeline)
             .field("clock", &"<dyn Clock>")
             .field("device", &"<dyn PointerDevice>")
+            .field(
+                "perception",
+                &self.perception.as_ref().map(|_| "<dyn PerceptionAdapter>"),
+            )
             .finish()
     }
 }
@@ -52,7 +62,13 @@ impl RuntimeDependencies {
             clock,
             device,
             pipeline,
+            perception: None,
         }
+    }
+
+    pub fn with_perception(mut self, perception: Arc<dyn PerceptionAdapter>) -> Self {
+        self.perception = Some(perception);
+        self
     }
 
     fn pipeline_config(&self, epoch: RuntimeEpoch) -> PipelineConfig {
@@ -99,6 +115,7 @@ struct SupervisorState {
     pipeline_started_at_ms: Option<u64>,
     pipeline_error: Option<RuntimeErrorSummary>,
     subsystems: SubsystemSnapshots,
+    perception_metrics: PerceptionMetrics,
     started_at_unix_ms: u64,
 }
 
@@ -112,6 +129,7 @@ impl Default for SupervisorState {
             pipeline_started_at_ms: None,
             pipeline_error: None,
             subsystems: SubsystemSnapshots::default(),
+            perception_metrics: PerceptionMetrics::default(),
             started_at_unix_ms: now_ms(),
         }
     }
@@ -132,6 +150,7 @@ impl SupervisorState {
                 last_error: self.pipeline_error.clone(),
             },
             subsystems: self.subsystems.clone(),
+            perception_metrics: self.perception_metrics,
             updated_at_ms,
         }
     }
@@ -158,14 +177,19 @@ impl SupervisorState {
         self.pipeline = PipelineState::Starting;
         self.pipeline_started_at_ms = None;
         self.pipeline_error = None;
+        self.perception_metrics = PerceptionMetrics::default();
         self.subsystems.control.state = SubsystemState::Starting;
         self.subsystems.device.state = SubsystemState::Starting;
         Ok(Some(epoch))
     }
 
-    fn finish_start(&mut self, started_at_ms: u64) {
+    fn finish_start(&mut self, started_at_ms: u64, perception_running: bool) {
         self.pipeline = PipelineState::Running;
         self.pipeline_started_at_ms = Some(started_at_ms);
+        if perception_running {
+            self.subsystems.capture.state = SubsystemState::Running;
+            self.subsystems.inference.state = SubsystemState::Running;
+        }
         self.subsystems.control.state = SubsystemState::Running;
         self.subsystems.device.state = SubsystemState::Ready;
     }
@@ -175,6 +199,8 @@ impl SupervisorState {
             return false;
         }
         self.pipeline = PipelineState::Stopping;
+        self.subsystems.capture.state = SubsystemState::Stopping;
+        self.subsystems.inference.state = SubsystemState::Stopping;
         self.subsystems.control.state = SubsystemState::Stopping;
         self.subsystems.device.state = SubsystemState::Stopping;
         true
@@ -183,6 +209,8 @@ impl SupervisorState {
     fn finish_stop(&mut self) {
         self.pipeline = PipelineState::Stopped;
         self.pipeline_started_at_ms = None;
+        self.subsystems.capture.state = SubsystemState::Stopped;
+        self.subsystems.inference.state = SubsystemState::Stopped;
         self.subsystems.control.state = SubsystemState::Stopped;
         self.subsystems.device.state = SubsystemState::Stopped;
     }
@@ -192,6 +220,12 @@ impl SupervisorState {
         self.pipeline = PipelineState::Faulted;
         self.pipeline_started_at_ms = None;
         self.pipeline_error = Some(error.clone());
+        if self.subsystems.capture.state != SubsystemState::Stopped {
+            self.subsystems.capture.state = SubsystemState::Failed;
+        }
+        if self.subsystems.inference.state != SubsystemState::Stopped {
+            self.subsystems.inference.state = SubsystemState::Failed;
+        }
         self.subsystems.control.state = SubsystemState::Failed;
         self.subsystems.device.state = SubsystemState::Unavailable;
         self.subsystems.control.last_error = Some(error);
@@ -213,7 +247,10 @@ struct ActivePipeline {
     epoch: RuntimeEpoch,
     runtime: PipelineRuntime,
     ingress: PipelineIngress,
+    perception: Option<Box<dyn PerceptionSession>>,
     event_bridge: tokio::task::JoinHandle<()>,
+    perception_event_bridge: Option<tokio::task::JoinHandle<()>>,
+    perception_event_cancel: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Debug)]
@@ -410,6 +447,8 @@ async fn supervisor_loop(
     dependencies: RuntimeDependencies,
 ) {
     let mut active: Option<ActivePipeline> = None;
+    let mut metrics_tick = tokio::time::interval(Duration::from_millis(200));
+    metrics_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             biased;
@@ -432,6 +471,17 @@ async fn supervisor_loop(
                     &mut state,
                     &mut active,
                 ).await;
+            }
+            _ = metrics_tick.tick(), if active.is_some() => {
+                let metrics = active
+                    .as_ref()
+                    .and_then(|pipeline| pipeline.perception.as_ref())
+                    .map(|perception| perception.metrics())
+                    .unwrap_or_default();
+                if metrics != state.perception_metrics {
+                    state.perception_metrics = metrics;
+                    publish(&snapshot_tx, &state, now_ms());
+                }
             }
             command = command_rx.recv() => {
                 let Some(command) = command else { break };
@@ -558,11 +608,18 @@ async fn start_state(
     let Some(epoch) = state.begin_start()? else {
         return Ok(publish(snapshot_tx, state, now_ms()));
     };
+    let has_perception = dependencies.perception.is_some();
+    if has_perception {
+        state.subsystems.capture.state = SubsystemState::Starting;
+        state.subsystems.inference.state = SubsystemState::Starting;
+    }
     publish(snapshot_tx, state, now_ms());
 
     let config = dependencies.pipeline_config(epoch);
     let clock = Arc::clone(&dependencies.clock);
+    let perception_clock = Arc::clone(&clock);
     let device = Arc::clone(&dependencies.device);
+    let perception_adapter = dependencies.perception.clone();
     let started =
         tokio::task::spawn_blocking(move || PipelineRuntime::start(config, clock, device)).await;
     let (mut pipeline, ingress) = match started {
@@ -598,6 +655,77 @@ async fn start_state(
         publish(snapshot_tx, state, now_ms());
         return Err(error);
     };
+    let (perception, perception_event_bridge, perception_event_cancel) =
+        if let Some(adapter) = perception_adapter {
+            let (perception_event_tx, perception_event_rx) =
+                std::sync::mpsc::sync_channel(PERCEPTION_EVENT_CAPACITY);
+            let perception_ingress = ingress.clone();
+            let started = tokio::task::spawn_blocking(move || {
+                adapter.start(
+                    epoch,
+                    perception_ingress,
+                    perception_clock,
+                    perception_event_tx,
+                )
+            })
+            .await;
+            let perception = match started {
+                Ok(Ok(perception)) => perception,
+                Ok(Err(error)) => {
+                    let cleanup = tokio::task::spawn_blocking(move || pipeline.shutdown()).await;
+                    let cleanup = cleanup_error("pipeline", cleanup);
+                    let error = RuntimeError::pipeline_rejected(format!(
+                        "perception startup failed: {error}{cleanup}"
+                    ));
+                    state.finish_fault(error.to_string());
+                    publish(snapshot_tx, state, now_ms());
+                    return Err(error);
+                }
+                Err(error) => {
+                    let cleanup = tokio::task::spawn_blocking(move || pipeline.shutdown()).await;
+                    let cleanup = cleanup_error("pipeline", cleanup);
+                    let error = RuntimeError::pipeline_rejected(format!(
+                        "perception startup task failed: {error}{cleanup}"
+                    ));
+                    state.finish_fault(error.to_string());
+                    publish(snapshot_tx, state, now_ms());
+                    return Err(error);
+                }
+            };
+            let event_tx = notice_tx.clone();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let bridge_cancel = Arc::clone(&cancel);
+            let bridge = tokio::task::spawn_blocking(move || {
+                loop {
+                    match perception_event_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(event) => {
+                            let event = match event {
+                                PerceptionEvent::Faulted { message } => {
+                                    PipelineEvent::Faulted { message }
+                                }
+                                PerceptionEvent::Stopped => PipelineEvent::Stopped,
+                            };
+                            let _ = event_tx.blocking_send(PipelineNotice { epoch, event });
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                            if bridge_cancel.load(Ordering::Acquire) =>
+                        {
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            });
+            (Some(perception), Some(bridge), Some(cancel))
+        } else {
+            (None, None, None)
+        };
+    // Start the blocking receiver only after every epoch-scoped producer has
+    // reached its readiness gate. If perception startup fails, shutting down
+    // the pipeline closes this receiver without leaving an unjoinable blocking
+    // task behind.
     let event_tx = notice_tx.clone();
     let event_bridge = tokio::task::spawn_blocking(move || {
         if let Ok(event) = events.recv() {
@@ -609,9 +737,12 @@ async fn start_state(
         epoch,
         runtime: pipeline,
         ingress,
+        perception,
         event_bridge,
+        perception_event_bridge,
+        perception_event_cancel,
     });
-    state.finish_start(now_ms());
+    state.finish_start(now_ms(), has_perception);
     Ok(publish(snapshot_tx, state, now_ms()))
 }
 
@@ -675,24 +806,67 @@ async fn shutdown_active(active: &mut Option<ActivePipeline>) -> Result<(), Runt
         epoch: _,
         mut runtime,
         ingress: _,
+        mut perception,
         event_bridge,
+        perception_event_bridge,
+        perception_event_cancel,
     } = active;
-    let shutdown = tokio::task::spawn_blocking(move || runtime.shutdown()).await;
+    let shutdown = tokio::task::spawn_blocking(move || {
+        let mut failures = Vec::new();
+        runtime.close_output_gate();
+        if let Some(perception) = &mut perception
+            && let Err(error) = perception.shutdown()
+        {
+            failures.push(format!("perception shutdown failed: {error}"));
+        }
+        if let Some(cancel) = &perception_event_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Err(error) = runtime.shutdown() {
+            failures.push(format!("pipeline shutdown failed: {error}"));
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    })
+    .await;
     let bridge = event_bridge.await;
+    let perception_bridge = match perception_event_bridge {
+        Some(bridge) => bridge.await.err(),
+        None => None,
+    };
     let shutdown_error = match shutdown {
-        Ok(Ok(_)) => None,
-        Ok(Err(error)) => Some(format!("pipeline shutdown failed: {error}")),
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error),
         Err(error) => Some(format!("pipeline shutdown task failed: {error}")),
     };
-    let bridge_error = bridge
-        .err()
-        .map(|error| format!("pipeline event bridge failed: {error}"));
-    match (shutdown_error, bridge_error) {
-        (None, None) => Ok(()),
-        (Some(error), None) | (None, Some(error)) => Err(RuntimeError::pipeline_rejected(error)),
-        (Some(shutdown), Some(bridge)) => Err(RuntimeError::pipeline_rejected(format!(
-            "{shutdown}; {bridge}"
-        ))),
+    let mut failures = Vec::new();
+    if let Some(error) = shutdown_error {
+        failures.push(error);
+    }
+    if let Err(error) = bridge {
+        failures.push(format!("pipeline event bridge failed: {error}"));
+    }
+    if let Some(error) = perception_bridge {
+        failures.push(format!("perception event bridge failed: {error}"));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(RuntimeError::pipeline_rejected(failures.join("; ")))
+    }
+}
+
+fn cleanup_error<T, E>(label: &str, cleanup: Result<Result<T, E>, tokio::task::JoinError>) -> String
+where
+    E: std::fmt::Display,
+{
+    match cleanup {
+        Ok(Ok(_)) => String::new(),
+        Ok(Err(error)) => format!("; {label} cleanup failed: {error}"),
+        Err(error) => format!("; {label} cleanup task failed: {error}"),
     }
 }
 

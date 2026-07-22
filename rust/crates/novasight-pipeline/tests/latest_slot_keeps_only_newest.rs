@@ -1,4 +1,7 @@
-use novasight_pipeline::LatestSlot;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+
+use novasight_pipeline::{LatestSlot, TryPublishError};
 
 #[test]
 fn latest_slot_keeps_only_the_newest_unconsumed_value() {
@@ -23,4 +26,59 @@ fn closing_a_slot_rejects_new_values_and_wakes_consumers() {
 
     assert!(slot.publish(1).is_err());
     assert!(slot.wait_take().is_none());
+}
+
+#[test]
+fn replacing_a_value_does_not_hold_the_slot_lock_while_dropping_it() {
+    #[derive(Debug)]
+    struct BlockingDrop(Arc<(Mutex<(bool, bool)>, Condvar)>);
+
+    impl Drop for BlockingDrop {
+        fn drop(&mut self) {
+            let (state, changed) = &*self.0;
+            let mut state = state.lock().unwrap();
+            state.0 = true;
+            changed.notify_all();
+            while !state.1 {
+                state = changed.wait(state).unwrap();
+            }
+        }
+    }
+
+    let drop_state = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let slot = LatestSlot::new();
+    slot.publish(BlockingDrop(Arc::clone(&drop_state))).unwrap();
+
+    let publishing_slot = slot.clone();
+    let publisher = thread::spawn(move || {
+        publishing_slot.publish(BlockingDrop(Arc::new((
+            Mutex::new((true, true)),
+            Condvar::new(),
+        ))))
+    });
+
+    let (state, changed) = &*drop_state;
+    let mut state = state.lock().unwrap();
+    while !state.0 {
+        state = changed.wait(state).unwrap();
+    }
+    slot.try_publish(BlockingDrop(Arc::new((
+        Mutex::new((true, true)),
+        Condvar::new(),
+    ))))
+    .expect("slot mutex is released before the replaced value is dropped");
+    state.1 = true;
+    changed.notify_all();
+    drop(state);
+
+    publisher.join().unwrap().unwrap();
+    slot.close();
+}
+
+#[test]
+fn realtime_publish_rejects_a_closed_slot_without_waiting() {
+    let slot = LatestSlot::new();
+    slot.close();
+
+    assert_eq!(slot.try_publish(1), Err(TryPublishError::Closed));
 }

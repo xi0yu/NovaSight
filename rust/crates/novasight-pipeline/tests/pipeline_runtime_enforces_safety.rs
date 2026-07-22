@@ -174,6 +174,55 @@ fn ingress_rejects_cross_epoch_and_non_monotonic_observations() {
 }
 
 #[test]
+fn realtime_ingress_uses_the_same_epoch_and_generation_contract() {
+    let epoch = RuntimeEpoch(30);
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock,
+        device,
+    )
+    .expect("pipeline starts");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match ingress.try_submit(batch(epoch, 1)) {
+            Ok(()) => break,
+            Err(PipelineError::IngressBusy) if Instant::now() < deadline => {
+                thread::yield_now();
+            }
+            result => panic!("realtime batch was not accepted: {result:?}"),
+        }
+    }
+    let duplicate = loop {
+        match ingress.try_submit(batch(epoch, 1)) {
+            Err(PipelineError::IngressBusy) => thread::yield_now(),
+            result => break result,
+        }
+    };
+    assert!(matches!(
+        duplicate,
+        Err(PipelineError::NonMonotonicGeneration {
+            previous: 1,
+            actual: 1
+        })
+    ));
+    assert!(matches!(
+        ingress.try_submit(batch(RuntimeEpoch(31), 2)),
+        Err(PipelineError::EpochMismatch {
+            expected: 30,
+            actual: 31
+        })
+    ));
+
+    runtime.shutdown().expect("workers join");
+}
+
+#[test]
 fn device_failure_faults_the_pipeline_and_closes_ingress() {
     let epoch = RuntimeEpoch(4);
     let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));

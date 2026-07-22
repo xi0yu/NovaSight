@@ -8,11 +8,16 @@
 
 #![forbid(unsafe_code)]
 
+mod perception;
 mod runtime;
 mod slot;
+
+pub use perception::{
+    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
+};
 
 pub use runtime::{
     PipelineConfig, PipelineError, PipelineEvent, PipelineIngress, PipelineMetrics,
     PipelineRuntime, PipelineStatus,
 };
-pub use slot::{LatestSlot, SlotClosed, SlotMetrics};
+pub use slot::{LatestSlot, SlotClosed, SlotMetrics, TryPublishError};

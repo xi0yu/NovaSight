@@ -1,4 +1,4 @@
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -13,6 +13,14 @@ pub struct SlotMetrics {
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 #[error("latest slot is closed")]
 pub struct SlotClosed;
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum TryPublishError {
+    #[error("latest slot is busy")]
+    Busy,
+    #[error("latest slot is closed")]
+    Closed,
+}
 
 #[derive(Debug)]
 struct SlotState<T> {
@@ -85,8 +93,36 @@ impl<T> LatestSlot<T> {
         }
         state.metrics.published = state.metrics.published.saturating_add(1);
         let published = state.metrics.published;
-        state.value = Some(Arc::new(value));
+        let replaced = state.value.replace(Arc::new(value));
         self.inner.changed.notify_one();
+        drop(state);
+        // `T::drop` is arbitrary user code. Never execute it while holding the
+        // slot mutex or a realtime try-publisher could be delayed by cleanup
+        // from an older value.
+        drop(replaced);
+        Ok(published)
+    }
+
+    /// Publish without ever waiting for the consumer or another producer.
+    /// Realtime callbacks should drop the incoming value on [`TryPublishError::Busy`].
+    pub fn try_publish(&self, value: T) -> Result<u64, TryPublishError> {
+        let mut state = match self.inner.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Err(TryPublishError::Busy),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        if state.closed {
+            return Err(TryPublishError::Closed);
+        }
+        if state.value.is_some() {
+            state.metrics.overwritten = state.metrics.overwritten.saturating_add(1);
+        }
+        state.metrics.published = state.metrics.published.saturating_add(1);
+        let published = state.metrics.published;
+        let replaced = state.value.replace(Arc::new(value));
+        self.inner.changed.notify_one();
+        drop(state);
+        drop(replaced);
         Ok(published)
     }
 

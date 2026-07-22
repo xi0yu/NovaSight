@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, TryLockError,
     atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     mpsc::{Receiver, SyncSender, sync_channel},
 };
@@ -16,7 +16,7 @@ use novasight_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::LatestSlot;
+use crate::{LatestSlot, TryPublishError};
 
 const STATUS_STARTING: u8 = 0;
 const STATUS_RUNNING: u8 = 1;
@@ -105,6 +105,8 @@ pub enum PipelineError {
     EpochMismatch { expected: u64, actual: u64 },
     #[error("pipeline generation must increase: previous {previous}, received {actual}")]
     NonMonotonicGeneration { previous: u64, actual: u64 },
+    #[error("pipeline ingress is busy; realtime producer must drop this batch")]
+    IngressBusy,
     #[error("output scheduler interval must be within 1..=10 ms, got {actual_ms}")]
     InvalidOutputInterval { actual_ms: u64 },
     #[error("failed to spawn {worker} worker: {source}")]
@@ -264,6 +266,46 @@ impl PipelineIngress {
             .fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+
+    /// Submit from a realtime producer without waiting for another producer or
+    /// the targeting lane. Busy means the caller must drop this frame.
+    pub fn try_submit(&self, batch: DetectionBatch) -> Result<(), PipelineError> {
+        if self.shared.status() != PipelineStatus::Running {
+            return Err(PipelineError::NotRunning);
+        }
+        let stamp = batch.stamp();
+        if stamp.epoch != self.epoch {
+            return Err(PipelineError::EpochMismatch {
+                expected: self.epoch.0,
+                actual: stamp.epoch.0,
+            });
+        }
+        let mut last = match self.shared.metrics.last_generation.try_lock() {
+            Ok(last) => last,
+            Err(TryLockError::WouldBlock) => return Err(PipelineError::IngressBusy),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        if let Some(previous) = *last
+            && stamp.generation <= previous
+        {
+            return Err(PipelineError::NonMonotonicGeneration {
+                previous: previous.0,
+                actual: stamp.generation.0,
+            });
+        }
+        match self.batches.try_publish(batch) {
+            Ok(_) => {}
+            Err(TryPublishError::Busy) => return Err(PipelineError::IngressBusy),
+            Err(TryPublishError::Closed) => return Err(PipelineError::NotRunning),
+        }
+        *last = Some(stamp.generation);
+        drop(last);
+        self.shared
+            .metrics
+            .received_batches
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,6 +434,19 @@ impl PipelineRuntime {
         snapshot_metrics(&self.shared, &self.batch_slot, &self.command_slot)
     }
 
+    /// Prevent every future device side effect without tearing down ingress.
+    /// The supervisor calls this before stopping an upstream perception owner,
+    /// so reverse-order cleanup cannot leak one last command.
+    pub fn close_output_gate(&self) {
+        let _lane = self
+            .shared
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.shared.output_gate.store(false, Ordering::Release);
+        self.shared.trigger_active.store(false, Ordering::Release);
+    }
+
     /// Transfer the single lifecycle event stream to the supervisor.
     pub fn take_event_receiver(&mut self) -> Option<Receiver<PipelineEvent>> {
         self.event_rx.take()
@@ -400,18 +455,8 @@ impl PipelineRuntime {
     /// Close the output gate first, wake every blocked lane, then join
     /// all worker threads before reporting `Stopped`.
     pub fn shutdown(&mut self) -> Result<PipelineMetrics, PipelineError> {
-        {
-            // Serialize the gate transition with the final device check.
-            // Once this lock is acquired, no device call remains in flight.
-            let _lane = self
-                .shared
-                .device_lane
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.shared.output_gate.store(false, Ordering::Release);
-            self.shared.trigger_active.store(false, Ordering::Release);
-            self.shared.status.store(STATUS_STOPPING, Ordering::Release);
-        }
+        self.close_output_gate();
+        self.shared.status.store(STATUS_STOPPING, Ordering::Release);
         close_slots(&self.batch_slot, &self.target_slot, &self.command_slot);
         let panicked = join_workers(&mut self.workers);
         if panicked {

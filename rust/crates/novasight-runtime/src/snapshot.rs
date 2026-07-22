@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use novasight_core::RuntimeEpoch;
+use novasight_pipeline::PerceptionMetrics;
 
 use crate::protocol::RuntimeErrorSummary;
 use crate::state::{DaemonState, PipelineState};
@@ -55,5 +56,7 @@ pub struct RuntimeSnapshot {
     pub daemon: DaemonSnapshot,
     pub pipeline: PipelineSnapshot,
     pub subsystems: SubsystemSnapshots,
+    #[serde(default)]
+    pub perception_metrics: PerceptionMetrics,
     pub updated_at_ms: u64,
 }
