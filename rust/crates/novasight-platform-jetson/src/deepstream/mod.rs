@@ -27,5 +27,5 @@ pub use preprocess::CudaFramePreprocessor;
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 pub use session::{
     DeepStreamAdapter, DeepStreamSession, DeepStreamSessionConfig, SessionError, SessionEvent,
-    SessionMetrics,
+    SessionMetrics, preflight_deepstream_runtime,
 };

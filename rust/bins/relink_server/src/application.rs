@@ -140,7 +140,7 @@ pub async fn entry() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "PASS mode=production config={} model_ingress_helper=ready model_contract=ready deepstream_pipeline=buildable hardware_not_started=true",
+                "PASS mode=production config={} model_ingress_helper=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true capture_not_started=true pointer_not_connected=true",
                 args.config.display()
             );
             return ExitCode::SUCCESS;

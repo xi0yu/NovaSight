@@ -298,6 +298,12 @@ struct StartedPipeline {
     perception_worker: JoinHandle<()>,
 }
 
+struct PreparedPipeline {
+    pipeline: gst::Pipeline,
+    probe_pad: gst::Pad,
+    bus: gst::Bus,
+}
+
 struct PreviewEpochGuard {
     hub: PreviewHub,
     epoch: RuntimeEpoch,
@@ -469,6 +475,21 @@ impl DeepStreamSession {
     }
 }
 
+/// Validate the linked DeepStream/GStreamer runtime and construct the configured
+/// pipeline without changing its state. This checks the same ABI, plugin,
+/// element-name, and probe-pad contract used by a real session, but does not
+/// open capture or start inference.
+pub fn preflight_deepstream_runtime(config: &DeepStreamSessionConfig) -> Result<(), SessionError> {
+    config.validate()?;
+    let _prepared = prepare_pipeline(config)?;
+    #[cfg(feature = "tensorrt")]
+    if let Some(tensorrt) = config.rust_tensorrt.clone() {
+        let _owner = CudaTensorRtOwner::from_config(tensorrt)
+            .map_err(|error| SessionError::InferenceInitialize(error.to_string()))?;
+    }
+    Ok(())
+}
+
 impl PerceptionSession for DeepStreamSession {
     fn metrics(&self) -> PerceptionMetrics {
         let metrics = self.metrics();
@@ -617,27 +638,11 @@ fn start_pipeline(
     state: Arc<ProbeState>,
     latest_frames: LatestFrameExchange,
 ) -> Result<StartedPipeline, SessionError> {
-    validate_loaded_abi().map_err(SessionError::BridgeAbi)?;
-    gst::init().map_err(|error| SessionError::GstreamerInit(error.to_string()))?;
-    let description = config.pipeline.build()?;
-    let element = gst::parse::launch(&description)
-        .map_err(|error| SessionError::PipelineParse(error.to_string()))?;
-    let pipeline = element
-        .downcast::<gst::Pipeline>()
-        .map_err(|_| SessionError::ParsedElementNotPipeline)?;
-    let bus = pipeline.bus().ok_or(SessionError::MissingBus)?;
-    let inference = pipeline
-        .by_name(&config.pipeline.inference_element)
-        .ok_or_else(|| SessionError::MissingInferenceElement {
-            name: config.pipeline.inference_element.clone(),
-        })?;
-    let probe_pad =
-        inference
-            .static_pad(&config.probe_pad)
-            .ok_or_else(|| SessionError::MissingProbePad {
-                element: config.pipeline.inference_element.clone(),
-                pad: config.probe_pad.clone(),
-            })?;
+    let PreparedPipeline {
+        pipeline,
+        probe_pad,
+        bus,
+    } = prepare_pipeline(config)?;
     let weak_pipeline = pipeline.downgrade();
     let source_id = config.source_id;
     let exchange = SnapshotExchange::new(latest_frames);
@@ -728,6 +733,73 @@ fn start_pipeline(
         })
         .ok_or(SessionError::ProbeInstallFailed)?;
 
+    finish_started_pipeline(
+        config,
+        epoch,
+        ingress,
+        monotonic_clock,
+        state,
+        pipeline,
+        probe_pad,
+        probe_id,
+        bus,
+        exchange,
+    )
+}
+
+fn prepare_pipeline(config: &DeepStreamSessionConfig) -> Result<PreparedPipeline, SessionError> {
+    validate_loaded_abi().map_err(SessionError::BridgeAbi)?;
+    gst::init().map_err(|error| SessionError::GstreamerInit(error.to_string()))?;
+    let description = config.pipeline.build()?;
+    let element = gst::parse::launch(&description)
+        .map_err(|error| SessionError::PipelineParse(error.to_string()))?;
+    let pipeline = element
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| SessionError::ParsedElementNotPipeline)?;
+    let bus = pipeline.bus().ok_or(SessionError::MissingBus)?;
+    let inference = pipeline
+        .by_name(&config.pipeline.inference_element)
+        .ok_or_else(|| SessionError::MissingInferenceElement {
+            name: config.pipeline.inference_element.clone(),
+        })?;
+    let probe_pad =
+        inference
+            .static_pad(&config.probe_pad)
+            .ok_or_else(|| SessionError::MissingProbePad {
+                element: config.pipeline.inference_element.clone(),
+                pad: config.probe_pad.clone(),
+            })?;
+    if config.pipeline.preview.is_some() {
+        pipeline
+            .by_name("preview-valve")
+            .ok_or(SessionError::MissingPreviewElement("preview-valve"))?;
+        let preview_sink = pipeline
+            .by_name("preview-sink")
+            .ok_or(SessionError::MissingPreviewElement("preview-sink"))?;
+        preview_sink
+            .static_pad("sink")
+            .ok_or(SessionError::MissingPreviewPad)?;
+    }
+    Ok(PreparedPipeline {
+        pipeline,
+        probe_pad,
+        bus,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_started_pipeline(
+    config: &DeepStreamSessionConfig,
+    epoch: RuntimeEpoch,
+    ingress: PipelineIngress,
+    monotonic_clock: Arc<dyn Clock>,
+    state: Arc<ProbeState>,
+    pipeline: gst::Pipeline,
+    probe_pad: gst::Pad,
+    probe_id: gst::PadProbeId,
+    bus: gst::Bus,
+    exchange: Arc<SnapshotExchange>,
+) -> Result<StartedPipeline, SessionError> {
     let preview_probe = match install_preview_probe(&pipeline, config.preview.as_ref(), epoch) {
         Ok(probe) => probe,
         Err(error) => {
@@ -739,7 +811,7 @@ fn start_pipeline(
 
     let worker_context = SnapshotWorkerContext {
         epoch,
-        source_id,
+        source_id: config.source_id,
         inference_component_id: config.inference_component_id,
         max_batch_age_ns: config.max_batch_age_ns,
         monotonic_clock,

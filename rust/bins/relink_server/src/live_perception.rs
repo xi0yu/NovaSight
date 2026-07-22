@@ -23,7 +23,7 @@ use novasight_platform_jetson::deepstream::CudaTensorRtConfig;
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
     DeepStreamSessionConfig, InferenceStage, LatestFrameExchange, ModelInput,
-    PreviewPipelineConfig, Roi,
+    PreviewPipelineConfig, Roi, SessionError, preflight_deepstream_runtime,
 };
 use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
 #[cfg(feature = "experimental-kmnet-native")]
@@ -114,14 +114,15 @@ pub(super) fn build_live_production_dependencies(
     )
 }
 
-/// Validate the production vision contract without opening capture, loading a
-/// GStreamer pipeline, or connecting the pointer device.
+/// Validate the production vision contract and linked native runtime without
+/// opening capture, starting inference, or connecting the pointer device.
 pub(super) fn preflight_live_production(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
 ) -> Result<(), LivePerceptionError> {
     let preview = PreviewHub::new(config.consumers.preview);
-    build_deepstream_session_config(config, model_catalog, preview).map(|_| ())
+    let session = build_deepstream_session_config(config, model_catalog, preview)?;
+    preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
 }
 
 fn build_live_dependencies(
@@ -1638,4 +1639,6 @@ pub(super) enum LivePerceptionError {
     ManifestContract(String),
     #[error("DeepStream pipeline configuration is invalid: {0}")]
     Pipeline(String),
+    #[error("DeepStream native runtime preflight failed: {0}")]
+    RuntimePreflight(SessionError),
 }
