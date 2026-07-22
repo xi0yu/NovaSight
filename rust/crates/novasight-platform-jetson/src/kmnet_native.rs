@@ -24,6 +24,7 @@ const MOVE_PACKET_LEN: usize = HEADER_LEN + 56;
 // accepting a truncated datagram would turn corruption into trigger state.
 const MONITOR_PACKET_LEN: usize = 20;
 const MONITOR_PORT_RANGE: std::ops::RangeInclusive<u16> = 1024..=49_151;
+const IDEMPOTENT_SETUP_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct KmNetNativeConfig {
@@ -48,7 +49,7 @@ struct KmNetNativeSession {
     control: Mutex<ControlSocket>,
     buttons: Arc<AtomicU8>,
     monitor_healthy: Arc<AtomicBool>,
-    last_monitor_update: Arc<Mutex<Instant>>,
+    last_monitor_update: Arc<Mutex<Option<Instant>>>,
     monitor_timeout: Duration,
     monitor_port: u16,
     stop: Arc<AtomicBool>,
@@ -84,7 +85,9 @@ impl KmNetNativeSession {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(KmNetNativeError::Bind)?;
         socket.connect(remote).map_err(KmNetNativeError::Connect)?;
         socket
-            .set_read_timeout(Some(config.connect_timeout))
+            .set_read_timeout(Some(
+                config.connect_timeout / u32::try_from(IDEMPOTENT_SETUP_ATTEMPTS).unwrap(),
+            ))
             .map_err(KmNetNativeError::Configure)?;
         let mut control = ControlSocket {
             socket,
@@ -93,7 +96,7 @@ impl KmNetNativeSession {
             sequence: u32::MAX,
             random_state: random_seed(mac),
         };
-        control.exchange(CMD_CONNECT, None, &[], "connect")?;
+        control.exchange_idempotent(CMD_CONNECT, None, &[], "connect")?;
 
         let monitor_socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, config.monitor_port))
             .map_err(KmNetNativeError::MonitorBind)?;
@@ -101,7 +104,7 @@ impl KmNetNativeSession {
             .set_read_timeout(Some(config.request_timeout))
             .map_err(KmNetNativeError::Configure)?;
         let monitor_value = u32::from(config.monitor_port) | (0xaa55_u32 << 16);
-        control.exchange(CMD_MONITOR, Some(monitor_value), &[], "monitor")?;
+        control.exchange_idempotent(CMD_MONITOR, Some(monitor_value), &[], "monitor")?;
         control
             .socket
             .set_read_timeout(Some(config.request_timeout))
@@ -109,7 +112,7 @@ impl KmNetNativeSession {
 
         let buttons = Arc::new(AtomicU8::new(0));
         let monitor_healthy = Arc::new(AtomicBool::new(true));
-        let last_monitor_update = Arc::new(Mutex::new(Instant::now()));
+        let last_monitor_update = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let monitor = spawn_monitor(
             monitor_socket,
@@ -237,30 +240,13 @@ impl PointerDevice for KmNetNativeDevice {
                 "native kmNet session is not connected".to_owned(),
             )
         })?;
-        if !session.monitor_healthy.load(Ordering::Acquire) {
-            return Err(pointer_error(
-                "monitor_failed",
-                "kmNet monitor socket terminated".to_owned(),
-            ));
-        }
-        let last_update = *session
-            .last_monitor_update
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if last_update.elapsed() > session.monitor_timeout {
-            return Err(pointer_error(
-                "monitor_stale",
-                format!(
-                    "kmNet monitor has been silent for more than {:?}",
-                    session.monitor_timeout
-                ),
-            ));
-        }
-        let buttons = session.buttons.load(Ordering::Acquire);
-        Ok(Some(PointerButtons {
-            left: buttons & 0x01 != 0,
-            right: buttons & 0x02 != 0,
-        }))
+        read_monitor_buttons(
+            &session.monitor_healthy,
+            &session.last_monitor_update,
+            &session.buttons,
+            session.monitor_timeout,
+        )
+        .map(Some)
     }
 
     fn disconnect(&self) -> Result<(), AppError> {
@@ -297,36 +283,75 @@ impl ControlSocket {
         payload: &[u8],
         operation: &'static str,
     ) -> Result<(), KmNetNativeError> {
+        self.exchange_with_attempts(command, random_override, payload, operation, 1)
+    }
+
+    fn exchange_idempotent(
+        &mut self,
+        command: u32,
+        random_override: Option<u32>,
+        payload: &[u8],
+        operation: &'static str,
+    ) -> Result<(), KmNetNativeError> {
+        self.exchange_with_attempts(
+            command,
+            random_override,
+            payload,
+            operation,
+            IDEMPOTENT_SETUP_ATTEMPTS,
+        )
+    }
+
+    fn exchange_with_attempts(
+        &mut self,
+        command: u32,
+        random_override: Option<u32>,
+        payload: &[u8],
+        operation: &'static str,
+        attempts: usize,
+    ) -> Result<(), KmNetNativeError> {
         self.sequence = self.sequence.wrapping_add(1);
         let random = random_override.unwrap_or_else(|| self.next_random());
         let packet = encode_packet(self.mac, random, self.sequence, command, payload);
         debug_assert!(packet.len() == HEADER_LEN || packet.len() == MOVE_PACKET_LEN);
-        self.socket
-            .send(&packet)
-            .map_err(|source| KmNetNativeError::Send { operation, source })?;
-        let mut response = [0_u8; 1024];
-        let received = self
-            .socket
-            .recv(&mut response)
-            .map_err(|source| KmNetNativeError::Receive { operation, source })?;
-        if received < HEADER_LEN {
-            return Err(KmNetNativeError::ShortResponse {
-                operation,
-                received,
-            });
+        for attempt in 0..attempts {
+            self.socket
+                .send(&packet)
+                .map_err(|source| KmNetNativeError::Send { operation, source })?;
+            let mut response = [0_u8; 1024];
+            let received = match self.socket.recv(&mut response) {
+                Ok(received) => received,
+                Err(source)
+                    if attempt + 1 < attempts
+                        && matches!(
+                            source.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) =>
+                {
+                    continue;
+                }
+                Err(source) => return Err(KmNetNativeError::Receive { operation, source }),
+            };
+            if received < HEADER_LEN {
+                return Err(KmNetNativeError::ShortResponse {
+                    operation,
+                    received,
+                });
+            }
+            let response_sequence = u32::from_le_bytes(response[8..12].try_into().unwrap());
+            let response_command = u32::from_le_bytes(response[12..16].try_into().unwrap());
+            if response_sequence != self.sequence || response_command != command {
+                return Err(KmNetNativeError::ResponseMismatch {
+                    operation,
+                    expected_sequence: self.sequence,
+                    actual_sequence: response_sequence,
+                    expected_command: command,
+                    actual_command: response_command,
+                });
+            }
+            return Ok(());
         }
-        let response_sequence = u32::from_le_bytes(response[8..12].try_into().unwrap());
-        let response_command = u32::from_le_bytes(response[12..16].try_into().unwrap());
-        if response_sequence != self.sequence || response_command != command {
-            return Err(KmNetNativeError::ResponseMismatch {
-                operation,
-                expected_sequence: self.sequence,
-                actual_sequence: response_sequence,
-                expected_command: command,
-                actual_command: response_command,
-            });
-        }
-        Ok(())
+        unreachable!("exchange attempts are always non-zero")
     }
 
     fn next_random(&mut self) -> u32 {
@@ -370,7 +395,7 @@ fn spawn_monitor(
     socket: UdpSocket,
     buttons: Arc<AtomicU8>,
     healthy: Arc<AtomicBool>,
-    last_update: Arc<Mutex<Instant>>,
+    last_update: Arc<Mutex<Option<Instant>>>,
     stop: Arc<AtomicBool>,
     expected_host: Ipv4Addr,
 ) -> Result<JoinHandle<()>, KmNetNativeError> {
@@ -387,7 +412,8 @@ fn spawn_monitor(
                         buttons.store(packet[1], Ordering::Release);
                         *last_update
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            Some(Instant::now());
                     }
                     Ok(_) => {}
                     Err(error)
@@ -415,6 +441,43 @@ fn parse_uuid(value: &str) -> Result<u32, KmNetNativeError> {
 
 fn pointer_error(code: &'static str, message: String) -> AppError {
     AppError::PointerDevice { code, message }
+}
+
+fn read_monitor_buttons(
+    healthy: &AtomicBool,
+    last_update: &Mutex<Option<Instant>>,
+    buttons: &AtomicU8,
+    monitor_timeout: Duration,
+) -> Result<PointerButtons, AppError> {
+    if !healthy.load(Ordering::Acquire) {
+        return Err(pointer_error(
+            "monitor_failed",
+            "kmNet monitor socket terminated".to_owned(),
+        ));
+    }
+    let last_update = *last_update
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(last_update) = last_update else {
+        return Err(pointer_error(
+            "monitor_stale",
+            "kmNet monitor is waiting for its first hardware report".to_owned(),
+        ));
+    };
+    if last_update.elapsed() > monitor_timeout {
+        return Err(pointer_error(
+            "monitor_stale",
+            format!(
+                "kmNet monitor has been silent for more than {:?}",
+                monitor_timeout
+            ),
+        ));
+    }
+    let buttons = buttons.load(Ordering::Acquire);
+    Ok(PointerButtons {
+        left: buttons & 0x01 != 0,
+        right: buttons & 0x02 != 0,
+    })
 }
 
 #[derive(Debug, Error)]
@@ -487,16 +550,19 @@ impl KmNetNativeError {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, UdpSocket};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU8};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use novasight_core::{
-        DeviceCommand, Generation, MonotonicNanos, PointerButtons, PointerDevice, RuntimeEpoch,
+        AppError, DeviceCommand, Generation, MonotonicNanos, PointerButtons, PointerDevice,
+        RuntimeEpoch,
     };
 
     use super::{
         CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE, KmNetNativeConfig, KmNetNativeDevice,
-        encode_packet, parse_uuid,
+        encode_packet, parse_uuid, read_monitor_buttons,
     };
 
     fn available_monitor_port() -> u16 {
@@ -576,6 +642,18 @@ mod tests {
     }
 
     #[test]
+    fn monitor_is_unavailable_until_a_real_hardware_report_arrives() {
+        let error = read_monitor_buttons(
+            &AtomicBool::new(true),
+            &Mutex::new(None),
+            &AtomicU8::new(0),
+            Duration::from_secs(2),
+        )
+        .expect_err("the connect acknowledgement is not a monitor report");
+        assert!(error.to_string().contains("first hardware report"));
+    }
+
+    #[test]
     fn native_device_exchanges_real_udp_packets_and_caches_monitor_buttons() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let server_port = server.local_addr().unwrap().port();
@@ -632,7 +710,9 @@ mod tests {
             port: server_port,
             uuid: "01FBC068".to_owned(),
             monitor_port,
-            connect_timeout: Duration::from_secs(15),
+            // CI hosts can heavily deschedule loopback responder threads; the
+            // production retry budget remains supplied by configuration.
+            connect_timeout: Duration::from_secs(60),
             request_timeout: Duration::from_secs(5),
             monitor_timeout: Duration::from_secs(2),
         })
@@ -642,8 +722,16 @@ mod tests {
             .expect("mock device responder must be scheduled before the client handshake");
         device.connect().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while device.trigger_active().unwrap() != Some(true) && Instant::now() < deadline {
-            thread::yield_now();
+        loop {
+            match device.trigger_active() {
+                Ok(Some(true)) => break,
+                Ok(Some(false))
+                | Err(AppError::PointerDevice {
+                    code: "monitor_stale",
+                    ..
+                }) if Instant::now() < deadline => thread::yield_now(),
+                result => panic!("monitor did not publish the hardware report: {result:?}"),
+            }
         }
         assert_eq!(device.trigger_active().unwrap(), Some(true));
         assert_eq!(
