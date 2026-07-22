@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use novasight_client::{
-    ClientError, ControlClient, DiagnosticMoveResponse, ExecutorStatus, LicenseStatus,
-    ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
+    CatalogEngineRegistration, ClientError, ControlClient, DiagnosticMoveResponse, ExecutorStatus,
+    LicenseStatus, ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
 };
 use novasight_core::CaptureSelectionPreference;
 use novasight_runtime::{
@@ -82,6 +82,8 @@ enum LicenseCommand {
 
 #[derive(Subcommand, Debug)]
 enum ModelCommand {
+    /// Register an existing .engine below a configured daemon model root.
+    Register { relative_path: String },
     /// List model projects in the daemon catalog.
     Projects,
     /// List versions belonging to one project.
@@ -212,6 +214,7 @@ enum CommandOutput {
     Config(AppConfig),
     ConfigUpdate(ConfigUpdate),
     Model(ModelIngressResult),
+    ModelRegistration(CatalogEngineRegistration),
     License(LicenseStatus),
     ModelProjects(Vec<ModelProject>),
     ModelVersions(Vec<ModelVersion>),
@@ -298,6 +301,12 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::License {
             command: LicenseCommand::Clear,
         } => client.clear_license().await.map(CommandOutput::License),
+        Command::Model {
+            command: ModelCommand::Register { relative_path },
+        } => client
+            .register_catalog_engine(&relative_path)
+            .await
+            .map(CommandOutput::ModelRegistration),
         Command::Model {
             command: ModelCommand::Projects,
         } => client

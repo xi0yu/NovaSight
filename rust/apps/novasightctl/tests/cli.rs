@@ -357,6 +357,69 @@ async fn model_profile_command_uses_the_daemon_model_contract() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_register_command_uses_the_shared_catalog_contract() {
+    let socket = SocketPath::new();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let app = axum::Router::new().route(
+        "/api/models/catalog/register",
+        axum::routing::post(
+            |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                assert_eq!(request["relative_path"], "nested/detector.engine");
+                axum::Json(serde_json::json!({
+                    "project": {"id": 4, "name": "detector", "description": "external"},
+                    "version": {
+                        "id": 7,
+                        "project_id": 4,
+                        "version": "external-abc123",
+                        "source_kind": "onnx",
+                        "source_path": "/srv/models/nested/detector.engine",
+                        "classes": ["target"],
+                        "input_shape": "engine-probe-required"
+                    },
+                    "artifact": {
+                        "id": 9,
+                        "version_id": 7,
+                        "kind": "engine",
+                        "path": "/srv/models/nested/detector.engine",
+                        "checksum": "deferred:abc123",
+                        "status": "pending",
+                        "size_bytes": 4096
+                    },
+                    "engine_path": "/srv/models/nested/detector.engine",
+                    "created": true
+                }))
+            },
+        ),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        run_cli_args(
+            &socket_path,
+            &["model", "register", "nested/detector.engine"],
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["created"], true);
+    assert_eq!(body["project"]["id"], 4);
+    assert_eq!(body["artifact"]["id"], 9);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn model_publish_command_uses_the_shared_activation_contract() {
     let socket = SocketPath::new();
     let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");

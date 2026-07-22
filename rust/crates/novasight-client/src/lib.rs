@@ -19,7 +19,9 @@ use novasight_runtime::{
     ModelProfileConfigureRequest, RuntimeSnapshot,
 };
 pub use novasight_store::license::LicenseStatus;
-pub use novasight_store::model_catalog::{Deployment, ModelArtifact, ModelProject, ModelVersion};
+pub use novasight_store::model_catalog::{
+    CatalogEngineRegistration, Deployment, ModelArtifact, ModelProject, ModelVersion,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
@@ -233,6 +235,22 @@ impl ControlClient {
             Method::GET,
             &format!("/api/models/versions/{version_id}/artifacts"),
             None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn register_catalog_engine(
+        &self,
+        relative_path: &str,
+    ) -> Result<CatalogEngineRegistration, ClientError> {
+        #[derive(Serialize)]
+        struct RegisterCatalogEngineRequest<'a> {
+            relative_path: &'a str,
+        }
+        self.request(
+            Method::POST,
+            "/api/models/catalog/register",
+            Some(&RegisterCatalogEngineRequest { relative_path }),
         )
         .await
     }
