@@ -8,7 +8,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use novasight_api::{
-    build_control_router, build_control_router_with_services, build_control_router_with_shutdown,
+    build_control_router, build_control_router_with_capabilities,
+    build_control_router_with_services, build_control_router_with_shutdown,
 };
 use novasight_core::{Clock, MonotonicNanos, PointerDevice, RecordingPointerDevice};
 use novasight_pipeline::PipelineConfig;
@@ -341,6 +342,86 @@ async fn studio_status_websocket_streams_real_supervisor_changes() {
 
     socket.close(None).await.unwrap();
     server.abort();
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, "revision: 0\nhardware: {}\n").unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let dry_run =
+        build_control_router_with_capabilities(runtime.clone(), Some(config.clone()), false, None);
+    let request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/executors/kmnet/diagnostic-move")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"dx":4,"dy":-2}"#))
+            .unwrap()
+    };
+
+    let response = dry_run.oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "HARDWARE_OUTPUT_DISABLED");
+
+    let production =
+        build_control_router_with_capabilities(runtime.clone(), Some(config), true, None);
+    let response = production.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(result["sent"], true);
+    assert_eq!(result["queued"], false);
+    assert_eq!(result["steps_sent"], 1);
+    assert_eq!(result["receipt"]["epoch"], 0);
+    assert_eq!(result["receipt"]["generation"], 1);
+    assert_eq!(result["receipt"]["delta_x_counts"], 4);
+    assert_eq!(result["status"]["managed_by_runtime"], true);
+
+    let response = production
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/executors")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let executors: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(executors["executors"]["kmnet"]["connected"], true);
+    assert_eq!(executors["executors"]["kmnet"]["move_count"], 1);
+    assert_eq!(executors["executors"]["kmnet"]["last_dx"], 4);
+    assert_eq!(executors["executors"]["kmnet"]["last_dy"], -2);
+    assert_eq!(executors["executors"]["kmnet"]["managed_by_runtime"], true);
+
+    let response = production
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/executors/kmnet/connect")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "DEVICE_LIFECYCLE_MANAGED_BY_RUNTIME");
+
+    runtime.start().await.unwrap();
+    let response = production.oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+
     shutdown(supervisor, &runtime).await;
 }
 

@@ -58,5 +58,14 @@ pub struct RuntimeSnapshot {
     pub subsystems: SubsystemSnapshots,
     #[serde(default)]
     pub perception_metrics: PerceptionMetrics,
+    #[serde(default)]
+    pub device_metrics: DeviceMetrics,
     pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceMetrics {
+    pub diagnostic_move_count: u64,
+    pub last_diagnostic_dx: Option<i32>,
+    pub last_diagnostic_dy: Option<i32>,
 }

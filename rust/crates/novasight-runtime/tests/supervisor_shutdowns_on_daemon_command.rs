@@ -82,6 +82,14 @@ fn error_kind_codes_match_documented_strings() {
         RuntimeErrorKind::PipelineRejected.code(),
         "pipeline_rejected"
     );
+    assert_eq!(
+        RuntimeErrorKind::DeviceUnavailable.code(),
+        "device_unavailable"
+    );
+    assert_eq!(
+        RuntimeErrorKind::InvalidDeviceCommand.code(),
+        "invalid_device_command"
+    );
     assert_eq!(RuntimeErrorKind::Other.code(), "runtime_error");
 }
 

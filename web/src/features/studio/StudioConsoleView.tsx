@@ -5,10 +5,7 @@ import {
   CaptureCapability,
   CaptureState,
   CaptureSelectPayload,
-  connectKmNet,
-  diagnosticCircleKmNet,
   diagnosticMoveKmNet,
-  disconnectKmNet,
   clearCrosshairTemplate,
   crosshairTemplatePreviewUrl,
   getRuntimeState,
@@ -635,12 +632,6 @@ export function StudioConsoleView({
   const [selectedModelCatalogPath, setSelectedModelCatalogPath] = useState<string>();
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
-  const [kmnetTestMs, setKmnetTestMs] = useState(300);
-  const [kmnetMoveKind, setKmnetMoveKind] = useState("raw");
-  const [kmnetBezierX1, setKmnetBezierX1] = useState(-50);
-  const [kmnetBezierY1, setKmnetBezierY1] = useState(-60);
-  const [kmnetBezierX2, setKmnetBezierX2] = useState(70);
-  const [kmnetBezierY2, setKmnetBezierY2] = useState(80);
   const [kmnetTestMessage, setKmnetTestMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -1321,8 +1312,6 @@ export function StudioConsoleView({
   const kalmanAccelerationNoise = readNumber(controlConfig.kalman_acceleration_noise, 1200);
   const kalmanMeasurementNoiseX = readNumber(controlConfig.kalman_measurement_noise_x, 16);
   const kalmanMeasurementNoiseY = readNumber(controlConfig.kalman_measurement_noise_y, 16);
-  const moveKind = kmnetMoveKind;
-  const moveMs = kmnetTestMs;
   const calibratedFovX = readNumber(calibratedAngularConfig.fov_x_deg, 105);
   const calibratedCountsPer360X = readNumber(calibratedAngularConfig.counts_per_360_x, 9980);
   const calibratedCountsPer360Y = readNumber(calibratedAngularConfig.counts_per_360_y, 9980);
@@ -1395,6 +1384,7 @@ export function StudioConsoleView({
   const kmnetConnected = kmnetStatus.connected === true;
   const kmnetConnecting = kmnetStatus.connecting === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
+  const kmnetManagedByRuntime = kmnetStatus.managed_by_runtime === true;
   const kmnetConnectionState = readString(
     kmnetStatus.connection_state,
     kmnetConnected ? "connected" : kmnetConnecting ? "connecting" : "disconnected"
@@ -1410,14 +1400,7 @@ export function StudioConsoleView({
       : kmnetConnectionFailed
         ? "连接失败"
         : "未连接";
-  const kmnetConnectionActionLabel = kmnetConnected
-    ? "断开 kmNet"
-    : kmnetConnecting
-      ? "取消连接"
-      : kmnetConnectionFailed
-        ? kmnetRetryable ? "重新连接" : "驱动不可用"
-        : "连接 kmNet";
-  const kmnetDiagnosticDisabled = !kmnetConnected || busy === "kmnet.diagnostic" || busy === "kmnet.circle";
+  const kmnetDiagnosticDisabled = !kmnetDriverAvailable || runtime?.running === true || busy === "kmnet.diagnostic";
   const kmnetButtonLeft = kmnetStatus.button_left === true;
   const kmnetButtonRight = kmnetStatus.button_right === true;
   const previewEnabled = consumersConfig.preview !== false;
@@ -2898,61 +2881,26 @@ export function StudioConsoleView({
     }
   }, [onRefresh, runtimeConfig]);
 
-  const toggleHardwareConnection = useCallback(async () => {
-    setBusy("kmnet.toggle");
-    setLocalError(null);
-    try {
-      if (kmnetConnected || kmnetConnecting) {
-        await disconnectKmNet();
-      } else {
-        await connectKmNet();
-      }
-      await onRefresh();
-    } catch (err) {
-      setLocalError(`kmNet ${kmnetConnected ? "断开" : kmnetConnecting ? "取消连接" : "连接"}失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [kmnetConnected, kmnetConnecting, onRefresh]);
-
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
-    dy = kmnetTestDy,
-    repeat = 1,
-    intervalMs = 0,
-    moveKindOverride?: string,
-    moveMsOverride = kmnetTestMs,
-    bezierCtrl?: { x1: number; y1: number; x2: number; y2: number }
+    dy = kmnetTestDy
   ) => {
     setBusy("kmnet.diagnostic");
     setLocalError(null);
     setKmnetTestMessage("");
     try {
-      const effectiveMoveKind = moveKindOverride ?? moveKind;
       const result = await diagnosticMoveKmNet(
         Math.round(dx),
-        Math.round(dy),
-        repeat,
-        intervalMs,
-        effectiveMoveKind,
-        Math.round(moveMsOverride),
-        bezierCtrl
+        Math.round(dy)
       );
       const status = asRecord(result.status);
       const metadata = asRecord(result.metadata);
-      const stepsSent = readNumber(result.steps_sent, result.sent === true ? repeat : 0);
-      const queued = result.queued === true;
-      const apiName = readString(metadata.api_name, effectiveMoveKind);
-      const driverRc = String(metadata.driver_rc ?? "-");
+      const stepsSent = readNumber(result.steps_sent, result.sent === true ? 1 : 0);
+      const apiName = readString(metadata.api_name, "rust_pointer_device_send");
       setKmnetTestMessage(
-        queued
-          ? `已下发 ${effectiveMoveKind} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${repeat} 步 · ${Math.round(moveMsOverride)}ms · 后端后台执行`
-          : result.sent === true
-          ? `已发送 ${apiName} rc=${driverRc} dx=${Math.round(dx)} dy=${Math.round(dy)} · ${Math.round(moveMsOverride)}ms · ${stepsSent}/${repeat} 步 · 累计 ${readNumber(status.move_count, 0)} 次`
-          : `未发送 ${effectiveMoveKind}：${readString(result.message, "未知原因")} · ${stepsSent}/${repeat} 步`
+        result.sent === true
+          ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步 · 诊断累计 ${readNumber(status.move_count, 0)} 次`
+          : `未发送 raw：${readString(result.message, "未知原因")} · ${stepsSent}/1 步`
       );
       await onRefresh();
     } catch (err) {
@@ -2963,34 +2911,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [kmnetTestDx, kmnetTestDy, kmnetTestMs, moveKind, onRefresh]);
-
-  const diagnosticCircleHardware = useCallback(async () => {
-    setBusy("kmnet.circle");
-    setLocalError(null);
-    setKmnetTestMessage("");
-    try {
-      const result = await diagnosticCircleKmNet(8, 32, 8);
-      const failed = asRecord(result.failed);
-      if (result.queued === true) {
-        setKmnetTestMessage(`画圆测试已下发 · ${readNumber(result.steps_requested, 32)} 步 · 半径 ${readNumber(result.radius, 8)} · 后端后台执行`);
-      } else if (result.sent === true) {
-        setKmnetTestMessage(`画圆测试已发送 ${readNumber(result.steps_sent, 0)} 步 · 半径 ${readNumber(result.radius, 8)}`);
-      } else {
-        setKmnetTestMessage(
-          `画圆测试中断：第 ${readNumber(failed.step, 0)} 步 · ${readString(failed.message, "未发送")}`
-        );
-      }
-      await onRefresh();
-    } catch (err) {
-      setLocalError(`kmNet 画圆测试失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [onRefresh]);
+  }, [kmnetTestDx, kmnetTestDy, onRefresh]);
 
   const exportConfig = () => {
     if (!runtimeConfig) {
@@ -4343,15 +4264,14 @@ export function StudioConsoleView({
               ) : null}
               <div className="console-action-row kmnet-connection-actions">
                 <button
-                  className={kmnetConnected ? "console-button danger" : kmnetConnecting ? "console-button" : "console-button primary"}
+                  className="console-button"
                   aria-pressed={kmnetConnected}
-                  disabled={busy === "kmnet.toggle" || (!kmnetDriverAvailable && !kmnetConnected && !kmnetConnecting)}
-                  onClick={() => void toggleHardwareConnection()}
+                  disabled
                   type="button"
                 >
-                  {busy === "kmnet.toggle" ? "处理中…" : kmnetConnectionActionLabel}
+                  {kmnetManagedByRuntime ? "由 Rust Runtime 托管" : "硬件输出未启用"}
                 </button>
-                <span>{kmnetConnected ? "输出命令可发送" : kmnetConnecting ? "正在初始化驱动与网络连接" : kmnetConnectionFailed ? "主链可继续运行，输出暂不可用" : "连接后才会发送控制输出"}</span>
+                <span>设备生命周期由 novasightd 所有；启动主链时启用，停止主链后才允许单步诊断。</span>
               </div>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
               <NumberControl label="kmnetport" value={kmnetPort} min={0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
@@ -4363,18 +4283,6 @@ export function StudioConsoleView({
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
               />
-              <label>移动 API</label>
-              <select
-                value={moveKind}
-                onChange={(event) => setKmnetMoveKind(event.target.value)}
-              >
-                <option value="raw">move：最快直移</option>
-                <option value="enc_raw">enc_move：加密直移</option>
-                <option value="auto">move_auto：模拟移动</option>
-                <option value="enc_auto">enc_move_auto：加密模拟移动</option>
-                <option value="bezier">move_beizer：贝塞尔曲线</option>
-                <option value="enc_bezier">enc_move_beizer：加密贝塞尔曲线</option>
-              </select>
               <label>命令调度</label>
               {dualPhaseActive ? (
                 <div className="console-kv compact-kv">
@@ -4419,123 +4327,27 @@ export function StudioConsoleView({
                       onChange={(event) => setKmnetTestDy(Number(event.target.value))}
                     />
                   </label>
-                  <label>
-                    <span>ms</span>
-                    <input
-                      type="number"
-                      value={kmnetTestMs}
-                      onChange={(event) => setKmnetTestMs(Number(event.target.value))}
-                    />
-                  </label>
                 </div>
                 <div className="kmnet-pad">
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, -10, 1, 0, "raw", 0)}>↑</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(-10, 0, 1, 0, "raw", 0)}>←</button>
-                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)} disabled={kmnetDiagnosticDisabled}>发送</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(10, 0, 1, 0, "raw", 0)}>→</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10, 1, 0, "raw", 0)}>↓</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, -10)}>↑</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(-10, 0)}>←</button>
+                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={kmnetDiagnosticDisabled}>发送</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(10, 0)}>→</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
                 </div>
                 <div className="kmnet-test-section">
-                  <h3>最快直移</h3>
-                  <p>调用 move / enc_move，只传 x、y。适合验证最底层驱动是否能立即移动。</p>
+                  <h3>Supervisor 单步诊断</h3>
+                  <p>仅在主链停止时，由 Rust supervisor 串行调用 daemon-owned PointerDevice；不会与实时 DeviceLane 竞争。</p>
                   <div className="console-action-row">
                     <button
                       className="console-button"
                       disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "raw", 0)}
+                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)}
                       type="button"
                     >
-                      move
-                    </button>
-                    <button
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_raw", 0)}
-                      type="button"
-                    >
-                      enc_move
+                      发送单步 raw
                     </button>
                   </div>
-                </div>
-                <div className="kmnet-test-section">
-                  <h3>自动模拟</h3>
-                  <p>调用 move_auto / enc_move_auto，指定 ms，按最小步进逼近目标。</p>
-                  <div className="console-action-row">
-                    <button
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "auto", kmnetTestMs)}
-                      type="button"
-                    >
-                      move_auto
-                    </button>
-                    <button
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_auto", kmnetTestMs)}
-                      type="button"
-                    >
-                      enc_move_auto
-                    </button>
-                  </div>
-                </div>
-                <div className="kmnet-test-section">
-                  <h3>贝塞尔曲线</h3>
-                  <p>调用 move_beizer / enc_move_beizer，参数为 x、y、ms、x1、y1、x2、y2。</p>
-                  <div className="kmnet-test-inputs bezier">
-                    <label><span>x1</span><input type="number" value={kmnetBezierX1} onChange={(event) => setKmnetBezierX1(Number(event.target.value))} /></label>
-                    <label><span>y1</span><input type="number" value={kmnetBezierY1} onChange={(event) => setKmnetBezierY1(Number(event.target.value))} /></label>
-                    <label><span>x2</span><input type="number" value={kmnetBezierX2} onChange={(event) => setKmnetBezierX2(Number(event.target.value))} /></label>
-                    <label><span>y2</span><input type="number" value={kmnetBezierY2} onChange={(event) => setKmnetBezierY2(Number(event.target.value))} /></label>
-                  </div>
-                  <div className="console-action-row">
-                    <button
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "bezier", kmnetTestMs, { x1: kmnetBezierX1, y1: kmnetBezierY1, x2: kmnetBezierX2, y2: kmnetBezierY2 })}
-                      type="button"
-                    >
-                      move_beizer
-                    </button>
-                    <button
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 1, 0, "enc_bezier", kmnetTestMs, { x1: kmnetBezierX1, y1: kmnetBezierY1, x2: kmnetBezierX2, y2: kmnetBezierY2 })}
-                      type="button"
-                    >
-                      enc_move_beizer
-                    </button>
-                  </div>
-                </div>
-                <div className="kmnet-test-section">
-                  <h3>辅助诊断</h3>
-                  <p>连续发送用于检查频率响应；右移大步和画圆用于确认肉眼可见移动。</p>
-                  <div className="console-action-row">
-                    <button
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy, 3, 4, "raw", 0)}
-                      type="button"
-                    >
-                      连续发送
-                    </button>
-                    <button
-                      className="console-button primary"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(600, 0, 1, 0, "raw", 0)}
-                      type="button"
-                    >
-                      右移大步测试
-                    </button>
-                  </div>
-                  <button
-                    className="kmnet-circle-button"
-                    disabled={kmnetDiagnosticDisabled}
-                    onClick={() => void diagnosticCircleHardware()}
-                    type="button"
-                  >
-                    {busy === "kmnet.circle" ? "画圆中" : "画圆测试"}
-                  </button>
                 </div>
                 <div className="kmnet-test-result">
                   <span>最近移动</span>

@@ -530,10 +530,16 @@ impl DeviceConfig {
                 "must not be empty",
             ));
         }
-        if self.auto_connect && (self.port == 0 || self.monitor_port == 0) {
+        if self.auto_connect && self.port == 0 {
             return Err(ConfigValidationError::new(
                 "hardware.port",
-                "port and monitor_port must be non-zero when auto_connect is enabled",
+                "must be non-zero when auto_connect is enabled",
+            ));
+        }
+        if self.auto_connect && !(1024..=49_151).contains(&self.monitor_port) {
+            return Err(ConfigValidationError::new(
+                "hardware.monitor_port",
+                "must be within the kmNet vendor range 1024..=49151",
             ));
         }
         if self.auto_connect

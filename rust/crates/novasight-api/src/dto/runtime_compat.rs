@@ -65,6 +65,16 @@ pub(crate) struct ExecutorState {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Availability {
     pub available: bool,
+    pub connected: bool,
+    pub connecting: bool,
+    pub monitoring: bool,
+    pub connection_state: &'static str,
+    pub retryable: bool,
+    pub last_error: Option<String>,
+    pub managed_by_runtime: bool,
+    pub move_count: u64,
+    pub last_dx: Option<i32>,
+    pub last_dy: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,6 +139,7 @@ impl CompatibilityRuntimeState {
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
         effective_revision: Option<u64>,
+        hardware_output_enabled: bool,
     ) -> Self {
         let capture_config = config.and_then(|config| config.capture.as_ref());
         let inference_config = config.and_then(|config| config.inference.as_ref());
@@ -156,12 +167,54 @@ impl CompatibilityRuntimeState {
             "dry_run".to_owned(),
             Availability {
                 available: config.is_some_and(|config| config.replay.enabled),
+                connected: false,
+                connecting: false,
+                monitoring: false,
+                connection_state: "not_applicable",
+                retryable: false,
+                last_error: None,
+                managed_by_runtime: true,
+                move_count: 0,
+                last_dx: None,
+                last_dy: None,
             },
         );
+        let device_state = snapshot.subsystems.device.state;
+        let device_connected = hardware_output_enabled
+            && matches!(
+                device_state,
+                SubsystemState::Ready | SubsystemState::Running
+            );
         executors.insert(
             "kmnet".to_owned(),
             Availability {
-                available: device_available,
+                available: hardware_output_enabled && device_available,
+                connected: device_connected,
+                connecting: hardware_output_enabled && device_state == SubsystemState::Starting,
+                monitoring: device_connected && running,
+                connection_state: match device_state {
+                    SubsystemState::Starting => "connecting",
+                    SubsystemState::Ready | SubsystemState::Running => "connected",
+                    SubsystemState::Failed | SubsystemState::Unavailable => "failed",
+                    SubsystemState::Degraded => "degraded",
+                    SubsystemState::Stopping => "disconnecting",
+                    SubsystemState::Stopped => "stopped",
+                },
+                retryable: hardware_output_enabled
+                    && matches!(
+                        device_state,
+                        SubsystemState::Failed | SubsystemState::Unavailable
+                    ),
+                last_error: snapshot
+                    .subsystems
+                    .device
+                    .last_error
+                    .as_ref()
+                    .map(|error| error.message.clone()),
+                managed_by_runtime: true,
+                move_count: snapshot.device_metrics.diagnostic_move_count,
+                last_dx: snapshot.device_metrics.last_diagnostic_dx,
+                last_dy: snapshot.device_metrics.last_diagnostic_dy,
             },
         );
         let metrics = snapshot.perception_metrics;

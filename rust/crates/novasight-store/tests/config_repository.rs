@@ -212,6 +212,10 @@ fn each_production_adapter_reports_its_invalid_field() {
             "hardware:\n  auto_connect: true\n  port: 0\n",
             "hardware.port",
         ),
+        (
+            "hardware:\n  auto_connect: true\n  monitor_port: 1023\n",
+            "hardware.monitor_port",
+        ),
         ("capture:\n  preference: manual\n", "capture.preference"),
     ] {
         fs::write(&path, document).unwrap();

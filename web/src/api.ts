@@ -581,10 +581,7 @@ export const API_PATHS = {
   crosshairTemplate: "/api/crosshair/template",
   crosshairTemplatePreview: "/api/crosshair/template.png",
   executors: "/api/executors",
-  kmnetConnect: "/api/executors/kmnet/connect",
-  kmnetDisconnect: "/api/executors/kmnet/disconnect",
   kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
-  kmnetDiagnosticCircle: "/api/executors/kmnet/diagnostic-circle",
   modelProjects: "/api/models/projects",
   modelCatalog: "/api/models/catalog",
   modelJobs: "/api/models/jobs",
@@ -776,26 +773,9 @@ export function crosshairTemplatePreviewUrl(cacheKey: number): string {
   return apiUrl(`${API_PATHS.crosshairTemplatePreview}?ts=${cacheKey}`);
 }
 
-export function connectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetConnect, {
-    method: "POST"
-  });
-}
-
-export function disconnectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDisconnect, {
-    method: "POST"
-  });
-}
-
 export function diagnosticMoveKmNet(
   dx = 1,
-  dy = 0,
-  repeat = 1,
-  intervalMs = 0,
-  moveKind?: string,
-  moveMs = 12,
-  bezierCtrl?: { x1: number; y1: number; x2: number; y2: number }
+  dy = 0
 ): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticMove, {
     method: "POST",
@@ -805,29 +785,10 @@ export function diagnosticMoveKmNet(
     body: JSON.stringify({
       dx,
       dy,
-      repeat,
-      interval_ms: intervalMs,
-      move_kind: moveKind,
-      move_ms: moveMs,
-      ctrl_x1: bezierCtrl?.x1,
-      ctrl_y1: bezierCtrl?.y1,
-      ctrl_x2: bezierCtrl?.x2,
-      ctrl_y2: bezierCtrl?.y2
+      repeat: 1,
+      interval_ms: 0,
+      move_kind: "raw"
     })
-  });
-}
-
-export function diagnosticCircleKmNet(
-  radius = 8,
-  steps = 32,
-  intervalMs = 8
-): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticCircle, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ radius, steps, interval_ms: intervalMs })
   });
 }
 

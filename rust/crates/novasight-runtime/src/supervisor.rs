@@ -11,7 +11,8 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use novasight_core::{
-    Clock, DetectionBatch, MonotonicNanos, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
+    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, MonotonicNanos, PointerDevice,
+    RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
     PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession, PipelineConfig,
@@ -22,7 +23,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::command::RuntimeCommand;
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
-use crate::snapshot::{DaemonSnapshot, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshots};
+use crate::snapshot::{
+    DaemonSnapshot, DeviceMetrics, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshots,
+};
 use crate::state::{DaemonState, PipelineState};
 
 const COMMAND_CAPACITY: usize = 32;
@@ -112,10 +115,12 @@ struct SupervisorState {
     pipeline: PipelineState,
     pipeline_epoch: Option<RuntimeEpoch>,
     next_epoch: u64,
+    next_diagnostic_generation: u64,
     pipeline_started_at_ms: Option<u64>,
     pipeline_error: Option<RuntimeErrorSummary>,
     subsystems: SubsystemSnapshots,
     perception_metrics: PerceptionMetrics,
+    device_metrics: DeviceMetrics,
     started_at_unix_ms: u64,
 }
 
@@ -126,10 +131,12 @@ impl Default for SupervisorState {
             pipeline: PipelineState::Stopped,
             pipeline_epoch: None,
             next_epoch: 0,
+            next_diagnostic_generation: 0,
             pipeline_started_at_ms: None,
             pipeline_error: None,
             subsystems: SubsystemSnapshots::default(),
             perception_metrics: PerceptionMetrics::default(),
+            device_metrics: DeviceMetrics::default(),
             started_at_unix_ms: now_ms(),
         }
     }
@@ -151,6 +158,7 @@ impl SupervisorState {
             },
             subsystems: self.subsystems.clone(),
             perception_metrics: self.perception_metrics,
+            device_metrics: self.device_metrics,
             updated_at_ms,
         }
     }
@@ -389,6 +397,25 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
+    pub async fn diagnose_device_move(
+        &self,
+        delta_x_counts: i32,
+        delta_y_counts: i32,
+    ) -> Result<DeviceReceipt, RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::DiagnoseDeviceMove {
+                delta_x_counts,
+                delta_y_counts,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
     pub async fn start(&self) -> Result<RuntimeSnapshot, RuntimeError> {
         self.send_command(|reply| RuntimeCommand::Start { reply })
             .await
@@ -577,6 +604,21 @@ async fn handle_command(
             };
             let _ = reply.send(result);
         }
+        RuntimeCommand::DiagnoseDeviceMove {
+            delta_x_counts,
+            delta_y_counts,
+            reply,
+        } => {
+            let result = diagnose_device_move(
+                snapshot_tx,
+                state,
+                dependencies,
+                delta_x_counts,
+                delta_y_counts,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
         RuntimeCommand::ShutdownDaemon { reply } => {
             state.daemon = DaemonState::ShuttingDown;
             ingress_tx.send_replace(None);
@@ -595,6 +637,78 @@ async fn handle_command(
         }
     }
     false
+}
+
+async fn diagnose_device_move(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &mut SupervisorState,
+    dependencies: &RuntimeDependencies,
+    delta_x_counts: i32,
+    delta_y_counts: i32,
+) -> Result<DeviceReceipt, RuntimeError> {
+    if state.pipeline != PipelineState::Stopped {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "device diagnostics require a stopped pipeline",
+        ));
+    }
+    if state.subsystems.device.state == SubsystemState::Unavailable {
+        return Err(RuntimeError::device_unavailable(
+            "device diagnostics remain disabled after emergency stop or device fault",
+        ));
+    }
+    if delta_x_counts == 0 && delta_y_counts == 0 {
+        return Err(RuntimeError::invalid_device_command(
+            "device diagnostic move must change at least one axis",
+        ));
+    }
+    if i16::try_from(delta_x_counts).is_err() || i16::try_from(delta_y_counts).is_err() {
+        return Err(RuntimeError::invalid_device_command(
+            "device diagnostic counts must fit the kmNet signed 16-bit contract",
+        ));
+    }
+    state.next_diagnostic_generation = state
+        .next_diagnostic_generation
+        .checked_add(1)
+        .ok_or_else(|| RuntimeError::device_unavailable("diagnostic generation is exhausted"))?;
+    let command = DeviceCommand {
+        epoch: RuntimeEpoch(0),
+        generation: Generation(state.next_diagnostic_generation),
+        issued_at: dependencies.clock.now(),
+        target_object_id: 0,
+        delta_x_counts,
+        delta_y_counts,
+    };
+    state.subsystems.device.state = SubsystemState::Starting;
+    publish(snapshot_tx, state, now_ms());
+    let device = Arc::clone(&dependencies.device);
+    let result = tokio::task::spawn_blocking(move || device.send(command)).await;
+    match result {
+        Ok(Ok(receipt)) => {
+            state.device_metrics.diagnostic_move_count =
+                state.device_metrics.diagnostic_move_count.saturating_add(1);
+            state.device_metrics.last_diagnostic_dx = Some(receipt.delta_x_counts);
+            state.device_metrics.last_diagnostic_dy = Some(receipt.delta_y_counts);
+            state.subsystems.device.state = SubsystemState::Ready;
+            state.subsystems.device.last_error = None;
+            publish(snapshot_tx, state, now_ms());
+            Ok(receipt)
+        }
+        Ok(Err(error)) => {
+            let error = RuntimeError::device_unavailable(error.to_string());
+            state.subsystems.device.state = SubsystemState::Unavailable;
+            state.subsystems.device.last_error = Some(error.summary());
+            publish(snapshot_tx, state, now_ms());
+            Err(error)
+        }
+        Err(error) => {
+            let error =
+                RuntimeError::device_unavailable(format!("device diagnostic task failed: {error}"));
+            state.subsystems.device.state = SubsystemState::Unavailable;
+            state.subsystems.device.last_error = Some(error.summary());
+            publish(snapshot_tx, state, now_ms());
+            Err(error)
+        }
+    }
 }
 
 async fn start_state(

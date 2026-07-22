@@ -333,7 +333,9 @@ ReplaySource -> Perception -> Targeting -> Control
 
 Phase 4 使用同一 `PointerDevice` 端口保留两种可替换实现：`python_host` 是迁移期生产默认，Rust daemon 负责 helper 生命周期、超时、冷却和重连；`native_udp` 是独立 Rust 协议实现，在完成目标 Jetson、目标盒子固件和断网/重启故障注入之前必须同时显式选择并使用 `experimental-kmnet-native` 证据构建，普通生产构建拒绝启动，不得成为默认。两种实现都不得把设备状态所有权交回旧 Python backend。
 
-kmBoxNet 的公开 C++ demo 仅作为协议与行为参考，不直接编译、复制或随 NovaSight 分发。该仓库没有标准开源许可证，其版权声明限制源码只能对接官方 kmbox 硬件；商业发布前必须取得厂商对协议实现、分发和商业用途的书面授权。保留 Python vendor extension 是兼容与回滚资产，不是在线业务架构的第二套权威实现。
+kmNet 的控制面生命周期同样归 daemon：Studio 不再提供会绕过 owner 的 connect/disconnect 假按钮。显式诊断移动必须进入 `RuntimeSupervisor` typed command，仅在 pipeline 为 `Stopped`、配置 revision 已生效且 daemon 由 production hardware composition 启动时允许；dry-run 不得把 Recording adapter 的 receipt 宣称为硬件移动。诊断命令限制为单条 signed-16-bit raw move，复用 adapter timeout，并在成功后把 receipt 与诊断计数发布到不可变 snapshot。运行中、emergency-stop latch、零移动、越界 counts 和未配置设备均 fail closed。
+
+kmBoxNet 的公开 C++ demo 仅作为协议与行为参考，不直接编译、复制或随 NovaSight 分发。独立 Rust 实现以 demo 的 packed little-endian 头、命令字、`indexpts` 序号、signed-16-bit 移动入口和 `1024..=49151` monitor 端口范围作为兼容合同，并用固定字节 golden tests 防止协议漂移；接收路径继续执行比 demo 更严格的来源、长度、命令和序号校验。该仓库没有标准开源许可证，其版权声明限制源码只能对接官方 kmbox 硬件；商业发布前必须取得厂商对协议实现、分发和商业用途的书面授权。保留 Python vendor extension 是兼容与回滚资产，不是在线业务架构的第二套权威实现。
 
 ### Phase 5：控制面全量接管
 

@@ -20,6 +20,7 @@ const CMD_MONITOR: u32 = 0x2738_8020;
 const HEADER_LEN: usize = 16;
 const MOVE_PACKET_LEN: usize = HEADER_LEN + 56;
 const MONITOR_PACKET_MIN_LEN: usize = 8;
+const MONITOR_PORT_RANGE: std::ops::RangeInclusive<u16> = 1024..=49_151;
 
 #[derive(Clone, Debug)]
 pub struct KmNetNativeConfig {
@@ -54,9 +55,14 @@ struct ControlSocket {
 
 impl KmNetNativeDevice {
     pub fn connect(config: KmNetNativeConfig) -> Result<Self, KmNetNativeError> {
-        if config.port == 0 || config.monitor_port == 0 {
+        if config.port == 0 {
             return Err(KmNetNativeError::InvalidConfig(
-                "control and monitor ports must be non-zero",
+                "control port must be non-zero",
+            ));
+        }
+        if !MONITOR_PORT_RANGE.contains(&config.monitor_port) {
+            return Err(KmNetNativeError::InvalidConfig(
+                "monitor port must be within the vendor range 1024..=49151",
             ));
         }
         if config.connect_timeout.is_zero()
@@ -196,12 +202,7 @@ impl ControlSocket {
         operation: &'static str,
     ) -> Result<(), KmNetNativeError> {
         self.sequence = self.sequence.wrapping_add(1);
-        let mut packet = Vec::with_capacity(HEADER_LEN + payload.len());
-        packet.extend_from_slice(&self.mac.to_le_bytes());
-        packet.extend_from_slice(&random.to_le_bytes());
-        packet.extend_from_slice(&self.sequence.to_le_bytes());
-        packet.extend_from_slice(&command.to_le_bytes());
-        packet.extend_from_slice(payload);
+        let packet = encode_packet(self.mac, random, self.sequence, command, payload);
         debug_assert!(packet.len() == HEADER_LEN || packet.len() == MOVE_PACKET_LEN);
         self.socket
             .send(&packet)
@@ -230,6 +231,16 @@ impl ControlSocket {
         }
         Ok(())
     }
+}
+
+fn encode_packet(mac: u32, random: u32, sequence: u32, command: u32, payload: &[u8]) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(HEADER_LEN + payload.len());
+    packet.extend_from_slice(&mac.to_le_bytes());
+    packet.extend_from_slice(&random.to_le_bytes());
+    packet.extend_from_slice(&sequence.to_le_bytes());
+    packet.extend_from_slice(&command.to_le_bytes());
+    packet.extend_from_slice(payload);
+    packet
 }
 
 fn spawn_monitor(
@@ -359,8 +370,18 @@ mod tests {
     use novasight_core::{DeviceCommand, Generation, MonotonicNanos, PointerDevice, RuntimeEpoch};
 
     use super::{
-        CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE, KmNetNativeConfig, KmNetNativeDevice, parse_uuid,
+        CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE, KmNetNativeConfig, KmNetNativeDevice,
+        encode_packet, parse_uuid,
     };
+
+    fn available_monitor_port() -> u16 {
+        for port in (40_000..=49_151).rev() {
+            if UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+                return port;
+            }
+        }
+        panic!("no free UDP port in the kmNet monitor range");
+    }
 
     #[test]
     fn uuid_is_exactly_the_vendor_four_byte_identifier() {
@@ -370,15 +391,47 @@ mod tests {
     }
 
     #[test]
+    fn packet_bytes_match_the_public_cpp_packed_little_endian_abi() {
+        let packet = encode_packet(0x01fb_c068, 0x1122_3344, 7, CMD_MOUSE_MOVE, &[0xaa, 0xbb]);
+
+        assert_eq!(
+            packet,
+            [
+                0x68, 0xc0, 0xfb, 0x01, // UUID/mac
+                0x44, 0x33, 0x22, 0x11, // rand/control value
+                0x07, 0x00, 0x00, 0x00, // indexpts
+                0x45, 0x73, 0xde, 0xae, // cmd_mouse_move
+                0xaa, 0xbb,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_monitor_ports_outside_the_public_cpp_contract() {
+        for monitor_port in [0, 1023, 49_152, u16::MAX] {
+            let error = KmNetNativeDevice::connect(KmNetNativeConfig {
+                host: Ipv4Addr::LOCALHOST,
+                port: 8888,
+                uuid: "01FBC068".to_owned(),
+                monitor_port,
+                connect_timeout: Duration::from_secs(1),
+                request_timeout: Duration::from_secs(1),
+                monitor_timeout: Duration::from_secs(1),
+            })
+            .unwrap_err();
+
+            assert!(error.to_string().contains("1024..=49151"));
+        }
+    }
+
+    #[test]
     fn native_device_exchanges_real_udp_packets_and_caches_monitor_buttons() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         server
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let server_port = server.local_addr().unwrap().port();
-        let monitor_probe = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let monitor_port = monitor_probe.local_addr().unwrap().port();
-        drop(monitor_probe);
+        let monitor_port = available_monitor_port();
         let responder = thread::spawn(move || {
             let mut packet = [0_u8; 1024];
             for (expected_sequence, expected_command) in [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE]

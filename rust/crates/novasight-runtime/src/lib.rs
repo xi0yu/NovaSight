@@ -26,7 +26,8 @@ pub use novasight_core::RuntimeEpoch;
 pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};
 pub use snapshot::{
-    DaemonSnapshot, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshot, SubsystemSnapshots,
+    DaemonSnapshot, DeviceMetrics, PipelineSnapshot, RuntimeSnapshot, SubsystemSnapshot,
+    SubsystemSnapshots,
 };
 pub use state::{DaemonState, PipelineState};
 pub use supervisor::{RuntimeDependencies, RuntimeHandle, RuntimeSupervisor};

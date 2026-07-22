@@ -3,12 +3,13 @@
 //! to every command, even on failure, so the caller never blocks
 //! waiting for a reply that will never come.
 //!
-//! `ReplaceConfig`, `ReloadConfig`, `ValidateConfig`, and
-//! `Diagnose` are intentionally absent in Commit 2. They will land
-//! in Commit 7 or Commit 8 once the ConfigService surface exists;
-//! pre-allocating them now would create fake interfaces.
+//! Commands are added only with a concrete owner and reply contract. Device
+//! diagnostics are serialized here because they must never compete with the
+//! live DeviceLane; config persistence remains owned by ConfigService.
 
 use tokio::sync::oneshot;
+
+use novasight_core::DeviceReceipt;
 
 use crate::error::RuntimeError;
 use crate::snapshot::RuntimeSnapshot;
@@ -30,6 +31,11 @@ pub enum RuntimeCommand {
     SetTriggerActive {
         active: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    DiagnoseDeviceMove {
+        delta_x_counts: i32,
+        delta_y_counts: i32,
+        reply: oneshot::Sender<Result<DeviceReceipt, RuntimeError>>,
     },
     ShutdownDaemon {
         reply: oneshot::Sender<Result<(), RuntimeError>>,

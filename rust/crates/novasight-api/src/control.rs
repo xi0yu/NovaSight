@@ -11,6 +11,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{Sink, Stream, StreamExt};
+use novasight_core::DeviceReceipt;
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
     RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
@@ -46,6 +47,15 @@ pub fn build_control_router_with_services(
     config_service: impl Into<Option<ConfigService>>,
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
+    build_control_router_with_capabilities(runtime, config_service, false, shutdown)
+}
+
+pub fn build_control_router_with_capabilities(
+    runtime: RuntimeHandle,
+    config_service: impl Into<Option<ConfigService>>,
+    hardware_output_enabled: bool,
+    shutdown: impl Into<Option<watch::Receiver<bool>>>,
+) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/api/runtime/state", get(legacy_status))
@@ -60,9 +70,23 @@ pub fn build_control_router_with_services(
         .route("/api/v1/runtime/emergency-stop", post(emergency_stop))
         .route("/api/v1/events", get(events))
         .route("/api/config", get(config).post(update_legacy_config))
+        .route("/api/executors", get(executors))
+        .route(
+            "/api/executors/kmnet/connect",
+            post(device_lifecycle_managed),
+        )
+        .route(
+            "/api/executors/kmnet/disconnect",
+            post(device_lifecycle_managed),
+        )
+        .route(
+            "/api/executors/kmnet/diagnostic-move",
+            post(diagnostic_device_move),
+        )
         .with_state(ControlState {
             runtime,
             config: config_service.into(),
+            hardware_output_enabled,
             shutdown: shutdown.into(),
         })
         .layer(super::app::studio_cors_layer())
@@ -72,6 +96,7 @@ pub fn build_control_router_with_services(
 struct ControlState {
     runtime: RuntimeHandle,
     config: Option<ConfigService>,
+    hardware_output_enabled: bool,
     shutdown: Option<watch::Receiver<bool>>,
 }
 
@@ -111,7 +136,117 @@ async fn compatibility_state(
         None => None,
     };
     let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
-    CompatibilityRuntimeState::new(snapshot, config.as_ref(), effective_revision)
+    CompatibilityRuntimeState::new(
+        snapshot,
+        config.as_ref(),
+        effective_revision,
+        state.hardware_output_enabled,
+    )
+}
+
+async fn executors(State(state): State<ControlState>) -> Json<serde_json::Value> {
+    let snapshot = state.runtime.snapshot();
+    let compatibility = compatibility_state(&state, &snapshot).await;
+    Json(
+        serde_json::to_value(compatibility.executor)
+            .expect("compatibility executor DTO must serialize"),
+    )
+}
+
+async fn device_lifecycle_managed() -> ControlApiError {
+    ControlApiError::DeviceLifecycleManaged
+}
+
+#[derive(Debug, Deserialize)]
+struct DiagnosticMoveRequest {
+    dx: i32,
+    dy: i32,
+    #[serde(default = "one_u32")]
+    repeat: u32,
+    #[serde(default)]
+    interval_ms: u64,
+    #[serde(default)]
+    move_kind: Option<String>,
+}
+
+const fn one_u32() -> u32 {
+    1
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticMoveResponse {
+    sent: bool,
+    queued: bool,
+    steps_sent: u32,
+    message: &'static str,
+    receipt: DeviceReceipt,
+    status: DiagnosticDeviceStatus,
+    metadata: DiagnosticMetadata,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticDeviceStatus {
+    available: bool,
+    connected: bool,
+    connection_state: &'static str,
+    move_count: u64,
+    last_dx: i32,
+    last_dy: i32,
+    managed_by_runtime: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticMetadata {
+    api_name: &'static str,
+}
+
+async fn diagnostic_device_move(
+    State(state): State<ControlState>,
+    Json(request): Json<DiagnosticMoveRequest>,
+) -> Result<Json<DiagnosticMoveResponse>, ControlApiError> {
+    if !state.hardware_output_enabled {
+        return Err(ControlApiError::HardwareOutputDisabled);
+    }
+    ensure_config_effective(&state).await?;
+    let config = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?
+        .snapshot()
+        .await;
+    if config.device.is_none() {
+        return Err(ControlApiError::DeviceNotConfigured);
+    }
+    let move_kind = request.move_kind.as_deref().unwrap_or("raw");
+    if request.repeat != 1 || request.interval_ms != 0 || move_kind != "raw" {
+        return Err(ControlApiError::UnsupportedDiagnostic(
+            "only one immediate raw move is supported; repeat must be 1 and interval_ms must be 0"
+                .to_owned(),
+        ));
+    }
+    let receipt = state
+        .runtime
+        .diagnose_device_move(request.dx, request.dy)
+        .await?;
+    Ok(Json(DiagnosticMoveResponse {
+        sent: true,
+        queued: false,
+        steps_sent: 1,
+        message: "diagnostic move accepted by the daemon-owned device adapter",
+        status: DiagnosticDeviceStatus {
+            available: true,
+            connected: true,
+            connection_state: "connected",
+            move_count: receipt.attempt,
+            last_dx: receipt.delta_x_counts,
+            last_dy: receipt.delta_y_counts,
+            managed_by_runtime: true,
+        },
+        metadata: DiagnosticMetadata {
+            api_name: "rust_pointer_device_send",
+        },
+        receipt,
+    }))
 }
 
 async fn ensure_config_effective(state: &ControlState) -> Result<(), ControlApiError> {
@@ -354,6 +489,10 @@ enum ControlApiError {
     Config(ConfigServiceError),
     ConfigUnavailable,
     InvalidFieldUpdate(serde_json::Error),
+    HardwareOutputDisabled,
+    DeviceNotConfigured,
+    DeviceLifecycleManaged,
+    UnsupportedDiagnostic(String),
 }
 
 impl From<RuntimeError> for ControlApiError {
@@ -384,6 +523,8 @@ impl IntoResponse for ControlApiError {
                     | RuntimeErrorKind::SupervisorClosed
                     | RuntimeErrorKind::SupervisorReplyLost
                     | RuntimeErrorKind::PipelineUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                    RuntimeErrorKind::DeviceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                    RuntimeErrorKind::InvalidDeviceCommand => StatusCode::BAD_REQUEST,
                     RuntimeErrorKind::PipelineRejected
                     | RuntimeErrorKind::RuntimeEpochExhausted
                     | RuntimeErrorKind::Other => StatusCode::INTERNAL_SERVER_ERROR,
@@ -415,6 +556,27 @@ impl IntoResponse for ControlApiError {
                 StatusCode::BAD_REQUEST,
                 "CONFIG_FIELD_UPDATE_INVALID",
                 format!("expected a field update with section, key, and value: {error}"),
+            ),
+            Self::HardwareOutputDisabled => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "HARDWARE_OUTPUT_DISABLED",
+                "hardware diagnostics are unavailable in dry-run mode".to_owned(),
+            ),
+            Self::DeviceNotConfigured => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "DEVICE_NOT_CONFIGURED",
+                "no production pointer device is configured".to_owned(),
+            ),
+            Self::DeviceLifecycleManaged => (
+                StatusCode::CONFLICT,
+                "DEVICE_LIFECYCLE_MANAGED_BY_RUNTIME",
+                "the Rust daemon owns device connection lifetime; use runtime start/stop"
+                    .to_owned(),
+            ),
+            Self::UnsupportedDiagnostic(message) => (
+                StatusCode::BAD_REQUEST,
+                "DEVICE_DIAGNOSTIC_UNSUPPORTED",
+                message,
             ),
         };
         let body = ControlErrorBody { code, message };

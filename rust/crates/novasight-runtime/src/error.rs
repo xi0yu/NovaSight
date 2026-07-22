@@ -26,6 +26,10 @@ pub enum RuntimeErrorKind {
     PipelineUnavailable,
     /// The owned pipeline rejected an input or lifecycle operation.
     PipelineRejected,
+    /// The daemon-owned output adapter rejected a diagnostic operation.
+    DeviceUnavailable,
+    /// A control-plane diagnostic command violates the device contract.
+    InvalidDeviceCommand,
     /// Generic runtime error. New variants land in later commits.
     Other,
 }
@@ -40,6 +44,8 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::RuntimeEpochExhausted => "runtime_epoch_exhausted",
             RuntimeErrorKind::PipelineUnavailable => "pipeline_unavailable",
             RuntimeErrorKind::PipelineRejected => "pipeline_rejected",
+            RuntimeErrorKind::DeviceUnavailable => "device_unavailable",
+            RuntimeErrorKind::InvalidDeviceCommand => "invalid_device_command",
             RuntimeErrorKind::Other => "runtime_error",
         }
     }
@@ -101,6 +107,14 @@ impl RuntimeError {
 
     pub fn pipeline_rejected(message: impl Into<String>) -> Self {
         Self::new(RuntimeErrorKind::PipelineRejected, message)
+    }
+
+    pub fn device_unavailable(message: impl Into<String>) -> Self {
+        Self::new(RuntimeErrorKind::DeviceUnavailable, message)
+    }
+
+    pub fn invalid_device_command(message: impl Into<String>) -> Self {
+        Self::new(RuntimeErrorKind::InvalidDeviceCommand, message)
     }
 
     pub fn summary(&self) -> RuntimeErrorSummary {
