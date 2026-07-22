@@ -161,12 +161,30 @@ pub(crate) struct DeepStreamState {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionState {
     pub crosshair: Option<CrosshairSnapshot>,
+    pub inference: VisionInferenceState,
     pub detections: usize,
     pub detection_items: Vec<VisionDetectionState>,
     pub detection_items_truncated: usize,
     pub target: Option<VisionTargetState>,
     pub target_pipeline: TargetPipelineState,
     pub control: VisionControlState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct VisionInferenceState {
+    /// Coordinate space of the latest admitted detection batch. These remain
+    /// absent until a real batch arrives, so clients can fall back explicitly.
+    pub input_width: Option<u32>,
+    pub input_height: Option<u32>,
+    pub generation: Option<u64>,
+    pub model_input_width: Option<u32>,
+    pub model_input_height: Option<u32>,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
+    pub roi_offset_x: Option<u32>,
+    pub roi_offset_y: Option<u32>,
+    pub roi_width: Option<u32>,
+    pub roi_height: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -548,6 +566,31 @@ impl CompatibilityRuntimeState {
             },
             vision: VisionState {
                 crosshair: crosshair.cloned(),
+                inference: VisionInferenceState {
+                    input_width: snapshot
+                        .pipeline_metrics
+                        .detections
+                        .generation
+                        .map(|_| snapshot.pipeline_metrics.detections.coordinate_width),
+                    input_height: snapshot
+                        .pipeline_metrics
+                        .detections
+                        .generation
+                        .map(|_| snapshot.pipeline_metrics.detections.coordinate_height),
+                    generation: snapshot
+                        .pipeline_metrics
+                        .detections
+                        .generation
+                        .map(|generation| generation.0),
+                    model_input_width: inference_config.map(|config| config.model_width),
+                    model_input_height: inference_config.map(|config| config.model_height),
+                    source_width: capture_config.map(|config| config.width),
+                    source_height: capture_config.map(|config| config.height),
+                    roi_offset_x: capture_config.map(|config| config.roi_left),
+                    roi_offset_y: capture_config.map(|config| config.roi_top),
+                    roi_width: capture_config.map(|config| config.roi_width),
+                    roi_height: capture_config.map(|config| config.roi_height),
+                },
                 detections: target_selection.candidates,
                 detection_items: snapshot
                     .pipeline_metrics
@@ -869,6 +912,7 @@ fn serialized_label(value: &impl Serialize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use novasight_core::Generation;
     use novasight_core::control::dual_phase_v2::{BlockReason, ControlDecision, ControlMode};
     use novasight_core::control::humanized_motion::{
         HumanizedMotionPhase, HumanizedMotionReason, HumanizedMotionTelemetry,
@@ -947,6 +991,9 @@ mod tests {
             block_reason: RecoilBlockReason::None,
         };
         snapshot.pipeline_metrics.targeting_batches = 1;
+        snapshot.pipeline_metrics.detections.generation = Some(Generation(9));
+        snapshot.pipeline_metrics.detections.coordinate_width = 960;
+        snapshot.pipeline_metrics.detections.coordinate_height = 544;
         snapshot.pipeline_metrics.detections.items = vec![DetectionTelemetryItem {
             object_id: 91,
             class_id: 2,
@@ -1001,6 +1048,9 @@ mod tests {
         assert_eq!(target["observed_aim_y"], 240.0);
         assert_eq!(target_pipeline["code"], "TARGET_SELECTED");
         assert_eq!(target_pipeline["counts"]["eligible_candidates"], 1);
+        assert_eq!(value["vision"]["inference"]["input_width"], 960);
+        assert_eq!(value["vision"]["inference"]["input_height"], 544);
+        assert_eq!(value["vision"]["inference"]["generation"], 9);
         assert_eq!(value["vision"]["detection_items"][0]["object_id"], 91);
         assert_eq!(value["vision"]["detection_items"][0]["cx"], 330.0);
         assert_eq!(
