@@ -69,6 +69,14 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
     // detector candidate identity (41).
     assert_eq!(receipts[0].target_object_id, 1);
     assert_ne!(receipts[0].delta_x_counts, 0);
+    let control = runtime.metrics().dual_phase;
+    assert!(control.sample_available);
+    assert_eq!(control.generation, 1);
+    assert_eq!(control.observation_width, 640);
+    assert_eq!(control.observed_error_x, 80.0);
+    assert_eq!(control.dx, receipts[0].delta_x_counts);
+    assert!(control.full_error_counts_x.is_finite());
+    assert!(control.float_demand_x.is_finite());
 
     let metrics = runtime.shutdown().expect("workers join");
     assert_eq!(metrics.status, PipelineStatus::Stopped);

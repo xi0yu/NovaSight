@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use novasight_core::control::dual_phase_v2::{
-    ControlObservation, DualPhaseConfig, DualPhaseControl,
+    ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig, DualPhaseControl,
 };
 use novasight_core::control::humanized_motion::HumanizedMotionTelemetry;
 use novasight_core::control::recoil::{
@@ -129,6 +129,7 @@ pub struct PipelineMetrics {
     pub live_workers: u64,
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
+    pub dual_phase: DualPhaseDecision,
     pub humanized_motion: HumanizedMotionTelemetry,
     pub recoil: RecoilDecision,
 }
@@ -175,6 +176,7 @@ struct AtomicMetrics {
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
+    dual_phase: Mutex<DualPhaseDecision>,
     humanized_motion: Mutex<HumanizedMotionTelemetry>,
     recoil: Mutex<RecoilDecision>,
 }
@@ -225,6 +227,14 @@ impl SharedState {
         }
     }
 
+    fn record_dual_phase(&self, value: DualPhaseDecision) {
+        match self.metrics.dual_phase.try_lock() {
+            Ok(mut telemetry) => *telemetry = value,
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
+        }
+    }
+
     fn record_recoil(&self, value: RecoilDecision) {
         match self.metrics.recoil.try_lock() {
             Ok(mut telemetry) => *telemetry = value,
@@ -234,6 +244,7 @@ impl SharedState {
     }
 
     fn clear_control_telemetry(&self) {
+        self.record_dual_phase(DualPhaseDecision::default());
         self.record_humanized_motion(HumanizedMotionTelemetry::default());
         self.record_recoil(RecoilDecision::default());
     }
@@ -980,6 +991,7 @@ fn spawn_control_worker(
                         active_profile.as_deref(),
                         target.target_width_px,
                     );
+                    shared.record_dual_phase(decision);
                     shared.record_humanized_motion(decision.humanized_motion);
                     shared
                         .metrics
@@ -1225,6 +1237,11 @@ fn snapshot_metrics(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone(),
+        dual_phase: *shared
+            .metrics
+            .dual_phase
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
         humanized_motion: *shared
             .metrics
             .humanized_motion

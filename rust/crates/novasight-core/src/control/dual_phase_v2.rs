@@ -147,6 +147,20 @@ pub struct ControlObservation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlDecision {
+    pub sample_available: bool,
+    pub generation: u64,
+    pub frame_id: u64,
+    pub target_id: u64,
+    pub capture_ts_ns: u64,
+    pub control_now_ns: u64,
+    pub frame_age_ms: f64,
+    pub aim_x: f64,
+    pub aim_y: f64,
+    pub crosshair_x: f64,
+    pub crosshair_y: f64,
+    pub observation_width: u32,
+    pub observation_height: u32,
+    pub trigger_active: bool,
     pub dx: i32,
     pub dy: i32,
     pub emit_allowed: bool,
@@ -159,15 +173,45 @@ pub struct ControlDecision {
     pub predicted_offset_x: f64,
     pub predicted_offset_y: f64,
     pub motion_confidence: f64,
+    pub history_position_count: usize,
+    pub velocity_samples: [Option<f64>; 3],
+    pub median_velocity: Option<f64>,
+    pub velocity_spread: Option<f64>,
+    pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
+    pub prediction_lead_frames: f64,
+    pub prediction_raw_offset_x: f64,
+    pub prediction_weighted_offset_x: f64,
+    pub prediction_allowed_cap_x: f64,
+    pub prediction_allowed: bool,
+    pub observed_error_x: f64,
+    pub observed_error_y: f64,
     pub filtered_error_x: f64,
     pub filtered_error_y: f64,
+    pub full_error_counts_x: f64,
+    pub full_error_counts_y: f64,
+    pub float_demand_x: f64,
+    pub float_demand_y: f64,
     pub humanized_motion: HumanizedMotionTelemetry,
 }
 
 impl ControlDecision {
     pub fn blocked(reason: BlockReason) -> Self {
         Self {
+            sample_available: false,
+            generation: 0,
+            frame_id: 0,
+            target_id: 0,
+            capture_ts_ns: 0,
+            control_now_ns: 0,
+            frame_age_ms: 0.0,
+            aim_x: 0.0,
+            aim_y: 0.0,
+            crosshair_x: 0.0,
+            crosshair_y: 0.0,
+            observation_width: 0,
+            observation_height: 0,
+            trigger_active: false,
             dx: 0,
             dy: 0,
             emit_allowed: false,
@@ -180,12 +224,43 @@ impl ControlDecision {
             predicted_offset_x: 0.0,
             predicted_offset_y: 0.0,
             motion_confidence: 0.0,
+            history_position_count: 0,
+            velocity_samples: [None; 3],
+            median_velocity: None,
+            velocity_spread: None,
+            measurement_dt_ms: None,
             reference_dt_ms: 0.0,
+            prediction_lead_frames: 0.0,
+            prediction_raw_offset_x: 0.0,
+            prediction_weighted_offset_x: 0.0,
+            prediction_allowed_cap_x: 0.0,
+            prediction_allowed: false,
+            observed_error_x: 0.0,
+            observed_error_y: 0.0,
             filtered_error_x: 0.0,
             filtered_error_y: 0.0,
+            full_error_counts_x: 0.0,
+            full_error_counts_y: 0.0,
+            float_demand_x: 0.0,
+            float_demand_y: 0.0,
             humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
+}
+
+impl Default for ControlDecision {
+    fn default() -> Self {
+        Self::blocked(BlockReason::TriggerInactive)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PredictionResult {
+    raw_offset_x: f64,
+    weighted_offset_x: f64,
+    allowed_cap_x: f64,
+    safe_offset_x: f64,
+    allowed: bool,
 }
 
 const VELOCITY_POSITION_COUNT: usize = 4;
@@ -575,7 +650,7 @@ impl DualPhaseControl {
         let velocity_x = estimate.map_or(0.0, |value| value.filtered_velocity);
         let motion_confidence = estimate.map_or(0.0, |value| value.motion_confidence);
         let reference_dt_ms = estimate.map_or(0.0, |value| value.reference_dt_ms);
-        let predicted_offset_x = self.predict_offset(
+        let prediction = self.predict_offset(
             mode,
             error_x,
             velocity_x,
@@ -583,6 +658,7 @@ impl DualPhaseControl {
             reference_dt_ms,
             estimate.is_some(),
         );
+        let predicted_offset_x = prediction.safe_offset_x;
         // The authoritative Python robust predictor intentionally predicts X only.
         let predicted_offset_y = 0.0;
         let filtered_error_x = error_x + predicted_offset_x;
@@ -656,6 +732,20 @@ impl DualPhaseControl {
         self.measured_error_history_valid = true;
 
         ControlDecision {
+            sample_available: true,
+            generation: observation.generation,
+            frame_id: observation.frame_id,
+            target_id: observation.target_id,
+            capture_ts_ns: observation.capture_ts_ns,
+            control_now_ns: observation.control_now_ns,
+            frame_age_ms,
+            aim_x: observation.aim_x,
+            aim_y: observation.aim_y,
+            crosshair_x: observation.crosshair_x,
+            crosshair_y: observation.crosshair_y,
+            observation_width: self.config.observation_width,
+            observation_height: self.config.observation_height,
+            trigger_active: observation.trigger_active,
             dx,
             dy,
             emit_allowed: block_reason == BlockReason::None,
@@ -668,9 +758,25 @@ impl DualPhaseControl {
             predicted_offset_x,
             predicted_offset_y,
             motion_confidence,
+            history_position_count: self.velocity_x.history_position_count(),
+            velocity_samples: estimate.map_or([None; 3], |value| value.raw_velocities.map(Some)),
+            median_velocity: estimate.map(|value| value.median_velocity),
+            velocity_spread: estimate.map(|value| value.spread),
+            measurement_dt_ms: estimate.map(|value| value.measurement_dt_ms),
             reference_dt_ms,
+            prediction_lead_frames: self.config.prediction_lead_frames,
+            prediction_raw_offset_x: prediction.raw_offset_x,
+            prediction_weighted_offset_x: prediction.weighted_offset_x,
+            prediction_allowed_cap_x: prediction.allowed_cap_x,
+            prediction_allowed: prediction.allowed,
+            observed_error_x: error_x,
+            observed_error_y: error_y,
             filtered_error_x,
             filtered_error_y,
+            full_error_counts_x: full_x,
+            full_error_counts_y: full_y,
+            float_demand_x: demand_x,
+            float_demand_y: demand_y,
             humanized_motion: shaped.telemetry,
         }
     }
@@ -683,7 +789,7 @@ impl DualPhaseControl {
         motion_confidence: f64,
         reference_dt_ms: f64,
         estimate_available: bool,
-    ) -> f64 {
+    ) -> PredictionResult {
         let allowed = estimate_available
             && reference_dt_ms.is_finite()
             && reference_dt_ms > 0.0
@@ -708,7 +814,14 @@ impl DualPhaseControl {
             ),
         };
         let allowed_cap = absolute_cap.min(base_cap + relative_cap * measured_error_x.abs());
-        (raw_offset * confidence).clamp(-allowed_cap, allowed_cap)
+        let weighted_offset = raw_offset * confidence;
+        PredictionResult {
+            raw_offset_x: raw_offset,
+            weighted_offset_x: weighted_offset,
+            allowed_cap_x: allowed_cap,
+            safe_offset_x: weighted_offset.clamp(-allowed_cap, allowed_cap),
+            allowed,
+        }
     }
 
     fn prediction_config_valid(&self) -> bool {
@@ -915,10 +1028,19 @@ mod tests {
             }));
         }
         let decision = decision.expect("last decision");
+        assert!(decision.sample_available);
+        assert_eq!(decision.history_position_count, 4);
+        assert_eq!(decision.velocity_samples, [Some(0.4); 3]);
+        assert_eq!(decision.median_velocity, Some(0.4));
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
+        assert!((decision.prediction_raw_offset_x - 8.0).abs() < 1e-12);
+        assert!((decision.prediction_allowed_cap_x - 2.6).abs() < 1e-12);
+        assert!(decision.prediction_allowed);
         assert!((decision.predicted_offset_x - 2.6).abs() < 1e-12);
         assert!((decision.filtered_error_x - 54.6).abs() < 1e-12);
+        assert!(decision.full_error_counts_x.is_finite());
+        assert!(decision.float_demand_x.is_finite());
     }
 
     #[test]

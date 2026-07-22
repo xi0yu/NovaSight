@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use novasight_core::control::dual_phase_v2::{BlockReason, ControlMode};
 use novasight_core::control::humanized_motion::{
     HumanizedMotionPhase, HumanizedMotionReason, HumanizedSpatialCurveSource,
     HumanizedSpeedCurveSource,
@@ -164,11 +165,65 @@ pub(crate) struct VisionState {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionControlState {
+    pub global_state: &'static str,
+    pub aim_x: Option<f64>,
+    pub aim_y: Option<f64>,
+    pub dx: Option<i32>,
+    pub dy: Option<i32>,
+    pub will_emit: Option<bool>,
+    pub trigger_active: Option<bool>,
+    pub reason: Option<&'static str>,
+    pub no_send_reason: Option<&'static str>,
+    pub mouse_observation: MouseObservationState,
     pub pipeline: ControlPipelineState,
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct MouseObservationState {
+    pub control_width_px: Option<u32>,
+    pub control_height_px: Option<u32>,
+    pub observed_x_px: Option<f64>,
+    pub observed_y_px: Option<f64>,
+    pub predicted_x_px: Option<f64>,
+    pub predicted_y_px: Option<f64>,
+    pub measurement_dt_s: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct ControlPipelineState {
+    pub control_mode: &'static str,
+    pub movement_strategy: &'static str,
+    pub mode: Option<&'static str>,
+    pub frame_age_ms: Option<f64>,
+    pub history_position_count: Option<usize>,
+    pub velocity_1: Option<f64>,
+    pub velocity_2: Option<f64>,
+    pub velocity_3: Option<f64>,
+    pub median_velocity: Option<f64>,
+    pub filtered_velocity: Option<f64>,
+    pub velocity_spread: Option<f64>,
+    pub motion_confidence: Option<f64>,
+    pub measurement_dt_s: Option<f64>,
+    pub reference_dt_ms: Option<f64>,
+    pub prediction_lead_frames: Option<f64>,
+    pub prediction_raw_offset_x: Option<f64>,
+    pub prediction_weighted_offset_x: Option<f64>,
+    pub prediction_allowed_cap_x: Option<f64>,
+    pub prediction_safe_offset_x: Option<f64>,
+    pub prediction_allowed: Option<bool>,
+    pub observed_error_x_px: Option<f64>,
+    pub observed_error_y_px: Option<f64>,
+    pub predicted_error_x_px: Option<f64>,
+    pub predicted_error_y_px: Option<f64>,
+    pub full_error_counts_x: Option<f64>,
+    pub full_error_counts_y: Option<f64>,
+    pub float_demand_x: Option<f64>,
+    pub float_demand_y: Option<f64>,
+    pub integer_command_x: Option<i32>,
+    pub integer_command_y: Option<i32>,
+    pub quantizer_residual_x: Option<f64>,
+    pub quantizer_residual_y: Option<f64>,
+    pub block_reason: Option<&'static str>,
     pub humanized_motion_enabled: bool,
     pub humanized_motion_reason: HumanizedMotionReason,
     pub humanized_motion_phase: Option<HumanizedMotionPhase>,
@@ -206,6 +261,9 @@ impl CompatibilityRuntimeState {
         let capture_config = config.and_then(|config| config.capture.as_ref());
         let inference_config = config.and_then(|config| config.inference.as_ref());
         let device_config = config.and_then(|config| config.device.as_ref());
+        let dual_phase = snapshot.pipeline_metrics.dual_phase;
+        let control_sample = dual_phase.sample_available;
+        let control_reason = control_sample.then_some(block_reason_label(dual_phase.block_reason));
         let running = snapshot.pipeline.state == PipelineState::Running;
         let source = capture_config
             .map(|capture| capture.device.to_string_lossy().into_owned())
@@ -401,7 +459,72 @@ impl CompatibilityRuntimeState {
             vision: VisionState {
                 crosshair: crosshair.cloned(),
                 control: VisionControlState {
+                    global_state: if control_sample { "CALCULATED" } else { "IDLE" },
+                    aim_x: control_sample
+                        .then_some(dual_phase.aim_x + dual_phase.predicted_offset_x),
+                    aim_y: control_sample
+                        .then_some(dual_phase.aim_y + dual_phase.predicted_offset_y),
+                    dx: control_sample.then_some(dual_phase.dx),
+                    dy: control_sample.then_some(dual_phase.dy),
+                    will_emit: control_sample.then_some(dual_phase.emit_allowed),
+                    trigger_active: control_sample.then_some(dual_phase.trigger_active),
+                    reason: control_reason,
+                    no_send_reason: control_reason.filter(|reason| !reason.is_empty()),
+                    mouse_observation: MouseObservationState {
+                        control_width_px: control_sample.then_some(dual_phase.observation_width),
+                        control_height_px: control_sample.then_some(dual_phase.observation_height),
+                        observed_x_px: control_sample.then_some(dual_phase.aim_x),
+                        observed_y_px: control_sample.then_some(dual_phase.aim_y),
+                        predicted_x_px: control_sample
+                            .then_some(dual_phase.aim_x + dual_phase.predicted_offset_x),
+                        predicted_y_px: control_sample
+                            .then_some(dual_phase.aim_y + dual_phase.predicted_offset_y),
+                        measurement_dt_s: dual_phase.measurement_dt_ms.map(|value| value / 1_000.0),
+                    },
                     pipeline: ControlPipelineState {
+                        control_mode: "dual_phase_atan_robust_predictive_v2",
+                        movement_strategy: "latest_replace",
+                        mode: control_sample.then_some(control_mode_label(dual_phase.mode)),
+                        frame_age_ms: control_sample.then_some(dual_phase.frame_age_ms),
+                        history_position_count: control_sample
+                            .then_some(dual_phase.history_position_count),
+                        velocity_1: dual_phase.velocity_samples[0],
+                        velocity_2: dual_phase.velocity_samples[1],
+                        velocity_3: dual_phase.velocity_samples[2],
+                        median_velocity: dual_phase.median_velocity,
+                        filtered_velocity: control_sample.then_some(dual_phase.velocity_x),
+                        velocity_spread: dual_phase.velocity_spread,
+                        motion_confidence: control_sample.then_some(dual_phase.motion_confidence),
+                        measurement_dt_s: dual_phase.measurement_dt_ms.map(|value| value / 1_000.0),
+                        reference_dt_ms: control_sample.then_some(dual_phase.reference_dt_ms),
+                        prediction_lead_frames: control_sample
+                            .then_some(dual_phase.prediction_lead_frames),
+                        prediction_raw_offset_x: control_sample
+                            .then_some(dual_phase.prediction_raw_offset_x),
+                        prediction_weighted_offset_x: control_sample
+                            .then_some(dual_phase.prediction_weighted_offset_x),
+                        prediction_allowed_cap_x: control_sample
+                            .then_some(dual_phase.prediction_allowed_cap_x),
+                        prediction_safe_offset_x: control_sample
+                            .then_some(dual_phase.predicted_offset_x),
+                        prediction_allowed: control_sample.then_some(dual_phase.prediction_allowed),
+                        observed_error_x_px: control_sample.then_some(dual_phase.observed_error_x),
+                        observed_error_y_px: control_sample.then_some(dual_phase.observed_error_y),
+                        predicted_error_x_px: control_sample.then_some(dual_phase.filtered_error_x),
+                        predicted_error_y_px: control_sample.then_some(dual_phase.filtered_error_y),
+                        full_error_counts_x: control_sample
+                            .then_some(dual_phase.full_error_counts_x),
+                        full_error_counts_y: control_sample
+                            .then_some(dual_phase.full_error_counts_y),
+                        float_demand_x: control_sample.then_some(dual_phase.float_demand_x),
+                        float_demand_y: control_sample.then_some(dual_phase.float_demand_y),
+                        integer_command_x: control_sample.then_some(dual_phase.dx),
+                        integer_command_y: control_sample.then_some(dual_phase.dy),
+                        quantizer_residual_x: control_sample
+                            .then_some(dual_phase.quantizer_residual_x),
+                        quantizer_residual_y: control_sample
+                            .then_some(dual_phase.quantizer_residual_y),
+                        block_reason: control_reason,
                         humanized_motion_enabled: snapshot
                             .pipeline_metrics
                             .humanized_motion
@@ -472,6 +595,28 @@ impl CompatibilityRuntimeState {
     }
 }
 
+const fn control_mode_label(mode: ControlMode) -> &'static str {
+    match mode {
+        ControlMode::Far => "FAR",
+        ControlMode::Near => "NEAR",
+    }
+}
+
+const fn block_reason_label(reason: BlockReason) -> &'static str {
+    match reason {
+        BlockReason::TimestampDomainInvalid => "TIMESTAMP_DOMAIN_INVALID",
+        BlockReason::StaleObservation => "STALE_OBSERVATION",
+        BlockReason::NonMonotonicObservation => "NON_MONOTONIC_OBSERVATION",
+        BlockReason::CaptureTimestampDiscontinuity => "CAPTURE_TIMESTAMP_DISCONTINUITY",
+        BlockReason::TargetInvalid => "TARGET_INVALID",
+        BlockReason::GeometryInvalid => "GEOMETRY_INVALID",
+        BlockReason::TriggerInactive => "TRIGGER_INACTIVE",
+        BlockReason::DeadZone => "DEAD_ZONE",
+        BlockReason::DemandOutOfRange => "DEMAND_OUT_OF_RANGE",
+        BlockReason::None => "",
+    }
+}
+
 fn subsystem_can_run(subsystem: &SubsystemSnapshot) -> bool {
     !matches!(
         subsystem.state,
@@ -499,6 +644,7 @@ fn serialized_label(value: &impl Serialize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use novasight_core::control::dual_phase_v2::{BlockReason, ControlDecision, ControlMode};
     use novasight_core::control::humanized_motion::{
         HumanizedMotionPhase, HumanizedMotionReason, HumanizedMotionTelemetry,
         HumanizedSpatialCurveSource, HumanizedSpeedCurveSource,
@@ -511,6 +657,44 @@ mod tests {
     #[test]
     fn projects_daemon_owned_control_telemetry_into_studio_shape() {
         let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline_metrics.dual_phase = ControlDecision {
+            sample_available: true,
+            aim_x: 330.0,
+            aim_y: 317.0,
+            observation_width: 640,
+            observation_height: 640,
+            trigger_active: true,
+            dx: 12,
+            dy: -3,
+            emit_allowed: true,
+            block_reason: BlockReason::None,
+            mode: ControlMode::Near,
+            velocity_x: 0.25,
+            motion_confidence: 0.8,
+            history_position_count: 4,
+            velocity_samples: [Some(0.2), Some(0.3), Some(0.25)],
+            median_velocity: Some(0.25),
+            velocity_spread: Some(0.05),
+            measurement_dt_ms: Some(8.0),
+            reference_dt_ms: 8.1,
+            prediction_lead_frames: 1.0,
+            prediction_raw_offset_x: 2.0,
+            prediction_weighted_offset_x: 1.6,
+            prediction_allowed_cap_x: 3.0,
+            prediction_allowed: true,
+            predicted_offset_x: 1.6,
+            observed_error_x: 10.0,
+            observed_error_y: -3.0,
+            filtered_error_x: 11.6,
+            filtered_error_y: -3.0,
+            full_error_counts_x: 28.0,
+            full_error_counts_y: -7.0,
+            float_demand_x: 12.4,
+            float_demand_y: -2.9,
+            quantizer_residual_x: 0.4,
+            quantizer_residual_y: -0.1,
+            ..ControlDecision::default()
+        };
         snapshot.pipeline_metrics.humanized_motion = HumanizedMotionTelemetry {
             enabled: true,
             reason: HumanizedMotionReason::Active,
@@ -541,6 +725,20 @@ mod tests {
         ))
         .unwrap();
         let pipeline = &value["vision"]["control"]["pipeline"];
+        let control = &value["vision"]["control"];
+        assert_eq!(control["will_emit"], true);
+        assert_eq!(control["aim_x"], 331.6);
+        assert_eq!(control["mouse_observation"]["measurement_dt_s"], 0.008);
+        assert_eq!(
+            pipeline["control_mode"],
+            "dual_phase_atan_robust_predictive_v2"
+        );
+        assert_eq!(pipeline["mode"], "NEAR");
+        assert_eq!(pipeline["velocity_2"], 0.3);
+        assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
+        assert_eq!(pipeline["integer_command_x"], 12);
+        assert_eq!(pipeline["quantizer_residual_y"], -0.1);
+        assert_eq!(pipeline["block_reason"], "");
         assert_eq!(pipeline["humanized_motion_enabled"], true);
         assert_eq!(pipeline["humanized_motion_reason"], "active");
         assert_eq!(pipeline["humanized_motion_phase"], "acceleration");
