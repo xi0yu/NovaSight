@@ -790,7 +790,6 @@ fn is_recoverable_pointer_error(error: &novasight_core::AppError) -> bool {
                 | "reconnect_cooldown"
                 | "driver_send_failed"
                 | "driver_protocol_failed"
-                | "monitor_failed"
                 | "monitor_stale",
             ..
         }

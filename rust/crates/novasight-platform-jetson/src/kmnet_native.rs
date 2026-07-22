@@ -39,6 +39,7 @@ pub struct KmNetNativeDevice {
     monitor_healthy: Arc<AtomicBool>,
     last_monitor_update: Arc<Mutex<Instant>>,
     monitor_timeout: Duration,
+    monitor_port: u16,
     stop: Arc<AtomicBool>,
     monitor: Mutex<Option<JoinHandle<()>>>,
     successful_sends: AtomicU64,
@@ -109,6 +110,7 @@ impl KmNetNativeDevice {
             monitor_healthy,
             last_monitor_update,
             monitor_timeout: config.monitor_timeout,
+            monitor_port: config.monitor_port,
             stop,
             monitor: Mutex::new(Some(monitor)),
             successful_sends: AtomicU64::new(0),
@@ -169,6 +171,11 @@ impl PointerDevice for KmNetNativeDevice {
 impl Drop for KmNetNativeDevice {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        // Wake recv_from immediately; production shutdown must not inherit the
+        // device request timeout.
+        if let Ok(waker) = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) {
+            let _ = waker.send_to(&[0], (Ipv4Addr::LOCALHOST, self.monitor_port));
+        }
         if let Some(handle) = self
             .monitor
             .get_mut()
@@ -442,5 +449,8 @@ mod tests {
             })
             .unwrap();
         responder.join().unwrap();
+        let shutdown_started = Instant::now();
+        drop(device);
+        assert!(shutdown_started.elapsed() < Duration::from_millis(250));
     }
 }

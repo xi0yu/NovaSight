@@ -15,6 +15,7 @@ use novasight_platform_jetson::deepstream::{
     DeepStreamSessionConfig, ModelInput, Roi,
 };
 use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
+#[cfg(feature = "experimental-kmnet-native")]
 use novasight_platform_jetson::kmnet_native::{
     KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError,
 };
@@ -42,22 +43,26 @@ pub(super) fn build_live_production_dependencies(
     }
     let device: Arc<dyn PointerDevice> = match adapters.device.backend {
         DeviceBackend::NativeUdp => {
-            let host =
-                adapters.device.host.parse().map_err(|_| {
+            #[cfg(not(feature = "experimental-kmnet-native"))]
+            return Err(LivePerceptionError::NativeKmNetNotValidated);
+            #[cfg(feature = "experimental-kmnet-native")]
+            {
+                let host = adapters.device.host.parse().map_err(|_| {
                     LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
                 })?;
-            Arc::new(
-                KmNetNativeDevice::connect(KmNetNativeConfig {
-                    host,
-                    port: adapters.device.port,
-                    uuid: adapters.device.uuid.clone(),
-                    monitor_port: adapters.device.monitor_port,
-                    connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
-                    request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
-                    monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
-                })
-                .map_err(LivePerceptionError::NativeKmNet)?,
-            )
+                Arc::new(
+                    KmNetNativeDevice::connect(KmNetNativeConfig {
+                        host,
+                        port: adapters.device.port,
+                        uuid: adapters.device.uuid.clone(),
+                        monitor_port: adapters.device.monitor_port,
+                        connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
+                        request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
+                        monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
+                    })
+                    .map_err(LivePerceptionError::NativeKmNet)?,
+                )
+            }
         }
         DeviceBackend::PythonHost => Arc::new(
             KmNetHostClient::connect(KmNetHostConfig {
@@ -1178,10 +1183,17 @@ pub(super) enum LivePerceptionError {
     DeviceAutoConnectDisabled,
     #[error("kmNet production adapter failed: {0}")]
     KmNet(KmNetError),
+    #[cfg(feature = "experimental-kmnet-native")]
     #[error("hardware.host must be an IPv4 address for native kmNet: {0}")]
     InvalidKmNetHost(String),
+    #[cfg(feature = "experimental-kmnet-native")]
     #[error("native kmNet production adapter failed: {0}")]
     NativeKmNet(KmNetNativeError),
+    #[cfg(not(feature = "experimental-kmnet-native"))]
+    #[error(
+        "native kmNet is experimental; rebuild with experimental-kmnet-native only for Jetson evidence collection"
+    )]
+    NativeKmNetNotValidated,
     #[error("unsupported capture pixel format: {0}")]
     UnsupportedCaptureFormat(String),
     #[error("invalid DeepStream I/O mode: {0}")]

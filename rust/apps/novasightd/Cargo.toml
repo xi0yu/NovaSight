@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = []
 deepstream = ["dep:novasight-platform-jetson", "novasight-platform-jetson/deepstream"]
+experimental-kmnet-native = ["deepstream"]
 
 [dependencies]
 axum.workspace = true
