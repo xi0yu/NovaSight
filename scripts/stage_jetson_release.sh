@@ -11,10 +11,10 @@ require_file() {
   fi
 }
 
-DAEMON="${ROOT_DIR}/rust/target/release/novasightd"
-CLI="${ROOT_DIR}/rust/target/release/novasightctl"
-BRIDGE="${ROOT_DIR}/build/deepstream-bridge/libnovasight_deepstream_bridge.so"
-PARSER="${ROOT_DIR}/build/deepstream-parser/libnovasight_parser.so"
+DAEMON="${NOVASIGHT_STAGE_DAEMON:-${ROOT_DIR}/rust/target/release/novasightd}"
+CLI="${NOVASIGHT_STAGE_CLI:-${ROOT_DIR}/rust/target/release/novasightctl}"
+BRIDGE="${NOVASIGHT_STAGE_BRIDGE:-${ROOT_DIR}/build/deepstream-bridge/libnovasight_deepstream_bridge.so}"
+PARSER="${NOVASIGHT_STAGE_PARSER:-${ROOT_DIR}/build/deepstream-parser/libnovasight_parser.so}"
 
 require_file "${DAEMON}"
 require_file "${CLI}"
@@ -22,6 +22,9 @@ require_file "${BRIDGE}"
 require_file "${PARSER}"
 require_file "${ROOT_DIR}/scripts/model_ingress_job.py"
 require_file "${ROOT_DIR}/deploy/novasight.service"
+require_file "${ROOT_DIR}/deploy/novasight.production.yaml"
+require_file "${ROOT_DIR}/novasight/executors/kmnet_host.py"
+require_file "${ROOT_DIR}/novasight/executors/kmnet_loader.py"
 
 install -d "${STAGE_DIR}/bin" "${STAGE_DIR}/lib" "${STAGE_DIR}/scripts" \
   "${STAGE_DIR}/deploy" "${STAGE_DIR}/share/novasight"
@@ -33,8 +36,19 @@ install -m 0644 "${BRIDGE}" "${STAGE_DIR}/lib/libnovasight_deepstream_bridge.so"
 install -m 0644 "${PARSER}" "${STAGE_DIR}/lib/libnovasight_parser.so"
 install -m 0644 "${ROOT_DIR}/deploy/novasight.service" \
   "${STAGE_DIR}/deploy/novasight.service"
+install -m 0640 "${ROOT_DIR}/deploy/novasight.production.yaml" \
+  "${STAGE_DIR}/share/novasight/novasight.production.yaml"
 install -m 0644 "${ROOT_DIR}/rust/config/novasightd.example.yaml" \
   "${STAGE_DIR}/share/novasight/novasight.example.yaml"
+
+# The online vision/control path is Rust. The daemon-owned kmNet crash-isolation
+# helper and allowlisted offline model job still import the retained Python
+# package, so a release must carry that exact code instead of depending on a
+# source checkout or an ambient editable install.
+install -d "${STAGE_DIR}/novasight"
+cp -R "${ROOT_DIR}/novasight/." "${STAGE_DIR}/novasight/"
+find "${STAGE_DIR}/novasight" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+find "${STAGE_DIR}/novasight" -type d -name __pycache__ -empty -delete
 
 for optional in libnovasight_preprocess.so libnovasight_tensorrt.so; do
   source_path="${ROOT_DIR}/build/jetson-native/${optional}"
@@ -47,3 +61,5 @@ echo "release_root: ${STAGE_DIR}"
 echo "daemon: ${STAGE_DIR}/bin/novasightd"
 echo "cli: ${STAGE_DIR}/bin/novasightctl"
 echo "libraries: ${STAGE_DIR}/lib"
+echo "production_config: ${STAGE_DIR}/share/novasight/novasight.production.yaml"
+echo "python_helpers: ${STAGE_DIR}/novasight"

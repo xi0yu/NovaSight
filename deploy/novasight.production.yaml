@@ -1,0 +1,119 @@
+schema_version: 1
+revision: 0
+server:
+  host: 0.0.0.0
+  port: 5174
+  control_socket: /run/novasight/novasightd.sock
+replay:
+  enabled: false
+  frame_interval_ms: 16
+  output_gate_open: false
+consumers:
+  preview: true
+limits:
+  stream_fps: 30
+pipeline:
+  freshness_threshold_ms: 55.0
+  near_threshold_px: 12.0
+  projection_fov_x_deg: 105.0
+  projection_counts_per_360: 9980.0
+  projection_invert_y: false
+  atan_scale_counts: 1024.0
+  far_kp: 0.90
+  far_max_counts_per_update: 600.0
+  near_kp: 0.30
+  near_max_counts_per_update: 120.0
+  velocity_smoothing_frames: 3.0
+  velocity_history_reset_gap_ms: 80.0
+  velocity_spread_base_px_ms: 0.12
+  velocity_spread_relative: 0.50
+  velocity_change_base_px_ms: 0.20
+  velocity_change_relative: 0.75
+  prediction_lead_frames: 1.0
+  prediction_far_absolute_cap_px: 10.0
+  prediction_far_base_cap_px: 1.25
+  prediction_far_relative_cap: 0.30
+  prediction_near_absolute_cap_px: 3.0
+  prediction_near_base_cap_px: 0.75
+  prediction_near_relative_cap: 0.20
+  residual_cap: 1.0
+  target_debounce_distance_px: 64.0
+  target_fov_radius_px: 180.0
+  target_min_confidence: 0.5
+  target_track_max_age: 5
+  tracker_max_match_distance: 1.5
+  tracker_position_cost_weight: 0.75
+  tracker_iou_cost_weight: 0.25
+  tracker_scale_cost_weight: 0.15
+  tracker_max_size_ratio: 2.5
+  tracker_max_association_dt_ms: 150.0
+  target_class_priority: "0,1"
+  target_selection_class_weight: 0.55
+  target_selection_distance_weight: 0.40
+  target_sticky_bias: 0.25
+  target_switch_min_preference_advantage: 0.08
+  target_switch_min_continuity_score: 0.70
+  target_switch_delay_ms: 50.0
+  target_aim_y_ratio: 0.22
+  target_class_aim_y_ratios: ""
+  candidate_max_aspect_ratio: 6.0
+  max_command_age_ms: 55
+  output_interval_ms: 4
+capture:
+  device: /dev/video0
+  backend: deepstream_nvinfer
+  memory: nvmm
+  preference: manual
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+  width: 1920
+  height: 1080
+  fps: 120
+  pixel_format: MJPEG
+  roi_left: 640
+  roi_top: 220
+  roi_width: 640
+  roi_height: 640
+inference:
+  enabled: true
+  backend: deepstream_nvinfer
+  device: cuda
+  require_gpu: true
+  allow_cpu_fallback: false
+  confidence_threshold: 0.25
+  nms_threshold: 0.45
+  inference_input_deadline_ms: 55.0
+  deepstream_parser_library: /opt/novasight/lib/libnovasight_parser.so
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
+  deepstream_component_id: 1
+  deepstream_source_id: 0
+  deepstream_probe_element: primary-infer
+  deepstream_probe_pad: src
+  deepstream_nvinfer_config: /var/lib/novasight/runtime/deepstream/active-nvinfer.ini
+  model_width: 640
+  model_height: 640
+  deepstream_startup_timeout_ms: 10000
+  deepstream_shutdown_timeout_ms: 5000
+  input_source: source.default
+hardware:
+  auto_connect: true
+  # This helper is daemon-owned. native_udp remains an experimental evidence build.
+  backend: python_host
+  host: 192.168.2.188
+  port: 8888
+  uuid: "12345678"
+  monitor_port: 5001
+  helper_module: novasight.executors.kmnet_host
+  connect_timeout_ms: 3000
+  send_timeout_ms: 25
+  monitor_timeout_ms: 250
+  trigger_poll_interval_ms: 4
+  reconnect_cooldown_ms: 500
+paths:
+  data_dir: /var/lib/novasight
+  model_dir: /var/lib/novasight/models
+  database: /var/lib/novasight/novasight.db
+  license: /var/lib/novasight/license.json
+  python_executable: /usr/bin/python3

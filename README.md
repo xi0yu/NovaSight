@@ -171,13 +171,21 @@ scripts/build_deepstream_bridge.sh
 cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
 cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
 scripts/stage_jetson_release.sh
-build/jetson-release/bin/novasightd --config rust/config/novasightd.example.yaml --check
-build/jetson-release/bin/novasightd --config rust/config/novasightd.example.yaml
+sudo install -d -m 0750 /etc/novasight
+sudo install -m 0640 build/jetson-release/share/novasight/novasight.production.yaml \
+  /etc/novasight/novasight.yaml
+sudo cp -a build/jetson-release/. /opt/novasight/
+/opt/novasight/bin/novasightd --config /etc/novasight/novasight.yaml --check
 ```
 
 The staged `bin/../lib` layout matches the daemon's production RUNPATH and the
-`/opt/novasight/{bin,lib}` systemd layout. Running the unstaged Cargo binary is
-not a production check because the native bridge is built outside its RUNPATH.
+`/opt/novasight/{bin,lib}` systemd layout. It also carries the retained Python
+package used only by the daemon-owned kmNet helper and allowlisted offline model
+job, so neither path depends on a source checkout or editable install. The
+production template uses absolute `/opt/novasight` and `/var/lib/novasight`
+paths; the development example remains repository-relative. Running the
+unstaged Cargo binary is not a production check because the native bridge is
+built outside its RUNPATH.
 
 The example config starts the active TensorRT deployment through nvinfer. kmNet
 auto-connect runs independently.
