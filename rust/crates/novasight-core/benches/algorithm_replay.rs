@@ -101,6 +101,8 @@ fn main() {
                     aim_y: matched.center_y(),
                     crosshair_x: 320.0,
                     crosshair_y: 320.0,
+                    detection_confidence: 1.0,
+                    track_confidence: 1.0,
                     target_valid: true,
                     trigger_active: true,
                 };

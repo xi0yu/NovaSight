@@ -322,6 +322,10 @@ fn decide_with_algorithm(
                 aim_y: target.center_y,
                 crosshair_x: 320.0,
                 crosshair_y: 320.0,
+                detection_confidence: f64::from(target.confidence),
+                // This replay selector has no identity tracker; its selected-target
+                // confidence is the only real quality signal available.
+                track_confidence: f64::from(target.confidence),
                 target_valid: true,
                 trigger_active: true,
             };

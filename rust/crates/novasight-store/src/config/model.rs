@@ -150,6 +150,32 @@ pub struct PipelineRuntimeConfig {
     pub near_kp: f64,
     #[serde(default = "default_near_max_counts_per_update")]
     pub near_max_counts_per_update: f64,
+    #[serde(default = "default_velocity_smoothing_frames")]
+    pub velocity_smoothing_frames: f64,
+    #[serde(default = "default_velocity_history_reset_gap_ms")]
+    pub velocity_history_reset_gap_ms: f64,
+    #[serde(default = "default_velocity_spread_base_px_ms")]
+    pub velocity_spread_base_px_ms: f64,
+    #[serde(default = "default_velocity_spread_relative")]
+    pub velocity_spread_relative: f64,
+    #[serde(default = "default_velocity_change_base_px_ms")]
+    pub velocity_change_base_px_ms: f64,
+    #[serde(default = "default_velocity_change_relative")]
+    pub velocity_change_relative: f64,
+    #[serde(default = "default_prediction_lead_frames")]
+    pub prediction_lead_frames: f64,
+    #[serde(default = "default_prediction_far_absolute_cap_px")]
+    pub prediction_far_absolute_cap_px: f64,
+    #[serde(default = "default_prediction_far_base_cap_px")]
+    pub prediction_far_base_cap_px: f64,
+    #[serde(default = "default_prediction_far_relative_cap")]
+    pub prediction_far_relative_cap: f64,
+    #[serde(default = "default_prediction_near_absolute_cap_px")]
+    pub prediction_near_absolute_cap_px: f64,
+    #[serde(default = "default_prediction_near_base_cap_px")]
+    pub prediction_near_base_cap_px: f64,
+    #[serde(default = "default_prediction_near_relative_cap")]
+    pub prediction_near_relative_cap: f64,
     #[serde(default = "default_residual_cap")]
     pub residual_cap: f64,
     #[serde(default = "default_target_debounce_distance_px")]
@@ -181,6 +207,19 @@ impl Default for PipelineRuntimeConfig {
             far_max_counts_per_update: default_far_max_counts_per_update(),
             near_kp: default_near_kp(),
             near_max_counts_per_update: default_near_max_counts_per_update(),
+            velocity_smoothing_frames: default_velocity_smoothing_frames(),
+            velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
+            velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
+            velocity_spread_relative: default_velocity_spread_relative(),
+            velocity_change_base_px_ms: default_velocity_change_base_px_ms(),
+            velocity_change_relative: default_velocity_change_relative(),
+            prediction_lead_frames: default_prediction_lead_frames(),
+            prediction_far_absolute_cap_px: default_prediction_far_absolute_cap_px(),
+            prediction_far_base_cap_px: default_prediction_far_base_cap_px(),
+            prediction_far_relative_cap: default_prediction_far_relative_cap(),
+            prediction_near_absolute_cap_px: default_prediction_near_absolute_cap_px(),
+            prediction_near_base_cap_px: default_prediction_near_base_cap_px(),
+            prediction_near_relative_cap: default_prediction_near_relative_cap(),
             residual_cap: default_residual_cap(),
             target_debounce_distance_px: default_target_debounce_distance_px(),
             target_min_confidence: default_target_min_confidence(),
@@ -239,6 +278,76 @@ impl PipelineRuntimeConfig {
             1.0,
             f64::from(i16::MAX),
         )?;
+        validate_finite_range(
+            "pipeline.velocity_smoothing_frames",
+            self.velocity_smoothing_frames,
+            0.000_001,
+            1_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_history_reset_gap_ms",
+            self.velocity_history_reset_gap_ms,
+            0.000_001,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_spread_base_px_ms",
+            self.velocity_spread_base_px_ms,
+            0.000_001,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_spread_relative",
+            self.velocity_spread_relative,
+            0.0,
+            1_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_change_base_px_ms",
+            self.velocity_change_base_px_ms,
+            0.000_001,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_change_relative",
+            self.velocity_change_relative,
+            0.0,
+            1_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.prediction_lead_frames",
+            self.prediction_lead_frames,
+            0.0,
+            10.0,
+        )?;
+        for (field, value) in [
+            (
+                "pipeline.prediction_far_absolute_cap_px",
+                self.prediction_far_absolute_cap_px,
+            ),
+            (
+                "pipeline.prediction_far_base_cap_px",
+                self.prediction_far_base_cap_px,
+            ),
+            (
+                "pipeline.prediction_far_relative_cap",
+                self.prediction_far_relative_cap,
+            ),
+            (
+                "pipeline.prediction_near_absolute_cap_px",
+                self.prediction_near_absolute_cap_px,
+            ),
+            (
+                "pipeline.prediction_near_base_cap_px",
+                self.prediction_near_base_cap_px,
+            ),
+            (
+                "pipeline.prediction_near_relative_cap",
+                self.prediction_near_relative_cap,
+            ),
+        ] {
+            validate_finite_range(field, value, 0.0, 100_000.0)?;
+        }
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
             "pipeline.target_debounce_distance_px",
@@ -325,6 +434,58 @@ const fn default_near_kp() -> f64 {
 
 const fn default_near_max_counts_per_update() -> f64 {
     120.0
+}
+
+const fn default_velocity_smoothing_frames() -> f64 {
+    3.0
+}
+
+const fn default_velocity_history_reset_gap_ms() -> f64 {
+    80.0
+}
+
+const fn default_velocity_spread_base_px_ms() -> f64 {
+    0.12
+}
+
+const fn default_velocity_spread_relative() -> f64 {
+    0.50
+}
+
+const fn default_velocity_change_base_px_ms() -> f64 {
+    0.20
+}
+
+const fn default_velocity_change_relative() -> f64 {
+    0.75
+}
+
+const fn default_prediction_lead_frames() -> f64 {
+    1.0
+}
+
+const fn default_prediction_far_absolute_cap_px() -> f64 {
+    10.0
+}
+
+const fn default_prediction_far_base_cap_px() -> f64 {
+    1.25
+}
+
+const fn default_prediction_far_relative_cap() -> f64 {
+    0.30
+}
+
+const fn default_prediction_near_absolute_cap_px() -> f64 {
+    3.0
+}
+
+const fn default_prediction_near_base_cap_px() -> f64 {
+    0.75
+}
+
+const fn default_prediction_near_relative_cap() -> f64 {
+    0.20
 }
 
 const fn default_residual_cap() -> f64 {

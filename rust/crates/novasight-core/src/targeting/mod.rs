@@ -10,6 +10,7 @@ pub struct SelectedTarget {
     pub class_id: u32,
     pub center_x: f64,
     pub center_y: f64,
+    pub confidence: f32,
 }
 
 /// Replay selector choosing the candidate nearest the declared batch center.
@@ -46,6 +47,7 @@ impl NearestCenterTargeting {
                 class_id: detection.class_id(),
                 center_x: detection.center_x(),
                 center_y: detection.center_y(),
+                confidence: detection.confidence(),
             })
     }
 }

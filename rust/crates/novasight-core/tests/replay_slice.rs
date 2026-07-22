@@ -15,6 +15,7 @@ async fn replay_batch_becomes_recorded_device_receipt() {
     )
     .unwrap();
     let target = NearestCenterTargeting.select(&batch).expect("target");
+    assert!((target.confidence - 0.9).abs() < f32::EPSILON);
     let decision = ProportionalReplayControl::new(1.0)
         .decide(&batch, &target, 1_010_000_000)
         .expect("decision");

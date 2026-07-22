@@ -21,6 +21,19 @@ pipeline:
   far_max_counts_per_update: 600.0
   near_kp: 0.30
   near_max_counts_per_update: 120.0
+  velocity_smoothing_frames: 3.0
+  velocity_history_reset_gap_ms: 80.0
+  velocity_spread_base_px_ms: 0.12
+  velocity_spread_relative: 0.50
+  velocity_change_base_px_ms: 0.20
+  velocity_change_relative: 0.75
+  prediction_lead_frames: 1.0
+  prediction_far_absolute_cap_px: 10.0
+  prediction_far_base_cap_px: 1.25
+  prediction_far_relative_cap: 0.30
+  prediction_near_absolute_cap_px: 3.0
+  prediction_near_base_cap_px: 0.75
+  prediction_near_relative_cap: 0.20
   residual_cap: 1.0
   target_debounce_distance_px: 64.0
   target_min_confidence: 0.5

@@ -348,6 +348,8 @@ struct TargetedObservation {
     aim_y: f64,
     crosshair_x: f64,
     crosshair_y: f64,
+    detection_confidence: f64,
+    track_confidence: f64,
     inference_end_ns: u64,
     control_now_ns: u64,
 }
@@ -658,7 +660,7 @@ fn spawn_targeting_worker(
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
                     let selection = targeting.select(batch.detections());
-                    let (target_id, aim_x, aim_y) = match (
+                    let (target_id, aim_x, aim_y, detection_confidence) = match (
                         selection.target_object_id,
                         selection.target_track_id,
                         selection.target_class_id,
@@ -667,9 +669,12 @@ fn spawn_targeting_worker(
                             match batch.detections().iter().find(|item| {
                                 item.object_id() == object_id && item.class_id() == class_id
                             }) {
-                                Some(target) => {
-                                    (Some(track_id.0), target.center_x(), target.center_y())
-                                }
+                                Some(target) => (
+                                    Some(track_id.0),
+                                    target.center_x(),
+                                    target.center_y(),
+                                    f64::from(target.confidence()),
+                                ),
                                 None => {
                                     shared.fault(
                                         "target selection did not belong to its detection batch",
@@ -681,9 +686,12 @@ fn spawn_targeting_worker(
                         }
                         _ => {
                             let (center_x, center_y) = batch.center();
-                            (None, center_x, center_y)
+                            (None, center_x, center_y, 0.0)
                         }
                     };
+                    let track_confidence = targeting
+                        .locked()
+                        .map_or(0.0, |track| f64::from(track.confidence));
                     let (crosshair_x, crosshair_y) = batch.center();
                     let now = clock.now().0;
                     let observation = TargetedObservation {
@@ -693,6 +701,8 @@ fn spawn_targeting_worker(
                         aim_y,
                         crosshair_x,
                         crosshair_y,
+                        detection_confidence,
+                        track_confidence,
                         inference_end_ns: now,
                         control_now_ns: now,
                     };
@@ -738,6 +748,8 @@ fn spawn_control_worker(
                         aim_y: target.aim_y,
                         crosshair_x: target.crosshair_x,
                         crosshair_y: target.crosshair_y,
+                        detection_confidence: target.detection_confidence,
+                        track_confidence: target.track_confidence,
                         target_valid: target.target_id.is_some(),
                         trigger_active: shared.trigger_active.load(Ordering::Acquire),
                     });
