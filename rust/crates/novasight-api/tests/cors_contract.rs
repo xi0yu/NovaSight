@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use axum::{
     body::Body,
     http::{
@@ -11,13 +9,19 @@ use axum::{
         },
     },
 };
-use novasight_api::{ApiState, build_router};
-use novasight_core::{RuntimeDependencies, RuntimeManager};
+use novasight_api::build_control_router;
+use novasight_runtime::RuntimeSupervisor;
 use tower::ServiceExt;
 
-fn app() -> axum::Router {
-    let runtime = RuntimeManager::spawn(RuntimeDependencies::replay_fixture(Duration::ZERO));
-    build_router(ApiState::new(runtime))
+async fn send(request: Request<Body>) -> axum::response::Response {
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let response = build_control_router(runtime.clone())
+        .oneshot(request)
+        .await
+        .expect("response");
+    runtime.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("join supervisor");
+    response
 }
 
 #[tokio::test]
@@ -35,15 +39,13 @@ async fn studio_and_loopback_origins_are_allowed_without_a_wildcard() {
     ];
 
     for origin in allowed_origins {
-        let response = app()
-            .oneshot(
-                Request::get("/healthz")
-                    .header(ORIGIN, origin)
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let response = send(
+            Request::get("/healthz")
+                .header(ORIGIN, origin)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK, "origin {origin}");
         assert_eq!(
@@ -70,17 +72,15 @@ async fn studio_and_loopback_origins_are_allowed_without_a_wildcard() {
 
 #[tokio::test]
 async fn allowed_preflight_mirrors_the_requested_method_and_headers() {
-    let response = app()
-        .oneshot(
-            Request::options("/api/runtime/start")
-                .header(ORIGIN, "http://localhost:43123")
-                .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
-                .header(ACCESS_CONTROL_REQUEST_HEADERS, "x-novasight-test")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
+    let response = send(
+        Request::options("/api/runtime/start")
+            .header(ORIGIN, "http://localhost:43123")
+            .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(ACCESS_CONTROL_REQUEST_HEADERS, "x-novasight-test")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -124,15 +124,13 @@ async fn non_loopback_origins_receive_no_cors_authorization() {
     ];
 
     for origin in disallowed_origins {
-        let response = app()
-            .oneshot(
-                Request::get("/healthz")
-                    .header(ORIGIN, origin)
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
+        let response = send(
+            Request::get("/healthz")
+                .header(ORIGIN, origin)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK, "origin {origin}");
         assert!(

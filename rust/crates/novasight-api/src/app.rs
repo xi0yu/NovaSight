@@ -1,14 +1,5 @@
-use axum::{Router, http::HeaderValue};
+use axum::http::HeaderValue;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
-
-use crate::{ApiState, routes, websocket};
-
-pub fn build_router(state: ApiState) -> Router {
-    routes::router()
-        .merge(websocket::router())
-        .with_state(state)
-        .layer(studio_cors_layer())
-}
 
 pub(crate) fn studio_cors_layer() -> CorsLayer {
     CorsLayer::new()
