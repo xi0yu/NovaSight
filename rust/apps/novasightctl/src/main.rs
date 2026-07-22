@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use novasight_client::{ClientError, ControlClient};
+use novasight_client::{
+    ClientError, ControlClient, DiagnosticMoveResponse, ExecutorStatus, LicenseStatus,
+    ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
+};
 use novasight_runtime::{
     AppConfig, ConfigUpdate, ModelIngressResult, ModelProbeInputMode, ModelProfileConfigureRequest,
     RuntimeSnapshot,
@@ -41,15 +44,44 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Inspect or update the daemon license through the local control socket.
+    License {
+        #[command(subcommand)]
+        command: LicenseCommand,
+    },
     /// Inspect, configure, and diagnostically execute TensorRT model artifacts.
     Model {
         #[command(subcommand)]
         command: ModelCommand,
     },
+    /// Inspect the runtime-owned pointer device or send one bounded diagnostic move.
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LicenseCommand {
+    /// Print verified license state.
+    Status,
+    /// Activate a license read from a file so the key is not exposed in argv.
+    Activate {
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    /// Remove the currently persisted license.
+    Clear,
 }
 
 #[derive(Subcommand, Debug)]
 enum ModelCommand {
+    /// List model projects in the daemon catalog.
+    Projects,
+    /// List versions belonging to one project.
+    Versions { project_id: i64 },
+    /// List artifacts belonging to one model version.
+    Artifacts { version_id: i64 },
     /// Deserialize an Engine and write its initial immutable profile.
     Inspect { artifact_id: i64 },
     /// Read the current profile from the unified Engine manifest.
@@ -65,6 +97,28 @@ enum ModelCommand {
         artifact_id: i64,
         #[arg(long, value_enum, default_value_t = CliProbeInputMode::Fixed)]
         input_mode: CliProbeInputMode,
+    },
+    /// Atomically publish a validated artifact and restart the active epoch when needed.
+    Publish {
+        project_id: i64,
+        artifact_id: i64,
+        #[arg(long, default_value = "auto")]
+        parser_preset: String,
+    },
+    /// Roll back one project through the same compensated activation transaction.
+    Rollback { project_id: i64 },
+}
+
+#[derive(Subcommand, Debug)]
+enum DeviceCommand {
+    /// Print the supervisor-owned executor state.
+    Status,
+    /// Send exactly one immediate raw move through the daemon-owned adapter.
+    Move {
+        #[arg(allow_hyphen_values = true)]
+        dx: i32,
+        #[arg(allow_hyphen_values = true)]
+        dy: i32,
     },
 }
 
@@ -105,6 +159,13 @@ enum CommandOutput {
     Config(AppConfig),
     ConfigUpdate(ConfigUpdate),
     Model(ModelIngressResult),
+    License(LicenseStatus),
+    ModelProjects(Vec<ModelProject>),
+    ModelVersions(Vec<ModelVersion>),
+    ModelArtifacts(Vec<ModelArtifact>),
+    ModelSwitch(ModelSwitchResponse),
+    Executor(ExecutorStatus),
+    DiagnosticMove(DiagnosticMoveResponse),
 }
 
 fn init_logging() {
@@ -163,6 +224,43 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
                 .await
                 .map(CommandOutput::ConfigUpdate)
         }
+        Command::License {
+            command: LicenseCommand::Status,
+        } => client.license_status().await.map(CommandOutput::License),
+        Command::License {
+            command: LicenseCommand::Activate { key_file },
+        } => {
+            let key =
+                std::fs::read_to_string(&key_file).map_err(|source| CliError::ReadLicenseKey {
+                    path: key_file,
+                    source,
+                })?;
+            client
+                .activate_license(key.trim())
+                .await
+                .map(CommandOutput::License)
+        }
+        Command::License {
+            command: LicenseCommand::Clear,
+        } => client.clear_license().await.map(CommandOutput::License),
+        Command::Model {
+            command: ModelCommand::Projects,
+        } => client
+            .model_projects()
+            .await
+            .map(CommandOutput::ModelProjects),
+        Command::Model {
+            command: ModelCommand::Versions { project_id },
+        } => client
+            .model_versions(project_id)
+            .await
+            .map(CommandOutput::ModelVersions),
+        Command::Model {
+            command: ModelCommand::Artifacts { version_id },
+        } => client
+            .model_artifacts(version_id)
+            .await
+            .map(CommandOutput::ModelArtifacts),
         Command::Model {
             command: ModelCommand::Inspect { artifact_id },
         } => client
@@ -203,6 +301,32 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .probe_model(artifact_id, input_mode.into())
             .await
             .map(CommandOutput::Model),
+        Command::Model {
+            command:
+                ModelCommand::Publish {
+                    project_id,
+                    artifact_id,
+                    parser_preset,
+                },
+        } => client
+            .publish_model(project_id, artifact_id, &parser_preset)
+            .await
+            .map(CommandOutput::ModelSwitch),
+        Command::Model {
+            command: ModelCommand::Rollback { project_id },
+        } => client
+            .rollback_model(project_id)
+            .await
+            .map(CommandOutput::ModelSwitch),
+        Command::Device {
+            command: DeviceCommand::Status,
+        } => client.executor_status().await.map(CommandOutput::Executor),
+        Command::Device {
+            command: DeviceCommand::Move { dx, dy },
+        } => client
+            .diagnostic_move(dx, dy)
+            .await
+            .map(CommandOutput::DiagnosticMove),
     }
     .map_err(CliError::Client)
 }
@@ -219,6 +343,12 @@ enum CliError {
     },
     #[error("failed to decode model profile request: {0}")]
     DecodeProfileRequest(#[source] serde_json::Error),
+    #[error("failed to read license key {}: {source}", path.display())]
+    ReadLicenseKey {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl CliError {
@@ -227,6 +357,7 @@ impl CliError {
             Self::Client(error) => error.code(),
             Self::ReadProfileRequest { .. } => "model_profile_request_read_failed",
             Self::DecodeProfileRequest(_) => "model_profile_request_invalid",
+            Self::ReadLicenseKey { .. } => "license_key_read_failed",
         }
     }
 }

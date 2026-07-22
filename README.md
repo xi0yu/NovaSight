@@ -232,6 +232,21 @@ snapshot restores the active model deployment from SQLite during daemon boot
 and updates it only after a model switch has committed successfully. A catalog
 read failure is reported separately from the valid “no active model” state.
 
+Local administration uses that same router rather than a second in-process
+control implementation:
+
+```bash
+novasightctl license activate --key-file /secure/path/license.key
+novasightctl model projects
+novasightctl model publish 1 4 --parser-preset auto
+novasightctl device status
+novasightctl device move 4 -2
+```
+
+License activation reads the key from a file so the secret is not exposed in
+the process argument list. Model publish/rollback and the single raw diagnostic
+move retain the API's compensated activation and supervisor ownership rules.
+
 ### Legacy CPU-bridge diagnostics
 
 Run a 60-second capture smoke on Jetson:

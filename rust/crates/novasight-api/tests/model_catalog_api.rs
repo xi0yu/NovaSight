@@ -12,7 +12,7 @@ use novasight_pipeline::{
     ModelCandidate, PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionModelContract,
     PerceptionSession, PipelineConfig, PipelineIngress,
 };
-use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
+use novasight_runtime::{AppConfig, ConfigService, RuntimeDependencies, RuntimeSupervisor};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -349,9 +349,13 @@ async fn publish_while_stopped_preflights_and_commits_without_starting_runtime()
         }));
     let (supervisor, runtime) =
         RuntimeSupervisor::spawn(dependencies.with_model_catalog(catalog.clone()));
+    let config = ConfigService::new(
+        directory.join("novasight.yaml"),
+        serde_yaml::from_str::<AppConfig>("inference:\n  backend: rust_tensor_rt\n").unwrap(),
+    );
     let app = build_control_router_with_control_plane(
         runtime.clone(),
-        None,
+        config,
         None,
         catalog.clone(),
         false,
@@ -376,6 +380,8 @@ async fn publish_while_stopped_preflights_and_commits_without_starting_runtime()
     assert_eq!(body["deployment"]["artifact_id"], 1);
     assert_eq!(body["report"]["applied"], true);
     assert_eq!(body["report"]["rolled_back"], false);
+    assert_eq!(body["inference"]["selected"], "rust_tensor_rt");
+    assert_eq!(body["report"]["backend"], "rust_tensor_rt");
     assert_eq!(
         runtime.snapshot().pipeline.state,
         novasight_runtime::PipelineState::Stopped
@@ -975,8 +981,14 @@ async fn overlapping_urgent_stops_keep_activation_cancelled_until_both_are_ackno
     assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 1);
 
     let start_runtime = runtime.clone();
-    let start = tokio::spawn(async move { start_runtime.start().await });
-    tokio::task::yield_now().await;
+    let start = async move { start_runtime.start().await };
+    tokio::pin!(start);
+    let start_waker = futures_util::task::noop_waker();
+    let mut start_context = std::task::Context::from_waker(&start_waker);
+    assert!(
+        std::future::Future::poll(start.as_mut(), &mut start_context).is_pending(),
+        "start must be queued behind the blocked activation before stop is submitted"
+    );
     let stop_runtime = runtime.clone();
     let stop = tokio::spawn(async move { stop_runtime.stop().await });
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -998,7 +1010,7 @@ async fn overlapping_urgent_stops_keep_activation_cancelled_until_both_are_ackno
         stopped.pipeline.state,
         novasight_runtime::PipelineState::Stopped
     );
-    let start_error = start.await.unwrap().unwrap_err();
+    let start_error = start.await.unwrap_err();
     assert_eq!(
         start_error.kind,
         novasight_runtime::RuntimeErrorKind::InvalidPipelineState

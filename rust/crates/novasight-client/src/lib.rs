@@ -13,10 +13,13 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
+use novasight_core::DeviceReceipt;
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
     ModelProfileConfigureRequest, RuntimeSnapshot,
 };
+pub use novasight_store::license::LicenseStatus;
+pub use novasight_store::model_catalog::{Deployment, ModelArtifact, ModelProject, ModelVersion};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
@@ -24,6 +27,97 @@ use tokio::net::UnixStream;
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModelSwitchResponse {
+    pub deployment: Deployment,
+    pub inference: Value,
+    pub parser_contract: Option<Value>,
+    pub preparation: ModelPreparation,
+    pub report: ModelSwitchReport,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModelPreparation {
+    pub manifest_action: String,
+    pub reason: String,
+    pub input_shape: String,
+    pub classes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModelSwitchReport {
+    pub action: String,
+    pub applied: bool,
+    pub rolled_back: bool,
+    pub message: String,
+    pub runtime_error: String,
+    pub artifact_id: i64,
+    pub previous_artifact_id: Option<i64>,
+    pub artifact_path: String,
+    pub backend: String,
+    pub input_shape: String,
+    pub classes: usize,
+    pub sections: Vec<ModelSwitchSection>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModelSwitchSection {
+    pub section: String,
+    pub impact: String,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExecutorStatus {
+    pub selected: String,
+    pub executors: std::collections::BTreeMap<String, ExecutorAvailability>,
+    pub state: String,
+    pub last_error: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExecutorAvailability {
+    pub available: bool,
+    pub connected: bool,
+    pub connecting: bool,
+    pub monitoring: bool,
+    pub connection_state: String,
+    pub retryable: bool,
+    pub last_error: Option<String>,
+    pub managed_by_runtime: bool,
+    pub move_count: u64,
+    pub last_dx: Option<i32>,
+    pub last_dy: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DiagnosticMoveResponse {
+    pub sent: bool,
+    pub queued: bool,
+    pub steps_sent: u32,
+    pub message: String,
+    pub receipt: DeviceReceipt,
+    pub status: DiagnosticDeviceStatus,
+    pub metadata: DiagnosticMetadata,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DiagnosticDeviceStatus {
+    pub available: bool,
+    pub connected: bool,
+    pub connection_state: String,
+    pub move_count: u64,
+    pub last_dx: i32,
+    pub last_dy: i32,
+    pub managed_by_runtime: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DiagnosticMetadata {
+    pub api_name: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct ControlClient {
@@ -93,6 +187,120 @@ impl ControlClient {
         };
         self.request(Method::PATCH, "/api/v1/config", Some(&update))
             .await
+    }
+
+    pub async fn license_status(&self) -> Result<LicenseStatus, ClientError> {
+        self.request(Method::GET, "/api/license", None::<&()>).await
+    }
+
+    pub async fn activate_license(&self, key: &str) -> Result<LicenseStatus, ClientError> {
+        #[derive(Serialize)]
+        struct ActivateLicenseRequest<'a> {
+            key: &'a str,
+        }
+        self.request(
+            Method::PUT,
+            "/api/license",
+            Some(&ActivateLicenseRequest { key }),
+        )
+        .await
+    }
+
+    pub async fn clear_license(&self) -> Result<LicenseStatus, ClientError> {
+        self.request(Method::DELETE, "/api/license", None::<&()>)
+            .await
+    }
+
+    pub async fn model_projects(&self) -> Result<Vec<ModelProject>, ClientError> {
+        self.request(Method::GET, "/api/models/projects", None::<&()>)
+            .await
+    }
+
+    pub async fn model_versions(&self, project_id: i64) -> Result<Vec<ModelVersion>, ClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/models/projects/{project_id}/versions"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn model_artifacts(
+        &self,
+        version_id: i64,
+    ) -> Result<Vec<ModelArtifact>, ClientError> {
+        self.request(
+            Method::GET,
+            &format!("/api/models/versions/{version_id}/artifacts"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn publish_model(
+        &self,
+        project_id: i64,
+        artifact_id: i64,
+        parser_preset: &str,
+    ) -> Result<ModelSwitchResponse, ClientError> {
+        #[derive(Serialize)]
+        struct PublishModelRequest<'a> {
+            artifact_id: i64,
+            parser_preset: &'a str,
+        }
+        self.request(
+            Method::POST,
+            &format!("/api/models/projects/{project_id}/publish"),
+            Some(&PublishModelRequest {
+                artifact_id,
+                parser_preset,
+            }),
+        )
+        .await
+    }
+
+    pub async fn rollback_model(
+        &self,
+        project_id: i64,
+    ) -> Result<ModelSwitchResponse, ClientError> {
+        self.request(
+            Method::POST,
+            &format!("/api/models/projects/{project_id}/rollback"),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn executor_status(&self) -> Result<ExecutorStatus, ClientError> {
+        self.request(Method::GET, "/api/executors", None::<&()>)
+            .await
+    }
+
+    pub async fn diagnostic_move(
+        &self,
+        dx: i32,
+        dy: i32,
+    ) -> Result<DiagnosticMoveResponse, ClientError> {
+        #[derive(Serialize)]
+        struct DiagnosticMoveRequest {
+            dx: i32,
+            dy: i32,
+            repeat: u32,
+            interval_ms: u64,
+            move_kind: &'static str,
+        }
+        self.request(
+            Method::POST,
+            "/api/executors/kmnet/diagnostic-move",
+            Some(&DiagnosticMoveRequest {
+                dx,
+                dy,
+                repeat: 1,
+                interval_ms: 0,
+                move_kind: "raw",
+            }),
+        )
+        .await
     }
 
     pub async fn inspect_model(&self, artifact_id: i64) -> Result<ModelIngressResult, ClientError> {

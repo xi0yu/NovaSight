@@ -9,7 +9,9 @@ bytes.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+novasight-core = { path = "../novasight-core" }
 novasight-runtime = { path = "../novasight-runtime" }
+novasight-store = { path = "../novasight-store" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

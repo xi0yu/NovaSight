@@ -914,6 +914,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "novasight-api",
+ "novasight-core",
  "novasight-runtime",
  "novasight-store",
  "serde",

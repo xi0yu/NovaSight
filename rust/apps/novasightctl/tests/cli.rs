@@ -1,11 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use novasight_api::{build_control_router, build_control_router_with_services};
+use novasight_api::{
+    build_control_router, build_control_router_with_capabilities,
+    build_control_router_with_control_plane, build_control_router_with_services,
+};
 use novasight_runtime::{
     AppConfig, ConfigService, ConfigUpdate, PipelineState, RuntimeSnapshot, RuntimeSupervisor,
 };
 use novasight_store::config::YamlConfigRepository;
+use novasight_store::license::{FileLicenseRepository, LicensePolicy, LicenseStatus};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_novasightctl")
@@ -51,11 +55,136 @@ fn help_documents_the_real_command_surface() {
         "restart",
         "emergency-stop",
         "config",
+        "license",
         "model",
+        "device",
     ] {
         assert!(stdout.contains(command), "help omitted {command}");
     }
     assert!(!stdout.contains("diagnose"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn license_commands_bootstrap_through_a_key_file_and_the_real_repository() {
+    let socket = SocketPath::new();
+    let license_path = socket.0.with_extension("license.json");
+    let key_path = socket.0.with_extension("license.key");
+    std::fs::write(&key_path, "NOVASIGHT-TEST-MAX-ACCESS-2026\n").unwrap();
+    let repository = FileLicenseRepository::new(&license_path, LicensePolicy::new(true, None));
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_control_plane(
+        runtime.clone(),
+        None,
+        repository,
+        None,
+        false,
+        None,
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let key_path_for_cli = key_path.clone();
+    let activated = tokio::task::spawn_blocking(move || {
+        run_cli_args(
+            &socket_path,
+            &[
+                "license",
+                "activate",
+                "--key-file",
+                key_path_for_cli.to_str().unwrap(),
+            ],
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        activated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&activated.stderr)
+    );
+    let activated: LicenseStatus = serde_json::from_slice(&activated.stdout).unwrap();
+    assert!(activated.configured);
+    assert!(activated.valid);
+    assert!(
+        !std::fs::read_to_string(&license_path)
+            .unwrap()
+            .contains("NOVASIGHT-TEST-MAX-ACCESS-2026")
+    );
+
+    let socket_path = socket.0.clone();
+    let status =
+        tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["license", "status"]))
+            .await
+            .unwrap();
+    let status: LicenseStatus = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(status.valid);
+
+    let socket_path = socket.0.clone();
+    let cleared =
+        tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["license", "clear"]))
+            .await
+            .unwrap();
+    let cleared: LicenseStatus = serde_json::from_slice(&cleared.stdout).unwrap();
+    assert!(!cleared.configured);
+
+    server.abort();
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_file(key_path).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn device_commands_use_the_supervisor_owned_diagnostic_path() {
+    let socket = SocketPath::new();
+    let config_path = socket.0.with_extension("yaml");
+    std::fs::write(&config_path, "revision: 0\nhardware: {}\n").unwrap();
+    let config = ConfigService::new(
+        &config_path,
+        YamlConfigRepository::load(&config_path).unwrap(),
+    );
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_capabilities(runtime.clone(), config, true, None);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let moved = tokio::task::spawn_blocking(move || {
+        run_cli_args(&socket_path, &["device", "move", "5", "-3"])
+    })
+    .await
+    .unwrap();
+    assert!(
+        moved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&moved.stderr)
+    );
+    let moved: serde_json::Value = serde_json::from_slice(&moved.stdout).unwrap();
+    assert_eq!(moved["sent"], true);
+    assert_eq!(moved["receipt"]["delta_x_counts"], 5);
+    assert_eq!(moved["receipt"]["delta_y_counts"], -3);
+
+    let socket_path = socket.0.clone();
+    let status =
+        tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["device", "status"]))
+            .await
+            .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["executors"]["kmnet"]["move_count"], 1);
+    assert_eq!(status["executors"]["kmnet"]["last_dx"], 5);
+
+    server.abort();
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    std::fs::remove_file(config_path).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -93,6 +222,79 @@ async fn model_profile_command_uses_the_daemon_model_contract() {
     let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(body["artifact_id"], 7);
     assert_eq!(body["profile"]["status"], "VALIDATED");
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_publish_command_uses_the_shared_activation_contract() {
+    let socket = SocketPath::new();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let app = axum::Router::new().route(
+        "/api/models/projects/{project_id}/publish",
+        axum::routing::post(
+            |axum::extract::Path(project_id): axum::extract::Path<i64>,
+             axum::Json(request): axum::Json<serde_json::Value>| async move {
+                assert_eq!(project_id, 4);
+                assert_eq!(request["artifact_id"], 9);
+                assert_eq!(request["parser_preset"], "yolov8");
+                axum::Json(serde_json::json!({
+                    "deployment": {
+                        "id": 12,
+                        "project_id": project_id,
+                        "artifact_id": 9,
+                        "previous_artifact_id": 8,
+                        "updated_seq": 2
+                    },
+                    "inference": {"loaded": true},
+                    "parser_contract": null,
+                    "preparation": {
+                        "manifest_action": "reused",
+                        "reason": "validated",
+                        "input_shape": "1x3x640x640",
+                        "classes": ["target"]
+                    },
+                    "report": {
+                        "action": "publish",
+                        "applied": true,
+                        "rolled_back": false,
+                        "message": "activated",
+                        "runtime_error": "",
+                        "artifact_id": 9,
+                        "previous_artifact_id": 8,
+                        "artifact_path": "models/detector/v2/model.engine",
+                        "backend": "deepstream_nvinfer",
+                        "input_shape": "1x3x640x640",
+                        "classes": 1,
+                        "sections": []
+                    }
+                }))
+            },
+        ),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        run_cli_args(
+            &socket_path,
+            &["model", "publish", "4", "9", "--parser-preset", "yolov8"],
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["deployment"]["artifact_id"], 9);
+    assert_eq!(body["report"]["applied"], true);
 
     server.abort();
 }

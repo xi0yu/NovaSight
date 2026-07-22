@@ -238,7 +238,7 @@ struct ModelSwitchReport {
     artifact_id: i64,
     previous_artifact_id: Option<i64>,
     artifact_path: String,
-    backend: &'static str,
+    backend: String,
     input_shape: String,
     classes: usize,
     sections: Vec<ModelSwitchSection>,
@@ -258,7 +258,8 @@ async fn publish_model(
     Json(request): Json<PublishModelRequest>,
 ) -> Result<Json<ModelSwitchResponse>, ControlApiError> {
     super::ensure_config_effective(&state).await?;
-    state
+    let backend = configured_inference_backend(&state).await;
+    let result = state
         .runtime
         .activate_model(ModelActivationRequest::Publish {
             project_id,
@@ -266,9 +267,8 @@ async fn publish_model(
             parser_preset: request.parser_preset,
         })
         .await
-        .map(success_response)
-        .map(Json)
-        .map_err(ControlApiError::ModelActivation)
+        .map_err(ControlApiError::ModelActivation)?;
+    Ok(Json(success_response(result, backend)))
 }
 
 async fn rollback_model(
@@ -276,16 +276,35 @@ async fn rollback_model(
     State(state): State<ControlState>,
 ) -> Result<Json<ModelSwitchResponse>, ControlApiError> {
     super::ensure_config_effective(&state).await?;
-    state
+    let backend = configured_inference_backend(&state).await;
+    let result = state
         .runtime
         .activate_model(ModelActivationRequest::Rollback { project_id })
         .await
-        .map(success_response)
-        .map(Json)
-        .map_err(ControlApiError::ModelActivation)
+        .map_err(ControlApiError::ModelActivation)?;
+    Ok(Json(success_response(result, backend)))
 }
 
-fn success_response(result: ModelActivationResult) -> ModelSwitchResponse {
+async fn configured_inference_backend(state: &ControlState) -> String {
+    let Some(config) = &state.config else {
+        return "unconfigured".to_owned();
+    };
+    config
+        .snapshot()
+        .await
+        .inference
+        .as_ref()
+        .map(|inference| {
+            serde_json::to_value(inference.backend)
+                .expect("inference backend enum must serialize")
+                .as_str()
+                .expect("inference backend enum must serialize as a string")
+                .to_owned()
+        })
+        .unwrap_or_else(|| "unconfigured".to_owned())
+}
+
+fn success_response(result: ModelActivationResult, backend: String) -> ModelSwitchResponse {
     let loaded = result.restarted;
     let changed = result.changed;
     let input_shape = result
@@ -312,14 +331,14 @@ fn success_response(result: ModelActivationResult) -> ModelSwitchResponse {
         )
     } else {
         format!(
-            "模型已切换并通过 Rust DeepStream 启动前校验：{}",
+            "模型已切换并通过 Rust 推理启动前校验：{}",
             result.candidate.artifact_path.display()
         )
     };
     ModelSwitchResponse {
         deployment: result.deployment.clone(),
         inference: serde_json::json!({
-            "selected": "deepstream_nvinfer",
+            "selected": backend,
             "available": true,
             "loaded": loaded,
             "configured": true,
@@ -328,7 +347,7 @@ fn success_response(result: ModelActivationResult) -> ModelSwitchResponse {
             } else if loaded {
                 "active deployment produced a valid DetectionBatch"
             } else {
-                "active deployment passed Rust DeepStream preflight"
+                "active deployment passed Rust perception preflight"
             },
         }),
         parser_contract,
@@ -351,7 +370,7 @@ fn success_response(result: ModelActivationResult) -> ModelSwitchResponse {
             artifact_id: result.deployment.artifact_id,
             previous_artifact_id: result.deployment.previous_artifact_id,
             artifact_path,
-            backend: "deepstream_nvinfer",
+            backend,
             input_shape,
             classes: classes.len(),
             sections: vec![
@@ -374,7 +393,7 @@ fn success_response(result: ModelActivationResult) -> ModelSwitchResponse {
                     } else if loaded {
                         "新 epoch 已通过首个 DetectionBatch 就绪门"
                     } else {
-                        "候选模型已通过 Rust DeepStream 启动前校验"
+                        "候选模型已通过 Rust 推理启动前校验"
                     },
                 },
             ],
