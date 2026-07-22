@@ -4,8 +4,9 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use novasight_api::build_control_router_with_capabilities;
+use novasight_api::build_control_router_with_control_plane;
 use novasight_runtime::{ApplicationError, ConfigService, LoadedApplication, RuntimeDependencies};
+use novasight_store::license::{FileLicenseRepository, LicensePolicy};
 use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
@@ -44,6 +45,8 @@ pub(super) async fn run_daemon(
     let port = loaded.config().server.port;
     let control_socket = loaded.config().server.control_socket.clone();
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
+    let license_repository =
+        FileLicenseRepository::new(loaded.config().paths.license.clone(), license_policy(mode)?);
     let listener = TcpListener::bind((host.as_str(), port))
         .await
         .map_err(|source| DaemonRunError::Bind {
@@ -59,11 +62,12 @@ pub(super) async fn run_daemon(
     let mut signals = ShutdownSignals::register()?;
     let application = loaded.start(dependencies);
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
-    let router = build_control_router_with_capabilities(
+    let router = build_control_router_with_control_plane(
         application.runtime(),
-        Some(config_service),
+        config_service,
+        license_repository,
         mode.hardware_output_enabled(),
-        Some(server_shutdown_rx.clone()),
+        server_shutdown_rx.clone(),
     );
     let http_server = axum::serve(listener, router.clone())
         .with_graceful_shutdown(async move {
@@ -128,6 +132,17 @@ pub(super) async fn run_daemon(
             cleanup: Box::new(cleanup),
         }),
     }
+}
+
+fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
+    let allow_test_key = mode == DaemonMode::DryRun;
+    let public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if mode.hardware_output_enabled() && public_key.is_none() {
+        return Err(DaemonRunError::LicensePublicKeyMissing);
+    }
+    Ok(LicensePolicy::new(allow_test_key, public_key))
 }
 
 enum FirstExit {
@@ -343,6 +358,8 @@ impl ShutdownSignals {
 
 #[derive(Debug, Error)]
 pub(super) enum DaemonRunError {
+    #[error("production mode requires NOVASIGHT_LICENSE_PUBLIC_KEY")]
+    LicensePublicKeyMissing,
     #[error("failed to bind HTTP server at {host}:{port}: {source}")]
     Bind {
         host: String,
@@ -440,6 +457,7 @@ pub(super) enum DaemonRunError {
 impl DaemonRunError {
     pub(super) const fn code(&self) -> &'static str {
         match self {
+            Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",
             Self::Signal(_) => "SHUTDOWN_SIGNAL_FAILED",

@@ -154,7 +154,10 @@ class LicenseStore:
             raise ValueError("license key must be at least 8 characters")
         payload = _payload_for_key(stripped)
         activated_at = _now()
-        expires_at = activated_at + _duration_seconds(
+        # Duration is bound to the signed issuance timestamp. Starting it at
+        # activation would let the same offline token reset its lifetime after
+        # deleting the local file and activating again.
+        expires_at = payload.created_at + _duration_seconds(
             payload.duration_value,
             payload.duration_unit,
         )

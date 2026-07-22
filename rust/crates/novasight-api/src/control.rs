@@ -2,11 +2,14 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
         Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket},
     },
-    http::StatusCode,
+    http::{Method, Request, StatusCode},
+    middleware,
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -16,6 +19,7 @@ use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
     RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
 };
+use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -56,8 +60,39 @@ pub fn build_control_router_with_capabilities(
     hardware_output_enabled: bool,
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
-    Router::new()
+    build_control_router_with_control_plane(
+        runtime,
+        config_service,
+        None,
+        hardware_output_enabled,
+        shutdown,
+    )
+}
+
+pub fn build_control_router_with_control_plane(
+    runtime: RuntimeHandle,
+    config_service: impl Into<Option<ConfigService>>,
+    license: impl Into<Option<FileLicenseRepository>>,
+    hardware_output_enabled: bool,
+    shutdown: impl Into<Option<watch::Receiver<bool>>>,
+) -> Router {
+    let state = ControlState {
+        runtime,
+        config: config_service.into(),
+        license: license.into(),
+        hardware_output_enabled,
+        shutdown: shutdown.into(),
+    };
+    let license_gate_enabled = state.license.is_some();
+    let router = Router::new()
         .route("/healthz", get(health))
+        .route(
+            "/api/license",
+            get(license_status)
+                .put(activate_license)
+                .delete(clear_license),
+        )
+        .route("/api/license/activate", post(activate_license))
         .route("/api/runtime/state", get(legacy_status))
         .route("/api/runtime/start", post(legacy_start))
         .route("/api/runtime/stop", post(legacy_stop))
@@ -83,21 +118,166 @@ pub fn build_control_router_with_capabilities(
             "/api/executors/kmnet/diagnostic-move",
             post(diagnostic_device_move),
         )
-        .with_state(ControlState {
-            runtime,
-            config: config_service.into(),
-            hardware_output_enabled,
-            shutdown: shutdown.into(),
-        })
-        .layer(super::app::studio_cors_layer())
+        .with_state(state.clone());
+    let router = if license_gate_enabled {
+        router.layer(middleware::from_fn_with_state(state, require_license))
+    } else {
+        router
+    };
+    router.layer(super::app::studio_cors_layer())
 }
 
 #[derive(Clone)]
 struct ControlState {
     runtime: RuntimeHandle,
     config: Option<ConfigService>,
+    license: Option<FileLicenseRepository>,
     hardware_output_enabled: bool,
     shutdown: Option<watch::Receiver<bool>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LicenseActivationRequest {
+    key: String,
+}
+
+async fn license_status(
+    State(state): State<ControlState>,
+) -> Result<Json<LicenseStatus>, ControlApiError> {
+    let license = state
+        .license
+        .as_ref()
+        .ok_or(ControlApiError::LicenseUnavailable)?;
+    Ok(Json(
+        run_license_operation(license.clone(), |repository| repository.status()).await?,
+    ))
+}
+
+async fn activate_license(
+    State(state): State<ControlState>,
+    Json(request): Json<LicenseActivationRequest>,
+) -> Result<Json<LicenseStatus>, ControlApiError> {
+    let license = state
+        .license
+        .as_ref()
+        .ok_or(ControlApiError::LicenseUnavailable)?;
+    Ok(Json(
+        run_license_operation(license.clone(), move |repository| {
+            repository.activate(&request.key)
+        })
+        .await?,
+    ))
+}
+
+async fn clear_license(
+    State(state): State<ControlState>,
+) -> Result<Json<LicenseStatus>, ControlApiError> {
+    let license = state
+        .license
+        .as_ref()
+        .ok_or(ControlApiError::LicenseUnavailable)?;
+    Ok(Json(
+        run_license_operation(license.clone(), |repository| repository.clear()).await?,
+    ))
+}
+
+async fn run_license_operation(
+    repository: FileLicenseRepository,
+    operation: impl FnOnce(FileLicenseRepository) -> Result<LicenseStatus, LicenseError>
+    + Send
+    + 'static,
+) -> Result<LicenseStatus, ControlApiError> {
+    tokio::task::spawn_blocking(move || operation(repository))
+        .await
+        .map_err(ControlApiError::LicenseTask)?
+        .map_err(ControlApiError::License)
+}
+
+async fn require_license(
+    State(state): State<ControlState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let method = request.method();
+    if is_license_open_path(method, path) {
+        return next.run(request).await;
+    }
+    let Some(license) = state.license.as_ref() else {
+        return next.run(request).await;
+    };
+    let status =
+        match run_license_operation(license.clone(), |repository| repository.status()).await {
+            Ok(status) => status,
+            Err(error) => return error.into_response(),
+        };
+    if !status.configured || !status.valid {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "detail": "license required",
+                "license": status,
+            })),
+        )
+            .into_response();
+    }
+    if let Some(feature) = required_license_feature(method, path)
+        && !status.features.iter().any(|candidate| candidate == feature)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "code": "LICENSE_FEATURE_REQUIRED",
+                "detail": format!("license feature {feature} is required"),
+                "required_feature": feature,
+                "license": status,
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+fn is_license_open_path(method: &Method, path: &str) -> bool {
+    *method == Method::OPTIONS
+        || path == "/healthz"
+        || (path == "/api/license" && matches!(*method, Method::GET | Method::PUT))
+        || (path == "/api/license/activate" && *method == Method::POST)
+        || path == "/ws/status"
+        || path == "/api/config/schema"
+        || (*method == Method::POST
+            && matches!(
+                path,
+                "/api/runtime/stop" | "/api/v1/runtime/stop" | "/api/v1/runtime/emergency-stop"
+            ))
+        || !path.starts_with("/api/")
+}
+
+fn required_license_feature(method: &Method, path: &str) -> Option<&'static str> {
+    if path == "/api/config" || path == "/api/v1/config" {
+        return Some(if *method == Method::GET {
+            "config_read"
+        } else {
+            "config_write"
+        });
+    }
+    if path.starts_with("/api/runtime/")
+        || path.starts_with("/api/v1/runtime/")
+        || path == "/api/v1/status"
+        || path == "/api/v1/events"
+    {
+        return Some("runtime");
+    }
+    if path.starts_with("/api/executors") {
+        return Some("hardware_control");
+    }
+    if path.starts_with("/api/models") {
+        return Some("models");
+    }
+    if path.starts_with("/api/capture") {
+        return Some("capture");
+    }
+    None
 }
 
 async fn health(State(state): State<ControlState>) -> Json<CompatibilityHealth> {
@@ -329,7 +509,25 @@ async fn legacy_events(
     Query(query): Query<CompatibilityStatusQuery>,
     State(state): State<ControlState>,
 ) -> Response {
+    if let Some(license) = state.license.as_ref() {
+        match run_license_operation(license.clone(), |repository| repository.status()).await {
+            Ok(status) if status.configured && status.valid => {}
+            Ok(_) => {
+                return websocket.on_upgrade(close_unlicensed_websocket);
+            }
+            Err(error) => return error.into_response(),
+        }
+    }
     websocket.on_upgrade(move |socket| stream_legacy_events(socket, state, query))
+}
+
+async fn close_unlicensed_websocket(mut socket: WebSocket) {
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code: 4401,
+            reason: "license required".into(),
+        })))
+        .await;
 }
 
 async fn stream_legacy_events(
@@ -493,6 +691,15 @@ enum ControlApiError {
     DeviceNotConfigured,
     DeviceLifecycleManaged,
     UnsupportedDiagnostic(String),
+    License(LicenseError),
+    LicenseTask(tokio::task::JoinError),
+    LicenseUnavailable,
+}
+
+impl From<LicenseError> for ControlApiError {
+    fn from(error: LicenseError) -> Self {
+        Self::License(error)
+    }
 }
 
 impl From<RuntimeError> for ControlApiError {
@@ -511,6 +718,7 @@ impl From<ConfigServiceError> for ControlApiError {
 struct ControlErrorBody {
     code: &'static str,
     message: String,
+    detail: String,
 }
 
 impl IntoResponse for ControlApiError {
@@ -578,8 +786,32 @@ impl IntoResponse for ControlApiError {
                 "DEVICE_DIAGNOSTIC_UNSUPPORTED",
                 message,
             ),
+            Self::License(error) => {
+                let status = if error.is_client_error() {
+                    StatusCode::BAD_REQUEST
+                } else if error.is_configuration_error() {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, error.code(), error.to_string())
+            }
+            Self::LicenseTask(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "LICENSE_TASK_FAILED",
+                format!("license storage task failed: {error}"),
+            ),
+            Self::LicenseUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "LICENSE_SERVICE_UNAVAILABLE",
+                "license service is not configured".to_owned(),
+            ),
         };
-        let body = ControlErrorBody { code, message };
+        let body = ControlErrorBody {
+            code,
+            detail: message.clone(),
+            message,
+        };
         (status, Json(body)).into_response()
     }
 }

@@ -42,8 +42,9 @@ fn temp_config() -> (TempDirectory, PathBuf) {
     fs::write(
         &path,
         format!(
-            "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: {}\n",
-            socket.display()
+            "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: {}\npaths:\n  license: {}\n",
+            socket.display(),
+            directory.join("license.json").display()
         ),
     )
     .expect("write config");
@@ -159,6 +160,20 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
         ready.unwrap_or_else(|| panic!("daemon exited before readiness: {}", log.join(" | ")));
     assert!(control_socket.exists(), "control socket was not created");
 
+    let (status, license) = http_request(address, "GET", "/api/license");
+    assert_eq!(status, 200);
+    assert!(license.contains("\"configured\":false"));
+    let (status, blocked) = http_request(address, "GET", "/api/v1/status");
+    assert_eq!(status, 401);
+    assert!(blocked.contains("license required"));
+    let (status, activated) = http_json_request(
+        address,
+        "POST",
+        "/api/license/activate",
+        r#"{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}"#,
+    );
+    assert_eq!(status, 200);
+    assert!(activated.contains("\"valid\":true"));
     let (status, initial) = http_request(address, "GET", "/api/v1/status");
     assert_eq!(status, 200);
     assert!(initial.contains("\"state\":\"stopped\""));
@@ -185,16 +200,30 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
 }
 
 fn http_request(address: SocketAddr, method: &str, path: &str) -> (u16, String) {
+    http_request_with_body(address, method, path, "", None)
+}
+
+fn http_json_request(address: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {
+    http_request_with_body(address, method, path, body, Some("application/json"))
+}
+
+fn http_request_with_body(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &str,
+    content_type: Option<&str>,
+) -> (u16, String) {
     let mut stream =
         TcpStream::connect_timeout(&address, Duration::from_secs(5)).expect("connect HTTP server");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set read timeout");
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    )
-    .expect("write HTTP request");
+    let content_type = content_type
+        .map(|value| format!("Content-Type: {value}\r\n"))
+        .unwrap_or_default();
+    write!(stream, "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+        .expect("write HTTP request");
     let mut response = String::new();
     stream
         .read_to_string(&mut response)

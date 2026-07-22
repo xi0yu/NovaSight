@@ -98,10 +98,17 @@ curl -X POST http://127.0.0.1:5174/api/license/activate \
 ```
 
 Operational APIs are blocked until a valid license is activated. The built-in
-test key grants `test_max` permissions for Jetson bring-up. Production licenses
-use signed `NS1.<payload>.<signature>` tokens with created time, activation time,
-duration, tier, and feature permissions; plaintext keys are never returned by the
-API.
+test key grants `test_max` permissions only in `--dry-run`. Hardware production
+mode requires an RSA public key in `NOVASIGHT_LICENSE_PUBLIC_KEY`; there is no
+environment override that enables the test key in production. Production
+licenses use signed `NS1.<payload>.<signature>` tokens with created time,
+duration, tier, and feature permissions. Rust re-verifies signed claims after
+restart, enforces feature permissions server-side, and never returns the
+activation token. The 0600 license file stores its hash plus the signed
+payload/signature proof required for offline restart verification; it does not
+store a plaintext `key` field. Offline license duration starts at the signed
+creation time, so deleting and reactivating the same token cannot reset its
+expiry.
 
 ## Jetson `deepstream_nvinfer` Mainline
 
