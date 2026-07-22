@@ -318,7 +318,7 @@ def test_studio_auto_configures_and_switches_pending_engine() -> None:
     assert "模型产物不可切换" not in panel
 
 
-def test_studio_uses_truthful_runtime_metrics_and_explicit_auto_save_copy() -> None:
+def test_studio_uses_truthful_runtime_metrics_and_atomic_dialog_save_copy() -> None:
     source = STUDIO_CONSOLE.read_text(encoding="utf-8")
     app = APP.read_text(encoding="utf-8")
     license_view = LICENSE_VIEW.read_text(encoding="utf-8")
@@ -351,12 +351,13 @@ def test_studio_uses_truthful_runtime_metrics_and_explicit_auto_save_copy() -> N
     assert "确认结果前不会显示卡密输入" in license_view
     assert "useState(true)" in app
 
-    assert "正在自动保存并同步运行配置" in advanced_dialog
-    assert "已自动保存" in advanced_dialog
-    assert '>关闭</button>' in advanced_dialog
-    assert "已自动保存 · 修改后立即生效" in source
-    assert "已自动保存 · 当前配置" in source
-    assert "pendingConfigWriteCount" in source
+    assert "正在保存本次修改…" in advanced_dialog
+    assert "有未保存修改 · 关闭时将一次同步到运行配置。" in advanced_dialog
+    assert '{dirty ? "关闭并保存" : "关闭"}' in advanced_dialog
+    assert "正在自动保存并同步运行配置" not in advanced_dialog
+    assert "有未保存修改 · 关闭时将一次同步到运行配置。" in source
+    assert "有未保存修改 · 关闭时将整份类别配置一次保存。" in source
+    assert "pendingConfigWritesRef" in source
     assert "dialogSavingRef" in source
     assert "保存失败 · ${dialogSaveError}" in source
     assert 'inert: dialogSaving ? "" : undefined' in source
@@ -398,9 +399,11 @@ def test_kmnet_panel_has_dedicated_control_test_page() -> None:
     assert "const kmnetConnecting = kmnetStatus.connecting === true;" in source
     assert "kmnetStatus.connection_state" in source
     assert "kmnetStatus.retryable" in source
-    assert '? "重新连接"' in source
+    assert '? "重新连接"' not in source
     assert 'aria-pressed={kmnetConnected}' in source
-    assert "主链可继续运行，输出暂不可用" in source
+    assert "由 Rust Runtime 托管" in source
+    assert "设备生命周期由 novasightd 所有" in source
+    assert "修改配置并保存后，重启主链以创建新的设备会话。" in source
     assert "enabled={kmnetAutoConnect}" in source
     assert 'updateConfigField("hardware", "auto_connect", enabled)' in source
 
