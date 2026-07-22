@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::{AppError, DetectionBatch, DeviceCommand, DeviceReceipt, MonotonicNanos};
 
@@ -11,6 +12,18 @@ pub trait Clock: Send + Sync {
 #[async_trait]
 pub trait PerceptionSource: Send {
     async fn next_batch(&mut self) -> Result<Option<DetectionBatch>, AppError>;
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PointerButtons {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl PointerButtons {
+    pub const fn trigger_active(self) -> bool {
+        self.left || self.right
+    }
 }
 
 /// Device transition seam; successful sends return a typed receipt for the same command.
@@ -27,6 +40,13 @@ pub trait PointerDevice: Send + Sync {
     /// `None` means this device has no hardware trigger source.
     fn trigger_active(&self) -> Result<Option<bool>, AppError> {
         Ok(None)
+    }
+
+    /// Read both hardware buttons when the adapter exposes them. Existing
+    /// adapters that only expose one combined trigger retain safe compatibility.
+    fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
+        self.trigger_active()
+            .map(|active| active.map(|left| PointerButtons { left, right: false }))
     }
 
     /// Release the epoch-owned device session after every worker has stopped.

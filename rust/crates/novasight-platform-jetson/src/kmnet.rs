@@ -14,7 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerDevice};
+use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerButtons, PointerDevice};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -129,7 +129,7 @@ impl KmNetHostClient {
         Ok(DeviceReceipt::accepted(attempt, command))
     }
 
-    fn trigger_inner(&self) -> Result<bool, KmNetError> {
+    fn buttons_inner(&self) -> Result<PointerButtons, KmNetError> {
         let mut state = self.state();
         let result = self
             .ensure_session(&mut state)?
@@ -146,12 +146,12 @@ impl KmNetHostClient {
                 let right = value.get("right").and_then(Value::as_bool).ok_or_else(|| {
                     KmNetError::Protocol("buttons result is missing boolean right".to_owned())
                 })?;
-                Ok(left || right)
+                Ok(PointerButtons { left, right })
             });
         match result {
-            Ok(active) => {
+            Ok(buttons) => {
                 state.last_failure = None;
-                Ok(active)
+                Ok(buttons)
             }
             Err(error) => {
                 if let Some(mut session) = state.session.take() {
@@ -219,7 +219,16 @@ impl PointerDevice for KmNetHostClient {
     }
 
     fn trigger_active(&self) -> Result<Option<bool>, AppError> {
-        self.trigger_inner()
+        self.buttons_inner()
+            .map(|buttons| Some(buttons.trigger_active()))
+            .map_err(|error| AppError::PointerDevice {
+                code: error.code(),
+                message: error.to_string(),
+            })
+    }
+
+    fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
+        self.buttons_inner()
             .map(Some)
             .map_err(|error| AppError::PointerDevice {
                 code: error.code(),

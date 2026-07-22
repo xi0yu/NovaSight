@@ -152,6 +152,7 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/capture/select", post(select_capture))
         .route("/api/capture/stop", post(stop_capture))
         .route("/api/executors", get(executors))
+        .route("/api/executors/kmnet/buttons", get(device_buttons))
         .merge(models::routes())
         .route(
             "/api/executors/kmnet/connect",
@@ -558,6 +559,24 @@ struct DiagnosticDeviceStatus {
 #[derive(Debug, Serialize)]
 struct DiagnosticMetadata {
     api_name: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct DeviceButtonsResponse {
+    available: bool,
+    left: bool,
+    right: bool,
+    managed_by_runtime: bool,
+}
+
+async fn device_buttons(State(state): State<ControlState>) -> Json<DeviceButtonsResponse> {
+    let metrics = state.runtime.snapshot().pipeline_metrics;
+    Json(DeviceButtonsResponse {
+        available: metrics.buttons_available,
+        left: metrics.button_left,
+        right: metrics.button_right,
+        managed_by_runtime: true,
+    })
 }
 
 async fn diagnostic_device_move(

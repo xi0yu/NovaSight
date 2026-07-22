@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use novasight_client::{
-    CatalogEngineRegistration, ClientError, ControlClient, DiagnosticMoveResponse, ExecutorStatus,
-    LicenseStatus, ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
+    CatalogEngineRegistration, ClientError, ControlClient, DeviceButtons, DiagnosticMoveResponse,
+    ExecutorStatus, LicenseStatus, ModelArtifact, ModelProject, ModelSwitchResponse, ModelVersion,
 };
 use novasight_core::CaptureSelectionPreference;
 use novasight_runtime::{
@@ -136,6 +136,8 @@ enum ModelCommand {
 enum DeviceCommand {
     /// Print the supervisor-owned executor state.
     Status,
+    /// Print the latest daemon-owned left/right hardware button state.
+    Buttons,
     /// Send exactly one immediate raw move through the daemon-owned adapter.
     Move {
         #[arg(allow_hyphen_values = true)]
@@ -236,6 +238,7 @@ enum CommandOutput {
     ModelArtifacts(Vec<ModelArtifact>),
     ModelSwitch(ModelSwitchResponse),
     Executor(ExecutorStatus),
+    DeviceButtons(DeviceButtons),
     DiagnosticMove(DiagnosticMoveResponse),
     CaptureCapabilities(novasight_core::CaptureCapabilities),
     Preview(PreviewSnapshot),
@@ -401,6 +404,12 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Device {
             command: DeviceCommand::Status,
         } => client.executor_status().await.map(CommandOutput::Executor),
+        Command::Device {
+            command: DeviceCommand::Buttons,
+        } => client
+            .device_buttons()
+            .await
+            .map(CommandOutput::DeviceButtons),
         Command::Device {
             command: DeviceCommand::Move { dx, dy },
         } => client

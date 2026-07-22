@@ -97,6 +97,9 @@ pub struct PipelineMetrics {
     pub superseded_commands: u64,
     pub stale_commands: u64,
     pub device_receipts: u64,
+    pub buttons_available: bool,
+    pub button_left: bool,
+    pub button_right: bool,
     pub live_workers: u64,
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
@@ -149,6 +152,9 @@ struct SharedState {
     status: AtomicU8,
     output_gate: AtomicBool,
     trigger_active: AtomicBool,
+    buttons_available: AtomicBool,
+    button_left: AtomicBool,
+    button_right: AtomicBool,
     external_stop: Arc<AtomicUsize>,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
@@ -161,6 +167,9 @@ impl SharedState {
             status: AtomicU8::new(STATUS_STARTING),
             output_gate: AtomicBool::new(false),
             trigger_active: AtomicBool::new(false),
+            buttons_available: AtomicBool::new(false),
+            button_left: AtomicBool::new(false),
+            button_right: AtomicBool::new(false),
             external_stop,
             device_lane: Mutex::new(()),
             event_tx,
@@ -176,6 +185,9 @@ impl SharedState {
         let message = message.into();
         self.output_gate.store(false, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
+        self.buttons_available.store(false, Ordering::Release);
+        self.button_left.store(false, Ordering::Release);
+        self.button_right.store(false, Ordering::Release);
         *self
             .metrics
             .last_fault
@@ -194,6 +206,9 @@ impl SharedState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.output_gate.store(false, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
+        self.buttons_available.store(false, Ordering::Release);
+        self.button_left.store(false, Ordering::Release);
+        self.button_right.store(false, Ordering::Release);
     }
 }
 
@@ -235,6 +250,11 @@ impl PipelineIngress {
     pub fn request_output_stop(&self) {
         self.shared.output_gate.store(false, Ordering::Release);
         self.shared.trigger_active.store(false, Ordering::Release);
+        self.shared
+            .buttons_available
+            .store(false, Ordering::Release);
+        self.shared.button_left.store(false, Ordering::Release);
+        self.shared.button_right.store(false, Ordering::Release);
     }
 
     /// Synchronously retire every future device side effect for this epoch.
@@ -248,6 +268,9 @@ impl PipelineIngress {
     /// the device lane rechecks this value immediately before sending.
     pub fn set_trigger_active(&self, active: bool) {
         self.shared.trigger_active.store(active, Ordering::Release);
+        self.shared.buttons_available.store(true, Ordering::Release);
+        self.shared.button_left.store(active, Ordering::Release);
+        self.shared.button_right.store(false, Ordering::Release);
         if !active {
             // Returning from trigger release is a synchronization point:
             // no device send from the previous active interval remains.
@@ -630,9 +653,13 @@ fn spawn_trigger_worker(
                     thread::yield_now();
                 }
                 while shared.status() == PipelineStatus::Running {
-                    match device.trigger_active() {
-                        Ok(Some(active)) => {
+                    match device.buttons() {
+                        Ok(Some(buttons)) => {
+                            let active = buttons.trigger_active();
                             shared.trigger_active.store(active, Ordering::Release);
+                            shared.buttons_available.store(true, Ordering::Release);
+                            shared.button_left.store(buttons.left, Ordering::Release);
+                            shared.button_right.store(buttons.right, Ordering::Release);
                             if !active {
                                 drop(
                                     shared
@@ -643,11 +670,15 @@ fn spawn_trigger_worker(
                             }
                         }
                         Ok(None) => {
+                            shared.buttons_available.store(false, Ordering::Release);
                             shared.fault("pointer device does not expose a hardware trigger");
                             break;
                         }
                         Err(error) => {
                             shared.trigger_active.store(false, Ordering::Release);
+                            shared.buttons_available.store(false, Ordering::Release);
+                            shared.button_left.store(false, Ordering::Release);
+                            shared.button_right.store(false, Ordering::Release);
                             if !is_recoverable_pointer_error(&error) {
                                 shared.fault(format!("pointer trigger failed: {error}"));
                                 break;
@@ -975,6 +1006,9 @@ fn snapshot_metrics(
         superseded_commands: shared.metrics.superseded_commands.load(Ordering::Relaxed),
         stale_commands: shared.metrics.stale_commands.load(Ordering::Relaxed),
         device_receipts: shared.metrics.device_receipts.load(Ordering::Relaxed),
+        buttons_available: shared.buttons_available.load(Ordering::Acquire),
+        button_left: shared.button_left.load(Ordering::Acquire),
+        button_right: shared.button_right.load(Ordering::Acquire),
         live_workers: shared.metrics.live_workers.load(Ordering::Acquire),
         last_generation: *shared
             .metrics

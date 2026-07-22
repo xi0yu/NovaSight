@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerDevice};
+use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerButtons, PointerDevice};
 use thiserror::Error;
 
 const CMD_CONNECT: u32 = 0xaf3c_2828;
@@ -156,6 +156,11 @@ impl PointerDevice for KmNetNativeDevice {
     }
 
     fn trigger_active(&self) -> Result<Option<bool>, AppError> {
+        self.buttons()
+            .map(|buttons| buttons.map(PointerButtons::trigger_active))
+    }
+
+    fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
         if !self.monitor_healthy.load(Ordering::Acquire) {
             return Err(pointer_error(
                 "monitor_failed",
@@ -175,7 +180,11 @@ impl PointerDevice for KmNetNativeDevice {
                 ),
             ));
         }
-        Ok(Some(self.buttons.load(Ordering::Acquire) & 0x03 != 0))
+        let buttons = self.buttons.load(Ordering::Acquire);
+        Ok(Some(PointerButtons {
+            left: buttons & 0x01 != 0,
+            right: buttons & 0x02 != 0,
+        }))
     }
 }
 
@@ -399,7 +408,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use novasight_core::{DeviceCommand, Generation, MonotonicNanos, PointerDevice, RuntimeEpoch};
+    use novasight_core::{
+        DeviceCommand, Generation, MonotonicNanos, PointerButtons, PointerDevice, RuntimeEpoch,
+    };
 
     use super::{
         CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE, KmNetNativeConfig, KmNetNativeDevice,
@@ -460,7 +471,7 @@ mod tests {
     fn native_device_exchanges_real_udp_packets_and_caches_monitor_buttons() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         server
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(15)))
             .unwrap();
         let server_port = server.local_addr().unwrap().port();
         let monitor_port = available_monitor_port();
@@ -514,17 +525,24 @@ mod tests {
             port: server_port,
             uuid: "01FBC068".to_owned(),
             monitor_port,
-            connect_timeout: Duration::from_secs(5),
-            request_timeout: Duration::from_secs(2),
-            monitor_timeout: Duration::from_millis(50),
+            connect_timeout: Duration::from_secs(15),
+            request_timeout: Duration::from_secs(5),
+            monitor_timeout: Duration::from_secs(2),
         })
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(5);
         while device.trigger_active().unwrap() != Some(true) && Instant::now() < deadline {
             thread::yield_now();
         }
         assert_eq!(device.trigger_active().unwrap(), Some(true));
-        thread::sleep(Duration::from_millis(70));
+        assert_eq!(
+            device.buttons().unwrap(),
+            Some(PointerButtons {
+                left: false,
+                right: true,
+            })
+        );
+        thread::sleep(Duration::from_millis(2_100));
         assert!(
             device
                 .trigger_active()

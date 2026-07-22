@@ -166,3 +166,27 @@ for line in sys.stdin:
         .expect_err("failed protocol session enters cooldown");
     assert!(retry.to_string().contains("cooldown"));
 }
+
+#[test]
+fn preserves_individual_button_state_from_the_helper() {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    op = request['op']
+    if op == 'hello':
+        result = {'protocol': 1}
+    elif op == 'buttons':
+        result = {'available': True, 'left': False, 'right': True}
+    else:
+        result = {}
+    print(json.dumps({'id': request['id'], 'ok': True, 'result': result, 'error': None}), flush=True)
+"#;
+    let client = KmNetHostClient::connect(config(script)).expect("connect helper");
+
+    let buttons = client.buttons().expect("read buttons").expect("available");
+
+    assert!(!buttons.left);
+    assert!(buttons.right);
+    assert!(buttons.trigger_active());
+}

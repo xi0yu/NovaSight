@@ -95,6 +95,14 @@ pub struct ExecutorAvailability {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DeviceButtons {
+    pub available: bool,
+    pub left: bool,
+    pub right: bool,
+    pub managed_by_runtime: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DiagnosticMoveResponse {
     pub sent: bool,
     pub queued: bool,
@@ -319,6 +327,11 @@ impl ControlClient {
             }),
         )
         .await
+    }
+
+    pub async fn device_buttons(&self) -> Result<DeviceButtons, ClientError> {
+        self.request(Method::GET, "/api/executors/kmnet/buttons", None::<&()>)
+            .await
     }
 
     pub async fn capture_state(&self) -> Result<Value, ClientError> {

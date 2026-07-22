@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use novasight_core::{
     AppError, Clock, Detection, DetectionBatch, DeviceCommand, DeviceReceipt, FrameStamp,
-    MonotonicNanos, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
+    MonotonicNanos, PointerButtons, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
     PipelineConfig, PipelineError, PipelineEvent, PipelineRuntime, PipelineStatus,
@@ -163,6 +163,24 @@ struct RecoveringTriggerDevice {
     recording: RecordingPointerDevice,
 }
 
+#[derive(Debug, Default)]
+struct RightButtonDevice {
+    recording: RecordingPointerDevice,
+}
+
+impl PointerDevice for RightButtonDevice {
+    fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        self.recording.send(command)
+    }
+
+    fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
+        Ok(Some(PointerButtons {
+            left: false,
+            right: true,
+        }))
+    }
+}
+
 impl PointerDevice for RecoveringTriggerDevice {
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
         self.recording.send(command)
@@ -280,6 +298,36 @@ fn hardware_trigger_poller_owns_production_output_gate() {
     assert_eq!(device.recording.receipts().len(), 1);
     assert_eq!(device.recording.receipts()[0].generation, 2);
     runtime.shutdown().expect("workers join");
+}
+
+#[test]
+fn hardware_button_state_is_preserved_in_pipeline_metrics() {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device: Arc<dyn PointerDevice> = Arc::new(RightButtonDevice::default());
+    let (mut runtime, _ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            trigger_poll_interval_ms: Some(1),
+            ..PipelineConfig::default()
+        },
+        clock,
+        device,
+    )
+    .expect("pipeline starts");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !runtime.metrics().button_right && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    let metrics = runtime.metrics();
+    assert!(metrics.buttons_available);
+    assert!(!metrics.button_left);
+    assert!(metrics.button_right);
+
+    runtime.shutdown().expect("workers join");
+    let metrics = runtime.metrics();
+    assert!(!metrics.buttons_available);
+    assert!(!metrics.button_left);
+    assert!(!metrics.button_right);
 }
 
 #[test]

@@ -311,6 +311,25 @@ async fn device_commands_use_the_supervisor_owned_diagnostic_path() {
     assert_eq!(status["executors"]["kmnet"]["move_count"], 1);
     assert_eq!(status["executors"]["kmnet"]["last_dx"], 5);
 
+    runtime.start().await.unwrap();
+    runtime.set_trigger_active(true).await.unwrap();
+    let socket_path = socket.0.clone();
+    let buttons =
+        tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["device", "buttons"]))
+            .await
+            .unwrap();
+    assert!(
+        buttons.status.success(),
+        "{}",
+        String::from_utf8_lossy(&buttons.stderr)
+    );
+    let buttons: serde_json::Value = serde_json::from_slice(&buttons.stdout).unwrap();
+    assert_eq!(buttons["available"], true);
+    assert_eq!(buttons["left"], true);
+    assert_eq!(buttons["right"], false);
+    assert_eq!(buttons["managed_by_runtime"], true);
+    runtime.stop().await.unwrap();
+
     server.abort();
     runtime.shutdown_daemon().await.unwrap();
     supervisor.join().await.unwrap();

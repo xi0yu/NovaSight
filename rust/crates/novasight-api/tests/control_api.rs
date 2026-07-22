@@ -91,6 +91,32 @@ async fn shutdown(supervisor: RuntimeSupervisor, runtime: &RuntimeHandle) {
 }
 
 #[tokio::test]
+async fn kmnet_buttons_projects_daemon_owned_trigger_cache() {
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    runtime.start().await.expect("start pipeline");
+    runtime
+        .set_trigger_active(true)
+        .await
+        .expect("set daemon trigger cache");
+
+    let (status, body) = request(&runtime, "GET", "/api/executors/kmnet/buttons").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["available"], true);
+    assert_eq!(body["left"], true);
+    assert_eq!(body["right"], false);
+    assert_eq!(body["managed_by_runtime"], true);
+
+    runtime.stop().await.expect("stop pipeline");
+    let (status, body) = request(&runtime, "GET", "/api/executors/kmnet/buttons").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["available"], false);
+    assert_eq!(body["left"], false);
+    assert_eq!(body["right"], false);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claims() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");

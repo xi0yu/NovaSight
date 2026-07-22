@@ -865,6 +865,10 @@ async fn handle_command(
                 Ok(ingress) => set_trigger_state(ingress, requested).await,
                 Err(error) => Err(error),
             };
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
             let _ = reply.send(result);
         }
         RuntimeCommand::SetPreviewActive {

@@ -24,5 +24,5 @@ pub use perception::{
     Detection, DetectionBatch, FrameStamp, Generation, MAX_DETECTIONS, MonotonicNanos,
     ReplayPerceptionSource, RuntimeEpoch,
 };
-pub use ports::{Clock, PerceptionSource, PointerDevice};
+pub use ports::{Clock, PerceptionSource, PointerButtons, PointerDevice};
 pub use targeting::{NearestCenterTargeting, SelectedTarget};
