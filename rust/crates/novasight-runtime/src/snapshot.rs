@@ -1,12 +1,10 @@
-//! Runtime snapshot. Distinct DTOs per the proposal: the
-//! RuntimeSnapshot bundles daemon, pipeline, and subsystem state
-//! without KPI fields; FPS, latency, and dropped-frame counters
-//! live in a separate MetricsSnapshot (added in a later commit).
+//! Immutable daemon-owned runtime snapshot, including the counters needed to
+//! explain freshness loss and output suppression on a deployed system.
 
 use serde::{Deserialize, Serialize};
 
 use novasight_core::RuntimeEpoch;
-use novasight_pipeline::PerceptionMetrics;
+use novasight_pipeline::{PerceptionMetrics, PipelineMetrics};
 use novasight_store::model_catalog::ActiveModelDeployment;
 
 use crate::protocol::RuntimeErrorSummary;
@@ -59,6 +57,8 @@ pub struct RuntimeSnapshot {
     pub subsystems: SubsystemSnapshots,
     #[serde(default)]
     pub perception_metrics: PerceptionMetrics,
+    #[serde(default)]
+    pub pipeline_metrics: PipelineMetrics,
     #[serde(default)]
     pub device_metrics: DeviceMetrics,
     #[serde(default)]

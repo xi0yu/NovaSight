@@ -25,11 +25,12 @@ const STATUS_STOPPED: u8 = 3;
 const STATUS_FAULTED: u8 = 4;
 const STATUS_STANDBY: u8 = 5;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PipelineStatus {
     Starting,
     Running,
     Stopping,
+    #[default]
     Stopped,
     Faulted,
     Standby,
@@ -84,7 +85,7 @@ impl Default for PipelineConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PipelineMetrics {
     pub status: PipelineStatus,
     pub received_batches: u64,

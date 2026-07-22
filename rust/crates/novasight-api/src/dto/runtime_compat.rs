@@ -234,7 +234,11 @@ impl CompatibilityRuntimeState {
             .saturating_add(metrics.unavailable_snapshot_slots)
             .saturating_add(metrics.extraction_rejections)
             .saturating_add(metrics.admission_rejections)
-            .saturating_add(metrics.ingress_rejections);
+            .saturating_add(metrics.ingress_rejections)
+            .saturating_add(snapshot.pipeline_metrics.input_overwrites)
+            .saturating_add(snapshot.pipeline_metrics.command_overwrites)
+            .saturating_add(snapshot.pipeline_metrics.superseded_commands)
+            .saturating_add(snapshot.pipeline_metrics.stale_commands);
         let fatal_error = snapshot
             .pipeline
             .last_error

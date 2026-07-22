@@ -11,7 +11,7 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineConfig, PipelineIngress,
+    PipelineConfig, PipelineIngress, PipelineStatus,
 };
 use novasight_runtime::{PipelineState, RuntimeDependencies, RuntimeErrorKind, RuntimeSupervisor};
 
@@ -214,6 +214,16 @@ async fn supervisor_start_stop_owns_the_real_pipeline_lifecycle() {
 
     let stopped = handle.stop().await.expect("stop joins pipeline");
     assert_eq!(stopped.pipeline.state, PipelineState::Stopped);
+    assert_eq!(stopped.pipeline_metrics.status, PipelineStatus::Stopped);
+    assert_eq!(stopped.pipeline_metrics.received_batches, 1);
+    assert_eq!(stopped.pipeline_metrics.device_receipts, 1);
+    assert_eq!(
+        stopped
+            .pipeline_metrics
+            .last_generation
+            .map(|generation| generation.0),
+        Some(1)
+    );
     let error = handle
         .submit_detection_batch(batch(epoch, 2))
         .expect_err("stopped pipeline rejects ingress");

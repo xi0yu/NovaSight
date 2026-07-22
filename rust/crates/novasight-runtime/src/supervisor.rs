@@ -16,8 +16,8 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     ModelCandidate, PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineConfig, PipelineEvent, PipelineIngress, PipelineRuntime, PipelineStatus, PreviewHub,
-    PreviewSnapshot, PreviewSubscription,
+    PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics, PipelineRuntime,
+    PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription,
 };
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -189,6 +189,7 @@ struct SupervisorState {
     pipeline_error: Option<RuntimeErrorSummary>,
     subsystems: SubsystemSnapshots,
     perception_metrics: PerceptionMetrics,
+    pipeline_metrics: PipelineMetrics,
     device_metrics: DeviceMetrics,
     model: ModelSnapshot,
     started_at_unix_ms: u64,
@@ -206,6 +207,7 @@ impl Default for SupervisorState {
             pipeline_error: None,
             subsystems: SubsystemSnapshots::default(),
             perception_metrics: PerceptionMetrics::default(),
+            pipeline_metrics: PipelineMetrics::default(),
             device_metrics: DeviceMetrics::default(),
             model: ModelSnapshot::default(),
             started_at_unix_ms: now_ms(),
@@ -229,6 +231,7 @@ impl SupervisorState {
             },
             subsystems: self.subsystems.clone(),
             perception_metrics: self.perception_metrics,
+            pipeline_metrics: self.pipeline_metrics.clone(),
             device_metrics: self.device_metrics,
             model: self.model.clone(),
             updated_at_ms,
@@ -258,6 +261,10 @@ impl SupervisorState {
         self.pipeline_started_at_ms = None;
         self.pipeline_error = None;
         self.perception_metrics = PerceptionMetrics::default();
+        self.pipeline_metrics = PipelineMetrics {
+            status: PipelineStatus::Starting,
+            ..PipelineMetrics::default()
+        };
         self.subsystems.control.state = SubsystemState::Starting;
         self.subsystems.device.state = SubsystemState::Starting;
         Ok(Some(epoch))
@@ -279,6 +286,7 @@ impl SupervisorState {
             return false;
         }
         self.pipeline = PipelineState::Stopping;
+        self.pipeline_metrics.status = PipelineStatus::Stopping;
         self.subsystems.capture.state = SubsystemState::Stopping;
         self.subsystems.inference.state = SubsystemState::Stopping;
         self.subsystems.control.state = SubsystemState::Stopping;
@@ -288,6 +296,7 @@ impl SupervisorState {
 
     fn finish_stop(&mut self) {
         self.pipeline = PipelineState::Stopped;
+        self.pipeline_metrics.status = PipelineStatus::Stopped;
         self.pipeline_started_at_ms = None;
         self.subsystems.capture.state = SubsystemState::Stopped;
         self.subsystems.inference.state = SubsystemState::Stopped;
@@ -298,6 +307,7 @@ impl SupervisorState {
     fn finish_fault(&mut self, message: impl Into<String>) {
         let error = RuntimeErrorSummary::new("pipeline_faulted", message);
         self.pipeline = PipelineState::Faulted;
+        self.pipeline_metrics.status = PipelineStatus::Faulted;
         self.pipeline_started_at_ms = None;
         self.pipeline_error = Some(error.clone());
         if self.subsystems.capture.state != SubsystemState::Stopped {
@@ -703,13 +713,20 @@ async fn supervisor_loop(
                 ).await;
             }
             _ = metrics_tick.tick(), if active.is_some() => {
-                let metrics = active
+                let perception_metrics = active
                     .as_ref()
                     .and_then(|pipeline| pipeline.perception.as_ref())
                     .map(|perception| perception.metrics())
                     .unwrap_or_default();
-                if metrics != state.perception_metrics {
-                    state.perception_metrics = metrics;
+                let pipeline_metrics = active
+                    .as_ref()
+                    .map(|pipeline| pipeline.runtime.metrics())
+                    .unwrap_or_default();
+                if perception_metrics != state.perception_metrics
+                    || pipeline_metrics != state.pipeline_metrics
+                {
+                    state.perception_metrics = perception_metrics;
+                    state.pipeline_metrics = pipeline_metrics;
                     publish(&snapshot_tx, &state, now_ms());
                 }
             }
@@ -816,6 +833,7 @@ async fn handle_command(
         }
         RuntimeCommand::EmergencyStop { urgent, reply } => {
             ingress_tx.send_replace(None);
+            refresh_pipeline_metrics(state, active);
             if state.begin_stop() {
                 publish(snapshot_tx, state, now_ms());
             }
@@ -878,6 +896,7 @@ async fn handle_command(
         RuntimeCommand::ShutdownDaemon { urgent, reply } => {
             state.daemon = DaemonState::ShuttingDown;
             ingress_tx.send_replace(None);
+            refresh_pipeline_metrics(state, active);
             if state.begin_stop() {
                 publish(snapshot_tx, state, now_ms());
             }
@@ -1716,6 +1735,10 @@ async fn start_state(
         perception_event_bridge,
         perception_event_cancel,
     });
+    state.pipeline_metrics = active
+        .as_ref()
+        .map(|active| active.runtime.metrics())
+        .unwrap_or_default();
     state.finish_start(now_ms(), has_perception);
     Ok(publish(snapshot_tx, state, now_ms()))
 }
@@ -1726,6 +1749,7 @@ async fn stop_state(
     state: &mut SupervisorState,
     active: &mut Option<ActivePipeline>,
 ) -> Result<RuntimeSnapshot, RuntimeError> {
+    refresh_pipeline_metrics(state, active);
     if state.begin_stop() {
         publish(snapshot_tx, state, now_ms());
         ingress_tx.send_replace(None);
@@ -1760,6 +1784,7 @@ async fn handle_pipeline_notice(
     match notice.event {
         PipelineEvent::Faulted { message } => {
             ingress_tx.send_replace(None);
+            refresh_pipeline_metrics(state, active);
             let cleanup = shutdown_active(active).await.err();
             let message = match cleanup {
                 Some(error) => format!("{message}; pipeline cleanup failed: {error}"),
@@ -1833,6 +1858,12 @@ async fn shutdown_active(active: &mut Option<ActivePipeline>) -> Result<(), Runt
     }
 }
 
+fn refresh_pipeline_metrics(state: &mut SupervisorState, active: &Option<ActivePipeline>) {
+    if let Some(active) = active {
+        state.pipeline_metrics = active.runtime.metrics();
+    }
+}
+
 fn cleanup_error<T, E>(label: &str, cleanup: Result<Result<T, E>, tokio::task::JoinError>) -> String
 where
     E: std::fmt::Display,
@@ -1873,6 +1904,7 @@ async fn shutdown_for_exit(
 ) {
     state.daemon = DaemonState::ShuttingDown;
     ingress_tx.send_replace(None);
+    refresh_pipeline_metrics(state, active);
     if state.begin_stop() {
         publish(snapshot_tx, state, now_ms());
     }
