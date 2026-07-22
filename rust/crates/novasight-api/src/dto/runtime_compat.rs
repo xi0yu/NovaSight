@@ -166,6 +166,7 @@ pub(crate) struct VisionState {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionControlState {
     pub global_state: &'static str,
+    pub output_enabled: bool,
     pub aim_x: Option<f64>,
     pub aim_y: Option<f64>,
     pub dx: Option<i32>,
@@ -460,6 +461,7 @@ impl CompatibilityRuntimeState {
                 crosshair: crosshair.cloned(),
                 control: VisionControlState {
                     global_state: if control_sample { "CALCULATED" } else { "IDLE" },
+                    output_enabled: snapshot.pipeline_metrics.output_gate_open,
                     aim_x: control_sample
                         .then_some(dual_phase.aim_x + dual_phase.predicted_offset_x),
                     aim_y: control_sample

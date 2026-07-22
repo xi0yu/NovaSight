@@ -135,6 +135,11 @@ impl ConfigSchemaResponse {
                     ],
                 ),
                 section(
+                    "control",
+                    "控制输出",
+                    vec![hot_boolean("control.output_enabled", "允许设备位移输出")],
+                ),
+                section(
                     "control.humanized_motion",
                     "拟人轨迹",
                     vec![
@@ -853,6 +858,13 @@ fn boolean(path: &'static str, label: &'static str) -> ConfigFieldSchema {
     field(path, label, "bool")
 }
 
+fn hot_boolean(path: &'static str, label: &'static str) -> ConfigFieldSchema {
+    ConfigFieldSchema {
+        restart_required: false,
+        ..boolean(path, label)
+    }
+}
+
 fn select(
     path: &'static str,
     label: &'static str,
@@ -946,13 +958,14 @@ mod tests {
                         && field["max"] == 10.0
                 })
         }));
-        assert!(value["sections"].as_array().unwrap().iter().all(|section| {
-            section["fields"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|field| field["restart_required"] == true)
-        }));
+        let output_gate = value["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|section| section["fields"].as_array().unwrap())
+            .find(|field| field["path"] == "control.output_enabled")
+            .unwrap();
+        assert_eq!(output_gate["restart_required"], false);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "crosshair"
                 && section["fields"]

@@ -97,6 +97,7 @@ pub struct RuntimeDependencies {
     crosshair: Option<CrosshairHub>,
     motion_profiles: Option<MotionProfileHub>,
     motion_repository: Option<MotionProfileRepository>,
+    output_enabled: bool,
     urgent_stop: Arc<UrgentStopSignal>,
 }
 
@@ -131,6 +132,7 @@ impl RuntimeDependencies {
             crosshair: None,
             motion_profiles: None,
             motion_repository: None,
+            output_enabled: true,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
     }
@@ -174,6 +176,11 @@ impl RuntimeDependencies {
 
     pub fn with_recoil(mut self, config: RecoilConfig) -> Self {
         self.pipeline.recoil = config;
+        self
+    }
+
+    pub fn with_output_enabled(mut self, enabled: bool) -> Self {
+        self.output_enabled = enabled;
         self
     }
 
@@ -226,6 +233,7 @@ struct SupervisorState {
     pipeline_metrics: PipelineMetrics,
     device_metrics: DeviceMetrics,
     model: ModelSnapshot,
+    output_enabled: bool,
     started_at_unix_ms: u64,
 }
 
@@ -244,6 +252,7 @@ impl Default for SupervisorState {
             pipeline_metrics: PipelineMetrics::default(),
             device_metrics: DeviceMetrics::default(),
             model: ModelSnapshot::default(),
+            output_enabled: true,
             started_at_unix_ms: now_ms(),
         }
     }
@@ -425,6 +434,7 @@ impl RuntimeSupervisor {
         let state = SupervisorState {
             daemon: DaemonState::Ready,
             model,
+            output_enabled: dependencies.output_enabled,
             ..SupervisorState::default()
         };
         let initial_snapshot = Arc::new(state.snapshot(now_ms()));
@@ -548,6 +558,11 @@ impl RuntimeHandle {
         reply_rx
             .await
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub async fn set_output_enabled(&self, enabled: bool) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::SetOutputEnabled { enabled, reply })
+            .await
     }
 
     pub fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
@@ -1019,6 +1034,19 @@ async fn handle_command(
                 publish(snapshot_tx, state, now_ms());
             }
             let _ = reply.send(result);
+        }
+        RuntimeCommand::SetOutputEnabled { enabled, reply } => {
+            state.output_enabled = enabled;
+            if let Some(active) = active.as_ref() {
+                if enabled {
+                    active.runtime.open_output_gate();
+                } else {
+                    active.runtime.pause_output_gate();
+                }
+            }
+            refresh_pipeline_metrics(state, active);
+            let snapshot = publish(snapshot_tx, state, now_ms());
+            let _ = reply.send(Ok(snapshot));
         }
         RuntimeCommand::SetPreviewActive {
             active: requested,
@@ -1890,7 +1918,9 @@ async fn start_state(
             let _ = event_tx.blocking_send(PipelineNotice { epoch, event });
         }
     });
-    pipeline.open_output_gate();
+    if state.output_enabled {
+        pipeline.open_output_gate();
+    }
     ingress_tx.send_replace(Some(ingress.clone()));
     *active = Some(ActivePipeline {
         epoch,

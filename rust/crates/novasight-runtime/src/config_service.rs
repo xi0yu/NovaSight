@@ -146,9 +146,18 @@ impl ConfigService {
         update: ConfigFieldUpdate,
     ) -> Result<ConfigUpdate, ConfigServiceError> {
         let _update_guard = self.inner.update_lock.lock().await;
+        let hot_output_gate = update.section == "control" && update.key == "output_enabled";
+        let current_revision = self.inner.current.read().await.revision;
+        let effective_revision = self.effective_revision();
+        if hot_output_gate && current_revision != effective_revision {
+            return Err(ConfigServiceError::RestartRequired {
+                effective_revision,
+                desired_revision: current_revision,
+            });
+        }
         let expected_revision = match update.expected_revision {
             Some(revision) => revision,
-            None => self.inner.current.read().await.revision,
+            None => current_revision,
         };
         let yaml_value =
             serde_yaml::to_value(update.value).map_err(ConfigServiceError::SerializeFieldValue)?;
@@ -161,12 +170,21 @@ impl ConfigService {
         .await
         .map_err(ConfigServiceError::SaveTask)??;
         *self.inner.current.write().await = config.clone();
+        if hot_output_gate {
+            self.inner
+                .effective_revision
+                .store(config.revision, Ordering::Release);
+        }
         Ok(ConfigUpdate {
             config,
-            restart_required: true,
-            applied: false,
+            restart_required: !hot_output_gate,
+            applied: hot_output_gate,
             rolled_back: false,
-            message: "configuration persisted; restart novasightd to apply it".to_owned(),
+            message: if hot_output_gate {
+                "output gate persisted and applied to the live runtime".to_owned()
+            } else {
+                "configuration persisted; restart novasightd to apply it".to_owned()
+            },
         })
     }
 

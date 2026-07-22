@@ -151,6 +151,25 @@ async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claim
     assert_eq!(persisted["future"]["keep"].as_bool(), Some(true));
 
     let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "CONFIG_RESTART_REQUIRED");
+
+    let response = app
         .oneshot(
             Request::builder()
                 .uri("/api/v1/config")
@@ -163,6 +182,59 @@ async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claim
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["revision"], 3);
     assert_eq!(body["server"]["port"], 6000);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\n").unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    runtime.start().await.unwrap();
+    assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
+    let app = build_control_router_with_services(runtime.clone(), Some(config), None);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["applied"], true);
+    assert_eq!(body["restart_required"], false);
+    assert_eq!(body["config"]["control"]["output_enabled"], false);
+    assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
 
     shutdown(supervisor, &runtime).await;
 }

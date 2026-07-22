@@ -1028,7 +1028,15 @@ async fn update_config(
         .config
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
-    Ok(Json(service.update_field(update).await?))
+    let hot_output_gate = update.section == "control" && update.key == "output_enabled";
+    let result = service.update_field(update).await?;
+    if hot_output_gate {
+        state
+            .runtime
+            .set_output_enabled(result.config.control.output_enabled)
+            .await?;
+    }
+    Ok(Json(result))
 }
 
 async fn update_legacy_config(
@@ -1043,13 +1051,21 @@ async fn update_legacy_config(
     let is_field_update = payload.get("section").is_some()
         || payload.get("key").is_some()
         || payload.get("value").is_some();
-    let update = if is_field_update {
-        let update =
+    let (update, hot_output_gate) = if is_field_update {
+        let field_update: ConfigFieldUpdate =
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
-        service.update_field(update).await?
+        let hot_output_gate =
+            field_update.section == "control" && field_update.key == "output_enabled";
+        (service.update_field(field_update).await?, hot_output_gate)
     } else {
-        service.replace(payload).await?
+        (service.replace(payload).await?, false)
     };
+    if hot_output_gate {
+        state
+            .runtime
+            .set_output_enabled(update.config.control.output_enabled)
+            .await?;
+    }
     Ok(Json(update))
 }
 

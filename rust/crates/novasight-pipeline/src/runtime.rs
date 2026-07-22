@@ -126,6 +126,7 @@ pub struct PipelineMetrics {
     pub buttons_available: bool,
     pub button_left: bool,
     pub button_right: bool,
+    pub output_gate_open: bool,
     pub live_workers: u64,
     pub last_generation: Option<Generation>,
     pub last_fault: Option<String>,
@@ -185,6 +186,7 @@ struct AtomicMetrics {
 struct SharedState {
     status: AtomicU8,
     output_gate: AtomicBool,
+    output_gate_min_generation: AtomicU64,
     trigger_active: AtomicBool,
     buttons_available: AtomicBool,
     button_left: AtomicBool,
@@ -201,6 +203,7 @@ impl SharedState {
         Self {
             status: AtomicU8::new(STATUS_STARTING),
             output_gate: AtomicBool::new(false),
+            output_gate_min_generation: AtomicU64::new(0),
             trigger_active: AtomicBool::new(false),
             buttons_available: AtomicBool::new(false),
             button_left: AtomicBool::new(false),
@@ -668,6 +671,17 @@ impl PipelineRuntime {
         if self.shared.status() == PipelineStatus::Running
             && self.shared.external_stop.load(Ordering::Acquire) == 0
         {
+            let next_generation = self
+                .shared
+                .metrics
+                .last_generation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .map_or(0, |generation| generation.0.saturating_add(1));
+            self.shared
+                .output_gate_min_generation
+                .store(next_generation, Ordering::Release);
+            let _ = self.command_slot.try_take();
             self.shared.output_gate.store(true, Ordering::Release);
         }
     }
@@ -677,6 +691,20 @@ impl PipelineRuntime {
     /// so reverse-order cleanup cannot leak one last command.
     pub fn close_output_gate(&self) {
         self.shared.close_output_gate();
+        let _ = self.command_slot.try_take();
+    }
+
+    /// Pause device delivery while keeping trigger observation and all
+    /// upstream calculation lanes alive. Reopening requires a newer source
+    /// generation, so a command calculated during the pause cannot leak.
+    pub fn pause_output_gate(&self) {
+        let _lane = self
+            .shared
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.shared.output_gate.store(false, Ordering::Release);
+        let _ = self.command_slot.try_take();
     }
 
     /// Transfer the single lifecycle event stream to the supervisor.
@@ -1115,6 +1143,11 @@ fn spawn_device_worker(
                             }
                         }
                     };
+                    if command.generation.0
+                        < shared.output_gate_min_generation.load(Ordering::Acquire)
+                    {
+                        continue;
+                    }
                     if command.epoch != config.epoch {
                         shared.fault(format!(
                             "device lane rejected epoch {}, expected {}",
@@ -1225,6 +1258,7 @@ fn snapshot_metrics(
         buttons_available: shared.buttons_available.load(Ordering::Acquire),
         button_left: shared.button_left.load(Ordering::Acquire),
         button_right: shared.button_right.load(Ordering::Acquire),
+        output_gate_open: shared.output_gate.load(Ordering::Acquire),
         live_workers: shared.metrics.live_workers.load(Ordering::Acquire),
         last_generation: *shared
             .metrics

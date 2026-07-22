@@ -64,6 +64,7 @@ pipeline:
   max_command_age_ms: 55
   output_interval_ms: 4
 control:
+  output_enabled: true
   recoil:
     enabled: false
     base_rate_counts_s: 0.0

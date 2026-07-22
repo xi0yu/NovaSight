@@ -143,14 +143,27 @@ impl AppConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RustControlConfig {
+    #[serde(default = "default_true")]
+    pub output_enabled: bool,
     #[serde(default)]
     pub humanized_motion: HumanizedMotionConfig,
     #[serde(default)]
     pub recoil: RecoilConfig,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
+}
+
+impl Default for RustControlConfig {
+    fn default() -> Self {
+        Self {
+            output_enabled: true,
+            humanized_motion: HumanizedMotionConfig::default(),
+            recoil: RecoilConfig::default(),
+            legacy: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2089,5 +2102,16 @@ mod tests {
         config.control.recoil.max_rate_counts_s = 599.0;
         let error = config.validate_configured_adapters().unwrap_err();
         assert_eq!(error.field, "control.recoil.max_rate_counts_s");
+    }
+
+    #[test]
+    fn output_gate_is_typed_and_defaults_open_for_backward_compatibility() {
+        let defaulted: AppConfig = serde_yaml::from_str("{}\n").unwrap();
+        assert!(defaulted.control.output_enabled);
+
+        let paused: AppConfig =
+            serde_yaml::from_str("control:\n  output_enabled: false\n").unwrap();
+        assert!(!paused.control.output_enabled);
+        assert!(!paused.control.legacy.contains_key("output_enabled"));
     }
 }

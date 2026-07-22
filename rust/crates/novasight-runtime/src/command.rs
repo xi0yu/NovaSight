@@ -51,6 +51,10 @@ pub enum RuntimeCommand {
         active: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
+    SetOutputEnabled {
+        enabled: bool,
+        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+    },
     SetPreviewActive {
         active: bool,
         reply: oneshot::Sender<Result<PreviewSnapshot, RuntimeError>>,

@@ -266,6 +266,7 @@ pub async fn entry() -> ExitCode {
 
     let dependencies = dependencies
         .with_model_jobs(model_jobs)
+        .with_output_enabled(loaded.config().control.output_enabled)
         .with_recoil(RecoilConfig {
             enabled: loaded.config().control.recoil.enabled,
             base_rate_counts_s: loaded.config().control.recoil.base_rate_counts_s,

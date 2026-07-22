@@ -261,8 +261,13 @@ remain available as compatibility and rollback routes.
 The production router exposes the persisted Rust configuration contract at
 `GET /api/config/schema` and the supervisor-owned capture projection at
 `GET /api/capture/state`; neither endpoint is backed by the replay-only
-compatibility shim. Every schema field is marked restart-required because the
-Rust daemon persists revisioned configuration but does not claim hot apply.
+compatibility shim. Schema fields are restart-required unless the Rust daemon
+has an explicit hot-apply owner. `control.output_enabled` is the first such
+field: that safety gate is persisted and applied by
+one typed supervisor command without disconnecting the device or stopping
+capture, inference, targeting, or control calculation. Pausing drains the
+latest command, and reopening accepts only a newer source generation, so a
+command calculated during the pause cannot leak afterward.
 
 `GET /api/runtime/state`, `GET /api/v1/status`, `/ws/status`, and
 `novasightctl status` all read the same immutable runtime snapshot. The
@@ -324,6 +329,12 @@ arbiter: two downward demands never stack, while upward tracking can still
 cancel overshoot. The same immutable runtime snapshot publishes recoil state,
 gate, rate, emitted counts, residual, observation age, and source generation to
 the Studio.
+
+The same snapshot carries the complete Rust dual-phase decision used by the
+device lane: observed and predicted error, robust velocity window, confidence,
+prediction caps, full correction counts, shaped floating-point demand, integer
+command, and quantizer residual. Studio and CLI diagnostics therefore inspect
+the actual daemon decision rather than recomputing display-only values.
 
 ### Legacy CPU-bridge diagnostics
 

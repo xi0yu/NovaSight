@@ -371,6 +371,57 @@ fn external_stop_signal_blocks_device_output_even_after_gate_open() {
 }
 
 #[test]
+fn paused_output_keeps_control_hot_and_reopen_requires_a_new_generation() {
+    let epoch = RuntimeEpoch(34);
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+    ingress.submit(batch(epoch, 1)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(device.receipts().len(), 1);
+
+    runtime.pause_output_gate();
+    assert!(!runtime.metrics().output_gate_open);
+    assert!(
+        ingress.trigger_active(),
+        "pausing output must not stop control calculation"
+    );
+    ingress.submit(batch(epoch, 2)).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(device.receipts().len(), 1);
+
+    runtime.open_output_gate();
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        device.receipts().len(),
+        1,
+        "a command calculated while paused must not leak after resume"
+    );
+    ingress.submit(batch(epoch, 3)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().len() == 1 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[1].generation, 3);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
 fn transient_trigger_failure_recovers_without_restarting_the_pipeline() {
     let epoch = RuntimeEpoch(32);
     let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));

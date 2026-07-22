@@ -3,8 +3,8 @@
 //! channel.
 
 use novasight_runtime::{
-    DaemonSnapshot, DaemonState, PipelineState, RuntimeEpoch, RuntimeHandle, RuntimeSupervisor,
-    SubsystemSnapshot, SubsystemState,
+    DaemonSnapshot, DaemonState, PipelineState, RuntimeDependencies, RuntimeEpoch, RuntimeHandle,
+    RuntimeSupervisor, SubsystemSnapshot, SubsystemState,
 };
 
 async fn shutdown(supervisor: RuntimeSupervisor, handle: &RuntimeHandle) {
@@ -58,6 +58,23 @@ async fn restart_allocates_a_new_runtime_epoch() {
     assert_eq!(after.pipeline.state, PipelineState::Running);
     assert_eq!(after.pipeline.epoch, Some(RuntimeEpoch(2)));
 
+    shutdown(supervisor, &handle).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn output_gate_hot_update_survives_runtime_restart() {
+    let (supervisor, handle) =
+        RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(false));
+    let started = handle.start().await.unwrap();
+    assert!(!started.pipeline_metrics.output_gate_open);
+
+    let enabled = handle.set_output_enabled(true).await.unwrap();
+    assert!(enabled.pipeline_metrics.output_gate_open);
+    let restarted = handle.restart().await.unwrap();
+    assert!(restarted.pipeline_metrics.output_gate_open);
+
+    let disabled = handle.set_output_enabled(false).await.unwrap();
+    assert!(!disabled.pipeline_metrics.output_gate_open);
     shutdown(supervisor, &handle).await;
 }
 
