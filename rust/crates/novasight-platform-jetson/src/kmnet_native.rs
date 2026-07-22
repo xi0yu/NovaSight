@@ -574,6 +574,17 @@ mod tests {
         panic!("no free UDP port in the kmNet monitor range");
     }
 
+    fn send_monitor_report(monitor_port: u16) {
+        let monitor = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut report = [0_u8; 20];
+        report[0] = 1;
+        report[1] = 0x02;
+        report[8] = 2;
+        monitor
+            .send_to(&report, (Ipv4Addr::LOCALHOST, monitor_port))
+            .unwrap();
+    }
+
     #[test]
     fn uuid_is_exactly_the_vendor_four_byte_identifier() {
         assert_eq!(parse_uuid("01FBC068").unwrap(), 0x01fb_c068);
@@ -662,21 +673,29 @@ mod tests {
         let responder = thread::spawn(move || {
             let mut packet = [0_u8; 1024];
             let mut ordinary_randoms = Vec::new();
+            let commands = [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE];
+            let mut expected_sequence = 0_usize;
             ready_tx.send(()).unwrap();
-            for (expected_sequence, expected_command) in [CMD_CONNECT, CMD_MONITOR, CMD_MOUSE_MOVE]
-                .into_iter()
-                .enumerate()
-            {
+            while expected_sequence < commands.len() {
                 let (received, peer) = server.recv_from(&mut packet).unwrap();
                 assert!(received >= 16);
+                let actual_sequence =
+                    u32::from_le_bytes(packet[8..12].try_into().unwrap()) as usize;
+                let actual_command = u32::from_le_bytes(packet[12..16].try_into().unwrap());
+                if actual_sequence < expected_sequence {
+                    assert_eq!(commands[actual_sequence], actual_command);
+                    server.send_to(&packet[..received], peer).unwrap();
+                    if actual_command == CMD_MONITOR {
+                        send_monitor_report(monitor_port);
+                    }
+                    continue;
+                }
+                let expected_command = commands[expected_sequence];
                 assert_eq!(
-                    u32::from_le_bytes(packet[8..12].try_into().unwrap()),
-                    u32::try_from(expected_sequence).unwrap()
+                    actual_sequence, expected_sequence,
+                    "setup retries must retain the previous sequence"
                 );
-                assert_eq!(
-                    u32::from_le_bytes(packet[12..16].try_into().unwrap()),
-                    expected_command
-                );
+                assert_eq!(actual_command, expected_command);
                 if expected_command == CMD_MONITOR {
                     let encoded_port = u32::from_le_bytes(packet[4..8].try_into().unwrap());
                     assert_eq!(encoded_port, 0xaa55_0000 | u32::from(monitor_port));
@@ -686,20 +705,14 @@ mod tests {
                 }
                 server.send_to(&packet[..received], peer).unwrap();
                 if expected_command == CMD_MONITOR {
-                    let monitor = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-                    let mut report = [0_u8; 20];
-                    report[0] = 1;
-                    report[1] = 0x02;
-                    report[8] = 2;
-                    monitor
-                        .send_to(&report, (Ipv4Addr::LOCALHOST, monitor_port))
-                        .unwrap();
+                    send_monitor_report(monitor_port);
                 }
                 if expected_command == CMD_MOUSE_MOVE {
                     assert_eq!(received, 72);
                     assert_eq!(i32::from_le_bytes(packet[20..24].try_into().unwrap()), 12);
                     assert_eq!(i32::from_le_bytes(packet[24..28].try_into().unwrap()), -7);
                 }
+                expected_sequence += 1;
             }
             assert_eq!(ordinary_randoms.len(), 2);
             assert!(ordinary_randoms.iter().all(|value| *value != 0));
