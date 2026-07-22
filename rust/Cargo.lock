@@ -831,6 +831,8 @@ dependencies = [
  "novasight-core",
  "novasight-deepstream-bridge",
  "novasight-pipeline",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

@@ -467,6 +467,8 @@ pub enum InferenceInputSource {
 pub struct DeviceConfig {
     #[serde(default)]
     pub auto_connect: bool,
+    #[serde(default)]
+    pub backend: DeviceBackend,
     #[serde(default = "default_kmnet_host")]
     pub host: String,
     #[serde(default = "default_kmnet_port")]
@@ -475,6 +477,14 @@ pub struct DeviceConfig {
     pub uuid: String,
     #[serde(default = "default_kmnet_monitor_port")]
     pub monitor_port: u16,
+    #[serde(default = "default_kmnet_helper_module")]
+    pub helper_module: String,
+    #[serde(default = "default_kmnet_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_kmnet_send_timeout_ms")]
+    pub send_timeout_ms: u64,
+    #[serde(default = "default_kmnet_reconnect_cooldown_ms")]
+    pub reconnect_cooldown_ms: u64,
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
@@ -485,10 +495,15 @@ impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
             auto_connect: false,
+            backend: DeviceBackend::default(),
             host: default_kmnet_host(),
             port: default_kmnet_port(),
             uuid: default_kmnet_uuid(),
             monitor_port: default_kmnet_monitor_port(),
+            helper_module: default_kmnet_helper_module(),
+            connect_timeout_ms: default_kmnet_connect_timeout_ms(),
+            send_timeout_ms: default_kmnet_send_timeout_ms(),
+            reconnect_cooldown_ms: default_kmnet_reconnect_cooldown_ms(),
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
         }
@@ -515,8 +530,35 @@ impl DeviceConfig {
                 "port and monitor_port must be non-zero when auto_connect is enabled",
             ));
         }
+        if self.auto_connect
+            && self.backend == DeviceBackend::PythonHost
+            && self.helper_module.trim().is_empty()
+        {
+            return Err(ConfigValidationError::new(
+                "hardware.helper_module",
+                "must not be empty",
+            ));
+        }
+        if self.auto_connect
+            && (self.connect_timeout_ms == 0
+                || self.send_timeout_ms == 0
+                || self.reconnect_cooldown_ms == 0)
+        {
+            return Err(ConfigValidationError::new(
+                "hardware.send_timeout_ms",
+                "connect, send, and reconnect cooldown durations must be non-zero",
+            ));
+        }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceBackend {
+    #[default]
+    NativeUdp,
+    PythonHost,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -708,4 +750,20 @@ fn default_kmnet_uuid() -> String {
 
 const fn default_kmnet_monitor_port() -> u16 {
     5001
+}
+
+fn default_kmnet_helper_module() -> String {
+    "novasight.executors.kmnet_host".to_owned()
+}
+
+const fn default_kmnet_connect_timeout_ms() -> u64 {
+    3_000
+}
+
+const fn default_kmnet_send_timeout_ms() -> u64 {
+    25
+}
+
+const fn default_kmnet_reconnect_cooldown_ms() -> u64 {
+    500
 }

@@ -33,7 +33,8 @@ pub struct DeviceReceipt {
 }
 
 impl DeviceReceipt {
-    fn from_command(attempt: u64, command: DeviceCommand) -> Self {
+    /// Record a successfully accepted command at a concrete device adapter.
+    pub const fn accepted(attempt: u64, command: DeviceCommand) -> Self {
         Self {
             attempt,
             epoch: command.epoch,
@@ -43,6 +44,10 @@ impl DeviceReceipt {
             delta_x_counts: command.delta_x_counts,
             delta_y_counts: command.delta_y_counts,
         }
+    }
+
+    fn from_command(attempt: u64, command: DeviceCommand) -> Self {
+        Self::accepted(attempt, command)
     }
 }
 

@@ -358,7 +358,18 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
         device.production_fields_explicit = section_has_fields(
             document,
             "hardware",
-            &["auto_connect", "host", "port", "uuid", "monitor_port"],
+            &[
+                "auto_connect",
+                "backend",
+                "host",
+                "port",
+                "uuid",
+                "monitor_port",
+                "helper_module",
+                "connect_timeout_ms",
+                "send_timeout_ms",
+                "reconnect_cooldown_ms",
+            ],
         );
     }
 }
@@ -620,7 +631,18 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
             path,
             "hardware",
             &device.legacy,
-            &["auto_connect", "host", "port", "uuid", "monitor_port"],
+            &[
+                "auto_connect",
+                "backend",
+                "host",
+                "port",
+                "uuid",
+                "monitor_port",
+                "helper_module",
+                "connect_timeout_ms",
+                "send_timeout_ms",
+                "reconnect_cooldown_ms",
+            ],
         )?;
     }
     Ok(())

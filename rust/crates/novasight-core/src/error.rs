@@ -47,6 +47,9 @@ pub enum AppError {
     #[error("replay controller output is outside signed 32-bit device-count range")]
     DeviceCountOutOfRange,
 
+    #[error("pointer device {code}: {message}")]
+    PointerDevice { code: &'static str, message: String },
+
     #[error("runtime command {command} conflicts with an in-flight command")]
     RuntimeCommandConflict { command: &'static str },
 

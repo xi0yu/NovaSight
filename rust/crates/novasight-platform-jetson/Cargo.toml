@@ -16,6 +16,8 @@ deepstream = [
 
 [dependencies]
 novasight-core = { path = "../novasight-core" }
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -23,3 +25,6 @@ crossbeam-queue = { workspace = true, optional = true }
 gstreamer = { workspace = true, optional = true }
 novasight-deepstream-bridge = { path = "../novasight-deepstream-bridge", optional = true }
 novasight-pipeline = { path = "../novasight-pipeline", optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true

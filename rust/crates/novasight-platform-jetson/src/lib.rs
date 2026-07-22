@@ -2,5 +2,7 @@
 
 mod clock;
 pub mod deepstream;
+pub mod kmnet;
+pub mod kmnet_native;
 
 pub use clock::SystemMonotonicClock;

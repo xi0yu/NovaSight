@@ -1,4 +1,7 @@
-use std::sync::{Arc, Condvar, Mutex, atomic::AtomicU64};
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -109,6 +112,22 @@ impl PointerDevice for PanickingDevice {
     }
 }
 
+#[derive(Debug, Default)]
+struct HardwareTriggerDevice {
+    active: AtomicBool,
+    recording: RecordingPointerDevice,
+}
+
+impl PointerDevice for HardwareTriggerDevice {
+    fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        self.recording.send(command)
+    }
+
+    fn trigger_active(&self) -> Result<Option<bool>, AppError> {
+        Ok(Some(self.active.load(Ordering::Acquire)))
+    }
+}
+
 fn batch(epoch: RuntimeEpoch, generation: u64) -> DetectionBatch {
     DetectionBatch::new(
         FrameStamp::new(epoch, generation, 1_000_000_000),
@@ -138,6 +157,42 @@ fn output_scheduler_rejects_cadence_outside_one_to_ten_ms() {
                 if actual_ms == output_interval_ms
         ));
     }
+}
+
+#[test]
+fn hardware_trigger_poller_owns_production_output_gate() {
+    let epoch = RuntimeEpoch(31);
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device = Arc::new(HardwareTriggerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            trigger_poll_interval_ms: Some(1),
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+    )
+    .expect("pipeline starts");
+    ingress.submit(batch(epoch, 1)).expect("batch accepted");
+    thread::sleep(Duration::from_millis(10));
+    assert!(device.recording.receipts().is_empty());
+
+    device.active.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !ingress.trigger_active() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert!(ingress.trigger_active());
+    ingress.submit(batch(epoch, 2)).expect("new batch accepted");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.recording.receipts().is_empty() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(device.recording.receipts().len(), 1);
+    assert_eq!(device.recording.receipts()[0].generation, 2);
+    runtime.shutdown().expect("workers join");
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
@@ -13,14 +14,76 @@ use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
     DeepStreamSessionConfig, ModelInput, Roi,
 };
+use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
+use novasight_platform_jetson::kmnet_native::{
+    KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError,
+};
 use novasight_runtime::RuntimeDependencies;
-use novasight_store::config::{AppConfig, CapturePreference, ConfigValidationError};
+use novasight_store::config::{AppConfig, CapturePreference, ConfigValidationError, DeviceBackend};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub(super) fn build_live_recording_dependencies(
     config: &AppConfig,
+) -> Result<RuntimeDependencies, LivePerceptionError> {
+    let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    build_live_dependencies(config, device, None)
+}
+
+pub(super) fn build_live_production_dependencies(
+    config: &AppConfig,
+) -> Result<RuntimeDependencies, LivePerceptionError> {
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
+    if !adapters.device.auto_connect {
+        return Err(LivePerceptionError::DeviceAutoConnectDisabled);
+    }
+    let device: Arc<dyn PointerDevice> = match adapters.device.backend {
+        DeviceBackend::NativeUdp => {
+            let host =
+                adapters.device.host.parse().map_err(|_| {
+                    LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
+                })?;
+            Arc::new(
+                KmNetNativeDevice::connect(KmNetNativeConfig {
+                    host,
+                    port: adapters.device.port,
+                    uuid: adapters.device.uuid.clone(),
+                    monitor_port: adapters.device.monitor_port,
+                    connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
+                    request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
+                })
+                .map_err(LivePerceptionError::NativeKmNet)?,
+            )
+        }
+        DeviceBackend::PythonHost => Arc::new(
+            KmNetHostClient::connect(KmNetHostConfig {
+                program: config.paths.python_executable.clone(),
+                args: vec![
+                    OsString::from("-u"),
+                    OsString::from("-m"),
+                    OsString::from(adapters.device.helper_module.trim()),
+                ],
+                host: adapters.device.host.clone(),
+                port: adapters.device.port,
+                uuid: adapters.device.uuid.clone(),
+                monitor_port: adapters.device.monitor_port,
+                startup_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
+                request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
+                reconnect_cooldown: Duration::from_millis(adapters.device.reconnect_cooldown_ms),
+            })
+            .map_err(LivePerceptionError::KmNet)?,
+        ),
+    };
+    build_live_dependencies(config, device, Some(4))
+}
+
+fn build_live_dependencies(
+    config: &AppConfig,
+    device: Arc<dyn PointerDevice>,
+    trigger_poll_interval_ms: Option<u64>,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -89,11 +152,15 @@ pub(super) fn build_live_recording_dependencies(
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
     };
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
-    let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
-    Ok(
-        RuntimeDependencies::new(clock, device, PipelineConfig::default())
-            .with_perception(Arc::new(DeepStreamAdapter::new(session))),
+    Ok(RuntimeDependencies::new(
+        clock,
+        device,
+        PipelineConfig {
+            trigger_poll_interval_ms,
+            ..PipelineConfig::default()
+        },
     )
+    .with_perception(Arc::new(DeepStreamAdapter::new(session))))
 }
 
 fn resolve_data_artifact(data_dir: &Path, artifact: &Path) -> Result<PathBuf, LivePerceptionError> {
@@ -1102,6 +1169,14 @@ pub(super) enum LivePerceptionError {
     InferenceDisabled,
     #[error("live DeepStream currently requires capture.preference=manual")]
     AutomaticCaptureUnsupported,
+    #[error("production kmNet output requires hardware.auto_connect=true")]
+    DeviceAutoConnectDisabled,
+    #[error("kmNet production adapter failed: {0}")]
+    KmNet(KmNetError),
+    #[error("hardware.host must be an IPv4 address for native kmNet: {0}")]
+    InvalidKmNetHost(String),
+    #[error("native kmNet production adapter failed: {0}")]
+    NativeKmNet(KmNetNativeError),
     #[error("unsupported capture pixel format: {0}")]
     UnsupportedCaptureFormat(String),
     #[error("invalid DeepStream I/O mode: {0}")]

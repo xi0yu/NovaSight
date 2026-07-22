@@ -106,7 +106,7 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 }
 
 #[test]
-fn complete_adapter_config_reaches_the_unimplemented_device_boundary() {
+fn complete_adapter_config_reaches_the_platform_build_boundary() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let output = Command::new(binary())
         .args(["--config", path.to_str().expect("UTF-8 path")])
@@ -115,7 +115,7 @@ fn complete_adapter_config_reaches_the_unimplemented_device_boundary() {
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
 
     assert!(!output.status.success());
-    assert!(stderr.contains("DEVICE_BACKEND_NOT_CONFIGURED"));
+    assert!(stderr.contains("PRODUCTION_RUNTIME_UNAVAILABLE"));
 }
 
 #[cfg(unix)]

@@ -66,6 +66,9 @@ pub struct PipelineConfig {
     /// Independent output scheduler cadence. Production configuration is
     /// constrained to the Python-compatible 1-10 ms range.
     pub output_interval_ms: u64,
+    /// Hardware trigger polling cadence. `None` leaves trigger ownership with
+    /// the control plane (recording/replay); production devices set this.
+    pub trigger_poll_interval_ms: Option<u64>,
 }
 
 impl Default for PipelineConfig {
@@ -76,6 +79,7 @@ impl Default for PipelineConfig {
             control: DualPhaseConfig::default(),
             max_command_age_ns: 55_000_000,
             output_interval_ms: 4,
+            trigger_poll_interval_ms: None,
         }
     }
 }
@@ -109,6 +113,8 @@ pub enum PipelineError {
     IngressBusy,
     #[error("output scheduler interval must be within 1..=10 ms, got {actual_ms}")]
     InvalidOutputInterval { actual_ms: u64 },
+    #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
+    InvalidTriggerPollInterval { actual_ms: u64 },
     #[error("failed to spawn {worker} worker: {source}")]
     Spawn {
         worker: &'static str,
@@ -355,12 +361,17 @@ impl PipelineRuntime {
                 actual_ms: config.output_interval_ms,
             });
         }
+        if let Some(actual_ms) = config.trigger_poll_interval_ms
+            && !(1..=50).contains(&actual_ms)
+        {
+            return Err(PipelineError::InvalidTriggerPollInterval { actual_ms });
+        }
         let (event_tx, event_rx) = sync_channel(4);
         let shared = Arc::new(SharedState::new(event_tx));
         let batch_slot = LatestSlot::new();
         let target_slot = LatestSlot::new();
         let command_slot = LatestSlot::new();
-        let mut workers = Vec::with_capacity(3);
+        let mut workers = Vec::with_capacity(4);
 
         let targeting_handle = spawn_targeting_worker(
             batch_slot.clone(),
@@ -391,7 +402,7 @@ impl PipelineRuntime {
             command_slot.clone(),
             Arc::clone(&shared),
             clock,
-            device,
+            Arc::clone(&device),
             config.epoch,
             config.max_command_age_ns,
             config.output_interval_ms,
@@ -404,6 +415,20 @@ impl PipelineRuntime {
             }
         };
         workers.push(device_handle);
+
+        if let Some(interval_ms) = config.trigger_poll_interval_ms {
+            let trigger_handle =
+                match spawn_trigger_worker(Arc::clone(&shared), Arc::clone(&device), interval_ms) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        shared.status.store(STATUS_STOPPING, Ordering::Release);
+                        close_slots(&batch_slot, &target_slot, &command_slot);
+                        join_workers(&mut workers);
+                        return Err(error);
+                    }
+                };
+            workers.push(trigger_handle);
+        }
 
         shared.output_gate.store(true, Ordering::Release);
         shared.status.store(STATUS_RUNNING, Ordering::Release);
@@ -468,6 +493,52 @@ impl PipelineRuntime {
         let _ = self.shared.event_tx.try_send(PipelineEvent::Stopped);
         Ok(self.metrics())
     }
+}
+
+fn spawn_trigger_worker(
+    shared: Arc<SharedState>,
+    device: Arc<dyn PointerDevice>,
+    interval_ms: u64,
+) -> Result<JoinHandle<()>, PipelineError> {
+    thread::Builder::new()
+        .name("novasight-trigger".to_owned())
+        .spawn(move || {
+            let _guard = WorkerGuard::new(Arc::clone(&shared));
+            guard_worker(&shared, "trigger", || {
+                let interval = Duration::from_millis(interval_ms);
+                while shared.status() == PipelineStatus::Starting {
+                    thread::yield_now();
+                }
+                while shared.status() == PipelineStatus::Running {
+                    match device.trigger_active() {
+                        Ok(Some(active)) => {
+                            shared.trigger_active.store(active, Ordering::Release);
+                            if !active {
+                                drop(
+                                    shared
+                                        .device_lane
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            shared.fault("pointer device does not expose a hardware trigger");
+                            break;
+                        }
+                        Err(error) => {
+                            shared.fault(format!("pointer trigger failed: {error}"));
+                            break;
+                        }
+                    }
+                    thread::sleep(interval);
+                }
+            });
+        })
+        .map_err(|source| PipelineError::Spawn {
+            worker: "trigger",
+            source,
+        })
 }
 
 impl Drop for PipelineRuntime {

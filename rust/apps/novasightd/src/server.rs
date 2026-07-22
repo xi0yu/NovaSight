@@ -10,9 +10,27 @@ use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
 
-pub(super) async fn run_dry_run(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DaemonMode {
+    DryRun,
+    #[cfg(all(feature = "deepstream", target_os = "linux"))]
+    Production,
+}
+
+impl DaemonMode {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DryRun => "dry-run",
+            #[cfg(all(feature = "deepstream", target_os = "linux"))]
+            Self::Production => "production",
+        }
+    }
+}
+
+pub(super) async fn run_daemon(
     loaded: LoadedApplication,
     dependencies: RuntimeDependencies,
+    mode: DaemonMode,
 ) -> Result<(), DaemonRunError> {
     let host = loaded.config().server.host.clone();
     let port = loaded.config().server.port;
@@ -52,9 +70,14 @@ pub(super) async fn run_dry_run(
     let mut http_server = Box::pin(http_server);
     let mut control_server = Box::pin(control_server);
 
-    tracing::warn!("novasightd is running in explicit dry-run mode; hardware output is disabled");
+    if mode == DaemonMode::DryRun {
+        tracing::warn!(
+            "novasightd is running in explicit dry-run mode; hardware output is disabled"
+        );
+    }
     eprintln!(
-        "novasightd ready mode=dry-run address={address} socket={}",
+        "novasightd ready mode={} address={address} socket={}",
+        mode.label(),
         control_socket.display()
     );
 

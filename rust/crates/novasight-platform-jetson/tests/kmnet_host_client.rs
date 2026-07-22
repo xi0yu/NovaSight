@@ -1,0 +1,124 @@
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use novasight_core::{DeviceCommand, Generation, MonotonicNanos, PointerDevice, RuntimeEpoch};
+use novasight_platform_jetson::kmnet::{KmNetHostClient, KmNetHostConfig};
+
+const GOOD_HELPER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    op = request['op']
+    ok = (
+        op == 'hello'
+        or (op == 'connect' and request['host'] == '192.0.2.10' and request['port'] == 8888 and request['uuid'] == 'box')
+        or (op == 'move' and request['dx'] == 120 and request['dy'] == -45)
+        or op == 'shutdown'
+    )
+    print(json.dumps({'id': request['id'], 'ok': ok, 'result': {'protocol': 1}, 'error': None if ok else 'unexpected request'}), flush=True)
+    if op == 'shutdown':
+        break
+"#;
+
+fn config(script: &str) -> KmNetHostConfig {
+    KmNetHostConfig {
+        program: PathBuf::from("python3"),
+        args: vec![
+            OsString::from("-u"),
+            OsString::from("-c"),
+            OsString::from(script),
+        ],
+        host: "192.0.2.10".to_owned(),
+        port: 8888,
+        uuid: "box".to_owned(),
+        monitor_port: 0,
+        startup_timeout: Duration::from_secs(1),
+        request_timeout: Duration::from_millis(100),
+        reconnect_cooldown: Duration::from_millis(30),
+    }
+}
+
+fn command() -> DeviceCommand {
+    DeviceCommand {
+        epoch: RuntimeEpoch(4),
+        generation: Generation(9),
+        issued_at: MonotonicNanos(100),
+        target_object_id: 7,
+        delta_x_counts: 120,
+        delta_y_counts: -45,
+    }
+}
+
+#[test]
+fn performs_handshake_connect_and_real_move_round_trip() {
+    let client = KmNetHostClient::connect(config(GOOD_HELPER)).expect("connect helper");
+
+    let receipt = client.send(command()).expect("send movement");
+
+    assert_eq!(receipt.epoch, RuntimeEpoch(4));
+    assert_eq!(receipt.generation, Generation(9));
+    assert_eq!(receipt.delta_x_counts, 120);
+    assert_eq!(receipt.delta_y_counts, -45);
+}
+
+#[test]
+fn timed_out_driver_is_aborted_and_cooldown_is_nonblocking() {
+    let script = GOOD_HELPER.replace(
+        "or (op == 'move' and request['dx'] == 120 and request['dy'] == -45)",
+        "or (op == 'move' and (__import__('time').sleep(2) is None))",
+    );
+    let client = KmNetHostClient::connect(config(&script)).expect("connect helper");
+
+    let started = Instant::now();
+    let first = client.send(command()).expect_err("move must time out");
+    assert!(first.to_string().contains("timed out"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    let retry_started = Instant::now();
+    let retry = client
+        .send(command())
+        .expect_err("cooldown must reject retry");
+    assert!(retry.to_string().contains("cooldown"));
+    assert!(retry_started.elapsed() < Duration::from_millis(20));
+}
+
+#[test]
+fn crashed_helper_reconnects_after_cooldown() {
+    let marker =
+        std::env::temp_dir().join(format!("novasight-kmnet-reconnect-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let quoted = serde_json::to_string(&marker).expect("marker JSON");
+    let script = format!(
+        r#"
+import json, os, sys
+marker = {quoted}
+for line in sys.stdin:
+    request = json.loads(line)
+    op = request['op']
+    if op == 'move' and not os.path.exists(marker):
+        open(marker, 'w').close()
+        os._exit(17)
+    print(json.dumps({{'id': request['id'], 'ok': True, 'result': {{'protocol': 1}}, 'error': None}}), flush=True)
+"#
+    );
+    let client = KmNetHostClient::connect(config(&script)).expect("connect helper");
+    client.send(command()).expect_err("first helper crashes");
+    std::thread::sleep(Duration::from_millis(40));
+
+    let receipt = client.send(command()).expect("reconnected move");
+
+    assert_eq!(receipt.target_object_id, 7);
+    let _ = std::fs::remove_file(marker);
+}
+
+#[test]
+fn rejects_counts_outside_the_kmnet_signed_16_bit_contract() {
+    let client = KmNetHostClient::connect(config(GOOD_HELPER)).expect("connect helper");
+    let mut invalid = command();
+    invalid.delta_x_counts = i32::from(i16::MAX) + 1;
+
+    let error = client.send(invalid).expect_err("out of range");
+
+    assert!(error.to_string().contains("signed 16-bit"));
+}

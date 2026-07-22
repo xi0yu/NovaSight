@@ -45,9 +45,9 @@ fn status_for(error: &AppError) -> StatusCode {
         AppError::RuntimeCommandConflict { .. } | AppError::RuntimeEpochMismatch { .. } => {
             StatusCode::CONFLICT
         }
-        AppError::RuntimeManagerUnavailable | AppError::RuntimeTaskTerminated => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+        AppError::RuntimeManagerUnavailable
+        | AppError::RuntimeTaskTerminated
+        | AppError::PointerDevice { .. } => StatusCode::SERVICE_UNAVAILABLE,
         AppError::RuntimeEpochExhausted => StatusCode::INTERNAL_SERVER_ERROR,
         AppError::InvalidDetection { .. }
         | AppError::InvalidCoordinateSpace { .. }
@@ -72,6 +72,7 @@ fn code_for(error: &AppError) -> &'static str {
         AppError::InvalidReplayGain => "invalid_replay_gain",
         AppError::NonMonotonicControlTime { .. } => "non_monotonic_control_time",
         AppError::DeviceCountOutOfRange => "device_count_out_of_range",
+        AppError::PointerDevice { code, .. } => code,
         AppError::RuntimeCommandConflict { .. } => "runtime_command_conflict",
         AppError::RuntimeEpochMismatch { .. } => "runtime_epoch_mismatch",
         AppError::RuntimeEpochExhausted => "runtime_epoch_exhausted",

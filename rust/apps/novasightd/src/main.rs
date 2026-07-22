@@ -61,22 +61,11 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if !args.dry_run {
-        if let Err(error) = loaded.config().require_production_adapters() {
-            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
-            return ExitCode::FAILURE;
-        }
-        eprintln!(
-            "DEVICE_BACKEND_NOT_CONFIGURED: production output requires a real device adapter; use --dry-run only for diagnostics"
-        );
-        return ExitCode::FAILURE;
-    }
-
-    let dependencies = if args.live_perception {
+    let (dependencies, mode) = if args.dry_run && args.live_perception {
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {
             match live_perception::build_live_recording_dependencies(loaded.config()) {
-                Ok(dependencies) => dependencies,
+                Ok(dependencies) => (dependencies, server::DaemonMode::DryRun),
                 Err(error) => {
                     eprintln!("LIVE_PERCEPTION_CONFIG_INVALID: {error}");
                     return ExitCode::FAILURE;
@@ -90,11 +79,33 @@ async fn main() -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
+    } else if args.dry_run {
+        (RuntimeDependencies::recording(), server::DaemonMode::DryRun)
     } else {
-        RuntimeDependencies::recording()
+        if let Err(error) = loaded.config().require_production_adapters() {
+            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
+            return ExitCode::FAILURE;
+        }
+        #[cfg(all(feature = "deepstream", target_os = "linux"))]
+        {
+            match live_perception::build_live_production_dependencies(loaded.config()) {
+                Ok(dependencies) => (dependencies, server::DaemonMode::Production),
+                Err(error) => {
+                    eprintln!("PRODUCTION_RUNTIME_INVALID: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+        {
+            eprintln!(
+                "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
+            );
+            return ExitCode::FAILURE;
+        }
     };
 
-    match server::run_dry_run(loaded, dependencies).await {
+    match server::run_daemon(loaded, dependencies, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

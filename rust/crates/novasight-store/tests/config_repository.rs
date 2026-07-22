@@ -76,7 +76,8 @@ fn loads_the_complete_rust_owned_example() {
     assert_eq!(adapters.capture.appsink_max_buffers, 1);
     assert_eq!(adapters.inference.deepstream_component_id, 1);
     assert_eq!(adapters.inference.deepstream_probe_element, "primary-infer");
-    assert!(!adapters.device.auto_connect);
+    assert!(adapters.device.auto_connect);
+    assert_eq!(adapters.device.send_timeout_ms, 25);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
 }
@@ -231,7 +232,7 @@ fn device_alias_migrates_to_hardware_without_duplicate_fields() {
     let path = directory.join("device-alias.yaml");
     fs::write(
         &path,
-        "revision: 0\ndevice:\n  auto_connect: true\n  host: 10.0.0.8\n  port: 8888\n  uuid: test-box\n  monitor_port: 5001\n",
+        "revision: 0\ndevice:\n  auto_connect: true\n  backend: native_udp\n  host: 10.0.0.8\n  port: 8888\n  uuid: test-box\n  monitor_port: 5001\n  helper_module: novasight.executors.kmnet_host\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  reconnect_cooldown_ms: 500\n",
     )
     .unwrap();
     let config = YamlConfigRepository::load(&path).unwrap();

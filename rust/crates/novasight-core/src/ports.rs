@@ -16,4 +16,10 @@ pub trait PerceptionSource: Send {
 /// Device transition seam; successful sends return a typed receipt for the same command.
 pub trait PointerDevice: Send + Sync {
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError>;
+
+    /// Read the hardware-owned output trigger when the adapter supports it.
+    /// `None` means this device has no hardware trigger source.
+    fn trigger_active(&self) -> Result<Option<bool>, AppError> {
+        Ok(None)
+    }
 }
