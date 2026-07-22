@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use novasight_runtime::{LoadedApplication, RuntimeDependencies};
+use novasight_runtime::LoadedApplication;
 use tracing_subscriber::EnvFilter;
+
+mod server;
 
 #[derive(Parser, Debug)]
 #[command(name = "novasightd", about = "NovaSight runtime daemon")]
@@ -58,12 +60,7 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let application = loaded.start(RuntimeDependencies::recording());
-    tracing::warn!("novasightd is running in explicit dry-run mode; hardware output is disabled");
-    match application
-        .run_until_shutdown_with_ready(|| eprintln!("novasightd ready mode=dry-run"))
-        .await
-    {
+    match server::run_dry_run(loaded).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

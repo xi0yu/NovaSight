@@ -663,8 +663,11 @@ dependencies = [
 name = "novasightd"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "clap",
+ "novasight-api",
  "novasight-runtime",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",

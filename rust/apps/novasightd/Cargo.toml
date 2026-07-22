@@ -10,8 +10,11 @@ name = "novasightd"
 path = "src/main.rs"
 
 [dependencies]
+axum.workspace = true
 clap = { workspace = true, features = ["derive"] }
+novasight-api = { path = "../../crates/novasight-api" }
 novasight-runtime = { path = "../../crates/novasight-runtime" }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

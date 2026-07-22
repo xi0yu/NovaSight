@@ -8,15 +8,25 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::StreamExt;
+use futures_util::{Sink, Stream, StreamExt};
 use novasight_runtime::{RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot};
 use serde::Serialize;
+use tokio::sync::watch;
 
 use crate::websocket::status::send_while_receiving;
 
 /// Cuttlefish-style control surface: every mutation delegates to the
 /// single daemon-owned RuntimeHandle and returns its immutable snapshot.
 pub fn build_control_router(runtime: RuntimeHandle) -> Router {
+    build_control_router_with_shutdown(runtime, None)
+}
+
+/// Build the control surface with a daemon-owned shutdown signal.
+/// WebSocket upgrades observe it and leave Axum's graceful drain.
+pub fn build_control_router_with_shutdown(
+    runtime: RuntimeHandle,
+    shutdown: impl Into<Option<watch::Receiver<bool>>>,
+) -> Router {
     Router::new()
         .route("/api/v1/status", get(status))
         .route("/api/v1/runtime/start", post(start))
@@ -24,40 +34,47 @@ pub fn build_control_router(runtime: RuntimeHandle) -> Router {
         .route("/api/v1/runtime/restart", post(restart))
         .route("/api/v1/runtime/emergency-stop", post(emergency_stop))
         .route("/api/v1/events", get(events))
-        .with_state(runtime)
+        .with_state(ControlState {
+            runtime,
+            shutdown: shutdown.into(),
+        })
         .layer(super::app::studio_cors_layer())
 }
 
-async fn status(State(runtime): State<RuntimeHandle>) -> Json<RuntimeSnapshot> {
-    Json(runtime.snapshot())
+#[derive(Clone)]
+struct ControlState {
+    runtime: RuntimeHandle,
+    shutdown: Option<watch::Receiver<bool>>,
+}
+
+async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
+    Json(state.runtime.snapshot())
 }
 
 async fn start(
-    State(runtime): State<RuntimeHandle>,
+    State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
-    Ok(Json(runtime.start().await?))
+    Ok(Json(state.runtime.start().await?))
 }
 
-async fn stop(
-    State(runtime): State<RuntimeHandle>,
-) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
-    Ok(Json(runtime.stop().await?))
+async fn stop(State(state): State<ControlState>) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    Ok(Json(state.runtime.stop().await?))
 }
 
 async fn restart(
-    State(runtime): State<RuntimeHandle>,
+    State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
-    Ok(Json(runtime.restart().await?))
+    Ok(Json(state.runtime.restart().await?))
 }
 
 async fn emergency_stop(
-    State(runtime): State<RuntimeHandle>,
+    State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
-    Ok(Json(runtime.emergency_stop().await?))
+    Ok(Json(state.runtime.emergency_stop().await?))
 }
 
-async fn events(websocket: WebSocketUpgrade, State(runtime): State<RuntimeHandle>) -> Response {
-    websocket.on_upgrade(move |socket| stream_events(socket, runtime))
+async fn events(websocket: WebSocketUpgrade, State(state): State<ControlState>) -> Response {
+    websocket.on_upgrade(move |socket| stream_events(socket, state.runtime, state.shutdown))
 }
 
 #[derive(Serialize)]
@@ -66,7 +83,11 @@ struct RuntimeEvent<'a> {
     snapshot: &'a RuntimeSnapshot,
 }
 
-async fn stream_events(socket: WebSocket, runtime: RuntimeHandle) {
+async fn stream_events(
+    socket: WebSocket,
+    runtime: RuntimeHandle,
+    mut shutdown: Option<watch::Receiver<bool>>,
+) {
     let mut snapshots = runtime.subscribe();
     let (mut outbound, mut inbound) = socket.split();
     loop {
@@ -78,8 +99,16 @@ async fn stream_events(socket: WebSocket, runtime: RuntimeHandle) {
         let Ok(payload) = serde_json::to_string(&event) else {
             return;
         };
-        if !send_while_receiving(&mut outbound, &mut inbound, Message::Text(payload.into())).await {
-            return;
+        match send_or_shutdown(
+            &mut outbound,
+            &mut inbound,
+            Message::Text(payload.into()),
+            &mut shutdown,
+        )
+        .await
+        {
+            SendOutcome::Sent => {}
+            SendOutcome::Closed | SendOutcome::Shutdown => return,
         }
 
         tokio::select! {
@@ -94,8 +123,49 @@ async fn stream_events(socket: WebSocket, runtime: RuntimeHandle) {
                     Some(Ok(_)) => {}
                 }
             }
+            () = shutdown_requested(&mut shutdown) => return,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SendOutcome {
+    Sent,
+    Closed,
+    Shutdown,
+}
+
+async fn send_or_shutdown<S, R, E>(
+    outbound: &mut S,
+    inbound: &mut R,
+    message: Message,
+    shutdown: &mut Option<watch::Receiver<bool>>,
+) -> SendOutcome
+where
+    S: Sink<Message> + Unpin,
+    R: Stream<Item = Result<Message, E>> + Unpin,
+{
+    tokio::select! {
+        sent = send_while_receiving(outbound, inbound, message) => {
+            if sent {
+                SendOutcome::Sent
+            } else {
+                SendOutcome::Closed
+            }
+        }
+        () = shutdown_requested(shutdown) => SendOutcome::Shutdown,
+    }
+}
+
+async fn shutdown_requested(shutdown: &mut Option<watch::Receiver<bool>>) {
+    let Some(receiver) = shutdown else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    if *receiver.borrow() {
+        return;
+    }
+    let _ = receiver.changed().await;
 }
 
 struct ControlApiError(RuntimeError);
@@ -129,5 +199,75 @@ impl IntoResponse for ControlApiError {
             message: self.0.message,
         };
         (status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
+
+    use futures_util::{Sink, task::noop_waker};
+
+    use super::*;
+
+    struct PendingSink;
+
+    impl Sink<Message> for PendingSink {
+        type Error = ();
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            unreachable!("a permanently backpressured sink is never ready")
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_interrupts_a_backpressured_websocket_send() {
+        let mut outbound = PendingSink;
+        let mut inbound = futures_util::stream::pending::<Result<Message, ()>>();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut shutdown = Some(shutdown_rx);
+        let operation = send_or_shutdown(
+            &mut outbound,
+            &mut inbound,
+            Message::Text("snapshot".into()),
+            &mut shutdown,
+        );
+        tokio::pin!(operation);
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert!(operation.as_mut().poll(&mut context).is_pending());
+
+        shutdown_tx.send_replace(true);
+        let outcome = tokio::time::timeout(Duration::from_millis(100), operation)
+            .await
+            .expect("daemon shutdown must not wait for a backpressured peer");
+
+        assert_eq!(outcome, SendOutcome::Shutdown);
     }
 }

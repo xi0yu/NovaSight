@@ -1,5 +1,6 @@
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -34,7 +35,7 @@ impl Drop for TempDirectory {
 fn temp_config() -> (TempDirectory, PathBuf) {
     let directory = TempDirectory::new();
     let path = directory.join("novasight.yaml");
-    fs::write(&path, "{}\n").expect("write config");
+    fs::write(&path, "server:\n  host: 127.0.0.1\n  port: 0\n").expect("write config");
     (directory, path)
 }
 
@@ -106,26 +107,64 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
     let mut child = ChildGuard(Some(child));
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let ready = BufReader::new(stderr)
+        let address = BufReader::new(stderr)
             .lines()
             .map_while(Result::ok)
-            .any(|line| line.contains("novasightd ready mode=dry-run"));
-        let _ = ready_tx.send(ready);
+            .find_map(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("address="))
+                    .and_then(|address| address.parse::<SocketAddr>().ok())
+            });
+        let _ = ready_tx.send(address);
     });
-    assert!(
-        ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("readiness timeout"),
-        "daemon exited before readiness"
-    );
+    let address = ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("readiness timeout")
+        .expect("daemon exited before readiness");
+
+    let (status, initial) = http_request(address, "GET", "/api/v1/status");
+    assert_eq!(status, 200);
+    assert!(initial.contains("\"state\":\"stopped\""));
+    let (status, started) = http_request(address, "POST", "/api/v1/runtime/start");
+    assert_eq!(status, 200);
+    assert!(started.contains("\"state\":\"running\""));
 
     let signal = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status()
         .expect("send SIGTERM");
     assert!(signal.success());
-    let status = child.wait().expect("wait for graceful exit");
+    let status = child
+        .wait_timeout(Duration::from_secs(5))
+        .expect("wait for graceful exit");
     assert!(status.success(), "novasightd exited with {status}");
+}
+
+fn http_request(address: SocketAddr, method: &str, path: &str) -> (u16, String) {
+    let mut stream =
+        TcpStream::connect_timeout(&address, Duration::from_secs(1)).expect("connect HTTP server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write HTTP request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read HTTP response");
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .expect("HTTP response headers");
+    let status = headers
+        .split_whitespace()
+        .nth(1)
+        .expect("HTTP status")
+        .parse()
+        .expect("numeric HTTP status");
+    (status, body.to_owned())
 }
 
 struct ChildGuard(Option<Child>);
@@ -135,8 +174,22 @@ impl ChildGuard {
         self.0.as_ref().expect("child present").id()
     }
 
-    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.0.take().expect("child present").wait()
+    fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let child = self.0.as_mut().expect("child present");
+            if let Some(status) = child.try_wait()? {
+                self.0.take();
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let status = child.wait()?;
+                self.0.take();
+                panic!("novasightd did not exit within {timeout:?}; killed with {status}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 

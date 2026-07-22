@@ -4,7 +4,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use novasight_api::build_control_router;
+use novasight_api::{build_control_router, build_control_router_with_shutdown};
 use novasight_core::{Clock, MonotonicNanos, PointerDevice, RecordingPointerDevice};
 use novasight_pipeline::PipelineConfig;
 use novasight_runtime::{PipelineState, RuntimeDependencies, RuntimeHandle, RuntimeSupervisor};
@@ -168,5 +168,51 @@ async fn events_websocket_sends_initial_and_changed_supervisor_snapshots() {
 
     socket.close(None).await.expect("close socket");
     server.abort();
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn daemon_shutdown_closes_events_websocket_and_releases_axum_drain() {
+    use futures_util::StreamExt;
+
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().expect("server address");
+    let app = build_control_router_with_shutdown(runtime.clone(), Some(shutdown_rx.clone()));
+    let mut graceful_rx = shutdown_rx;
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                if !*graceful_rx.borrow() {
+                    let _ = graceful_rx.changed().await;
+                }
+            })
+            .await
+            .expect("serve control API");
+    });
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/api/v1/events"))
+        .await
+        .expect("connect events socket");
+    socket.next().await.expect("initial frame").expect("frame");
+
+    shutdown_tx.send_replace(true);
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(1), socket.next())
+        .await
+        .expect("events socket closes on daemon shutdown");
+    assert!(
+        matches!(
+            closed,
+            None | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | Some(Err(_))
+        ),
+        "unexpected frame after shutdown: {closed:?}"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), server)
+        .await
+        .expect("Axum graceful drain completes")
+        .expect("server task");
+
     shutdown(supervisor, &runtime).await;
 }
