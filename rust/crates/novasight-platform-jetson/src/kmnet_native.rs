@@ -38,6 +38,13 @@ pub struct KmNetNativeConfig {
 
 #[derive(Debug)]
 pub struct KmNetNativeDevice {
+    config: KmNetNativeConfig,
+    session: Mutex<Option<KmNetNativeSession>>,
+    successful_sends: AtomicU64,
+}
+
+#[derive(Debug)]
+struct KmNetNativeSession {
     control: Mutex<ControlSocket>,
     buttons: Arc<AtomicU8>,
     monitor_healthy: Arc<AtomicBool>,
@@ -46,7 +53,6 @@ pub struct KmNetNativeDevice {
     monitor_port: u16,
     stop: Arc<AtomicBool>,
     monitor: Mutex<Option<JoinHandle<()>>>,
-    successful_sends: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -58,23 +64,21 @@ struct ControlSocket {
 }
 
 impl KmNetNativeDevice {
-    pub fn connect(config: KmNetNativeConfig) -> Result<Self, KmNetNativeError> {
-        if config.port == 0 {
-            return Err(KmNetNativeError::InvalidConfig(
-                "control port must be non-zero",
-            ));
-        }
-        if !MONITOR_PORT_RANGE.contains(&config.monitor_port) {
-            return Err(KmNetNativeError::InvalidConfig(
-                "monitor port must be within the vendor range 1024..=49151",
-            ));
-        }
-        if config.connect_timeout.is_zero()
-            || config.request_timeout.is_zero()
-            || config.monitor_timeout.is_zero()
-        {
-            return Err(KmNetNativeError::InvalidConfig("timeouts must be non-zero"));
-        }
+    /// Build a disconnected adapter. Network resources are acquired by the
+    /// runtime epoch through [`PointerDevice::connect`].
+    pub fn new(config: KmNetNativeConfig) -> Result<Self, KmNetNativeError> {
+        validate_config(&config)?;
+        Ok(Self {
+            config,
+            session: Mutex::new(None),
+            successful_sends: AtomicU64::new(0),
+        })
+    }
+}
+
+impl KmNetNativeSession {
+    fn connect(config: &KmNetNativeConfig) -> Result<Self, KmNetNativeError> {
+        validate_config(config)?;
         let mac = parse_uuid(&config.uuid)?;
         let remote = SocketAddrV4::new(config.host, config.port);
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(KmNetNativeError::Bind)?;
@@ -124,12 +128,63 @@ impl KmNetNativeDevice {
             monitor_port: config.monitor_port,
             stop,
             monitor: Mutex::new(Some(monitor)),
-            successful_sends: AtomicU64::new(0),
         })
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // Wake recv_from immediately; production shutdown must not inherit the
+        // device request timeout.
+        if let Ok(waker) = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) {
+            let _ = waker.send_to(&[0], (Ipv4Addr::LOCALHOST, self.monitor_port));
+        }
+        if let Some(handle) = self
+            .monitor
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = handle.join();
+        }
     }
 }
 
+fn validate_config(config: &KmNetNativeConfig) -> Result<(), KmNetNativeError> {
+    if config.port == 0 {
+        return Err(KmNetNativeError::InvalidConfig(
+            "control port must be non-zero",
+        ));
+    }
+    if !MONITOR_PORT_RANGE.contains(&config.monitor_port) {
+        return Err(KmNetNativeError::InvalidConfig(
+            "monitor port must be within the vendor range 1024..=49151",
+        ));
+    }
+    if config.connect_timeout.is_zero()
+        || config.request_timeout.is_zero()
+        || config.monitor_timeout.is_zero()
+    {
+        return Err(KmNetNativeError::InvalidConfig("timeouts must be non-zero"));
+    }
+    parse_uuid(&config.uuid)?;
+    Ok(())
+}
+
 impl PointerDevice for KmNetNativeDevice {
+    fn connect(&self) -> Result<(), AppError> {
+        let mut session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if session.is_none() {
+            *session = Some(
+                KmNetNativeSession::connect(&self.config)
+                    .map_err(|error| pointer_error(error.code(), error.to_string()))?,
+            );
+        }
+        Ok(())
+    }
+
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
         let dx = i16::try_from(command.delta_x_counts).map_err(|_| {
             pointer_error(
@@ -146,7 +201,18 @@ impl PointerDevice for KmNetNativeDevice {
         let mut payload = [0_u8; 56];
         payload[4..8].copy_from_slice(&i32::from(dx).to_le_bytes());
         payload[8..12].copy_from_slice(&i32::from(dy).to_le_bytes());
-        self.control
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = session.as_ref().ok_or_else(|| {
+            pointer_error(
+                "not_connected",
+                "native kmNet session is not connected".to_owned(),
+            )
+        })?;
+        session
+            .control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .exchange(CMD_MOUSE_MOVE, None, &payload, "move")
@@ -161,48 +227,64 @@ impl PointerDevice for KmNetNativeDevice {
     }
 
     fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
-        if !self.monitor_healthy.load(Ordering::Acquire) {
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = session.as_ref().ok_or_else(|| {
+            pointer_error(
+                "not_connected",
+                "native kmNet session is not connected".to_owned(),
+            )
+        })?;
+        if !session.monitor_healthy.load(Ordering::Acquire) {
             return Err(pointer_error(
                 "monitor_failed",
                 "kmNet monitor socket terminated".to_owned(),
             ));
         }
-        let last_update = *self
+        let last_update = *session
             .last_monitor_update
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if last_update.elapsed() > self.monitor_timeout {
+        if last_update.elapsed() > session.monitor_timeout {
             return Err(pointer_error(
                 "monitor_stale",
                 format!(
                     "kmNet monitor has been silent for more than {:?}",
-                    self.monitor_timeout
+                    session.monitor_timeout
                 ),
             ));
         }
-        let buttons = self.buttons.load(Ordering::Acquire);
+        let buttons = session.buttons.load(Ordering::Acquire);
         Ok(Some(PointerButtons {
             left: buttons & 0x01 != 0,
             right: buttons & 0x02 != 0,
         }))
     }
+
+    fn disconnect(&self) -> Result<(), AppError> {
+        if let Some(mut session) = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            session.shutdown();
+        }
+        Ok(())
+    }
 }
 
 impl Drop for KmNetNativeDevice {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        // Wake recv_from immediately; production shutdown must not inherit the
-        // device request timeout.
-        if let Ok(waker) = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) {
-            let _ = waker.send_to(&[0], (Ipv4Addr::LOCALHOST, self.monitor_port));
-        }
-        if let Some(handle) = self
-            .monitor
+        if let Some(mut session) = self
+            .session
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
         {
-            let _ = handle.join();
+            session.shutdown();
         }
     }
 }
@@ -452,7 +534,7 @@ mod tests {
     #[test]
     fn rejects_monitor_ports_outside_the_public_cpp_contract() {
         for monitor_port in [0, 1023, 49_152, u16::MAX] {
-            let error = KmNetNativeDevice::connect(KmNetNativeConfig {
+            let error = KmNetNativeDevice::new(KmNetNativeConfig {
                 host: Ipv4Addr::LOCALHOST,
                 port: 8888,
                 uuid: "01FBC068".to_owned(),
@@ -465,6 +547,32 @@ mod tests {
 
             assert!(error.to_string().contains("1024..=49151"));
         }
+    }
+
+    #[test]
+    fn construction_validates_without_opening_a_device_session() {
+        let device = KmNetNativeDevice::new(KmNetNativeConfig {
+            host: Ipv4Addr::LOCALHOST,
+            port: 9,
+            uuid: "01FBC068".to_owned(),
+            monitor_port: available_monitor_port(),
+            connect_timeout: Duration::from_millis(1),
+            request_timeout: Duration::from_millis(1),
+            monitor_timeout: Duration::from_millis(1),
+        })
+        .expect("construction must not contact the configured endpoint");
+
+        let error = device
+            .send(DeviceCommand {
+                epoch: RuntimeEpoch(1),
+                generation: Generation(1),
+                issued_at: MonotonicNanos(1),
+                target_object_id: 1,
+                delta_x_counts: 1,
+                delta_y_counts: 1,
+            })
+            .expect_err("commands outside an epoch-owned session must fail closed");
+        assert!(error.to_string().contains("not connected"));
     }
 
     #[test]
@@ -520,7 +628,7 @@ mod tests {
             assert!(ordinary_randoms.iter().all(|value| *value != 0));
             assert_ne!(ordinary_randoms[0], ordinary_randoms[1]);
         });
-        let device = KmNetNativeDevice::connect(KmNetNativeConfig {
+        let device = KmNetNativeDevice::new(KmNetNativeConfig {
             host: Ipv4Addr::LOCALHOST,
             port: server_port,
             uuid: "01FBC068".to_owned(),
@@ -530,6 +638,7 @@ mod tests {
             monitor_timeout: Duration::from_secs(2),
         })
         .unwrap();
+        device.connect().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while device.trigger_active().unwrap() != Some(true) && Instant::now() < deadline {
             thread::yield_now();
@@ -562,7 +671,14 @@ mod tests {
             .unwrap();
         responder.join().unwrap();
         let shutdown_started = Instant::now();
-        drop(device);
+        device.disconnect().unwrap();
         assert!(shutdown_started.elapsed() < Duration::from_millis(250));
+        assert!(
+            device
+                .trigger_active()
+                .unwrap_err()
+                .to_string()
+                .contains("not connected")
+        );
     }
 }

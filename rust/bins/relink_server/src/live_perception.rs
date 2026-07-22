@@ -74,7 +74,7 @@ pub(super) fn build_live_production_dependencies(
                     LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
                 })?;
                 Arc::new(
-                    KmNetNativeDevice::connect(KmNetNativeConfig {
+                    KmNetNativeDevice::new(KmNetNativeConfig {
                         host,
                         port: adapters.device.port,
                         uuid: adapters.device.uuid.clone(),
