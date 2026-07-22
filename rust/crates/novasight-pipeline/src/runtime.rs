@@ -669,15 +669,23 @@ fn spawn_targeting_worker(
                         selection.target_object_id,
                         selection.target_track_id,
                         selection.target_class_id,
+                        selection.target_aim_x,
+                        selection.target_aim_y,
                     ) {
-                        (Some(object_id), Some(track_id), Some(class_id)) => {
+                        (
+                            Some(object_id),
+                            Some(track_id),
+                            Some(class_id),
+                            Some(aim_x),
+                            Some(aim_y),
+                        ) => {
                             match batch.detections().iter().find(|item| {
                                 item.object_id() == object_id && item.class_id() == class_id
                             }) {
                                 Some(target) => (
                                     Some(track_id.0),
-                                    target.center_x(),
-                                    target.center_y(),
+                                    aim_x,
+                                    aim_y,
                                     f64::from(target.confidence()),
                                 ),
                                 None => {

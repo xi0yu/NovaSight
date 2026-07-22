@@ -206,6 +206,12 @@ pub struct PipelineRuntimeConfig {
     pub target_switch_min_continuity_score: f64,
     #[serde(default = "default_target_switch_delay_ms")]
     pub target_switch_delay_ms: f64,
+    #[serde(default = "default_target_aim_y_ratio")]
+    pub target_aim_y_ratio: f64,
+    #[serde(default)]
+    pub target_class_aim_y_ratios: String,
+    #[serde(default = "default_candidate_max_aspect_ratio")]
+    pub candidate_max_aspect_ratio: f64,
     #[serde(default = "default_max_command_age_ms")]
     pub max_command_age_ms: u64,
     #[serde(default = "default_output_interval_ms")]
@@ -258,6 +264,9 @@ impl Default for PipelineRuntimeConfig {
             ),
             target_switch_min_continuity_score: default_target_switch_min_continuity_score(),
             target_switch_delay_ms: default_target_switch_delay_ms(),
+            target_aim_y_ratio: default_target_aim_y_ratio(),
+            target_class_aim_y_ratios: String::new(),
+            candidate_max_aspect_ratio: default_candidate_max_aspect_ratio(),
             max_command_age_ms: default_max_command_age_ms(),
             output_interval_ms: default_output_interval_ms(),
             production_fields_explicit: false,
@@ -476,6 +485,19 @@ impl PipelineRuntimeConfig {
             0.0,
             10_000.0,
         )?;
+        validate_finite_range(
+            "pipeline.target_aim_y_ratio",
+            self.target_aim_y_ratio,
+            0.0,
+            1.0,
+        )?;
+        parse_target_class_aim_y_ratios(&self.target_class_aim_y_ratios)?;
+        validate_finite_range(
+            "pipeline.candidate_max_aspect_ratio",
+            self.candidate_max_aspect_ratio,
+            1.0,
+            100.0,
+        )?;
         if !(1..=1_000).contains(&self.max_command_age_ms) {
             return Err(ConfigValidationError::new(
                 "pipeline.max_command_age_ms",
@@ -516,6 +538,45 @@ pub fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValida
         ));
     }
     Ok(classes)
+}
+
+pub fn parse_target_class_aim_y_ratios(
+    value: &str,
+) -> Result<BTreeMap<u32, f64>, ConfigValidationError> {
+    let mut ratios = BTreeMap::new();
+    if value.trim().is_empty() {
+        return Ok(ratios);
+    }
+    for item in value.split(',') {
+        let (class_id, ratio) = item.trim().split_once(':').ok_or_else(|| {
+            ConfigValidationError::new(
+                "pipeline.target_class_aim_y_ratios",
+                "must use class_id:ratio pairs separated by commas",
+            )
+        })?;
+        let class_id = class_id.trim().parse::<u32>().map_err(|_| {
+            ConfigValidationError::new(
+                "pipeline.target_class_aim_y_ratios",
+                "class ids must be unsigned integers",
+            )
+        })?;
+        let ratio = ratio.trim().parse::<f64>().map_err(|_| {
+            ConfigValidationError::new(
+                "pipeline.target_class_aim_y_ratios",
+                "ratios must be finite numbers within 0..=1",
+            )
+        })?;
+        if !ratio.is_finite()
+            || !(0.0..=1.0).contains(&ratio)
+            || ratios.insert(class_id, ratio).is_some()
+        {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_class_aim_y_ratios",
+                "class ids must be unique and ratios must be finite within 0..=1",
+            ));
+        }
+    }
+    Ok(ratios)
 }
 
 fn validate_finite_range(
@@ -679,6 +740,14 @@ const fn default_target_switch_min_continuity_score() -> f64 {
 
 const fn default_target_switch_delay_ms() -> f64 {
     50.0
+}
+
+const fn default_target_aim_y_ratio() -> f64 {
+    0.22
+}
+
+const fn default_candidate_max_aspect_ratio() -> f64 {
+    6.0
 }
 
 const fn default_max_command_age_ms() -> u64 {
@@ -1458,5 +1527,14 @@ mod tests {
         };
         let error = config.validate().expect_err("zero target scoring weights");
         assert_eq!(error.field, "pipeline.target_selection_class_weight");
+    }
+
+    #[test]
+    fn class_aim_ratios_parse_to_typed_bounded_values() {
+        let parsed = parse_target_class_aim_y_ratios("0:0.22, 1:0.30").unwrap();
+        assert_eq!(parsed.get(&0), Some(&0.22));
+        assert_eq!(parsed.get(&1), Some(&0.30));
+        assert!(parse_target_class_aim_y_ratios("0:1.1").is_err());
+        assert!(parse_target_class_aim_y_ratios("0:0.2,0:0.3").is_err());
     }
 }

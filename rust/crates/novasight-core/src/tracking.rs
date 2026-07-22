@@ -17,6 +17,8 @@
 //!   selection returns `target_object_id = None` until a fresh
 //!   candidate re-acquires the lock.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -208,6 +210,9 @@ pub struct TargetSelection {
     pub target_class_id: Option<u32>,
     pub target_detection_confidence: Option<f32>,
     pub target_identity_confidence: Option<f64>,
+    /// Control aim point. Association continues to use the geometric center.
+    pub target_aim_x: Option<f64>,
+    pub target_aim_y: Option<f64>,
     pub lock_reason: Option<LockReason>,
     pub candidates: usize,
     pub inside_fov: usize,
@@ -222,6 +227,8 @@ impl TargetSelection {
             target_class_id: None,
             target_detection_confidence: None,
             target_identity_confidence: None,
+            target_aim_x: None,
+            target_aim_y: None,
             lock_reason: None,
             candidates: 0,
             inside_fov: 0,
@@ -256,6 +263,9 @@ pub struct TargetingConfig {
     pub switch_min_preference_advantage: f64,
     pub switch_min_continuity_score: f64,
     pub switch_delay_ms: f64,
+    pub aim_y_ratio: f64,
+    pub class_aim_y_ratios: BTreeMap<u32, f64>,
+    pub candidate_max_aspect_ratio: f64,
 }
 
 impl Default for TargetingConfig {
@@ -275,6 +285,9 @@ impl Default for TargetingConfig {
             switch_min_preference_advantage: 0.08,
             switch_min_continuity_score: 0.70,
             switch_delay_ms: 50.0,
+            aim_y_ratio: 0.22,
+            class_aim_y_ratios: BTreeMap::new(),
+            candidate_max_aspect_ratio: 6.0,
         }
     }
 }
@@ -358,6 +371,7 @@ impl TargetingCore {
             .filter(|det| {
                 det.confidence() >= self.config.min_confidence
                     && self.config.class_priority.contains(&det.class_id())
+                    && detection_aspect_ratio(det) <= self.config.candidate_max_aspect_ratio
                     && euclidean(
                         det.center_x(),
                         det.center_y(),
@@ -378,6 +392,8 @@ impl TargetingCore {
                 target_class_id: None,
                 target_detection_confidence: None,
                 target_identity_confidence: None,
+                target_aim_x: None,
+                target_aim_y: None,
                 lock_reason: None,
                 lost_count: self.lost_count,
             };
@@ -497,6 +513,19 @@ impl TargetingCore {
         } else {
             LockReason::FallbackClass
         };
+        let selected_detection = admissible
+            .iter()
+            .find(|detection| detection.object_id() == track.object_id)
+            .expect("selected track belongs to the admitted batch");
+        let aim_y_ratio = self
+            .config
+            .class_aim_y_ratios
+            .get(&track.class_id)
+            .copied()
+            .unwrap_or(self.config.aim_y_ratio);
+        let aim_x = selected_detection.center_x();
+        let aim_y = f64::from(selected_detection.y())
+            + f64::from(selected_detection.height()) * aim_y_ratio;
 
         self.history.push(track.clone());
         self.tracks = current;
@@ -510,6 +539,8 @@ impl TargetingCore {
             target_class_id: Some(track.class_id),
             target_detection_confidence: Some(track.confidence),
             target_identity_confidence: Some(track.identity_confidence),
+            target_aim_x: Some(aim_x),
+            target_aim_y: Some(aim_y),
             lock_reason: Some(reason),
             lost_count: self.lost_count,
         }
@@ -570,6 +601,12 @@ fn target_score(
         return distance_score;
     }
     (class_weight * class_score + distance_weight * distance_score) / total_weight
+}
+
+fn detection_aspect_ratio(detection: &Detection) -> f64 {
+    let width = f64::from(detection.width());
+    let height = f64::from(detection.height());
+    (width / height).max(height / width)
 }
 
 fn association_identity_confidence(

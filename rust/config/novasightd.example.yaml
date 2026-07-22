@@ -49,6 +49,9 @@ pipeline:
   target_switch_min_preference_advantage: 0.08
   target_switch_min_continuity_score: 0.70
   target_switch_delay_ms: 50.0
+  target_aim_y_ratio: 0.22
+  target_class_aim_y_ratios: ""
+  candidate_max_aspect_ratio: 6.0
   max_command_age_ms: 55
   output_interval_ms: 4
 capture:

@@ -3,6 +3,7 @@
 //! negative cases. The fixture reference values come from the Python
 //! `RuntimeTargetSelector`; only the small subset of edges the Phase 2
 //! slice must respect is asserted here.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use novasight_core::perception::types::Detection;
@@ -164,6 +165,34 @@ fn target_fov_radius_is_a_real_radial_admission_gate() {
     assert_eq!(selected.candidates, 2);
     assert_eq!(selected.inside_fov, 1);
     assert_eq!(selected.target_object_id, Some(2));
+}
+
+#[test]
+fn control_aim_point_is_separate_from_association_center_and_supports_class_override() {
+    let mut class_ratios = BTreeMap::new();
+    class_ratios.insert(1, 0.30);
+    let mut core = TargetingCore::new(TargetingConfig {
+        aim_y_ratio: 0.22,
+        class_aim_y_ratios: class_ratios,
+        ..TargetingConfig::default()
+    });
+    let target = Detection::new(1, 1, 280.0, 200.0, 80.0, 100.0, 0.9).expect("target");
+    let selection = core.select(&[target], OBSERVATION_CENTER);
+    assert_eq!(selection.target_aim_x, Some(320.0));
+    assert_eq!(selection.target_aim_y, Some(230.0));
+    assert_eq!(core.locked().expect("track").center_y, 250.0);
+}
+
+#[test]
+fn extreme_aspect_ratio_is_rejected_before_association() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        candidate_max_aspect_ratio: 6.0,
+        ..TargetingConfig::default()
+    });
+    let stretched = Detection::new(1, 0, 270.0, 315.0, 100.0, 10.0, 0.9).expect("stretched");
+    let selection = core.select(&[stretched], OBSERVATION_CENTER);
+    assert!(selection.target_object_id.is_none());
+    assert_eq!(selection.inside_fov, 0);
 }
 
 #[test]

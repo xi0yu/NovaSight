@@ -312,6 +312,21 @@ impl ConfigSchemaResponse {
                             10_000.0,
                             Some("ms"),
                         ),
+                        float(
+                            "pipeline.target_aim_y_ratio",
+                            "默认垂直瞄点比例",
+                            0.0,
+                            1.0,
+                            Some("bbox-height"),
+                        ),
+                        string("pipeline.target_class_aim_y_ratios", "按类别垂直瞄点比例"),
+                        float(
+                            "pipeline.candidate_max_aspect_ratio",
+                            "候选框最大宽高比",
+                            1.0,
+                            100.0,
+                            None,
+                        ),
                         integer(
                             "pipeline.max_command_age_ms",
                             "设备命令最大年龄",
