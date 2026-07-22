@@ -289,6 +289,22 @@ function profileRoleRecords(value: unknown): Record<string, Record<string, AimRo
   );
 }
 
+function serializeRustClassAimRatios(
+  roles: Record<string, AimRole>,
+  ratios: AimRoleRatios
+): string {
+  return Object.entries(roles)
+    .flatMap(([classId, role]) => {
+      const numericClassId = Number(classId);
+      return Number.isInteger(numericClassId) && numericClassId >= 0 && numericClassId <= 255
+        ? [[numericClassId, ratios[role]] as const]
+        : [];
+    })
+    .sort(([left], [right]) => left - right)
+    .map(([classId, ratio]) => `${classId}:${ratio.toFixed(2)}`)
+    .join(",");
+}
+
 function classDisplayName(value: string, classId: number): string {
   const normalized = value.trim().replace(new RegExp(`^${classId}\\s*[-:：]\\s*`), "");
   return normalized || `未知类别（cls ${classId}）`;
@@ -1230,7 +1246,12 @@ export function StudioConsoleView({
   const activeDetectionClass = readString(inferenceConfig.detection_class_filter, "all");
   const detectionProfileNames = Object.keys(detectionProfiles);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
-  const detectionClassPriority = readString(inferenceConfig.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
+  const detectionClassPriority = readString(
+    rustControlPlane
+      ? rustPipelineConfig.target_class_priority
+      : inferenceConfig.detection_class_priority,
+    "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+  );
   const classPriorityIds = parseClassPriority(detectionClassPriority);
   useEffect(() => {
     setRenamedClassProfileName(activeDetectionProfile);
@@ -1309,7 +1330,16 @@ export function StudioConsoleView({
   const aimRoleRatios: AimRoleRatios = {
     head: clampNumber(readNumber(rawAimRoleRatios.head, 0.22), 0, 1),
     body: clampNumber(readNumber(rawAimRoleRatios.body, 0.22), 0, 1),
-    other: clampNumber(readNumber(rawAimRoleRatios.other, 0.22), 0, 1)
+    other: clampNumber(
+      readNumber(
+        rustControlPlane
+          ? rustPipelineConfig.target_aim_y_ratio
+          : rawAimRoleRatios.other,
+        0.22
+      ),
+      0,
+      1
+    )
   };
   const classRoleProfiles = profileRoleRecords(aimConfig.class_roles);
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
@@ -2746,12 +2776,47 @@ export function StudioConsoleView({
 
   const updateAimRoleRatio = useCallback(
     async (role: AimRole, ratio: number) => {
-      await updateControlGroupField("aim", "role_y_ratios", {
+      const nextRatios = {
         ...aimRoleRatios,
         [role]: clampNumber(Number(ratio.toFixed(2)), 0, 1)
-      } as RuntimeConfigValue);
+      };
+      if (rustControlPlane) {
+        const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+        const next = base ? normalizeRuntimeConfig(base) : null;
+        if (!next) {
+          return;
+        }
+        const control = asRecord(next.control);
+        const aim = nestedRecord(control, "aim");
+        next.control = {
+          ...control,
+          aim: { ...aim, role_y_ratios: nextRatios }
+        } as RuntimeConfig[string];
+        next.pipeline = {
+          ...asRecord(next.pipeline),
+          target_aim_y_ratio: nextRatios.other,
+          target_class_aim_y_ratios: serializeRustClassAimRatios(
+            activeClassRoles,
+            nextRatios
+          )
+        } as RuntimeConfig[string];
+        stageConfigDialogDraft(next);
+        return;
+      }
+      await updateControlGroupField(
+        "aim",
+        "role_y_ratios",
+        nextRatios as RuntimeConfigValue
+      );
     },
-    [aimRoleRatios, updateControlGroupField]
+    [
+      activeClassRoles,
+      aimRoleRatios,
+      runtimeConfig,
+      rustControlPlane,
+      stageConfigDialogDraft,
+      updateControlGroupField
+    ]
   );
 
   const updateClassAimRole = useCallback(
@@ -2763,9 +2828,40 @@ export function StudioConsoleView({
           [String(classId)]: role
         }
       };
+      if (rustControlPlane) {
+        const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+        const next = base ? normalizeRuntimeConfig(base) : null;
+        if (!next) {
+          return;
+        }
+        const control = asRecord(next.control);
+        const aim = nestedRecord(control, "aim");
+        next.control = {
+          ...control,
+          aim: { ...aim, class_roles: nextProfiles }
+        } as RuntimeConfig[string];
+        next.pipeline = {
+          ...asRecord(next.pipeline),
+          target_class_aim_y_ratios: serializeRustClassAimRatios(
+            nextProfiles[activeDetectionProfile] ?? {},
+            aimRoleRatios
+          )
+        } as RuntimeConfig[string];
+        stageConfigDialogDraft(next);
+        return;
+      }
       await updateControlGroupField("aim", "class_roles", nextProfiles as RuntimeConfigValue);
     },
-    [activeClassRoles, activeDetectionProfile, classRoleProfiles, updateControlGroupField]
+    [
+      activeClassRoles,
+      activeDetectionProfile,
+      aimRoleRatios,
+      classRoleProfiles,
+      runtimeConfig,
+      rustControlPlane,
+      stageConfigDialogDraft,
+      updateControlGroupField
+    ]
   );
 
   const setClassPriorityPosition = useCallback(
@@ -2777,9 +2873,32 @@ export function StudioConsoleView({
       }
       current.splice(index, 1);
       current.splice(clampNumber(targetIndex, 0, current.length), 0, classId);
+      if (rustControlPlane) {
+        const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+        const next = base ? normalizeRuntimeConfig(base) : null;
+        if (!next) {
+          return;
+        }
+        next.inference = {
+          ...asRecord(next.inference),
+          detection_class_priority: current.join(",")
+        } as RuntimeConfig[string];
+        next.pipeline = {
+          ...asRecord(next.pipeline),
+          target_class_priority: current.join(",")
+        } as RuntimeConfig[string];
+        stageConfigDialogDraft(next);
+        return;
+      }
       await updateConfigField("inference", "detection_class_priority", current.join(","));
     },
-    [orderedClassEditorIds, updateConfigField]
+    [
+      orderedClassEditorIds,
+      runtimeConfig,
+      rustControlPlane,
+      stageConfigDialogDraft,
+      updateConfigField
+    ]
   );
 
   const toggleDetectionClass = useCallback(
@@ -2828,10 +2947,20 @@ export function StudioConsoleView({
           class_roles: roleProfiles
         }
       } as RuntimeConfig[string];
+      if (rustControlPlane) {
+        next.pipeline = {
+          ...asRecord(next.pipeline),
+          target_aim_y_ratio: aimRoleRatios.other,
+          target_class_aim_y_ratios: serializeRustClassAimRatios(
+            roleProfiles[nextActiveProfile] ?? {},
+            aimRoleRatios
+          )
+        } as RuntimeConfig[string];
+      }
       setLocalError(null);
       stageConfigDialogDraft(next);
     },
-    [runtimeConfig, stageConfigDialogDraft]
+    [aimRoleRatios, runtimeConfig, rustControlPlane, stageConfigDialogDraft]
   );
 
   const createClassProfile = useCallback(async (copyCurrent: boolean) => {

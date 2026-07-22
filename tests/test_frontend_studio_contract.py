@@ -478,7 +478,8 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     assert "未知类别（cls ${classId}）" in source
     assert 'updateConfigField("inference", "detection_class_profiles"' in source
     assert 'updateControlGroupField("aim", "class_roles"' in source
-    assert 'updateControlGroupField("aim", "role_y_ratios"' in source
+    assert '"role_y_ratios",' in source
+    assert "role_y_ratios: nextRatios" in source
     assert "<AimTargetRange" in source
     assert "recordArray(vision.detection_items)" in source
     assert 'updateConfigField("inference", "detection_class_priority", current.join(","))' in source
@@ -567,6 +568,12 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert 'rustPipelineConfig.target_selection_class_weight' in studio
     assert 'rustPipelineConfig.target_track_max_age' in studio
     assert 'updateConfigField("pipeline", "output_interval_ms"' in studio
+    assert "serializeRustClassAimRatios" in studio
+    assert "target_class_aim_y_ratios" in studio
+    assert "target_aim_y_ratio: nextRatios.other" in studio
+    assert "target_class_priority: current.join(\",\")" in studio
+    assert "rustPipelineConfig.target_class_priority" in studio
+    assert "rustPipelineConfig.target_aim_y_ratio" in studio
     assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
     assert 'Rust 主链使用有界关联与稳健速度短窗' in studio
     assert 'availableControlAlgorithms.map' in studio
