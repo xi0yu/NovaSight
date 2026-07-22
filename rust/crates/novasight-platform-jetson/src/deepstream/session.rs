@@ -22,6 +22,7 @@ use novasight_pipeline::{
 use thiserror::Error;
 
 use super::DeepStreamPipelineSpec;
+use super::{FrameLease, LatestFrameExchange};
 
 const EVENT_CAPACITY: usize = 8;
 const BUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -112,6 +113,7 @@ struct SnapshotSlot {
     snapshot: MaybeUninit<novasight_deepstream_bridge::FrameSnapshot>,
     pipeline_running_now_ns: u64,
     monotonic_now: novasight_core::MonotonicNanos,
+    frame: Option<gst::Buffer>,
 }
 
 impl SnapshotSlot {
@@ -120,6 +122,7 @@ impl SnapshotSlot {
             snapshot: MaybeUninit::uninit(),
             pipeline_running_now_ns: 0,
             monotonic_now: novasight_core::MonotonicNanos(0),
+            frame: None,
         }
     }
 }
@@ -128,6 +131,7 @@ impl SnapshotSlot {
 struct SnapshotExchange {
     free: ArrayQueue<Box<SnapshotSlot>>,
     ready: ArrayQueue<Box<SnapshotSlot>>,
+    latest_frames: LatestFrameExchange,
     closed: AtomicBool,
     wake_sequence: AtomicU64,
     wake_lock: Mutex<()>,
@@ -135,10 +139,11 @@ struct SnapshotExchange {
 }
 
 impl SnapshotExchange {
-    fn new() -> Arc<Self> {
+    fn new(latest_frames: LatestFrameExchange) -> Arc<Self> {
         let exchange = Arc::new(Self {
             free: ArrayQueue::new(SNAPSHOT_SLOT_COUNT),
             ready: ArrayQueue::new(1),
+            latest_frames,
             closed: AtomicBool::new(false),
             wake_sequence: AtomicU64::new(0),
             wake_lock: Mutex::new(()),
@@ -153,11 +158,8 @@ impl SnapshotExchange {
         exchange
     }
 
-    fn claim(&self) -> Option<(Box<SnapshotSlot>, bool)> {
-        self.free
-            .pop()
-            .map(|slot| (slot, false))
-            .or_else(|| self.ready.pop().map(|slot| (slot, true)))
+    fn claim(&self) -> Option<Box<SnapshotSlot>> {
+        self.free.pop()
     }
 
     fn publish(&self, mut slot: Box<SnapshotSlot>) -> Result<bool, Box<SnapshotSlot>> {
@@ -174,8 +176,13 @@ impl SnapshotExchange {
                 }
                 Err(returned) => {
                     slot = returned;
-                    if let Some(stale) = self.ready.pop() {
+                    if let Some(mut stale) = self.ready.pop() {
                         overwritten = true;
+                        // Releasing a strong GstBuffer reference is normal on a
+                        // GStreamer streaming thread. Mapping, CUDA work, model
+                        // execution, and arbitrary user cleanup remain forbidden
+                        // here; only the replaced pending lease is retired.
+                        drop(stale.frame.take());
                         self.recycle(stale);
                     }
                 }
@@ -271,15 +278,33 @@ struct StartedPipeline {
 #[derive(Clone, Debug)]
 pub struct DeepStreamAdapter {
     config: DeepStreamSessionConfig,
+    latest_frames: LatestFrameExchange,
 }
 
 impl DeepStreamAdapter {
     pub fn new(config: DeepStreamSessionConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            latest_frames: LatestFrameExchange::new(),
+        }
+    }
+
+    pub fn with_latest_frames(
+        config: DeepStreamSessionConfig,
+        latest_frames: LatestFrameExchange,
+    ) -> Self {
+        Self {
+            config,
+            latest_frames,
+        }
     }
 
     pub fn config(&self) -> &DeepStreamSessionConfig {
         &self.config
+    }
+
+    pub fn latest_frames(&self) -> &LatestFrameExchange {
+        &self.latest_frames
     }
 }
 
@@ -291,9 +316,16 @@ impl PerceptionAdapter for DeepStreamAdapter {
         clock: Arc<dyn Clock>,
         events: SyncSender<PerceptionEvent>,
     ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
-        DeepStreamSession::start_internal(self.config.clone(), epoch, ingress, clock, Some(events))
-            .map(|session| Box::new(session) as Box<dyn PerceptionSession>)
-            .map_err(|error| PerceptionError::new(error.to_string()))
+        DeepStreamSession::start_internal(
+            self.config.clone(),
+            epoch,
+            ingress,
+            clock,
+            Some(events),
+            self.latest_frames.clone(),
+        )
+        .map(|session| Box::new(session) as Box<dyn PerceptionSession>)
+        .map_err(|error| PerceptionError::new(error.to_string()))
     }
 }
 
@@ -314,7 +346,14 @@ impl DeepStreamSession {
         ingress: PipelineIngress,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, SessionError> {
-        Self::start_internal(config, epoch, ingress, clock, None)
+        Self::start_internal(
+            config,
+            epoch,
+            ingress,
+            clock,
+            None,
+            LatestFrameExchange::new(),
+        )
     }
 
     fn start_internal(
@@ -323,8 +362,10 @@ impl DeepStreamSession {
         ingress: PipelineIngress,
         clock: Arc<dyn Clock>,
         perception_events: Option<SyncSender<PerceptionEvent>>,
+        latest_frames: LatestFrameExchange,
     ) -> Result<Self, SessionError> {
         config.validate()?;
+        latest_frames.clear();
         let (command_tx, command_rx) = sync_channel(1);
         let (event_tx, event_rx) = sync_channel(EVENT_CAPACITY);
         let (startup_tx, startup_rx) = sync_channel(1);
@@ -348,6 +389,7 @@ impl DeepStreamSession {
                     command_rx,
                     startup_tx,
                     worker_state,
+                    latest_frames,
                 )
             })
             .map_err(SessionError::Spawn)?;
@@ -430,8 +472,16 @@ fn run_session(
     commands: Receiver<SessionCommand>,
     startup: SyncSender<Result<(), String>>,
     state: Arc<ProbeState>,
+    latest_frames: LatestFrameExchange,
 ) -> Result<(), SessionError> {
-    let startup_result = start_pipeline(&config, epoch, ingress, clock, Arc::clone(&state));
+    let startup_result = start_pipeline(
+        &config,
+        epoch,
+        ingress,
+        clock,
+        Arc::clone(&state),
+        latest_frames,
+    );
     let StartedPipeline {
         pipeline,
         probe_pad,
@@ -516,6 +566,7 @@ fn start_pipeline(
     ingress: PipelineIngress,
     monotonic_clock: Arc<dyn Clock>,
     state: Arc<ProbeState>,
+    latest_frames: LatestFrameExchange,
 ) -> Result<StartedPipeline, SessionError> {
     validate_loaded_abi().map_err(SessionError::BridgeAbi)?;
     gst::init().map_err(|error| SessionError::GstreamerInit(error.to_string()))?;
@@ -540,7 +591,7 @@ fn start_pipeline(
             })?;
     let weak_pipeline = pipeline.downgrade();
     let source_id = config.source_id;
-    let exchange = SnapshotExchange::new();
+    let exchange = SnapshotExchange::new(latest_frames);
     let probe_exchange = Arc::clone(&exchange);
     let probe_state = Arc::clone(&state);
     let probe_clock = Arc::clone(&monotonic_clock);
@@ -556,20 +607,14 @@ fn start_pipeline(
                 .metrics
                 .probed_buffers
                 .fetch_add(1, Ordering::Relaxed);
-            let Some((mut slot, claimed_ready)) = probe_exchange.claim() else {
+            let Some(mut slot) = probe_exchange.claim() else {
                 probe_state
                     .metrics
                     .unavailable_snapshot_slots
                     .fetch_add(1, Ordering::Relaxed);
                 return gst::PadProbeReturn::Ok;
             };
-            if claimed_ready {
-                probe_state
-                    .metrics
-                    .overwritten_snapshots
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            let Some(buffer) = NonNull::new(buffer.as_ptr().cast_mut().cast::<c_void>()) else {
+            let Some(buffer_ptr) = NonNull::new(buffer.as_ptr().cast_mut().cast::<c_void>()) else {
                 probe_state
                     .metrics
                     .extraction_rejections
@@ -577,7 +622,7 @@ fn start_pipeline(
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;
             };
-            if unsafe { extract_frame_into(buffer, source_id, &mut slot.snapshot) }.is_err() {
+            if unsafe { extract_frame_into(buffer_ptr, source_id, &mut slot.snapshot) }.is_err() {
                 probe_state
                     .metrics
                     .extraction_rejections
@@ -619,6 +664,7 @@ fn start_pipeline(
             };
             slot.pipeline_running_now_ns = running_now_ns;
             slot.monotonic_now = probe_clock.now();
+            slot.frame = Some(buffer.to_owned());
             match probe_exchange.publish(slot) {
                 Ok(true) => {
                     probe_state
@@ -739,9 +785,9 @@ fn run_snapshot_worker(
     state: &ProbeState,
     context: &SnapshotWorkerContext,
 ) {
-    while let Some(slot) = exchange.wait_take() {
+    while let Some(mut slot) = exchange.wait_take() {
         if state.closed.load(Ordering::Acquire) {
-            exchange.recycle(slot);
+            recycle_from_worker(exchange, slot);
             break;
         }
         let generation =
@@ -753,7 +799,7 @@ fn run_snapshot_worker(
                 Ok(previous) => Generation(previous + 1),
                 Err(_) => {
                     state.fault("DeepStream runtime generation exhausted");
-                    exchange.recycle(slot);
+                    recycle_from_worker(exchange, slot);
                     break;
                 }
             };
@@ -778,29 +824,49 @@ fn run_snapshot_worker(
                     .metrics
                     .admission_rejections
                     .fetch_add(1, Ordering::Relaxed);
-                exchange.recycle(slot);
+                recycle_from_worker(exchange, slot);
                 continue;
             }
         };
-        if context.max_batch_age_ns.is_some_and(|maximum| {
-            context
-                .monotonic_clock
-                .now()
-                .0
-                .saturating_sub(admitted.batch().stamp().captured_at.0)
-                > maximum
-        }) {
+        let now = context.monotonic_clock.now();
+        let Some(batch_age_ns) = now.0.checked_sub(admitted.batch().stamp().captured_at.0) else {
             state
                 .metrics
                 .admission_rejections
                 .fetch_add(1, Ordering::Relaxed);
-            exchange.recycle(slot);
+            recycle_from_worker(exchange, slot);
+            continue;
+        };
+        if context
+            .max_batch_age_ns
+            .is_some_and(|maximum| batch_age_ns > maximum)
+        {
+            state
+                .metrics
+                .admission_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            recycle_from_worker(exchange, slot);
             continue;
         }
         if state.closed.load(Ordering::Acquire) {
-            exchange.recycle(slot);
+            recycle_from_worker(exchange, slot);
             break;
         }
+        let stamp = admitted.batch().stamp();
+        let width = admitted.batch().coordinate_width();
+        let height = admitted.batch().coordinate_height();
+        let frame = slot
+            .frame
+            .take()
+            .expect("published DeepStream snapshot owns its GstBuffer lease");
+        let _ = exchange.latest_frames.publish(FrameLease::new(
+            frame,
+            stamp.epoch,
+            stamp.generation,
+            stamp.captured_at,
+            width,
+            height,
+        ));
         match context.ingress.try_submit(admitted.into_batch()) {
             Ok(()) => {
                 state
@@ -821,12 +887,17 @@ fn run_snapshot_worker(
                     .ingress_rejections
                     .fetch_add(1, Ordering::Relaxed);
                 state.fault(format!("DeepStream ingress rejected a batch: {error}"));
-                exchange.recycle(slot);
+                recycle_from_worker(exchange, slot);
                 break;
             }
         }
-        exchange.recycle(slot);
+        recycle_from_worker(exchange, slot);
     }
+}
+
+fn recycle_from_worker(exchange: &SnapshotExchange, mut slot: Box<SnapshotSlot>) {
+    drop(slot.frame.take());
+    exchange.recycle(slot);
 }
 
 fn wait_until_ready(
@@ -936,6 +1007,9 @@ fn cleanup_pipeline(
     {
         failures.push("perception worker panicked".to_owned());
     }
+    // The worker is the only publisher. Clearing after join prevents a
+    // stop-vs-publish race from leaking an old epoch or NVMM pool lease.
+    exchange.latest_frames.clear();
     if !failures.is_empty() {
         return Err(SessionError::ShutdownCleanup(failures.join("; ")));
     }
@@ -1021,4 +1095,32 @@ pub enum SessionError {
     StartupFailed(String),
     #[error("DeepStream owner thread panicked")]
     WorkerPanicked,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_exchange_keeps_the_newest_pending_frame_under_sustained_overload() {
+        let exchange = SnapshotExchange::new(LatestFrameExchange::new());
+        // Model the single perception worker holding the current frame while
+        // the streaming thread repeatedly replaces the one pending frame.
+        let worker_owned = exchange.claim().expect("worker slot");
+
+        for generation in 0..128 {
+            let mut pending = exchange.claim().expect("replacement slot remains reusable");
+            assert!(pending.frame.is_none());
+            pending.pipeline_running_now_ns = generation;
+            pending.frame = Some(gst::Buffer::new());
+            assert_eq!(exchange.publish(pending).unwrap(), generation > 0);
+        }
+
+        let mut newest = exchange.wait_take().expect("newest pending frame");
+        assert_eq!(newest.pipeline_running_now_ns, 127);
+        assert!(newest.frame.take().is_some());
+        exchange.recycle(newest);
+        exchange.recycle(worker_owned);
+        assert_eq!(exchange.free.len(), SNAPSHOT_SLOT_COUNT);
+    }
 }

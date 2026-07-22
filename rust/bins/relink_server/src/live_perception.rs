@@ -18,7 +18,7 @@ use novasight_pipeline::{
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
-    DeepStreamSessionConfig, ModelInput, Roi,
+    DeepStreamSessionConfig, LatestFrameExchange, ModelInput, Roi,
 };
 use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
 #[cfg(feature = "experimental-kmnet-native")]
@@ -116,6 +116,7 @@ fn build_live_dependencies(
         return Err(LivePerceptionError::AutomaticCaptureUnsupported);
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
+    let latest_frames = LatestFrameExchange::new();
     Ok(RuntimeDependencies::new(
         clock,
         device,
@@ -128,6 +129,7 @@ fn build_live_dependencies(
     .with_perception(Arc::new(CatalogDeepStreamAdapter {
         config: config.clone(),
         model_catalog,
+        latest_frames,
     })))
 }
 
@@ -135,6 +137,7 @@ fn build_live_dependencies(
 struct CatalogDeepStreamAdapter {
     config: AppConfig,
     model_catalog: SqliteModelCatalog,
+    latest_frames: LatestFrameExchange,
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
@@ -166,7 +169,8 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
     ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
         let config = build_deepstream_session_config(&self.config, &self.model_catalog)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
-        DeepStreamAdapter::new(config).start(epoch, ingress, clock, events)
+        DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
+            .start(epoch, ingress, clock, events)
     }
 }
 
@@ -568,7 +572,7 @@ fn validate_model_document(
     model_width: u32,
     model_height: u32,
 ) -> Result<String, LivePerceptionError> {
-    validate_manifest_shape(&document, model_width, model_height)?;
+    validate_manifest_shape(document, model_width, model_height)?;
     if !document.validated {
         return Err(manifest_error("model manifest must have validated=true"));
     }
