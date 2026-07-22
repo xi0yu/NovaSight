@@ -7,6 +7,12 @@ use std::mem::size_of;
 #[cfg(feature = "ffi")]
 use std::ptr::NonNull;
 
+mod admission;
+
+pub use admission::{
+    AdmissionContext, AdmissionError, AdmittedFrame, PipelineClockSample, admit_snapshot,
+};
+
 pub const ABI_VERSION: u32 = 1;
 pub const MAX_DETECTIONS: usize = 256;
 pub const ANY_SOURCE: u32 = u32::MAX;

@@ -7,3 +7,6 @@ edition = "2024"
 default = []
 ffi = []
 
+[dependencies]
+novasight-core = { path = "../novasight-core" }
+thiserror.workspace = true

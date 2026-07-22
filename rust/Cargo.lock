@@ -616,6 +616,10 @@ dependencies = [
 [[package]]
 name = "novasight-deepstream-bridge"
 version = "0.1.0"
+dependencies = [
+ "novasight-core",
+ "thiserror",
+]
 
 [[package]]
 name = "novasight-pipeline"
