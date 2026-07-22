@@ -6,6 +6,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
 use uuid::Uuid;
 
 fn binary() -> &'static str {
@@ -16,7 +19,7 @@ struct TempDirectory(PathBuf);
 
 impl TempDirectory {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("novasightd-cli-{}", Uuid::new_v4()));
+        let path = PathBuf::from("/tmp").join(format!("novasightd-cli-{}", Uuid::new_v4()));
         fs::create_dir(&path).expect("create temp directory");
         Self(path)
     }
@@ -35,7 +38,15 @@ impl Drop for TempDirectory {
 fn temp_config() -> (TempDirectory, PathBuf) {
     let directory = TempDirectory::new();
     let path = directory.join("novasight.yaml");
-    fs::write(&path, "server:\n  host: 127.0.0.1\n  port: 0\n").expect("write config");
+    let socket = directory.join("novasightd.sock");
+    fs::write(
+        &path,
+        format!(
+            "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: {}\n",
+            socket.display()
+        ),
+    )
+    .expect("write config");
     (directory, path)
 }
 
@@ -107,27 +118,42 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
     let mut child = ChildGuard(Some(child));
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let address = BufReader::new(stderr)
-            .lines()
-            .map_while(Result::ok)
-            .find_map(|line| {
-                line.split_whitespace()
-                    .find_map(|field| field.strip_prefix("address="))
-                    .and_then(|address| address.parse::<SocketAddr>().ok())
-            });
-        let _ = ready_tx.send(address);
+        let mut log = Vec::new();
+        let mut ready = None;
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let mut address = None;
+            let mut socket = None;
+            for field in line.split_whitespace() {
+                if let Some(value) = field.strip_prefix("address=") {
+                    address = value.parse::<SocketAddr>().ok();
+                } else if let Some(value) = field.strip_prefix("socket=") {
+                    socket = Some(PathBuf::from(value));
+                }
+            }
+            log.push(line);
+            if let Some(value) = address.zip(socket) {
+                ready = Some(value);
+                break;
+            }
+        }
+        let _ = ready_tx.send((ready, log));
     });
-    let address = ready_rx
+    let (ready, log) = ready_rx
         .recv_timeout(Duration::from_secs(5))
-        .expect("readiness timeout")
-        .expect("daemon exited before readiness");
+        .expect("readiness timeout");
+    let (address, control_socket) =
+        ready.unwrap_or_else(|| panic!("daemon exited before readiness: {}", log.join(" | ")));
+    assert!(control_socket.exists(), "control socket was not created");
 
     let (status, initial) = http_request(address, "GET", "/api/v1/status");
     assert_eq!(status, 200);
     assert!(initial.contains("\"state\":\"stopped\""));
-    let (status, started) = http_request(address, "POST", "/api/v1/runtime/start");
+    let (status, started) = unix_http_request(&control_socket, "POST", "/api/v1/runtime/start");
     assert_eq!(status, 200);
     assert!(started.contains("\"state\":\"running\""));
+    let (status, shared) = http_request(address, "GET", "/api/v1/status");
+    assert_eq!(status, 200);
+    assert!(shared.contains("\"state\":\"running\""));
 
     let signal = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
@@ -138,6 +164,10 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
         .wait_timeout(Duration::from_secs(5))
         .expect("wait for graceful exit");
     assert!(status.success(), "novasightd exited with {status}");
+    assert!(
+        !control_socket.exists(),
+        "control socket was not removed after shutdown"
+    );
 }
 
 fn http_request(address: SocketAddr, method: &str, path: &str) -> (u16, String) {
@@ -164,6 +194,33 @@ fn http_request(address: SocketAddr, method: &str, path: &str) -> (u16, String) 
         .expect("HTTP status")
         .parse()
         .expect("numeric HTTP status");
+    (status, body.to_owned())
+}
+
+#[cfg(unix)]
+fn unix_http_request(socket: &Path, method: &str, path: &str) -> (u16, String) {
+    let mut stream = UnixStream::connect(socket).expect("connect Unix control socket");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write Unix HTTP request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read Unix HTTP response");
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .expect("Unix HTTP response headers");
+    let status = headers
+        .split_whitespace()
+        .nth(1)
+        .expect("Unix HTTP status")
+        .parse()
+        .expect("numeric Unix HTTP status");
     (status, body.to_owned())
 }
 

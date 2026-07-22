@@ -39,6 +39,8 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_server_port")]
     pub port: u16,
+    #[serde(default = "default_control_socket")]
+    pub control_socket: PathBuf,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
 }
@@ -48,6 +50,7 @@ impl Default for ServerConfig {
         Self {
             host: default_server_host(),
             port: default_server_port(),
+            control_socket: default_control_socket(),
             legacy: BTreeMap::new(),
         }
     }
@@ -115,6 +118,10 @@ fn default_server_host() -> String {
 
 const fn default_server_port() -> u16 {
     5174
+}
+
+fn default_control_socket() -> PathBuf {
+    PathBuf::from("/run/novasight/novasightd.sock")
 }
 
 const fn default_replay_enabled() -> bool {

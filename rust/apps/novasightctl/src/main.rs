@@ -1,17 +1,19 @@
-//! `novasightctl` — the NovaSight command-line client.
-//!
-//! Commit 1 ships an empty entrypoint that initializes logging and
-//! returns success. The real CLI surface lands in Commit 6.
+//! `novasightctl` — the thin local client for the daemon authority.
 
-use anyhow::Result;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
 use clap::{Parser, Subcommand};
+use novasight_client::{ClientError, ControlClient};
+use novasight_runtime::RuntimeSnapshot;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "novasightctl", about = "NovaSight daemon command-line client")]
 struct Cli {
+    /// Unix domain socket exposed by novasightd.
     #[arg(long, default_value = "/run/novasight/novasightd.sock")]
-    socket: String,
+    socket: PathBuf,
 
     #[command(subcommand)]
     command: Command,
@@ -19,12 +21,16 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Print the current immutable runtime snapshot.
     Status,
+    /// Start the runtime pipeline.
     Start,
+    /// Stop the runtime pipeline.
     Stop,
+    /// Restart the runtime pipeline with a new epoch.
     Restart,
+    /// Immediately close output and stop the runtime pipeline.
     EmergencyStop,
-    Diagnose,
 }
 
 fn init_logging() {
@@ -36,8 +42,34 @@ fn init_logging() {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     init_logging();
-    let _cli = Cli::parse();
-    Ok(())
+    let cli = Cli::parse();
+    match execute(cli).await {
+        Ok(snapshot) => match serde_json::to_string_pretty(&snapshot) {
+            Ok(json) => {
+                println!("{json}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("snapshot_encode_failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn execute(cli: Cli) -> Result<RuntimeSnapshot, ClientError> {
+    let client = ControlClient::new(cli.socket);
+    match cli.command {
+        Command::Status => client.status().await,
+        Command::Start => client.start().await,
+        Command::Stop => client.stop().await,
+        Command::Restart => client.restart().await,
+        Command::EmergencyStop => client.emergency_stop().await,
+    }
 }

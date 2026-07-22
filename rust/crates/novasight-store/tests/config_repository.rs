@@ -55,6 +55,10 @@ fn loads_the_complete_rust_owned_example() {
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "0.0.0.0");
     assert_eq!(config.server.port, 5174);
+    assert_eq!(
+        config.server.control_socket,
+        Path::new("/run/novasight/novasightd.sock")
+    );
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
@@ -82,6 +86,10 @@ fn defaults_match_the_current_deployment_after_a_document_is_opened() {
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "0.0.0.0");
     assert_eq!(config.server.port, 5174);
+    assert_eq!(
+        config.server.control_socket,
+        Path::new("/run/novasight/novasightd.sock")
+    );
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
