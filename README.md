@@ -171,11 +171,9 @@ scripts/build_deepstream_bridge.sh
 cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
 cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
 scripts/stage_jetson_release.sh
-sudo install -d -m 0750 /etc/novasight
-sudo install -m 0640 build/jetson-release/share/novasight/novasight.production.yaml \
-  /etc/novasight/novasight.yaml
-sudo cp -a build/jetson-release/. /opt/novasight/
-/opt/novasight/bin/novasightd --config /etc/novasight/novasight.yaml --check
+sudo build/jetson-release/scripts/install_jetson_release.sh
+sudo /opt/novasight/current/bin/novasightd \
+  --config /etc/novasight/novasight.yaml --check
 ```
 
 The staged `bin/../lib` layout matches the daemon's production RUNPATH and the
@@ -186,6 +184,14 @@ production template uses absolute `/opt/novasight` and `/var/lib/novasight`
 paths; the development example remains repository-relative. Running the
 unstaged Cargo binary is not a production check because the native bridge is
 built outside its RUNPATH.
+
+The installer writes each build to `/opt/novasight/releases/<release-id>` and
+only then atomically switches `/opt/novasight/current`. It never overwrites an
+existing `/etc/novasight/novasight.yaml`; the new template is written as
+`novasight.yaml.dist` for an explicit operator merge. It reloads systemd but
+does not start the service, so license/config/model checks remain a deliberate
+deployment gate. Retained version directories keep rollback recoverable and
+explicit; same-ID installs fail closed instead of mutating an immutable release.
 
 The example config starts the active TensorRT deployment through nvinfer. kmNet
 auto-connect runs independently.

@@ -21,6 +21,8 @@ require_file "${CLI}"
 require_file "${BRIDGE}"
 require_file "${PARSER}"
 require_file "${ROOT_DIR}/scripts/model_ingress_job.py"
+require_file "${ROOT_DIR}/scripts/install_jetson_release.sh"
+require_file "${ROOT_DIR}/scripts/deployment_check.py"
 require_file "${ROOT_DIR}/deploy/novasight.service"
 require_file "${ROOT_DIR}/deploy/novasight.production.yaml"
 require_file "${ROOT_DIR}/novasight/executors/kmnet_host.py"
@@ -32,6 +34,10 @@ install -m 0755 "${DAEMON}" "${STAGE_DIR}/bin/novasightd"
 install -m 0755 "${CLI}" "${STAGE_DIR}/bin/novasightctl"
 install -m 0755 "${ROOT_DIR}/scripts/model_ingress_job.py" \
   "${STAGE_DIR}/scripts/model_ingress_job.py"
+install -m 0755 "${ROOT_DIR}/scripts/install_jetson_release.sh" \
+  "${STAGE_DIR}/scripts/install_jetson_release.sh"
+install -m 0755 "${ROOT_DIR}/scripts/deployment_check.py" \
+  "${STAGE_DIR}/scripts/deployment_check.py"
 install -m 0644 "${BRIDGE}" "${STAGE_DIR}/lib/libnovasight_deepstream_bridge.so"
 install -m 0644 "${PARSER}" "${STAGE_DIR}/lib/libnovasight_parser.so"
 install -m 0644 "${ROOT_DIR}/deploy/novasight.service" \
@@ -50,6 +56,19 @@ cp -R "${ROOT_DIR}/novasight/." "${STAGE_DIR}/novasight/"
 find "${STAGE_DIR}/novasight" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 find "${STAGE_DIR}/novasight" -type d -name __pycache__ -empty -delete
 
+RELEASE_ID="${NOVASIGHT_RELEASE_ID:-}"
+if [[ -z "${RELEASE_ID}" ]]; then
+  RELEASE_ID="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD)"
+  if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no)" ]]; then
+    RELEASE_ID="${RELEASE_ID}.dirty"
+  fi
+fi
+if [[ ! "${RELEASE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  echo "error: invalid NOVASIGHT_RELEASE_ID: ${RELEASE_ID}" >&2
+  exit 1
+fi
+printf '%s\n' "${RELEASE_ID}" > "${STAGE_DIR}/RELEASE_ID"
+
 for optional in libnovasight_preprocess.so libnovasight_tensorrt.so; do
   source_path="${ROOT_DIR}/build/jetson-native/${optional}"
   if [[ -f "${source_path}" ]]; then
@@ -63,3 +82,4 @@ echo "cli: ${STAGE_DIR}/bin/novasightctl"
 echo "libraries: ${STAGE_DIR}/lib"
 echo "production_config: ${STAGE_DIR}/share/novasight/novasight.production.yaml"
 echo "python_helpers: ${STAGE_DIR}/novasight"
+echo "release_id: ${RELEASE_ID}"

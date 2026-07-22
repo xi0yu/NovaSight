@@ -84,7 +84,7 @@ inference:
   confidence_threshold: 0.25
   nms_threshold: 0.45
   inference_input_deadline_ms: 55.0
-  deepstream_parser_library: /opt/novasight/lib/libnovasight_parser.so
+  deepstream_parser_library: /opt/novasight/current/lib/libnovasight_parser.so
   deepstream_io_mode: 2
   deepstream_batched_push_timeout_us: 0
   deepstream_component_id: 1

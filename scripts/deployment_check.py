@@ -64,6 +64,7 @@ def run_deployment_check(
         _unit_check(unit, "Service", "StandardError", "journal"),
         _unit_check(unit, "Service", "RuntimeDirectory", "novasight"),
         _unit_check(unit, "Service", "LogsDirectory", "novasight"),
+        _unit_check(unit, "Service", "WorkingDirectory", "/opt/novasight/current"),
         _environment_check(
             unit,
             expected="NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock",
@@ -96,11 +97,14 @@ def _release_checks(root: Path) -> list[CheckResult]:
         "lib/libnovasight_deepstream_bridge.so",
         "lib/libnovasight_parser.so",
         "scripts/model_ingress_job.py",
+        "scripts/install_jetson_release.sh",
+        "scripts/deployment_check.py",
         "deploy/novasight.service",
         "share/novasight/novasight.production.yaml",
         "novasight/__init__.py",
         "novasight/executors/kmnet_host.py",
         "novasight/executors/kmnet_loader.py",
+        "RELEASE_ID",
     )
     checks = [
         CheckResult(
@@ -113,7 +117,7 @@ def _release_checks(root: Path) -> list[CheckResult]:
     config = root / "share/novasight/novasight.production.yaml"
     contents = config.read_text(encoding="utf-8") if config.is_file() else ""
     expected_paths = (
-        "deepstream_parser_library: /opt/novasight/lib/libnovasight_parser.so",
+        "deepstream_parser_library: /opt/novasight/current/lib/libnovasight_parser.so",
         "deepstream_nvinfer_config: /var/lib/novasight/runtime/deepstream/active-nvinfer.ini",
         "data_dir: /var/lib/novasight",
         "database: /var/lib/novasight/novasight.db",
@@ -214,7 +218,7 @@ def _environment_check(unit: configparser.ConfigParser, *, expected: str) -> Che
 
 def _exec_start_check(unit: configparser.ConfigParser) -> CheckResult:
     actual = unit.get("Service", "ExecStart", fallback="")
-    expected = "/opt/novasight/bin/novasightd"
+    expected = "/opt/novasight/current/bin/novasightd"
     return CheckResult(
         name="unit.Service.ExecStart.novasightd",
         passed=actual == expected or actual.startswith(f"{expected} "),
@@ -227,10 +231,10 @@ def _exec_start_check(unit: configparser.ConfigParser) -> CheckResult:
 
 def _exec_start_pre_check(unit: configparser.ConfigParser) -> CheckResult:
     actual = unit.get("Service", "ExecStartPre", fallback="")
-    executable = "/opt/novasight/bin/novasightd"
+    executable = "/opt/novasight/current/bin/novasightd"
     required = (
         "--config /etc/novasight/novasight.yaml",
-        "--model-job-script /opt/novasight/scripts/model_ingress_job.py",
+        "--model-job-script /opt/novasight/current/scripts/model_ingress_job.py",
         "--check",
     )
     return CheckResult(

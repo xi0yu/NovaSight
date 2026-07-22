@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/novasight
+WorkingDirectory=/opt/novasight/current
 Environment=NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock
 EnvironmentFile=-/etc/novasight/novasight.env
 RuntimeDirectory=novasight
@@ -14,8 +14,8 @@ StateDirectory=novasight
 StateDirectoryMode=0750
 LogsDirectory=novasight
 LogsDirectoryMode=0755
-ExecStartPre=/opt/novasight/bin/novasightd --config /etc/novasight/novasight.yaml --model-job-python /usr/bin/python3 --model-job-script /opt/novasight/scripts/model_ingress_job.py --model-job-workdir /var/lib/novasight --check
-ExecStart=/opt/novasight/bin/novasightd --config /etc/novasight/novasight.yaml --model-job-python /usr/bin/python3 --model-job-script /opt/novasight/scripts/model_ingress_job.py --model-job-workdir /var/lib/novasight
+ExecStartPre=/opt/novasight/current/bin/novasightd --config /etc/novasight/novasight.yaml --model-job-python /usr/bin/python3 --model-job-script /opt/novasight/current/scripts/model_ingress_job.py --model-job-workdir /var/lib/novasight --check
+ExecStart=/opt/novasight/current/bin/novasightd --config /etc/novasight/novasight.yaml --model-job-python /usr/bin/python3 --model-job-script /opt/novasight/current/scripts/model_ingress_job.py --model-job-workdir /var/lib/novasight
 Restart=on-failure
 RestartSec=2
 KillSignal=SIGINT
