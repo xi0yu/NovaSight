@@ -87,7 +87,7 @@ pub(super) fn build_live_production_dependencies(
             }
         }
         DeviceBackend::PythonHost => Arc::new(
-            KmNetHostClient::connect(KmNetHostConfig {
+            KmNetHostClient::new(KmNetHostConfig {
                 program: config.paths.python_executable.clone(),
                 args: vec![
                     OsString::from("-u"),

@@ -15,11 +15,22 @@ pub trait PerceptionSource: Send {
 
 /// Device transition seam; successful sends return a typed receipt for the same command.
 pub trait PointerDevice: Send + Sync {
+    /// Acquire the concrete device session for one runtime epoch. Stateless
+    /// adapters may keep the default no-op implementation.
+    fn connect(&self) -> Result<(), AppError> {
+        Ok(())
+    }
+
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError>;
 
     /// Read the hardware-owned output trigger when the adapter supports it.
     /// `None` means this device has no hardware trigger source.
     fn trigger_active(&self) -> Result<Option<bool>, AppError> {
         Ok(None)
+    }
+
+    /// Release the epoch-owned device session after every worker has stopped.
+    fn disconnect(&self) -> Result<(), AppError> {
+        Ok(())
     }
 }

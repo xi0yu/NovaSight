@@ -116,6 +116,10 @@ pub enum PipelineError {
     InvalidOutputInterval { actual_ms: u64 },
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
+    #[error("pointer device connection failed: {0}")]
+    DeviceConnect(String),
+    #[error("pointer device disconnect failed: {0}")]
+    DeviceDisconnect(String),
     #[error("failed to spawn {worker} worker: {source}")]
     Spawn {
         worker: &'static str,
@@ -361,6 +365,7 @@ struct TargetedObservation {
 /// a dedicated OS thread.
 pub struct PipelineRuntime {
     config: PipelineConfig,
+    device: Arc<dyn PointerDevice>,
     shared: Arc<SharedState>,
     batch_slot: LatestSlot<DetectionBatch>,
     target_slot: LatestSlot<TargetedObservation>,
@@ -374,6 +379,7 @@ impl std::fmt::Debug for PipelineRuntime {
         f.debug_struct("PipelineRuntime")
             .field("epoch", &self.config.epoch)
             .field("status", &self.shared.status())
+            .field("device", &"<dyn PointerDevice>")
             .field("workers", &self.workers.len())
             .finish()
     }
@@ -440,6 +446,10 @@ impl PipelineRuntime {
         {
             return Err(PipelineError::InvalidTriggerPollInterval { actual_ms });
         }
+        device
+            .connect()
+            .map_err(|error| PipelineError::DeviceConnect(error.to_string()))?;
+        let mut device_guard = DeviceConnectionGuard::new(Arc::clone(&device));
         let (event_tx, event_rx) = sync_channel(4);
         let shared = Arc::new(SharedState::new(event_tx, external_stop));
         let batch_slot = LatestSlot::new();
@@ -513,9 +523,10 @@ impl PipelineRuntime {
             batches: batch_slot.clone(),
             shared: Arc::clone(&shared),
         };
-        Ok((
+        let started = (
             Self {
                 config,
+                device: Arc::clone(&device),
                 shared,
                 batch_slot,
                 target_slot,
@@ -524,7 +535,9 @@ impl PipelineRuntime {
                 workers,
             },
             ingress,
-        ))
+        );
+        device_guard.disarm();
+        Ok(started)
     }
 
     pub fn status(&self) -> PipelineStatus {
@@ -565,14 +578,40 @@ impl PipelineRuntime {
         self.shared.status.store(STATUS_STOPPING, Ordering::Release);
         close_slots(&self.batch_slot, &self.target_slot, &self.command_slot);
         let panicked = join_workers(&mut self.workers);
+        let disconnect = self.device.disconnect();
         if panicked {
             self.shared
                 .fault("pipeline worker panicked during shutdown");
             return Err(PipelineError::WorkerPanicked);
         }
+        disconnect.map_err(|error| PipelineError::DeviceDisconnect(error.to_string()))?;
         self.shared.status.store(STATUS_STOPPED, Ordering::Release);
         let _ = self.shared.event_tx.try_send(PipelineEvent::Stopped);
         Ok(self.metrics())
+    }
+}
+
+struct DeviceConnectionGuard {
+    device: Option<Arc<dyn PointerDevice>>,
+}
+
+impl DeviceConnectionGuard {
+    fn new(device: Arc<dyn PointerDevice>) -> Self {
+        Self {
+            device: Some(device),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.device = None;
+    }
+}
+
+impl Drop for DeviceConnectionGuard {
+    fn drop(&mut self) {
+        if let Some(device) = self.device.take() {
+            let _ = device.disconnect();
+        }
     }
 }
 

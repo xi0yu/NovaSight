@@ -81,6 +81,14 @@ async fn emergency_stop_marks_device_unavailable_and_increments_control_restart(
         "control last_error must record the emergency stop code"
     );
 
+    let recovered = handle.start().await.expect("start a new epoch after stop");
+    assert_eq!(recovered.pipeline.state, PipelineState::Running);
+    assert!(recovered.pipeline.last_error.is_none());
+    assert!(recovered.subsystems.capture.last_error.is_none());
+    assert!(recovered.subsystems.inference.last_error.is_none());
+    assert!(recovered.subsystems.control.last_error.is_none());
+    assert!(recovered.subsystems.device.last_error.is_none());
+
     shutdown(supervisor, &handle).await;
 }
 

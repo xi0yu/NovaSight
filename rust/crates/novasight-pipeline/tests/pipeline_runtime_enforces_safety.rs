@@ -113,6 +113,45 @@ impl PointerDevice for PanickingDevice {
 }
 
 #[derive(Debug, Default)]
+struct LifecycleDevice {
+    connects: AtomicU64,
+    disconnects: AtomicU64,
+    recording: RecordingPointerDevice,
+}
+
+impl PointerDevice for LifecycleDevice {
+    fn connect(&self) -> Result<(), AppError> {
+        self.connects.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        self.recording.send(command)
+    }
+
+    fn disconnect(&self) -> Result<(), AppError> {
+        self.disconnects.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct ConnectFailingDevice;
+
+impl PointerDevice for ConnectFailingDevice {
+    fn connect(&self) -> Result<(), AppError> {
+        Err(AppError::PointerDevice {
+            code: "offline",
+            message: "test device is offline".to_owned(),
+        })
+    }
+
+    fn send(&self, _command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        unreachable!("failed connection must prevent worker startup")
+    }
+}
+
+#[derive(Debug, Default)]
 struct HardwareTriggerDevice {
     active: AtomicBool,
     recording: RecordingPointerDevice,
@@ -179,6 +218,32 @@ fn output_scheduler_rejects_cadence_outside_one_to_ten_ms() {
                 if actual_ms == output_interval_ms
         ));
     }
+}
+
+#[test]
+fn pipeline_epoch_owns_device_connect_and_disconnect() {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device = Arc::new(LifecycleDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+
+    let (mut runtime, _ingress) =
+        PipelineRuntime::start(PipelineConfig::default(), clock, pointer).expect("pipeline starts");
+    assert_eq!(device.connects.load(Ordering::Acquire), 1);
+    assert_eq!(device.disconnects.load(Ordering::Acquire), 0);
+
+    runtime.shutdown().expect("pipeline stops");
+    assert_eq!(device.disconnects.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn device_connection_failure_prevents_worker_startup() {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let device: Arc<dyn PointerDevice> = Arc::new(ConnectFailingDevice);
+
+    let error = PipelineRuntime::start(PipelineConfig::default(), clock, device)
+        .expect_err("offline device rejects epoch start");
+
+    assert!(matches!(error, PipelineError::DeviceConnect(message) if message.contains("offline")));
 }
 
 #[test]

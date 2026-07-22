@@ -63,6 +63,28 @@ fn performs_handshake_connect_and_real_move_round_trip() {
 }
 
 #[test]
+fn lazy_adapter_defers_helper_start_until_runtime_connect() {
+    let mut lazy = config(GOOD_HELPER);
+    lazy.program = PathBuf::from("/definitely/missing/novasight-kmnet-helper");
+
+    let client = KmNetHostClient::new(lazy).expect("configuration is valid without hardware");
+    let error = PointerDevice::connect(&client).expect_err("runtime connect starts helper");
+
+    assert!(error.to_string().contains("failed to spawn"));
+}
+
+#[test]
+fn disconnect_releases_the_helper_and_next_epoch_reconnects() {
+    let client = KmNetHostClient::connect(config(GOOD_HELPER)).expect("connect helper");
+
+    PointerDevice::disconnect(&client).expect("disconnect helper");
+    PointerDevice::connect(&client).expect("reconnect helper");
+    let receipt = client.send(command()).expect("send after reconnect");
+
+    assert_eq!(receipt.generation, Generation(9));
+}
+
+#[test]
 fn timed_out_driver_is_aborted_and_cooldown_is_nonblocking() {
     let script = GOOD_HELPER.replace(
         "or (op == 'move' and request['dx'] == 120 and request['dy'] == -45)",

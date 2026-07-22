@@ -71,17 +71,26 @@ struct ClientState {
 }
 
 impl KmNetHostClient {
-    pub fn connect(config: KmNetHostConfig) -> Result<Self, KmNetError> {
+    /// Construct a validated but disconnected adapter. Production composition
+    /// uses this so daemon control surfaces remain available while hardware is
+    /// offline; the runtime epoch owns the actual helper session.
+    pub fn new(config: KmNetHostConfig) -> Result<Self, KmNetError> {
         config.validate()?;
-        let session = HostSession::start(&config)?;
         Ok(Self {
             config,
             state: Mutex::new(ClientState {
-                session: Some(session),
+                session: None,
                 last_failure: None,
             }),
             successful_sends: AtomicU64::new(0),
         })
+    }
+
+    /// Eager compatibility constructor used by focused diagnostics and tests.
+    pub fn connect(config: KmNetHostConfig) -> Result<Self, KmNetError> {
+        let client = Self::new(config)?;
+        client.connect_inner()?;
+        Ok(client)
     }
 
     fn state(&self) -> MutexGuard<'_, ClientState> {
@@ -100,32 +109,14 @@ impl KmNetHostClient {
             });
         }
         let mut state = self.state();
-        if state.session.is_none() {
-            if let Some(remaining) =
-                cooldown_remaining(state.last_failure, self.config.reconnect_cooldown)
-            {
-                return Err(KmNetError::ReconnectCooldown(remaining));
-            }
-            match HostSession::start(&self.config) {
-                Ok(session) => state.session = Some(session),
-                Err(error) => {
-                    state.last_failure = Some(Instant::now());
-                    return Err(error);
-                }
-            }
-        }
-        let result = state
-            .session
-            .as_mut()
-            .expect("session was connected above")
-            .request(
-                "move",
-                json!({
-                    "dx": command.delta_x_counts,
-                    "dy": command.delta_y_counts,
-                }),
-                self.config.request_timeout,
-            );
+        let result = self.ensure_session(&mut state)?.request(
+            "move",
+            json!({
+                "dx": command.delta_x_counts,
+                "dy": command.delta_y_counts,
+            }),
+            self.config.request_timeout,
+        );
         if let Err(error) = result {
             if let Some(mut session) = state.session.take() {
                 session.abort();
@@ -140,24 +131,8 @@ impl KmNetHostClient {
 
     fn trigger_inner(&self) -> Result<bool, KmNetError> {
         let mut state = self.state();
-        if state.session.is_none() {
-            if let Some(remaining) =
-                cooldown_remaining(state.last_failure, self.config.reconnect_cooldown)
-            {
-                return Err(KmNetError::ReconnectCooldown(remaining));
-            }
-            match HostSession::start(&self.config) {
-                Ok(session) => state.session = Some(session),
-                Err(error) => {
-                    state.last_failure = Some(Instant::now());
-                    return Err(error);
-                }
-            }
-        }
-        let result = state
-            .session
-            .as_mut()
-            .expect("session was connected above")
+        let result = self
+            .ensure_session(&mut state)?
             .request("buttons", json!({}), self.config.request_timeout)
             .and_then(|value| {
                 if value.get("available").and_then(Value::as_bool) != Some(true) {
@@ -187,9 +162,54 @@ impl KmNetHostClient {
             }
         }
     }
+
+    fn connect_inner(&self) -> Result<(), KmNetError> {
+        let mut state = self.state();
+        self.ensure_session(&mut state).map(|_| ())
+    }
+
+    fn ensure_session<'a>(
+        &self,
+        state: &'a mut ClientState,
+    ) -> Result<&'a mut HostSession, KmNetError> {
+        if state.session.is_none() {
+            if let Some(remaining) =
+                cooldown_remaining(state.last_failure, self.config.reconnect_cooldown)
+            {
+                return Err(KmNetError::ReconnectCooldown(remaining));
+            }
+            match HostSession::start(&self.config) {
+                Ok(session) => state.session = Some(session),
+                Err(error) => {
+                    state.last_failure = Some(Instant::now());
+                    return Err(error);
+                }
+            }
+        }
+        Ok(state
+            .session
+            .as_mut()
+            .expect("session was established above"))
+    }
+
+    fn disconnect_inner(&self) {
+        let mut state = self.state();
+        if let Some(mut session) = state.session.take() {
+            session.abort();
+        }
+        state.last_failure = None;
+    }
 }
 
 impl PointerDevice for KmNetHostClient {
+    fn connect(&self) -> Result<(), AppError> {
+        self.connect_inner()
+            .map_err(|error| AppError::PointerDevice {
+                code: error.code(),
+                message: error.to_string(),
+            })
+    }
+
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
         self.send_inner(command)
             .map_err(|error| AppError::PointerDevice {
@@ -205,6 +225,11 @@ impl PointerDevice for KmNetHostClient {
                 code: error.code(),
                 message: error.to_string(),
             })
+    }
+
+    fn disconnect(&self) -> Result<(), AppError> {
+        self.disconnect_inner();
+        Ok(())
     }
 }
 

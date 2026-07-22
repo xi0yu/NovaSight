@@ -265,6 +265,10 @@ impl SupervisorState {
             status: PipelineStatus::Starting,
             ..PipelineMetrics::default()
         };
+        self.subsystems.capture.last_error = None;
+        self.subsystems.inference.last_error = None;
+        self.subsystems.control.last_error = None;
+        self.subsystems.device.last_error = None;
         self.subsystems.control.state = SubsystemState::Starting;
         self.subsystems.device.state = SubsystemState::Starting;
         Ok(Some(epoch))
@@ -1513,7 +1517,16 @@ async fn diagnose_device_move(
     state.subsystems.device.state = SubsystemState::Starting;
     publish(snapshot_tx, state, now_ms());
     let device = Arc::clone(&dependencies.device);
-    let result = tokio::task::spawn_blocking(move || device.send(command)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        device.connect()?;
+        let send = device.send(command);
+        let disconnect = device.disconnect();
+        match send {
+            Ok(receipt) => disconnect.map(|()| receipt),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
     match result {
         Ok(Ok(receipt)) => {
             state.device_metrics.diagnostic_move_count =
