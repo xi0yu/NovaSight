@@ -9,7 +9,9 @@ Usage:
 Creates a Jetson-friendly NovaSight virtual environment with system GStreamer
 bindings visible through --system-site-packages. If a NVIDIA DeepStream pyds
 wheel is provided, the script installs and verifies it. The required DeepStream
-parser is built by default; pass --skip-build only for dependency-only setup.
+parser, metadata bridge, Rust daemon, and thin CLI are built by default; pass
+--skip-build only for dependency-only setup. Python remains available for the
+kmNet host and rollback operation.
 EOF
 }
 
@@ -120,11 +122,22 @@ gst-inspect-1.0 nvinfer >/dev/null
 echo "DeepStream GStreamer elements ok"
 
 if [[ "${RUN_BUILD}" -eq 1 ]]; then
-  echo "==> Building DeepStream C++ parser"
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "error: cargo is required to build the canonical Rust daemon" >&2
+    echo "install a current Rust toolchain, then rerun scripts/setup_jetson.sh" >&2
+    exit 1
+  fi
+
+  echo "==> Building DeepStream C++ parser and metadata bridge"
   scripts/build_deepstream_parser.sh build/deepstream-parser
+  scripts/build_deepstream_bridge.sh build/deepstream-bridge
+
+  echo "==> Building canonical Rust daemon and thin CLI"
+  cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
+  cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
 fi
 
-echo "==> Verifying optional pyds binding"
+echo "==> Verifying optional legacy Python pyds binding"
 if python3 - <<'PY'
 import pyds
 print("pyds ok", pyds)
@@ -135,16 +148,17 @@ from novasight.deepstream.backend import check_deepstream_dependencies
 print(check_deepstream_dependencies("build/deepstream-parser/libnovasight_parser.so"))
 PY
 else
-  echo "pyds is not installed. DeepStream object-meta backend will remain unavailable."
-  echo "Install the matching NVIDIA wheel, for example:"
+  echo "pyds is not installed. The canonical Rust DeepStream path is unaffected;"
+  echo "only the legacy Python object-meta fallback remains unavailable."
+  echo "To enable that fallback, install the matching NVIDIA wheel, for example:"
   echo "  scripts/setup_jetson.sh --pyds-wheel /path/to/pyds-1.2.0-cp310-cp310-linux_aarch64.whl"
 fi
 
 echo "==> NovaSight Jetson setup complete"
-echo "Canonical Rust production build:"
-echo "  scripts/build_deepstream_bridge.sh"
-echo "  cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream"
+echo "Canonical Rust production preflight:"
 echo "  rust/target/release/novasightd --config rust/config/novasightd.example.yaml --check"
+echo "Thin local control client:"
+echo "  rust/target/release/novasightctl --help"
 echo "Legacy Python fallback remains available with:"
 echo "  source .venv/bin/activate"
 echo "  python3 -m novasight --host 0.0.0.0 --port 5174"
