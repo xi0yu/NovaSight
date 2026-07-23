@@ -63,6 +63,56 @@ fn performs_handshake_connect_and_real_move_round_trip() {
 }
 
 #[test]
+fn preflight_proves_helper_protocol_without_connecting_hardware() {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    op = request['op']
+    if op == 'connect':
+        print(json.dumps({'id': request['id'], 'ok': False, 'result': None, 'error': 'hardware must not be opened by preflight'}), flush=True)
+        continue
+    result = {'protocol': 1, 'driver_available': True} if op == 'hello' else {}
+    print(json.dumps({'id': request['id'], 'ok': op in ('hello', 'shutdown'), 'result': result, 'error': None}), flush=True)
+    if op == 'shutdown':
+        break
+"#;
+    let config = config(script);
+
+    KmNetHostClient::preflight(&config).expect("helper-only preflight");
+}
+
+#[test]
+fn preflight_rejects_a_packaged_helper_with_the_wrong_protocol() {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({'id': request['id'], 'ok': True, 'result': {'protocol': 2}, 'error': None}), flush=True)
+"#;
+    let config = config(script);
+
+    let error = KmNetHostClient::preflight(&config).expect_err("protocol drift must fail");
+
+    assert!(error.to_string().contains("protocol version mismatch"));
+}
+
+#[test]
+fn preflight_rejects_a_helper_without_the_vendor_driver() {
+    let script = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({'id': request['id'], 'ok': True, 'result': {'protocol': 1, 'driver_available': False}, 'error': None}), flush=True)
+"#;
+    let config = config(script);
+
+    let error = KmNetHostClient::preflight(&config).expect_err("missing driver must fail");
+
+    assert_eq!(error.code(), "driver_unavailable");
+}
+
+#[test]
 fn lazy_adapter_defers_helper_start_until_runtime_connect() {
     let mut lazy = config(GOOD_HELPER);
     lazy.program = PathBuf::from("/definitely/missing/novasight-kmnet-helper");

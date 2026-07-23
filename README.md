@@ -237,6 +237,14 @@ operation through the configured Python interpreter. This imports the pinned
 Python bundle and verifies the bounded JSON protocol without opening an Engine
 or mutating the model catalog, so `model_ingress_helper=ready` is runtime
 evidence rather than a path-existence claim.
+The same production preflight launches the configured daemon-owned kmNet
+Python helper, verifies protocol version 1 and requires its vendor driver to be
+loadable, then shuts the helper down without issuing `connect` or opening the
+device. A `native_udp` selection is rejected unless the daemon carries the
+explicit `experimental-kmnet-native` feature; with that feature, `--check`
+validates the native protocol configuration but still does not contact the
+box. Therefore `pointer_adapter=ready` proves the packaged adapter is usable,
+while `pointer_not_connected=true` remains an intentional hardware boundary.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.

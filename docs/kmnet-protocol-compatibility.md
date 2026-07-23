@@ -26,6 +26,15 @@ The `rand` field is refreshed for ordinary commands to match upstream packet
 behavior. It is not treated as authentication. The monitor command is the one
 exception because that field transports its tagged listener port.
 
+The retained `python_host` adapter is still the production default while this
+native path remains evidence-gated. Production `novasightd --check` now starts
+that exact configured helper, validates its JSON-lines protocol and
+`driver_available` receipt, and requests a clean shutdown without sending the
+hardware `connect` operation. This catches a missing interpreter, packaged
+module, incompatible helper, or unavailable vendor extension before systemd
+starts the daemon. Selecting `native_udp` without the explicit experimental
+feature fails the same preflight instead of producing a false PASS.
+
 The upstream repository does not publish a standard open-source license, and
 its copyright notice restricts use to official kmBox hardware. Protocol
 compatibility does not by itself grant commercial redistribution rights.

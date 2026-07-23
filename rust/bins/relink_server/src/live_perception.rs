@@ -33,8 +33,9 @@ use novasight_platform_jetson::kmnet_native::{
 };
 use novasight_runtime::{ConfigService, RuntimeDependencies};
 use novasight_store::config::{
-    AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, InferenceBackend,
-    parse_target_class_aim_y_ratios, parse_target_class_filter, parse_target_class_priority,
+    AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, DeviceConfig,
+    InferenceBackend, parse_target_class_aim_y_ratios, parse_target_class_filter,
+    parse_target_class_priority,
 };
 use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
 use novasight_store::model_manifest::ModelManifest;
@@ -88,22 +89,8 @@ pub(super) fn build_live_production_dependencies(
             }
         }
         DeviceBackend::PythonHost => Arc::new(
-            KmNetHostClient::new(KmNetHostConfig {
-                program: config.paths.python_executable.clone(),
-                args: vec![
-                    OsString::from("-u"),
-                    OsString::from("-m"),
-                    OsString::from(adapters.device.helper_module.trim()),
-                ],
-                host: adapters.device.host.clone(),
-                port: adapters.device.port,
-                uuid: adapters.device.uuid.clone(),
-                monitor_port: adapters.device.monitor_port,
-                startup_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
-                request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
-                reconnect_cooldown: Duration::from_millis(adapters.device.reconnect_cooldown_ms),
-            })
-            .map_err(LivePerceptionError::KmNet)?,
+            KmNetHostClient::new(kmnet_host_config(config, adapters.device))
+                .map_err(LivePerceptionError::KmNet)?,
         ),
     };
     build_live_dependencies(
@@ -121,10 +108,65 @@ pub(super) fn preflight_live_production(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
 ) -> Result<(), LivePerceptionError> {
+    preflight_pointer_adapter(config)?;
     let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
     let session = build_deepstream_session_config(config, model_catalog, preview, crosshair)?;
     preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
+}
+
+fn preflight_pointer_adapter(config: &AppConfig) -> Result<(), LivePerceptionError> {
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
+    if !adapters.device.auto_connect {
+        return Err(LivePerceptionError::DeviceAutoConnectDisabled);
+    }
+    match adapters.device.backend {
+        DeviceBackend::PythonHost => {
+            KmNetHostClient::preflight(&kmnet_host_config(config, adapters.device))
+                .map_err(LivePerceptionError::KmNet)
+        }
+        DeviceBackend::NativeUdp => {
+            #[cfg(not(feature = "experimental-kmnet-native"))]
+            return Err(LivePerceptionError::NativeKmNetNotValidated);
+            #[cfg(feature = "experimental-kmnet-native")]
+            {
+                let host = adapters.device.host.parse().map_err(|_| {
+                    LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
+                })?;
+                KmNetNativeDevice::new(KmNetNativeConfig {
+                    host,
+                    port: adapters.device.port,
+                    uuid: adapters.device.uuid.clone(),
+                    monitor_port: adapters.device.monitor_port,
+                    connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
+                    request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
+                    monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
+                })
+                .map(drop)
+                .map_err(LivePerceptionError::NativeKmNet)
+            }
+        }
+    }
+}
+
+fn kmnet_host_config(config: &AppConfig, device: &DeviceConfig) -> KmNetHostConfig {
+    KmNetHostConfig {
+        program: config.paths.python_executable.clone(),
+        args: vec![
+            OsString::from("-u"),
+            OsString::from("-m"),
+            OsString::from(device.helper_module.trim()),
+        ],
+        host: device.host.clone(),
+        port: device.port,
+        uuid: device.uuid.clone(),
+        monitor_port: device.monitor_port,
+        startup_timeout: Duration::from_millis(device.connect_timeout_ms),
+        request_timeout: Duration::from_millis(device.send_timeout_ms),
+        reconnect_cooldown: Duration::from_millis(device.reconnect_cooldown_ms),
+    }
 }
 
 fn build_live_dependencies(

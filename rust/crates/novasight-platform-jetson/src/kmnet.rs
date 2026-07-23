@@ -93,6 +93,25 @@ impl KmNetHostClient {
         Ok(client)
     }
 
+    /// Prove that the configured helper executable speaks the expected
+    /// control protocol without opening a kmNet hardware session. Production
+    /// `novasightd --check` uses this boundary so a missing Python module or a
+    /// protocol-incompatible packaged helper cannot be reported as ready.
+    pub fn preflight(config: &KmNetHostConfig) -> Result<(), KmNetError> {
+        config.validate()?;
+        let mut session = HostSession::spawn(config)?;
+        let result = (|| {
+            let hello = session.hello(config.startup_timeout)?;
+            if hello.get("driver_available").and_then(Value::as_bool) != Some(true) {
+                return Err(KmNetError::DriverUnavailable);
+            }
+            session.request("shutdown", json!({}), config.startup_timeout)?;
+            Ok(())
+        })();
+        session.abort();
+        result
+    }
+
     fn state(&self) -> MutexGuard<'_, ClientState> {
         self.state
             .lock()
@@ -270,40 +289,9 @@ struct HostSession {
 
 impl HostSession {
     fn start(config: &KmNetHostConfig) -> Result<Self, KmNetError> {
-        let mut child = Command::new(&config.program)
-            .args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|source| KmNetError::Spawn {
-                program: config.program.clone(),
-                source,
-            })?;
-        let stdin = child.stdin.take().ok_or(KmNetError::MissingPipe("stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(KmNetError::MissingPipe("stdout"))?;
-        let (responses, reader) = spawn_response_reader(stdout)?;
-        let mut session = Self {
-            child,
-            stdin: BufWriter::new(stdin),
-            responses,
-            reader: Some(reader),
-            next_request_id: 0,
-        };
+        let mut session = Self::spawn(config)?;
         let result = (|| {
-            let hello = session.request(
-                "hello",
-                json!({ "protocol": PROTOCOL_VERSION }),
-                config.startup_timeout,
-            )?;
-            if hello.get("protocol").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
-                return Err(KmNetError::Protocol(
-                    "helper protocol version mismatch".to_owned(),
-                ));
-            }
+            session.hello(config.startup_timeout)?;
             session.request(
                 "connect",
                 json!({
@@ -321,6 +309,42 @@ impl HostSession {
             return Err(error);
         }
         Ok(session)
+    }
+
+    fn spawn(config: &KmNetHostConfig) -> Result<Self, KmNetError> {
+        let mut child = Command::new(&config.program)
+            .args(&config.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|source| KmNetError::Spawn {
+                program: config.program.clone(),
+                source,
+            })?;
+        let stdin = child.stdin.take().ok_or(KmNetError::MissingPipe("stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(KmNetError::MissingPipe("stdout"))?;
+        let (responses, reader) = spawn_response_reader(stdout)?;
+        Ok(Self {
+            child,
+            stdin: BufWriter::new(stdin),
+            responses,
+            reader: Some(reader),
+            next_request_id: 0,
+        })
+    }
+
+    fn hello(&mut self, timeout: Duration) -> Result<Value, KmNetError> {
+        let hello = self.request("hello", json!({ "protocol": PROTOCOL_VERSION }), timeout)?;
+        if hello.get("protocol").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
+            return Err(KmNetError::Protocol(
+                "helper protocol version mismatch".to_owned(),
+            ));
+        }
+        Ok(hello)
     }
 
     fn request(
@@ -458,6 +482,8 @@ pub enum KmNetError {
         operation: &'static str,
         message: String,
     },
+    #[error("kmNet helper reports that the vendor driver is unavailable")]
+    DriverUnavailable,
     #[error("kmNet reconnect cooldown active for {0:?}")]
     ReconnectCooldown(Duration),
     #[error("kmNet movement ({dx}, {dy}) is outside the signed 16-bit device range")]
@@ -479,6 +505,7 @@ impl KmNetError {
             Self::Timeout(_) => "driver_timeout",
             Self::HelperExited { .. } => "helper_exited",
             Self::Driver { .. } => "driver_rejected",
+            Self::DriverUnavailable => "driver_unavailable",
             Self::ReconnectCooldown(_) => "reconnect_cooldown",
             Self::CountsOutOfRange { .. } => "counts_out_of_range",
         }
