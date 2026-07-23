@@ -24,6 +24,7 @@ require_file "${ROOT_DIR}/scripts/model_ingress_job.py"
 require_file "${ROOT_DIR}/scripts/install_jetson_release.sh"
 require_file "${ROOT_DIR}/scripts/deployment_check.py"
 require_file "${ROOT_DIR}/scripts/release_manifest.py"
+require_file "${ROOT_DIR}/scripts/daemon_build_check.py"
 require_file "${ROOT_DIR}/deploy/novasight.service"
 require_file "${ROOT_DIR}/deploy/novasight.production.yaml"
 require_file "${ROOT_DIR}/novasight/executors/kmnet_host.py"
@@ -41,6 +42,8 @@ install -m 0755 "${ROOT_DIR}/scripts/deployment_check.py" \
   "${STAGE_DIR}/scripts/deployment_check.py"
 install -m 0755 "${ROOT_DIR}/scripts/release_manifest.py" \
   "${STAGE_DIR}/scripts/release_manifest.py"
+install -m 0755 "${ROOT_DIR}/scripts/daemon_build_check.py" \
+  "${STAGE_DIR}/scripts/daemon_build_check.py"
 install -m 0644 "${BRIDGE}" "${STAGE_DIR}/lib/libnovasight_deepstream_bridge.so"
 install -m 0644 "${PARSER}" "${STAGE_DIR}/lib/libnovasight_parser.so"
 install -m 0644 "${ROOT_DIR}/deploy/novasight.service" \
@@ -71,6 +74,16 @@ if [[ ! "${RELEASE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
   exit 1
 fi
 printf '%s\n' "${RELEASE_ID}" > "${STAGE_DIR}/RELEASE_ID"
+
+SOURCE_REVISION="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
+SOURCE_DIRTY=false
+if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no)" ]]; then
+  SOURCE_DIRTY=true
+fi
+python3 "${STAGE_DIR}/scripts/daemon_build_check.py" \
+  --daemon "${STAGE_DIR}/bin/novasightd" \
+  --expected-revision "${SOURCE_REVISION}" \
+  --expected-dirty "${SOURCE_DIRTY}"
 
 for optional in libnovasight_preprocess.so libnovasight_tensorrt.so; do
   source_path="${ROOT_DIR}/build/jetson-native/${optional}"

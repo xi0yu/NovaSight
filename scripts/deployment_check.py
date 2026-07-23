@@ -14,8 +14,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 if __package__:
+    from .daemon_build_check import check_daemon_build
     from .release_manifest import verify_manifest
 else:
+    from daemon_build_check import check_daemon_build
     from release_manifest import verify_manifest
 
 
@@ -106,6 +108,7 @@ def _release_checks(root: Path) -> list[CheckResult]:
         "scripts/install_jetson_release.sh",
         "scripts/deployment_check.py",
         "scripts/release_manifest.py",
+        "scripts/daemon_build_check.py",
         "deploy/novasight.service",
         "share/novasight/novasight.production.yaml",
         "novasight/__init__.py",
@@ -145,6 +148,14 @@ def _release_checks(root: Path) -> list[CheckResult]:
             name="release.sha256_manifest",
             passed=integrity.passed,
             detail=asdict(integrity),
+        )
+    )
+    daemon_build = check_daemon_build(root / "bin/novasightd")
+    checks.append(
+        CheckResult(
+            name="release.novasightd.production_build",
+            passed=daemon_build.passed,
+            detail=asdict(daemon_build),
         )
     )
     checks.append(_model_ingress_helper_check(root))

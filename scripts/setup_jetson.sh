@@ -133,7 +133,14 @@ if [[ "${RUN_BUILD}" -eq 1 ]]; then
   scripts/build_deepstream_bridge.sh build/deepstream-bridge
 
   echo "==> Building canonical Rust daemon and thin CLI"
-  cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
+  BUILD_REVISION="$(git rev-parse HEAD)"
+  BUILD_DIRTY=false
+  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    BUILD_DIRTY=true
+  fi
+  NOVASIGHT_BUILD_REVISION="${BUILD_REVISION}" \
+    NOVASIGHT_BUILD_DIRTY="${BUILD_DIRTY}" \
+    cargo build --manifest-path rust/Cargo.toml -p novasightd --release --features deepstream
   cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
 
   echo "==> Staging relocatable Jetson release layout"

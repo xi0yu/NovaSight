@@ -1137,6 +1137,8 @@ name = "novasightd"
 version = "0.1.0"
 dependencies = [
  "relink-server",
+ "serde",
+ "serde_json",
  "tokio",
  "uuid",
 ]

@@ -86,6 +86,37 @@ fn help_documents_yaml_check_and_explicit_dry_run() {
 }
 
 #[test]
+fn build_info_is_machine_readable_and_reports_compiled_capabilities() {
+    let output = Command::new(binary())
+        .arg("--build-info-json")
+        .output()
+        .expect("read daemon build identity");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout).expect("build info JSON");
+    assert_eq!(info["schema_version"], 1);
+    assert_eq!(info["binary"], "novasightd");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+    assert!(
+        info["source_revision"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(info["source_dirty"].is_boolean());
+    assert!(
+        info["target"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        info["profile"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(info["features"].is_array());
+}
+
+#[test]
 fn missing_config_exits_nonzero_with_stable_code() {
     let directory = TempDirectory::new();
     let missing = directory.join("missing.yaml");

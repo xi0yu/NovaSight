@@ -18,6 +18,8 @@ experimental-kmnet-native = ["deepstream", "relink-server/experimental-kmnet-nat
 
 [dependencies]
 relink-server = { path = "../../bins/relink_server" }
+serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 
 [dev-dependencies]

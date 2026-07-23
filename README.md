@@ -200,6 +200,13 @@ checker exposes this as `release.sha256_manifest`, and the installer verifies
 the manifest both before creating the version directory and after copying it;
 missing, additional, modified, or symlinked payloads are rejected before the
 `current` link can move.
+`novasightd --build-info-json` exposes the embedded source revision, dirty
+state, target triple, build profile, and compiled features without opening any
+runtime resource. Jetson staging additionally requires an `aarch64` Linux
+release binary with `deepstream` compiled in and rejects a daemon whose source
+revision or dirty state differs from the checkout being packaged. The same
+production-capability check is repeated by deployment validation and the
+installer.
 
 The example config starts the active TensorRT deployment through nvinfer. kmNet
 auto-connect runs independently.

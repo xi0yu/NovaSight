@@ -68,9 +68,12 @@ require_file "${SOURCE_ROOT}/deploy/novasight.service"
 require_file "${SOURCE_ROOT}/share/novasight/novasight.production.yaml"
 require_file "${SOURCE_ROOT}/scripts/model_ingress_job.py"
 require_file "${SOURCE_ROOT}/scripts/release_manifest.py"
+require_file "${SOURCE_ROOT}/scripts/daemon_build_check.py"
 require_file "${SOURCE_ROOT}/novasight/executors/kmnet_host.py"
 
 python3 "${SOURCE_ROOT}/scripts/release_manifest.py" verify "${SOURCE_ROOT}"
+python3 "${SOURCE_ROOT}/scripts/daemon_build_check.py" \
+  --daemon "${SOURCE_ROOT}/bin/novasightd"
 
 RELEASE_ID="$(tr -d '\r\n' < "${SOURCE_ROOT}/RELEASE_ID")"
 if [[ ! "${RELEASE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
@@ -99,6 +102,8 @@ cp -a "${SOURCE_ROOT}/bin" "${SOURCE_ROOT}/lib" "${SOURCE_ROOT}/scripts" \
 install -m 0644 "${SOURCE_ROOT}/RELEASE_ID" "${RELEASE_DIR}/RELEASE_ID"
 install -m 0644 "${SOURCE_ROOT}/SHA256SUMS.json" "${RELEASE_DIR}/SHA256SUMS.json"
 python3 "${RELEASE_DIR}/scripts/release_manifest.py" verify "${RELEASE_DIR}"
+python3 "${RELEASE_DIR}/scripts/daemon_build_check.py" \
+  --daemon "${RELEASE_DIR}/bin/novasightd"
 install -m 0644 /dev/null "${RELEASE_DIR}/.complete"
 
 install -m 0640 "${SOURCE_ROOT}/share/novasight/novasight.production.yaml" \
