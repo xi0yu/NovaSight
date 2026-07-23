@@ -285,7 +285,7 @@ async fn device_commands_use_the_supervisor_owned_diagnostic_path() {
     let config_path = socket.0.with_extension("yaml");
     std::fs::write(
         &config_path,
-        "revision: 0\ncontrol:\n  output_enabled: true\nhardware: {}\n",
+        "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 127.0.0.1\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
     )
     .unwrap();
     let initial = YamlConfigRepository::load(&config_path).unwrap();

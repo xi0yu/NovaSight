@@ -71,6 +71,17 @@ impl AppConfig {
         }
         if let Some(device) = &self.device {
             device.validate()?;
+            if self.control.output_enabled && !device.auto_connect {
+                return Err(ConfigValidationError::new(
+                    "control.output_enabled",
+                    "cannot be true until hardware.auto_connect is enabled with a commissioned device",
+                ));
+            }
+        } else if self.control.output_enabled {
+            return Err(ConfigValidationError::new(
+                "control.output_enabled",
+                "cannot be true until a commissioned hardware section is configured",
+            ));
         }
         self.crosshair.validate()?;
         if self.limits.stream_fps == 0 {
@@ -2200,6 +2211,27 @@ mod tests {
             serde_yaml::from_str("control:\n  output_enabled: false\n").unwrap();
         assert!(!paused.control.output_enabled);
         assert!(!paused.control.legacy.contains_key("output_enabled"));
+    }
+
+    #[test]
+    fn configured_output_gate_rejects_an_explicitly_uncommissioned_device() {
+        let config: AppConfig = serde_yaml::from_str(
+            "control:\n  output_enabled: true\nhardware:\n  auto_connect: false\n",
+        )
+        .unwrap();
+
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "control.output_enabled");
+        assert!(error.message.contains("hardware.auto_connect"));
+    }
+
+    #[test]
+    fn configured_output_gate_requires_a_hardware_section() {
+        let config: AppConfig = serde_yaml::from_str("control:\n  output_enabled: true\n").unwrap();
+
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "control.output_enabled");
+        assert!(error.message.contains("hardware"));
     }
 
     #[test]

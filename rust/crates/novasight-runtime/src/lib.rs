@@ -2,7 +2,8 @@
 //! PipelineRuntime orchestration, and API server wiring.
 //!
 //! Commit 2 introduces the RuntimeSupervisor, RuntimeHandle,
-//! RuntimeCommand, and RuntimeSnapshot type families. The
+//! internal RuntimeCommand actor protocol and public RuntimeSnapshot type
+//! families. The
 //! PipelineRuntime, ConfigService, and HTTP transport land in
 //! later commits; `ReplaceConfig` is intentionally absent from
 //! the command enum until the ConfigService surface exists.
@@ -10,7 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod application;
-pub mod command;
+mod command;
 mod config_service;
 mod error;
 mod model_activation;
@@ -21,7 +22,6 @@ mod state;
 pub mod supervisor;
 
 pub use application::{Application, ApplicationError, LoadedApplication};
-pub use command::RuntimeCommand;
 pub use config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use model_activation::{ModelActivationError, ModelActivationRequest, ModelActivationResult};

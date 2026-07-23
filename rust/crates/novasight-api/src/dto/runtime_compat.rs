@@ -408,6 +408,12 @@ impl CompatibilityRuntimeState {
             },
         );
         let device_state = snapshot.subsystems.device.state;
+        let device_uncommissioned = snapshot
+            .subsystems
+            .device
+            .last_error
+            .as_ref()
+            .is_some_and(|error| error.code == "device_uncommissioned");
         let device_connected = hardware_output_enabled
             && matches!(
                 device_state,
@@ -420,15 +426,20 @@ impl CompatibilityRuntimeState {
                 connected: device_connected,
                 connecting: hardware_output_enabled && device_state == SubsystemState::Starting,
                 monitoring: device_connected && running,
-                connection_state: match device_state {
-                    SubsystemState::Starting => "connecting",
-                    SubsystemState::Ready | SubsystemState::Running => "connected",
-                    SubsystemState::Failed | SubsystemState::Unavailable => "failed",
-                    SubsystemState::Degraded => "degraded",
-                    SubsystemState::Stopping => "disconnecting",
-                    SubsystemState::Stopped => "stopped",
+                connection_state: if device_uncommissioned {
+                    "uncommissioned"
+                } else {
+                    match device_state {
+                        SubsystemState::Starting => "connecting",
+                        SubsystemState::Ready | SubsystemState::Running => "connected",
+                        SubsystemState::Failed | SubsystemState::Unavailable => "failed",
+                        SubsystemState::Degraded => "degraded",
+                        SubsystemState::Stopping => "disconnecting",
+                        SubsystemState::Stopped => "stopped",
+                    }
                 },
-                retryable: hardware_output_enabled
+                retryable: !device_uncommissioned
+                    && hardware_output_enabled
                     && matches!(
                         device_state,
                         SubsystemState::Failed | SubsystemState::Unavailable
@@ -900,7 +911,12 @@ fn first_subsystem_error(snapshot: &RuntimeSnapshot) -> Option<RuntimeErrorSumma
         &snapshot.subsystems.device,
     ]
     .into_iter()
-    .find_map(|subsystem| subsystem.last_error.clone())
+    .find_map(|subsystem| {
+        subsystem
+            .last_error
+            .clone()
+            .filter(|error| error.code != "device_uncommissioned")
+    })
 }
 
 fn serialized_label(value: &impl Serialize) -> String {

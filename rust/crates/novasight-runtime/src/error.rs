@@ -18,6 +18,8 @@ pub enum RuntimeErrorKind {
     /// The supervisor's oneshot reply channel was dropped before a
     /// reply landed.
     SupervisorReplyLost,
+    /// The bounded urgent-command admission queue is saturated.
+    SupervisorBusy,
     /// Pipeline cannot satisfy the requested transition.
     InvalidPipelineState,
     /// No new runtime epoch can be allocated without wrapping.
@@ -28,6 +30,8 @@ pub enum RuntimeErrorKind {
     PipelineRejected,
     /// Hardware output is intentionally closed until explicitly commissioned.
     OutputGateClosed,
+    /// No physical pointer adapter has been provisioned for this runtime.
+    DeviceUncommissioned,
     /// The daemon-owned output adapter rejected a diagnostic operation.
     DeviceUnavailable,
     /// A control-plane diagnostic command violates the device contract.
@@ -42,11 +46,13 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::SupervisorUnavailable => "supervisor_unavailable",
             RuntimeErrorKind::SupervisorClosed => "supervisor_closed",
             RuntimeErrorKind::SupervisorReplyLost => "supervisor_reply_lost",
+            RuntimeErrorKind::SupervisorBusy => "supervisor_busy",
             RuntimeErrorKind::InvalidPipelineState => "invalid_pipeline_state",
             RuntimeErrorKind::RuntimeEpochExhausted => "runtime_epoch_exhausted",
             RuntimeErrorKind::PipelineUnavailable => "pipeline_unavailable",
             RuntimeErrorKind::PipelineRejected => "pipeline_rejected",
             RuntimeErrorKind::OutputGateClosed => "output_gate_closed",
+            RuntimeErrorKind::DeviceUncommissioned => "device_uncommissioned",
             RuntimeErrorKind::DeviceUnavailable => "device_unavailable",
             RuntimeErrorKind::InvalidDeviceCommand => "invalid_device_command",
             RuntimeErrorKind::Other => "runtime_error",
@@ -90,6 +96,13 @@ impl RuntimeError {
         )
     }
 
+    pub fn supervisor_busy() -> Self {
+        Self::new(
+            RuntimeErrorKind::SupervisorBusy,
+            "runtime supervisor urgent-command admission is saturated",
+        )
+    }
+
     pub fn invalid_pipeline_state(message: impl Into<String>) -> Self {
         Self::new(RuntimeErrorKind::InvalidPipelineState, message)
     }
@@ -116,6 +129,13 @@ impl RuntimeError {
         Self::new(
             RuntimeErrorKind::OutputGateClosed,
             "hardware output gate is closed; explicitly enable control.output_enabled",
+        )
+    }
+
+    pub fn device_uncommissioned() -> Self {
+        Self::new(
+            RuntimeErrorKind::DeviceUncommissioned,
+            "pointer device is not commissioned; configure hardware.auto_connect with a provisioned host and UUID",
         )
     }
 

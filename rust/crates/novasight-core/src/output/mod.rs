@@ -7,7 +7,7 @@ pub mod quantizer;
 
 use crate::error::AppError;
 use crate::perception::types::{Generation, MonotonicNanos, RuntimeEpoch};
-use crate::ports::PointerDevice;
+use crate::ports::{PointerDevice, PointerDeviceMode};
 
 /// Fully typed pointer movement derived from one runtime observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -71,6 +71,10 @@ impl RecordingPointerDevice {
 }
 
 impl PointerDevice for RecordingPointerDevice {
+    fn mode(&self) -> PointerDeviceMode {
+        PointerDeviceMode::Commissioned
+    }
+
     fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
         let mut receipts = self
             .receipts
@@ -88,12 +92,29 @@ impl PointerDevice for RecordingPointerDevice {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UncommissionedPointerDevice;
 
-impl PointerDevice for UncommissionedPointerDevice {
-    fn send(&self, _command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
-        Err(AppError::PointerDevice {
-            code: "device_not_commissioned",
-            message: "configure hardware.auto_connect with a provisioned host and UUID before opening output"
+fn uncommissioned_device_error() -> AppError {
+    AppError::PointerDevice {
+        code: "device_uncommissioned",
+        message:
+            "configure hardware.auto_connect with a provisioned host and UUID before opening output"
                 .to_owned(),
-        })
+    }
+}
+
+impl PointerDevice for UncommissionedPointerDevice {
+    fn mode(&self) -> PointerDeviceMode {
+        PointerDeviceMode::Uncommissioned
+    }
+
+    fn send(&self, _command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        Err(uncommissioned_device_error())
+    }
+
+    fn trigger_active(&self) -> Result<Option<bool>, AppError> {
+        Err(uncommissioned_device_error())
+    }
+
+    fn buttons(&self) -> Result<Option<crate::ports::PointerButtons>, AppError> {
+        Err(uncommissioned_device_error())
     }
 }

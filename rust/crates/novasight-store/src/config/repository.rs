@@ -4,6 +4,8 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
@@ -21,6 +23,9 @@ use xattr::FileExt as XattrFileExt;
 use serde_yaml::Value;
 
 use super::{AppConfig, ConfigValidationError};
+
+const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
+const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 
 pub trait ConfigRepository {
     type Error: Error + Send + Sync + 'static;
@@ -126,6 +131,9 @@ pub enum ConfigError {
         path: PathBuf,
         revision: u64,
     },
+    Busy {
+        path: PathBuf,
+    },
     ReservedLegacyKey {
         path: PathBuf,
         section: &'static str,
@@ -167,6 +175,7 @@ impl ConfigError {
             Self::Serialize { .. } => "CONFIG_SERIALIZE_ERROR",
             Self::RevisionConflict { .. } => "CONFIG_REVISION_CONFLICT",
             Self::RevisionOverflow { .. } => "CONFIG_REVISION_OVERFLOW",
+            Self::Busy { .. } => "CONFIG_BUSY",
             Self::ReservedLegacyKey { .. } => "CONFIG_RESERVED_LEGACY_KEY",
             Self::InvalidFieldTarget { .. } => "CONFIG_INVALID_FIELD_TARGET",
             Self::InvalidReplacementDocument { .. } => "CONFIG_REPLACEMENT_INVALID",
@@ -186,6 +195,7 @@ impl ConfigError {
             | Self::Serialize { path, .. }
             | Self::RevisionConflict { path, .. }
             | Self::RevisionOverflow { path, .. }
+            | Self::Busy { path }
             | Self::ReservedLegacyKey { path, .. }
             | Self::InvalidFieldTarget { path, .. }
             | Self::InvalidReplacementDocument { path, .. }
@@ -259,6 +269,11 @@ impl fmt::Display for ConfigError {
                 "configuration revision overflow for {} at {revision}",
                 path.display()
             ),
+            Self::Busy { path } => write!(
+                formatter,
+                "configuration is being updated by another writer: {}",
+                path.display()
+            ),
             Self::ReservedLegacyKey { path, section, key } => write!(
                 formatter,
                 "configuration legacy key {section}.{key} is reserved at {}",
@@ -312,6 +327,7 @@ impl Error for ConfigError {
             Self::NotFound { .. }
             | Self::RevisionConflict { .. }
             | Self::RevisionOverflow { .. }
+            | Self::Busy { .. }
             | Self::ReservedLegacyKey { .. }
             | Self::InvalidFieldTarget { .. }
             | Self::InvalidReplacementDocument { .. }
@@ -563,6 +579,26 @@ fn ensure_save_supported(path: &Path) -> Result<(), ConfigError> {
     })
 }
 
+fn try_lock_parent(directory: &File, path: &Path, parent: &Path) -> Result<(), ConfigError> {
+    let deadline = Instant::now() + CONFIG_LOCK_WAIT;
+    loop {
+        match directory.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(CONFIG_LOCK_RETRY);
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(ConfigError::Busy {
+                    path: path.to_owned(),
+                });
+            }
+            Err(fs::TryLockError::Error(source)) => {
+                return Err(io_error("lock parent directory", parent, source));
+            }
+        }
+    }
+}
+
 fn save_document(
     path: &Path,
     config: &AppConfig,
@@ -571,9 +607,7 @@ fn save_document(
     ensure_save_supported(path)?;
     let parent = parent_directory(path);
     let directory = File::open(parent).map_err(|source| read_error(path, source))?;
-    directory
-        .lock()
-        .map_err(|source| io_error("lock parent directory", parent, source))?;
+    try_lock_parent(&directory, path, parent)?;
 
     let (destination, mut document, current) = load_document(path)?;
     if current.revision != expected_revision {
@@ -636,9 +670,7 @@ fn save_document_field(
     ensure_save_supported(path)?;
     let parent = parent_directory(path);
     let directory = File::open(parent).map_err(|source| read_error(path, source))?;
-    directory
-        .lock()
-        .map_err(|source| io_error("lock parent directory", parent, source))?;
+    try_lock_parent(&directory, path, parent)?;
 
     let (destination, mut document, current) = load_document(path)?;
     if current.revision != expected_revision {
@@ -746,9 +778,7 @@ fn replace_document(
     ensure_save_supported(path)?;
     let parent = parent_directory(path);
     let directory = File::open(parent).map_err(|source| read_error(path, source))?;
-    directory
-        .lock()
-        .map_err(|source| io_error("lock parent directory", parent, source))?;
+    try_lock_parent(&directory, path, parent)?;
     let (destination, mut document, current) = load_document(path)?;
     if current.revision != expected_revision {
         return Err(ConfigError::RevisionConflict {

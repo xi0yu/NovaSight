@@ -5,12 +5,14 @@
 //!
 //! Commands are added only with a concrete owner and reply contract. Device
 //! diagnostics are serialized here because they must never compete with the
-//! live DeviceLane; config persistence remains owned by ConfigService.
+//! live DeviceLane. Hot output configuration is also serialized here so a
+//! persisted revision and its physical gate transition have one owner.
 
 use tokio::sync::oneshot;
 
 use novasight_core::DeviceReceipt;
 
+use crate::config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
 use crate::error::RuntimeError;
 use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
@@ -21,7 +23,7 @@ use crate::supervisor::UrgentStopToken;
 use novasight_pipeline::PreviewSnapshot;
 
 #[derive(Debug)]
-pub enum RuntimeCommand {
+pub(crate) enum RuntimeCommand {
     Start {
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
     },
@@ -51,9 +53,10 @@ pub enum RuntimeCommand {
         active: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
-    SetOutputEnabled {
-        enabled: bool,
-        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+    UpdateOutputConfig {
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+        reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,
     },
     SetPreviewActive {
         active: bool,

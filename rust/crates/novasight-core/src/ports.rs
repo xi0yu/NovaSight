@@ -20,6 +20,16 @@ pub struct PointerButtons {
     pub right: bool,
 }
 
+/// Provisioning state exposed by a pointer adapter. Runtime composition uses
+/// this capability instead of maintaining a second configuration boolean that
+/// could drift from the selected adapter.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PointerDeviceMode {
+    Commissioned,
+    #[default]
+    Uncommissioned,
+}
+
 impl PointerButtons {
     pub const fn trigger_active(self) -> bool {
         self.left || self.right
@@ -28,6 +38,10 @@ impl PointerButtons {
 
 /// Device transition seam; successful sends return a typed receipt for the same command.
 pub trait PointerDevice: Send + Sync {
+    fn mode(&self) -> PointerDeviceMode {
+        PointerDeviceMode::Uncommissioned
+    }
+
     /// Acquire the concrete device session for one runtime epoch. Stateless
     /// adapters may keep the default no-op implementation.
     fn connect(&self) -> Result<(), AppError> {

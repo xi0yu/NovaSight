@@ -10,7 +10,8 @@ use novasight_core::output::DeviceCommand;
 use novasight_core::output::latest_command::{LatestCommandSlot, SlotPushError, SlotTakeError};
 use novasight_core::output::quantizer::{AxisQuantizer, PerAxisQuantizer, QuantizerConfig};
 use novasight_core::{
-    AppError, Generation, MonotonicNanos, PointerDevice, RuntimeEpoch, UncommissionedPointerDevice,
+    AppError, Generation, MonotonicNanos, PointerDevice, PointerDeviceMode, RuntimeEpoch,
+    UncommissionedPointerDevice,
 };
 
 fn command(epoch: u64, generation: u64, issued_at: u64, _expiry_at: u64) -> DeviceCommand {
@@ -28,21 +29,35 @@ fn command(epoch: u64, generation: u64, issued_at: u64, _expiry_at: u64) -> Devi
 fn uncommissioned_device_is_inert_and_rejects_every_send() {
     let device = UncommissionedPointerDevice;
 
+    assert_eq!(device.mode(), PointerDeviceMode::Uncommissioned);
     device
         .connect()
         .expect("disabled adapter has no session to open");
-    assert_eq!(device.buttons().expect("button probe"), None);
-    assert_eq!(
-        device.send(command(1, 1, 100, 200)),
-        Err(AppError::PointerDevice {
-            code: "device_not_commissioned",
-            message: "configure hardware.auto_connect with a provisioned host and UUID before opening output"
-                .to_owned(),
-        })
-    );
+    for error in [
+        device.send(command(1, 1, 100, 200)).unwrap_err(),
+        device.buttons().unwrap_err(),
+        device.trigger_active().unwrap_err(),
+    ] {
+        assert_eq!(
+            error,
+            AppError::PointerDevice {
+                code: "device_uncommissioned",
+                message: "configure hardware.auto_connect with a provisioned host and UUID before opening output"
+                    .to_owned(),
+            }
+        );
+    }
     device
         .disconnect()
         .expect("disabled adapter has no session to close");
+}
+
+#[test]
+fn pointer_device_capability_defaults_to_uncommissioned() {
+    assert_eq!(
+        PointerDeviceMode::default(),
+        PointerDeviceMode::Uncommissioned
+    );
 }
 
 #[test]

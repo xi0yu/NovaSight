@@ -3,6 +3,8 @@
 mod application;
 #[cfg(all(feature = "tensorrt", any(test, target_os = "linux")))]
 mod model_contract;
+#[cfg(any(test, all(feature = "deepstream", target_os = "linux")))]
+mod pointer_adapter;
 mod server;
 
 #[cfg(all(feature = "deepstream", target_os = "linux"))]

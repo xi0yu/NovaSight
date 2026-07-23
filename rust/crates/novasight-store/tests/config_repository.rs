@@ -35,9 +35,9 @@ impl Drop for TempDirectory {
 }
 
 #[test]
-fn current_project_yaml_requires_commissioning_without_dropping_legacy_sections() {
+fn tracked_project_example_requires_commissioning_without_dropping_legacy_sections() {
     let project_config =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/novasight.yaml");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/novasight.example.yaml");
     let error = YamlConfigRepository::load(&project_config).unwrap_err();
     assert!(error.to_string().contains("hardware.uuid"));
 
@@ -95,6 +95,88 @@ fn loads_the_complete_rust_owned_example() {
     assert_eq!(adapters.pipeline.output_interval_ms, 4);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
+}
+
+#[test]
+fn production_output_cannot_open_before_hardware_is_commissioned() {
+    let directory = TempDirectory::new();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let path = directory.join("unsafe-output.yaml");
+    let document = fs::read_to_string(source)
+        .unwrap()
+        .replace("output_enabled: false", "output_enabled: true");
+    fs::write(&path, document).unwrap();
+
+    let error = YamlConfigRepository::load(path).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("control.output_enabled"));
+    assert!(error.to_string().contains("hardware.auto_connect"));
+}
+
+#[test]
+fn field_update_cannot_decommission_hardware_while_output_is_enabled() {
+    let directory = TempDirectory::new();
+    let path = directory.join("unsafe-decommission.yaml");
+    fs::write(
+        &path,
+        "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 192.168.2.188\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
+    )
+    .unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let error = YamlConfigRepository::new(&path)
+        .save_field("hardware", "auto_connect", Value::Bool(false), 0)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("control.output_enabled"));
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn document_replacement_cannot_persist_an_uncommissioned_open_gate() {
+    let directory = TempDirectory::new();
+    let path = directory.join("unsafe-replacement.yaml");
+    fs::write(
+        &path,
+        "revision: 0\ncontrol:\n  output_enabled: false\nhardware:\n  auto_connect: false\n",
+    )
+    .unwrap();
+    let before = fs::read(&path).unwrap();
+    let replacement: Value = serde_yaml::from_str(
+        "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: false\n",
+    )
+    .unwrap();
+
+    let error = YamlConfigRepository::new(&path)
+        .replace_document(replacement, 0)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("control.output_enabled"));
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn document_replacement_cannot_remove_hardware_while_output_is_enabled() {
+    let directory = TempDirectory::new();
+    let path = directory.join("removed-hardware.yaml");
+    fs::write(
+        &path,
+        "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 192.168.2.188\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
+    )
+    .unwrap();
+    let before = fs::read(&path).unwrap();
+    let replacement: Value = serde_yaml::from_str("revision: 0\nhardware: null\n").unwrap();
+
+    let error = YamlConfigRepository::new(&path)
+        .replace_document(replacement, 0)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
+    assert!(error.to_string().contains("control.output_enabled"));
+    assert_eq!(fs::read(path).unwrap(), before);
 }
 
 #[test]
@@ -561,7 +643,7 @@ fn save_fails_closed_when_destination_has_unpreservable_extended_metadata() {
 }
 
 #[test]
-fn concurrent_writers_with_the_same_expected_revision_have_one_winner() {
+fn concurrent_writers_have_one_winner_and_fail_fast_when_the_lock_is_busy() {
     const WRITER_COUNT: usize = 8;
 
     let directory = TempDirectory::new();
@@ -591,11 +673,30 @@ fn concurrent_writers_with_the_same_expected_revision_have_one_winner() {
         results
             .iter()
             .filter_map(|result| result.as_ref().err())
-            .all(|error| error.code() == "CONFIG_REVISION_CONFLICT"
-                && error.expected_revision() == Some(0)
-                && error.actual_revision() == Some(1))
+            .all(|error| match error.code() {
+                "CONFIG_BUSY" => true,
+                "CONFIG_REVISION_CONFLICT" => {
+                    error.expected_revision() == Some(0) && error.actual_revision() == Some(1)
+                }
+                _ => false,
+            })
     );
     assert_eq!(YamlConfigRepository::load(path).unwrap().revision, 1);
+}
+
+#[test]
+fn configuration_save_reports_a_busy_writer_after_a_bounded_lock_wait() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "revision: 0\n").unwrap();
+    let config = YamlConfigRepository::load(&path).unwrap();
+    let directory_lock = fs::File::open(&directory.0).unwrap();
+    directory_lock.lock().unwrap();
+
+    let error = YamlConfigRepository::save(&path, &config, 0).unwrap_err();
+
+    assert_eq!(error.code(), "CONFIG_BUSY");
+    assert_eq!(error.path(), path);
 }
 
 #[test]

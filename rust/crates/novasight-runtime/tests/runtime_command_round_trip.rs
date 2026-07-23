@@ -7,6 +7,9 @@ use novasight_runtime::{
     RuntimeSupervisor, SubsystemSnapshot, SubsystemState,
 };
 
+mod common;
+use common::TestConfig;
+
 async fn shutdown(supervisor: RuntimeSupervisor, handle: &RuntimeHandle) {
     handle.shutdown_daemon().await.expect("shutdown");
     supervisor.join().await.expect("supervisor join");
@@ -77,14 +80,15 @@ async fn output_gate_hot_update_survives_runtime_restart() {
         RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(false));
     let started = handle.start().await.unwrap();
     assert!(!started.pipeline_metrics.output_gate_open);
+    let config = TestConfig::commissioned(false);
 
-    let enabled = handle.set_output_enabled(true).await.unwrap();
-    assert!(enabled.pipeline_metrics.output_gate_open);
+    config.set_output(&handle, true).await.unwrap();
+    assert!(handle.snapshot().pipeline_metrics.output_gate_open);
     let restarted = handle.restart().await.unwrap();
     assert!(restarted.pipeline_metrics.output_gate_open);
 
-    let disabled = handle.set_output_enabled(false).await.unwrap();
-    assert!(!disabled.pipeline_metrics.output_gate_open);
+    config.set_output(&handle, false).await.unwrap();
+    assert!(!handle.snapshot().pipeline_metrics.output_gate_open);
     shutdown(supervisor, &handle).await;
 }
 

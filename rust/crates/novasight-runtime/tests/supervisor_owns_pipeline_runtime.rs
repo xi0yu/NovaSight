@@ -41,6 +41,10 @@ impl BlockingFailDevice {
 }
 
 impl PointerDevice for BlockingFailDevice {
+    fn mode(&self) -> novasight_core::PointerDeviceMode {
+        novasight_core::PointerDeviceMode::Commissioned
+    }
+
     fn send(
         &self,
         _command: novasight_core::DeviceCommand,
@@ -500,6 +504,10 @@ async fn worker_fault_is_projected_into_the_supervisor_snapshot() {
     struct FailingDevice;
 
     impl PointerDevice for FailingDevice {
+        fn mode(&self) -> novasight_core::PointerDeviceMode {
+            novasight_core::PointerDeviceMode::Commissioned
+        }
+
         fn send(
             &self,
             _command: novasight_core::DeviceCommand,

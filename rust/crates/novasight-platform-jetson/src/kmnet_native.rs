@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerButtons, PointerDevice};
+use novasight_core::{
+    AppError, DeviceCommand, DeviceReceipt, PointerButtons, PointerDevice, PointerDeviceMode,
+};
 use thiserror::Error;
 
 const CMD_CONNECT: u32 = 0xaf3c_2828;
@@ -174,6 +176,10 @@ fn validate_config(config: &KmNetNativeConfig) -> Result<(), KmNetNativeError> {
 }
 
 impl PointerDevice for KmNetNativeDevice {
+    fn mode(&self) -> PointerDeviceMode {
+        PointerDeviceMode::Commissioned
+    }
+
     fn connect(&self) -> Result<(), AppError> {
         let mut session = self
             .session

@@ -1,7 +1,8 @@
 //! Production application composition for NovaSight.
 //!
-//! Production startup fails closed until a real output adapter is
-//! selected. Recording output is available only through `--dry-run`.
+//! Production startup may remain explicitly uncommissioned; hardware output
+//! stays closed until a real adapter has been provisioned. Recording output is
+//! available only through `--dry-run`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,6 +19,8 @@ use novasight_store::model_catalog::SqliteModelCatalog;
 use novasight_store::motion_profile::MotionProfileRepository;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
+use crate::pointer_adapter::configured_pointer_device_mode;
 use crate::server;
 
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
@@ -219,10 +222,16 @@ pub async fn entry() -> ExitCode {
                 eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
                 return ExitCode::FAILURE;
             }
+            let pointer_adapter =
+                match configured_pointer_device_mode(loaded.config().device.as_ref()) {
+                    novasight_core::PointerDeviceMode::Commissioned => "commissioned",
+                    novasight_core::PointerDeviceMode::Uncommissioned => "uncommissioned",
+                };
             println!(
-                "PASS mode=production config={} configured_output_enabled={} license_verifier=ready instance_lock=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter=ready capture_not_started=true pointer_not_connected=true",
+                "PASS mode=production config={} configured_output_enabled={} license_verifier=ready instance_lock=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
                 args.config.display(),
-                loaded.config().control.output_enabled
+                loaded.config().control.output_enabled,
+                pointer_adapter
             );
             return ExitCode::SUCCESS;
         }

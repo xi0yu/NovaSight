@@ -1063,10 +1063,11 @@ async fn update_config(
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
-    let mut result = service.update_field(update).await?;
-    if hot_output_gate {
-        apply_output_gate_update(&state, service, &mut result).await?;
-    }
+    let result = if hot_output_gate {
+        service.update_output_gate(&state.runtime, update).await?
+    } else {
+        service.update_field(update).await?
+    };
     Ok(Json(result))
 }
 
@@ -1082,37 +1083,22 @@ async fn update_legacy_config(
     let is_field_update = payload.get("section").is_some()
         || payload.get("key").is_some()
         || payload.get("value").is_some();
-    let (mut update, hot_output_gate) = if is_field_update {
+    let update = if is_field_update {
         let field_update: ConfigFieldUpdate =
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
         let hot_output_gate =
             field_update.section == "control" && field_update.key == "output_enabled";
-        (service.update_field(field_update).await?, hot_output_gate)
+        if hot_output_gate {
+            service
+                .update_output_gate(&state.runtime, field_update)
+                .await?
+        } else {
+            service.update_field(field_update).await?
+        }
     } else {
-        (service.replace(payload).await?, false)
+        service.replace(payload).await?
     };
-    if hot_output_gate {
-        apply_output_gate_update(&state, service, &mut update).await?;
-    }
     Ok(Json(update))
-}
-
-async fn apply_output_gate_update(
-    state: &ControlState,
-    service: &ConfigService,
-    update: &mut ConfigUpdate,
-) -> Result<(), ControlApiError> {
-    state
-        .runtime
-        .set_output_enabled(update.config.control.output_enabled)
-        .await?;
-    service
-        .commit_effective_revision(update.config.revision)
-        .await?;
-    update.applied = true;
-    update.restart_required = false;
-    update.message = "output gate persisted and applied to the live runtime".to_owned();
-    Ok(())
 }
 
 async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
@@ -1377,7 +1363,10 @@ impl From<RuntimeError> for ControlApiError {
 
 impl From<ConfigServiceError> for ControlApiError {
     fn from(error: ConfigServiceError) -> Self {
-        Self::Config(error)
+        match error {
+            ConfigServiceError::Runtime(error) => Self::Runtime(error),
+            error => Self::Config(error),
+        }
     }
 }
 
@@ -1393,12 +1382,13 @@ impl IntoResponse for ControlApiError {
         let (status, code, message) = match self {
             Self::Runtime(error) => {
                 let status = match error.kind {
-                    RuntimeErrorKind::InvalidPipelineState | RuntimeErrorKind::OutputGateClosed => {
-                        StatusCode::CONFLICT
-                    }
+                    RuntimeErrorKind::InvalidPipelineState
+                    | RuntimeErrorKind::OutputGateClosed
+                    | RuntimeErrorKind::DeviceUncommissioned => StatusCode::CONFLICT,
                     RuntimeErrorKind::SupervisorUnavailable
                     | RuntimeErrorKind::SupervisorClosed
                     | RuntimeErrorKind::SupervisorReplyLost
+                    | RuntimeErrorKind::SupervisorBusy
                     | RuntimeErrorKind::PipelineUnavailable => StatusCode::SERVICE_UNAVAILABLE,
                     RuntimeErrorKind::DeviceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
                     RuntimeErrorKind::InvalidDeviceCommand => StatusCode::BAD_REQUEST,
@@ -1412,11 +1402,16 @@ impl IntoResponse for ControlApiError {
                 let status = match error.code() {
                     "CONFIG_REVISION_CONFLICT" => StatusCode::CONFLICT,
                     "CONFIG_RESTART_REQUIRED" => StatusCode::CONFLICT,
+                    "CONFIG_RUNTIME_DIVERGED" => StatusCode::CONFLICT,
+                    "CONFIG_BUSY" | "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED" => {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
                     "CONFIG_PARSE_ERROR"
                     | "CONFIG_VALIDATION_ERROR"
                     | "CONFIG_RESERVED_LEGACY_KEY"
                     | "CONFIG_INVALID_FIELD_TARGET"
                     | "CONFIG_FIELD_VALUE_INVALID"
+                    | "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED"
                     | "CONFIG_REPLACEMENT_INVALID"
                     | "CONFIG_REPLACEMENT_REVISION_REQUIRED"
                     | "CAPTURE_NOT_CONFIGURED"
@@ -1562,10 +1557,12 @@ impl IntoResponse for ControlApiError {
                 ModelActivationError::Runtime(error) => {
                     let status = match error.kind {
                         RuntimeErrorKind::InvalidPipelineState
-                        | RuntimeErrorKind::OutputGateClosed => StatusCode::CONFLICT,
+                        | RuntimeErrorKind::OutputGateClosed
+                        | RuntimeErrorKind::DeviceUncommissioned => StatusCode::CONFLICT,
                         RuntimeErrorKind::SupervisorUnavailable
                         | RuntimeErrorKind::SupervisorClosed
                         | RuntimeErrorKind::SupervisorReplyLost
+                        | RuntimeErrorKind::SupervisorBusy
                         | RuntimeErrorKind::PipelineUnavailable
                         | RuntimeErrorKind::DeviceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
                         RuntimeErrorKind::InvalidDeviceCommand => StatusCode::BAD_REQUEST,
@@ -1639,10 +1636,12 @@ impl IntoResponse for ControlApiError {
                 ModelIngressError::Runtime(error) => {
                     let status = match error.kind {
                         RuntimeErrorKind::InvalidPipelineState
-                        | RuntimeErrorKind::OutputGateClosed => StatusCode::CONFLICT,
+                        | RuntimeErrorKind::OutputGateClosed
+                        | RuntimeErrorKind::DeviceUncommissioned => StatusCode::CONFLICT,
                         RuntimeErrorKind::SupervisorUnavailable
                         | RuntimeErrorKind::SupervisorClosed
                         | RuntimeErrorKind::SupervisorReplyLost
+                        | RuntimeErrorKind::SupervisorBusy
                         | RuntimeErrorKind::PipelineUnavailable
                         | RuntimeErrorKind::DeviceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
                         RuntimeErrorKind::InvalidDeviceCommand => StatusCode::BAD_REQUEST,

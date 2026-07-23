@@ -14,7 +14,7 @@ use novasight_core::control::humanized_motion::MotionProfile;
 use novasight_core::control::recoil::RecoilConfig;
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, MonotonicNanos, PointerDevice,
-    RecordingPointerDevice, RuntimeEpoch,
+    PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
     CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, MotionProfileHub,
@@ -26,9 +26,10 @@ use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, Sqlite
 use novasight_store::motion_profile::{
     MotionProfileRepository, MotionSampleInput, MotionSampleResult, MotionSessionSummary,
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::command::RuntimeCommand;
+use crate::config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
@@ -45,6 +46,7 @@ use crate::snapshot::{
 use crate::state::{DaemonState, PipelineState};
 
 const COMMAND_CAPACITY: usize = 32;
+const URGENT_ADMISSION_CAPACITY: usize = 8;
 const PIPELINE_EVENT_CAPACITY: usize = 8;
 const PERCEPTION_EVENT_CAPACITY: usize = 4;
 
@@ -70,11 +72,17 @@ impl UrgentStopSignal {
     fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire) != 0
     }
+
+    /// Permanently retire output for an owner-driven process shutdown.
+    /// Unlike a command token, a dropped supervisor has no later point at
+    /// which reopening this process would be valid.
+    fn latch_shutdown(&self) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct UrgentStopToken {
+pub(crate) struct UrgentStopToken {
     signal: Arc<UrgentStopSignal>,
 }
 
@@ -85,7 +93,6 @@ impl Drop for UrgentStopToken {
 }
 
 /// Concrete resources used to create each runtime epoch.
-#[derive(Clone)]
 pub struct RuntimeDependencies {
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
@@ -234,6 +241,7 @@ struct SupervisorState {
     device_metrics: DeviceMetrics,
     model: ModelSnapshot,
     output_enabled: bool,
+    device_mode: PointerDeviceMode,
     started_at_unix_ms: u64,
 }
 
@@ -253,6 +261,7 @@ impl Default for SupervisorState {
             device_metrics: DeviceMetrics::default(),
             model: ModelSnapshot::default(),
             output_enabled: false,
+            device_mode: PointerDeviceMode::Commissioned,
             started_at_unix_ms: now_ms(),
         }
     }
@@ -279,6 +288,13 @@ impl SupervisorState {
             model: self.model.clone(),
             updated_at_ms,
         }
+    }
+
+    fn mark_device_uncommissioned(&mut self) {
+        let mut error = RuntimeError::device_uncommissioned().summary();
+        error.subsystem = Some("device".to_owned());
+        self.subsystems.device.state = SubsystemState::Unavailable;
+        self.subsystems.device.last_error = Some(error);
     }
 
     fn begin_start(&mut self) -> Result<Option<RuntimeEpoch>, RuntimeError> {
@@ -313,7 +329,11 @@ impl SupervisorState {
         self.subsystems.control.last_error = None;
         self.subsystems.device.last_error = None;
         self.subsystems.control.state = SubsystemState::Starting;
-        self.subsystems.device.state = SubsystemState::Starting;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Starting;
+        } else {
+            self.mark_device_uncommissioned();
+        }
         Ok(Some(epoch))
     }
 
@@ -325,7 +345,11 @@ impl SupervisorState {
             self.subsystems.inference.state = SubsystemState::Running;
         }
         self.subsystems.control.state = SubsystemState::Running;
-        self.subsystems.device.state = SubsystemState::Ready;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Ready;
+        } else {
+            self.mark_device_uncommissioned();
+        }
     }
 
     fn begin_stop(&mut self) -> bool {
@@ -337,7 +361,11 @@ impl SupervisorState {
         self.subsystems.capture.state = SubsystemState::Stopping;
         self.subsystems.inference.state = SubsystemState::Stopping;
         self.subsystems.control.state = SubsystemState::Stopping;
-        self.subsystems.device.state = SubsystemState::Stopping;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Stopping;
+        } else {
+            self.mark_device_uncommissioned();
+        }
         true
     }
 
@@ -348,7 +376,11 @@ impl SupervisorState {
         self.subsystems.capture.state = SubsystemState::Stopped;
         self.subsystems.inference.state = SubsystemState::Stopped;
         self.subsystems.control.state = SubsystemState::Stopped;
-        self.subsystems.device.state = SubsystemState::Stopped;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Stopped;
+        } else {
+            self.mark_device_uncommissioned();
+        }
     }
 
     fn finish_fault(&mut self, message: impl Into<String>) {
@@ -416,7 +448,11 @@ fn initial_model_snapshot(catalog: Option<&SqliteModelCatalog>) -> ModelSnapshot
 /// paired [`RuntimeHandle`].
 pub struct RuntimeSupervisor {
     join: Option<tokio::task::JoinHandle<()>>,
+    _command_tx: mpsc::Sender<RuntimeCommand>,
     shutdown_tx: watch::Sender<bool>,
+    ingress_rx: watch::Receiver<Option<PipelineIngress>>,
+    urgent_stop: Arc<UrgentStopSignal>,
+    owner_shutdown_armed: bool,
 }
 
 impl std::fmt::Debug for RuntimeSupervisor {
@@ -431,18 +467,30 @@ impl RuntimeSupervisor {
     /// Spawn the sole lifecycle actor with production-selected adapters.
     pub fn spawn(dependencies: RuntimeDependencies) -> (Self, RuntimeHandle) {
         let model = initial_model_snapshot(dependencies.model_catalog.as_ref());
-        let state = SupervisorState {
+        let device_mode = dependencies.device.mode();
+        let mut state = SupervisorState {
             daemon: DaemonState::Ready,
             model,
-            output_enabled: dependencies.output_enabled,
+            output_enabled: dependencies.output_enabled
+                && device_mode == PointerDeviceMode::Commissioned,
+            device_mode,
             ..SupervisorState::default()
         };
+        if device_mode == PointerDeviceMode::Uncommissioned {
+            state.mark_device_uncommissioned();
+        }
         let initial_snapshot = Arc::new(state.snapshot(now_ms()));
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
         let (ingress_tx, ingress_rx) = watch::channel(None::<PipelineIngress>);
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (notice_tx, notice_rx) = mpsc::channel(PIPELINE_EVENT_CAPACITY);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let urgent_admission = Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY));
+        let urgent_stop = Arc::clone(&dependencies.urgent_stop);
+        let preview = dependencies.preview.clone();
+        let crosshair = dependencies.crosshair.clone();
+        let motion_profiles = dependencies.motion_profiles.clone();
+        let motion_repository = dependencies.motion_repository.clone();
         let join = tokio::spawn(supervisor_loop(
             command_rx,
             notice_rx,
@@ -451,23 +499,28 @@ impl RuntimeSupervisor {
             snapshot_tx,
             ingress_tx,
             state,
-            dependencies.clone(),
+            dependencies,
         ));
 
         (
             Self {
                 join: Some(join),
+                _command_tx: command_tx.clone(),
                 shutdown_tx,
+                ingress_rx: ingress_rx.clone(),
+                urgent_stop: Arc::clone(&urgent_stop),
+                owner_shutdown_armed: true,
             },
             RuntimeHandle {
                 command_tx,
                 snapshot_rx,
                 ingress_rx,
-                urgent_stop: Arc::clone(&dependencies.urgent_stop),
-                preview: dependencies.preview.clone(),
-                crosshair: dependencies.crosshair.clone(),
-                motion_profiles: dependencies.motion_profiles.clone(),
-                motion_repository: dependencies.motion_repository.clone(),
+                urgent_stop,
+                urgent_admission,
+                preview,
+                crosshair,
+                motion_profiles,
+                motion_repository,
             },
         )
     }
@@ -481,7 +534,9 @@ impl RuntimeSupervisor {
             .join
             .take()
             .ok_or_else(RuntimeError::supervisor_unavailable)?;
-        join.await.map_err(|error| {
+        let result = join.await;
+        self.owner_shutdown_armed = false;
+        result.map_err(|error| {
             RuntimeError::new(
                 RuntimeErrorKind::SupervisorUnavailable,
                 format!("runtime supervisor task failed: {error}"),
@@ -492,7 +547,11 @@ impl RuntimeSupervisor {
 
 impl Drop for RuntimeSupervisor {
     fn drop(&mut self) {
-        if self.join.is_some() {
+        if self.owner_shutdown_armed {
+            self.urgent_stop.latch_shutdown();
+            if let Some(ingress) = self.ingress_rx.borrow().clone() {
+                ingress.request_output_stop();
+            }
             self.shutdown_tx.send_replace(true);
         }
     }
@@ -505,6 +564,7 @@ pub struct RuntimeHandle {
     snapshot_rx: watch::Receiver<Arc<RuntimeSnapshot>>,
     ingress_rx: watch::Receiver<Option<PipelineIngress>>,
     urgent_stop: Arc<UrgentStopSignal>,
+    urgent_admission: Arc<Semaphore>,
     preview: Option<PreviewHub>,
     crosshair: Option<CrosshairHub>,
     motion_profiles: Option<MotionProfileHub>,
@@ -577,9 +637,23 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
-    pub async fn set_output_enabled(&self, enabled: bool) -> Result<RuntimeSnapshot, RuntimeError> {
-        self.send_command(|reply| RuntimeCommand::SetOutputEnabled { enabled, reply })
+    pub(crate) async fn update_output_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateOutputConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
             .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
     }
 
     pub fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
@@ -747,21 +821,8 @@ impl RuntimeHandle {
     }
 
     pub async fn stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
-        let urgent = self.urgent_stop.register();
-        if let Some(ingress) = self.ingress_rx.borrow().clone() {
-            ingress.request_output_stop();
-        }
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
-            .send(RuntimeCommand::Stop {
-                urgent,
-                reply: reply_tx,
-            })
+        self.send_urgent_command(|urgent, reply| RuntimeCommand::Stop { urgent, reply })
             .await
-            .map_err(|_| RuntimeError::supervisor_closed())?;
-        reply_rx
-            .await
-            .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
     pub async fn restart(&self) -> Result<RuntimeSnapshot, RuntimeError> {
@@ -815,44 +876,54 @@ impl RuntimeHandle {
     }
 
     pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
-        let urgent = self.urgent_stop.register();
-        if let Some(ingress) = self.ingress_rx.borrow().clone() {
-            ingress.request_output_stop();
-        }
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
-            .send(RuntimeCommand::EmergencyStop {
-                urgent,
-                reply: reply_tx,
-            })
+        self.send_urgent_command(|urgent, reply| RuntimeCommand::EmergencyStop { urgent, reply })
             .await
-            .map_err(|_| RuntimeError::supervisor_closed())?;
-        reply_rx
-            .await
-            .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
     pub async fn shutdown_daemon(&self) -> Result<(), RuntimeError> {
+        self.send_urgent_command(|urgent, reply| RuntimeCommand::ShutdownDaemon { urgent, reply })
+            .await
+    }
+
+    async fn send_urgent_command<T, F>(&self, build: F) -> Result<T, RuntimeError>
+    where
+        F: FnOnce(UrgentStopToken, oneshot::Sender<Result<T, RuntimeError>>) -> RuntimeCommand,
+    {
+        let admission_permit = Arc::clone(&self.urgent_admission)
+            .try_acquire_owned()
+            .map_err(|_| RuntimeError::supervisor_busy())?;
+        // Register before touching the gate so another actor transaction can
+        // never reopen it between the physical effect and publication of the
+        // stop intent. The token remains owned by the detached admission task
+        // if the initiating HTTP/task future is cancelled.
         let urgent = self.urgent_stop.register();
         if let Some(ingress) = self.ingress_rx.borrow().clone() {
             ingress.request_output_stop();
         }
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
-            .send(RuntimeCommand::ShutdownDaemon {
-                urgent,
-                reply: reply_tx,
-            })
+        let command = build(urgent, reply_tx);
+        let command_tx = self.command_tx.clone();
+        let (admission_tx, admission_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let _admission_permit = admission_permit;
+            let admitted = command_tx
+                .send(command)
+                .await
+                .map_err(|_| RuntimeError::supervisor_closed());
+            let _ = admission_tx.send(admitted);
+        });
+
+        admission_rx
             .await
-            .map_err(|_| RuntimeError::supervisor_closed())?;
+            .map_err(|_| RuntimeError::supervisor_reply_lost())??;
         reply_rx
             .await
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
-    async fn send_command<F>(&self, build: F) -> Result<RuntimeSnapshot, RuntimeError>
+    async fn send_command<T, F>(&self, build: F) -> Result<T, RuntimeError>
     where
-        F: FnOnce(oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>) -> RuntimeCommand,
+        F: FnOnce(oneshot::Sender<Result<T, RuntimeError>>) -> RuntimeCommand,
     {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
@@ -1084,18 +1155,64 @@ async fn handle_command(
             }
             let _ = reply.send(result);
         }
-        RuntimeCommand::SetOutputEnabled { enabled, reply } => {
-            state.output_enabled = enabled;
-            if let Some(active) = active.as_ref() {
-                if enabled {
-                    active.runtime.open_output_gate();
-                } else {
-                    active.runtime.pause_output_gate();
+        RuntimeCommand::UpdateOutputConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let result = match ConfigService::output_gate_value(&update) {
+                Ok(true) if state.device_mode == PointerDeviceMode::Uncommissioned => Err(
+                    ConfigServiceError::Runtime(RuntimeError::device_uncommissioned()),
+                ),
+                Ok(false) => {
+                    // Closing is safety-monotonic: retire physical output
+                    // before any filesystem wait, and never compensate by
+                    // reopening when persistence fails.
+                    let changed_live_output = state.output_enabled;
+                    state.output_enabled = false;
+                    if let Some(active_pipeline) = active.as_ref() {
+                        active_pipeline.runtime.pause_output_gate();
+                    }
+                    refresh_pipeline_metrics(state, active);
+                    publish(snapshot_tx, state, now_ms());
+                    match service.persist_output_gate(update, false).await {
+                        Ok(transaction) => {
+                            let update = transaction.commit();
+                            #[cfg(test)]
+                            service.notify_output_gate_applied();
+                            Ok(update)
+                        }
+                        Err(source)
+                            if changed_live_output || !service.output_gate_is_consistent() =>
+                        {
+                            service.mark_output_gate_diverged();
+                            Err(ConfigServiceError::OutputGateDisabledButNotPersisted {
+                                source: Box::new(source),
+                            })
+                        }
+                        Err(source) => Err(source),
+                    }
                 }
-            }
-            refresh_pipeline_metrics(state, active);
-            let snapshot = publish(snapshot_tx, state, now_ms());
-            let _ = reply.send(Ok(snapshot));
+                Ok(true) => match service.persist_output_gate(update, true).await {
+                    Ok(transaction) => {
+                        // Commit the in-memory revision before exposing the
+                        // physical gate. No await is allowed between them.
+                        let update = transaction.commit();
+                        state.output_enabled = true;
+                        if let Some(active_pipeline) = active.as_ref() {
+                            active_pipeline.runtime.open_output_gate();
+                        }
+                        refresh_pipeline_metrics(state, active);
+                        publish(snapshot_tx, state, now_ms());
+                        #[cfg(test)]
+                        service.notify_output_gate_applied();
+                        Ok(update)
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            let _ = reply.send(result);
         }
         RuntimeCommand::SetPreviewActive {
             active: requested,
@@ -1717,6 +1834,9 @@ async fn diagnose_device_move(
             "device diagnostics require a stopped pipeline",
         ));
     }
+    if state.device_mode == PointerDeviceMode::Uncommissioned {
+        return Err(RuntimeError::device_uncommissioned());
+    }
     if state.subsystems.device.state == SubsystemState::Unavailable {
         return Err(RuntimeError::device_unavailable(
             "device diagnostics remain disabled after emergency stop or device fault",
@@ -1970,7 +2090,7 @@ async fn start_state(
             let _ = event_tx.blocking_send(PipelineNotice { epoch, event });
         }
     });
-    if state.output_enabled {
+    if state.output_enabled && state.device_mode == PointerDeviceMode::Commissioned {
         pipeline.open_output_gate();
     }
     ingress_tx.send_replace(Some(ingress.clone()));
@@ -2177,4 +2297,111 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handle_with_saturated_command_queue() -> (RuntimeHandle, mpsc::Receiver<RuntimeCommand>) {
+        let initial_snapshot = Arc::new(SupervisorState::default().snapshot(now_ms()));
+        let (_snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let (_ingress_tx, ingress_rx) = watch::channel(None::<PipelineIngress>);
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let handle = RuntimeHandle {
+            command_tx: command_tx.clone(),
+            snapshot_rx,
+            ingress_rx,
+            urgent_stop: Arc::new(UrgentStopSignal::new()),
+            urgent_admission: Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY)),
+            preview: None,
+            crosshair: None,
+            motion_profiles: None,
+            motion_repository: None,
+        };
+        let (occupied_reply, _occupied_reply_rx) = oneshot::channel();
+        command_tx
+            .try_send(RuntimeCommand::Start {
+                reply: occupied_reply,
+            })
+            .expect("test command queue should accept its first command");
+        (handle, command_rx)
+    }
+
+    async fn wait_for_pending_urgent_stops(handle: &RuntimeHandle, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while handle.pending_urgent_stop_count() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("urgent stop registrations should reach the expected count");
+    }
+
+    #[tokio::test]
+    async fn cancelled_urgent_caller_cannot_orphan_a_stop_behind_a_full_queue() {
+        let (handle, mut command_rx) = handle_with_saturated_command_queue();
+
+        let stop_handle = handle.clone();
+        let caller = tokio::spawn(async move { stop_handle.stop().await });
+        wait_for_pending_urgent_stops(&handle, 1).await;
+        assert_eq!(handle.pending_urgent_stop_count(), 1);
+
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            handle.pending_urgent_stop_count(),
+            1,
+            "caller cancellation must not withdraw the accepted stop request"
+        );
+
+        let occupied = command_rx.recv().await.expect("occupied command");
+        assert!(matches!(occupied, RuntimeCommand::Start { .. }));
+        drop(occupied);
+        let queued_stop = tokio::time::timeout(Duration::from_secs(1), command_rx.recv())
+            .await
+            .expect("detached admission should make progress")
+            .expect("queued stop command");
+        assert!(matches!(queued_stop, RuntimeCommand::Stop { .. }));
+        assert_eq!(handle.pending_urgent_stop_count(), 1);
+
+        drop(queued_stop);
+        assert_eq!(handle.pending_urgent_stop_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn urgent_admission_is_bounded_when_the_command_queue_stalls() {
+        let (handle, mut command_rx) = handle_with_saturated_command_queue();
+        let callers: Vec<_> = (0..URGENT_ADMISSION_CAPACITY)
+            .map(|_| {
+                let stop_handle = handle.clone();
+                tokio::spawn(async move { stop_handle.stop().await })
+            })
+            .collect();
+        wait_for_pending_urgent_stops(&handle, URGENT_ADMISSION_CAPACITY).await;
+
+        let overflow = handle.stop().await.expect_err("admission must be bounded");
+        assert_eq!(overflow.kind, RuntimeErrorKind::SupervisorBusy);
+        assert_eq!(
+            handle.pending_urgent_stop_count(),
+            URGENT_ADMISSION_CAPACITY
+        );
+        for caller in callers {
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+        }
+
+        let occupied = command_rx.recv().await.expect("occupied command");
+        assert!(matches!(occupied, RuntimeCommand::Start { .. }));
+        drop(occupied);
+        for _ in 0..URGENT_ADMISSION_CAPACITY {
+            let queued_stop = tokio::time::timeout(Duration::from_secs(1), command_rx.recv())
+                .await
+                .expect("bounded detached admissions should make progress")
+                .expect("queued stop command");
+            assert!(matches!(queued_stop, RuntimeCommand::Stop { .. }));
+            drop(queued_stop);
+        }
+        assert_eq!(handle.pending_urgent_stop_count(), 0);
+    }
 }

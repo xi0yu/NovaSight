@@ -14,7 +14,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use novasight_core::{AppError, DeviceCommand, DeviceReceipt, PointerButtons, PointerDevice};
+use novasight_core::{
+    AppError, DeviceCommand, DeviceReceipt, PointerButtons, PointerDevice, PointerDeviceMode,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -227,6 +229,10 @@ impl KmNetHostClient {
 }
 
 impl PointerDevice for KmNetHostClient {
+    fn mode(&self) -> PointerDeviceMode {
+        PointerDeviceMode::Commissioned
+    }
+
     fn connect(&self) -> Result<(), AppError> {
         self.connect_inner()
             .map_err(|error| AppError::PointerDevice {

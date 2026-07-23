@@ -14,7 +14,7 @@ use novasight_api::{
 };
 use novasight_core::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError, Clock,
-    MonotonicNanos, PointerDevice, RecordingPointerDevice,
+    MonotonicNanos, PointerDevice, RecordingPointerDevice, UncommissionedPointerDevice,
 };
 use novasight_pipeline::PipelineConfig;
 use novasight_runtime::{
@@ -63,6 +63,12 @@ impl Drop for ConfigDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+fn commissioned_config(revision: u64, output_enabled: bool) -> String {
+    format!(
+        "revision: {revision}\ncontrol:\n  output_enabled: {output_enabled}\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 127.0.0.1\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n"
+    )
 }
 
 async fn request(runtime: &RuntimeHandle, method: &str, path: &str) -> (StatusCode, Value) {
@@ -190,7 +196,7 @@ async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claim
 async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
-    fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\n").unwrap();
+    fs::write(&path, commissioned_config(0, true)).unwrap();
     let initial = YamlConfigRepository::load(&path).unwrap();
     let output_enabled = initial.control.output_enabled;
     let config = ConfigService::new(&path, initial);
@@ -246,7 +252,7 @@ async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
 async fn failed_output_gate_hot_apply_never_advances_the_effective_revision() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
-    fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\n").unwrap();
+    fs::write(&path, commissioned_config(0, true)).unwrap();
     let initial = YamlConfigRepository::load(&path).unwrap();
     let config = ConfigService::new(&path, initial);
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
@@ -268,9 +274,98 @@ async fn failed_output_gate_hot_apply_never_advances_the_effective_revision() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(config.snapshot().await.revision, 1);
+    assert_eq!(config.snapshot().await.revision, 0);
     assert_eq!(config.effective_revision(), 0);
-    assert!(config.ensure_effective().await.is_err());
+    assert!(config.ensure_effective().await.is_ok());
+    assert_eq!(YamlConfigRepository::load(&path).unwrap().revision, 0);
+}
+
+#[tokio::test]
+async fn output_gate_persistence_failure_keeps_the_live_runtime_fail_closed() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, commissioned_config(0, false)).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    runtime.start().await.unwrap();
+    assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+
+    // Simulate an out-of-process writer after the service snapshot. The actor
+    // must detect the optimistic revision race before opening physical output.
+    fs::write(&path, commissioned_config(1, false)).unwrap();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+    assert_eq!(config.snapshot().await.revision, 0);
+    assert_eq!(config.effective_revision(), 0);
+    let persisted = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(persisted.revision, 1);
+    assert!(!persisted.control.output_enabled);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn failed_disable_persistence_leaves_output_closed_and_reports_runtime_divergence() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, commissioned_config(0, true)).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) =
+        RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(true));
+    runtime.start().await.unwrap();
+    assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
+
+    // Lose the persistence CAS to an external writer. A failed close must
+    // still retire physical output and make the config/runtime split visible.
+    fs::write(&path, commissioned_config(1, true)).unwrap();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["code"], "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED");
+    assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+    assert_eq!(config.snapshot().await.revision, 0);
+    assert_eq!(config.effective_revision(), 0);
+    assert_eq!(
+        config.ensure_effective().await.unwrap_err().code(),
+        "CONFIG_RUNTIME_DIVERGED"
+    );
+    let persisted = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(persisted.revision, 1);
+    assert!(persisted.control.output_enabled);
+
+    shutdown(supervisor, &runtime).await;
 }
 
 #[tokio::test]
@@ -362,6 +457,79 @@ async fn studio_config_alias_uses_the_same_service_and_revision_guard() {
     assert_eq!(state["config"]["version"], 2);
     assert_eq!(state["config"]["effective_version"], 0);
     assert_eq!(state["config"]["restart_required"], true);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn whole_document_cannot_change_the_hot_output_gate() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: false\n").unwrap();
+    let before = fs::read(&path).unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"revision":0,"control":{"output_enabled":true}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(config.snapshot().await.revision, 0);
+    assert_eq!(config.effective_revision(), 0);
+    assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn whole_document_cannot_remove_hardware_while_output_is_enabled() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, commissioned_config(0, true)).unwrap();
+    let before = fs::read(&path).unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let (supervisor, runtime) =
+        RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(true));
+    runtime.start().await.unwrap();
+    assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/config")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"revision":0,"hardware":null}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "CONFIG_VALIDATION_ERROR");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(config.snapshot().await.revision, 0);
+    assert_eq!(config.effective_revision(), 0);
+    assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
 
     shutdown(supervisor, &runtime).await;
 }
@@ -830,7 +998,7 @@ async fn studio_status_websocket_streams_real_supervisor_changes() {
 async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
-    fs::write(&path, "revision: 0\nhardware: {}\n").unwrap();
+    fs::write(&path, commissioned_config(0, false)).unwrap();
     let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
     let dry_run =
@@ -858,10 +1026,21 @@ async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(error["code"], "output_gate_closed");
 
-    runtime
-        .set_output_enabled(true)
+    let response = production
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":true}"#,
+                ))
+                .unwrap(),
+        )
         .await
-        .expect("explicitly open the diagnostic output gate");
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     let response = production.clone().oneshot(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let result: Value =
@@ -913,6 +1092,95 @@ async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
 
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn uncommissioned_diagnostic_returns_a_stable_conflict() {
+    #[derive(Debug)]
+    struct FixedClock;
+
+    impl Clock for FixedClock {
+        fn now(&self) -> MonotonicNanos {
+            MonotonicNanos(1)
+        }
+    }
+
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        "revision: 0\ncontrol:\n  output_enabled: false\nhardware: {}\n",
+    )
+    .unwrap();
+    let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let device: Arc<dyn PointerDevice> = Arc::new(UncommissionedPointerDevice);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
+        clock,
+        device,
+        PipelineConfig::default(),
+    ));
+    let app =
+        build_control_router_with_capabilities(runtime.clone(), Some(config.clone()), true, None);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/runtime/state")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let kmnet = &status["executor"]["executors"]["kmnet"];
+    assert_eq!(kmnet["connection_state"], "uncommissioned");
+    assert_eq!(kmnet["retryable"], false);
+    assert!(status["fatal_error"].is_null());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"output_enabled","value":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "device_uncommissioned");
+    assert_eq!(config.snapshot().await.revision, 0);
+    let persisted = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(persisted.revision, 0);
+    assert!(!persisted.control.output_enabled);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/executors/kmnet/diagnostic-move")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"dx":1,"dy":0}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "device_uncommissioned");
     shutdown(supervisor, &runtime).await;
 }
 

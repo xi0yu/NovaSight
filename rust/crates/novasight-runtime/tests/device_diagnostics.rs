@@ -1,8 +1,16 @@
 use std::sync::Arc;
 
-use novasight_core::{Clock, MonotonicNanos, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
+use novasight_core::{
+    Clock, MonotonicNanos, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
+    UncommissionedPointerDevice,
+};
 use novasight_pipeline::PipelineConfig;
-use novasight_runtime::{RuntimeDependencies, RuntimeErrorKind, RuntimeSupervisor};
+use novasight_runtime::{
+    ConfigServiceError, RuntimeDependencies, RuntimeErrorKind, RuntimeSupervisor, SubsystemState,
+};
+
+mod common;
+use common::TestConfig;
 
 #[derive(Debug)]
 struct FixedClock;
@@ -31,6 +39,49 @@ async fn shutdown(supervisor: RuntimeSupervisor, runtime: &novasight_runtime::Ru
     supervisor.join().await.unwrap();
 }
 
+fn uncommissioned_runtime() -> (RuntimeSupervisor, novasight_runtime::RuntimeHandle) {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let device: Arc<dyn PointerDevice> = Arc::new(UncommissionedPointerDevice);
+    RuntimeSupervisor::spawn(RuntimeDependencies::new(
+        clock,
+        device,
+        PipelineConfig::default(),
+    ))
+}
+
+#[tokio::test]
+async fn uncommissioned_device_stays_unavailable_and_cannot_open_output() {
+    let (supervisor, runtime) = uncommissioned_runtime();
+    let config = TestConfig::commissioned(false);
+
+    let initial = runtime.snapshot();
+    assert_eq!(initial.subsystems.device.state, SubsystemState::Unavailable);
+    assert_eq!(
+        initial.subsystems.device.last_error.unwrap().code,
+        "device_uncommissioned"
+    );
+
+    let error = config.set_output(&runtime, true).await.unwrap_err();
+    let ConfigServiceError::Runtime(error) = error else {
+        panic!("expected runtime rejection, got {error}");
+    };
+    assert_eq!(error.kind, RuntimeErrorKind::DeviceUncommissioned);
+
+    let error = runtime.diagnose_device_move(1, 0).await.unwrap_err();
+    assert_eq!(error.kind, RuntimeErrorKind::DeviceUncommissioned);
+
+    let running = runtime.start().await.unwrap();
+    assert_eq!(running.subsystems.device.state, SubsystemState::Unavailable);
+    assert!(!running.pipeline_metrics.output_gate_open);
+    let stopped = runtime.stop().await.unwrap();
+    assert_eq!(stopped.subsystems.device.state, SubsystemState::Unavailable);
+    assert_eq!(
+        stopped.subsystems.device.last_error.unwrap().code,
+        "device_uncommissioned"
+    );
+    shutdown(supervisor, &runtime).await;
+}
+
 #[tokio::test]
 async fn closed_output_gate_blocks_diagnostic_moves() {
     let (supervisor, runtime, recording) = recording_runtime();
@@ -45,7 +96,8 @@ async fn closed_output_gate_blocks_diagnostic_moves() {
 #[tokio::test]
 async fn stopped_runtime_serializes_diagnostic_moves_through_the_supervisor() {
     let (supervisor, runtime, recording) = recording_runtime();
-    runtime.set_output_enabled(true).await.unwrap();
+    let config = TestConfig::commissioned(false);
+    config.set_output(&runtime, true).await.unwrap();
 
     let first = runtime.diagnose_device_move(12, -4).await.unwrap();
     let second = runtime.diagnose_device_move(-1, 3).await.unwrap();

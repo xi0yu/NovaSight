@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use novasight_core::control::dual_phase_v2::DualPhaseConfig;
 use novasight_core::tracking::TargetingConfig;
-use novasight_core::{
-    Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch, UncommissionedPointerDevice,
-};
+use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
 use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
     ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
@@ -46,6 +44,7 @@ use thiserror::Error;
 
 #[cfg(feature = "tensorrt")]
 use crate::model_contract::resolve_rust_tensorrt_contract;
+use crate::pointer_adapter::select_uncommissioned_pointer_adapter;
 
 pub(super) fn build_live_recording_dependencies(
     config: &AppConfig,
@@ -65,56 +64,53 @@ pub(super) fn build_live_production_dependencies(
     let adapters = config
         .require_production_adapters()
         .map_err(LivePerceptionError::Config)?;
-    let (device, trigger_poll_interval_ms): (Arc<dyn PointerDevice>, Option<u64>) = if adapters
-        .device
-        .auto_connect
-    {
-        let device: Arc<dyn PointerDevice> = match adapters.device.backend {
-            DeviceBackend::NativeUdp => {
-                #[cfg(not(feature = "experimental-kmnet-native"))]
-                return Err(LivePerceptionError::NativeKmNetNotValidated);
-                #[cfg(feature = "experimental-kmnet-native")]
-                {
-                    let host = adapters.device.host.parse().map_err(|_| {
-                        LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
-                    })?;
-                    Arc::new(
-                        KmNetNativeDevice::new(KmNetNativeConfig {
-                            host,
-                            port: adapters.device.port,
-                            uuid: adapters.device.uuid.clone(),
-                            monitor_port: adapters.device.monitor_port,
-                            connect_timeout: Duration::from_millis(
-                                adapters.device.connect_timeout_ms,
-                            ),
-                            request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
-                            monitor_timeout: Duration::from_millis(
-                                adapters.device.monitor_timeout_ms,
-                            ),
-                        })
-                        .map_err(LivePerceptionError::NativeKmNet)?,
-                    )
-                }
+    if let Some(selected) = select_uncommissioned_pointer_adapter(adapters.device) {
+        return build_live_dependencies(
+            config,
+            config_service,
+            model_catalog,
+            selected.device,
+            selected.trigger_poll_interval_ms,
+        );
+    }
+    let device: Arc<dyn PointerDevice> = match adapters.device.backend {
+        DeviceBackend::NativeUdp => {
+            #[cfg(not(feature = "experimental-kmnet-native"))]
+            return Err(LivePerceptionError::NativeKmNetNotValidated);
+            #[cfg(feature = "experimental-kmnet-native")]
+            {
+                let host = adapters.device.host.parse().map_err(|_| {
+                    LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
+                })?;
+                Arc::new(
+                    KmNetNativeDevice::new(KmNetNativeConfig {
+                        host,
+                        port: adapters.device.port,
+                        uuid: adapters.device.uuid.clone(),
+                        monitor_port: adapters.device.monitor_port,
+                        connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
+                        request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
+                        monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
+                    })
+                    .map_err(LivePerceptionError::NativeKmNet)?,
+                )
             }
-            DeviceBackend::PythonHost => Arc::new(
-                KmNetHostClient::new(kmnet_host_config(
-                    config,
-                    adapters.device,
-                    python_package_root,
-                ))
-                .map_err(LivePerceptionError::KmNet)?,
-            ),
-        };
-        (device, Some(adapters.device.trigger_poll_interval_ms))
-    } else {
-        (Arc::new(UncommissionedPointerDevice), None)
+        }
+        DeviceBackend::PythonHost => Arc::new(
+            KmNetHostClient::new(kmnet_host_config(
+                config,
+                adapters.device,
+                python_package_root,
+            ))
+            .map_err(LivePerceptionError::KmNet)?,
+        ),
     };
     build_live_dependencies(
         config,
         config_service,
         model_catalog,
         device,
-        trigger_poll_interval_ms,
+        Some(adapters.device.trigger_poll_interval_ms),
     )
 }
 
@@ -139,7 +135,7 @@ fn preflight_pointer_adapter(
     let adapters = config
         .require_production_adapters()
         .map_err(LivePerceptionError::Config)?;
-    if !adapters.device.auto_connect {
+    if select_uncommissioned_pointer_adapter(adapters.device).is_some() {
         return Ok(());
     }
     match adapters.device.backend {
