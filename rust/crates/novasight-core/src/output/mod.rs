@@ -81,3 +81,19 @@ impl PointerDevice for RecordingPointerDevice {
         Ok(receipt)
     }
 }
+
+/// Inert production adapter used before a physical pointer device has been
+/// provisioned. It lets the runtime own a complete dependency graph without
+/// silently substituting a recording or network device.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UncommissionedPointerDevice;
+
+impl PointerDevice for UncommissionedPointerDevice {
+    fn send(&self, _command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        Err(AppError::PointerDevice {
+            code: "device_not_commissioned",
+            message: "configure hardware.auto_connect with a provisioned host and UUID before opening output"
+                .to_owned(),
+        })
+    }
+}

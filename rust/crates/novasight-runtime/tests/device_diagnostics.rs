@@ -32,8 +32,20 @@ async fn shutdown(supervisor: RuntimeSupervisor, runtime: &novasight_runtime::Ru
 }
 
 #[tokio::test]
+async fn closed_output_gate_blocks_diagnostic_moves() {
+    let (supervisor, runtime, recording) = recording_runtime();
+
+    let error = runtime.diagnose_device_move(1, 0).await.unwrap_err();
+
+    assert_eq!(error.kind, RuntimeErrorKind::OutputGateClosed);
+    assert!(recording.receipts().is_empty());
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn stopped_runtime_serializes_diagnostic_moves_through_the_supervisor() {
     let (supervisor, runtime, recording) = recording_runtime();
+    runtime.set_output_enabled(true).await.unwrap();
 
     let first = runtime.diagnose_device_move(12, -4).await.unwrap();
     let second = runtime.diagnose_device_move(-1, 3).await.unwrap();

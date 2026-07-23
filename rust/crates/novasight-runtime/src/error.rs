@@ -26,6 +26,8 @@ pub enum RuntimeErrorKind {
     PipelineUnavailable,
     /// The owned pipeline rejected an input or lifecycle operation.
     PipelineRejected,
+    /// Hardware output is intentionally closed until explicitly commissioned.
+    OutputGateClosed,
     /// The daemon-owned output adapter rejected a diagnostic operation.
     DeviceUnavailable,
     /// A control-plane diagnostic command violates the device contract.
@@ -44,6 +46,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::RuntimeEpochExhausted => "runtime_epoch_exhausted",
             RuntimeErrorKind::PipelineUnavailable => "pipeline_unavailable",
             RuntimeErrorKind::PipelineRejected => "pipeline_rejected",
+            RuntimeErrorKind::OutputGateClosed => "output_gate_closed",
             RuntimeErrorKind::DeviceUnavailable => "device_unavailable",
             RuntimeErrorKind::InvalidDeviceCommand => "invalid_device_command",
             RuntimeErrorKind::Other => "runtime_error",
@@ -107,6 +110,13 @@ impl RuntimeError {
 
     pub fn pipeline_rejected(message: impl Into<String>) -> Self {
         Self::new(RuntimeErrorKind::PipelineRejected, message)
+    }
+
+    pub fn output_gate_closed() -> Self {
+        Self::new(
+            RuntimeErrorKind::OutputGateClosed,
+            "hardware output gate is closed; explicitly enable control.output_enabled",
+        )
     }
 
     pub fn device_unavailable(message: impl Into<String>) -> Self {

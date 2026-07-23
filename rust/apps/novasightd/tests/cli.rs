@@ -148,6 +148,7 @@ fn check_loads_config_and_exits_without_starting_the_daemon() {
 
     assert!(output.status.success());
     assert!(stdout.contains("PASS mode=dry_run"));
+    assert!(stdout.contains("configured_output_enabled=false"));
     assert!(stdout.contains("hardware_not_started=true"));
 }
 

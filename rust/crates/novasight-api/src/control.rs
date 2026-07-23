@@ -1393,7 +1393,9 @@ impl IntoResponse for ControlApiError {
         let (status, code, message) = match self {
             Self::Runtime(error) => {
                 let status = match error.kind {
-                    RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
+                    RuntimeErrorKind::InvalidPipelineState | RuntimeErrorKind::OutputGateClosed => {
+                        StatusCode::CONFLICT
+                    }
                     RuntimeErrorKind::SupervisorUnavailable
                     | RuntimeErrorKind::SupervisorClosed
                     | RuntimeErrorKind::SupervisorReplyLost
@@ -1559,7 +1561,8 @@ impl IntoResponse for ControlApiError {
                 },
                 ModelActivationError::Runtime(error) => {
                     let status = match error.kind {
-                        RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
+                        RuntimeErrorKind::InvalidPipelineState
+                        | RuntimeErrorKind::OutputGateClosed => StatusCode::CONFLICT,
                         RuntimeErrorKind::SupervisorUnavailable
                         | RuntimeErrorKind::SupervisorClosed
                         | RuntimeErrorKind::SupervisorReplyLost
@@ -1635,7 +1638,8 @@ impl IntoResponse for ControlApiError {
                 ),
                 ModelIngressError::Runtime(error) => {
                     let status = match error.kind {
-                        RuntimeErrorKind::InvalidPipelineState => StatusCode::CONFLICT,
+                        RuntimeErrorKind::InvalidPipelineState
+                        | RuntimeErrorKind::OutputGateClosed => StatusCode::CONFLICT,
                         RuntimeErrorKind::SupervisorUnavailable
                         | RuntimeErrorKind::SupervisorClosed
                         | RuntimeErrorKind::SupervisorReplyLost

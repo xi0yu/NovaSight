@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -85,6 +86,12 @@ impl AppConfig {
         &self,
     ) -> Result<ProductionAdapterConfig<'_>, ConfigValidationError> {
         self.validate_configured_adapters()?;
+        if !is_loopback_server_host(&self.server.host) {
+            return Err(ConfigValidationError::new(
+                "server.host",
+                "must be a loopback address until authenticated TLS transport is configured",
+            ));
+        }
         let capture = self.capture.as_ref().ok_or_else(|| {
             ConfigValidationError::new("capture", "section is required in production")
         })?;
@@ -143,9 +150,9 @@ impl AppConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RustControlConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub output_enabled: bool,
     #[serde(default)]
     pub humanized_motion: HumanizedMotionConfig,
@@ -153,17 +160,6 @@ pub struct RustControlConfig {
     pub recoil: RecoilConfig,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
-}
-
-impl Default for RustControlConfig {
-    fn default() -> Self {
-        Self {
-            output_enabled: true,
-            humanized_motion: HumanizedMotionConfig::default(),
-            recoil: RecoilConfig::default(),
-            legacy: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1746,6 +1742,25 @@ impl DeviceConfig {
                 "must not be empty",
             ));
         }
+        if self.auto_connect && matches!(self.uuid.trim(), "12345678" | "00000000") {
+            return Err(ConfigValidationError::new(
+                "hardware.uuid",
+                "must be a commissioned device identity, not a placeholder",
+            ));
+        }
+        if self.auto_connect
+            && (self.uuid.trim().len() != 8
+                || !self
+                    .uuid
+                    .trim()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(ConfigValidationError::new(
+                "hardware.uuid",
+                "must contain exactly eight hexadecimal digits",
+            ));
+        }
         if self.auto_connect && self.port == 0 {
             return Err(ConfigValidationError::new(
                 "hardware.port",
@@ -1895,7 +1910,15 @@ const fn default_schema_version() -> u32 {
 }
 
 fn default_server_host() -> String {
-    "0.0.0.0".to_owned()
+    "127.0.0.1".to_owned()
+}
+
+fn is_loopback_server_host(host: &str) -> bool {
+    let host = host.trim();
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 const fn default_server_port() -> u16 {
@@ -1991,7 +2014,7 @@ const fn default_deepstream_shutdown_timeout_ms() -> u64 {
 }
 
 fn default_kmnet_host() -> String {
-    "192.168.2.188".to_owned()
+    String::new()
 }
 
 const fn default_kmnet_port() -> u16 {
@@ -1999,7 +2022,7 @@ const fn default_kmnet_port() -> u16 {
 }
 
 fn default_kmnet_uuid() -> String {
-    "12345678".to_owned()
+    String::new()
 }
 
 const fn default_kmnet_monitor_port() -> u16 {
@@ -2169,13 +2192,57 @@ mod tests {
     }
 
     #[test]
-    fn output_gate_is_typed_and_defaults_open_for_backward_compatibility() {
+    fn output_gate_is_typed_and_defaults_closed_for_safe_commissioning() {
         let defaulted: AppConfig = serde_yaml::from_str("{}\n").unwrap();
-        assert!(defaulted.control.output_enabled);
+        assert!(!defaulted.control.output_enabled);
 
         let paused: AppConfig =
             serde_yaml::from_str("control:\n  output_enabled: false\n").unwrap();
         assert!(!paused.control.output_enabled);
         assert!(!paused.control.legacy.contains_key("output_enabled"));
+    }
+
+    #[test]
+    fn device_auto_connect_does_not_invent_missing_identity() {
+        let config: AppConfig = serde_yaml::from_str("hardware:\n  auto_connect: true\n").unwrap();
+
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "hardware.host");
+    }
+
+    #[test]
+    fn device_auto_connect_rejects_the_historical_placeholder_uuid() {
+        let config: AppConfig = serde_yaml::from_str(
+            "hardware:\n  auto_connect: true\n  host: 192.168.2.188\n  uuid: '12345678'\n",
+        )
+        .unwrap();
+
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "hardware.uuid");
+        assert!(error.message.contains("placeholder"));
+    }
+
+    #[test]
+    fn device_auto_connect_rejects_the_zero_placeholder_uuid() {
+        let config: AppConfig = serde_yaml::from_str(
+            "hardware:\n  auto_connect: true\n  host: 192.168.2.188\n  uuid: '00000000'\n",
+        )
+        .unwrap();
+
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "hardware.uuid");
+        assert!(error.message.contains("placeholder"));
+    }
+
+    #[test]
+    fn device_auto_connect_requires_the_vendor_uuid_contract() {
+        let config: AppConfig = serde_yaml::from_str(
+            "hardware:\n  auto_connect: true\n  host: 192.168.2.188\n  uuid: test-box\n",
+        )
+        .unwrap();
+
+        let error = config.validate_configured_adapters().unwrap_err();
+        assert_eq!(error.field, "hardware.uuid");
+        assert!(error.message.contains("eight hexadecimal digits"));
     }
 }

@@ -35,11 +35,20 @@ impl Drop for TempDirectory {
 }
 
 #[test]
-fn loads_current_project_yaml_without_dropping_legacy_sections() {
+fn current_project_yaml_requires_commissioning_without_dropping_legacy_sections() {
     let project_config =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/novasight.yaml");
+    let error = YamlConfigRepository::load(&project_config).unwrap_err();
+    assert!(error.to_string().contains("hardware.uuid"));
 
-    let config = YamlConfigRepository::load(project_config).unwrap();
+    let directory = TempDirectory::new();
+    let commissioned = directory.join("commissioned.yaml");
+    let document = fs::read_to_string(project_config)
+        .unwrap()
+        .replace("uuid: \"12345678\"", "uuid: \"A1B2C3D4\"");
+    fs::write(&commissioned, document).unwrap();
+
+    let config = YamlConfigRepository::load(commissioned).unwrap();
 
     assert_eq!(config.server.port, 5174);
     let capture = config.capture.as_ref().unwrap();
@@ -63,7 +72,7 @@ fn loads_the_complete_rust_owned_example() {
 
     assert_eq!(config.schema_version, 1);
     assert_eq!(config.revision, 0);
-    assert_eq!(config.server.host, "0.0.0.0");
+    assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
     assert_eq!(
         config.server.control_socket,
@@ -72,17 +81,37 @@ fn loads_the_complete_rust_owned_example() {
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
+    assert!(!config.control.output_enabled);
     let adapters = config.require_production_adapters().unwrap();
     assert_eq!(adapters.capture.appsink_max_buffers, 1);
     assert_eq!(adapters.inference.deepstream_component_id, 1);
     assert_eq!(adapters.inference.deepstream_probe_element, "primary-infer");
-    assert!(adapters.device.auto_connect);
+    assert!(!adapters.device.auto_connect);
+    assert!(adapters.device.host.is_empty());
+    assert!(adapters.device.uuid.is_empty());
     assert_eq!(adapters.device.send_timeout_ms, 25);
     assert_eq!(adapters.pipeline.freshness_threshold_ms, 55.0);
     assert_eq!(adapters.pipeline.max_command_age_ms, 55);
     assert_eq!(adapters.pipeline.output_interval_ms, 4);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
+}
+
+#[test]
+fn production_preflight_rejects_an_unauthenticated_public_http_binding() {
+    let directory = TempDirectory::new();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let path = directory.join("public-http.yaml");
+    let document = fs::read_to_string(source)
+        .unwrap()
+        .replace("host: 127.0.0.1", "host: 0.0.0.0");
+    fs::write(&path, document).unwrap();
+
+    let config = YamlConfigRepository::load(path).unwrap();
+    let error = config.require_production_adapters().unwrap_err();
+
+    assert_eq!(error.field, "server.host");
+    assert!(error.message.contains("loopback"));
 }
 
 #[test]
@@ -135,7 +164,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 
     assert_eq!(config.schema_version, 1);
     assert_eq!(config.revision, 0);
-    assert_eq!(config.server.host, "0.0.0.0");
+    assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
     assert_eq!(
         config.server.control_socket,
@@ -244,11 +273,11 @@ fn each_production_adapter_reports_its_invalid_field() {
             "inference.device",
         ),
         (
-            "hardware:\n  auto_connect: true\n  port: 0\n",
+            "hardware:\n  auto_connect: true\n  host: 10.0.0.8\n  uuid: A1B2C3D4\n  port: 0\n",
             "hardware.port",
         ),
         (
-            "hardware:\n  auto_connect: true\n  monitor_port: 1023\n",
+            "hardware:\n  auto_connect: true\n  host: 10.0.0.8\n  uuid: A1B2C3D4\n  monitor_port: 1023\n",
             "hardware.monitor_port",
         ),
         ("capture:\n  preference: manual\n", "capture.preference"),
@@ -271,7 +300,7 @@ fn device_alias_migrates_to_hardware_without_duplicate_fields() {
     let path = directory.join("device-alias.yaml");
     fs::write(
         &path,
-        "revision: 0\ndevice:\n  auto_connect: true\n  backend: native_udp\n  host: 10.0.0.8\n  port: 8888\n  uuid: test-box\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
+        "revision: 0\ndevice:\n  auto_connect: true\n  backend: native_udp\n  host: 10.0.0.8\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
     )
     .unwrap();
     let config = YamlConfigRepository::load(&path).unwrap();

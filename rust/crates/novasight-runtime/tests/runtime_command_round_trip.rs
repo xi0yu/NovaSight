@@ -62,6 +62,16 @@ async fn restart_allocates_a_new_runtime_epoch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn recording_runtime_defaults_to_a_closed_output_gate() {
+    let (supervisor, handle) = RuntimeSupervisor::spawn_recording();
+
+    let started = handle.start().await.expect("start");
+    assert!(!started.pipeline_metrics.output_gate_open);
+
+    shutdown(supervisor, &handle).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn output_gate_hot_update_survives_runtime_restart() {
     let (supervisor, handle) =
         RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(false));

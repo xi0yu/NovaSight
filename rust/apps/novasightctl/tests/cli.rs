@@ -11,7 +11,8 @@ use novasight_core::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
 };
 use novasight_runtime::{
-    AppConfig, ConfigService, ConfigUpdate, PipelineState, RuntimeSnapshot, RuntimeSupervisor,
+    AppConfig, ConfigService, ConfigUpdate, PipelineState, RuntimeDependencies, RuntimeSnapshot,
+    RuntimeSupervisor,
 };
 use novasight_store::config::YamlConfigRepository;
 use novasight_store::license::{FileLicenseRepository, LicensePolicy, LicenseStatus};
@@ -282,13 +283,18 @@ async fn license_commands_bootstrap_through_a_key_file_and_the_real_repository()
 async fn device_commands_use_the_supervisor_owned_diagnostic_path() {
     let socket = SocketPath::new();
     let config_path = socket.0.with_extension("yaml");
-    std::fs::write(&config_path, "revision: 0\nhardware: {}\n").unwrap();
-    let config = ConfigService::new(
+    std::fs::write(
         &config_path,
-        YamlConfigRepository::load(&config_path).unwrap(),
-    );
+        "revision: 0\ncontrol:\n  output_enabled: true\nhardware: {}\n",
+    )
+    .unwrap();
+    let initial = YamlConfigRepository::load(&config_path).unwrap();
+    let output_enabled = initial.control.output_enabled;
+    let config = ConfigService::new(&config_path, initial);
     let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
-    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::recording().with_output_enabled(output_enabled),
+    );
     let app = build_control_router_with_capabilities(runtime.clone(), config, true, None);
     let server = tokio::spawn(async move {
         axum::serve(listener, app)

@@ -19,7 +19,9 @@ pub use capture::{
 };
 pub use control::{ControlDecision, ProportionalReplayControl};
 pub use error::AppError;
-pub use output::{DeviceCommand, DeviceReceipt, RecordingPointerDevice};
+pub use output::{
+    DeviceCommand, DeviceReceipt, RecordingPointerDevice, UncommissionedPointerDevice,
+};
 pub use perception::{
     Detection, DetectionBatch, FrameStamp, Generation, MAX_DETECTIONS, MonotonicNanos,
     ReplayPerceptionSource, RuntimeEpoch,

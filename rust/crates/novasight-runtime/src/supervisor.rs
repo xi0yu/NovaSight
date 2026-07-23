@@ -132,7 +132,7 @@ impl RuntimeDependencies {
             crosshair: None,
             motion_profiles: None,
             motion_repository: None,
-            output_enabled: true,
+            output_enabled: false,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
     }
@@ -252,7 +252,7 @@ impl Default for SupervisorState {
             pipeline_metrics: PipelineMetrics::default(),
             device_metrics: DeviceMetrics::default(),
             model: ModelSnapshot::default(),
-            output_enabled: true,
+            output_enabled: false,
             started_at_unix_ms: now_ms(),
         }
     }
@@ -1731,6 +1731,9 @@ async fn diagnose_device_move(
         return Err(RuntimeError::invalid_device_command(
             "device diagnostic counts must fit the kmNet signed 16-bit contract",
         ));
+    }
+    if !state.output_enabled {
+        return Err(RuntimeError::output_gate_closed());
     }
     state.next_diagnostic_generation = state
         .next_diagnostic_generation

@@ -9,7 +9,9 @@
 use novasight_core::output::DeviceCommand;
 use novasight_core::output::latest_command::{LatestCommandSlot, SlotPushError, SlotTakeError};
 use novasight_core::output::quantizer::{AxisQuantizer, PerAxisQuantizer, QuantizerConfig};
-use novasight_core::{Generation, MonotonicNanos, RuntimeEpoch};
+use novasight_core::{
+    AppError, Generation, MonotonicNanos, PointerDevice, RuntimeEpoch, UncommissionedPointerDevice,
+};
 
 fn command(epoch: u64, generation: u64, issued_at: u64, _expiry_at: u64) -> DeviceCommand {
     DeviceCommand {
@@ -20,6 +22,27 @@ fn command(epoch: u64, generation: u64, issued_at: u64, _expiry_at: u64) -> Devi
         delta_x_counts: 5,
         delta_y_counts: 0,
     }
+}
+
+#[test]
+fn uncommissioned_device_is_inert_and_rejects_every_send() {
+    let device = UncommissionedPointerDevice;
+
+    device
+        .connect()
+        .expect("disabled adapter has no session to open");
+    assert_eq!(device.buttons().expect("button probe"), None);
+    assert_eq!(
+        device.send(command(1, 1, 100, 200)),
+        Err(AppError::PointerDevice {
+            code: "device_not_commissioned",
+            message: "configure hardware.auto_connect with a provisioned host and UUID before opening output"
+                .to_owned(),
+        })
+    );
+    device
+        .disconnect()
+        .expect("disabled adapter has no session to close");
 }
 
 #[test]

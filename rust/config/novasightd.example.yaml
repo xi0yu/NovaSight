@@ -1,7 +1,8 @@
 schema_version: 1
 revision: 0
 server:
-  host: 0.0.0.0
+  # Remote access belongs behind an authenticated TLS proxy.
+  host: 127.0.0.1
   port: 5174
   control_socket: /run/novasight/novasightd.sock
 replay:
@@ -65,7 +66,8 @@ pipeline:
   max_command_age_ms: 55
   output_interval_ms: 4
 control:
-  output_enabled: true
+  # Commissioning is explicit: no pointer movement until an operator opens this gate.
+  output_enabled: false
   recoil:
     enabled: false
     base_rate_counts_s: 0.0
@@ -131,12 +133,13 @@ inference:
   deepstream_shutdown_timeout_ms: 5000
   input_source: source.default
 hardware:
-  auto_connect: true
+  # Provision host and UUID first, then opt in to device connection.
+  auto_connect: false
   # native_udp remains opt-in until verified against the target Jetson and box firmware.
   backend: python_host
-  host: 192.168.2.188
+  host: ""
   port: 8888
-  uuid: "12345678"
+  uuid: ""
   monitor_port: 5001
   helper_module: novasight.executors.kmnet_host
   connect_timeout_ms: 3000

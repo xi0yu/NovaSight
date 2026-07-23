@@ -83,6 +83,10 @@ fn error_kind_codes_match_documented_strings() {
         "pipeline_rejected"
     );
     assert_eq!(
+        RuntimeErrorKind::OutputGateClosed.code(),
+        "output_gate_closed"
+    );
+    assert_eq!(
         RuntimeErrorKind::DeviceUnavailable.code(),
         "device_unavailable"
     );

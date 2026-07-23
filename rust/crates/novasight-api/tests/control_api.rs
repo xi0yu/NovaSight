@@ -192,8 +192,11 @@ async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
     let path = directory.0.join("novasight.yaml");
     fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\n").unwrap();
     let initial = YamlConfigRepository::load(&path).unwrap();
+    let output_enabled = initial.control.output_enabled;
     let config = ConfigService::new(&path, initial);
-    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::recording().with_output_enabled(output_enabled),
+    );
     runtime.start().await.unwrap();
     assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
     let app = build_control_router_with_services(runtime.clone(), Some(config), None);
@@ -849,6 +852,16 @@ async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims
 
     let production =
         build_control_router_with_capabilities(runtime.clone(), Some(config), true, None);
+    let response = production.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(error["code"], "output_gate_closed");
+
+    runtime
+        .set_output_enabled(true)
+        .await
+        .expect("explicitly open the diagnostic output gate");
     let response = production.clone().oneshot(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let result: Value =

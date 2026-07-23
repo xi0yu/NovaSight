@@ -237,7 +237,8 @@ async fn supervisor_start_stop_owns_the_real_pipeline_lifecycle() {
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
-    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_output_enabled(true);
     let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
 
     let started = handle.start().await.expect("start real pipeline");
@@ -509,7 +510,8 @@ async fn worker_fault_is_projected_into_the_supervisor_snapshot() {
 
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let pointer: Arc<dyn PointerDevice> = Arc::new(FailingDevice);
-    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_output_enabled(true);
     let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
     let started = handle.start().await.expect("start real pipeline");
     let epoch = started.pipeline.epoch.expect("runtime epoch");
@@ -567,11 +569,10 @@ async fn delayed_fault_cannot_overwrite_a_completed_stop() {
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(BlockingFailDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
-    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
-        clock,
-        pointer,
-        PipelineConfig::default(),
-    ));
+    let (supervisor, handle) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+            .with_output_enabled(true),
+    );
     let started = handle.start().await.expect("start pipeline");
     let epoch = started.pipeline.epoch.expect("runtime epoch");
     handle
@@ -620,11 +621,10 @@ async fn delayed_fault_cannot_overwrite_a_completed_emergency_stop() {
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(BlockingFailDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
-    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
-        clock,
-        pointer,
-        PipelineConfig::default(),
-    ));
+    let (supervisor, handle) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+            .with_output_enabled(true),
+    );
     let started = handle.start().await.expect("start pipeline");
     let epoch = started.pipeline.epoch.expect("runtime epoch");
     handle
@@ -665,11 +665,10 @@ async fn trigger_release_does_not_block_the_tokio_executor() {
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(BlockingFailDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
-    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
-        clock,
-        pointer,
-        PipelineConfig::default(),
-    ));
+    let (supervisor, handle) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+            .with_output_enabled(true),
+    );
     let started = handle.start().await.expect("start pipeline");
     let epoch = started.pipeline.epoch.expect("runtime epoch");
     handle
@@ -705,11 +704,10 @@ async fn concurrent_trigger_requests_are_serialized_and_retired_with_the_epoch()
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(BlockingFailDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
-    let (supervisor, handle) = RuntimeSupervisor::spawn(RuntimeDependencies::new(
-        clock,
-        pointer,
-        PipelineConfig::default(),
-    ));
+    let (supervisor, handle) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+            .with_output_enabled(true),
+    );
     let started = handle.start().await.expect("start pipeline");
     let epoch = started.pipeline.epoch.expect("runtime epoch");
     handle

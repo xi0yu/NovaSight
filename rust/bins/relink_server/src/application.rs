@@ -177,8 +177,9 @@ pub async fn entry() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "PASS mode=dry_run config={} model_ingress_helper=ready motion_profile=ready hardware_not_started=true",
-                args.config.display()
+                "PASS mode=dry_run config={} configured_output_enabled={} model_ingress_helper=ready motion_profile=ready hardware_not_started=true",
+                args.config.display(),
+                loaded.config().control.output_enabled
             );
             return ExitCode::SUCCESS;
         }
@@ -219,8 +220,9 @@ pub async fn entry() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "PASS mode=production config={} license_verifier=ready instance_lock=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter=ready capture_not_started=true pointer_not_connected=true",
-                args.config.display()
+                "PASS mode=production config={} configured_output_enabled={} license_verifier=ready instance_lock=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter=ready capture_not_started=true pointer_not_connected=true",
+                args.config.display(),
+                loaded.config().control.output_enabled
             );
             return ExitCode::SUCCESS;
         }
