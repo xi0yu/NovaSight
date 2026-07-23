@@ -907,6 +907,29 @@ async fn supervisor_loop(
                 ).await;
             }
             _ = metrics_tick.tick(), if active.is_some() => {
+                let perception_fault = active.as_mut().and_then(|pipeline| {
+                    let epoch = pipeline.epoch;
+                    pipeline
+                        .perception
+                        .as_mut()
+                        .and_then(|perception| perception.poll_health().err())
+                        .map(|error| PipelineNotice {
+                            epoch,
+                            event: PipelineEvent::Faulted {
+                                message: format!("perception health check failed: {error}"),
+                            },
+                        })
+                });
+                if let Some(notice) = perception_fault {
+                    handle_pipeline_notice(
+                        notice,
+                        &snapshot_tx,
+                        &ingress_tx,
+                        &mut state,
+                        &mut active,
+                    ).await;
+                    continue;
+                }
                 let perception_metrics = active
                     .as_ref()
                     .and_then(|pipeline| pipeline.perception.as_ref())
@@ -2003,20 +2026,19 @@ async fn handle_pipeline_notice(
     if !is_live_state || !is_active_epoch {
         return;
     }
-    match notice.event {
-        PipelineEvent::Faulted { message } => {
-            ingress_tx.send_replace(None);
-            refresh_pipeline_metrics(state, active);
-            let cleanup = shutdown_active(active).await.err();
-            let message = match cleanup {
-                Some(error) => format!("{message}; pipeline cleanup failed: {error}"),
-                None => message,
-            };
-            state.finish_fault(message);
-            publish(snapshot_tx, state, now_ms());
-        }
-        PipelineEvent::Stopped => {}
-    }
+    let message = match notice.event {
+        PipelineEvent::Faulted { message } => message,
+        PipelineEvent::Stopped => "perception stopped unexpectedly".to_owned(),
+    };
+    ingress_tx.send_replace(None);
+    refresh_pipeline_metrics(state, active);
+    let cleanup = shutdown_active(active).await.err();
+    let message = match cleanup {
+        Some(error) => format!("{message}; pipeline cleanup failed: {error}"),
+        None => message,
+    };
+    state.finish_fault(message);
+    publish(snapshot_tx, state, now_ms());
 }
 
 async fn shutdown_active(active: &mut Option<ActivePipeline>) -> Result<(), RuntimeError> {

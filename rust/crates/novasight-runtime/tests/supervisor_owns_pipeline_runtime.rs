@@ -158,6 +158,51 @@ impl PerceptionSession for SilentPerceptionSession {
     }
 }
 
+#[derive(Debug, Default)]
+struct PolledFailureAdapter {
+    fail_health: Arc<AtomicBool>,
+    shutdowns: Arc<AtomicU64>,
+}
+
+impl PerceptionAdapter for PolledFailureAdapter {
+    fn start(
+        &self,
+        epoch: RuntimeEpoch,
+        ingress: PipelineIngress,
+        _clock: Arc<dyn Clock>,
+        _events: SyncSender<PerceptionEvent>,
+    ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+        ingress
+            .submit(batch(epoch, 1))
+            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        Ok(Box::new(PolledFailureSession {
+            fail_health: Arc::clone(&self.fail_health),
+            shutdowns: Arc::clone(&self.shutdowns),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct PolledFailureSession {
+    fail_health: Arc<AtomicBool>,
+    shutdowns: Arc<AtomicU64>,
+}
+
+impl PerceptionSession for PolledFailureSession {
+    fn poll_health(&mut self) -> Result<(), PerceptionError> {
+        if self.fail_health.load(Ordering::Acquire) {
+            Err(PerceptionError::new("simulated owner thread exit"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn shutdown(&mut self) -> Result<(), PerceptionError> {
+        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct FailingPreflightAdapter;
 
@@ -375,6 +420,77 @@ async fn perception_fault_closes_the_epoch_and_faults_the_supervisor() {
 
     handle.shutdown_daemon().await.expect("shutdown daemon");
     supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unexpected_perception_stop_is_a_runtime_fault() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let perception = Arc::new(RecordingPerceptionAdapter::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_perception(perception.clone());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+    handle.start().await.expect("start perception and pipeline");
+    let events = perception
+        .events
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("perception event sender");
+
+    events.send(PerceptionEvent::Stopped).unwrap();
+    let faulted = wait_for_pipeline_fault(&handle).await;
+    assert!(
+        faulted
+            .pipeline
+            .last_error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("stopped unexpectedly"))
+    );
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_polls_perception_liveness_when_no_event_can_be_sent() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let pointer: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+    let perception = Arc::new(PolledFailureAdapter::default());
+    let dependencies = RuntimeDependencies::new(clock, pointer, PipelineConfig::default())
+        .with_perception(perception.clone());
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+    handle.start().await.expect("start perception and pipeline");
+
+    perception.fail_health.store(true, Ordering::Release);
+    let faulted = wait_for_pipeline_fault(&handle).await;
+    assert!(
+        faulted
+            .pipeline
+            .last_error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("simulated owner thread exit"))
+    );
+    assert_eq!(perception.shutdowns.load(Ordering::Acquire), 1);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+async fn wait_for_pipeline_fault(
+    handle: &novasight_runtime::RuntimeHandle,
+) -> novasight_runtime::RuntimeSnapshot {
+    let mut snapshots = handle.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshots.borrow().pipeline.state == PipelineState::Faulted {
+                return snapshots.borrow().as_ref().clone();
+            }
+            snapshots.changed().await.expect("supervisor snapshot");
+        }
+    })
+    .await
+    .expect("perception failure reaches supervisor")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

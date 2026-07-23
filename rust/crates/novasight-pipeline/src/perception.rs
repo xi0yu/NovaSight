@@ -141,6 +141,15 @@ pub trait PerceptionSession: Send + 'static {
         PerceptionMetrics::default()
     }
 
+    /// Non-blocking liveness check for the epoch-scoped producer.
+    ///
+    /// Event delivery remains the fast failure path, but the supervisor polls
+    /// this method as an independent backstop for owner-thread termination that
+    /// could not publish an event (for example, a panic during vendor code).
+    fn poll_health(&mut self) -> Result<(), PerceptionError> {
+        Ok(())
+    }
+
     /// Stop producing before the post-inference pipeline is closed.
     fn shutdown(&mut self) -> Result<(), PerceptionError>;
 }

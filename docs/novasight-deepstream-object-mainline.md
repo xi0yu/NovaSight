@@ -54,8 +54,9 @@ The removed backend copied `NvDsInferTensorMeta` into NumPy and called the
 shared Python YOLO/NMS code. Restoring that code would violate the current
 requirements.
 
-The replacement probe reads only `NvDsObjectMeta`. Python receives a small list
-of final boxes; it never maps an NVMM image or raw model tensor.
+The replacement probe reads only `NvDsObjectMeta` into caller-owned Rust
+snapshots. Python is not present in the live perception path, and Rust never
+maps an NVMM image or raw model tensor in this mode.
 
 The downstream control boundary remains the existing NovaSight
 `DetectionBatch`. Tracker, target selection, prediction, mouse control, and
@@ -96,7 +97,7 @@ timestamps are rejected.
 ## Timestamp Contract
 
 `v4l2src do-timestamp=true` produces pipeline-running-time PTS. The backend maps
-it into Python's monotonic domain using:
+it into the daemon's monotonic clock domain using:
 
 ```text
 capture_ts_ns = pipeline_base_time + buffer_pts + gst_clock_to_monotonic_offset
@@ -179,8 +180,20 @@ scripts/verify_deepstream_60s.py \
   --report-json /tmp/novasight-deepstream-60s.json
 ```
 
-The setup step builds the native parser by default. Runtime startup also performs
-a one-time automatic CMake build when the configured parser library is missing.
+The setup step builds the native parser by default. The installed Rust daemon
+never compiles native code at runtime: packaging and `novasightd --check` must
+prove that the parser and DeepStream bridge are already present and ABI
+compatible before systemd starts capture.
+
+## Runtime Failure Ownership
+
+The Rust supervisor consumes explicit DeepStream fault/EOS events and also
+polls the epoch-scoped `PerceptionSession` every 200 ms. The second path is
+intentional: if the native owner thread panics before it can publish an event,
+its finished join handle still turns the epoch into `Faulted`, closes ingress
+and hardware output, and joins downstream workers. An unsolicited clean
+perception stop is treated as a fault as well; only a supervisor-owned stop or
+restart may end a live session without an error.
 
 The 60-second gate checks:
 

@@ -508,6 +508,26 @@ impl PerceptionSession for DeepStreamSession {
         }
     }
 
+    fn poll_health(&mut self) -> Result<(), PerceptionError> {
+        let finished = self.join.as_ref().is_some_and(JoinHandle::is_finished);
+        if !finished {
+            return Ok(());
+        }
+        let join = self
+            .join
+            .take()
+            .expect("finished DeepStream owner was checked above");
+        match join.join() {
+            Ok(Ok(())) => Err(PerceptionError::new(
+                "DeepStream owner exited before supervisor shutdown",
+            )),
+            Ok(Err(error)) => Err(PerceptionError::new(error.to_string())),
+            Err(_) => Err(PerceptionError::new(
+                SessionError::WorkerPanicked.to_string(),
+            )),
+        }
+    }
+
     fn shutdown(&mut self) -> Result<(), PerceptionError> {
         DeepStreamSession::shutdown(self)
             .map(|_| ())
