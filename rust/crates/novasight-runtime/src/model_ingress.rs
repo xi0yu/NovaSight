@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -333,6 +333,25 @@ impl OfflineModelJobRunner {
         Ok(self)
     }
 
+    /// Execute the packaged worker without touching a model artifact. This
+    /// proves that the configured interpreter can execute the pinned helper,
+    /// import its retained Python dependencies, and speak the expected
+    /// bounded JSON protocol before the daemon reports readiness.
+    pub async fn preflight(&self) -> Result<(), ModelIngressError> {
+        let report: ModelWorkerPreflight = self
+            .run("preflight", None, &[], None, Arc::new(AtomicUsize::new(0)))
+            .await?;
+        if report.protocol != 1
+            || report.worker != "novasight.model_ingress"
+            || report.operations != ["inspect", "configure", "probe"]
+        {
+            return Err(ModelIngressError::Protocol(
+                "model-ingress preflight returned an incompatible protocol".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn inspect(
         &self,
         engine_path: &Path,
@@ -341,7 +360,7 @@ impl OfflineModelJobRunner {
     ) -> Result<ModelWorkerOutput, ModelIngressError> {
         self.run(
             "inspect",
-            engine_path,
+            Some(engine_path),
             &["--display-name", display_name],
             None,
             cancellation,
@@ -362,8 +381,14 @@ impl OfflineModelJobRunner {
                 "model profile request exceeds {MAX_REQUEST_BYTES} bytes"
             )));
         }
-        self.run("configure", engine_path, &[], Some(request), cancellation)
-            .await
+        self.run(
+            "configure",
+            Some(engine_path),
+            &[],
+            Some(request),
+            cancellation,
+        )
+        .await
     }
 
     pub(crate) async fn probe(
@@ -378,7 +403,7 @@ impl OfflineModelJobRunner {
         let parser_library = self.parser_library.to_string_lossy().into_owned();
         self.run(
             "probe",
-            engine_path,
+            Some(engine_path),
             &["--parser-library", &parser_library, "--input-mode", "fixed"],
             None,
             cancellation,
@@ -386,14 +411,14 @@ impl OfflineModelJobRunner {
         .await
     }
 
-    async fn run(
+    async fn run<T: DeserializeOwned>(
         &self,
         operation: &'static str,
-        engine_path: &Path,
+        engine_path: Option<&Path>,
         extra_args: &[&str],
         request: Option<Vec<u8>>,
         cancellation: Arc<AtomicUsize>,
-    ) -> Result<ModelWorkerOutput, ModelIngressError> {
+    ) -> Result<T, ModelIngressError> {
         if cancellation.load(Ordering::Acquire) != 0 {
             return Err(ModelIngressError::Cancelled);
         }
@@ -425,11 +450,11 @@ impl OfflineModelJobRunner {
         }
         let job_directory = JobDirectory::create(&self.working_directory)?;
         let mut command = Command::new(&self.executable);
+        command.arg(&self.helper_script).arg(operation);
+        if let Some(engine_path) = engine_path {
+            command.arg("--engine").arg(engine_path);
+        }
         command
-            .arg(&self.helper_script)
-            .arg(operation)
-            .arg("--engine")
-            .arg(engine_path)
             .args(extra_args)
             .current_dir(job_directory.path())
             .stdin(if request.is_some() {
@@ -521,6 +546,13 @@ impl OfflineModelJobRunner {
         }
         serde_json::from_slice(&stdout).map_err(ModelIngressError::DecodeResponse)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelWorkerPreflight {
+    protocol: u32,
+    worker: String,
+    operations: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

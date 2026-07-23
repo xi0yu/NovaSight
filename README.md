@@ -220,6 +220,11 @@ Production preflight parses the RSA public key and acquires the configured
 `NOVASIGHT_INSTANCE_LOCK`; the running daemon holds that kernel lock for its
 entire lifetime, so a second configuration cannot become another hardware
 authority by choosing a different HTTP port or control socket.
+It also executes the packaged model-ingress worker's versioned `preflight`
+operation through the configured Python interpreter. This imports the pinned
+Python bundle and verifies the bounded JSON protocol without opening an Engine
+or mutating the model catalog, so `model_ingress_helper=ready` is runtime
+evidence rather than a path-existence claim.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.

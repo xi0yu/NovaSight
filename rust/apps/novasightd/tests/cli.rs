@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -13,6 +14,25 @@ use uuid::Uuid;
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_novasightd")
+}
+
+fn daemon_command() -> Command {
+    static PYTHON: OnceLock<PathBuf> = OnceLock::new();
+    let python = PYTHON.get_or_init(|| {
+        let output = Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .expect("resolve test Python");
+        assert!(output.status.success(), "test Python must be runnable");
+        PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("UTF-8 Python path")
+                .trim(),
+        )
+    });
+    let mut command = Command::new(binary());
+    command.arg("--model-job-python").arg(python);
+    command
 }
 
 struct TempDirectory(PathBuf);
@@ -56,10 +76,7 @@ fn temp_config() -> (TempDirectory, PathBuf) {
 
 #[test]
 fn help_documents_yaml_check_and_explicit_dry_run() {
-    let output = Command::new(binary())
-        .arg("--help")
-        .output()
-        .expect("run help");
+    let output = daemon_command().arg("--help").output().expect("run help");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 help");
 
     assert!(output.status.success());
@@ -72,7 +89,7 @@ fn help_documents_yaml_check_and_explicit_dry_run() {
 fn missing_config_exits_nonzero_with_stable_code() {
     let directory = TempDirectory::new();
     let missing = directory.join("missing.yaml");
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", missing.to_str().expect("UTF-8 path"), "--check"])
         .output()
         .expect("run missing config");
@@ -85,7 +102,7 @@ fn missing_config_exits_nonzero_with_stable_code() {
 #[test]
 fn check_loads_config_and_exits_without_starting_the_daemon() {
     let (_directory, path) = temp_config();
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args([
             "--config",
             path.to_str().expect("UTF-8 path"),
@@ -103,6 +120,74 @@ fn check_loads_config_and_exits_without_starting_the_daemon() {
     assert!(stdout.contains("hardware_not_started=true"));
 }
 
+#[cfg(unix)]
+#[test]
+fn check_rejects_a_model_worker_that_cannot_execute_its_protocol() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (directory, path) = temp_config();
+    let broken_python = directory.join("broken-python");
+    fs::write(
+        &broken_python,
+        "#!/bin/sh\necho worker-import-failed >&2\nexit 17\n",
+    )
+    .expect("write broken interpreter");
+    fs::set_permissions(&broken_python, fs::Permissions::from_mode(0o755))
+        .expect("make broken interpreter executable");
+    let output = Command::new(binary())
+        .args([
+            "--model-job-python",
+            broken_python.to_str().expect("UTF-8 interpreter"),
+            "--config",
+            path.to_str().expect("UTF-8 path"),
+            "--check",
+            "--dry-run",
+        ])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+        .output()
+        .expect("run check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("MODEL_INGRESS_PREFLIGHT_FAILED"));
+    assert!(stderr.contains("worker-import-failed"));
+}
+
+#[cfg(unix)]
+#[test]
+fn check_rejects_an_incompatible_model_worker_protocol() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (directory, path) = temp_config();
+    let incompatible_python = directory.join("incompatible-python");
+    fs::write(
+        &incompatible_python,
+        "#!/bin/sh\necho '{\"protocol\":2,\"worker\":\"other\",\"operations\":[]}'\n",
+    )
+    .expect("write incompatible interpreter");
+    fs::set_permissions(&incompatible_python, fs::Permissions::from_mode(0o755))
+        .expect("make incompatible interpreter executable");
+    let output = Command::new(binary())
+        .args([
+            "--model-job-python",
+            incompatible_python.to_str().expect("UTF-8 interpreter"),
+            "--config",
+            path.to_str().expect("UTF-8 path"),
+            "--check",
+            "--dry-run",
+        ])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+        .output()
+        .expect("run check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("MODEL_INGRESS_PREFLIGHT_FAILED"));
+    assert!(stderr.contains("incompatible protocol"));
+}
+
 #[test]
 fn check_rejects_a_missing_named_motion_profile_instead_of_silently_using_builtin() {
     let (_directory, path) = temp_config();
@@ -112,7 +197,7 @@ fn check_rejects_a_missing_named_motion_profile_instead_of_silently_using_builti
     );
     fs::write(&path, config).expect("write motion config");
 
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args([
             "--config",
             path.to_str().expect("UTF-8 path"),
@@ -133,7 +218,7 @@ fn check_rejects_a_missing_named_motion_profile_instead_of_silently_using_builti
 #[test]
 fn production_check_rejects_incomplete_adapter_configuration() {
     let (_directory, path) = temp_config();
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .output()
         .expect("run production check");
@@ -147,7 +232,7 @@ fn production_check_rejects_incomplete_adapter_configuration() {
 #[test]
 fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
     let (_directory, path) = temp_config();
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path")])
         .output()
         .expect("run production mode");
@@ -161,7 +246,7 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 #[test]
 fn production_check_rejects_a_missing_license_public_key_before_platform_startup() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path")])
         .arg("--check")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
@@ -177,7 +262,7 @@ fn production_check_rejects_a_missing_license_public_key_before_platform_startup
 #[test]
 fn production_check_rejects_an_invalid_license_public_key() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY", "not a PEM public key")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
@@ -194,7 +279,7 @@ fn production_check_requires_the_configured_instance_lock() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let public_key =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/license-public.pem");
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", public_key)
@@ -213,7 +298,7 @@ fn valid_production_authority_reaches_the_platform_build_boundary() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let public_key =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/license-public.pem");
-    let output = Command::new(binary())
+    let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", public_key)
@@ -230,7 +315,7 @@ fn valid_production_authority_reaches_the_platform_build_boundary() {
 #[test]
 fn explicit_dry_run_exits_cleanly_on_sigterm() {
     let (_directory, path) = temp_config();
-    let mut child = Command::new(binary())
+    let mut child = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--dry-run"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")

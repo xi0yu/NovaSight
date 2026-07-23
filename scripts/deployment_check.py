@@ -131,8 +131,45 @@ def _release_checks(root: Path) -> list[CheckResult]:
             detail={"path": str(config), "required_values": list(expected_paths)},
         )
     )
+    checks.append(_model_ingress_helper_check(root))
     checks.append(_kmnet_helper_check(root))
     return checks
+
+
+def _model_ingress_helper_check(root: Path) -> CheckResult:
+    helper = root / "scripts" / "model_ingress_job.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper), "preflight"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return CheckResult(
+            name="release.model_ingress_helper.preflight",
+            passed=False,
+            detail={"error": str(error)},
+        )
+    receipt = _decode_json(result.stdout.encode())
+    passed = (
+        result.returncode == 0
+        and isinstance(receipt, dict)
+        and receipt.get("protocol") == 1
+        and receipt.get("worker") == "novasight.model_ingress"
+        and receipt.get("operations") == ["inspect", "configure", "probe"]
+    )
+    return CheckResult(
+        name="release.model_ingress_helper.preflight",
+        passed=passed,
+        detail={
+            "returncode": result.returncode,
+            "receipt": receipt,
+            "stderr": result.stderr,
+        },
+    )
 
 
 def _kmnet_helper_check(root: Path) -> CheckResult:

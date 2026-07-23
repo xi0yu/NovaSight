@@ -172,6 +172,10 @@ pub async fn entry() -> ExitCode {
                 eprintln!("{}: {error}", error.code());
                 return ExitCode::FAILURE;
             }
+            if let Err(error) = model_jobs.preflight().await {
+                eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
+                return ExitCode::FAILURE;
+            }
             println!(
                 "PASS mode=dry_run config={} model_ingress_helper=ready motion_profile=ready hardware_not_started=true",
                 args.config.display()
@@ -188,6 +192,10 @@ pub async fn entry() -> ExitCode {
         }
         if let Err(error) = server::preflight_instance_lock(server::DaemonMode::Production) {
             eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
+        if let Err(error) = model_jobs.preflight().await {
+            eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
             return ExitCode::FAILURE;
         }
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
@@ -221,6 +229,17 @@ pub async fn entry() -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
+    }
+
+    if !args.dry_run
+        && let Err(error) = loaded.config().require_production_adapters()
+    {
+        eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = model_jobs.preflight().await {
+        eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
+        return ExitCode::FAILURE;
     }
 
     let model_catalog = match SqliteModelCatalog::open_with_model_root(
@@ -262,10 +281,6 @@ pub async fn entry() -> ExitCode {
             server::DaemonMode::DryRun,
         )
     } else {
-        if let Err(error) = loaded.config().require_production_adapters() {
-            eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
-            return ExitCode::FAILURE;
-        }
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {
             match live_perception::build_live_production_dependencies(

@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NovaSight allowlisted model-ingress worker")
     subparsers = parser.add_subparsers(dest="operation", required=True)
 
+    subparsers.add_parser("preflight")
+
     inspect = subparsers.add_parser("inspect")
     inspect.add_argument("--engine", type=Path, required=True)
     inspect.add_argument("--display-name", required=True)
@@ -189,7 +191,13 @@ def _json_value(value: Any) -> Any:
 def main() -> int:
     args = parse_args()
     try:
-        if args.operation == "inspect":
+        if args.operation == "preflight":
+            response = {
+                "protocol": 1,
+                "worker": "novasight.model_ingress",
+                "operations": ["inspect", "configure", "probe"],
+            }
+        elif args.operation == "inspect":
             response = inspect_engine(args.engine, args.display_name)
         elif args.operation == "configure":
             response = configure_engine(args.engine)
