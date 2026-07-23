@@ -218,6 +218,16 @@ async fn license_commands_bootstrap_through_a_key_file_and_the_real_repository()
     });
 
     let socket_path = socket.0.clone();
+    let rejected = tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["status"]))
+        .await
+        .unwrap();
+    assert!(!rejected.status.success());
+    let rejected = String::from_utf8(rejected.stderr).unwrap();
+    assert!(rejected.contains("LICENSE_REQUIRED"));
+    assert!(rejected.contains("a valid license is required"));
+    assert!(!rejected.contains("daemon_error_response_invalid"));
+
+    let socket_path = socket.0.clone();
     let key_path_for_cli = key_path.clone();
     let activated = tokio::task::spawn_blocking(move || {
         run_cli_args(

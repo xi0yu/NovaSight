@@ -101,7 +101,9 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     let (status, body) =
         json_response(app.clone(), "POST", "/api/runtime/start", Body::empty()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "LICENSE_REQUIRED");
     assert_eq!(body["detail"], "license required");
+    assert_eq!(body["message"], "a valid license is required");
     assert_eq!(body["license"]["valid"], false);
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 
@@ -186,6 +188,11 @@ async fn license_gate_enforces_features_on_the_server() {
     let (status, body) =
         json_response(app.clone(), "POST", "/api/runtime/start", Body::empty()).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "LICENSE_FEATURE_REQUIRED");
+    assert_eq!(
+        body["message"],
+        "license feature hardware_control is required"
+    );
     assert_eq!(body["required_feature"], "hardware_control");
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 

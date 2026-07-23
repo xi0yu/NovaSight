@@ -327,7 +327,9 @@ async fn require_license(
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
+                "code": "LICENSE_REQUIRED",
                 "detail": "license required",
+                "message": "a valid license is required",
                 "license": status,
             })),
         )
@@ -341,6 +343,7 @@ async fn require_license(
             Json(serde_json::json!({
                 "code": "LICENSE_FEATURE_REQUIRED",
                 "detail": format!("license feature {feature} is required"),
+                "message": format!("license feature {feature} is required"),
                 "required_feature": feature,
                 "license": status,
             })),
@@ -359,6 +362,7 @@ async fn require_license(
             Json(serde_json::json!({
                 "code": "LICENSE_FEATURE_REQUIRED",
                 "detail": "license feature hardware_control is required",
+                "message": "license feature hardware_control is required",
                 "required_feature": "hardware_control",
                 "license": status,
             })),

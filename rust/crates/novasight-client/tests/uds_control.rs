@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use novasight_api::{build_control_router, build_control_router_with_services};
+use novasight_api::{
+    build_control_router, build_control_router_with_control_plane,
+    build_control_router_with_services,
+};
 use novasight_client::{ClientError, ControlClient};
 use novasight_core::RuntimeEpoch;
 use novasight_runtime::{
@@ -8,6 +11,7 @@ use novasight_runtime::{
     RuntimeDependencies, RuntimeSupervisor,
 };
 use novasight_store::config::YamlConfigRepository;
+use novasight_store::license::{FileLicenseRepository, LicensePolicy};
 use novasight_store::motion_profile::MotionProfileRepository;
 
 struct SocketPath(PathBuf);
@@ -225,5 +229,75 @@ async fn an_unresponsive_daemon_is_bounded_by_the_client_timeout() {
 
     assert!(matches!(error, ClientError::Timeout(_)));
     assert_eq!(error.code(), "daemon_request_timed_out");
+    server.abort();
+}
+
+#[tokio::test]
+async fn license_middleware_rejection_remains_a_typed_daemon_error() {
+    let socket = SocketPath::new();
+    let license_path = socket.0.with_extension("license.json");
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
+    let license = FileLicenseRepository::new(&license_path, LicensePolicy::new(true, None));
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app =
+        build_control_router_with_control_plane(runtime.clone(), None, license, None, false, None);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve Unix control socket")
+    });
+
+    let error = ControlClient::new(&socket.0)
+        .status()
+        .await
+        .expect_err("unlicensed status is rejected");
+
+    assert!(matches!(
+        error,
+        ClientError::Daemon {
+            status: hyper::StatusCode::UNAUTHORIZED,
+            ref code,
+            ref message,
+        } if code == "LICENSE_REQUIRED" && message == "a valid license is required"
+    ));
+    assert_eq!(error.code(), "daemon_command_rejected");
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn detail_only_compatibility_error_keeps_http_status_and_reason() {
+    let socket = SocketPath::new();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
+    let app = axum::Router::new().route(
+        "/api/v1/status",
+        axum::routing::get(|| async {
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({"detail": "license required"})),
+            )
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve Unix control socket")
+    });
+
+    let error = ControlClient::new(&socket.0)
+        .status()
+        .await
+        .expect_err("compatibility rejection is typed");
+
+    assert!(matches!(
+        error,
+        ClientError::Daemon {
+            status: hyper::StatusCode::UNAUTHORIZED,
+            ref code,
+            ref message,
+        } if code == "HTTP_401" && message == "license required"
+    ));
     server.abort();
 }

@@ -666,10 +666,24 @@ impl ControlClient {
         } else {
             let error: DaemonErrorBody =
                 serde_json::from_slice(&body).map_err(ClientError::DecodeDaemonError)?;
+            let code = error
+                .code
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| format!("HTTP_{}", status.as_u16()));
+            let message = error
+                .message
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| error.detail.filter(|value| !value.trim().is_empty()))
+                .unwrap_or_else(|| {
+                    status
+                        .canonical_reason()
+                        .unwrap_or("daemon rejected the command")
+                        .to_owned()
+                });
             Err(ClientError::Daemon {
                 status,
-                code: error.code,
-                message: error.message,
+                code,
+                message,
             })
         }
     }
@@ -677,8 +691,12 @@ impl ControlClient {
 
 #[derive(Debug, Deserialize)]
 struct DaemonErrorBody {
-    code: String,
-    message: String,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
 }
 
 #[derive(Debug, Error)]
