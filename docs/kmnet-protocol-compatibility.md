@@ -34,6 +34,11 @@ hardware `connect` operation. This catches a missing interpreter, packaged
 module, incompatible helper, or unavailable vendor extension before systemd
 starts the daemon. Selecting `native_udp` without the explicit experimental
 feature fails the same preflight instead of producing a false PASS.
+The Rust composition root also pins the helper's working directory to the
+canonical release that contains the configured model worker. Helper startup no
+longer depends on the operator's shell directory or systemd's ambient working
+directory, and reconnect cannot cross an atomic `current` symlink switch into
+another release's Python package.
 
 The upstream repository does not publish a standard open-source license, and
 its copyright notice restricts use to official kmBox hardware. Protocol

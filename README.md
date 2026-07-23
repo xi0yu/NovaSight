@@ -245,6 +245,11 @@ explicit `experimental-kmnet-native` feature; with that feature, `--check`
 validates the native protocol configuration but still does not contact the
 box. Therefore `pointer_adapter=ready` proves the packaged adapter is usable,
 while `pointer_not_connected=true` remains an intentional hardware boundary.
+The daemon resolves the packaged model worker relative to its own installed
+binary when no override is supplied. It canonicalizes that worker path and
+starts every kmNet helper from the same immutable release root, so a later
+`/opt/novasight/current` switch cannot make an already-running daemon import
+Python code from a different release.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.

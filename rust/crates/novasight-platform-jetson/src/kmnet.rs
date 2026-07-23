@@ -27,6 +27,7 @@ type HostResponseReceiver = Receiver<HostResponseResult>;
 pub struct KmNetHostConfig {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    pub working_directory: PathBuf,
     pub host: String,
     pub port: u16,
     pub uuid: String,
@@ -40,6 +41,11 @@ impl KmNetHostConfig {
     pub fn validate(&self) -> Result<(), KmNetError> {
         if self.program.as_os_str().is_empty() {
             return Err(KmNetError::InvalidConfig("helper program is empty"));
+        }
+        if !self.working_directory.is_dir() {
+            return Err(KmNetError::InvalidConfig(
+                "helper working directory does not exist",
+            ));
         }
         if self.host.trim().is_empty() {
             return Err(KmNetError::InvalidConfig("kmNet host is empty"));
@@ -314,6 +320,7 @@ impl HostSession {
     fn spawn(config: &KmNetHostConfig) -> Result<Self, KmNetError> {
         let mut child = Command::new(&config.program)
             .args(&config.args)
+            .current_dir(&config.working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

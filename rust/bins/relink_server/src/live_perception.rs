@@ -58,6 +58,7 @@ pub(super) fn build_live_production_dependencies(
     config: &AppConfig,
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
+    python_package_root: &Path,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -89,8 +90,12 @@ pub(super) fn build_live_production_dependencies(
             }
         }
         DeviceBackend::PythonHost => Arc::new(
-            KmNetHostClient::new(kmnet_host_config(config, adapters.device))
-                .map_err(LivePerceptionError::KmNet)?,
+            KmNetHostClient::new(kmnet_host_config(
+                config,
+                adapters.device,
+                python_package_root,
+            ))
+            .map_err(LivePerceptionError::KmNet)?,
         ),
     };
     build_live_dependencies(
@@ -107,15 +112,19 @@ pub(super) fn build_live_production_dependencies(
 pub(super) fn preflight_live_production(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
+    python_package_root: &Path,
 ) -> Result<(), LivePerceptionError> {
-    preflight_pointer_adapter(config)?;
+    preflight_pointer_adapter(config, python_package_root)?;
     let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
     let session = build_deepstream_session_config(config, model_catalog, preview, crosshair)?;
     preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
 }
 
-fn preflight_pointer_adapter(config: &AppConfig) -> Result<(), LivePerceptionError> {
+fn preflight_pointer_adapter(
+    config: &AppConfig,
+    python_package_root: &Path,
+) -> Result<(), LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
         .map_err(LivePerceptionError::Config)?;
@@ -123,10 +132,12 @@ fn preflight_pointer_adapter(config: &AppConfig) -> Result<(), LivePerceptionErr
         return Err(LivePerceptionError::DeviceAutoConnectDisabled);
     }
     match adapters.device.backend {
-        DeviceBackend::PythonHost => {
-            KmNetHostClient::preflight(&kmnet_host_config(config, adapters.device))
-                .map_err(LivePerceptionError::KmNet)
-        }
+        DeviceBackend::PythonHost => KmNetHostClient::preflight(&kmnet_host_config(
+            config,
+            adapters.device,
+            python_package_root,
+        ))
+        .map_err(LivePerceptionError::KmNet),
         DeviceBackend::NativeUdp => {
             #[cfg(not(feature = "experimental-kmnet-native"))]
             return Err(LivePerceptionError::NativeKmNetNotValidated);
@@ -151,7 +162,11 @@ fn preflight_pointer_adapter(config: &AppConfig) -> Result<(), LivePerceptionErr
     }
 }
 
-fn kmnet_host_config(config: &AppConfig, device: &DeviceConfig) -> KmNetHostConfig {
+fn kmnet_host_config(
+    config: &AppConfig,
+    device: &DeviceConfig,
+    python_package_root: &Path,
+) -> KmNetHostConfig {
     KmNetHostConfig {
         program: config.paths.python_executable.clone(),
         args: vec![
@@ -159,6 +174,7 @@ fn kmnet_host_config(config: &AppConfig, device: &DeviceConfig) -> KmNetHostConf
             OsString::from("-m"),
             OsString::from(device.helper_module.trim()),
         ],
+        working_directory: python_package_root.to_owned(),
         host: device.host.clone(),
         port: device.port,
         uuid: device.uuid.clone(),

@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,7 @@ fn config(script: &str) -> KmNetHostConfig {
             OsString::from("-c"),
             OsString::from(script),
         ],
+        working_directory: std::env::current_dir().expect("current directory"),
         host: "192.0.2.10".to_owned(),
         port: 8888,
         uuid: "box".to_owned(),
@@ -80,6 +82,41 @@ for line in sys.stdin:
     let config = config(script);
 
     KmNetHostClient::preflight(&config).expect("helper-only preflight");
+}
+
+#[test]
+fn helper_module_is_resolved_from_the_pinned_working_directory() {
+    let root = std::env::temp_dir().join(format!(
+        "novasight-kmnet-helper-root-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("pinned_helper.py"),
+        r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    op = request['op']
+    result = {'protocol': 1, 'driver_available': True} if op == 'hello' else {}
+    print(json.dumps({'id': request['id'], 'ok': True, 'result': result, 'error': None}), flush=True)
+    if op == 'shutdown':
+        break
+"#,
+    )
+    .unwrap();
+    let mut config = config(GOOD_HELPER);
+    config.args = vec![
+        OsString::from("-u"),
+        OsString::from("-m"),
+        OsString::from("pinned_helper"),
+    ];
+    config.working_directory = root.clone();
+
+    KmNetHostClient::preflight(&config).expect("module from pinned release root");
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

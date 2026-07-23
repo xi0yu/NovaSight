@@ -86,12 +86,12 @@ pub async fn entry() -> ExitCode {
         .unwrap_or_default()
         .deepstream_parser_library;
     let model_job_script = resolve_model_job_script(args.model_job_script.as_deref());
-    let model_job_code_root = model_job_script
+    let python_package_root = model_job_script
         .canonicalize()
         .ok()
         .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_owned))
-        .unwrap_or_else(|| args.model_job_workdir.clone())
-        .join("novasight");
+        .unwrap_or_else(|| args.model_job_workdir.clone());
+    let model_job_code_root = python_package_root.join("novasight");
     let model_jobs = match OfflineModelJobRunner::new(
         &args.model_job_python,
         &model_job_script,
@@ -210,9 +210,11 @@ pub async fn entry() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            if let Err(error) =
-                live_perception::preflight_live_production(loaded.config(), &model_catalog)
-            {
+            if let Err(error) = live_perception::preflight_live_production(
+                loaded.config(),
+                &model_catalog,
+                &python_package_root,
+            ) {
                 eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
                 return ExitCode::FAILURE;
             }
@@ -287,6 +289,7 @@ pub async fn entry() -> ExitCode {
                 loaded.config(),
                 config_service.clone(),
                 model_catalog.clone(),
+                &python_package_root,
             ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::Production),
                 Err(error) => {
@@ -333,9 +336,44 @@ fn resolve_model_job_script(configured: Option<&Path>) -> PathBuf {
     if let Some(path) = configured {
         return path.to_owned();
     }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(path) = bundled_model_job_script(&executable)
+    {
+        return path;
+    }
     let working_tree_path = PathBuf::from("scripts/model_ingress_job.py");
     if working_tree_path.is_file() {
         return working_tree_path;
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/model_ingress_job.py")
+}
+
+fn bundled_model_job_script(executable: &Path) -> Option<PathBuf> {
+    let release_root = executable.parent()?.parent()?;
+    let candidate = release_root.join("scripts/model_ingress_job.py");
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::bundled_model_job_script;
+
+    #[test]
+    fn installed_daemon_discovers_worker_in_its_own_release() {
+        let root =
+            std::env::temp_dir().join(format!("novasight-bundled-worker-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/model_ingress_job.py"), b"# worker\n").unwrap();
+
+        assert_eq!(
+            bundled_model_job_script(&root.join("bin/novasightd")),
+            Some(root.join("scripts/model_ingress_job.py"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
