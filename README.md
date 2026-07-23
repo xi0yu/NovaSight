@@ -195,6 +195,11 @@ existing `/etc/novasight/novasight.yaml`; the new template is written as
 does not start the service, so license/config/model checks remain a deliberate
 deployment gate. Retained version directories keep rollback recoverable and
 explicit; same-ID installs fail closed instead of mutating an immutable release.
+Staging generates `SHA256SUMS.json` for every payload file. The deployment
+checker exposes this as `release.sha256_manifest`, and the installer verifies
+the manifest both before creating the version directory and after copying it;
+missing, additional, modified, or symlinked payloads are rejected before the
+`current` link can move.
 
 The example config starts the active TensorRT deployment through nvinfer. kmNet
 auto-connect runs independently.

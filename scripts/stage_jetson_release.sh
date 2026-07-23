@@ -23,6 +23,7 @@ require_file "${PARSER}"
 require_file "${ROOT_DIR}/scripts/model_ingress_job.py"
 require_file "${ROOT_DIR}/scripts/install_jetson_release.sh"
 require_file "${ROOT_DIR}/scripts/deployment_check.py"
+require_file "${ROOT_DIR}/scripts/release_manifest.py"
 require_file "${ROOT_DIR}/deploy/novasight.service"
 require_file "${ROOT_DIR}/deploy/novasight.production.yaml"
 require_file "${ROOT_DIR}/novasight/executors/kmnet_host.py"
@@ -38,6 +39,8 @@ install -m 0755 "${ROOT_DIR}/scripts/install_jetson_release.sh" \
   "${STAGE_DIR}/scripts/install_jetson_release.sh"
 install -m 0755 "${ROOT_DIR}/scripts/deployment_check.py" \
   "${STAGE_DIR}/scripts/deployment_check.py"
+install -m 0755 "${ROOT_DIR}/scripts/release_manifest.py" \
+  "${STAGE_DIR}/scripts/release_manifest.py"
 install -m 0644 "${BRIDGE}" "${STAGE_DIR}/lib/libnovasight_deepstream_bridge.so"
 install -m 0644 "${PARSER}" "${STAGE_DIR}/lib/libnovasight_parser.so"
 install -m 0644 "${ROOT_DIR}/deploy/novasight.service" \
@@ -76,6 +79,10 @@ for optional in libnovasight_preprocess.so libnovasight_tensorrt.so; do
   fi
 done
 
+# Bind every staged payload file to this release before it can be installed.
+# The installer verifies the same manifest before and after copying.
+python3 "${STAGE_DIR}/scripts/release_manifest.py" generate "${STAGE_DIR}"
+
 echo "release_root: ${STAGE_DIR}"
 echo "daemon: ${STAGE_DIR}/bin/novasightd"
 echo "cli: ${STAGE_DIR}/bin/novasightctl"
@@ -83,3 +90,4 @@ echo "libraries: ${STAGE_DIR}/lib"
 echo "production_config: ${STAGE_DIR}/share/novasight/novasight.production.yaml"
 echo "python_helpers: ${STAGE_DIR}/novasight"
 echo "release_id: ${RELEASE_ID}"
+echo "manifest: ${STAGE_DIR}/SHA256SUMS.json"

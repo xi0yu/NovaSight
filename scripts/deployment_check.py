@@ -5,12 +5,18 @@ import argparse
 import configparser
 from dataclasses import asdict, dataclass
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+if __package__:
+    from .release_manifest import verify_manifest
+else:
+    from release_manifest import verify_manifest
 
 
 @dataclass(frozen=True)
@@ -99,12 +105,14 @@ def _release_checks(root: Path) -> list[CheckResult]:
         "scripts/model_ingress_job.py",
         "scripts/install_jetson_release.sh",
         "scripts/deployment_check.py",
+        "scripts/release_manifest.py",
         "deploy/novasight.service",
         "share/novasight/novasight.production.yaml",
         "novasight/__init__.py",
         "novasight/executors/kmnet_host.py",
         "novasight/executors/kmnet_loader.py",
         "RELEASE_ID",
+        "SHA256SUMS.json",
     )
     checks = [
         CheckResult(
@@ -131,6 +139,14 @@ def _release_checks(root: Path) -> list[CheckResult]:
             detail={"path": str(config), "required_values": list(expected_paths)},
         )
     )
+    integrity = verify_manifest(root)
+    checks.append(
+        CheckResult(
+            name="release.sha256_manifest",
+            passed=integrity.passed,
+            detail=asdict(integrity),
+        )
+    )
     checks.append(_model_ingress_helper_check(root))
     checks.append(_kmnet_helper_check(root))
     return checks
@@ -146,6 +162,7 @@ def _model_ingress_helper_check(root: Path) -> CheckResult:
             capture_output=True,
             timeout=5,
             check=False,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
     except (OSError, subprocess.SubprocessError) as error:
         return CheckResult(
@@ -183,6 +200,7 @@ def _kmnet_helper_check(root: Path) -> CheckResult:
             capture_output=True,
             timeout=5,
             check=False,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
     except (OSError, subprocess.SubprocessError) as error:
         return CheckResult(

@@ -59,6 +59,7 @@ path_in_root() {
 }
 
 require_file "${SOURCE_ROOT}/RELEASE_ID"
+require_file "${SOURCE_ROOT}/SHA256SUMS.json"
 require_file "${SOURCE_ROOT}/bin/novasightd"
 require_file "${SOURCE_ROOT}/bin/novasightctl"
 require_file "${SOURCE_ROOT}/lib/libnovasight_deepstream_bridge.so"
@@ -66,7 +67,10 @@ require_file "${SOURCE_ROOT}/lib/libnovasight_parser.so"
 require_file "${SOURCE_ROOT}/deploy/novasight.service"
 require_file "${SOURCE_ROOT}/share/novasight/novasight.production.yaml"
 require_file "${SOURCE_ROOT}/scripts/model_ingress_job.py"
+require_file "${SOURCE_ROOT}/scripts/release_manifest.py"
 require_file "${SOURCE_ROOT}/novasight/executors/kmnet_host.py"
+
+python3 "${SOURCE_ROOT}/scripts/release_manifest.py" verify "${SOURCE_ROOT}"
 
 RELEASE_ID="$(tr -d '\r\n' < "${SOURCE_ROOT}/RELEASE_ID")"
 if [[ ! "${RELEASE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
@@ -90,10 +94,11 @@ fi
 # Build the complete immutable version directory before switching `current`.
 install -d -m 0755 "${RELEASE_DIR}"
 cp -a "${SOURCE_ROOT}/bin" "${SOURCE_ROOT}/lib" "${SOURCE_ROOT}/scripts" \
-  "${SOURCE_ROOT}/novasight" "${SOURCE_ROOT}/share" "${RELEASE_DIR}/"
+  "${SOURCE_ROOT}/novasight" "${SOURCE_ROOT}/share" "${SOURCE_ROOT}/deploy" \
+  "${RELEASE_DIR}/"
 install -m 0644 "${SOURCE_ROOT}/RELEASE_ID" "${RELEASE_DIR}/RELEASE_ID"
-install -m 0644 "${SOURCE_ROOT}/deploy/novasight.service" \
-  "${RELEASE_DIR}/novasight.service"
+install -m 0644 "${SOURCE_ROOT}/SHA256SUMS.json" "${RELEASE_DIR}/SHA256SUMS.json"
+python3 "${RELEASE_DIR}/scripts/release_manifest.py" verify "${RELEASE_DIR}"
 install -m 0644 /dev/null "${RELEASE_DIR}/.complete"
 
 install -m 0640 "${SOURCE_ROOT}/share/novasight/novasight.production.yaml" \

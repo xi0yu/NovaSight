@@ -133,7 +133,8 @@ def test_native_jetson_cuda_source_uses_real_dmabuf_egl_cuda_path() -> None:
     assert "nvbufsurface_geometry_mismatch" in cu_source
     assert "bool validate_rgba_plane_layout" in cu_source
     assert "cuda_egl_rgba_plane_invalid" in cu_source
-    assert "rgba_pitch < width * 4" in cu_source
+    assert "minimum_pitch = static_cast<int64_t>(width) * 4" in cu_source
+    assert "rgba_pitch < minimum_pitch" in cu_source
     assert "__device__ int scaled_source_index" in cu_source
     assert "nv12_to_nchw_kernel" not in cu_source
     assert "max(0, min(255" not in cu_source
