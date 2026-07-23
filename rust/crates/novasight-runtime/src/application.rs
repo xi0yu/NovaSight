@@ -126,6 +126,14 @@ impl Application {
     }
 
     pub async fn shutdown(self) -> Result<(), ApplicationError> {
+        let supervisor_already_exited = !self.runtime.is_supervisor_alive();
+        if supervisor_already_exited {
+            return match self.supervisor.join().await {
+                Ok(()) => Err(ApplicationError::RuntimeExitedUnexpectedly),
+                Err(error) => Err(error.into()),
+            };
+        }
+
         let command = self.runtime.shutdown_daemon().await;
         let join = self.supervisor.join().await;
         match (command, join) {
@@ -185,6 +193,8 @@ pub enum ApplicationError {
     ConfigLoadTask(tokio::task::JoinError),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
+    #[error("runtime supervisor exited while the application was still serving")]
+    RuntimeExitedUnexpectedly,
     #[error("failed to register or receive shutdown signal: {0}")]
     Signal(std::io::Error),
     #[error("runtime shutdown command failed: {command}; supervisor join failed: {join}")]
@@ -205,6 +215,7 @@ impl ApplicationError {
             Self::Config(error) => error.code(),
             Self::ConfigLoadTask(_) => "CONFIG_LOAD_TASK_FAILED",
             Self::Runtime(error) => error.kind.code(),
+            Self::RuntimeExitedUnexpectedly => "RUNTIME_SUPERVISOR_EXITED",
             Self::Signal(_) => "SHUTDOWN_SIGNAL_FAILED",
             Self::RuntimeShutdown { .. } => "RUNTIME_SHUTDOWN_FAILED",
             Self::SignalAndShutdown { .. } => "SIGNAL_AND_SHUTDOWN_FAILED",

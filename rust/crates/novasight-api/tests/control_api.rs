@@ -753,6 +753,31 @@ async fn studio_lifecycle_aliases_project_the_real_supervisor_and_config() {
 }
 
 #[tokio::test]
+async fn health_fails_closed_after_the_runtime_supervisor_exits() {
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router(runtime.clone());
+
+    runtime
+        .shutdown_daemon()
+        .await
+        .expect("shutdown runtime supervisor");
+    supervisor.join().await.expect("join runtime supervisor");
+
+    let response = app
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .expect("health response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let health: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("health body"),
+    )
+    .expect("health JSON");
+    assert_eq!(health["ok"], false);
+}
+
+#[tokio::test]
 async fn studio_status_websocket_streams_real_supervisor_changes() {
     use futures_util::StreamExt;
 

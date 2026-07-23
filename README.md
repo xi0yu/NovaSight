@@ -250,6 +250,11 @@ binary when no override is supplied. It canonicalizes that worker path and
 starts every kmNet helper from the same immutable release root, so a later
 `/opt/novasight/current` switch cannot make an already-running daemon import
 Python code from a different release.
+Runtime health is also tied to the sole Rust supervisor, not merely its last
+published snapshot. If that lifecycle actor exits or panics, `/healthz` fails
+closed while the HTTP and Unix-socket servers drain; `novasightd` then exits
+unsuccessfully so the production unit's `Restart=on-failure` policy can recover
+the service instead of leaving a false-ready control plane online.
 
 Detailed contracts and current measurement gaps are in
 `docs/novasight-deepstream-object-mainline.md`.

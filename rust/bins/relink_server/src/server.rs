@@ -100,11 +100,12 @@ pub(super) async fn run_daemon(
     let mut control_server = Box::pin(control_server);
     let mut license_watchdog = Box::pin(monitor_runtime_license(
         license_repository,
-        runtime,
+        runtime.clone(),
         mode.hardware_output_enabled(),
         server_shutdown_tx.subscribe(),
         Duration::from_secs(1),
     ));
+    let mut runtime_exit = Box::pin(runtime.wait_for_supervisor_exit());
 
     if mode == DaemonMode::DryRun {
         tracing::warn!(
@@ -121,11 +122,12 @@ pub(super) async fn run_daemon(
         result = http_server.as_mut() => FirstExit::Http(result),
         result = control_server.as_mut() => FirstExit::Control(result),
         result = license_watchdog.as_mut() => FirstExit::License(result),
+        () = runtime_exit.as_mut() => FirstExit::Runtime,
         () = signals.wait() => FirstExit::Signal,
     };
     server_shutdown_tx.send_replace(true);
     let (service_result, license_result) = match first_exit {
-        FirstExit::Signal => {
+        FirstExit::Signal | FirstExit::Runtime => {
             let (http, control, license) = tokio::join!(
                 http_server.as_mut(),
                 control_server.as_mut(),
@@ -151,6 +153,7 @@ pub(super) async fn run_daemon(
     drop(http_server);
     drop(control_server);
     drop(license_watchdog);
+    drop(runtime_exit);
     let shutdown_result = application
         .shutdown()
         .await
@@ -340,6 +343,7 @@ async fn monitor_runtime_license(
 
 enum FirstExit {
     Signal,
+    Runtime,
     Http(Result<(), io::Error>),
     Control(Result<(), io::Error>),
     License(Result<(), DaemonRunError>),

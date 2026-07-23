@@ -90,3 +90,26 @@ async fn run_until_waits_for_shutdown_then_joins_the_supervisor() {
         .expect("application shutdown");
     assert_eq!(handle.snapshot().daemon.state, DaemonState::ShuttingDown);
 }
+
+#[tokio::test]
+async fn application_fails_if_the_supervisor_exits_before_process_shutdown() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    fs::write(&path, "{}\n").expect("write config");
+    let application = Application::bootstrap(&path, RuntimeDependencies::recording())
+        .await
+        .expect("bootstrap application");
+    let handle = application.runtime();
+
+    handle
+        .shutdown_daemon()
+        .await
+        .expect("stop supervisor independently");
+    handle.wait_for_supervisor_exit().await;
+
+    let error = application
+        .shutdown()
+        .await
+        .expect_err("an independently exited supervisor must fail the application");
+    assert_eq!(error.code(), "RUNTIME_SUPERVISOR_EXITED");
+}

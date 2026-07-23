@@ -426,7 +426,7 @@ fn required_license_feature(method: &Method, path: &str) -> Option<&'static str>
 async fn health(State(state): State<ControlState>) -> Json<CompatibilityHealth> {
     let daemon = state.runtime.snapshot().daemon.state;
     Json(CompatibilityHealth {
-        ok: daemon == DaemonState::Ready,
+        ok: daemon == DaemonState::Ready && state.runtime.is_supervisor_alive(),
     })
 }
 

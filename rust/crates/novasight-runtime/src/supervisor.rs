@@ -522,6 +522,23 @@ impl std::fmt::Debug for RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    /// Returns whether the sole runtime supervisor can still accept work.
+    ///
+    /// The immutable snapshot may outlive its producer, so callers that report
+    /// process health must check this signal instead of trusting the last
+    /// published daemon state alone.
+    pub fn is_supervisor_alive(&self) -> bool {
+        !self.command_tx.is_closed()
+    }
+
+    /// Wait until the runtime supervisor receiver disappears.
+    ///
+    /// This is the process-owner seam used to fail the daemon when its core
+    /// lifecycle actor exits unexpectedly.
+    pub async fn wait_for_supervisor_exit(&self) {
+        self.command_tx.closed().await;
+    }
+
     #[doc(hidden)]
     pub fn pending_urgent_stop_count(&self) -> usize {
         self.urgent_stop.pending.load(Ordering::Acquire)
