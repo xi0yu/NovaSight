@@ -32,6 +32,19 @@ impl Clock for ManualClock {
     }
 }
 
+#[derive(Debug)]
+struct LaneClock;
+
+impl Clock for LaneClock {
+    fn now(&self) -> MonotonicNanos {
+        match thread::current().name() {
+            Some("novasight-targeting") => MonotonicNanos(1_008_000_000),
+            Some("novasight-control" | "novasight-device") => MonotonicNanos(1_100_000_000),
+            _ => MonotonicNanos(1_100_000_000),
+        }
+    }
+}
+
 #[test]
 fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
     let epoch = RuntimeEpoch(7);
@@ -171,6 +184,56 @@ fn pipeline_output_is_closed_until_trigger_is_explicitly_active() {
     thread::sleep(Duration::from_millis(20));
     assert!(device.receipts().is_empty());
     assert_eq!(runtime.metrics().blocked_decisions, 1);
+    runtime.shutdown().expect("workers join");
+}
+
+#[test]
+fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
+    let epoch = RuntimeEpoch(9);
+    let clock: Arc<dyn Clock> = Arc::new(LaneClock);
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+    )
+    .expect("pipeline starts");
+    ingress.set_trigger_active(true);
+    let detection = Detection::new(43, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 1, 1_000_000_000),
+                640,
+                640,
+                vec![detection],
+            )
+            .expect("valid batch"),
+        )
+        .expect("batch accepted");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let metrics = runtime.metrics();
+        if metrics.control_decisions == 1
+            && (metrics.blocked_decisions == 1 || metrics.stale_commands == 1)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "control/device lanes did not process the observation: {metrics:?}"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let metrics = runtime.metrics();
+    assert!(device.receipts().is_empty());
+    assert_eq!((metrics.blocked_decisions, metrics.stale_commands), (1, 0));
     runtime.shutdown().expect("workers join");
 }
 

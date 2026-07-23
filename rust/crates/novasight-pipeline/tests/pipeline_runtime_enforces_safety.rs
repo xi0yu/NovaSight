@@ -29,13 +29,14 @@ impl Clock for FixedClock {
 }
 
 #[derive(Debug, Default)]
-struct AgingClock(AtomicU64);
+struct AgingClock;
 
 impl Clock for AgingClock {
     fn now(&self) -> MonotonicNanos {
-        match self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel) {
-            0 => MonotonicNanos(1_008_000_000),
-            _ => MonotonicNanos(1_100_000_000),
+        match thread::current().name() {
+            Some("novasight-targeting" | "novasight-control") => MonotonicNanos(1_008_000_000),
+            Some("novasight-device") => MonotonicNanos(1_100_000_000),
+            _ => MonotonicNanos(1_008_000_000),
         }
     }
 }
@@ -80,7 +81,7 @@ impl Clock for BlockingClock {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.0 += 1;
-        if state.0 == 2 {
+        if state.0 == 3 {
             state.1 = true;
             self.changed.notify_all();
             while !state.2 {
@@ -610,7 +611,7 @@ fn device_worker_panic_immediately_faults_and_closes_output() {
 #[test]
 fn device_lane_drops_a_command_that_expired_after_control() {
     let epoch = RuntimeEpoch(6);
-    let clock: Arc<dyn Clock> = Arc::new(AgingClock::default());
+    let clock: Arc<dyn Clock> = Arc::new(AgingClock);
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
     let (mut runtime, ingress) = PipelineRuntime::start(

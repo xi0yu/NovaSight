@@ -523,7 +523,6 @@ struct TargetedObservation {
     track_confidence: f64,
     target_width_px: f64,
     inference_end_ns: u64,
-    control_now_ns: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -650,6 +649,7 @@ impl PipelineRuntime {
             target_slot.clone(),
             command_slot.clone(),
             Arc::clone(&shared),
+            Arc::clone(&clock),
             config.epoch,
             config.control,
             config.motion_profiles.clone(),
@@ -1021,7 +1021,6 @@ fn spawn_targeting_worker(
                         track_confidence,
                         target_width_px,
                         inference_end_ns: now,
-                        control_now_ns: now,
                     };
                     if output.publish(observation).is_err() {
                         break;
@@ -1051,6 +1050,7 @@ fn spawn_control_worker(
     input: LatestSlot<TargetedObservation>,
     output: LatestSlot<DeviceCommand>,
     shared: Arc<SharedState>,
+    clock: Arc<dyn Clock>,
     epoch: RuntimeEpoch,
     config: DualPhaseConfig,
     motion_profiles: Option<MotionProfileHub>,
@@ -1065,6 +1065,7 @@ fn spawn_control_worker(
                     if shared.status() != PipelineStatus::Running {
                         break;
                     }
+                    let control_now_ns = clock.now().0;
                     let target_id = target.target_id.unwrap_or(0);
                     let observation = ControlObservation {
                         generation: target.stamp.generation.0,
@@ -1072,7 +1073,7 @@ fn spawn_control_worker(
                         target_id,
                         capture_ts_ns: target.stamp.captured_at.0,
                         inference_end_ts_ns: target.inference_end_ns,
-                        control_now_ns: target.control_now_ns,
+                        control_now_ns,
                         aim_x: target.aim_x,
                         aim_y: target.aim_y,
                         crosshair_x: target.crosshair_x,
@@ -1105,7 +1106,7 @@ fn spawn_control_worker(
                     let command = DeviceCommand {
                         epoch,
                         generation: target.stamp.generation,
-                        issued_at: novasight_core::MonotonicNanos(target.control_now_ns),
+                        issued_at: novasight_core::MonotonicNanos(control_now_ns),
                         target_object_id: target_id,
                         delta_x_counts: decision.dx,
                         delta_y_counts: decision.dy,
