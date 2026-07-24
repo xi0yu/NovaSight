@@ -1,5 +1,7 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use std::time::Instant;
 
 use axum::{
     Json, Router,
@@ -31,6 +33,7 @@ use novasight_store::motion_profile::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
+use tracing::Instrument;
 
 use crate::dto::{
     CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
@@ -39,6 +42,7 @@ use crate::dto::{
 use crate::websocket::status::send_while_receiving;
 
 const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(200);
+static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 mod models;
 
@@ -205,7 +209,51 @@ pub fn build_control_router_with_platform_queries(
     } else {
         router
     };
-    router.layer(super::app::studio_cors_layer())
+    router
+        .layer(super::app::studio_cors_layer())
+        .layer(middleware::from_fn(log_http_request))
+}
+
+async fn log_http_request(request: Request<Body>, next: Next) -> Response {
+    let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let span = tracing::info_span!(
+        "http_request",
+        service = "novasightd",
+        version = env!("CARGO_PKG_VERSION"),
+        request_id,
+        method = %method,
+        path = %path,
+    );
+    async move {
+        let started = Instant::now();
+        let response = next.run(request).await;
+        let status = response.status();
+        let latency_ms = started.elapsed().as_millis() as u64;
+        if status.is_server_error() {
+            tracing::error!(
+                http_status = status.as_u16(),
+                latency_ms,
+                "api request completed"
+            );
+        } else if status.is_client_error() {
+            tracing::warn!(
+                http_status = status.as_u16(),
+                latency_ms,
+                "api request completed"
+            );
+        } else {
+            tracing::info!(
+                http_status = status.as_u16(),
+                latency_ms,
+                "api request completed"
+            );
+        }
+        response
+    }
+    .instrument(span)
+    .await
 }
 
 #[derive(Clone)]
@@ -250,6 +298,12 @@ async fn activate_license(
         repository.activate(&request.key)
     })
     .await?;
+    tracing::info!(
+        valid = status.valid,
+        tier = %status.tier,
+        fingerprint = %status.fingerprint,
+        "license activation completed"
+    );
     stop_if_license_disallows_runtime(&state, &status).await?;
     Ok(Json(status))
 }
@@ -263,6 +317,7 @@ async fn clear_license(
         .as_ref()
         .ok_or(ControlApiError::LicenseUnavailable)?;
     let status = run_license_operation(license.clone(), |repository| repository.clear()).await?;
+    tracing::info!("license cleared");
     stop_if_license_disallows_runtime(&state, &status).await?;
     Ok(Json(status))
 }
@@ -324,6 +379,13 @@ async fn require_license(
             Err(error) => return error.into_response(),
         };
     if !status.configured || !status.valid {
+        tracing::warn!(
+            error_code = "LICENSE_REQUIRED",
+            configured = status.configured,
+            valid = status.valid,
+            reason = %status.message,
+            "license authorization rejected"
+        );
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -338,6 +400,11 @@ async fn require_license(
     if let Some(feature) = required_license_feature(method, path)
         && !status.features.iter().any(|candidate| candidate == feature)
     {
+        tracing::warn!(
+            error_code = "LICENSE_FEATURE_REQUIRED",
+            required_feature = feature,
+            "license authorization rejected"
+        );
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -357,6 +424,11 @@ async fn require_license(
             .iter()
             .any(|candidate| candidate == "hardware_control")
     {
+        tracing::warn!(
+            error_code = "LICENSE_FEATURE_REQUIRED",
+            required_feature = "hardware_control",
+            "license authorization rejected"
+        );
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -1717,6 +1789,21 @@ impl IntoResponse for ControlApiError {
             detail: message.clone(),
             message,
         };
+        if status.is_server_error() {
+            tracing::error!(
+                http_status = status.as_u16(),
+                error_code = code,
+                error = %body.message,
+                "api request failed"
+            );
+        } else {
+            tracing::warn!(
+                http_status = status.as_u16(),
+                error_code = code,
+                error = %body.message,
+                "api request rejected"
+            );
+        }
         (status, Json(body)).into_response()
     }
 }

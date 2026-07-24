@@ -3,6 +3,8 @@
 use std::fs::{File, OpenOptions};
 use std::future::IntoFuture;
 use std::io;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -363,7 +365,24 @@ fn combine_server_results(
 
 async fn bind_control_socket(
     path: &Path,
-) -> Result<(UnixListener, ControlSocketGuard, ControlDirectoryLock), DaemonRunError> {
+) -> Result<
+    (
+        UnixListener,
+        Option<ControlSocketGuard>,
+        Option<ControlDirectoryLock>,
+    ),
+    DaemonRunError,
+> {
+    if is_abstract_socket(path) {
+        let address = abstract_socket_path(path)?;
+        let listener =
+            UnixListener::bind(address).map_err(|source| DaemonRunError::ControlSocketBind {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        return Ok((listener, None, None));
+    }
+
     let directory_lock = lock_control_directory(path)?;
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_socket() => {
@@ -419,7 +438,28 @@ async fn bind_control_socket(
             source,
         }
     })?;
-    Ok((listener, guard, directory_lock))
+    Ok((listener, Some(guard), Some(directory_lock)))
+}
+
+fn is_abstract_socket(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().starts_with(b"@")
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn abstract_socket_path(path: &Path) -> Result<PathBuf, DaemonRunError> {
+    let configured = path.as_os_str().as_bytes();
+    if configured.len() == 1 {
+        return Err(DaemonRunError::AbstractControlSocketNameEmpty);
+    }
+    let mut address = Vec::with_capacity(configured.len());
+    address.push(0);
+    address.extend_from_slice(&configured[1..]);
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(address)))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn abstract_socket_path(_path: &Path) -> Result<PathBuf, DaemonRunError> {
+    Err(DaemonRunError::AbstractControlSocketUnsupported)
 }
 
 fn lock_control_directory(path: &Path) -> Result<ControlDirectoryLock, DaemonRunError> {
@@ -611,6 +651,12 @@ pub(super) enum DaemonRunError {
     HttpServe(io::Error),
     #[error("Unix control server failed: {0}")]
     ControlServe(io::Error),
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[error("abstract control socket name after @ cannot be empty")]
+    AbstractControlSocketNameEmpty,
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[error("abstract control sockets are supported only on Linux and Android")]
+    AbstractControlSocketUnsupported,
     #[error("HTTP server failed: {http}; Unix control server also failed: {control}")]
     ServersFailed { http: io::Error, control: io::Error },
     #[error("control socket path is occupied by a non-socket file: {}", .0.display())]
@@ -709,6 +755,10 @@ impl DaemonRunError {
             Self::Signal(_) => "SHUTDOWN_SIGNAL_FAILED",
             Self::HttpServe(_) => "SERVER_FAILED",
             Self::ControlServe(_) => "CONTROL_SERVER_FAILED",
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            Self::AbstractControlSocketNameEmpty => "CONTROL_SOCKET_ABSTRACT_NAME_EMPTY",
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            Self::AbstractControlSocketUnsupported => "CONTROL_SOCKET_ABSTRACT_UNSUPPORTED",
             Self::ServersFailed { .. } => "SERVERS_FAILED",
             Self::ControlSocketPathOccupied(_) => "CONTROL_SOCKET_PATH_OCCUPIED",
             Self::ControlSocketInUse(_) => "CONTROL_SOCKET_IN_USE",
@@ -842,6 +892,23 @@ mod tests {
             & 0o7777;
 
         assert_eq!(mode, 0o750);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn binds_a_linux_abstract_control_socket_without_a_filesystem_entry() {
+        let name = format!("novasightd-server-{}", uuid::Uuid::new_v4());
+        let configured = PathBuf::from(format!("@{name}"));
+
+        let (listener, guard, directory_lock) = bind_control_socket(&configured)
+            .await
+            .expect("bind abstract control socket");
+        let address = listener.local_addr().expect("abstract local address");
+
+        assert_eq!(address.as_abstract_name(), Some(name.as_bytes()));
+        assert!(guard.is_none());
+        assert!(directory_lock.is_none());
+        assert!(!configured.exists());
     }
 
     #[test]

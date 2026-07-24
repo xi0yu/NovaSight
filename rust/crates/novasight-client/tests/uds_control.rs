@@ -86,6 +86,40 @@ async fn typed_client_drives_the_same_runtime_over_a_unix_socket() {
     server.abort();
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn typed_client_connects_over_a_linux_abstract_socket() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixListener as StdUnixListener};
+
+    let name = format!("novasight-client-{}-{}", std::process::id(), unique_id());
+    let address = SocketAddr::from_abstract_name(name.as_bytes()).expect("abstract address");
+    let std_listener = StdUnixListener::bind_addr(&address).expect("bind abstract socket");
+    std_listener
+        .set_nonblocking(true)
+        .expect("make abstract listener nonblocking");
+    let listener = tokio::net::UnixListener::from_std(std_listener).expect("Tokio listener");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let server_runtime = runtime.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, build_control_router(server_runtime))
+            .await
+            .expect("serve abstract control socket")
+    });
+    let configured = PathBuf::from(format!("@{name}"));
+    let client = ControlClient::new(&configured);
+
+    assert_eq!(
+        client.status().await.expect("status").pipeline.state,
+        PipelineState::Stopped
+    );
+    assert!(!configured.exists());
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+    server.abort();
+}
+
 #[tokio::test]
 async fn typed_client_reads_and_updates_persisted_config_over_the_same_socket() {
     let socket = SocketPath::new();

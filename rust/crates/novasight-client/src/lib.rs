@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -611,13 +613,13 @@ impl ControlClient {
     where
         T: DeserializeOwned,
     {
-        let stream =
-            UnixStream::connect(&self.socket)
-                .await
-                .map_err(|source| ClientError::Connect {
-                    path: self.socket.clone(),
-                    source,
-                })?;
+        let socket = control_socket_address(&self.socket)?;
+        let stream = UnixStream::connect(&socket)
+            .await
+            .map_err(|source| ClientError::Connect {
+                path: self.socket.clone(),
+                source,
+            })?;
         let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
             .await
             .map_err(ClientError::Handshake)?;
@@ -689,6 +691,29 @@ impl ControlClient {
     }
 }
 
+fn control_socket_address(configured: &Path) -> Result<PathBuf, ClientError> {
+    if !configured.as_os_str().as_encoded_bytes().starts_with(b"@") {
+        return Ok(configured.to_path_buf());
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let name = configured.as_os_str().as_bytes();
+        if name.len() == 1 {
+            return Err(ClientError::InvalidSocketAddress(
+                "abstract socket name after @ cannot be empty".to_owned(),
+            ));
+        }
+        let mut address = Vec::with_capacity(name.len());
+        address.push(0);
+        address.extend_from_slice(&name[1..]);
+        return Ok(PathBuf::from(std::ffi::OsString::from_vec(address)));
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    Err(ClientError::InvalidSocketAddress(
+        "abstract sockets are supported only on Linux and Android".to_owned(),
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 struct DaemonErrorBody {
     #[serde(default)]
@@ -701,6 +726,8 @@ struct DaemonErrorBody {
 
 #[derive(Debug, Error)]
 pub enum ClientError {
+    #[error("invalid NovaSight daemon socket address: {0}")]
+    InvalidSocketAddress(String),
     #[error("failed to connect to NovaSight daemon socket {}: {source}", path.display())]
     Connect {
         path: PathBuf,
@@ -736,6 +763,7 @@ pub enum ClientError {
 impl ClientError {
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::InvalidSocketAddress(_) => "daemon_socket_address_invalid",
             Self::Connect { .. } => "daemon_connect_failed",
             Self::Timeout(_) => "daemon_request_timed_out",
             Self::Handshake(_) => "daemon_handshake_failed",

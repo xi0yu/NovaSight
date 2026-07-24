@@ -984,6 +984,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower",
  "tower-http",
+ "tracing",
 ]
 
 [[package]]

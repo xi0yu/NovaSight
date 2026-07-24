@@ -4,9 +4,8 @@ server:
   # Remote access belongs behind an authenticated TLS proxy.
   host: 127.0.0.1
   port: 5174
-  # Development socket gets a dedicated 0750 directory under writable data.
-  # Production uses /run/novasight/novasightd.sock via the systemd config.
-  control_socket: data/control/novasightd.sock
+  # @ selects Linux's in-memory abstract Unix-socket namespace.
+  control_socket: "@novasightd-dev"
 replay:
   enabled: true
   frame_interval_ms: 16
