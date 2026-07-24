@@ -726,6 +726,46 @@ impl SqliteModelCatalog {
                 artifact_id,
                 reason: format!("model profile receipt is invalid JSON: {error}"),
             })?;
+
+        // A canonical runtime manifest is the primary activation receipt. Raw
+        // TensorRT engines published through the automatic contract path do
+        // not necessarily carry the older model_profile extension. The file,
+        // artifact identity, and model fingerprint were already verified by
+        // inspect_model_file above; keep model_profile support only for older
+        // ingress manifests.
+        if manifest
+            .get("validated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let runtime_manifest: ModelManifest = serde_json::from_value(manifest.clone())
+                .map_err(|error| ModelCatalogError::IngressManifestInvalid {
+                    artifact_id,
+                    reason: format!("validated runtime manifest is invalid: {error}"),
+                })?;
+            if artifact.artifact.status != "ready"
+                || artifact.artifact.checksum
+                    != format!("sha256:{}", runtime_manifest.artifact.sha256)
+            {
+                return self.commit_model_ingress(ModelIngressCatalogUpdate {
+                    artifact_id,
+                    status: "ready".to_owned(),
+                    checksum: format!("sha256:{}", runtime_manifest.artifact.sha256),
+                    classes: Some(runtime_manifest.output.class_names),
+                    input_shape: Some(
+                        runtime_manifest
+                            .input
+                            .shape
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join("x"),
+                    ),
+                });
+            }
+            return Ok(artifact);
+        }
+
         let profile = manifest
             .get("model_profile")
             .and_then(serde_json::Value::as_object)

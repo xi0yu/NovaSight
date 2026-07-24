@@ -318,7 +318,7 @@ fn seed_publishable_artifacts(database: &std::path::Path) {
 }
 
 #[tokio::test]
-async fn publish_rejects_ready_artifact_without_a_fixed_probe_receipt() {
+async fn publish_accepts_validated_runtime_manifest_without_legacy_model_profile() {
     let directory = std::env::temp_dir().join(format!(
         "novasight-model-receipt-api-{}",
         std::process::id()
@@ -333,6 +333,13 @@ async fn publish_rejects_ready_artifact_without_a_fixed_probe_receipt() {
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     manifest.as_object_mut().unwrap().remove("model_profile");
     std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "UPDATE model_artifacts SET checksum = 'deferred:test', status = 'pending' WHERE id = 1",
+            [],
+        )
+        .unwrap();
     let dependencies =
         RuntimeDependencies::recording().with_perception(Arc::new(CatalogAwareAdapter {
             catalog: catalog.clone(),
@@ -360,11 +367,11 @@ async fn publish_rejects_ready_artifact_without_a_fixed_probe_receipt() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert!(catalog.active_model().unwrap().is_none());
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let active = catalog.active_model().unwrap().unwrap();
+    assert_eq!(active.artifact.id, 1);
+    assert_eq!(active.artifact.status, "ready");
+    assert!(active.artifact.checksum.starts_with("sha256:"));
 
     runtime.shutdown_daemon().await.unwrap();
     supervisor.join().await.unwrap();
