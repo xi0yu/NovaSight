@@ -37,11 +37,11 @@ use tracing::Instrument;
 
 use crate::dto::{
     CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
-    CompatibilityStatusFrame, ConfigSchemaResponse,
+    ConfigSchemaResponse, serialize_compatibility_status_frame,
 };
 use crate::websocket::status::send_while_receiving;
 
-const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(200);
+const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 mod models;
@@ -515,18 +515,27 @@ async fn compatibility_state(
     state: &ControlState,
     snapshot: &RuntimeSnapshot,
 ) -> CompatibilityRuntimeState {
+    compatibility_state_for_topic(state, snapshot, "full").await
+}
+
+async fn compatibility_state_for_topic(
+    state: &ControlState,
+    snapshot: &RuntimeSnapshot,
+    topic: &'static str,
+) -> CompatibilityRuntimeState {
     let config = match &state.config {
         Some(service) => Some(service.snapshot().await),
         None => None,
     };
     let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
-    CompatibilityRuntimeState::new(
+    CompatibilityRuntimeState::for_topic(
         snapshot,
         config.as_ref(),
         effective_revision,
         state.hardware_output_enabled,
         state.runtime.preview_snapshot().as_ref(),
         state.runtime.crosshair_snapshot().as_ref(),
+        topic,
     )
 }
 
@@ -1244,27 +1253,33 @@ async fn stream_legacy_events(
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     heartbeat.tick().await;
     let (mut outbound, mut inbound) = socket.split();
+    let mut snapshot_changed = true;
+    let mut first_frame = true;
     loop {
-        let current = snapshots.borrow_and_update().clone();
-        let frame = CompatibilityStatusFrame {
-            kind: "runtime_snapshot",
-            topic: topic.clone(),
-            full: true,
-            state: compatibility_state(&state, current.as_ref()).await,
-        };
-        let Ok(payload) = serde_json::to_string(&frame) else {
-            return;
-        };
-        match send_or_shutdown(
-            &mut outbound,
-            &mut inbound,
-            Message::Text(payload.into()),
-            &mut shutdown,
-        )
-        .await
-        {
-            SendOutcome::Sent => {}
-            SendOutcome::Closed | SendOutcome::Shutdown => return,
+        if snapshot_changed {
+            let current = snapshots.borrow_and_update().clone();
+            let build_topic = if first_frame { "full" } else { topic };
+            let compatibility =
+                compatibility_state_for_topic(&state, current.as_ref(), build_topic).await;
+            let Ok(payload) =
+                serialize_compatibility_status_frame(topic, first_frame, &compatibility)
+            else {
+                return;
+            };
+            match send_or_shutdown(
+                &mut outbound,
+                &mut inbound,
+                Message::Text(payload.into()),
+                &mut shutdown,
+            )
+            .await
+            {
+                SendOutcome::Sent => {
+                    first_frame = false;
+                    snapshot_changed = false;
+                }
+                SendOutcome::Closed | SendOutcome::Shutdown => return,
+            }
         }
 
         tokio::select! {
@@ -1272,8 +1287,11 @@ async fn stream_legacy_events(
                 if changed.is_err() {
                     return;
                 }
+                snapshot_changed = true;
             }
-            _ = heartbeat.tick() => {}
+            _ = heartbeat.tick() => {
+                snapshot_changed = true;
+            }
             incoming = inbound.next() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
@@ -1285,11 +1303,15 @@ async fn stream_legacy_events(
     }
 }
 
-fn normalize_compatibility_topic(topic: Option<&str>) -> String {
+fn normalize_compatibility_topic(topic: Option<&str>) -> &'static str {
     let topic = topic.unwrap_or_default().trim().to_ascii_lowercase();
     match topic.as_str() {
-        "summary" | "capture" | "infer" | "control" | "latency" => topic,
-        _ => "full".to_owned(),
+        "summary" => "summary",
+        "capture" => "capture",
+        "infer" => "infer",
+        "control" => "control",
+        "latency" => "latency",
+        _ => "full",
     }
 }
 

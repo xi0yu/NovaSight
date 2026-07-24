@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, TryLockError,
-    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
     mpsc::{Receiver, SyncSender, sync_channel},
 };
 use std::thread::{self, JoinHandle};
@@ -17,7 +17,7 @@ use novasight_core::control::recoil::{
 };
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore};
 use novasight_core::{
-    Clock, DetectionBatch, DeviceCommand, Generation, PointerDevice, RuntimeEpoch,
+    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -32,6 +32,7 @@ const STATUS_STOPPED: u8 = 3;
 const STATUS_FAULTED: u8 = 4;
 const STATUS_STANDBY: u8 = 5;
 const MAX_TELEMETRY_DETECTIONS: usize = 64;
+const DETECTION_TELEMETRY_MIN_INTERVAL_NS: u64 = 200_000_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PipelineStatus {
@@ -125,6 +126,8 @@ pub struct PipelineMetrics {
     pub stale_commands: u64,
     pub device_receipts: u64,
     #[serde(default)]
+    pub last_device_receipt: Option<DeviceReceipt>,
+    #[serde(default)]
     pub device_connected: bool,
     #[serde(default)]
     pub device_error_count: u64,
@@ -204,18 +207,98 @@ struct AtomicMetrics {
     blocked_decisions: AtomicU64,
     superseded_commands: AtomicU64,
     stale_commands: AtomicU64,
-    device_receipts: AtomicU64,
     device_error_count: AtomicU64,
     device_recovery_count: AtomicU64,
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
     last_device_error: Mutex<Option<String>>,
-    detections: Mutex<Arc<DetectionTelemetry>>,
-    target_selection: Mutex<TargetSelection>,
+    vision: Mutex<VisionTelemetry>,
+    last_device_receipt: AtomicDeviceReceipt,
     dual_phase: Mutex<DualPhaseDecision>,
     humanized_motion: Mutex<HumanizedMotionTelemetry>,
     recoil: Mutex<RecoilDecision>,
+}
+
+#[derive(Debug, Default)]
+struct VisionTelemetry {
+    detections: DetectionTelemetry,
+    target_selection: TargetSelection,
+}
+
+#[derive(Debug, Default)]
+struct AtomicDeviceReceipt {
+    sequence: AtomicU64,
+    accepted_count: AtomicU64,
+    attempt: AtomicU64,
+    epoch: AtomicU64,
+    generation: AtomicU64,
+    issued_at: AtomicU64,
+    target_object_id: AtomicU64,
+    delta_x_counts: AtomicI32,
+    delta_y_counts: AtomicI32,
+}
+
+impl AtomicDeviceReceipt {
+    fn store(&self, receipt: DeviceReceipt) {
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        let accepted_count = self
+            .accepted_count
+            .load(Ordering::Relaxed)
+            .saturating_add(1);
+        self.accepted_count.store(accepted_count, Ordering::Relaxed);
+        self.attempt.store(receipt.attempt, Ordering::Relaxed);
+        self.epoch.store(receipt.epoch.0, Ordering::Relaxed);
+        self.generation
+            .store(receipt.generation.0, Ordering::Relaxed);
+        self.issued_at.store(receipt.issued_at.0, Ordering::Relaxed);
+        self.target_object_id
+            .store(receipt.target_object_id, Ordering::Relaxed);
+        self.delta_x_counts
+            .store(receipt.delta_x_counts, Ordering::Relaxed);
+        self.delta_y_counts
+            .store(receipt.delta_y_counts, Ordering::Relaxed);
+        self.sequence.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> Option<(u64, DeviceReceipt)> {
+        let mut attempts = 0_u32;
+        loop {
+            let before = self.sequence.load(Ordering::Acquire);
+            if before == 0 {
+                return None;
+            }
+            if before & 1 != 0 {
+                attempts = attempts.saturating_add(1);
+                if attempts.is_multiple_of(16) {
+                    thread::yield_now();
+                } else {
+                    std::hint::spin_loop();
+                }
+                continue;
+            }
+            let accepted_count = self.accepted_count.load(Ordering::Relaxed);
+            let receipt = DeviceReceipt {
+                attempt: self.attempt.load(Ordering::Relaxed),
+                epoch: RuntimeEpoch(self.epoch.load(Ordering::Relaxed)),
+                generation: Generation(self.generation.load(Ordering::Relaxed)),
+                issued_at: novasight_core::MonotonicNanos(self.issued_at.load(Ordering::Relaxed)),
+                target_object_id: self.target_object_id.load(Ordering::Relaxed),
+                delta_x_counts: self.delta_x_counts.load(Ordering::Relaxed),
+                delta_y_counts: self.delta_y_counts.load(Ordering::Relaxed),
+            };
+            fence(Ordering::Acquire);
+            if self.sequence.load(Ordering::Acquire) == before {
+                return Some((accepted_count, receipt));
+            }
+            attempts = attempts.saturating_add(1);
+            if attempts.is_multiple_of(16) {
+                thread::yield_now();
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -229,6 +312,7 @@ struct SharedState {
     button_right: AtomicBool,
     device_connected: AtomicBool,
     external_stop: Arc<AtomicUsize>,
+    last_vision_telemetry_at_ns: AtomicU64,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
@@ -237,6 +321,21 @@ struct SharedState {
 
 impl SharedState {
     fn new(event_tx: SyncSender<PipelineEvent>, external_stop: Arc<AtomicUsize>) -> Self {
+        let metrics = AtomicMetrics {
+            vision: Mutex::new(VisionTelemetry {
+                detections: DetectionTelemetry {
+                    items: Vec::with_capacity(MAX_TELEMETRY_DETECTIONS),
+                    ..DetectionTelemetry::default()
+                },
+                target_selection: TargetSelection {
+                    rejected_class_ids: Vec::with_capacity(
+                        novasight_core::tracking::MAX_TRACK_CANDIDATES,
+                    ),
+                    ..TargetSelection::default()
+                },
+            }),
+            ..AtomicMetrics::default()
+        };
         Self {
             status: AtomicU8::new(STATUS_STARTING),
             output_gate: AtomicBool::new(false),
@@ -247,9 +346,10 @@ impl SharedState {
             button_right: AtomicBool::new(false),
             device_connected: AtomicBool::new(true),
             external_stop,
+            last_vision_telemetry_at_ns: AtomicU64::new(0),
             device_lane: Mutex::new(()),
             event_tx,
-            metrics: AtomicMetrics::default(),
+            metrics,
             latest_recoil_observation: Mutex::new(None),
         }
     }
@@ -276,24 +376,20 @@ impl SharedState {
         }
     }
 
-    fn record_target_selection(&self, value: TargetSelection) {
-        match self.metrics.target_selection.try_lock() {
-            Ok(mut telemetry) => *telemetry = value,
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
-        }
-    }
-
-    fn record_detections(&self, batch: &DetectionBatch) {
-        // Build the bounded immutable snapshot without holding the publication
-        // lock. Readers only clone an Arc while holding it, so publishing a
-        // real frame cannot be lost to concurrent status polling and the
-        // targeting lane never waits on JSON/vector cloning.
-        let telemetry = DetectionTelemetry {
-            generation: Some(batch.stamp().generation),
-            coordinate_width: batch.coordinate_width(),
-            coordinate_height: batch.coordinate_height(),
-            items: batch
+    fn record_vision(&self, batch: &DetectionBatch, selection: &TargetSelection) {
+        // UI telemetry is best-effort: status polling may retain the previous
+        // complete sample, but it must never stall or allocate in targeting.
+        let mut telemetry = match self.metrics.vision.try_lock() {
+            Ok(telemetry) => telemetry,
+            Err(TryLockError::WouldBlock) => return,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        telemetry.detections.generation = Some(batch.stamp().generation);
+        telemetry.detections.coordinate_width = batch.coordinate_width();
+        telemetry.detections.coordinate_height = batch.coordinate_height();
+        telemetry.detections.items.clear();
+        telemetry.detections.items.extend(
+            batch
                 .detections()
                 .iter()
                 .take(MAX_TELEMETRY_DETECTIONS)
@@ -305,18 +401,30 @@ impl SharedState {
                     width: detection.width(),
                     height: detection.height(),
                     confidence: detection.confidence(),
-                })
-                .collect(),
-            truncated: batch
-                .detections()
-                .len()
-                .saturating_sub(MAX_TELEMETRY_DETECTIONS),
-        };
-        *self
-            .metrics
-            .detections
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(telemetry);
+                }),
+        );
+        telemetry.detections.truncated = batch
+            .detections()
+            .len()
+            .saturating_sub(MAX_TELEMETRY_DETECTIONS);
+        telemetry.target_selection.clone_from(selection);
+    }
+
+    fn vision_telemetry_due(&self, captured_at_ns: u64) -> bool {
+        let encoded_now = captured_at_ns.saturating_add(1);
+        let previous = self.last_vision_telemetry_at_ns.load(Ordering::Relaxed);
+        if previous != 0
+            && encoded_now.saturating_sub(previous) < DETECTION_TELEMETRY_MIN_INTERVAL_NS
+        {
+            return false;
+        }
+        self.last_vision_telemetry_at_ns
+            .store(encoded_now, Ordering::Relaxed);
+        true
+    }
+
+    fn record_device_receipt(&self, receipt: DeviceReceipt) {
+        self.metrics.last_device_receipt.store(receipt);
     }
 
     fn record_recoil(&self, value: RecoilDecision) {
@@ -981,7 +1089,6 @@ fn spawn_targeting_worker(
                         .metrics
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
-                    shared.record_detections(&batch);
                     let geometric_center = batch.center();
                     let reference = crosshair.as_ref().map(|hub| {
                         hub.resolve(
@@ -999,7 +1106,9 @@ fn spawn_targeting_worker(
                         targeting_center,
                         batch.stamp().captured_at.0,
                     );
-                    shared.record_target_selection(selection.clone());
+                    if shared.vision_telemetry_due(batch.stamp().captured_at.0) {
+                        shared.record_vision(&batch, &selection);
+                    }
                     let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
                     let (
                         target_id,
@@ -1310,12 +1419,9 @@ fn spawn_device_worker(
                         continue;
                     }
                     match device.send(command) {
-                        Ok(_) => {
+                        Ok(receipt) => {
                             shared.record_device_success();
-                            shared
-                                .metrics
-                                .device_receipts
-                                .fetch_add(1, Ordering::Relaxed);
+                            shared.record_device_receipt(receipt);
                         }
                         Err(error) => {
                             shared.record_device_error(&error);
@@ -1377,13 +1483,15 @@ fn snapshot_metrics(
     batches: &LatestSlot<DetectionBatch>,
     commands: &LatestSlot<DeviceCommand>,
 ) -> PipelineMetrics {
-    let detections = Arc::clone(
-        &shared
+    let (detections, target_selection) = {
+        let vision = shared
             .metrics
-            .detections
+            .vision
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    );
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (vision.detections.clone(), vision.target_selection.clone())
+    };
+    let last_device_receipt = shared.metrics.last_device_receipt.snapshot();
     PipelineMetrics {
         status: shared.status(),
         received_batches: shared.metrics.received_batches.load(Ordering::Relaxed),
@@ -1394,7 +1502,8 @@ fn snapshot_metrics(
         command_overwrites: commands.metrics().overwritten,
         superseded_commands: shared.metrics.superseded_commands.load(Ordering::Relaxed),
         stale_commands: shared.metrics.stale_commands.load(Ordering::Relaxed),
-        device_receipts: shared.metrics.device_receipts.load(Ordering::Relaxed),
+        device_receipts: last_device_receipt.map_or(0, |(count, _)| count),
+        last_device_receipt: last_device_receipt.map(|(_, receipt)| receipt),
         device_connected: shared.device_connected.load(Ordering::Acquire),
         device_error_count: shared.metrics.device_error_count.load(Ordering::Relaxed),
         device_recovery_count: shared.metrics.device_recovery_count.load(Ordering::Relaxed),
@@ -1420,13 +1529,8 @@ fn snapshot_metrics(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone(),
-        detections: (*detections).clone(),
-        target_selection: shared
-            .metrics
-            .target_selection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone(),
+        detections,
+        target_selection,
         dual_phase: *shared
             .metrics
             .dual_phase

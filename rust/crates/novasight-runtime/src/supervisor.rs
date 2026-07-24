@@ -1243,7 +1243,7 @@ async fn handle_command(
                 Ok(()) => {
                     let timestamp = now_ms();
                     state.emergency_stop(timestamp);
-                    let snapshot = publish(snapshot_tx, state, timestamp);
+                    let snapshot = publish_with_result(snapshot_tx, state, timestamp);
                     let _ = reply.send(Ok(snapshot));
                 }
                 Err(error) => {
@@ -1461,7 +1461,7 @@ async fn activate_model_state(
             input_width: state.model.input_width,
             input_height: state.model.input_height,
         };
-        let runtime = publish(snapshot_tx, state, now_ms());
+        let runtime = publish_with_result(snapshot_tx, state, now_ms());
         return Ok(ModelActivationResult {
             action,
             deployment,
@@ -1711,7 +1711,7 @@ async fn activate_model_state(
         input_width: contract.as_ref().map(|contract| contract.input_width),
         input_height: contract.as_ref().map(|contract| contract.input_height),
     };
-    let runtime = publish(snapshot_tx, state, now_ms());
+    let runtime = publish_with_result(snapshot_tx, state, now_ms());
 
     Ok(ModelActivationResult {
         action,
@@ -2062,7 +2062,7 @@ async fn start_state(
         }
     }
     let Some(epoch) = state.begin_start()? else {
-        return Ok(publish(snapshot_tx, state, now_ms()));
+        return Ok(publish_with_result(snapshot_tx, state, now_ms()));
     };
     let has_perception = dependencies.perception.is_some();
     if has_perception {
@@ -2247,7 +2247,7 @@ async fn start_state(
         .map(|active| active.runtime.metrics())
         .unwrap_or_default();
     state.finish_start(now_ms(), has_perception);
-    Ok(publish(snapshot_tx, state, now_ms()))
+    Ok(publish_with_result(snapshot_tx, state, now_ms()))
 }
 
 async fn stop_state(
@@ -2267,7 +2267,7 @@ async fn stop_state(
         }
         state.finish_stop();
     }
-    Ok(publish(snapshot_tx, state, now_ms()))
+    Ok(publish_with_result(snapshot_tx, state, now_ms()))
 }
 
 async fn handle_pipeline_notice(
@@ -2423,6 +2423,14 @@ async fn shutdown_for_exit(
 }
 
 fn publish(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &SupervisorState,
+    timestamp: u64,
+) {
+    snapshot_tx.send_replace(Arc::new(state.snapshot(timestamp)));
+}
+
+fn publish_with_result(
     snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
     state: &SupervisorState,
     timestamp: u64,
