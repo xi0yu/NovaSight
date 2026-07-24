@@ -1642,15 +1642,14 @@ export function StudioConsoleView({
         : kmnetStatus.connected !== true
           ? "设备未连接"
           : readString(execution.message, readString(control.reason, "控制输出为零"));
-  const deepstreamInputFrames = readNumber(runtimeInference.input_frames, 0);
-  const deepstreamOutputBuffers = readNumber(runtimeInference.output_buffers, 0);
-  const deepstreamBatchMetaBuffers = readNumber(runtimeInference.batch_meta_buffers, 0);
-  const deepstreamFrameMetaFrames = readNumber(runtimeInference.frame_meta_frames, 0);
-  const deepstreamPublishedBatches = readNumber(runtimeInference.published_batches, 0);
+  const deepstreamInputFrames = runtimeMainlineStatus.nvinferInputFrames;
+  const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
+  const deepstreamMetadataExtractions = runtimeMainlineStatus.metadataExtractions;
+  const deepstreamPublishedBatches = runtimeMainlineStatus.publishedBatches;
   const deepstreamParserStatus = asRecord(runtimeInference.parser);
   const deepstreamInferenceCompleted =
-    deepstreamOutputBuffers > 0 ||
-    deepstreamPublishedBatches > 0;
+    (deepstreamOutputBuffers ?? 0) > 0 ||
+    (deepstreamPublishedBatches ?? 0) > 0;
   const inferenceRan =
     inferenceTrace.ran === true || (deepstreamNvinferSelected && deepstreamInferenceCompleted);
   const inferenceAvailable =
@@ -1737,7 +1736,7 @@ export function StudioConsoleView({
   );
   const latestFrameBroker = asRecord(pipeline.latest_frame_broker);
   const latestCaptureFrameId = readNullableNumber(
-    latestFrameBroker.published_frame_id ?? deepstreamStatus.last_frame_id
+    latestFrameBroker.published_frame_id
   );
   const latestCaptureGeneration = readNullableNumber(
     latestFrameBroker.published_generation ?? deepstreamMailbox.latest_generation
@@ -1770,7 +1769,7 @@ export function StudioConsoleView({
     latestFrameBroker.published_frames ?? deepstreamStatus.capture_frames ?? captureStatistics.published_frames
   );
   const captureDroppedFrames = readNullableNumber(
-    deepstreamStatus.stale_dropped_batches ?? captureStatistics.dropped_counter ?? capture?.frames_dropped
+    deepstreamStatus.stale_dropped_batches ?? capture?.frames_dropped
   );
   const captureFramePeriodMs = readNullableNumber(
     deepstreamStatus.last_capture_interval_ms ?? capture?.frame_period_ms
@@ -1815,7 +1814,9 @@ export function StudioConsoleView({
   const inputPixelRatio = readNumber(inferenceTrace.input_pixel_ratio, readNumber(preprocessDebug.pixel_ratio, 0));
   const inputDensityWarning =
     inferenceTrace.input_density_warning === true || preprocessDebug.density_warning === true;
-  const inferenceFrameId = readNullableNumber(inferenceTrace.frame_id ?? runtimeInference.last_frame_id);
+  const sampledDetectionGeneration = readNullableNumber(
+    inferenceTrace.detection_batch_generation ?? runtimeInference.sampled_detection_generation
+  );
   const inferenceCaptureTsNs = readNullableNumber(inferenceTrace.capture_ts_ns);
   const inferenceStartTsNs = readNullableNumber(inferenceTrace.inference_start_ts_ns);
   const inferenceEndTsNs = readNullableNumber(inferenceTrace.inference_end_ts_ns);
@@ -1867,7 +1868,7 @@ export function StudioConsoleView({
     readString(decodeDebug.selected_layout, deepstreamNvinferSelected ? "NvDsInferParseNovaSight" : "")
   );
   const inferenceBatchPublished =
-    (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0 || deepstreamPublishedBatches > 0;
+    (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0 || (deepstreamPublishedBatches ?? 0) > 0;
   const inferenceBatchStale =
     inferenceTrace.is_stale === true || inferenceTrace.stale_rejected === true || inferenceTrace.latest_rejected === true;
   const currentErrorDetails = useMemo(() => {
@@ -3103,7 +3104,7 @@ export function StudioConsoleView({
       const apiName = readString(metadata.api_name, "rust_pointer_device_send");
       setKmnetTestMessage(
         result.sent === true
-          ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步 · 诊断累计 ${readNumber(status.move_count, 0)} 次`
+          ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步 · 诊断累计 ${readNumber(status.diagnostic_move_count, 0)} 次`
           : `未发送 raw：${readString(result.message, "未知原因")} · ${stepsSent}/1 步`
       );
       await onRefresh();
@@ -3325,13 +3326,12 @@ export function StudioConsoleView({
       : health === null
         ? "后端检查中"
         : "后端异常";
-  const hasInferenceLatencySample = runtime?.running === true && readNumber(statistics?.inference_counter, 0) > 0;
   const latencyStages = [
-    { label: "采集 / 解码 / ROI / 排队", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_ingress_ms) : null, digits: 1 },
-    { label: "nvinfer（含 parser）", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_engine_ms) : null, digits: 1 },
-    { label: "Batch 构建", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_batch_build_ms) : null, digits: 2 },
-    { label: "控制等待", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_control_wait_ms) : null, digits: 2 },
-    { label: "控制计算", value: hasInferenceLatencySample ? readNullableNumber(statistics?.stage_control_ms) : null, digits: 2 }
+    { label: "采集 / 解码 / ROI / 排队", value: readNullableNumber(statistics?.stage_ingress_ms), digits: 1 },
+    { label: "nvinfer（含 parser）", value: readNullableNumber(statistics?.stage_engine_ms), digits: 1 },
+    { label: "Batch 构建", value: readNullableNumber(statistics?.stage_batch_build_ms), digits: 2 },
+    { label: "控制等待", value: readNullableNumber(statistics?.stage_control_wait_ms), digits: 2 },
+    { label: "控制计算", value: readNullableNumber(statistics?.stage_control_ms), digits: 2 }
   ];
   const latencyStageTotal = latencyStages.reduce(
     (total, stage) => total + (stage.value !== null && stage.value > 0 ? stage.value : 0),
@@ -3666,7 +3666,7 @@ export function StudioConsoleView({
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="推理 FPS" value={formatNumber(statistics?.inference_fps, 1)} small="FPS" />
+            <Metric title="推理 FPS" value={formatOptionalNumber(statistics?.inference_fps, 1)} small="真实采样 FPS" />
             <Metric title="推理状态" value={inferenceRan ? (inferenceAvailable ? "已执行" : "执行失败") : "未执行"} small={selectedRuntimeBackend || NO_SAMPLE} />
             <Metric title="推理引擎耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
             <Metric title="NMS 后检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="detections" />
@@ -3762,15 +3762,17 @@ export function StudioConsoleView({
                 <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
                 <span>nvinfer 输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
                 <span>nvinfer 输出 Buffer</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
-                <span>BatchMeta Buffer</span><b>{formatOptionalInteger(deepstreamBatchMetaBuffers)}</b>
-                <span>FrameMeta 帧</span><b>{formatOptionalInteger(deepstreamFrameMetaFrames)}</b>
+                <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
+                <span>DetectionBatch 已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
+                <span>DetectionBatch 已消费</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
+                <span>控制观测样本</span><b>{formatOptionalInteger(runtimeMainlineStatus.controlObservations)}</b>
                 <span>Parser 调用</span><b>{formatOptionalInteger(deepstreamParserStatus.decode_calls)}</b>
                 <span>Parser 失败</span><b>{formatOptionalInteger(deepstreamParserStatus.parse_failures)}</b>
                 <span>Parser 错误码</span><b>{formatOptionalInteger(deepstreamParserStatus.last_error_code)}</b>
                 <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
                 <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
                 <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
-                <span>当前推理 frame_id</span><b>{formatOptionalInteger(inferenceFrameId)}</b>
+                <span>采样 Detection generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
                 <span>Acquire generation</span><b>{formatOptionalInteger(inferenceAcquiredGeneration)}</b>
                 <span>Batch generation</span><b>{formatOptionalInteger(inferenceBatchGeneration)}</b>
                 <span>推理开始帧龄</span><b>{formatOptionalNumber(inferenceStartAgeMs, 2, "ms")}</b>
@@ -4408,8 +4410,8 @@ export function StudioConsoleView({
             <Metric title="驱动状态" value={kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
             <Metric title="自动连接" value={kmnetAutoConnect ? "已启用" : "已关闭"} small="startup" />
-            <Metric title="发送次数" value={formatNumber(kmnetStatus.move_count, 0)} small="counts" />
-            <Metric title="最近移动" value={`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`} small="dx / dy" />
+            <Metric title="主链接受命令" value={formatOptionalInteger(kmnetStatus.accepted_command_count)} small="device receipts" />
+            <Metric title="最近接受位移" value={formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)} small="dx / dy" />
           </div>
           <div className="console-grid2 control-test-grid">
             <div className="console-card">
@@ -4432,12 +4434,12 @@ export function StudioConsoleView({
                   <b>{`${readString(kmnetStatus.driver_platform, "-")}/${readString(kmnetStatus.driver_machine, "-")}`}</b>
                 </div>
                 <div className="kmnet-status-tile">
-                  <span>发送次数</span>
-                  <b>{formatNumber(kmnetStatus.move_count, 0)}</b>
+                  <span>主链接受命令</span>
+                  <b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
                 </div>
                 <div className="kmnet-status-tile">
-                  <span>最近移动</span>
-                  <b>{`${formatNumber(kmnetStatus.last_dx, 0)} / ${formatNumber(kmnetStatus.last_dy, 0)}`}</b>
+                  <span>最近接受位移</span>
+                  <b>{formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)}</b>
                 </div>
                 <div className={execution.sent === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>算法发送</span>
@@ -4578,8 +4580,8 @@ export function StudioConsoleView({
                   </div>
                 </div>
                 <div className="kmnet-test-result">
-                  <span>最近移动</span>
-                  <b>{`${readNumber(kmnetStatus.last_dx, 0)} / ${readNumber(kmnetStatus.last_dy, 0)} · ${readNumber(kmnetStatus.move_count, 0)} 次`}</b>
+                  <span>最近诊断移动</span>
+                  <b>{`${formatPoint(kmnetStatus.last_diagnostic_dx, kmnetStatus.last_diagnostic_dy, 0)} · ${formatOptionalInteger(kmnetStatus.diagnostic_move_count)} 次`}</b>
                 </div>
                 {kmnetTestMessage ? <div className="kmnet-test-message">{kmnetTestMessage}</div> : null}
               </div>
@@ -4591,10 +4593,10 @@ export function StudioConsoleView({
 
         <section className={activePage === "latency" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="进入 nvinfer" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_ingress_ms, 1) : NO_SAMPLE} small="ms" />
-            <Metric title="完整链路" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_total_ms, 2) : NO_SAMPLE} small="采集→控制 ms" />
-            <Metric title="Batch 发布龄" value={hasInferenceLatencySample ? formatNumber(statistics?.e2e_latency, 1) : NO_SAMPLE} small="ms" />
-            <Metric title="控制计算" value={hasInferenceLatencySample ? formatNumber(statistics?.stage_control_ms, 2) : NO_SAMPLE} small="ms" />
+            <Metric title="进入 nvinfer" value={formatOptionalNumber(statistics?.stage_ingress_ms, 1)} small="ms" />
+            <Metric title="完整链路" value={formatOptionalNumber(statistics?.stage_total_ms, 2)} small="采集→控制 ms" />
+            <Metric title="Batch 发布龄" value={formatOptionalNumber(statistics?.e2e_latency, 1)} small="ms" />
+            <Metric title="控制计算" value={formatOptionalNumber(statistics?.stage_control_ms, 2)} small="ms" />
           </div>
           <div className="console-grid2 latency-analysis-grid">
             <div className="console-card">

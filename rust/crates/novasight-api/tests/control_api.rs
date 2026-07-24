@@ -899,10 +899,10 @@ async fn studio_lifecycle_aliases_project_the_real_supervisor_and_config() {
     assert_eq!(state["config"]["restart_required"], false);
     assert_eq!(state["capture"]["device"], "/dev/video9");
     assert_eq!(state["capture"]["backend"], "deepstream_nvinfer");
-    assert_eq!(state["statistics"]["capture_counter"], 0);
+    assert_eq!(state["statistics"]["nvinfer_input_counter"], 0);
     assert_eq!(
-        state["statistics"]["capture_counter"],
-        serde_json::to_value(runtime.snapshot().perception_metrics.probed_buffers).unwrap()
+        state["statistics"]["nvinfer_input_counter"],
+        serde_json::to_value(runtime.snapshot().perception_metrics.input_buffers).unwrap()
     );
 
     let response = app
@@ -1066,9 +1066,9 @@ async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims
     let executors: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(executors["executors"]["kmnet"]["connected"], true);
-    assert_eq!(executors["executors"]["kmnet"]["move_count"], 1);
-    assert_eq!(executors["executors"]["kmnet"]["last_dx"], 4);
-    assert_eq!(executors["executors"]["kmnet"]["last_dy"], -2);
+    assert_eq!(executors["executors"]["kmnet"]["diagnostic_move_count"], 1);
+    assert_eq!(executors["executors"]["kmnet"]["last_diagnostic_dx"], 4);
+    assert_eq!(executors["executors"]["kmnet"]["last_diagnostic_dy"], -2);
     assert_eq!(executors["executors"]["kmnet"]["managed_by_runtime"], true);
 
     let response = production

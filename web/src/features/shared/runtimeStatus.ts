@@ -6,16 +6,11 @@ export type RuntimeMainlineStatus = {
   failureMessage: string;
   pipelineLastError: string;
   terminalError: boolean;
-  publishedBatches: number;
-  staleDroppedBatches: number;
-  windowStaleDroppedBatches: number;
-  maxPublishAgeMs: number;
-  lastPtsToProbeMs: number;
-  tensorMetaFrames: number;
-  postprocessFrames: number;
-  consumedBatches: number;
-  controlObservations: number;
-  inferenceCounter: number;
+  nvinferInputFrames: number | null;
+  metadataExtractions: number | null;
+  publishedBatches: number | null;
+  consumedBatches: number | null;
+  controlObservations: number | null;
   hasInferenceSignal: boolean;
   hasRuntimeConsumption: boolean;
   progressSummary: string;
@@ -35,21 +30,33 @@ function readBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false;
 }
 
-function readNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+function readOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function maxNumber(...values: unknown[]): number {
-  return Math.max(0, ...values.map(readNumber));
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const number = readOptionalNumber(value);
+    if (number !== null) {
+      return number;
+    }
+  }
+  return null;
+}
+
+function positive(value: number | null): boolean {
+  return value !== null && value > 0;
+}
+
+function counterLabel(value: number | null): string {
+  return value === null ? "—" : String(Math.trunc(value));
 }
 
 export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeMainlineStatus {
   const pipeline = asRecord(runtime?.pipeline);
   const deepstream = asRecord(pipeline.deepstream);
   const inference = asRecord(runtime?.inference);
-  const capture = asRecord(runtime?.capture);
   const statistics = asRecord(runtime?.statistics);
-  const captureStatistics = asRecord(capture.statistics);
   const fatal = asRecord(runtime?.fatal_error);
   const terminalError = readBoolean(inference.terminal_error) || readBoolean(deepstream.terminal_error);
   const pipelineLastError =
@@ -59,45 +66,41 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     pipelineLastError ||
     fatalMessage ||
     (terminalError ? readString(inference.detail) || readString(inference.reason) : "");
-  const publishedBatches = maxNumber(
+  const nvinferInputFrames = firstNumber(
+    statistics.nvinfer_input_counter,
+    deepstream.input_frames,
+    inference.input_frames
+  );
+  const metadataExtractions = firstNumber(
+    deepstream.metadata_extractions,
+    inference.metadata_extractions
+  );
+  const publishedBatches = firstNumber(
+    statistics.detection_batch_counter,
     deepstream.published_batches,
-    asRecord(deepstream.detection_batch_mailbox).published_batches
+    inference.published_batches
   );
-  const staleDroppedBatches = readNumber(deepstream.stale_dropped_batches);
-  const windowStaleDroppedBatches = 0;
-  const maxPublishAgeMs = readNumber(deepstream.max_publish_age_ms);
-  const lastPtsToProbeMs = 0;
-  const tensorMetaFrames = 0;
-  const postprocessFrames = readNumber(deepstream.object_meta_frames);
-  const consumedBatches = maxNumber(
-    pipeline.consumed_detection_batches,
-    pipeline.processed_frames,
-    statistics.inference_counter
+  const consumedBatches = firstNumber(
+    statistics.detection_batch_consumed_counter,
+    pipeline.consumed_detection_batches
   );
-  const controlObservations = maxNumber(
-    pipeline.control_observations,
+  const controlObservations = firstNumber(
     statistics.control_observation_counter,
-    captureStatistics.control_observation_counter
-  );
-  const inferenceCounter = maxNumber(
-    statistics.inference_counter,
-    captureStatistics.inference_counter,
-    pipeline.processed_frames,
-    pipeline.consumed_detection_batches,
-    deepstream.object_meta_frames
+    pipeline.control_observations
   );
   const hasInferenceSignal =
-    inferenceCounter > 0 ||
-    publishedBatches > 0 ||
-    maxNumber(statistics.inference_fps, captureStatistics.inference_fps, pipeline.inference_fps) > 0;
+    positive(nvinferInputFrames) ||
+    positive(metadataExtractions) ||
+    positive(publishedBatches);
   const hasRuntimeConsumption =
-    consumedBatches > 0 || controlObservations > 0;
+    positive(consumedBatches) || positive(controlObservations);
   const resolvedFailureMessage = failureMessage;
   const progressSummary = [
-    `input=${maxNumber(deepstream.input_frames, statistics.capture_counter, captureStatistics.capture_counter)}`,
-    `published=${publishedBatches}`,
-    `consumed=${consumedBatches}`,
-    `control=${controlObservations}`
+    `nvinfer=${counterLabel(nvinferInputFrames)}`,
+    `metadata=${counterLabel(metadataExtractions)}`,
+    `published=${counterLabel(publishedBatches)}`,
+    `consumed=${counterLabel(consumedBatches)}`,
+    `control=${counterLabel(controlObservations)}`
   ].join(" · ");
   const running = runtime?.running === true || pipeline.running === true || deepstream.running === true;
   const failed =
@@ -112,16 +115,11 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     failureMessage: resolvedFailureMessage,
     pipelineLastError,
     terminalError,
+    nvinferInputFrames,
+    metadataExtractions,
     publishedBatches,
-    staleDroppedBatches,
-    windowStaleDroppedBatches,
-    maxPublishAgeMs,
-    lastPtsToProbeMs,
-    tensorMetaFrames,
-    postprocessFrames,
     consumedBatches,
     controlObservations,
-    inferenceCounter,
     hasInferenceSignal,
     hasRuntimeConsumption,
     progressSummary

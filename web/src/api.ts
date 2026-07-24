@@ -4,7 +4,25 @@ export type HealthResponse = {
 
 export type ExecutorStatus = {
   selected: string;
-  executors: Record<string, { available: boolean }>;
+  executors: Record<string, ExecutorAvailability>;
+};
+
+export type ExecutorAvailability = {
+  available: boolean;
+  connected?: boolean;
+  connecting?: boolean;
+  monitoring?: boolean;
+  connection_state?: string;
+  retryable?: boolean;
+  last_error?: string | null;
+  managed_by_runtime?: boolean;
+  accepted_command_count?: number;
+  last_accepted_dx?: number | null;
+  last_accepted_dy?: number | null;
+  diagnostic_move_count?: number;
+  last_diagnostic_dx?: number | null;
+  last_diagnostic_dy?: number | null;
+  [key: string]: unknown;
 };
 
 export type ModelProject = {
@@ -346,12 +364,12 @@ export type CaptureState = {
 };
 
 export type Statistics = {
-  capture_counter: number;
-  inference_counter: number;
+  nvinfer_input_counter?: number;
   detection_batch_counter?: number;
   detection_batch_consumed_counter?: number;
-  dropped_counter: number;
-  skipped_counter: number;
+  control_observation_counter?: number;
+  metrics_available?: boolean;
+  skipped_counter?: number;
   stale_dropped_batches?: number;
   timestamp_rejected_batches?: number;
   non_monotonic_dropped_batches?: number;
@@ -359,10 +377,9 @@ export type Statistics = {
   published_frames?: number;
   overwritten_frames?: number;
   acquired_frames?: number;
-  capture_fps: number;
-  nvinfer_input_counter?: number;
+  capture_fps?: number;
   nvinfer_input_fps?: number;
-  inference_fps: number;
+  inference_fps?: number;
   queue_latency?: number;
   inference_latency?: number;
   stale_drop_count?: number;
@@ -381,9 +398,8 @@ export type Statistics = {
   stage_accounted_ms?: number;
   stage_unattributed_ms?: number;
   stage_total_ms?: number;
-  e2e_latency: number;
+  e2e_latency?: number;
   detection_batch_fps?: number;
-  control_observation_counter?: number;
   control_observation_fps?: number;
   timestamp_source?: string;
   last_raw_pts_ns?: number;

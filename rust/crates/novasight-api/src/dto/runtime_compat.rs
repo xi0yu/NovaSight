@@ -192,10 +192,6 @@ pub(crate) struct Availability {
     pub retryable: bool,
     pub last_error: Option<String>,
     pub managed_by_runtime: bool,
-    /// Legacy diagnostic counters retained for the existing Studio contract.
-    pub move_count: u64,
-    pub last_dx: Option<i32>,
-    pub last_dy: Option<i32>,
     pub accepted_command_count: u64,
     pub last_accepted_dx: Option<i32>,
     pub last_accepted_dy: Option<i32>,
@@ -227,17 +223,10 @@ pub(crate) struct CaptureProfile {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct StatisticsState {
-    /// Legacy alias for `nvinfer_input_counter`; retained until the frontend
-    /// migrates in the same repository change.
-    pub capture_counter: u64,
     pub nvinfer_input_counter: u64,
-    /// Legacy alias for published detection batches.
-    pub inference_counter: u64,
     pub detection_batch_counter: u64,
     pub detection_batch_consumed_counter: u64,
     pub control_observation_counter: u64,
-    /// Legacy aggregate; new UI must use stage counters from RuntimeSnapshot.
-    pub dropped_counter: u64,
     pub metrics_available: bool,
 }
 
@@ -256,15 +245,10 @@ pub(crate) struct InferenceState {
     pub input_frames: u64,
     pub output_buffers: u64,
     pub metadata_extractions: u64,
-    /// Legacy aliases for `metadata_extractions`, not independent Meta counts.
-    pub batch_meta_buffers: u64,
-    pub frame_meta_frames: u64,
     pub published_batches: u64,
     pub timestamp_buffer_pts_matches: u64,
     pub timestamp_frame_meta_pts_matches: u64,
     pub timestamp_correlation_misses: u64,
-    /// Legacy alias for `sampled_detection_generation`, not a camera frame ID.
-    pub last_frame_id: Option<u64>,
     pub sampled_detection_generation: Option<u64>,
     pub preview_enabled: bool,
     pub preview_active: bool,
@@ -302,8 +286,6 @@ pub(crate) struct DeepStreamState {
     pub last_error: Option<String>,
     pub input_frames: u64,
     pub metadata_extractions: u64,
-    /// Legacy alias for `metadata_extractions`, not an ObjectMeta frame count.
-    pub object_meta_frames: u64,
     pub published_batches: u64,
     pub crosshair_active: bool,
     pub crosshair_reason: String,
@@ -605,9 +587,6 @@ impl CompatibilityRuntimeState {
                 retryable: false,
                 last_error: None,
                 managed_by_runtime: true,
-                move_count: 0,
-                last_dx: None,
-                last_dy: None,
                 accepted_command_count: 0,
                 last_accepted_dx: None,
                 last_accepted_dy: None,
@@ -662,9 +641,6 @@ impl CompatibilityRuntimeState {
                     .as_ref()
                     .map(|error| error.message.clone()),
                 managed_by_runtime: true,
-                move_count: snapshot.device_metrics.diagnostic_move_count,
-                last_dx: snapshot.device_metrics.last_diagnostic_dx,
-                last_dy: snapshot.device_metrics.last_diagnostic_dy,
                 accepted_command_count: snapshot.pipeline_metrics.device_receipts,
                 last_accepted_dx: snapshot
                     .pipeline_metrics
@@ -694,17 +670,6 @@ impl CompatibilityRuntimeState {
             .probed_buffers
             .saturating_sub(metrics.unavailable_snapshot_slots)
             .saturating_sub(metrics.extraction_rejections);
-        let dropped_counter = metrics
-            .busy_dropped_batches
-            .saturating_add(metrics.overwritten_snapshots)
-            .saturating_add(metrics.unavailable_snapshot_slots)
-            .saturating_add(metrics.extraction_rejections)
-            .saturating_add(metrics.admission_rejections)
-            .saturating_add(metrics.ingress_rejections)
-            .saturating_add(snapshot.pipeline_metrics.input_overwrites)
-            .saturating_add(snapshot.pipeline_metrics.command_overwrites)
-            .saturating_add(snapshot.pipeline_metrics.superseded_commands)
-            .saturating_add(snapshot.pipeline_metrics.stale_commands);
         let fatal_error = snapshot
             .pipeline
             .last_error
@@ -756,13 +721,10 @@ impl CompatibilityRuntimeState {
                     .map(|error| error.message.clone()),
             },
             statistics: StatisticsState {
-                capture_counter: metrics.input_buffers,
                 nvinfer_input_counter: metrics.input_buffers,
-                inference_counter: metrics.published_batches,
                 detection_batch_counter: metrics.published_batches,
                 detection_batch_consumed_counter: snapshot.pipeline_metrics.received_batches,
                 control_observation_counter: snapshot.pipeline_metrics.targeting_batches,
-                dropped_counter,
                 metrics_available: metrics.input_buffers > 0
                     || metrics.probed_buffers > 0
                     || metrics.published_batches > 0
@@ -782,17 +744,10 @@ impl CompatibilityRuntimeState {
                 input_frames: metrics.input_buffers,
                 output_buffers: metrics.probed_buffers,
                 metadata_extractions,
-                batch_meta_buffers: metadata_extractions,
-                frame_meta_frames: metadata_extractions,
                 published_batches: metrics.published_batches,
                 timestamp_buffer_pts_matches: metrics.timestamp_buffer_pts_matches,
                 timestamp_frame_meta_pts_matches: metrics.timestamp_frame_meta_pts_matches,
                 timestamp_correlation_misses: metrics.timestamp_correlation_misses,
-                last_frame_id: snapshot
-                    .pipeline_metrics
-                    .detections
-                    .generation
-                    .map(|generation| generation.0),
                 sampled_detection_generation: snapshot
                     .pipeline_metrics
                     .detections
@@ -830,7 +785,6 @@ impl CompatibilityRuntimeState {
                     last_error: inference_error,
                     input_frames: metrics.input_buffers,
                     metadata_extractions,
-                    object_meta_frames: metadata_extractions,
                     published_batches: metrics.published_batches,
                     crosshair_active: crosshair.is_some_and(|state| state.running),
                     crosshair_reason: match crosshair {
