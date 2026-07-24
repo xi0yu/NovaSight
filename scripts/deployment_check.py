@@ -73,10 +73,6 @@ def run_deployment_check(
         _unit_check(unit, "Service", "RuntimeDirectory", "novasight"),
         _unit_check(unit, "Service", "LogsDirectory", "novasight"),
         _unit_check(unit, "Service", "WorkingDirectory", "/opt/novasight/current"),
-        _environment_check(
-            unit,
-            expected="NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock",
-        ),
         _unit_check(
             unit,
             "Service",
@@ -265,19 +261,6 @@ def _unit_check(
         detail={
             "actual": actual,
             "expected": expected,
-        },
-    )
-
-
-def _environment_check(unit: configparser.ConfigParser, *, expected: str) -> CheckResult:
-    values = unit.get("Service", "Environment", fallback="")
-    actual = values if isinstance(values, str) else ""
-    return CheckResult(
-        name="unit.Service.Environment.instance_lock",
-        passed=expected in actual,
-        detail={
-            "actual": actual,
-            "expected_contains": expected,
         },
     )
 

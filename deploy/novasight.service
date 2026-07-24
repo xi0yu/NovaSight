@@ -6,7 +6,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/novasight/current
-Environment=NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock
 EnvironmentFile=-/etc/novasight/novasight.env
 RuntimeDirectory=novasight
 RuntimeDirectoryMode=0755

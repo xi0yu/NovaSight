@@ -198,8 +198,7 @@ cargo build --manifest-path rust/Cargo.toml -p novasightctl --release
 scripts/stage_jetson_release.sh
 sudo build/jetson-release/scripts/install_jetson_release.sh
 sudo install -d -m 0755 /run/novasight
-sudo env NOVASIGHT_INSTANCE_LOCK=/run/novasight/instance.lock \
-  NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem \
+sudo env NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem \
   /opt/novasight/current/bin/novasightd \
   --config /etc/novasight/novasight.yaml --check
 ```
@@ -253,10 +252,11 @@ public key at `/etc/novasight/license-public.pem` and reference it from
 `NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem`; the unit
 reads this environment file before preflight. `NOVASIGHT_LICENSE_PUBLIC_KEY`
 remains available for environments that can safely supply the PEM text directly.
-Production preflight parses the RSA public key and acquires the configured
-`NOVASIGHT_INSTANCE_LOCK`; the running daemon holds that kernel lock for its
-entire lifetime, so a second configuration cannot become another hardware
-authority by choosing a different HTTP port or control socket.
+Production preflight acquires NovaSight's fixed Linux abstract-socket instance
+guard automatically. The guard has no filesystem entry or environment setting,
+and the kernel releases it on normal shutdown, Ctrl+C, or process death. A
+second configuration therefore cannot become another hardware authority by
+choosing a different HTTP port or control socket.
 It also executes the packaged model-ingress worker's versioned `preflight`
 operation through the configured Python interpreter. This imports the pinned
 Python bundle and verifies the bounded JSON protocol without opening an Engine

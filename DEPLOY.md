@@ -12,7 +12,7 @@ clients connect over REST and WebSocket.
 - Runtime config: `/etc/novasight/novasight.yaml`
 - Runtime data: `/var/lib/novasight`
 - Runtime logs: `/var/log/novasight/novasight.log`
-- Instance lock: `/run/novasight/instance.lock`
+- Instance guard: automatic Linux abstract socket (no filesystem entry)
 - systemd unit: `deploy/novasight.service`
 - Optional nvtracker config: `deploy/deepstream-tracker-iou.yml`
 
@@ -183,17 +183,11 @@ uv run python scripts/deployment_check.py --header "Authorization: Bearer <token
 - `systemctl start novasight`, `systemctl stop novasight`, and restart on
   failure work through systemd.
 - Watchdog notifications are active with `WatchdogSec=10`.
-- A second service process cannot acquire `/run/novasight/instance.lock`.
+- A second service process cannot acquire the kernel-owned instance guard.
 - A 1-hour performance run satisfies the p95 latency and FPS gates above before
   a 24-hour soak is started.
 - The 24-hour soak has no service crash, unbounded memory growth, or sustained
   stale detections.
-
-Check the active instance lock through the system API:
-
-```bash
-curl -s http://127.0.0.1:8000/api/v1/system | jq .instance_lock
-```
 
 During the soak, record process memory from the system API:
 
