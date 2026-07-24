@@ -186,8 +186,12 @@ pub(crate) struct ExecutorState {
 pub(crate) struct Availability {
     pub available: bool,
     pub connected: bool,
+    pub runtime_connected: bool,
     pub connecting: bool,
     pub monitoring: bool,
+    pub buttons_available: bool,
+    pub button_left: bool,
+    pub button_right: bool,
     pub connection_state: &'static str,
     pub retryable: bool,
     pub last_error: Option<String>,
@@ -198,6 +202,9 @@ pub(crate) struct Availability {
     pub diagnostic_move_count: u64,
     pub last_diagnostic_dx: Option<i32>,
     pub last_diagnostic_dy: Option<i32>,
+    pub device_error_count: u64,
+    pub device_recovery_count: u64,
+    pub last_device_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -581,8 +588,12 @@ impl CompatibilityRuntimeState {
             Availability {
                 available: config.is_some_and(|config| config.replay.enabled),
                 connected: false,
+                runtime_connected: false,
                 connecting: false,
                 monitoring: false,
+                buttons_available: false,
+                button_left: false,
+                button_right: false,
                 connection_state: "not_applicable",
                 retryable: false,
                 last_error: None,
@@ -593,6 +604,9 @@ impl CompatibilityRuntimeState {
                 diagnostic_move_count: 0,
                 last_diagnostic_dx: None,
                 last_diagnostic_dy: None,
+                device_error_count: 0,
+                device_recovery_count: 0,
+                last_device_error: None,
             },
         );
         let device_state = snapshot.subsystems.device.state;
@@ -612,8 +626,13 @@ impl CompatibilityRuntimeState {
             Availability {
                 available: hardware_output_enabled && device_available,
                 connected: device_connected,
+                runtime_connected: hardware_output_enabled
+                    && snapshot.pipeline_metrics.device_connected,
                 connecting: hardware_output_enabled && device_state == SubsystemState::Starting,
-                monitoring: device_connected && running,
+                monitoring: snapshot.pipeline_metrics.buttons_available,
+                buttons_available: snapshot.pipeline_metrics.buttons_available,
+                button_left: snapshot.pipeline_metrics.button_left,
+                button_right: snapshot.pipeline_metrics.button_right,
                 connection_state: if device_uncommissioned {
                     "uncommissioned"
                 } else {
@@ -653,6 +672,9 @@ impl CompatibilityRuntimeState {
                 diagnostic_move_count: snapshot.device_metrics.diagnostic_move_count,
                 last_diagnostic_dx: snapshot.device_metrics.last_diagnostic_dx,
                 last_diagnostic_dy: snapshot.device_metrics.last_diagnostic_dy,
+                device_error_count: snapshot.pipeline_metrics.device_error_count,
+                device_recovery_count: snapshot.pipeline_metrics.device_recovery_count,
+                last_device_error: snapshot.pipeline_metrics.last_device_error.clone(),
             },
         );
         let metrics = snapshot.perception_metrics;

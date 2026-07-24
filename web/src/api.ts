@@ -10,8 +10,12 @@ export type ExecutorStatus = {
 export type ExecutorAvailability = {
   available: boolean;
   connected?: boolean;
+  runtime_connected?: boolean;
   connecting?: boolean;
   monitoring?: boolean;
+  buttons_available?: boolean;
+  button_left?: boolean;
+  button_right?: boolean;
   connection_state?: string;
   retryable?: boolean;
   last_error?: string | null;
@@ -22,6 +26,9 @@ export type ExecutorAvailability = {
   diagnostic_move_count?: number;
   last_diagnostic_dx?: number | null;
   last_diagnostic_dy?: number | null;
+  device_error_count?: number;
+  device_recovery_count?: number;
+  last_device_error?: string | null;
   [key: string]: unknown;
 };
 
@@ -338,6 +345,8 @@ export type ModelProbeResponse = ModelProfileResponse & {
 
 export type CaptureState = {
   available: boolean;
+  running?: boolean;
+  state?: string;
   device: string;
   profile: null | {
     pixel_format: string;
@@ -345,19 +354,20 @@ export type CaptureState = {
     height: number;
     fps: number;
     preference: string;
-    selection_reason: string;
+    source?: "configured" | string;
+    selection_reason?: string;
   };
   backend: string | null;
-  fps_capture: number;
-  frame_period_ms: number;
-  capture_wait_ms: number;
-  frames_dropped: number;
-  preview_target_fps: number;
-  preview_fps: number;
-  preview_frames: number;
-  preview_output_frames: number;
-  preview_dropped: number;
-  recoveries: number;
+  fps_capture?: number;
+  frame_period_ms?: number;
+  capture_wait_ms?: number;
+  frames_dropped?: number;
+  preview_target_fps?: number;
+  preview_fps?: number;
+  preview_frames?: number;
+  preview_output_frames?: number;
+  preview_dropped?: number;
+  recoveries?: number;
   last_error: string | null;
   statistics?: Statistics;
   report?: ConfigUpdateResponse;
