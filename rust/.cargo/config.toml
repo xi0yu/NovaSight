@@ -1,0 +1,7 @@
+# JetPack's GStreamer, GLib, CUDA, and DeepStream libraries belong to Ubuntu's
+# native AArch64 sysroot. Do not let a Linuxbrew binutils installation link
+# those system libraries: its dependency search can mix incompatible glibc
+# generations into the same executable.
+[target.aarch64-unknown-linux-gnu]
+linker = "/usr/bin/aarch64-linux-gnu-gcc"
+rustflags = ["-C", "link-arg=-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu"]

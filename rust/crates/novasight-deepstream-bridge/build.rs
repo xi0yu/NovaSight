@@ -64,6 +64,10 @@ fn main() {
         output_directory.display()
     );
     println!("cargo:rustc-link-lib=static=novasight_deepstream_bridge");
+    // `cargo_metadata(false)` keeps the native link contract explicit, so the
+    // C++ runtime must be declared here as well. The bridge catches exceptions
+    // at the C ABI boundary and therefore requires libstdc++ exception support.
+    println!("cargo:rustc-link-lib=dylib=stdc++");
     for path in gstreamer.link_paths {
         println!("cargo:rustc-link-search=native={}", path.display());
     }
