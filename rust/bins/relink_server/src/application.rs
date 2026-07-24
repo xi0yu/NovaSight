@@ -37,14 +37,10 @@ struct Args {
     #[arg(long)]
     check: bool,
 
-    /// Use an in-memory recording output adapter; never sends hardware commands.
+    /// Isolated development mode with recording adapters; never opens the
+    /// production DeepStream or physical pointer-device path.
     #[arg(long)]
     dry_run: bool,
-
-    /// Run the real Jetson DeepStream perception chain while keeping hardware
-    /// output on the in-memory recording adapter.
-    #[arg(long, requires = "dry_run")]
-    live_perception: bool,
 
     /// Fixed Python executable used only for allowlisted offline model jobs.
     #[arg(long, default_value = "/usr/bin/python3")]
@@ -271,30 +267,7 @@ pub async fn entry() -> ExitCode {
         }
     };
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
-    let (dependencies, mode) = if args.dry_run && args.live_perception {
-        #[cfg(all(feature = "deepstream", target_os = "linux"))]
-        {
-            match live_perception::build_live_recording_dependencies(
-                loaded.config(),
-                config_service.clone(),
-                model_catalog.clone(),
-                parser_library.clone(),
-            ) {
-                Ok(dependencies) => (dependencies, server::DaemonMode::DryRun),
-                Err(error) => {
-                    eprintln!("LIVE_PERCEPTION_CONFIG_INVALID: {error}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
-        {
-            eprintln!(
-                "LIVE_PERCEPTION_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
-            );
-            return ExitCode::FAILURE;
-        }
-    } else if args.dry_run {
+    let (dependencies, mode) = if args.dry_run {
         (
             RuntimeDependencies::recording().with_model_catalog(model_catalog.clone()),
             server::DaemonMode::DryRun,

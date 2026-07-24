@@ -13,8 +13,8 @@ use novasight_core::control::dual_phase_v2::DualPhaseConfig;
 use novasight_core::tracking::TargetingConfig;
 use novasight_core::{
     CaptureCapabilityProbe, CaptureSelectionPreference, Clock,
-    MAX_DETECTIONS as DEEPSTREAM_MAX_DETECTIONS, PointerDevice, RecordingPointerDevice,
-    RuntimeEpoch, select_capture_profile_for_formats,
+    MAX_DETECTIONS as DEEPSTREAM_MAX_DETECTIONS, PointerDevice, RuntimeEpoch,
+    select_capture_profile_for_formats,
 };
 use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
@@ -50,23 +50,6 @@ use thiserror::Error;
 #[cfg(feature = "tensorrt")]
 use crate::model_contract::resolve_rust_tensorrt_contract;
 use crate::pointer_adapter::select_uncommissioned_pointer_adapter;
-
-pub(super) fn build_live_recording_dependencies(
-    config: &AppConfig,
-    config_service: ConfigService,
-    model_catalog: SqliteModelCatalog,
-    parser_library: PathBuf,
-) -> Result<RuntimeDependencies, LivePerceptionError> {
-    let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
-    build_live_dependencies(
-        config,
-        config_service,
-        model_catalog,
-        device,
-        None,
-        parser_library,
-    )
-}
 
 pub(super) fn build_live_production_dependencies(
     config: &AppConfig,

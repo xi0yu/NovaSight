@@ -29,6 +29,12 @@ cargo run --manifest-path rust/Cargo.toml -p novasightd -- \
   --config rust/config/novasightd.example.yaml --dry-run
 ```
 
+`--dry-run` is intentionally isolated from the product runtime: it uses
+recording adapters and never opens DeepStream capture or physical kmNet. The
+Jetson product mainline needs no runtime-mode flag. To run real capture and
+inference while temporarily preventing pointer output, use the normal Jetson
+command and set `control.output_enabled: false` in YAML.
+
 Start the web console in a second shell:
 
 ```bash
@@ -146,9 +152,13 @@ environment variable is required:
 
 ```bash
 cargo run -p novasightd --features deepstream -- \
-  --config config/novasightd.example.yaml \
-  --dry-run --live-perception
+  --config ~/.config/novasight/novasightd.yaml
 ```
+
+This is the canonical product command: DeepStream live perception is the
+default production implementation, not an optional CLI mode. Physical kmNet
+commissioning and the output gate come from the same YAML configuration, so
+CLI flags cannot silently override the UI's hardware state.
 
 Cargo automatically detects the standard JetPack DeepStream and CUDA install
 locations. `NOVASIGHT_DEEPSTREAM_ROOT` and `NOVASIGHT_CUDA_ROOT` are supported
