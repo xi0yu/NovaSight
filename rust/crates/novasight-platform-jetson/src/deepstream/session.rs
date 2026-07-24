@@ -32,7 +32,7 @@ use super::{DeepStreamPipelineSpec, FrameLease, InferenceStage, LatestFrameExcha
 const EVENT_CAPACITY: usize = 8;
 const BUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SNAPSHOT_SLOT_COUNT: usize = 3;
-const CAPTURE_TIMELINE_CAPACITY: usize = 256;
+const INFERENCE_INPUT_TIMELINE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct DeepStreamSessionConfig {
@@ -142,7 +142,7 @@ struct SnapshotSlot {
     snapshot: MaybeUninit<novasight_deepstream_bridge::FrameSnapshot>,
     pipeline_running_now_ns: u64,
     monotonic_now: novasight_core::MonotonicNanos,
-    capture_observed_at_source: bool,
+    observed_at_inference_input: bool,
     frame: Option<gst::Buffer>,
 }
 
@@ -152,25 +152,25 @@ impl SnapshotSlot {
             snapshot: MaybeUninit::uninit(),
             pipeline_running_now_ns: 0,
             monotonic_now: novasight_core::MonotonicNanos(0),
-            capture_observed_at_source: false,
+            observed_at_inference_input: false,
             frame: None,
         }
     }
 }
 
 #[derive(Debug, Default)]
-struct CaptureTimeline {
+struct InferenceInputTimeline {
     samples: Mutex<VecDeque<(u64, novasight_core::MonotonicNanos)>>,
 }
 
-impl CaptureTimeline {
+impl InferenceInputTimeline {
     fn observe(&self, pts_ns: u64, observed_at: novasight_core::MonotonicNanos) {
         let mut samples = self
             .samples
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         samples.push_back((pts_ns, observed_at));
-        while samples.len() > CAPTURE_TIMELINE_CAPACITY {
+        while samples.len() > INFERENCE_INPUT_TIMELINE_CAPACITY {
             samples.pop_front();
         }
     }
@@ -345,8 +345,8 @@ pub struct DeepStreamSession {
 
 struct StartedPipeline {
     pipeline: gst::Pipeline,
-    capture_pad: gst::Pad,
-    capture_probe_id: gst::PadProbeId,
+    inference_input_pad: gst::Pad,
+    inference_input_probe_id: gst::PadProbeId,
     probe_pad: gst::Pad,
     probe_id: gst::PadProbeId,
     preview_probe: Option<(gst::Pad, gst::PadProbeId)>,
@@ -359,7 +359,7 @@ struct StartedPipeline {
 
 struct PreparedPipeline {
     pipeline: gst::Pipeline,
-    capture_pad: gst::Pad,
+    inference_input_pad: gst::Pad,
     probe_pad: gst::Pad,
     bus: gst::Bus,
 }
@@ -621,8 +621,8 @@ fn run_session(
     );
     let StartedPipeline {
         pipeline,
-        capture_pad,
-        capture_probe_id,
+        inference_input_pad,
+        inference_input_probe_id,
         probe_pad,
         probe_id,
         preview_probe,
@@ -650,8 +650,8 @@ fn run_session(
             error,
             cleanup_pipeline(
                 &pipeline,
-                &capture_pad,
-                capture_probe_id,
+                &inference_input_pad,
+                inference_input_probe_id,
                 &probe_pad,
                 probe_id,
                 preview_probe,
@@ -671,8 +671,8 @@ fn run_session(
             SessionError::StartupChannelClosed,
             cleanup_pipeline(
                 &pipeline,
-                &capture_pad,
-                capture_probe_id,
+                &inference_input_pad,
+                inference_input_probe_id,
                 &probe_pad,
                 probe_id,
                 preview_probe,
@@ -696,8 +696,8 @@ fn run_session(
     );
     let cleanup = cleanup_pipeline(
         &pipeline,
-        &capture_pad,
-        capture_probe_id,
+        &inference_input_pad,
+        inference_input_probe_id,
         &probe_pad,
         probe_id,
         preview_probe,
@@ -738,31 +738,32 @@ fn start_pipeline(
 ) -> Result<StartedPipeline, SessionError> {
     let PreparedPipeline {
         pipeline,
-        capture_pad,
+        inference_input_pad,
         probe_pad,
         bus,
     } = prepare_pipeline(config)?;
     let weak_pipeline = pipeline.downgrade();
     let source_id = config.source_id;
     let exchange = SnapshotExchange::new(latest_frames);
-    let capture_timeline = Arc::new(CaptureTimeline::default());
-    let capture_probe_timeline = Arc::clone(&capture_timeline);
-    let capture_probe_clock = Arc::clone(&monotonic_clock);
-    let capture_probe_id = capture_pad
+    let inference_input_timeline = Arc::new(InferenceInputTimeline::default());
+    let inference_input_probe_timeline = Arc::clone(&inference_input_timeline);
+    let inference_input_probe_clock = Arc::clone(&monotonic_clock);
+    let inference_input_probe_id = inference_input_pad
         .add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
             let Some(buffer) = info.buffer() else {
                 return gst::PadProbeReturn::Ok;
             };
             if let Some(pts) = buffer.pts() {
-                capture_probe_timeline.observe(pts.nseconds(), capture_probe_clock.now());
+                inference_input_probe_timeline
+                    .observe(pts.nseconds(), inference_input_probe_clock.now());
             }
             gst::PadProbeReturn::Ok
         })
-        .ok_or(SessionError::CaptureProbeInstallFailed)?;
+        .ok_or(SessionError::InferenceInputProbeInstallFailed)?;
     let probe_exchange = Arc::clone(&exchange);
     let probe_state = Arc::clone(&state);
     let probe_clock = Arc::clone(&monotonic_clock);
-    let probe_capture_timeline = Arc::clone(&capture_timeline);
+    let probe_inference_input_timeline = Arc::clone(&inference_input_timeline);
     let probe_id = probe_pad
         .add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
             if probe_state.closed.load(Ordering::Acquire) {
@@ -811,23 +812,22 @@ fn start_pipeline(
                     return gst::PadProbeReturn::Ok;
                 }
             };
-            let capture_observed_at = (snapshot_flags & FRAME_META_PTS_VALID != 0)
-                .then(|| probe_capture_timeline.take(frame_pts_ns))
+            let inference_input_observed_at = (snapshot_flags & FRAME_BUFFER_PTS_VALID != 0)
+                .then(|| probe_inference_input_timeline.take(buffer_pts_ns))
                 .flatten()
                 .or_else(|| {
-                    (snapshot_flags & FRAME_BUFFER_PTS_VALID != 0)
-                        .then(|| probe_capture_timeline.take(buffer_pts_ns))
+                    (snapshot_flags & FRAME_META_PTS_VALID != 0)
+                        .then(|| probe_inference_input_timeline.take(frame_pts_ns))
                         .flatten()
                 });
-            if let Some(captured_at) = capture_observed_at {
-                // Anchor the original source PTS to the process monotonic clock
-                // at the earliest application-owned point. Some V4L2 drivers
-                // keep a stable PTS offset from pipeline running time; treating
-                // that offset as processing latency falsely marks every frame
-                // stale even when the latest-only pipeline is keeping up.
+            if let Some(input_observed_at) = inference_input_observed_at {
+                // Correlate the nvinfer input and output by buffer PTS, matching
+                // the Python DeepStream backend. The configured inference input
+                // deadline measures inference work, not V4L2/decoder clock-domain
+                // offsets that occur before the inference element.
                 slot.pipeline_running_now_ns = frame_pts_ns;
-                slot.monotonic_now = captured_at;
-                slot.capture_observed_at_source = true;
+                slot.monotonic_now = input_observed_at;
+                slot.observed_at_inference_input = true;
                 slot.frame = Some(buffer.to_owned());
                 match probe_exchange.publish(slot) {
                     Ok(true) => {
@@ -879,7 +879,7 @@ fn start_pipeline(
             };
             slot.pipeline_running_now_ns = running_now_ns;
             slot.monotonic_now = probe_clock.now();
-            slot.capture_observed_at_source = false;
+            slot.observed_at_inference_input = false;
             slot.frame = Some(buffer.to_owned());
             match probe_exchange.publish(slot) {
                 Ok(true) => {
@@ -902,8 +902,8 @@ fn start_pipeline(
         monotonic_clock,
         state,
         pipeline,
-        capture_pad,
-        capture_probe_id,
+        inference_input_pad,
+        inference_input_probe_id,
         probe_pad,
         probe_id,
         bus,
@@ -921,16 +921,17 @@ fn prepare_pipeline(config: &DeepStreamSessionConfig) -> Result<PreparedPipeline
         .downcast::<gst::Pipeline>()
         .map_err(|_| SessionError::ParsedElementNotPipeline)?;
     let bus = pipeline.bus().ok_or(SessionError::MissingBus)?;
-    let capture_pad = pipeline
-        .by_name("capture-source")
-        .ok_or(SessionError::MissingCaptureElement)?
-        .static_pad("src")
-        .ok_or(SessionError::MissingCapturePad)?;
     let inference = pipeline
         .by_name(&config.pipeline.inference_element)
         .ok_or_else(|| SessionError::MissingInferenceElement {
             name: config.pipeline.inference_element.clone(),
         })?;
+    let inference_input_pad =
+        inference
+            .static_pad("sink")
+            .ok_or_else(|| SessionError::MissingInferenceInputPad {
+                element: config.pipeline.inference_element.clone(),
+            })?;
     let probe_pad =
         inference
             .static_pad(&config.probe_pad)
@@ -958,7 +959,7 @@ fn prepare_pipeline(config: &DeepStreamSessionConfig) -> Result<PreparedPipeline
     }
     Ok(PreparedPipeline {
         pipeline,
-        capture_pad,
+        inference_input_pad,
         probe_pad,
         bus,
     })
@@ -972,8 +973,8 @@ fn finish_started_pipeline(
     monotonic_clock: Arc<dyn Clock>,
     state: Arc<ProbeState>,
     pipeline: gst::Pipeline,
-    capture_pad: gst::Pad,
-    capture_probe_id: gst::PadProbeId,
+    inference_input_pad: gst::Pad,
+    inference_input_probe_id: gst::PadProbeId,
     probe_pad: gst::Pad,
     probe_id: gst::PadProbeId,
     bus: gst::Bus,
@@ -982,7 +983,7 @@ fn finish_started_pipeline(
     let preview_probe = match install_preview_probe(&pipeline, config.preview.as_ref(), epoch) {
         Ok(probe) => probe,
         Err(error) => {
-            capture_pad.remove_probe(capture_probe_id);
+            inference_input_pad.remove_probe(inference_input_probe_id);
             probe_pad.remove_probe(probe_id);
             exchange.close();
             return Err(error);
@@ -993,7 +994,7 @@ fn finish_started_pipeline(
             match hub.begin_epoch(epoch, config.pipeline.roi.width, config.pipeline.roi.height) {
                 Ok(owner) => Some(owner),
                 Err(error) => {
-                    capture_pad.remove_probe(capture_probe_id);
+                    inference_input_pad.remove_probe(inference_input_probe_id);
                     probe_pad.remove_probe(probe_id);
                     if let Some((pad, id)) = preview_probe {
                         pad.remove_probe(id);
@@ -1012,7 +1013,7 @@ fn finish_started_pipeline(
     ) {
         Ok(probe) => probe,
         Err(error) => {
-            capture_pad.remove_probe(capture_probe_id);
+            inference_input_pad.remove_probe(inference_input_probe_id);
             probe_pad.remove_probe(probe_id);
             if let Some((pad, id)) = preview_probe {
                 pad.remove_probe(id);
@@ -1036,7 +1037,7 @@ fn finish_started_pipeline(
         match spawn_snapshot_worker(Arc::clone(&exchange), Arc::clone(&state), worker_context) {
             Ok(worker) => Some(worker),
             Err(error) => {
-                capture_pad.remove_probe(capture_probe_id);
+                inference_input_pad.remove_probe(inference_input_probe_id);
                 probe_pad.remove_probe(probe_id);
                 if let Some((pad, id)) = preview_probe {
                     pad.remove_probe(id);
@@ -1055,8 +1056,8 @@ fn finish_started_pipeline(
             SessionError::StateChange(error.to_string()),
             cleanup_pipeline(
                 &pipeline,
-                &capture_pad,
-                capture_probe_id,
+                &inference_input_pad,
+                inference_input_probe_id,
                 &probe_pad,
                 probe_id,
                 preview_probe,
@@ -1076,8 +1077,8 @@ fn finish_started_pipeline(
             SessionError::StateChange(error.to_string()),
             cleanup_pipeline(
                 &pipeline,
-                &capture_pad,
-                capture_probe_id,
+                &inference_input_pad,
+                inference_input_probe_id,
                 &probe_pad,
                 probe_id,
                 preview_probe,
@@ -1095,8 +1096,8 @@ fn finish_started_pipeline(
             SessionError::DidNotReachPlaying { current },
             cleanup_pipeline(
                 &pipeline,
-                &capture_pad,
-                capture_probe_id,
+                &inference_input_pad,
+                inference_input_probe_id,
                 &probe_pad,
                 probe_id,
                 preview_probe,
@@ -1114,8 +1115,8 @@ fn finish_started_pipeline(
     }
     Ok(StartedPipeline {
         pipeline,
-        capture_pad,
-        capture_probe_id,
+        inference_input_pad,
+        inference_input_probe_id,
         probe_pad,
         probe_id,
         preview_probe,
@@ -1372,8 +1373,8 @@ fn run_snapshot_worker(
                 format_args!(
                     "age {batch_age_ns} ns exceeds configured maximum {:?} ns; timestamp_source={}",
                     context.max_batch_age_ns,
-                    if slot.capture_observed_at_source {
-                        "capture_source_probe"
+                    if slot.observed_at_inference_input {
+                        "nvinfer_input_probe"
                     } else {
                         "pipeline_clock_pts"
                     }
@@ -1544,8 +1545,8 @@ fn poll_terminal_bus(
 #[allow(clippy::too_many_arguments)]
 fn cleanup_pipeline(
     pipeline: &gst::Pipeline,
-    capture_pad: &gst::Pad,
-    capture_probe_id: gst::PadProbeId,
+    inference_input_pad: &gst::Pad,
+    inference_input_probe_id: gst::PadProbeId,
     probe_pad: &gst::Pad,
     probe_id: gst::PadProbeId,
     preview_probe: Option<(gst::Pad, gst::PadProbeId)>,
@@ -1557,7 +1558,7 @@ fn cleanup_pipeline(
     perception_worker: &mut Option<JoinHandle<()>>,
 ) -> Result<(), SessionError> {
     state.closed.store(true, Ordering::Release);
-    capture_pad.remove_probe(capture_probe_id);
+    inference_input_pad.remove_probe(inference_input_probe_id);
     probe_pad.remove_probe(probe_id);
     if let Some((pad, id)) = preview_probe {
         pad.remove_probe(id);
@@ -1633,12 +1634,10 @@ pub enum SessionError {
     ParsedElementNotPipeline,
     #[error("DeepStream pipeline has no bus")]
     MissingBus,
-    #[error("DeepStream pipeline is missing capture element capture-source")]
-    MissingCaptureElement,
-    #[error("DeepStream capture element is missing its src pad")]
-    MissingCapturePad,
-    #[error("failed to install DeepStream capture timestamp probe")]
-    CaptureProbeInstallFailed,
+    #[error("DeepStream inference element {element} is missing its sink pad")]
+    MissingInferenceInputPad { element: String },
+    #[error("failed to install DeepStream inference-input timestamp probe")]
+    InferenceInputProbeInstallFailed,
     #[error("DeepStream pipeline is missing inference element {name}")]
     MissingInferenceElement { name: String },
     #[error("DeepStream inference element {element} is missing probe pad {pad}")]
