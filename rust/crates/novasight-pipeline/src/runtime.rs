@@ -124,6 +124,14 @@ pub struct PipelineMetrics {
     pub superseded_commands: u64,
     pub stale_commands: u64,
     pub device_receipts: u64,
+    #[serde(default)]
+    pub device_connected: bool,
+    #[serde(default)]
+    pub device_error_count: u64,
+    #[serde(default)]
+    pub device_recovery_count: u64,
+    #[serde(default)]
+    pub last_device_error: Option<String>,
     pub buttons_available: bool,
     pub button_left: bool,
     pub button_right: bool,
@@ -197,9 +205,12 @@ struct AtomicMetrics {
     superseded_commands: AtomicU64,
     stale_commands: AtomicU64,
     device_receipts: AtomicU64,
+    device_error_count: AtomicU64,
+    device_recovery_count: AtomicU64,
     live_workers: AtomicU64,
     last_generation: Mutex<Option<Generation>>,
     last_fault: Mutex<Option<String>>,
+    last_device_error: Mutex<Option<String>>,
     detections: Mutex<Arc<DetectionTelemetry>>,
     target_selection: Mutex<TargetSelection>,
     dual_phase: Mutex<DualPhaseDecision>,
@@ -216,6 +227,7 @@ struct SharedState {
     buttons_available: AtomicBool,
     button_left: AtomicBool,
     button_right: AtomicBool,
+    device_connected: AtomicBool,
     external_stop: Arc<AtomicUsize>,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
@@ -233,6 +245,7 @@ impl SharedState {
             buttons_available: AtomicBool::new(false),
             button_left: AtomicBool::new(false),
             button_right: AtomicBool::new(false),
+            device_connected: AtomicBool::new(true),
             external_stop,
             device_lane: Mutex::new(()),
             event_tx,
@@ -327,6 +340,7 @@ impl SharedState {
         self.buttons_available.store(false, Ordering::Release);
         self.button_left.store(false, Ordering::Release);
         self.button_right.store(false, Ordering::Release);
+        self.device_connected.store(false, Ordering::Release);
         self.clear_control_telemetry();
         *self
             .metrics
@@ -349,7 +363,49 @@ impl SharedState {
         self.buttons_available.store(false, Ordering::Release);
         self.button_left.store(false, Ordering::Release);
         self.button_right.store(false, Ordering::Release);
+        self.device_connected.store(false, Ordering::Release);
         self.clear_control_telemetry();
+    }
+
+    fn record_device_success(&self) {
+        if !self.device_connected.swap(true, Ordering::AcqRel) {
+            self.metrics
+                .device_recovery_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_device_error(&self, error: &novasight_core::AppError) {
+        self.device_connected.store(false, Ordering::Release);
+        if matches!(
+            error,
+            novasight_core::AppError::PointerDevice {
+                code: "reconnect_cooldown",
+                ..
+            }
+        ) {
+            return;
+        }
+        self.metrics
+            .device_error_count
+            .fetch_add(1, Ordering::Relaxed);
+        *self
+            .metrics
+            .last_device_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
+    }
+
+    fn record_device_error_message(&self, message: impl Into<String>) {
+        self.device_connected.store(false, Ordering::Release);
+        self.metrics
+            .device_error_count
+            .fetch_add(1, Ordering::Relaxed);
+        *self
+            .metrics
+            .last_device_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.into());
     }
 }
 
@@ -841,6 +897,7 @@ fn spawn_trigger_worker(
                 while shared.status() == PipelineStatus::Running {
                     match device.buttons() {
                         Ok(Some(buttons)) => {
+                            shared.record_device_success();
                             let active = buttons.trigger_active();
                             shared.trigger_active.store(active, Ordering::Release);
                             shared.buttons_available.store(true, Ordering::Release);
@@ -858,10 +915,13 @@ fn spawn_trigger_worker(
                         }
                         Ok(None) => {
                             shared.buttons_available.store(false, Ordering::Release);
-                            shared.fault("pointer device does not expose a hardware trigger");
+                            let message = "pointer device does not expose a hardware trigger";
+                            shared.record_device_error_message(message);
+                            shared.fault(message);
                             break;
                         }
                         Err(error) => {
+                            shared.record_device_error(&error);
                             shared.trigger_active.store(false, Ordering::Release);
                             shared.clear_control_telemetry();
                             shared.buttons_available.store(false, Ordering::Release);
@@ -1251,12 +1311,14 @@ fn spawn_device_worker(
                     }
                     match device.send(command) {
                         Ok(_) => {
+                            shared.record_device_success();
                             shared
                                 .metrics
                                 .device_receipts
                                 .fetch_add(1, Ordering::Relaxed);
                         }
                         Err(error) => {
+                            shared.record_device_error(&error);
                             shared.trigger_active.store(false, Ordering::Release);
                             shared.clear_control_telemetry();
                             if !is_recoverable_pointer_error(&error) {
@@ -1333,6 +1395,15 @@ fn snapshot_metrics(
         superseded_commands: shared.metrics.superseded_commands.load(Ordering::Relaxed),
         stale_commands: shared.metrics.stale_commands.load(Ordering::Relaxed),
         device_receipts: shared.metrics.device_receipts.load(Ordering::Relaxed),
+        device_connected: shared.device_connected.load(Ordering::Acquire),
+        device_error_count: shared.metrics.device_error_count.load(Ordering::Relaxed),
+        device_recovery_count: shared.metrics.device_recovery_count.load(Ordering::Relaxed),
+        last_device_error: shared
+            .metrics
+            .last_device_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
         buttons_available: shared.buttons_available.load(Ordering::Acquire),
         button_left: shared.button_left.load(Ordering::Acquire),
         button_right: shared.button_right.load(Ordering::Acquire),

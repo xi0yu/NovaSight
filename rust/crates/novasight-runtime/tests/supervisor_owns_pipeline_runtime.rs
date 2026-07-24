@@ -6,7 +6,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use novasight_core::{
-    Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerDevice,
+    Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerButtons, PointerDevice,
     RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
@@ -54,6 +54,39 @@ impl PointerDevice for BlockingFailDevice {
             std::thread::sleep(Duration::from_millis(1));
         }
         Err(novasight_core::AppError::RuntimeTaskTerminated)
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecoverableHealthDevice {
+    online: AtomicBool,
+    recording: RecordingPointerDevice,
+}
+
+impl PointerDevice for RecoverableHealthDevice {
+    fn mode(&self) -> novasight_core::PointerDeviceMode {
+        novasight_core::PointerDeviceMode::Commissioned
+    }
+
+    fn send(
+        &self,
+        command: novasight_core::DeviceCommand,
+    ) -> Result<novasight_core::DeviceReceipt, novasight_core::AppError> {
+        self.recording.send(command)
+    }
+
+    fn buttons(&self) -> Result<Option<PointerButtons>, novasight_core::AppError> {
+        if self.online.load(Ordering::Acquire) {
+            Ok(Some(PointerButtons {
+                left: false,
+                right: false,
+            }))
+        } else {
+            Err(novasight_core::AppError::PointerDevice {
+                code: "driver_timeout",
+                message: "simulated kmNet timeout".to_owned(),
+            })
+        }
     }
 }
 
@@ -278,6 +311,70 @@ async fn supervisor_start_stop_owns_the_real_pipeline_lifecycle() {
         .submit_detection_batch(batch(epoch, 2))
         .expect_err("stopped pipeline rejects ingress");
     assert_eq!(error.kind, RuntimeErrorKind::PipelineUnavailable);
+
+    handle.shutdown_daemon().await.expect("shutdown daemon");
+    supervisor.join().await.expect("supervisor joins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recoverable_device_outage_is_degraded_until_hardware_recovers() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecoverableHealthDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let dependencies = RuntimeDependencies::new(
+        clock,
+        pointer,
+        PipelineConfig {
+            trigger_poll_interval_ms: Some(1),
+            ..PipelineConfig::default()
+        },
+    );
+    let (supervisor, handle) = RuntimeSupervisor::spawn(dependencies);
+    handle.start().await.expect("start pipeline");
+
+    let mut snapshots = handle.subscribe();
+    let degraded = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshots.borrow().subsystems.device.state
+                == novasight_runtime::SubsystemState::Degraded
+            {
+                return snapshots.borrow().as_ref().clone();
+            }
+            snapshots.changed().await.expect("device health snapshot");
+        }
+    })
+    .await
+    .expect("device outage becomes degraded");
+    assert!(!degraded.pipeline_metrics.device_connected);
+    assert!(degraded.pipeline_metrics.device_error_count > 0);
+    assert!(
+        degraded
+            .subsystems
+            .device
+            .last_error
+            .as_ref()
+            .is_some_and(|error| {
+                error.code == "device_reconnecting"
+                    && error.message.contains("simulated kmNet timeout")
+            })
+    );
+
+    device.online.store(true, Ordering::Release);
+    let recovered = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if snapshots.borrow().subsystems.device.state
+                == novasight_runtime::SubsystemState::Ready
+                && snapshots.borrow().pipeline_metrics.device_recovery_count > 0
+            {
+                return snapshots.borrow().as_ref().clone();
+            }
+            snapshots.changed().await.expect("device recovery snapshot");
+        }
+    })
+    .await
+    .expect("device recovery becomes ready");
+    assert!(recovered.pipeline_metrics.device_connected);
+    assert!(recovered.subsystems.device.last_error.is_none());
 
     handle.shutdown_daemon().await.expect("shutdown daemon");
     supervisor.join().await.expect("supervisor joins");

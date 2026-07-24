@@ -40,6 +40,16 @@ longer depends on the operator's shell directory or systemd's ambient working
 directory, and reconnect cannot cross an atomic `current` symlink switch into
 another release's Python package.
 
+At runtime, recoverable helper/driver failures close the output gate and mark
+the device disconnected while the pipeline remains available for bounded
+reconnect attempts. The supervisor projects this as `device.state=degraded`
+with a `device_reconnecting` error instead of leaving a false `ready` state.
+`pipeline_metrics` records the connection bit, failure count, recovery count,
+and last concrete driver error; a successful buttons or move receipt returns
+the subsystem to `ready` and clears its active error without erasing that
+historical evidence. Reconnect-cooldown polls do not overwrite the originating
+failure or inflate its failure count.
+
 The upstream repository does not publish a standard open-source license, and
 its copyright notice restricts use to official kmBox hardware. Protocol
 compatibility does not by itself grant commercial redistribution rights.

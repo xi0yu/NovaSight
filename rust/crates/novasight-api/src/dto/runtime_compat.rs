@@ -442,7 +442,9 @@ impl CompatibilityRuntimeState {
                     && hardware_output_enabled
                     && matches!(
                         device_state,
-                        SubsystemState::Failed | SubsystemState::Unavailable
+                        SubsystemState::Degraded
+                            | SubsystemState::Failed
+                            | SubsystemState::Unavailable
                     ),
                 last_error: snapshot
                     .subsystems
@@ -912,10 +914,13 @@ fn first_subsystem_error(snapshot: &RuntimeSnapshot) -> Option<RuntimeErrorSumma
     ]
     .into_iter()
     .find_map(|subsystem| {
-        subsystem
-            .last_error
-            .clone()
-            .filter(|error| error.code != "device_uncommissioned")
+        matches!(
+            subsystem.state,
+            SubsystemState::Failed | SubsystemState::Unavailable
+        )
+        .then(|| subsystem.last_error.clone())
+        .flatten()
+        .filter(|error| error.code != "device_uncommissioned")
     })
 }
 
@@ -937,9 +942,44 @@ mod tests {
     use novasight_core::control::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
     use novasight_pipeline::DetectionTelemetryItem;
-    use novasight_runtime::{AppConfig, RuntimeSnapshot};
+    use novasight_runtime::{
+        AppConfig, PipelineState, RuntimeErrorSummary, RuntimeSnapshot, SubsystemState,
+    };
 
     use super::CompatibilityRuntimeState;
+
+    #[test]
+    fn degraded_kmnet_is_disconnected_retryable_and_exposes_the_runtime_error() {
+        let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline.state = PipelineState::Running;
+        snapshot.subsystems.device.state = SubsystemState::Degraded;
+        snapshot.subsystems.device.last_error = Some(RuntimeErrorSummary::new(
+            "device_reconnecting",
+            "kmNet helper timed out",
+        ));
+        let config = AppConfig {
+            device: Some(Default::default()),
+            ..AppConfig::default()
+        };
+
+        let value = serde_json::to_value(CompatibilityRuntimeState::new(
+            &snapshot,
+            Some(&config),
+            Some(0),
+            true,
+            None,
+            None,
+        ))
+        .unwrap();
+        let kmnet = &value["executor"]["executors"]["kmnet"];
+        assert_eq!(kmnet["available"], true);
+        assert_eq!(kmnet["connected"], false);
+        assert_eq!(kmnet["monitoring"], false);
+        assert_eq!(kmnet["connection_state"], "degraded");
+        assert_eq!(kmnet["retryable"], true);
+        assert_eq!(kmnet["last_error"], "kmNet helper timed out");
+        assert!(value["fatal_error"].is_null());
+    }
 
     #[test]
     fn projects_daemon_owned_control_telemetry_into_studio_shape() {

@@ -410,6 +410,35 @@ impl SupervisorState {
         self.subsystems.control.restart_count =
             self.subsystems.control.restart_count.saturating_add(1);
     }
+
+    fn reconcile_device_health(&mut self) {
+        if self.device_mode == PointerDeviceMode::Uncommissioned {
+            self.mark_device_uncommissioned();
+            return;
+        }
+        if !matches!(
+            self.pipeline,
+            PipelineState::Running | PipelineState::Standby
+        ) {
+            return;
+        }
+        if self.pipeline_metrics.device_connected {
+            self.subsystems.device.state = SubsystemState::Ready;
+            self.subsystems.device.last_error = None;
+            return;
+        }
+        self.subsystems.device.state = SubsystemState::Degraded;
+        self.subsystems.device.last_error =
+            self.pipeline_metrics
+                .last_device_error
+                .as_ref()
+                .map(|message| {
+                    let mut error =
+                        RuntimeErrorSummary::new("device_reconnecting", message.clone());
+                    error.subsystem = Some("device".to_owned());
+                    error
+                });
+    }
 }
 
 struct ActivePipeline {
@@ -1015,6 +1044,7 @@ async fn supervisor_loop(
                 {
                     state.perception_metrics = perception_metrics;
                     state.pipeline_metrics = pipeline_metrics;
+                    state.reconcile_device_health();
                     publish(&snapshot_tx, &state, now_ms());
                 }
             }
@@ -2228,6 +2258,7 @@ async fn shutdown_active(active: &mut Option<ActivePipeline>) -> Result<(), Runt
 fn refresh_pipeline_metrics(state: &mut SupervisorState, active: &Option<ActivePipeline>) {
     if let Some(active) = active {
         state.pipeline_metrics = active.runtime.metrics();
+        state.reconcile_device_health();
     }
 }
 

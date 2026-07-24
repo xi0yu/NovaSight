@@ -444,6 +444,16 @@ fn transient_trigger_failure_recovers_without_restarting_the_pipeline() {
     }
     assert!(ingress.trigger_active());
     assert_eq!(runtime.status(), PipelineStatus::Running);
+    let metrics = runtime.metrics();
+    assert!(metrics.device_connected);
+    assert_eq!(metrics.device_error_count, 1);
+    assert_eq!(metrics.device_recovery_count, 1);
+    assert!(
+        metrics
+            .last_device_error
+            .as_deref()
+            .is_some_and(|message| message.contains("transient test timeout"))
+    );
     ingress.submit(batch(epoch, 1)).expect("batch accepted");
     let deadline = Instant::now() + Duration::from_secs(1);
     while device.recording.receipts().is_empty() && Instant::now() < deadline {
