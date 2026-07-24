@@ -114,9 +114,9 @@ accumulator -= integer
 
 Opposite demand clears an old-direction fraction. Trigger release, stale blocking, target switch/loss, geometry change, or runtime reset clears unsent fractions. Trigger-inactive observations never bank output counts.
 
-Every accepted observation yields at most one complete integer command for the capacity-one latest-replace slot. An independent output tick takes the newest command; scheduler step limits equal V2's per-update maximum, so it is never split into a trajectory. V2 accepts the kmNet move range rather than applying the unrelated signed 8-bit HID limit; defaults are FAR 600 and NEAR 120 counts. `MouseCommandExecutor` still rejects non-integer counts and values outside the signed 16-bit device range before the driver call.
+Every accepted observation yields at most one complete integer command for the capacity-one latest-replace slot. An independent output tick takes the newest command; scheduler step limits equal V2's per-update maximum, so it is never split into a trajectory. The transport accepts the signed 16-bit kmNet move range, but that capability is not a control-law default. Stable closed-loop defaults remain FAR 127 and NEAR 72 counts. `MouseCommandExecutor` still rejects non-integer counts and values outside the device range before the driver call.
 
-The frame-normalized profile uses FAR Kp `0.90`, NEAR Kp `0.30`, shared Atan scale `1024`, one configured lead frame, and a three-frame velocity smoothing window. FAR therefore has enough authority to reach the empirically verified kmNet range, while NEAR remains separately bounded.
+The default profile uses FAR Kp `0.45`, NEAR Kp `0.22`, shared Atan scale `256`, one configured lead frame, and a three-frame velocity smoothing window. These values keep delayed visual feedback convergent; raising a protocol limit alone must never raise controller authority.
 
 The deterministic closed-loop test compares `lead_frames=0` against enabled limited prediction for a constant-velocity target and requires the predictive run to have lower post-warmup mean absolute error. This is a regression baseline, not a substitute for real-device A/B calibration.
 

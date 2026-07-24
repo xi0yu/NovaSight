@@ -356,6 +356,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
             path: path.to_owned(),
             source,
         })?;
+    migrate_config(&mut document, &mut config);
     mark_production_fields(&document, &mut config);
     config
         .validate_configured_adapters()
@@ -364,6 +365,59 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
             source,
         })?;
     Ok((file, document, config))
+}
+
+fn migrate_config(document: &mut Value, config: &mut AppConfig) {
+    if config.schema_version >= 2 {
+        return;
+    }
+
+    // Schema 1 shipped a high-authority tuple after confusing kmNet's
+    // protocol range with a suitable closed-loop response. Migrate only that
+    // exact generated profile; individually tuned values remain untouched.
+    let pipeline = &mut config.pipeline;
+    let migrated_high_authority_profile = pipeline.atan_scale_counts == 1_024.0
+        && pipeline.far_kp == 0.90
+        && pipeline.far_max_counts_per_update == 600.0
+        && pipeline.near_kp == 0.30
+        && pipeline.near_max_counts_per_update == 120.0;
+    if migrated_high_authority_profile {
+        pipeline.atan_scale_counts = 256.0;
+        pipeline.far_kp = 0.45;
+        pipeline.far_max_counts_per_update = 127.0;
+        pipeline.near_kp = 0.22;
+        pipeline.near_max_counts_per_update = 72.0;
+    }
+    config.schema_version = 2;
+
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    root.insert(
+        Value::String("schema_version".to_owned()),
+        Value::Number(2_u64.into()),
+    );
+    if !migrated_high_authority_profile {
+        return;
+    }
+    let pipeline = root
+        .entry(Value::String("pipeline".to_owned()))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    let Value::Mapping(pipeline) = pipeline else {
+        return;
+    };
+    for (key, value) in [
+        ("atan_scale_counts", 256.0),
+        ("far_kp", 0.45),
+        ("far_max_counts_per_update", 127.0),
+        ("near_kp", 0.22),
+        ("near_max_counts_per_update", 72.0),
+    ] {
+        pipeline.insert(
+            Value::String(key.to_owned()),
+            serde_yaml::to_value(value).expect("finite control migration value"),
+        );
+    }
 }
 
 fn mark_production_fields(document: &Value, config: &mut AppConfig) {

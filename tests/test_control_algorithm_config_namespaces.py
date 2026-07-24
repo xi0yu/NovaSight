@@ -110,8 +110,8 @@ def test_robust_v2_namespace_uses_single_threshold_and_shared_atan_scale() -> No
     assert executors.single_command_per_observation is False
     assert executors.latest_replace is True
     assert executors.scheduler is not None
-    assert executors.policy.max_abs_dx == 600
-    assert executors.policy.max_abs_dy == 600
+    assert executors.policy.max_abs_dx == 127
+    assert executors.policy.max_abs_dy == 127
 
 
 def test_v2_schema_two_migrates_to_single_threshold_and_shared_scale() -> None:
@@ -139,7 +139,7 @@ def test_v2_schema_two_migrates_to_single_threshold_and_shared_scale() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 5
+    assert robust.schema_version == 6
     assert robust.mode.near_threshold_px == 13.0
     assert robust.atan.scale_counts == 280.0
 
@@ -164,22 +164,22 @@ def test_v2_schema_three_time_prediction_migrates_to_frame_units() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 5
+    assert robust.schema_version == 6
     assert robust.velocity.smoothing_frames == pytest.approx(3.0)
     assert robust.prediction.lead_frames == pytest.approx(1.5)
 
 
-def test_v2_schema_four_updates_only_the_legacy_default_kmnet_profile() -> None:
+def test_v2_schema_five_repairs_only_the_legacy_high_authority_profile() -> None:
     migrated = parse_runtime_config(
         {
             "control": {
                 "algorithms": {
                     "dual_phase_atan_robust_predictive_v2": {
-                        "schema_version": 4,
+                        "schema_version": 5,
                         "atan": {
-                            "scale_counts": 256.0,
-                            "far": {"kp": 0.45, "max_counts_per_update": 127.0},
-                            "near": {"kp": 0.22, "max_counts_per_update": 72.0},
+                            "scale_counts": 1024.0,
+                            "far": {"kp": 0.90, "max_counts_per_update": 600.0},
+                            "near": {"kp": 0.30, "max_counts_per_update": 120.0},
                         },
                     }
                 }
@@ -191,7 +191,7 @@ def test_v2_schema_four_updates_only_the_legacy_default_kmnet_profile() -> None:
             "control": {
                 "algorithms": {
                     "dual_phase_atan_robust_predictive_v2": {
-                        "schema_version": 4,
+                        "schema_version": 5,
                         "atan": {
                             "scale_counts": 480.0,
                             "far": {"kp": 0.70, "max_counts_per_update": 420.0},
@@ -203,13 +203,13 @@ def test_v2_schema_four_updates_only_the_legacy_default_kmnet_profile() -> None:
         }
     ).control.dual_phase_atan_robust_predictive_v2
 
-    assert migrated.schema_version == 5
-    assert migrated.atan.scale_counts == 1024.0
-    assert migrated.atan.far.kp == 0.90
-    assert migrated.atan.far.max_counts_per_update == 600.0
-    assert migrated.atan.near.kp == 0.30
-    assert migrated.atan.near.max_counts_per_update == 120.0
-    assert customized.schema_version == 5
+    assert migrated.schema_version == 6
+    assert migrated.atan.scale_counts == 256.0
+    assert migrated.atan.far.kp == 0.45
+    assert migrated.atan.far.max_counts_per_update == 127.0
+    assert migrated.atan.near.kp == 0.22
+    assert migrated.atan.near.max_counts_per_update == 72.0
+    assert customized.schema_version == 6
     assert customized.atan.scale_counts == 480.0
     assert customized.atan.far.kp == 0.70
     assert customized.atan.far.max_counts_per_update == 420.0

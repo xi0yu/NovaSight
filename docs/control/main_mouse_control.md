@@ -76,11 +76,13 @@ control:
       prediction:
         lead_frames: 1.0
       atan:
-        scale_counts: 1024.0
+        scale_counts: 256.0
         far:
-          kp: 0.90
+          kp: 0.45
+          max_counts_per_update: 127.0
         near:
-          kp: 0.30
+          kp: 0.22
+          max_counts_per_update: 72.0
     calibrated_angular:
       kp_x: 1.0
 ```

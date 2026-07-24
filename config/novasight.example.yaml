@@ -112,7 +112,7 @@ control:
       max_step_x_counts: 50.0
       max_step_y_counts: 40.0
     dual_phase_atan_robust_predictive_v2:
-      schema_version: 5
+      schema_version: 6
       freshness_threshold_ms: 55.0
       projection:
         fov_x_deg: 105.0
@@ -140,13 +140,13 @@ control:
           base_cap_px: 0.75
           relative_cap: 0.20
       atan:
-        scale_counts: 1024.0
+        scale_counts: 256.0
         far:
-          kp: 0.90
-          max_counts_per_update: 600.0
+          kp: 0.45
+          max_counts_per_update: 127.0
         near:
-          kp: 0.30
-          max_counts_per_update: 120.0
+          kp: 0.22
+          max_counts_per_update: 72.0
   shared:
     max_count_slew_x: 10.0
     max_count_slew_y: 8.0

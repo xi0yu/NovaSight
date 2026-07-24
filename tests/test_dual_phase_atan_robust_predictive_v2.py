@@ -273,18 +273,18 @@ def test_real_measurement_error_drives_single_threshold_far_near_selection() -> 
     assert returned_far.telemetry["near_threshold_px"] == 12.0
 
 
-def test_tighter_defaults_raise_feedback_and_prediction_authority() -> None:
+def test_defaults_keep_closed_loop_authority_below_transport_capacity() -> None:
     config = DualPhaseAtanRobustPredictiveV2Config()
 
     assert config.velocity.smoothing_frames == 3.0
     assert config.prediction.lead_frames == 1.0
     assert config.prediction.far.absolute_cap_px == 10.0
     assert config.prediction.near.absolute_cap_px == 3.0
-    assert config.atan.scale_counts == 1024.0
-    assert config.atan.far.kp == 0.90
-    assert config.atan.near.kp == 0.30
-    assert config.atan.far.max_counts_per_update == 600.0
-    assert config.atan.near.max_counts_per_update == 120.0
+    assert config.atan.scale_counts == 256.0
+    assert config.atan.far.kp == 0.45
+    assert config.atan.near.kp == 0.22
+    assert config.atan.far.max_counts_per_update == 127.0
+    assert config.atan.near.max_counts_per_update == 72.0
 
 
 def test_far_controller_can_use_kmnet_counts_above_legacy_hid8_limit() -> None:
@@ -304,6 +304,28 @@ def test_far_controller_can_use_kmnet_counts_above_legacy_hid8_limit() -> None:
 
     assert decision.dx > 127
     assert decision.dx <= 600
+
+
+def test_default_feedback_converges_with_two_frames_of_visual_delay() -> None:
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(defaults, prediction=replace(defaults.prediction, lead_frames=0.0))
+    )
+    true_error_x = 100.0
+    delayed_errors = [true_error_x] * 3
+    tail_errors: list[float] = []
+
+    for generation in range(1, 81):
+        observed_error_x = delayed_errors.pop(0)
+        decision = algorithm.calculate(
+            _observation(generation=generation, error_x=observed_error_x)
+        )
+        true_error_x -= decision.dx * 0.154
+        delayed_errors.append(true_error_x)
+        if generation > 60:
+            tail_errors.append(abs(true_error_x))
+
+    assert mean(tail_errors) < 1.0
 
 
 def test_humanized_layer_cannot_bypass_far_axis_limit() -> None:
