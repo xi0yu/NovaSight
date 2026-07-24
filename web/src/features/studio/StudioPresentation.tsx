@@ -4,7 +4,7 @@ import { NovaIcon, type NovaIconName } from "../../components/visual";
 
 function metricIconForTitle(title: string): NovaIconName {
   if (title.includes("FPS")) return "fps";
-  if (title.includes("延迟") || title.includes("等待") || title.includes("帧间隔") || title.includes("端到端") || title.includes("队列")) return "latency";
+  if (title.includes("延迟") || title.includes("新鲜度") || title.includes("等待") || title.includes("帧间隔") || title.includes("端到端") || title.includes("队列")) return "latency";
   if (title.includes("分辨率")) return "resolution";
   if (title.includes("像素") || title.includes("格式")) return "frame";
   if (title.includes("丢帧") || title.includes("跳过")) return "signal-lost";
@@ -22,7 +22,7 @@ function metricIconForTitle(title: string): NovaIconName {
 function metricToneForTitle(title: string): "target" | "compute" | "info" | "attention" | "neutral" {
   if (title.includes("目标") || title.includes("触发") || title.includes("控制量")) return "target";
   if (title.includes("FPS") || title.includes("GPU") || title.includes("推理")) return "compute";
-  if (title.includes("延迟") || title.includes("帧间隔") || title.includes("端到端")) return "info";
+  if (title.includes("延迟") || title.includes("新鲜度") || title.includes("帧间隔") || title.includes("端到端")) return "info";
   if (title.includes("丢帧") || title.includes("等待") || title.includes("队列") || title.includes("跳过")) return "attention";
   return "neutral";
 }

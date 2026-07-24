@@ -63,7 +63,20 @@ pub struct RuntimeSnapshot {
     pub device_metrics: DeviceMetrics,
     #[serde(default)]
     pub model: ModelSnapshot,
+    /// Human-facing rates and freshness derived on the supervisor control
+    /// plane. Producers never calculate or publish these values per frame.
+    #[serde(default)]
+    pub telemetry: RuntimeTelemetrySnapshot,
     pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTelemetrySnapshot {
+    pub sample_window_ms: Option<u64>,
+    pub nvinfer_input_fps: Option<f64>,
+    pub detection_batch_fps: Option<f64>,
+    pub control_observation_fps: Option<f64>,
+    pub detection_data_age_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

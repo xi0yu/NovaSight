@@ -234,6 +234,11 @@ pub(crate) struct StatisticsState {
     pub detection_batch_counter: u64,
     pub detection_batch_consumed_counter: u64,
     pub control_observation_counter: u64,
+    pub nvinfer_input_fps: Option<f64>,
+    pub detection_batch_fps: Option<f64>,
+    pub control_observation_fps: Option<f64>,
+    pub detection_data_age_ms: Option<u64>,
+    pub telemetry_window_ms: Option<u64>,
     pub metrics_available: bool,
 }
 
@@ -747,6 +752,11 @@ impl CompatibilityRuntimeState {
                 detection_batch_counter: metrics.published_batches,
                 detection_batch_consumed_counter: snapshot.pipeline_metrics.received_batches,
                 control_observation_counter: snapshot.pipeline_metrics.targeting_batches,
+                nvinfer_input_fps: snapshot.telemetry.nvinfer_input_fps,
+                detection_batch_fps: snapshot.telemetry.detection_batch_fps,
+                control_observation_fps: snapshot.telemetry.control_observation_fps,
+                detection_data_age_ms: snapshot.telemetry.detection_data_age_ms,
+                telemetry_window_ms: snapshot.telemetry.sample_window_ms,
                 metrics_available: metrics.input_buffers > 0
                     || metrics.probed_buffers > 0
                     || metrics.published_batches > 0

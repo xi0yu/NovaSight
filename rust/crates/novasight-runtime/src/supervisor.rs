@@ -42,7 +42,7 @@ use crate::model_ingress::{
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::snapshot::{
     DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,
-    SubsystemSnapshots,
+    RuntimeTelemetrySnapshot, SubsystemSnapshots,
 };
 use crate::state::{DaemonState, PipelineState};
 
@@ -319,10 +319,22 @@ struct SupervisorState {
     pipeline_metrics: PipelineMetrics,
     device_metrics: DeviceMetrics,
     model: ModelSnapshot,
+    telemetry: RuntimeTelemetrySnapshot,
+    telemetry_baseline: Option<TelemetryBaseline>,
     output_enabled: bool,
     device_mode: PointerDeviceMode,
     started_at_unix_ms: u64,
 }
+
+#[derive(Clone, Copy, Debug)]
+struct TelemetryBaseline {
+    sampled_at_ns: u64,
+    nvinfer_inputs: u64,
+    detection_batches: u64,
+    control_observations: u64,
+}
+
+const TELEMETRY_RATE_WINDOW_NS: u64 = 1_000_000_000;
 
 impl Default for SupervisorState {
     fn default() -> Self {
@@ -339,6 +351,8 @@ impl Default for SupervisorState {
             pipeline_metrics: PipelineMetrics::default(),
             device_metrics: DeviceMetrics::default(),
             model: ModelSnapshot::default(),
+            telemetry: RuntimeTelemetrySnapshot::default(),
+            telemetry_baseline: None,
             output_enabled: false,
             device_mode: PointerDeviceMode::Commissioned,
             started_at_unix_ms: now_ms(),
@@ -365,8 +379,78 @@ impl SupervisorState {
             pipeline_metrics: self.pipeline_metrics.clone(),
             device_metrics: self.device_metrics,
             model: self.model.clone(),
+            telemetry: self.telemetry,
             updated_at_ms,
         }
+    }
+
+    fn reset_telemetry(&mut self) {
+        self.telemetry = RuntimeTelemetrySnapshot::default();
+        self.telemetry_baseline = None;
+    }
+
+    /// Derive stable, human-facing rates on the existing supervisor tick.
+    /// No producer-side lock, queue, allocation, or additional polling is
+    /// introduced by these calculations.
+    fn observe_telemetry(
+        &mut self,
+        now_ns: u64,
+        perception: PerceptionMetrics,
+        pipeline: &PipelineMetrics,
+    ) -> bool {
+        let previous = self.telemetry;
+        self.telemetry.detection_data_age_ms = pipeline
+            .detections
+            .captured_at_ns
+            .map(|captured_at_ns| now_ns.saturating_sub(captured_at_ns) / 1_000_000);
+
+        let sample = TelemetryBaseline {
+            sampled_at_ns: now_ns,
+            nvinfer_inputs: perception.input_buffers,
+            detection_batches: perception.published_batches,
+            control_observations: pipeline.targeting_batches,
+        };
+        let Some(baseline) = self.telemetry_baseline else {
+            self.telemetry_baseline = Some(sample);
+            return self.telemetry != previous;
+        };
+        let elapsed_ns = now_ns.saturating_sub(baseline.sampled_at_ns);
+        if elapsed_ns < TELEMETRY_RATE_WINDOW_NS {
+            return self.telemetry != previous;
+        }
+
+        let counters_advanced = sample.nvinfer_inputs >= baseline.nvinfer_inputs
+            && sample.detection_batches >= baseline.detection_batches
+            && sample.control_observations >= baseline.control_observations;
+        if counters_advanced && elapsed_ns > 0 {
+            let elapsed_seconds = elapsed_ns as f64 / 1_000_000_000.0;
+            self.telemetry.sample_window_ms = Some(elapsed_ns / 1_000_000);
+            self.telemetry.nvinfer_input_fps = Some(
+                sample
+                    .nvinfer_inputs
+                    .saturating_sub(baseline.nvinfer_inputs) as f64
+                    / elapsed_seconds,
+            );
+            self.telemetry.detection_batch_fps = Some(
+                sample
+                    .detection_batches
+                    .saturating_sub(baseline.detection_batches) as f64
+                    / elapsed_seconds,
+            );
+            self.telemetry.control_observation_fps = Some(
+                sample
+                    .control_observations
+                    .saturating_sub(baseline.control_observations) as f64
+                    / elapsed_seconds,
+            );
+        } else {
+            self.telemetry = RuntimeTelemetrySnapshot {
+                detection_data_age_ms: self.telemetry.detection_data_age_ms,
+                ..RuntimeTelemetrySnapshot::default()
+            };
+        }
+        self.telemetry_baseline = Some(sample);
+        self.telemetry != previous
     }
 
     fn mark_device_uncommissioned(&mut self) {
@@ -403,6 +487,7 @@ impl SupervisorState {
             status: PipelineStatus::Starting,
             ..PipelineMetrics::default()
         };
+        self.reset_telemetry();
         self.subsystems.capture.last_error = None;
         self.subsystems.inference.last_error = None;
         self.subsystems.control.last_error = None;
@@ -452,6 +537,7 @@ impl SupervisorState {
         self.pipeline = PipelineState::Stopped;
         self.pipeline_metrics.status = PipelineStatus::Stopped;
         self.pipeline_started_at_ms = None;
+        self.reset_telemetry();
         self.subsystems.capture.state = SubsystemState::Stopped;
         self.subsystems.inference.state = SubsystemState::Stopped;
         self.subsystems.control.state = SubsystemState::Stopped;
@@ -468,6 +554,7 @@ impl SupervisorState {
         self.pipeline_metrics.status = PipelineStatus::Faulted;
         self.pipeline_started_at_ms = None;
         self.pipeline_error = Some(error.clone());
+        self.reset_telemetry();
         if self.subsystems.capture.state != SubsystemState::Stopped {
             self.subsystems.capture.state = SubsystemState::Failed;
         }
@@ -1122,9 +1209,14 @@ async fn supervisor_loop(
                     .as_ref()
                     .map(|pipeline| pipeline.runtime.metrics())
                     .unwrap_or_default();
-                if perception_metrics != state.perception_metrics
-                    || pipeline_metrics != state.pipeline_metrics
-                {
+                let metrics_changed = perception_metrics != state.perception_metrics
+                    || pipeline_metrics != state.pipeline_metrics;
+                let telemetry_changed = state.observe_telemetry(
+                    dependencies.clock.now().0,
+                    perception_metrics,
+                    &pipeline_metrics,
+                );
+                if metrics_changed || telemetry_changed {
                     state.perception_metrics = perception_metrics;
                     state.pipeline_metrics = pipeline_metrics;
                     state.reconcile_device_health();

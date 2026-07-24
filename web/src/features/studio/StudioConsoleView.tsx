@@ -458,6 +458,22 @@ function formatOptionalInteger(value: unknown): string {
   return number === null || number < 0 ? NO_SAMPLE : Math.trunc(number).toString();
 }
 
+function freshnessSummary(ageMs: number | null, resultFps: number | null): string {
+  if (ageMs === null) {
+    return "等待结果样本";
+  }
+  const expectedPeriodMs = resultFps !== null && resultFps > 0 ? 1000 / resultFps : null;
+  const realtimeLimitMs = Math.max(50, (expectedPeriodMs ?? 0) * 3);
+  const delayedLimitMs = Math.max(150, (expectedPeriodMs ?? 0) * 10);
+  if (ageMs <= realtimeLimitMs) {
+    return "实时";
+  }
+  if (ageMs <= delayedLimitMs) {
+    return "有延迟";
+  }
+  return "明显滞后";
+}
+
 function formatPoint(x: unknown, y: unknown, digits = 1, unit = ""): string {
   const xNumber = readNullableNumber(x);
   const yNumber = readNullableNumber(y);
@@ -1767,6 +1783,13 @@ export function StudioConsoleView({
   const nvinferInputFps = readNullableNumber(
     deepstreamStatus.input_fps ?? captureStatistics.nvinfer_input_fps
   );
+  const detectionBatchFps = readNullableNumber(statistics?.detection_batch_fps);
+  const controlObservationFps = readNullableNumber(statistics?.control_observation_fps);
+  const detectionDataAgeMs = readNullableNumber(
+    statistics?.detection_data_age_ms ?? inferenceResultAgeMs
+  );
+  const telemetryWindowMs = readNullableNumber(statistics?.telemetry_window_ms);
+  const detectionFreshness = freshnessSummary(detectionDataAgeMs, detectionBatchFps);
   const captureBackendLabel = deepstreamNvinferSelected
     ? "deepstream_nvinfer"
     : readString(capture?.backend, captureBackendMode);
@@ -3463,9 +3486,9 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureStatusText} small={captureBackendLabel || NO_SAMPLE} />
-            <Metric title="采集 FPS" value={formatOptionalNumber(captureSourceFps, 1)} small={deepstreamNvinferSelected ? "v4l2 source" : "appsink arrival"} />
-            <Metric title="数据新鲜度" value={formatOptionalNumber(latestCaptureAgeMs, 1)} small="距当前 ms" />
-            <Metric title="采集帧间隔" value={formatOptionalNumber(captureFramePeriodMs, 2)} small="ms" />
+            <Metric title="输入 FPS" value={formatOptionalNumber(nvinferInputFps, 1)} small={`实际速率 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps, 1)} small="DetectionBatch 实际产出" />
+            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs, 0)} small={`${detectionFreshness} · ms`} />
           </div>
           <div className="console-card power-saving-card">
             <SectionTitle title="目标主机离线省流" />
@@ -3653,6 +3676,9 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, 1, "FPS")}</b>
                 <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(deepstreamNvinferSelected ? nvinferInputFps : captureSourceFps, 1, "FPS")}</b>
+                <span>DetectionBatch 结果 FPS</span><b>{formatOptionalNumber(detectionBatchFps, 1, "FPS")}</b>
+                <span>结果新鲜度</span><b>{`${formatOptionalNumber(detectionDataAgeMs, 0, "ms")} · ${detectionFreshness}`}</b>
+                <span>速率采样窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                 <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
               </div>
             </div>
@@ -3661,9 +3687,9 @@ export function StudioConsoleView({
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="推理 FPS" value={formatOptionalNumber(statistics?.inference_fps, 1)} small="真实采样 FPS" />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps, 1)} small="真实 DetectionBatch 产出" />
+            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs, 0)} small={`${detectionFreshness} · ms`} />
             <Metric title="推理状态" value={inferenceStatusText} small={selectedRuntimeBackend || NO_SAMPLE} />
-            <Metric title="推理引擎耗时" value={formatOptionalNumber(inferenceTotalMs, 2)} small="ms" />
             <Metric title="当前检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="post-parser" />
           </div>
           <div className="console-card model-selection-card">
@@ -3837,7 +3863,7 @@ export function StudioConsoleView({
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
-            <Metric title="目标链路" value={targetPipelineCode || NO_SAMPLE} small={targetPipelineStage || NO_SAMPLE} />
+            <Metric title="控制更新率" value={formatOptionalNumber(controlObservationFps, 1)} small="每秒有效观测" />
             <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={activeRuntimeClassLabel || "target"} />
             <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx, 1)} small="px" />
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
