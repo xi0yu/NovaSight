@@ -4,11 +4,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
 use novasight_store::config::{
-    AppConfig, ConfigRepository, DeepStreamBackend, InferenceBackend, YamlConfigRepository,
+    AppConfig, ConfigRepository, DeepStreamBackend, InferenceBackend, TriggerMode,
+    YamlConfigRepository,
 };
 use serde_yaml::Value;
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn trigger_mode_is_part_of_the_public_config_contract() {
+    assert_eq!(TriggerMode::default(), TriggerMode::Always);
+}
 
 struct TempDirectory(PathBuf);
 

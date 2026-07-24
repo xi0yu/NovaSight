@@ -6,7 +6,7 @@ pub use model::{
     ConfigValidationError, ConsumerConfig, CrosshairConfig, DeepStreamBackend, DeviceBackend,
     DeviceConfig, InferenceBackend, InferenceConfig, InferenceInputSource, LimitsConfig,
     PathConfig, PipelineRuntimeConfig, ProductionAdapterConfig, QueueLeaky, ReplayConfig,
-    ServerConfig, VisionAdapterConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
-    parse_target_class_priority,
+    ServerConfig, TriggerMode, VisionAdapterConfig, parse_target_class_aim_y_ratios,
+    parse_target_class_filter, parse_target_class_priority,
 };
 pub use repository::{ConfigError, ConfigRepository, YamlConfigRepository};
