@@ -20,7 +20,8 @@ use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
     ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
     PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
-    PipelineConfig, PipelineIngress, PreviewHub, validate_parser_preset,
+    PipelineConfig, PipelineIngress, PreviewHub, TriggerMode as PipelineTriggerMode,
+    validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 #[cfg(feature = "tensorrt")]
@@ -220,12 +221,14 @@ fn build_live_dependencies(
                 target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
                 min_confidence: adapters.pipeline.target_min_confidence,
                 track_max_age: adapters.pipeline.target_track_max_age,
+                track_max_lost_age_ms: adapters.pipeline.target_track_max_lost_age_ms,
                 tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
                 tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
                 tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
                 tracker_scale_cost_weight: adapters.pipeline.tracker_scale_cost_weight,
                 tracker_max_size_ratio: adapters.pipeline.tracker_max_size_ratio,
                 tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
+                kalman: Default::default(),
                 class_priority: parse_target_class_priority(
                     &adapters.pipeline.target_class_priority,
                 )
@@ -283,6 +286,10 @@ fn build_live_dependencies(
             max_command_age_ns: adapters.pipeline.max_command_age_ms * 1_000_000,
             output_interval_ms: adapters.pipeline.output_interval_ms,
             trigger_poll_interval_ms,
+            trigger_mode: match config.control.trigger_mode {
+                novasight_store::config::TriggerMode::Always => PipelineTriggerMode::Always,
+                novasight_store::config::TriggerMode::Hardware => PipelineTriggerMode::Hardware,
+            },
             ..PipelineConfig::default()
         },
     )

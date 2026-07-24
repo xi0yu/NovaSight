@@ -217,11 +217,23 @@ pub struct RustControlConfig {
     #[serde(default)]
     pub output_enabled: bool,
     #[serde(default)]
+    pub trigger_mode: TriggerMode,
+    #[serde(default)]
     pub humanized_motion: HumanizedMotionConfig,
     #[serde(default)]
     pub recoil: RecoilConfig,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
+}
+
+/// Determines whether a valid target is sufficient to activate movement or
+/// whether the commissioned device must also report a held hardware trigger.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerMode {
+    #[default]
+    Always,
+    Hardware,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -731,6 +743,8 @@ pub struct PipelineRuntimeConfig {
     pub target_min_confidence: f32,
     #[serde(default = "default_target_track_max_age")]
     pub target_track_max_age: u64,
+    #[serde(default = "default_target_track_max_lost_age_ms")]
+    pub target_track_max_lost_age_ms: f64,
     #[serde(default = "default_tracker_max_match_distance")]
     pub tracker_max_match_distance: f64,
     #[serde(default = "default_tracker_position_cost_weight")]
@@ -806,6 +820,7 @@ impl Default for PipelineRuntimeConfig {
             target_fov_radius_px: default_target_fov_radius_px(),
             target_min_confidence: default_target_min_confidence(),
             target_track_max_age: default_target_track_max_age(),
+            target_track_max_lost_age_ms: default_target_track_max_lost_age_ms(),
             tracker_max_match_distance: default_tracker_max_match_distance(),
             tracker_position_cost_weight: default_tracker_position_cost_weight(),
             tracker_iou_cost_weight: default_tracker_iou_cost_weight(),
@@ -975,6 +990,12 @@ impl PipelineRuntimeConfig {
                 "must be within 1..=120 frames",
             ));
         }
+        validate_finite_range(
+            "pipeline.target_track_max_lost_age_ms",
+            self.target_track_max_lost_age_ms,
+            1.0,
+            10_000.0,
+        )?;
         validate_finite_range(
             "pipeline.tracker_max_match_distance",
             self.tracker_max_match_distance,
@@ -1313,7 +1334,10 @@ const fn default_target_min_confidence() -> f32 {
 }
 
 const fn default_target_track_max_age() -> u64 {
-    5
+    2
+}
+const fn default_target_track_max_lost_age_ms() -> f64 {
+    120.0
 }
 
 const fn default_tracker_max_match_distance() -> f64 {

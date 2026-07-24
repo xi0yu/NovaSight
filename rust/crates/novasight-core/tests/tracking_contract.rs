@@ -71,6 +71,14 @@ fn target_switch_loss_fixture_matches_targeting_core() {
 
     let mut core = TargetingCore::new(TargetingConfig::default());
 
+    let first_detections = detections_from_value(&records[0]["detections"]);
+    assert!(
+        core.select(&first_detections, OBSERVATION_CENTER)
+            .target_object_id
+            .is_none(),
+        "multiple fresh candidates require a confirming observation"
+    );
+
     for record in &records {
         let detections = detections_from_value(&record["detections"]);
         let selection = core.select(&detections, OBSERVATION_CENTER);
@@ -205,6 +213,11 @@ fn first_lock_is_ranked_from_declared_observation_center_not_origin() {
     let near_origin = Detection::new(1, 0, 90.0, 90.0, 20.0, 20.0, 0.9).expect("origin");
     let near_center = Detection::new(2, 0, 290.0, 290.0, 20.0, 20.0, 0.9).expect("center");
 
+    let selected = core.select(
+        &[near_origin.clone(), near_center.clone()],
+        OBSERVATION_CENTER,
+    );
+    assert!(selected.target_object_id.is_none());
     let selected = core.select(&[near_origin, near_center], OBSERVATION_CENTER);
 
     assert_eq!(selected.target_object_id, Some(2));
@@ -219,6 +232,8 @@ fn target_fov_radius_is_a_real_radial_admission_gate() {
     let outside = Detection::new(1, 0, 530.0, 310.0, 20.0, 20.0, 0.99).expect("outside");
     let inside = Detection::new(2, 0, 310.0, 310.0, 20.0, 20.0, 0.60).expect("inside");
 
+    let selected = core.select(&[outside.clone(), inside.clone()], OBSERVATION_CENTER);
+    assert!(selected.target_object_id.is_none());
     let selected = core.select(&[outside, inside], OBSERVATION_CENTER);
 
     assert_eq!(selected.candidates, 2);
@@ -243,7 +258,7 @@ fn control_aim_point_is_separate_from_association_center_and_supports_class_over
     assert_eq!(selection.target_box_y, Some(200.0));
     assert_eq!(selection.target_box_width, Some(80.0));
     assert_eq!(selection.target_box_height, Some(100.0));
-    assert_eq!(core.locked().expect("track").center_y, 250.0);
+    assert_eq!(core.locked().expect("track").center_y, 230.0);
 }
 
 #[test]
@@ -277,30 +292,39 @@ fn head_movement_under_debounce_keeps_lock_with_held_by_debounce_reason() {
 #[test]
 fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
     let mut core = TargetingCore::new(TargetingConfig {
-        selection_class_weight: 0.10,
-        selection_distance_weight: 0.90,
+        selection_class_weight: 0.01,
+        selection_distance_weight: 0.99,
         sticky_bias: 0.0,
+        switch_min_preference_advantage: 0.01,
         switch_delay_ms: 50.0,
         ..TargetingConfig::default()
     });
     let first = vec![
-        Detection::new(1, 0, 280.0, 240.0, 80.0, 160.0, 0.9).expect("locked"),
-        Detection::new(2, 1, 310.0, 240.0, 80.0, 160.0, 0.9).expect("challenger"),
+        Detection::new(1, 0, 270.0, 285.0, 80.0, 160.0, 0.9).expect("locked"),
+        Detection::new(2, 1, 295.0, 285.0, 80.0, 160.0, 0.9).expect("challenger"),
     ];
-    assert_eq!(
+    assert!(
         core.select_at(&first, OBSERVATION_CENTER, 1_000_000_000)
+            .target_object_id
+            .is_none()
+    );
+    assert_eq!(
+        core.select_at(&first, OBSERVATION_CENTER, 1_001_000_000)
             .target_object_id,
         Some(1)
     );
 
     let challenger_wins = vec![
-        Detection::new(11, 0, 430.0, 240.0, 80.0, 160.0, 0.9).expect("locked moved"),
-        Detection::new(12, 1, 280.0, 240.0, 80.0, 160.0, 0.9).expect("stable challenger"),
+        Detection::new(11, 0, 288.0, 285.0, 80.0, 160.0, 0.9).expect("locked moved"),
+        Detection::new(12, 1, 280.0, 285.0, 80.0, 160.0, 0.9).expect("stable challenger"),
     ];
     let pending = core.select_at(&challenger_wins, OBSERVATION_CENTER, 1_020_000_000);
     assert_eq!(pending.target_object_id, Some(11), "delay must hold lock");
 
-    let committed = core.select_at(&challenger_wins, OBSERVATION_CENTER, 1_080_000_000);
+    for timestamp in [1_040_000_000, 1_080_000_000, 1_120_000_000] {
+        core.select_at(&challenger_wins, OBSERVATION_CENTER, timestamp);
+    }
+    let committed = core.select_at(&challenger_wins, OBSERVATION_CENTER, 1_180_000_000);
     assert_eq!(
         committed.target_object_id,
         Some(12),
@@ -332,15 +356,20 @@ fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
 fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.55).expect("first");
+    assert!(
+        core.select(std::slice::from_ref(&first), OBSERVATION_CENTER)
+            .target_track_id
+            .is_none()
+    );
     core.select(&[first], OBSERVATION_CENTER);
     let acquired = core.locked().expect("acquired track");
     assert!((acquired.confidence - 0.55).abs() < f32::EPSILON);
     assert_eq!(acquired.identity_confidence, 1.0);
 
-    let moved = Detection::new(2, 0, 320.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
+    let moved = Detection::new(2, 0, 318.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
     let selection = core.select(&[moved], OBSERVATION_CENTER);
     let tracked = core.locked().expect("continued track");
-    let expected = 1.0 - (0.75 * 0.25 + 0.25 * (1.0 - 1.0 / 3.0)) / 1.15;
+    let expected = 1.0 - (0.75 * 0.225 + 0.25 * (1.0 - 22.0 / 58.0)) / 1.15;
     assert!((tracked.confidence - 0.95).abs() < f32::EPSILON);
     assert!((tracked.identity_confidence - expected).abs() < 1e-12);
     assert_eq!(selection.target_detection_confidence, Some(0.95));
@@ -361,16 +390,21 @@ fn rectangular_minimum_cost_assignment_preserves_both_feasible_identities() {
         ..TargetingConfig::default()
     });
     let first = vec![
-        Detection::new(1, 0, 200.0, 270.0, 40.0, 100.0, 0.9).expect("left"),
+        Detection::new(1, 0, 280.0, 270.0, 40.0, 100.0, 0.9).expect("left"),
         Detection::new(2, 0, 300.0, 270.0, 40.0, 100.0, 0.9).expect("locked"),
     ];
+    assert!(
+        core.select(&first, OBSERVATION_CENTER)
+            .target_track_id
+            .is_none()
+    );
     let locked_id = core
         .select(&first, OBSERVATION_CENTER)
         .target_track_id
         .expect("locked id");
     let squeezed = vec![
         Detection::new(11, 0, 290.0, 270.0, 40.0, 100.0, 0.9).expect("left moved"),
-        Detection::new(12, 0, 400.0, 270.0, 40.0, 100.0, 0.9).expect("locked moved"),
+        Detection::new(12, 0, 318.0, 270.0, 40.0, 100.0, 0.9).expect("locked moved"),
     ];
     let selection = core.select(&squeezed, OBSERVATION_CENTER);
     assert_eq!(selection.target_track_id, Some(locked_id));

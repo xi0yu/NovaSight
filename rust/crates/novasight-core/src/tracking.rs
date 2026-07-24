@@ -5,10 +5,13 @@
 //! candidates (including frame-local DeepStream identities), owns temporal
 //! association, and returns both the chosen candidate and a stable `TrackId`.
 //!
-//! The implementation is intentionally small and exhaustive:
-//! * no Kalman filter. A compact rectangular minimum-cost assignment is
-//!   bounded to 16 tracks and detections; temporal identity confidence
-//!   combines target-height-normalized distance, bounding-box IoU, and scale.
+//! The implementation is intentionally bounded and exhaustive:
+//! * an allocation-free constant-velocity Kalman state predicts association
+//!   points and rejects NIS outliers. Mouse control still uses the latest raw
+//!   aim point, so identity stability does not add control lag.
+//! * rectangular minimum-cost assignment is bounded to 16 tracks and
+//!   detections; temporal identity confidence combines predicted distance,
+//!   bounding-box IoU, and scale.
 //! * no unbounded growth. History is bounded by `BoundedHistory` and
 //!   `TargetingCore::reset` is the only way to clear it.
 //! * lost tracks never produce a control target. After a configurable
@@ -23,12 +26,19 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::perception::types::Detection;
 
+mod kalman;
+pub use kalman::KalmanConfig;
+use kalman::KalmanState;
+
 /// Maximum number of historical tracking observations retained per
 /// track. Past this bound, the oldest entry is dropped.
 pub const DEFAULT_HISTORY_LIMIT: usize = 32;
 
 /// Maximum age (in frames) before a non-matched track is marked lost.
-pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
+pub const DEFAULT_TRACK_MAX_AGE: u64 = 2;
+pub const DEFAULT_TRACK_MAX_LOST_AGE_MS: f64 = 120.0;
+const TRACK_CONFIRM_HITS: u64 = 2;
+const IMMEDIATE_CONFIRM_CONFIDENCE: f32 = 0.75;
 
 /// Hard admission bound shared with `DetectionBatch`, preventing the
 /// association surface from diverging from the perception boundary.
@@ -52,10 +62,10 @@ pub enum LockReason {
     FallbackClass,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct TrackId(pub u64);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Track {
     pub id: TrackId,
     pub object_id: u64,
@@ -63,6 +73,10 @@ pub struct Track {
     pub state: TrackState,
     pub center_x: f64,
     pub center_y: f64,
+    pub observed_aim_x: f64,
+    pub observed_aim_y: f64,
+    pub box_x: f64,
+    pub box_y: f64,
     pub width: f64,
     pub height: f64,
     /// Latest detector score, kept separate from temporal identity quality.
@@ -71,7 +85,12 @@ pub struct Track {
     pub identity_confidence: f64,
     pub last_seen_ns: u64,
     pub age_frames: u64,
+    pub hit_count: u64,
+    pub confirmed: bool,
     pub missed_frames: u64,
+    pub lost_since_ns: Option<u64>,
+    #[serde(skip)]
+    kalman: KalmanState,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -169,9 +188,6 @@ fn associate(
 
     let mut edges = Vec::with_capacity(sorted_tracks.len() * sorted_detections.len());
     for (track_index, track) in sorted_tracks.iter().enumerate() {
-        if track.state == TrackState::Lost {
-            continue;
-        }
         for (detection_index, detection) in sorted_detections.iter().enumerate() {
             if let Some((cost, identity_confidence)) =
                 association_edge(track, detection, config, captured_at_ns)
@@ -202,8 +218,8 @@ fn associate(
         out.push(Association {
             track_id: track.id,
             object_id: detection.object_id(),
-            center_x: detection.center_x(),
-            center_y: detection.center_y(),
+            center_x: detection_aim(detection, config).0,
+            center_y: detection_aim(detection, config).1,
             confidence: detection.confidence(),
             identity_confidence: edge.identity_confidence,
         });
@@ -313,6 +329,8 @@ pub struct TargetSelection {
     pub target_class_id: Option<u32>,
     pub target_detection_confidence: Option<f32>,
     pub target_identity_confidence: Option<f64>,
+    /// The selected identity was created or restored on this observation.
+    pub target_rebuilt: bool,
     /// Control aim point. Association continues to use the geometric center.
     pub target_aim_x: Option<f64>,
     pub target_aim_y: Option<f64>,
@@ -339,6 +357,7 @@ impl TargetSelection {
             target_class_id: None,
             target_detection_confidence: None,
             target_identity_confidence: None,
+            target_rebuilt: false,
             target_aim_x: None,
             target_aim_y: None,
             target_box_x: None,
@@ -368,6 +387,8 @@ pub struct TargetingConfig {
     pub min_confidence: f32,
     /// Number of consecutive missed frames before a track is dropped.
     pub track_max_age: u64,
+    /// Wall-clock bound for retaining a lost identity, independent of FPS.
+    pub track_max_lost_age_ms: f64,
     /// Radial admission gate around the declared observation center.
     pub target_fov_radius_px: f64,
     /// Maximum center displacement measured in target-height units.
@@ -377,6 +398,7 @@ pub struct TargetingConfig {
     pub tracker_scale_cost_weight: f64,
     pub tracker_max_size_ratio: f64,
     pub tracker_max_association_dt_ms: f64,
+    pub kalman: KalmanConfig,
     /// Descending class preference. The first two ranks receive the same
     /// 1.0 / 0.5 scores as the Python selector; unlisted classes score zero.
     pub class_priority: Vec<u32>,
@@ -401,6 +423,7 @@ impl Default for TargetingConfig {
             debounce_distance_px: 64.0,
             min_confidence: 0.5,
             track_max_age: DEFAULT_TRACK_MAX_AGE,
+            track_max_lost_age_ms: DEFAULT_TRACK_MAX_LOST_AGE_MS,
             target_fov_radius_px: 180.0,
             tracker_max_match_distance: 1.5,
             tracker_position_cost_weight: 0.75,
@@ -408,6 +431,7 @@ impl Default for TargetingConfig {
             tracker_scale_cost_weight: 0.15,
             tracker_max_size_ratio: 2.5,
             tracker_max_association_dt_ms: 150.0,
+            kalman: KalmanConfig::default(),
             class_priority: vec![0, 1],
             allowed_class_ids: None,
             selection_class_weight: 0.55,
@@ -522,12 +546,9 @@ impl TargetingCore {
                 rejected_by_aspect_ratio += 1;
                 continue;
             }
-            if euclidean(
-                detection.center_x(),
-                detection.center_y(),
-                observation_center.0,
-                observation_center.1,
-            ) > self.config.target_fov_radius_px
+            let aim = detection_aim(detection, &self.config);
+            if euclidean(aim.0, aim.1, observation_center.0, observation_center.1)
+                > self.config.target_fov_radius_px
             {
                 rejected_by_fov += 1;
                 continue;
@@ -539,7 +560,7 @@ impl TargetingCore {
         let rejected_class_ids = rejected_class_ids.into_iter().collect::<Vec<_>>();
         if admissible.is_empty() {
             self.pending_switch = None;
-            self.miss_locked_target();
+            self.miss_locked_target(captured_at_ns);
             return TargetSelection {
                 candidates,
                 inside_fov: 0,
@@ -548,6 +569,7 @@ impl TargetingCore {
                 target_class_id: None,
                 target_detection_confidence: None,
                 target_identity_confidence: None,
+                target_rebuilt: false,
                 target_aim_x: None,
                 target_aim_y: None,
                 target_box_x: None,
@@ -564,9 +586,20 @@ impl TargetingCore {
             };
         }
 
+        for track in &mut self.tracks {
+            track.age_frames = track.age_frames.saturating_add(1);
+            if track.kalman.predict(captured_at_ns, self.config.kalman) {
+                (track.center_x, track.center_y) = track.kalman.position();
+            } else {
+                track.center_x = track.observed_aim_x;
+                track.center_y = track.observed_aim_y;
+            }
+        }
+
         let associations =
             associate(&self.tracks, &admissible, &self.config, captured_at_ns).unwrap_or_default();
-        let mut current = Vec::with_capacity(admissible.len());
+        let mut updated = Vec::with_capacity(admissible.len());
+        let mut rebuilt_ids = [None; MAX_ACTIVE_TRACKS];
         for det in &admissible {
             let associated = associations.iter().find_map(|association| {
                 let prior = self
@@ -576,41 +609,142 @@ impl TargetingCore {
                 if association.object_id != det.object_id() {
                     return None;
                 }
-                Some((prior, association.identity_confidence))
+                Some((prior.clone(), association.identity_confidence))
             });
-            let id = associated.map_or_else(
-                || {
-                    let id = TrackId(self.next_track_id);
-                    self.next_track_id = self.next_track_id.saturating_add(1);
-                    id
-                },
-                |(track, _)| track.id,
-            );
-            current.push(Track {
-                id,
-                object_id: det.object_id(),
-                class_id: det.class_id(),
-                state: TrackState::Confirmed,
-                center_x: det.center_x(),
-                center_y: det.center_y(),
-                width: f64::from(det.width()),
-                height: f64::from(det.height()),
-                confidence: det.confidence(),
-                identity_confidence: associated.map_or(1.0, |(_, confidence)| confidence),
-                last_seen_ns: captured_at_ns,
-                age_frames: associated.map_or(1, |(track, _)| track.age_frames.saturating_add(1)),
-                missed_frames: 0,
-            });
+            let aim = detection_aim(det, &self.config);
+            let track = if let Some((mut prior, identity_confidence)) = associated {
+                if prior.state == TrackState::Lost {
+                    remember_track_id(&mut rebuilt_ids, prior.id);
+                }
+                let filtered_valid = prior.kalman.update(aim.0, aim.1, self.config.kalman);
+                let filtered = prior.kalman.position();
+                prior.object_id = det.object_id();
+                prior.class_id = det.class_id();
+                prior.state =
+                    if prior.confirmed || prior.hit_count.saturating_add(1) >= TRACK_CONFIRM_HITS {
+                        TrackState::Confirmed
+                    } else {
+                        TrackState::Tentative
+                    };
+                prior.confirmed = prior.state == TrackState::Confirmed;
+                prior.center_x = if filtered_valid && filtered.0.is_finite() {
+                    filtered.0
+                } else {
+                    aim.0
+                };
+                prior.center_y = if filtered_valid && filtered.1.is_finite() {
+                    filtered.1
+                } else {
+                    aim.1
+                };
+                prior.observed_aim_x = aim.0;
+                prior.observed_aim_y = aim.1;
+                prior.box_x = f64::from(det.x());
+                prior.box_y = f64::from(det.y());
+                prior.width = f64::from(det.width());
+                prior.height = f64::from(det.height());
+                prior.confidence = det.confidence();
+                prior.identity_confidence = identity_confidence;
+                prior.last_seen_ns = captured_at_ns;
+                prior.hit_count = prior.hit_count.saturating_add(1);
+                prior.missed_frames = 0;
+                prior.lost_since_ns = None;
+                prior
+            } else {
+                let id = TrackId(self.next_track_id);
+                self.next_track_id = self.next_track_id.saturating_add(1);
+                let confirmed =
+                    admissible.len() == 1 && det.confidence() >= IMMEDIATE_CONFIRM_CONFIDENCE;
+                remember_track_id(&mut rebuilt_ids, id);
+                Track {
+                    id,
+                    object_id: det.object_id(),
+                    class_id: det.class_id(),
+                    state: if confirmed {
+                        TrackState::Confirmed
+                    } else {
+                        TrackState::Tentative
+                    },
+                    center_x: aim.0,
+                    center_y: aim.1,
+                    observed_aim_x: aim.0,
+                    observed_aim_y: aim.1,
+                    box_x: f64::from(det.x()),
+                    box_y: f64::from(det.y()),
+                    width: f64::from(det.width()),
+                    height: f64::from(det.height()),
+                    confidence: det.confidence(),
+                    identity_confidence: 1.0,
+                    last_seen_ns: captured_at_ns,
+                    age_frames: 1,
+                    hit_count: 1,
+                    confirmed,
+                    missed_frames: 0,
+                    lost_since_ns: None,
+                    kalman: KalmanState::new(aim.0, aim.1, captured_at_ns, self.config.kalman),
+                }
+            };
+            updated.push(track);
         }
 
-        let locked_index = self
-            .locked
-            .as_ref()
-            .and_then(|locked| current.iter().position(|track| track.id == locked.id));
-        let best_index = current
+        let mut matched_ids = [None; MAX_ACTIVE_TRACKS];
+        for track in &updated {
+            remember_track_id(&mut matched_ids, track.id);
+        }
+        let mut retained = self
+            .tracks
+            .iter()
+            .filter(|track| !has_track_id(&matched_ids, track.id))
+            .cloned()
+            .filter_map(|mut track| {
+                track.state = TrackState::Lost;
+                track.missed_frames = track.missed_frames.saturating_add(1);
+                let lost_since = *track.lost_since_ns.get_or_insert(captured_at_ns);
+                let lost_age_ms = captured_at_ns.saturating_sub(lost_since) as f64 / 1e6;
+                (track.missed_frames <= self.config.track_max_age
+                    && lost_age_ms <= self.config.track_max_lost_age_ms)
+                    .then_some(track)
+            })
+            .take(MAX_ACTIVE_TRACKS.saturating_sub(updated.len()))
+            .collect::<Vec<_>>();
+        let mut current_indices = [0_usize; MAX_ACTIVE_TRACKS];
+        let mut current_count = 0;
+        for (index, track) in updated.iter().enumerate() {
+            if track.state == TrackState::Confirmed {
+                current_indices[current_count] = index;
+                current_count += 1;
+            }
+        }
+        let current_indices = &current_indices[..current_count];
+        self.lost_count = retained.len() as u64;
+        if current_indices.is_empty() {
+            self.pending_switch = None;
+            self.tracks = updated;
+            self.tracks.append(&mut retained);
+            return TargetSelection {
+                candidates,
+                inside_fov: admissible.len(),
+                rejected_class_ids,
+                rejected_by_confidence,
+                rejected_by_class,
+                rejected_by_aspect_ratio,
+                rejected_by_fov,
+                lost_count: self.lost_count,
+                ..TargetSelection::empty()
+            };
+        }
+
+        let locked_index = self.locked.as_ref().and_then(|locked| {
+            current_indices
+                .iter()
+                .position(|index| updated[*index].id == locked.id)
+        });
+        let best_index = current_indices
             .iter()
             .enumerate()
             .max_by(|(left_index, left), (right_index, right)| {
+                let left = &updated[**left];
+                let right = &updated[**right];
                 target_score(left, self.locked.as_ref(), observation_center, &self.config)
                     .total_cmp(&target_score(
                         right,
@@ -635,12 +769,12 @@ impl TargetingCore {
             }
             Some(index) => {
                 let locked_score = target_score(
-                    &current[index],
+                    &updated[current_indices[index]],
                     self.locked.as_ref(),
                     observation_center,
                     &self.config,
                 );
-                let best = &current[best_index];
+                let best = &updated[current_indices[best_index]];
                 let advantage =
                     target_score(best, self.locked.as_ref(), observation_center, &self.config)
                         - locked_score;
@@ -673,7 +807,7 @@ impl TargetingCore {
                 }
             }
         };
-        let track = current[chosen_index].clone();
+        let track = updated[current_indices[chosen_index]].clone();
         let reason = if self.config.class_priority.first().copied() == Some(track.class_id) {
             LockReason::PreferredClass
         } else {
@@ -683,33 +817,11 @@ impl TargetingCore {
             .iter()
             .find(|detection| detection.object_id() == track.object_id)
             .expect("selected track belongs to the admitted batch");
-        let aim_y_ratio = self
-            .config
-            .class_aim_y_ratios
-            .get(&track.class_id)
-            .copied()
-            .unwrap_or(self.config.aim_y_ratio);
-        let aim_x = selected_detection.center_x();
-        let aim_y = f64::from(selected_detection.y())
-            + f64::from(selected_detection.height()) * aim_y_ratio;
+        let (aim_x, aim_y) = detection_aim(selected_detection, &self.config);
 
         self.history.push(track.clone());
-        let current_ids: Vec<TrackId> = current.iter().map(|item| item.id).collect();
-        let remaining = MAX_ACTIVE_TRACKS.saturating_sub(current.len());
-        let retained: Vec<Track> = self
-            .tracks
-            .iter()
-            .filter(|prior| !current_ids.contains(&prior.id))
-            .filter_map(|prior| {
-                let mut retained = prior.clone();
-                retained.missed_frames = retained.missed_frames.saturating_add(1);
-                (retained.missed_frames <= self.config.track_max_age).then_some(retained)
-            })
-            .take(remaining)
-            .collect();
-        self.tracks = current;
-        self.tracks.extend(retained);
-        self.lost_count = 0;
+        self.tracks = updated;
+        self.tracks.append(&mut retained);
         self.locked = Some(track.clone());
         TargetSelection {
             candidates,
@@ -719,6 +831,7 @@ impl TargetingCore {
             target_class_id: Some(track.class_id),
             target_detection_confidence: Some(track.confidence),
             target_identity_confidence: Some(track.identity_confidence),
+            target_rebuilt: has_track_id(&rebuilt_ids, track.id),
             target_aim_x: Some(aim_x),
             target_aim_y: Some(aim_y),
             target_box_x: Some(f64::from(selected_detection.x())),
@@ -735,23 +848,29 @@ impl TargetingCore {
         }
     }
 
-    fn miss_locked_target(&mut self) {
-        self.lost_count = self.lost_count.saturating_add(1);
+    fn miss_locked_target(&mut self, captured_at_ns: u64) {
         for track in &mut self.tracks {
+            track.age_frames = track.age_frames.saturating_add(1);
+            if track.kalman.predict(captured_at_ns, self.config.kalman) {
+                (track.center_x, track.center_y) = track.kalman.position();
+            }
             track.missed_frames = track.missed_frames.saturating_add(1);
-            if track.missed_frames > self.config.track_max_age {
-                track.state = TrackState::Lost;
-            }
+            track.state = TrackState::Lost;
+            track.lost_since_ns.get_or_insert(captured_at_ns);
         }
-        self.tracks.retain(|track| track.state != TrackState::Lost);
-        if let Some(locked) = &mut self.locked {
-            locked.missed_frames = locked.missed_frames.saturating_add(1);
-            if locked.missed_frames > self.config.track_max_age
-                || !self.tracks.iter().any(|track| track.id == locked.id)
-            {
-                self.locked = None;
-            }
-        }
+        self.tracks.retain(|track| {
+            let lost_age_ms = track.lost_since_ns.map_or(0.0, |lost_since| {
+                captured_at_ns.saturating_sub(lost_since) as f64 / 1e6
+            });
+            track.missed_frames <= self.config.track_max_age
+                && lost_age_ms <= self.config.track_max_lost_age_ms
+        });
+        self.lost_count = self.tracks.len() as u64;
+        self.locked = self
+            .locked
+            .as_ref()
+            .and_then(|locked| self.tracks.iter().find(|track| track.id == locked.id))
+            .cloned();
     }
 }
 
@@ -805,6 +924,19 @@ fn detection_aspect_ratio(detection: &Detection) -> f64 {
     (width / height).max(height / width)
 }
 
+fn remember_track_id(slots: &mut [Option<TrackId>; MAX_ACTIVE_TRACKS], track_id: TrackId) {
+    if slots.iter().flatten().any(|value| *value == track_id) {
+        return;
+    }
+    if let Some(slot) = slots.iter_mut().find(|slot| slot.is_none()) {
+        *slot = Some(track_id);
+    }
+}
+
+fn has_track_id(slots: &[Option<TrackId>; MAX_ACTIVE_TRACKS], track_id: TrackId) -> bool {
+    slots.iter().flatten().any(|value| *value == track_id)
+}
+
 fn association_edge(
     track: &Track,
     detection: &Detection,
@@ -824,12 +956,13 @@ fn association_edge(
     if !reference_height.is_finite() || reference_height <= 0.0 {
         return None;
     }
-    let normalized_distance = euclidean(
-        track.center_x,
-        track.center_y,
-        detection.center_x(),
-        detection.center_y(),
-    ) / reference_height;
+    let aim = detection_aim(detection, config);
+    let nis = track.kalman.measurement_nis(aim.0, aim.1, config.kalman);
+    if !nis.is_finite() || nis > config.kalman.nis_hard_reject {
+        return None;
+    }
+    let normalized_distance =
+        euclidean(track.center_x, track.center_y, aim.0, aim.1) / reference_height;
     if !normalized_distance.is_finite() || normalized_distance > config.tracker_max_match_distance {
         return None;
     }
@@ -863,10 +996,10 @@ fn symmetric_ratio(left: f64, right: f64) -> Option<f64> {
 }
 
 fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {
-    let track_left = track.center_x - track.width * 0.5;
-    let track_top = track.center_y - track.height * 0.5;
-    let track_right = track.center_x + track.width * 0.5;
-    let track_bottom = track.center_y + track.height * 0.5;
+    let track_left = track.box_x;
+    let track_top = track.box_y;
+    let track_right = track.box_x + track.width;
+    let track_bottom = track.box_y + track.height;
     let detection_left = f64::from(detection.x());
     let detection_top = f64::from(detection.y());
     let detection_right = detection_left + f64::from(detection.width());
@@ -884,4 +1017,17 @@ fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {
     } else {
         0.0
     }
+}
+
+fn detection_aim(detection: &Detection, config: &TargetingConfig) -> (f64, f64) {
+    let ratio = config
+        .class_aim_y_ratios
+        .get(&detection.class_id())
+        .copied()
+        .unwrap_or(config.aim_y_ratio)
+        .clamp(0.0, 1.0);
+    (
+        detection.center_x(),
+        f64::from(detection.y()) + f64::from(detection.height()) * ratio,
+    )
 }

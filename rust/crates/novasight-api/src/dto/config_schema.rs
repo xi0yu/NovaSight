@@ -137,7 +137,14 @@ impl ConfigSchemaResponse {
                 section(
                     "control",
                     "控制输出",
-                    vec![hot_boolean("control.output_enabled", "允许设备位移输出")],
+                    vec![
+                        hot_boolean("control.output_enabled", "允许设备位移输出"),
+                        select(
+                            "control.trigger_mode",
+                            "输出触发方式",
+                            &["always", "hardware"],
+                        ),
+                    ],
                 ),
                 section(
                     "control.humanized_motion",
@@ -469,6 +476,13 @@ impl ConfigSchemaResponse {
                             1.0,
                             120.0,
                             Some("frame"),
+                        ),
+                        float(
+                            "pipeline.target_track_max_lost_age_ms",
+                            "丢失轨迹最长保留时间",
+                            1.0,
+                            10_000.0,
+                            Some("ms"),
                         ),
                         float(
                             "pipeline.tracker_max_match_distance",

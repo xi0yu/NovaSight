@@ -14,7 +14,7 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     CrosshairConfig, CrosshairError, CrosshairHub, MotionProfileHub, PipelineConfig,
-    PipelineRuntime, PipelineStatus,
+    PipelineRuntime, PipelineStatus, TriggerMode,
 };
 
 #[derive(Debug)]
@@ -162,6 +162,7 @@ fn pipeline_output_is_closed_until_trigger_is_explicitly_active() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
+            trigger_mode: TriggerMode::Hardware,
             ..PipelineConfig::default()
         },
         clock,

@@ -547,6 +547,18 @@ impl DualPhaseControl {
         self.quantizer_y.reset();
     }
 
+    /// Clear target-relative state while preserving observation sequence
+    /// guards. Used when a tracker restores or rebuilds an identity.
+    pub fn reset_target_state(&mut self) {
+        self.release_trigger();
+        self.velocity_x.reset(None);
+        self.humanized_motion.reset();
+        self.target_id = None;
+        self.previous_error_x = 0.0;
+        self.previous_error_y = 0.0;
+        self.measured_error_history_valid = false;
+    }
+
     pub fn calculate(&mut self, observation: ControlObservation) -> ControlDecision {
         self.calculate_with_profile(observation, None, 1.0)
     }
@@ -599,9 +611,7 @@ impl DualPhaseControl {
             .target_id
             .is_some_and(|target| target != observation.target_id)
         {
-            self.release_trigger();
-            self.velocity_x.reset(None);
-            self.measured_error_history_valid = false;
+            self.reset_target_state();
         }
 
         if !observation.target_valid {

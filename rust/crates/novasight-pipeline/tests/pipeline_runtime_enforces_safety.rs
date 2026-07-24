@@ -10,7 +10,7 @@ use novasight_core::{
     MonotonicNanos, PointerButtons, PointerDevice, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    PipelineConfig, PipelineError, PipelineEvent, PipelineRuntime, PipelineStatus,
+    PipelineConfig, PipelineError, PipelineEvent, PipelineRuntime, PipelineStatus, TriggerMode,
 };
 
 #[derive(Debug)]
@@ -275,6 +275,7 @@ fn hardware_trigger_poller_owns_production_output_gate() {
         PipelineConfig {
             epoch,
             trigger_poll_interval_ms: Some(1),
+            trigger_mode: TriggerMode::Hardware,
             ..PipelineConfig::default()
         },
         clock,
@@ -308,6 +309,7 @@ fn hardware_button_state_is_preserved_in_pipeline_metrics() {
     let (mut runtime, _ingress) = PipelineRuntime::start(
         PipelineConfig {
             trigger_poll_interval_ms: Some(1),
+            trigger_mode: TriggerMode::Hardware,
             ..PipelineConfig::default()
         },
         clock,
@@ -432,6 +434,7 @@ fn transient_trigger_failure_recovers_without_restarting_the_pipeline() {
         PipelineConfig {
             epoch,
             trigger_poll_interval_ms: Some(1),
+            trigger_mode: TriggerMode::Hardware,
             ..PipelineConfig::default()
         },
         clock,

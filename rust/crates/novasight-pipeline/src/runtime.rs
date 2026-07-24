@@ -65,6 +65,13 @@ impl PipelineStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TriggerMode {
+    #[default]
+    Always,
+    Hardware,
+}
+
 #[derive(Clone, Debug)]
 pub struct PipelineConfig {
     pub epoch: RuntimeEpoch,
@@ -79,6 +86,9 @@ pub struct PipelineConfig {
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
+    /// Python-compatible activation policy. `Always` still respects the
+    /// output gate, device connection, freshness, and target-validity guards.
+    pub trigger_mode: TriggerMode,
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
@@ -95,6 +105,14 @@ struct DeviceWorkerConfig {
     max_command_age_ns: u64,
     output_interval_ms: u64,
     recoil: RecoilConfig,
+    trigger_mode: TriggerMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ControlWorkerConfig {
+    epoch: RuntimeEpoch,
+    control: DualPhaseConfig,
+    trigger_mode: TriggerMode,
 }
 
 impl Default for PipelineConfig {
@@ -106,6 +124,7 @@ impl Default for PipelineConfig {
             max_command_age_ns: 55_000_000,
             output_interval_ms: 4,
             trigger_poll_interval_ms: None,
+            trigger_mode: TriggerMode::Always,
             crosshair: None,
             motion_profiles: None,
             recoil: RecoilConfig::default(),
@@ -702,6 +721,7 @@ struct TargetedObservation {
     crosshair_y: f64,
     detection_confidence: f64,
     track_confidence: f64,
+    track_rebuilt: bool,
     target_width_px: f64,
     inference_end_ns: u64,
 }
@@ -846,8 +866,11 @@ impl PipelineRuntime {
             command_slot.clone(),
             Arc::clone(&shared),
             Arc::clone(&clock),
-            config.epoch,
-            config.control,
+            ControlWorkerConfig {
+                epoch: config.epoch,
+                control: config.control,
+                trigger_mode: config.trigger_mode,
+            },
             config.motion_profiles.clone(),
         ) {
             Ok(handle) => handle,
@@ -869,6 +892,7 @@ impl PipelineRuntime {
                 max_command_age_ns: config.max_command_age_ns,
                 output_interval_ms: config.output_interval_ms,
                 recoil: config.recoil,
+                trigger_mode: config.trigger_mode,
             },
         ) {
             Ok(handle) => handle,
@@ -880,7 +904,12 @@ impl PipelineRuntime {
         };
         workers.push(device_handle);
 
-        if let Some(interval_ms) = config.trigger_poll_interval_ms {
+        let needs_hardware_buttons =
+            config.trigger_mode == TriggerMode::Hardware || config.recoil.enabled;
+        if let Some(interval_ms) = config
+            .trigger_poll_interval_ms
+            .filter(|_| needs_hardware_buttons)
+        {
             let trigger_handle =
                 match spawn_trigger_worker(Arc::clone(&shared), Arc::clone(&device), interval_ms) {
                     Ok(handle) => handle,
@@ -1257,6 +1286,7 @@ fn spawn_targeting_worker(
                         crosshair_y,
                         detection_confidence,
                         track_confidence,
+                        track_rebuilt: selection.target_rebuilt,
                         target_width_px,
                         inference_end_ns: now,
                     };
@@ -1289,8 +1319,7 @@ fn spawn_control_worker(
     output: LatestSlot<DeviceCommand>,
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
-    epoch: RuntimeEpoch,
-    config: DualPhaseConfig,
+    config: ControlWorkerConfig,
     motion_profiles: Option<MotionProfileHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
@@ -1298,13 +1327,15 @@ fn spawn_control_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
-                let mut control = DualPhaseControl::new(config);
+                let mut control = DualPhaseControl::new(config.control);
                 while let Some(target) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
                     }
                     let control_now_ns = clock.now().0;
                     let target_id = target.target_id.unwrap_or(0);
+                    let trigger_active = config.trigger_mode == TriggerMode::Always
+                        || shared.trigger_active.load(Ordering::Acquire);
                     let observation = ControlObservation {
                         generation: target.stamp.generation.0,
                         frame_id: target.stamp.generation.0,
@@ -1319,10 +1350,13 @@ fn spawn_control_worker(
                         detection_confidence: target.detection_confidence,
                         track_confidence: target.track_confidence,
                         target_valid: target.target_id.is_some(),
-                        trigger_active: shared.trigger_active.load(Ordering::Acquire),
+                        trigger_active,
                     };
                     let active_profile =
                         motion_profiles.as_ref().and_then(MotionProfileHub::active);
+                    if target.track_rebuilt {
+                        control.reset_target_state();
+                    }
                     let decision = control.calculate_with_profile(
                         observation,
                         active_profile.as_deref(),
@@ -1342,7 +1376,7 @@ fn spawn_control_worker(
                         continue;
                     }
                     let command = DeviceCommand {
-                        epoch,
+                        epoch: config.epoch,
                         generation: target.stamp.generation,
                         source_captured_at: target.stamp.captured_at,
                         issued_at: novasight_core::MonotonicNanos(control_now_ns),
@@ -1380,11 +1414,8 @@ fn spawn_device_worker(
                 let mut last_tick_ns = None;
                 let mut recoil = TargetRelativeRecoilController::new(config.recoil)
                     .expect("pipeline validates recoil config before worker startup");
-                loop {
-                    let tracking = match input.wait_take_or_timeout(interval) {
-                        Ok(command) => command.map(|command| *command),
-                        Err(_) => break,
-                    };
+                while let Ok(command) = input.wait_take_or_timeout(interval) {
+                    let tracking = command.map(|command| *command);
                     let now_ns = clock.now().0;
                     let dt_s = last_tick_ns.map_or(interval_s, |last_tick_ns| {
                         (now_ns.saturating_sub(last_tick_ns) as f64 / 1_000_000_000.0)
@@ -1429,7 +1460,9 @@ fn spawn_device_worker(
                     if !shared.device_connection_enabled.load(Ordering::Acquire) {
                         continue;
                     }
-                    if !shared.trigger_active.load(Ordering::Acquire) {
+                    if config.trigger_mode == TriggerMode::Hardware
+                        && !shared.trigger_active.load(Ordering::Acquire)
+                    {
                         continue;
                     }
                     let command = match tracking {
@@ -1494,7 +1527,9 @@ fn spawn_device_worker(
                             .fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-                    if !shared.trigger_active.load(Ordering::Acquire) {
+                    if config.trigger_mode == TriggerMode::Hardware
+                        && !shared.trigger_active.load(Ordering::Acquire)
+                    {
                         continue;
                     }
                     match device.send(command) {

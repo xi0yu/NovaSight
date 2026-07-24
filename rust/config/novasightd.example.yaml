@@ -46,7 +46,8 @@ pipeline:
   target_debounce_distance_px: 64.0
   target_fov_radius_px: 180.0
   target_min_confidence: 0.5
-  target_track_max_age: 5
+  target_track_max_age: 2
+  target_track_max_lost_age_ms: 120.0
   tracker_max_match_distance: 1.5
   tracker_position_cost_weight: 0.75
   tracker_iou_cost_weight: 0.25
@@ -68,6 +69,8 @@ pipeline:
   output_interval_ms: 4
 control:
   output_enabled: true
+  # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。
+  trigger_mode: always
   recoil:
     enabled: false
     base_rate_counts_s: 0.0
