@@ -406,6 +406,9 @@ impl SupervisorState {
         self.telemetry.detection_data_age_ms = perception
             .latest_published_capture_at_ns
             .map(|captured_at_ns| now_ns.saturating_sub(captured_at_ns) as f64 / 1_000_000.0);
+        self.telemetry.inference_latency_ms = perception
+            .latest_inference_duration_ns
+            .map(|duration_ns| duration_ns as f64 / 1_000_000.0);
 
         let sample = TelemetrySample {
             sampled_at_ns: now_ns,
@@ -426,6 +429,7 @@ impl SupervisorState {
             self.telemetry_samples.clear();
             self.telemetry = RuntimeTelemetrySnapshot {
                 detection_data_age_ms: self.telemetry.detection_data_age_ms,
+                inference_latency_ms: self.telemetry.inference_latency_ms,
                 ..RuntimeTelemetrySnapshot::default()
             };
         }
@@ -2120,10 +2124,12 @@ async fn diagnose_device_move(
         .next_diagnostic_generation
         .checked_add(1)
         .ok_or_else(|| RuntimeError::device_unavailable("diagnostic generation is exhausted"))?;
+    let issued_at = dependencies.clock.now();
     let command = DeviceCommand {
         epoch: RuntimeEpoch(0),
         generation: Generation(state.next_diagnostic_generation),
-        issued_at: dependencies.clock.now(),
+        source_captured_at: issued_at,
+        issued_at,
         target_object_id: 0,
         delta_x_counts,
         delta_y_counts,

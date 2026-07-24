@@ -18,6 +18,7 @@ fn command(epoch: u64, generation: u64, issued_at: u64, _expiry_at: u64) -> Devi
     DeviceCommand {
         epoch: RuntimeEpoch(epoch),
         generation: Generation(generation),
+        source_captured_at: MonotonicNanos(issued_at),
         issued_at: MonotonicNanos(issued_at),
         target_object_id: 1,
         delta_x_counts: 5,

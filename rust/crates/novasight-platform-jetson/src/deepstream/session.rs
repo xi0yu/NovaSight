@@ -101,6 +101,8 @@ pub struct SessionMetrics {
     pub probed_buffers: u64,
     pub published_batches: u64,
     pub latest_published_capture_at_ns: Option<u64>,
+    pub latest_inference_duration_ns: Option<u64>,
+    pub inference_duration_samples: u64,
     pub busy_dropped_batches: u64,
     pub overwritten_snapshots: u64,
     pub unavailable_snapshot_slots: u64,
@@ -119,6 +121,8 @@ struct AtomicSessionMetrics {
     probed_buffers: AtomicU64,
     published_batches: AtomicU64,
     latest_published_capture_at_ns: AtomicU64,
+    latest_inference_duration_ns: AtomicU64,
+    inference_duration_samples: AtomicU64,
     busy_dropped_batches: AtomicU64,
     overwritten_snapshots: AtomicU64,
     unavailable_snapshot_slots: AtomicU64,
@@ -141,6 +145,11 @@ impl AtomicSessionMetrics {
                 .latest_published_capture_at_ns
                 .load(Ordering::Relaxed)
                 .checked_sub(1),
+            latest_inference_duration_ns: self
+                .latest_inference_duration_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            inference_duration_samples: self.inference_duration_samples.load(Ordering::Relaxed),
             busy_dropped_batches: self.busy_dropped_batches.load(Ordering::Relaxed),
             overwritten_snapshots: self.overwritten_snapshots.load(Ordering::Relaxed),
             unavailable_snapshot_slots: self.unavailable_snapshot_slots.load(Ordering::Relaxed),
@@ -162,6 +171,7 @@ struct SnapshotSlot {
     snapshot: MaybeUninit<novasight_deepstream_bridge::FrameSnapshot>,
     pipeline_running_now_ns: u64,
     monotonic_now: novasight_core::MonotonicNanos,
+    inference_duration_ns: Option<u64>,
     observed_at_inference_input: bool,
     frame: Option<gst::Buffer>,
 }
@@ -172,6 +182,7 @@ impl SnapshotSlot {
             snapshot: MaybeUninit::uninit(),
             pipeline_running_now_ns: 0,
             monotonic_now: novasight_core::MonotonicNanos(0),
+            inference_duration_ns: None,
             observed_at_inference_input: false,
             frame: None,
         }
@@ -579,6 +590,8 @@ impl PerceptionSession for DeepStreamSession {
             probed_buffers: metrics.probed_buffers,
             published_batches: metrics.published_batches,
             latest_published_capture_at_ns: metrics.latest_published_capture_at_ns,
+            latest_inference_duration_ns: metrics.latest_inference_duration_ns,
+            inference_duration_samples: metrics.inference_duration_samples,
             busy_dropped_batches: metrics.busy_dropped_batches,
             overwritten_snapshots: metrics.overwritten_snapshots,
             unavailable_snapshot_slots: metrics.unavailable_snapshot_slots,
@@ -802,6 +815,10 @@ fn start_pipeline(
             let Some(buffer) = info.buffer() else {
                 return gst::PadProbeReturn::Ok;
             };
+            // Timestamp pad arrival before bridge extraction so the metric
+            // matches Python's nvinfer sink-to-src scope and does not charge
+            // NovaSight metadata copying to TensorRT/parser execution.
+            let inference_output_observed_at = probe_clock.now();
             probe_state
                 .metrics
                 .probed_buffers
@@ -874,6 +891,9 @@ fn start_pipeline(
                 // offsets that occur before the inference element.
                 slot.pipeline_running_now_ns = frame_pts_ns;
                 slot.monotonic_now = input_observed_at;
+                slot.inference_duration_ns = inference_output_observed_at
+                    .0
+                    .checked_sub(input_observed_at.0);
                 slot.observed_at_inference_input = true;
                 slot.frame = Some(buffer.to_owned());
                 match probe_exchange.publish(slot) {
@@ -930,6 +950,7 @@ fn start_pipeline(
             };
             slot.pipeline_running_now_ns = running_now_ns;
             slot.monotonic_now = probe_clock.now();
+            slot.inference_duration_ns = None;
             slot.observed_at_inference_input = false;
             slot.frame = Some(buffer.to_owned());
             match probe_exchange.publish(slot) {
@@ -1331,6 +1352,16 @@ fn run_snapshot_worker(
         if state.closed.load(Ordering::Acquire) {
             recycle_from_worker(exchange, slot);
             break;
+        }
+        if let Some(inference_duration_ns) = slot.inference_duration_ns {
+            state
+                .metrics
+                .latest_inference_duration_ns
+                .store(inference_duration_ns.saturating_add(1), Ordering::Relaxed);
+            state
+                .metrics
+                .inference_duration_samples
+                .fetch_add(1, Ordering::Relaxed);
         }
         let generation =
             match state

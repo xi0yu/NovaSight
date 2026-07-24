@@ -68,6 +68,13 @@ pub struct PerceptionMetrics {
     /// It shares the runtime monotonic clock domain used for freshness gates.
     #[serde(default)]
     pub latest_published_capture_at_ns: Option<u64>,
+    /// Most recent correlated nvinfer sink-to-src duration. Collection is a
+    /// single clock read and subtraction in the existing output pad probe;
+    /// zero means no correlated sample has been observed yet.
+    #[serde(default)]
+    pub latest_inference_duration_ns: Option<u64>,
+    #[serde(default)]
+    pub inference_duration_samples: u64,
     pub busy_dropped_batches: u64,
     pub overwritten_snapshots: u64,
     pub unavailable_snapshot_slots: u64,

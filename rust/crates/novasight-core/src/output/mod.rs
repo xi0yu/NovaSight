@@ -14,6 +14,10 @@ use crate::ports::{PointerDevice, PointerDeviceMode};
 pub struct DeviceCommand {
     pub epoch: RuntimeEpoch,
     pub generation: Generation,
+    /// Capture timestamp of the perception sample that authorized this
+    /// movement. Output freshness must be measured from here, not from the
+    /// later control-decision timestamp.
+    pub source_captured_at: MonotonicNanos,
     pub issued_at: MonotonicNanos,
     pub target_object_id: u64,
     pub delta_x_counts: i32,

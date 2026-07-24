@@ -1890,7 +1890,10 @@ export function StudioConsoleView({
   const inferenceEnqueueMs = readNullableNumber(trtTimings.execute_enqueue_ms);
   const inferenceSyncWaitMs = readNullableNumber(trtTimings.stream_sync_ms);
   const inferenceTotalMs = readNullableNumber(
-    inferenceTrace.detection_batch_inference_latency_ms ?? inferenceTimings.execute_total_ms ?? statistics?.stage_engine_ms
+    inferenceTrace.detection_batch_inference_latency_ms ??
+      inferenceTimings.execute_total_ms ??
+      statistics?.inference_latency_ms ??
+      statistics?.stage_engine_ms
   );
   const inferencePostprocessMs = readNullableNumber(
     trtTimings.decode_ms ?? nativeParserTelemetry.decode_ms ?? statistics?.stage_postprocess_ms
@@ -3936,7 +3939,8 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>TensorRT enqueue 耗时</span><b>{formatOptionalNumber(inferenceEnqueueMs, 3, "ms")}</b>
                 <span>CUDA stream 同步等待</span><b>{formatOptionalNumber(inferenceSyncWaitMs, 3, "ms")}</b>
-                <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 3, "ms")}</b>
+                <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
+                <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
                 <span>计时范围</span><b>预处理 + TensorRT + parser</b>
               </div>
             </div>

@@ -397,6 +397,8 @@ export type Statistics = {
   nvinfer_input_fps?: number;
   nvinfer_output_fps?: number;
   detection_data_age_ms?: number;
+  inference_latency_ms?: number;
+  inference_latency_samples?: number;
   telemetry_window_ms?: number;
   inference_fps?: number;
   queue_latency?: number;

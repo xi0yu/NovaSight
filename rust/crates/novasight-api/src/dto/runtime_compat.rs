@@ -245,6 +245,8 @@ pub(crate) struct StatisticsState {
     pub detection_batch_fps: Option<f64>,
     pub control_observation_fps: Option<f64>,
     pub detection_data_age_ms: Option<f64>,
+    pub inference_latency_ms: Option<f64>,
+    pub inference_latency_samples: u64,
     pub telemetry_window_ms: Option<u64>,
     pub metrics_available: bool,
 }
@@ -811,6 +813,8 @@ impl CompatibilityRuntimeState {
                 detection_batch_fps: snapshot.telemetry.detection_batch_fps,
                 control_observation_fps: snapshot.telemetry.control_observation_fps,
                 detection_data_age_ms: snapshot.telemetry.detection_data_age_ms,
+                inference_latency_ms: snapshot.telemetry.inference_latency_ms,
+                inference_latency_samples: metrics.inference_duration_samples,
                 telemetry_window_ms: snapshot.telemetry.sample_window_ms,
                 metrics_available: metrics.input_buffers > 0
                     || metrics.probed_buffers > 0

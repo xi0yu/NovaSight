@@ -41,6 +41,7 @@ impl ControlDecision {
         DeviceCommand {
             epoch: self.stamp.epoch,
             generation: self.stamp.generation,
+            source_captured_at: self.stamp.captured_at,
             issued_at: self.decided_at,
             target_object_id: self.target_object_id,
             delta_x_counts: self.delta_x_counts,

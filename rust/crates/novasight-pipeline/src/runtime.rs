@@ -1344,6 +1344,7 @@ fn spawn_control_worker(
                     let command = DeviceCommand {
                         epoch,
                         generation: target.stamp.generation,
+                        source_captured_at: target.stamp.captured_at,
                         issued_at: novasight_core::MonotonicNanos(control_now_ns),
                         target_object_id: target_id,
                         delta_x_counts: decision.dx,
@@ -1448,6 +1449,9 @@ fn spawn_device_worker(
                             DeviceCommand {
                                 epoch: config.epoch,
                                 generation: observation.generation,
+                                source_captured_at: novasight_core::MonotonicNanos(
+                                    observation.capture_ts_ns,
+                                ),
                                 issued_at: novasight_core::MonotonicNanos(now_ns),
                                 target_object_id: observation.target_id,
                                 delta_x_counts: 0,
@@ -1467,7 +1471,7 @@ fn spawn_device_worker(
                         ));
                         break;
                     }
-                    let age = now_ns.saturating_sub(command.issued_at.0);
+                    let age = now_ns.saturating_sub(command.source_captured_at.0);
                     if age > config.max_command_age_ns {
                         shared
                             .metrics

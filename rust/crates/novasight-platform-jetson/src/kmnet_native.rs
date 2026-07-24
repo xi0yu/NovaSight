@@ -659,6 +659,7 @@ mod tests {
             .send(DeviceCommand {
                 epoch: RuntimeEpoch(1),
                 generation: Generation(1),
+                source_captured_at: MonotonicNanos(1),
                 issued_at: MonotonicNanos(1),
                 target_object_id: 1,
                 delta_x_counts: 1,
@@ -782,6 +783,7 @@ mod tests {
             .send(DeviceCommand {
                 epoch: RuntimeEpoch(1),
                 generation: Generation(2),
+                source_captured_at: MonotonicNanos(3),
                 issued_at: MonotonicNanos(3),
                 target_object_id: 4,
                 delta_x_counts: 12,

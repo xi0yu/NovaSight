@@ -45,6 +45,7 @@ fn command() -> DeviceCommand {
     DeviceCommand {
         epoch: RuntimeEpoch(4),
         generation: Generation(9),
+        source_captured_at: MonotonicNanos(100),
         issued_at: MonotonicNanos(100),
         target_object_id: 7,
         delta_x_counts: 120,
