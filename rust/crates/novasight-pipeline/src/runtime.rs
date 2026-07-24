@@ -152,12 +152,6 @@ pub struct PipelineMetrics {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DetectionTelemetry {
     pub generation: Option<Generation>,
-    /// Monotonic capture timestamp of the latest best-effort UI sample.
-    ///
-    /// This is populated inside the existing throttled telemetry path, so
-    /// exposing freshness never adds work to every admitted batch.
-    #[serde(default)]
-    pub captured_at_ns: Option<u64>,
     pub coordinate_width: u32,
     pub coordinate_height: u32,
     pub items: Vec<DetectionTelemetryItem>,
@@ -391,7 +385,6 @@ impl SharedState {
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
         telemetry.detections.generation = Some(batch.stamp().generation);
-        telemetry.detections.captured_at_ns = Some(batch.stamp().captured_at.0);
         telemetry.detections.coordinate_width = batch.coordinate_width();
         telemetry.detections.coordinate_height = batch.coordinate_height();
         telemetry.detections.items.clear();

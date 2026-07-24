@@ -1783,6 +1783,9 @@ export function StudioConsoleView({
   const nvinferInputFps = readNullableNumber(
     deepstreamStatus.input_fps ?? captureStatistics.nvinfer_input_fps
   );
+  const nvinferOutputFps = readNullableNumber(
+    deepstreamStatus.inference_fps ?? captureStatistics.nvinfer_output_fps
+  );
   const detectionBatchFps = readNullableNumber(statistics?.detection_batch_fps);
   const controlObservationFps = readNullableNumber(statistics?.control_observation_fps);
   const detectionDataAgeMs = readNullableNumber(
@@ -3486,8 +3489,8 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureStatusText} small={captureBackendLabel || NO_SAMPLE} />
-            <Metric title="输入 FPS" value={formatOptionalNumber(nvinferInputFps, 1)} small={`实际速率 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps, 1)} small="DetectionBatch 实际产出" />
+            <Metric title="采集 FPS" value={formatOptionalNumber(nvinferInputFps, 1)} small={`有效输入 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
+            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps, 1)} small="nvinfer 实际输出" />
             <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs, 0)} small={`${detectionFreshness} · ms`} />
           </div>
           <div className="console-card power-saving-card">
@@ -3676,6 +3679,7 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, 1, "FPS")}</b>
                 <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(deepstreamNvinferSelected ? nvinferInputFps : captureSourceFps, 1, "FPS")}</b>
+                <span>nvinfer 输出 FPS</span><b>{formatOptionalNumber(nvinferOutputFps, 1, "FPS")}</b>
                 <span>DetectionBatch 结果 FPS</span><b>{formatOptionalNumber(detectionBatchFps, 1, "FPS")}</b>
                 <span>结果新鲜度</span><b>{`${formatOptionalNumber(detectionDataAgeMs, 0, "ms")} · ${detectionFreshness}`}</b>
                 <span>速率采样窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
@@ -3687,9 +3691,9 @@ export function StudioConsoleView({
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps, 1)} small="真实 DetectionBatch 产出" />
+            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps, 1)} small="nvinfer 实际完成" />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps, 1)} small="DetectionBatch 有效产出" />
             <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs, 0)} small={`${detectionFreshness} · ms`} />
-            <Metric title="推理状态" value={inferenceStatusText} small={selectedRuntimeBackend || NO_SAMPLE} />
             <Metric title="当前检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="post-parser" />
           </div>
           <div className="console-card model-selection-card">

@@ -389,6 +389,7 @@ export type Statistics = {
   acquired_frames?: number;
   capture_fps?: number;
   nvinfer_input_fps?: number;
+  nvinfer_output_fps?: number;
   detection_data_age_ms?: number;
   telemetry_window_ms?: number;
   inference_fps?: number;

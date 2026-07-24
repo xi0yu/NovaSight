@@ -64,6 +64,10 @@ pub struct PerceptionMetrics {
     pub input_buffers: u64,
     pub probed_buffers: u64,
     pub published_batches: u64,
+    /// Capture timestamp of the newest DetectionBatch accepted by ingress.
+    /// It shares the runtime monotonic clock domain used for freshness gates.
+    #[serde(default)]
+    pub latest_published_capture_at_ns: Option<u64>,
     pub busy_dropped_batches: u64,
     pub overwritten_snapshots: u64,
     pub unavailable_snapshot_slots: u64,

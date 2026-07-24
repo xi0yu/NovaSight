@@ -100,6 +100,7 @@ pub struct SessionMetrics {
     pub input_buffers: u64,
     pub probed_buffers: u64,
     pub published_batches: u64,
+    pub latest_published_capture_at_ns: Option<u64>,
     pub busy_dropped_batches: u64,
     pub overwritten_snapshots: u64,
     pub unavailable_snapshot_slots: u64,
@@ -117,6 +118,7 @@ struct AtomicSessionMetrics {
     input_buffers: AtomicU64,
     probed_buffers: AtomicU64,
     published_batches: AtomicU64,
+    latest_published_capture_at_ns: AtomicU64,
     busy_dropped_batches: AtomicU64,
     overwritten_snapshots: AtomicU64,
     unavailable_snapshot_slots: AtomicU64,
@@ -135,6 +137,10 @@ impl AtomicSessionMetrics {
             input_buffers: self.input_buffers.load(Ordering::Relaxed),
             probed_buffers: self.probed_buffers.load(Ordering::Relaxed),
             published_batches: self.published_batches.load(Ordering::Relaxed),
+            latest_published_capture_at_ns: self
+                .latest_published_capture_at_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
             busy_dropped_batches: self.busy_dropped_batches.load(Ordering::Relaxed),
             overwritten_snapshots: self.overwritten_snapshots.load(Ordering::Relaxed),
             unavailable_snapshot_slots: self.unavailable_snapshot_slots.load(Ordering::Relaxed),
@@ -572,6 +578,7 @@ impl PerceptionSession for DeepStreamSession {
             input_buffers: metrics.input_buffers,
             probed_buffers: metrics.probed_buffers,
             published_batches: metrics.published_batches,
+            latest_published_capture_at_ns: metrics.latest_published_capture_at_ns,
             busy_dropped_batches: metrics.busy_dropped_batches,
             overwritten_snapshots: metrics.overwritten_snapshots,
             unavailable_snapshot_slots: metrics.unavailable_snapshot_slots,
@@ -1460,6 +1467,10 @@ fn run_snapshot_worker(
         let _ = exchange.latest_frames.publish(frame);
         match context.ingress.try_submit(batch) {
             Ok(()) => {
+                state
+                    .metrics
+                    .latest_published_capture_at_ns
+                    .store(stamp.captured_at.0.saturating_add(1), Ordering::Relaxed);
                 state
                     .metrics
                     .published_batches

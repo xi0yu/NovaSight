@@ -4,6 +4,7 @@
 //! Detection producers submit caller-owned batches through the same
 //! handle; worker objects and platform adapters never escape.
 
+use std::collections::VecDeque;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -320,21 +321,24 @@ struct SupervisorState {
     device_metrics: DeviceMetrics,
     model: ModelSnapshot,
     telemetry: RuntimeTelemetrySnapshot,
-    telemetry_baseline: Option<TelemetryBaseline>,
+    telemetry_samples: VecDeque<TelemetrySample>,
     output_enabled: bool,
     device_mode: PointerDeviceMode,
     started_at_unix_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct TelemetryBaseline {
+struct TelemetrySample {
     sampled_at_ns: u64,
     nvinfer_inputs: u64,
+    nvinfer_outputs: u64,
     detection_batches: u64,
     control_observations: u64,
 }
 
 const TELEMETRY_RATE_WINDOW_NS: u64 = 1_000_000_000;
+const TELEMETRY_MIN_RATE_WINDOW_NS: u64 = 800_000_000;
+const TELEMETRY_SAMPLE_CAPACITY: usize = 8;
 
 impl Default for SupervisorState {
     fn default() -> Self {
@@ -352,7 +356,7 @@ impl Default for SupervisorState {
             device_metrics: DeviceMetrics::default(),
             model: ModelSnapshot::default(),
             telemetry: RuntimeTelemetrySnapshot::default(),
-            telemetry_baseline: None,
+            telemetry_samples: VecDeque::with_capacity(TELEMETRY_SAMPLE_CAPACITY),
             output_enabled: false,
             device_mode: PointerDeviceMode::Commissioned,
             started_at_unix_ms: now_ms(),
@@ -386,7 +390,7 @@ impl SupervisorState {
 
     fn reset_telemetry(&mut self) {
         self.telemetry = RuntimeTelemetrySnapshot::default();
-        self.telemetry_baseline = None;
+        self.telemetry_samples.clear();
     }
 
     /// Derive stable, human-facing rates on the existing supervisor tick.
@@ -399,36 +403,60 @@ impl SupervisorState {
         pipeline: &PipelineMetrics,
     ) -> bool {
         let previous = self.telemetry;
-        self.telemetry.detection_data_age_ms = pipeline
-            .detections
-            .captured_at_ns
+        self.telemetry.detection_data_age_ms = perception
+            .latest_published_capture_at_ns
             .map(|captured_at_ns| now_ns.saturating_sub(captured_at_ns) / 1_000_000);
 
-        let sample = TelemetryBaseline {
+        let sample = TelemetrySample {
             sampled_at_ns: now_ns,
             nvinfer_inputs: perception.input_buffers,
+            nvinfer_outputs: perception.probed_buffers,
             detection_batches: perception.published_batches,
             control_observations: pipeline.targeting_batches,
         };
-        let Some(baseline) = self.telemetry_baseline else {
-            self.telemetry_baseline = Some(sample);
-            return self.telemetry != previous;
-        };
-        let elapsed_ns = now_ns.saturating_sub(baseline.sampled_at_ns);
-        if elapsed_ns < TELEMETRY_RATE_WINDOW_NS {
-            return self.telemetry != previous;
+
+        let counters_reset = self.telemetry_samples.back().is_some_and(|last| {
+            sample.sampled_at_ns < last.sampled_at_ns
+                || sample.nvinfer_inputs < last.nvinfer_inputs
+                || sample.nvinfer_outputs < last.nvinfer_outputs
+                || sample.detection_batches < last.detection_batches
+                || sample.control_observations < last.control_observations
+        });
+        if counters_reset {
+            self.telemetry_samples.clear();
+            self.telemetry = RuntimeTelemetrySnapshot {
+                detection_data_age_ms: self.telemetry.detection_data_age_ms,
+                ..RuntimeTelemetrySnapshot::default()
+            };
+        }
+        self.telemetry_samples.push_back(sample);
+
+        while self.telemetry_samples.len() > 2
+            && self.telemetry_samples.get(1).is_some_and(|next| {
+                now_ns.saturating_sub(next.sampled_at_ns) >= TELEMETRY_RATE_WINDOW_NS
+            })
+        {
+            self.telemetry_samples.pop_front();
+        }
+        while self.telemetry_samples.len() > TELEMETRY_SAMPLE_CAPACITY {
+            self.telemetry_samples.pop_front();
         }
 
-        let counters_advanced = sample.nvinfer_inputs >= baseline.nvinfer_inputs
-            && sample.detection_batches >= baseline.detection_batches
-            && sample.control_observations >= baseline.control_observations;
-        if counters_advanced && elapsed_ns > 0 {
+        let baseline = self.telemetry_samples.front().copied().unwrap_or(sample);
+        let elapsed_ns = sample.sampled_at_ns.saturating_sub(baseline.sampled_at_ns);
+        if elapsed_ns >= TELEMETRY_MIN_RATE_WINDOW_NS {
             let elapsed_seconds = elapsed_ns as f64 / 1_000_000_000.0;
             self.telemetry.sample_window_ms = Some(elapsed_ns / 1_000_000);
             self.telemetry.nvinfer_input_fps = Some(
                 sample
                     .nvinfer_inputs
                     .saturating_sub(baseline.nvinfer_inputs) as f64
+                    / elapsed_seconds,
+            );
+            self.telemetry.nvinfer_output_fps = Some(
+                sample
+                    .nvinfer_outputs
+                    .saturating_sub(baseline.nvinfer_outputs) as f64
                     / elapsed_seconds,
             );
             self.telemetry.detection_batch_fps = Some(
@@ -443,13 +471,7 @@ impl SupervisorState {
                     .saturating_sub(baseline.control_observations) as f64
                     / elapsed_seconds,
             );
-        } else {
-            self.telemetry = RuntimeTelemetrySnapshot {
-                detection_data_age_ms: self.telemetry.detection_data_age_ms,
-                ..RuntimeTelemetrySnapshot::default()
-            };
         }
-        self.telemetry_baseline = Some(sample);
         self.telemetry != previous
     }
 

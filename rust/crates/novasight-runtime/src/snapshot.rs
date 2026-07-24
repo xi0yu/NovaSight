@@ -74,6 +74,8 @@ pub struct RuntimeSnapshot {
 pub struct RuntimeTelemetrySnapshot {
     pub sample_window_ms: Option<u64>,
     pub nvinfer_input_fps: Option<f64>,
+    #[serde(default)]
+    pub nvinfer_output_fps: Option<f64>,
     pub detection_batch_fps: Option<f64>,
     pub control_observation_fps: Option<f64>,
     pub detection_data_age_ms: Option<u64>,
