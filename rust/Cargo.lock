@@ -1020,7 +1020,9 @@ dependencies = [
 name = "novasight-deepstream-bridge"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "novasight-core",
+ "pkg-config",
  "thiserror",
 ]
 

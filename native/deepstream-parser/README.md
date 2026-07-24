@@ -8,7 +8,10 @@ The supported output layouts are `[C,N]`, `[N,C]`, `[1,C,N]`, and `[1,N,C]`,
 where `C` is `4 + classes` (YOLOv8) or `5 + classes` (YOLOv5 objectness).
 Coordinates must be pixel-space `cx,cy,w,h` values.
 
-Build on the Jetson with its installed DeepStream headers:
+`cargo build -p novasightd --features deepstream` compiles this parser into the
+Cargo build directory and embeds its exact path into the daemon automatically.
+
+Build the standalone shared library on the Jetson only for release packaging:
 
 ```bash
 cmake -S native/deepstream-parser -B build/deepstream-parser \

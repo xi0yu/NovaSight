@@ -1993,7 +1993,7 @@ const fn default_inference_deadline_ms() -> f64 {
 }
 
 fn default_parser_library() -> PathBuf {
-    PathBuf::from("build/deepstream-parser/libnovasight_parser.so")
+    PathBuf::from("auto")
 }
 
 const fn default_deepstream_io_mode() -> i32 {

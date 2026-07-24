@@ -82,12 +82,16 @@ pub async fn entry() -> ExitCode {
         }
     };
 
-    let parser_library = loaded
+    let configured_parser_library = loaded
         .config()
         .inference
         .clone()
         .unwrap_or_default()
         .deepstream_parser_library;
+    let parser_library = resolve_deepstream_parser_library(
+        &configured_parser_library,
+        option_env!("NOVASIGHT_DEEPSTREAM_PARSER_LIBRARY").map(Path::new),
+    );
     let model_job_script = resolve_model_job_script(args.model_job_script.as_deref());
     let python_package_root = model_job_script
         .canonicalize()
@@ -99,7 +103,7 @@ pub async fn entry() -> ExitCode {
         &args.model_job_python,
         &model_job_script,
         &args.model_job_workdir,
-        parser_library,
+        parser_library.clone(),
         Duration::from_secs(args.model_job_timeout_seconds),
         1024 * 1024,
     )
@@ -218,6 +222,7 @@ pub async fn entry() -> ExitCode {
                 loaded.config(),
                 &model_catalog,
                 &python_package_root,
+                &parser_library,
             ) {
                 eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
                 return ExitCode::FAILURE;
@@ -273,6 +278,7 @@ pub async fn entry() -> ExitCode {
                 loaded.config(),
                 config_service.clone(),
                 model_catalog.clone(),
+                parser_library.clone(),
             ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::DryRun),
                 Err(error) => {
@@ -301,6 +307,7 @@ pub async fn entry() -> ExitCode {
                 config_service.clone(),
                 model_catalog.clone(),
                 &python_package_root,
+                parser_library.clone(),
             ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::Production),
                 Err(error) => {
@@ -359,6 +366,13 @@ fn resolve_model_job_script(configured: Option<&Path>) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/model_ingress_job.py")
 }
 
+fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) -> PathBuf {
+    if configured == Path::new("auto") {
+        return bundled.unwrap_or(configured).to_owned();
+    }
+    configured.to_owned()
+}
+
 fn bundled_model_job_script(executable: &Path) -> Option<PathBuf> {
     let release_root = executable.parent()?.parent()?;
     let candidate = release_root.join("scripts/model_ingress_job.py");
@@ -368,8 +382,32 @@ fn bundled_model_job_script(executable: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
-    use super::bundled_model_job_script;
+    use super::{bundled_model_job_script, resolve_deepstream_parser_library};
+
+    #[test]
+    fn cargo_managed_parser_replaces_the_auto_sentinel() {
+        let bundled = Path::new("/cargo/out/libnovasight_parser.so");
+
+        assert_eq!(
+            resolve_deepstream_parser_library(Path::new("auto"), Some(bundled)),
+            bundled
+        );
+    }
+
+    #[test]
+    fn explicitly_configured_parser_path_is_preserved() {
+        let configured = Path::new("/opt/novasight/lib/custom-parser.so");
+
+        assert_eq!(
+            resolve_deepstream_parser_library(
+                configured,
+                Some(Path::new("/cargo/out/libnovasight_parser.so")),
+            ),
+            configured
+        );
+    }
 
     #[test]
     fn installed_daemon_discovers_worker_in_its_own_release() {

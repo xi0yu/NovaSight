@@ -140,6 +140,21 @@ No image reaches appsink, NumPy, OpenCV, or Python postprocessing. The C++
 parser and DeepStream NMS still perform small metadata work on CPU; this path
 guarantees zero CPU image round trip, not zero CPU instructions.
 
+For source-tree development on a Jetson, Cargo owns the native metadata bridge
+and parser build. From `rust/`, no preparatory script or library-path
+environment variable is required:
+
+```bash
+cargo run -p novasightd --features deepstream -- \
+  --config config/novasightd.example.yaml \
+  --dry-run --live-perception
+```
+
+Cargo automatically detects the standard JetPack DeepStream and CUDA install
+locations. `NOVASIGHT_DEEPSTREAM_ROOT` and `NOVASIGHT_CUDA_ROOT` are supported
+only as overrides for non-standard installations. Standalone native scripts
+below remain packaging/ABI-test tools, not development run prerequisites.
+
 Required config values:
 
 ```yaml

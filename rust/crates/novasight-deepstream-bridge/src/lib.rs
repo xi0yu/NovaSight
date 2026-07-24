@@ -113,7 +113,6 @@ pub struct ExtractError {
 }
 
 #[cfg(feature = "ffi")]
-#[link(name = "novasight_deepstream_bridge")]
 unsafe extern "C" {
     fn ns_ds_bridge_abi_version() -> u32;
     fn ns_ds_bridge_frame_snapshot_size() -> u32;

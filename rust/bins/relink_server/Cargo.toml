@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 autobins = false
+build = "build.rs"
 
 [dependencies]
 axum.workspace = true

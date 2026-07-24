@@ -86,6 +86,10 @@ fn loads_the_complete_rust_owned_example() {
     assert_eq!(adapters.capture.appsink_max_buffers, 1);
     assert_eq!(adapters.inference.deepstream_component_id, 1);
     assert_eq!(adapters.inference.deepstream_probe_element, "primary-infer");
+    assert_eq!(
+        adapters.inference.deepstream_parser_library,
+        Path::new("auto")
+    );
     assert!(!adapters.device.auto_connect);
     assert!(adapters.device.host.is_empty());
     assert!(adapters.device.uuid.is_empty());
@@ -330,7 +334,7 @@ fn whitespace_only_parser_library_fails_closed() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let path = directory.join("blank-parser.yaml");
     let document = fs::read_to_string(source).unwrap().replace(
-        "deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so",
+        "deepstream_parser_library: auto",
         "deepstream_parser_library: '   '",
     );
     fs::write(&path, document).unwrap();

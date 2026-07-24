@@ -50,9 +50,17 @@ pub(super) fn build_live_recording_dependencies(
     config: &AppConfig,
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
+    parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
-    build_live_dependencies(config, config_service, model_catalog, device, None)
+    build_live_dependencies(
+        config,
+        config_service,
+        model_catalog,
+        device,
+        None,
+        parser_library,
+    )
 }
 
 pub(super) fn build_live_production_dependencies(
@@ -60,6 +68,7 @@ pub(super) fn build_live_production_dependencies(
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     python_package_root: &Path,
+    parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -71,6 +80,7 @@ pub(super) fn build_live_production_dependencies(
             model_catalog,
             selected.device,
             selected.trigger_poll_interval_ms,
+            parser_library,
         );
     }
     let device: Arc<dyn PointerDevice> = match adapters.device.backend {
@@ -111,6 +121,7 @@ pub(super) fn build_live_production_dependencies(
         model_catalog,
         device,
         Some(adapters.device.trigger_poll_interval_ms),
+        parser_library,
     )
 }
 
@@ -120,11 +131,13 @@ pub(super) fn preflight_live_production(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
     python_package_root: &Path,
+    parser_library: &Path,
 ) -> Result<(), LivePerceptionError> {
     preflight_pointer_adapter(config, python_package_root)?;
     let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
-    let session = build_deepstream_session_config(config, model_catalog, preview, crosshair)?;
+    let session =
+        build_deepstream_session_config(config, model_catalog, preview, crosshair, parser_library)?;
     preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
 }
 
@@ -198,6 +211,7 @@ fn build_live_dependencies(
     model_catalog: SqliteModelCatalog,
     device: Arc<dyn PointerDevice>,
     trigger_poll_interval_ms: Option<u64>,
+    parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -295,6 +309,7 @@ fn build_live_dependencies(
         latest_frames,
         preview,
         crosshair: crosshair.clone(),
+        parser_library,
     }));
     if let Some(crosshair) = crosshair {
         dependencies = dependencies.with_crosshair(crosshair);
@@ -309,6 +324,7 @@ struct CatalogDeepStreamAdapter {
     latest_frames: LatestFrameExchange,
     preview: PreviewHub,
     crosshair: Option<CrosshairHub>,
+    parser_library: PathBuf,
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
@@ -319,6 +335,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &self.model_catalog,
             self.preview.clone(),
             self.crosshair.clone(),
+            &self.parser_library,
         )
         .map(|_| ())
         .map_err(|error| PerceptionError::new(error.to_string()))
@@ -343,6 +360,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
                 &config,
                 &model,
                 Some(candidate.parser_preset.as_str()),
+                &self.parser_library,
             )
             .map(|(_, contract)| Some(contract))
             .map_err(|error| PerceptionError::new(error.to_string())),
@@ -377,6 +395,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &self.model_catalog,
             self.preview.clone(),
             self.crosshair.clone(),
+            &self.parser_library,
         )
         .map_err(|error| PerceptionError::new(error.to_string()))?;
         DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
@@ -389,6 +408,7 @@ fn build_deepstream_session_config(
     model_catalog: &SqliteModelCatalog,
     preview_hub: PreviewHub,
     crosshair_hub: Option<CrosshairHub>,
+    parser_library: &Path,
 ) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
@@ -400,7 +420,7 @@ fn build_deepstream_session_config(
     let (inference, rust_tensorrt) = match adapters.inference.backend {
         InferenceBackend::DeepstreamNvinfer => (
             InferenceStage::DeepStreamNvinfer {
-                config: resolve_active_nvinfer_config(config, model_catalog)?,
+                config: resolve_active_nvinfer_config(config, model_catalog, parser_library)?,
             },
             None,
         ),
@@ -412,7 +432,7 @@ fn build_deepstream_session_config(
     #[cfg(not(feature = "tensorrt"))]
     let inference = match adapters.inference.backend {
         InferenceBackend::DeepstreamNvinfer => InferenceStage::DeepStreamNvinfer {
-            config: resolve_active_nvinfer_config(config, model_catalog)?,
+            config: resolve_active_nvinfer_config(config, model_catalog, parser_library)?,
         },
         InferenceBackend::RustTensorRt => return Err(LivePerceptionError::TensorRtNotCompiled),
     };
@@ -522,9 +542,10 @@ fn resolve_process_path(path: &Path) -> Result<PathBuf, LivePerceptionError> {
 fn resolve_active_nvinfer_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
+    parser_library: &Path,
 ) -> Result<PathBuf, LivePerceptionError> {
     let model = active_runtime_model(model_catalog)?;
-    resolve_model_nvinfer_config(config, &model, None).map(|(path, _)| path)
+    resolve_model_nvinfer_config(config, &model, None, parser_library).map(|(path, _)| path)
 }
 
 fn active_runtime_model(
@@ -548,6 +569,7 @@ fn resolve_model_nvinfer_config(
     config: &AppConfig,
     model: &RuntimeModelArtifact,
     requested_preset: Option<&str>,
+    parser_library: &Path,
 ) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
     let candidate_preflight = requested_preset.is_some();
     let adapters = config
@@ -560,7 +582,7 @@ fn resolve_model_nvinfer_config(
         manifest.output.has_objectness,
     )
     .map_err(|error| manifest_error(error.message()))?;
-    let parser_library = resolve_process_path(&adapters.inference.deepstream_parser_library)?;
+    let parser_library = resolve_process_path(parser_library)?;
     let source = generate_nvinfer_config(
         manifest,
         &model.artifact_path,
