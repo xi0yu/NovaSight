@@ -66,6 +66,7 @@ pub struct AdmissionContext {
 pub struct AdmittedFrame {
     batch: DetectionBatch,
     filtered_without_detector_confidence: u32,
+    truncated_detections: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +130,12 @@ impl AdmittedFrame {
     pub const fn filtered_without_detector_confidence(&self) -> u32 {
         self.filtered_without_detector_confidence
     }
+
+    /// Number of vendor objects omitted by the fixed-capacity bridge snapshot.
+    /// The retained batch remains structurally valid and usable.
+    pub const fn truncated_detections(&self) -> u32 {
+        self.truncated_detections
+    }
 }
 
 /// Convert one caller-owned ABI snapshot into the only perception type that
@@ -146,11 +153,6 @@ pub fn admit_snapshot(
         return Err(AdmissionError::DetectionCount {
             actual: snapshot.detection_count,
             maximum: MAX_DETECTIONS,
-        });
-    }
-    if snapshot.has_flag(FRAME_DETECTIONS_TRUNCATED) || snapshot.truncated_count != 0 {
-        return Err(AdmissionError::Truncated {
-            omitted: snapshot.truncated_count,
         });
     }
     if snapshot.invalid_object_count != 0 {
@@ -211,6 +213,7 @@ pub fn admit_snapshot(
     Ok(AdmittedFrame {
         batch,
         filtered_without_detector_confidence,
+        truncated_detections: snapshot.truncated_count,
     })
 }
 

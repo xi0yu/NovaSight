@@ -674,13 +674,10 @@ fn resolve_model_nvinfer_config(
         .map_err(LivePerceptionError::Config)?;
     let parsed_manifest = validate_runtime_model(config, model)?;
     let manifest = &parsed_manifest.document;
-    if manifest.postprocess.max_detections == 0
-        || manifest.postprocess.max_detections as usize > DEEPSTREAM_MAX_DETECTIONS
-    {
-        return Err(manifest_error(format!(
-            "DeepStream bridge requires postprocess.max_detections within 1..={DEEPSTREAM_MAX_DETECTIONS}, got {}",
-            manifest.postprocess.max_detections
-        )));
+    if manifest.postprocess.max_detections == 0 {
+        return Err(manifest_error(
+            "postprocess.max_detections must be positive",
+        ));
     }
     let requested_preset = validate_parser_preset(
         requested_preset.unwrap_or(manifest.postprocess.parser_preset.as_str()),
@@ -958,7 +955,7 @@ fn generate_nvinfer_config(
         parser.cluster_mode,
         manifest.postprocess.confidence_threshold,
         manifest.postprocess.nms_iou_threshold,
-        manifest.postprocess.max_detections,
+        effective_deepstream_max_detections(manifest),
     );
     let values = parse_ini_values(&source);
     validate_ini_string(&values, "model-engine-file", engine_value)?;
@@ -1441,7 +1438,7 @@ fn validate_nvinfer_manifest_contract(
     validate_ini_integer(
         &values,
         "topk",
-        i64::from(manifest.postprocess.max_detections),
+        i64::from(effective_deepstream_max_detections(manifest)),
     )?;
     validate_ini_float(&values, "net-scale-factor", manifest.input.scale_factor)?;
     validate_ini_string(&values, "parse-bbox-func-name", parser.function)?;
@@ -1458,6 +1455,13 @@ fn validate_nvinfer_manifest_contract(
     };
     validate_ini_string(&values, "output-blob-names", &output_names)?;
     Ok(())
+}
+
+fn effective_deepstream_max_detections(manifest: &ModelManifest) -> u32 {
+    manifest
+        .postprocess
+        .max_detections
+        .min(DEEPSTREAM_MAX_DETECTIONS as u32)
 }
 
 fn resolve_parser_contract(

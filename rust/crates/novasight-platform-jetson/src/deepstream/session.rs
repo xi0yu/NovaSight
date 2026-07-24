@@ -101,6 +101,7 @@ pub struct SessionMetrics {
     pub unavailable_snapshot_slots: u64,
     pub extraction_rejections: u64,
     pub admission_rejections: u64,
+    pub truncated_detections: u64,
     pub ingress_rejections: u64,
 }
 
@@ -113,6 +114,7 @@ struct AtomicSessionMetrics {
     unavailable_snapshot_slots: AtomicU64,
     extraction_rejections: AtomicU64,
     admission_rejections: AtomicU64,
+    truncated_detections: AtomicU64,
     ingress_rejections: AtomicU64,
 }
 
@@ -126,6 +128,7 @@ impl AtomicSessionMetrics {
             unavailable_snapshot_slots: self.unavailable_snapshot_slots.load(Ordering::Relaxed),
             extraction_rejections: self.extraction_rejections.load(Ordering::Relaxed),
             admission_rejections: self.admission_rejections.load(Ordering::Relaxed),
+            truncated_detections: self.truncated_detections.load(Ordering::Relaxed),
             ingress_rejections: self.ingress_rejections.load(Ordering::Relaxed),
         }
     }
@@ -504,6 +507,7 @@ impl PerceptionSession for DeepStreamSession {
             unavailable_snapshot_slots: metrics.unavailable_snapshot_slots,
             extraction_rejections: metrics.extraction_rejections,
             admission_rejections: metrics.admission_rejections,
+            truncated_detections: metrics.truncated_detections,
             ingress_rejections: metrics.ingress_rejections,
         }
     }
@@ -1154,6 +1158,10 @@ fn run_snapshot_worker(
         let admitted = match processor {
             SnapshotProcessor::DeepStreamMetadata => admit_snapshot(snapshot, admission_context)
                 .map(|admitted| {
+                    state.metrics.truncated_detections.fetch_add(
+                        u64::from(admitted.truncated_detections()),
+                        Ordering::Relaxed,
+                    );
                     let batch = admitted.into_batch();
                     (
                         batch.stamp(),

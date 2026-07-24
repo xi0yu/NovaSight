@@ -68,6 +68,7 @@ pub struct PerceptionMetrics {
     pub unavailable_snapshot_slots: u64,
     pub extraction_rejections: u64,
     pub admission_rejections: u64,
+    pub truncated_detections: u64,
     pub ingress_rejections: u64,
 }
 
