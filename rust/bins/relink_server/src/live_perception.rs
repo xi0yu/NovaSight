@@ -11,12 +11,16 @@ use std::time::Duration;
 
 use novasight_core::control::dual_phase_v2::DualPhaseConfig;
 use novasight_core::tracking::TargetingConfig;
-use novasight_core::{Clock, PointerDevice, RecordingPointerDevice, RuntimeEpoch};
+use novasight_core::{
+    CaptureCapabilityProbe, CaptureSelectionPreference, Clock, PointerDevice,
+    RecordingPointerDevice, RuntimeEpoch, select_capture_profile_for_formats,
+};
+use novasight_deepstream_bridge::MAX_DETECTIONS as DEEPSTREAM_MAX_DETECTIONS;
 use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
     ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
-    PerceptionEvent, PerceptionModelContract, PerceptionSession, PipelineConfig, PipelineIngress,
-    PreviewHub, validate_parser_preset,
+    PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
+    PipelineConfig, PipelineIngress, PreviewHub, validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 #[cfg(feature = "tensorrt")]
@@ -31,10 +35,11 @@ use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostCon
 use novasight_platform_jetson::kmnet_native::{
     KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError,
 };
+use novasight_platform_jetson::v4l2::V4l2CapabilityProbe;
 use novasight_runtime::{ConfigService, RuntimeDependencies};
 use novasight_store::config::{
-    AppConfig, CapturePreference, ConfigValidationError, DeviceBackend, DeviceConfig,
-    InferenceBackend, parse_target_class_aim_y_ratios, parse_target_class_filter,
+    AppConfig, CaptureConfig, CapturePreference, ConfigValidationError, DeviceBackend,
+    DeviceConfig, InferenceBackend, parse_target_class_aim_y_ratios, parse_target_class_filter,
     parse_target_class_priority,
 };
 use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
@@ -214,13 +219,10 @@ fn build_live_dependencies(
     parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
-        .require_production_adapters()
+        .require_vision_adapters()
         .map_err(LivePerceptionError::Config)?;
     if !adapters.inference.enabled {
         return Err(LivePerceptionError::InferenceDisabled);
-    }
-    if adapters.capture.preference != CapturePreference::Manual {
-        return Err(LivePerceptionError::AutomaticCaptureUnsupported);
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
     let latest_frames = LatestFrameExchange::new();
@@ -291,8 +293,8 @@ fn build_live_dependencies(
                 source_width: adapters.capture.width,
                 roi_width: adapters.capture.roi_width,
                 roi_height: adapters.capture.roi_height,
-                observation_width: adapters.inference.model_width,
-                observation_height: adapters.inference.model_height,
+                observation_width: 0,
+                observation_height: 0,
                 residual_cap: adapters.pipeline.residual_cap,
             },
             max_command_age_ns: adapters.pipeline.max_command_age_ms * 1_000_000,
@@ -317,6 +319,45 @@ fn build_live_dependencies(
     Ok(dependencies)
 }
 
+fn resolve_capture_plan(capture: &CaptureConfig) -> Result<CaptureConfig, LivePerceptionError> {
+    if capture.preference == CapturePreference::Manual {
+        parse_capture_format(&capture.pixel_format)?;
+        return Ok(capture.clone());
+    }
+    let capabilities = V4l2CapabilityProbe
+        .probe(&capture.device.to_string_lossy())
+        .map_err(|error| LivePerceptionError::CaptureProbe(error.to_string()))?;
+    let preference = match capture.preference {
+        CapturePreference::AutoHighFps => CaptureSelectionPreference::AutoHighFps,
+        CapturePreference::AutoLowLatency => CaptureSelectionPreference::AutoLowLatency,
+        CapturePreference::AutoBalanced => CaptureSelectionPreference::AutoBalanced,
+        CapturePreference::Manual => unreachable!(),
+    };
+    let selected = select_capture_profile_for_formats(
+        &capabilities,
+        preference,
+        None,
+        &["MJPG", "NV12", "YUYV"],
+    )
+    .map_err(|error| LivePerceptionError::CaptureSelection(error.to_string()))?;
+    let mut resolved = capture.clone();
+    resolved.preference = CapturePreference::Manual;
+    resolved.pixel_format = selected.pixel_format;
+    resolved.width = selected.width;
+    resolved.height = selected.height;
+    resolved.fps = selected.fps;
+    if resolved.roi_width == 0 || resolved.roi_height == 0 {
+        resolved.roi_left = 0;
+        resolved.roi_top = 0;
+        resolved.roi_width = resolved.width;
+        resolved.roi_height = resolved.height;
+    }
+    resolved
+        .validate_runtime_plan()
+        .map_err(LivePerceptionError::Config)?;
+    Ok(resolved)
+}
+
 #[derive(Clone, Debug)]
 struct CatalogDeepStreamAdapter {
     config: ConfigService,
@@ -329,7 +370,7 @@ struct CatalogDeepStreamAdapter {
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
     fn preflight(&self) -> Result<(), PerceptionError> {
-        let config = self.config.blocking_snapshot();
+        let config = self.config.blocking_effective_snapshot();
         build_deepstream_session_config(
             &config,
             &self.model_catalog,
@@ -345,15 +386,14 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         &self,
         candidate: &ModelCandidate,
     ) -> Result<Option<PerceptionModelContract>, PerceptionError> {
-        let config = self.config.blocking_snapshot();
+        let config = self.config.blocking_effective_snapshot();
         let model = self
             .model_catalog
             .runtime_artifact(candidate.project_id, candidate.artifact_id)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
         let backend = config
-            .require_production_adapters()
+            .require_inference_adapter()
             .map_err(|error| PerceptionError::new(error.to_string()))?
-            .inference
             .backend;
         match backend {
             InferenceBackend::DeepstreamNvinfer => resolve_model_nvinfer_config(
@@ -381,6 +421,46 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         }
     }
 
+    fn runtime_contract(&self) -> Result<Option<PerceptionRuntimeContract>, PerceptionError> {
+        let config = self.config.blocking_effective_snapshot();
+        let capture = config
+            .require_vision_adapters()
+            .map_err(|error| PerceptionError::new(error.to_string()))
+            .and_then(|adapters| {
+                resolve_capture_plan(adapters.capture)
+                    .map_err(|error| PerceptionError::new(error.to_string()))
+            })?;
+        let model = active_runtime_model(&self.model_catalog)
+            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        let backend = config
+            .require_inference_adapter()
+            .map_err(|error| PerceptionError::new(error.to_string()))?
+            .backend;
+        let model = match backend {
+            InferenceBackend::DeepstreamNvinfer => {
+                resolve_model_nvinfer_config(&config, &model, None, &self.parser_library)
+                    .map(|(_, contract)| contract)
+            }
+            InferenceBackend::RustTensorRt => {
+                #[cfg(feature = "tensorrt")]
+                {
+                    resolve_model_rust_contract(&config, &model, "auto")
+                }
+                #[cfg(not(feature = "tensorrt"))]
+                {
+                    Err(LivePerceptionError::TensorRtNotCompiled)
+                }
+            }
+        }
+        .map_err(|error| PerceptionError::new(error.to_string()))?;
+        Ok(Some(PerceptionRuntimeContract {
+            model,
+            source_width: capture.width,
+            roi_width: capture.roi_width,
+            roi_height: capture.roi_height,
+        }))
+    }
+
     fn start(
         &self,
         epoch: RuntimeEpoch,
@@ -388,7 +468,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         clock: Arc<dyn Clock>,
         events: std::sync::mpsc::SyncSender<PerceptionEvent>,
     ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
-        let current = self.config.blocking_snapshot();
+        let current = self.config.blocking_effective_snapshot();
         self.preview.configure(current.consumers.preview);
         let config = build_deepstream_session_config(
             &current,
@@ -411,49 +491,66 @@ fn build_deepstream_session_config(
     parser_library: &Path,
 ) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
     let adapters = config
-        .require_production_adapters()
+        .require_vision_adapters()
         .map_err(LivePerceptionError::Config)?;
-    let format = parse_capture_format(&adapters.capture.pixel_format)?;
+    let capture = resolve_capture_plan(adapters.capture)?;
+    let format = parse_capture_format(&capture.pixel_format)?;
     let io_mode = u32::try_from(adapters.inference.deepstream_io_mode)
         .map_err(|_| LivePerceptionError::InvalidIoMode(adapters.inference.deepstream_io_mode))?;
     #[cfg(feature = "tensorrt")]
-    let (inference, rust_tensorrt) = match adapters.inference.backend {
-        InferenceBackend::DeepstreamNvinfer => (
-            InferenceStage::DeepStreamNvinfer {
-                config: resolve_active_nvinfer_config(config, model_catalog, parser_library)?,
-            },
-            None,
-        ),
-        InferenceBackend::RustTensorRt => (
-            InferenceStage::RustTensorRt,
-            Some(resolve_active_rust_tensorrt_config(config, model_catalog)?),
-        ),
+    let (inference, rust_tensorrt, model_contract) = match adapters.inference.backend {
+        InferenceBackend::DeepstreamNvinfer => {
+            let (path, contract) =
+                resolve_active_nvinfer_config(config, model_catalog, parser_library)?;
+            (
+                if contract.preserves_roi_coordinates {
+                    InferenceStage::DeepStreamNvinferAspectPreserving { config: path }
+                } else {
+                    InferenceStage::DeepStreamNvinfer { config: path }
+                },
+                None,
+                contract,
+            )
+        }
+        InferenceBackend::RustTensorRt => {
+            let (runtime, contract) = resolve_active_rust_tensorrt_config(config, model_catalog)?;
+            (InferenceStage::RustTensorRt, Some(runtime), contract)
+        }
     };
     #[cfg(not(feature = "tensorrt"))]
-    let inference = match adapters.inference.backend {
-        InferenceBackend::DeepstreamNvinfer => InferenceStage::DeepStreamNvinfer {
-            config: resolve_active_nvinfer_config(config, model_catalog, parser_library)?,
-        },
+    let (inference, model_contract) = match adapters.inference.backend {
+        InferenceBackend::DeepstreamNvinfer => {
+            let (path, contract) =
+                resolve_active_nvinfer_config(config, model_catalog, parser_library)?;
+            (
+                if contract.preserves_roi_coordinates {
+                    InferenceStage::DeepStreamNvinferAspectPreserving { config: path }
+                } else {
+                    InferenceStage::DeepStreamNvinfer { config: path }
+                },
+                contract,
+            )
+        }
         InferenceBackend::RustTensorRt => return Err(LivePerceptionError::TensorRtNotCompiled),
     };
     let pipeline = DeepStreamPipelineSpec {
-        device: adapters.capture.device.clone(),
+        device: capture.device.clone(),
         capture: CaptureProfile {
-            width: adapters.capture.width,
-            height: adapters.capture.height,
-            fps: adapters.capture.fps,
+            width: capture.width,
+            height: capture.height,
+            fps: capture.fps,
             format,
         },
         io_mode,
         roi: Roi {
-            left: adapters.capture.roi_left,
-            top: adapters.capture.roi_top,
-            width: adapters.capture.roi_width,
-            height: adapters.capture.roi_height,
+            left: capture.roi_left,
+            top: capture.roi_top,
+            width: capture.roi_width,
+            height: capture.roi_height,
         },
         model_input: ModelInput {
-            width: adapters.inference.model_width,
-            height: adapters.inference.model_height,
+            width: model_contract.input_width,
+            height: model_contract.input_height,
         },
         inference,
         batched_push_timeout_us: adapters.inference.deepstream_batched_push_timeout_us,
@@ -543,9 +640,9 @@ fn resolve_active_nvinfer_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
     parser_library: &Path,
-) -> Result<PathBuf, LivePerceptionError> {
+) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
     let model = active_runtime_model(model_catalog)?;
-    resolve_model_nvinfer_config(config, &model, None, parser_library).map(|(path, _)| path)
+    resolve_model_nvinfer_config(config, &model, None, parser_library)
 }
 
 fn active_runtime_model(
@@ -572,11 +669,19 @@ fn resolve_model_nvinfer_config(
     parser_library: &Path,
 ) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
     let candidate_preflight = requested_preset.is_some();
-    let adapters = config
-        .require_production_adapters()
+    let inference = config
+        .require_inference_adapter()
         .map_err(LivePerceptionError::Config)?;
     let parsed_manifest = validate_runtime_model(config, model)?;
     let manifest = &parsed_manifest.document;
+    if manifest.postprocess.max_detections == 0
+        || manifest.postprocess.max_detections as usize > DEEPSTREAM_MAX_DETECTIONS
+    {
+        return Err(manifest_error(format!(
+            "DeepStream bridge requires postprocess.max_detections within 1..={DEEPSTREAM_MAX_DETECTIONS}, got {}",
+            manifest.postprocess.max_detections
+        )));
+    }
     let requested_preset = validate_parser_preset(
         requested_preset.unwrap_or(manifest.postprocess.parser_preset.as_str()),
         manifest.output.has_objectness,
@@ -587,7 +692,7 @@ fn resolve_model_nvinfer_config(
         manifest,
         &model.artifact_path,
         &parser_library,
-        adapters.inference.deepstream_component_id,
+        inference.deepstream_component_id,
     )?;
     validate_nvinfer_manifest_contract(&source, manifest)?;
     let runtime_directory =
@@ -612,6 +717,9 @@ fn resolve_model_nvinfer_config(
         .join("x");
     let contract = PerceptionModelContract {
         input_shape,
+        input_width: manifest_input_dimension(manifest, 3, "width")?,
+        input_height: manifest_input_dimension(manifest, 2, "height")?,
+        preserves_roi_coordinates: manifest.input.maintain_aspect_ratio,
         classes: manifest.output.class_names.clone(),
         parser: PerceptionParserContract {
             requested_preset,
@@ -629,12 +737,27 @@ fn resolve_model_nvinfer_config(
     Ok((path, contract))
 }
 
+fn manifest_input_dimension(
+    manifest: &ModelManifest,
+    index: usize,
+    label: &'static str,
+) -> Result<u32, LivePerceptionError> {
+    manifest
+        .input
+        .shape
+        .get(index)
+        .copied()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| manifest_error(format!("input {label} exceeds runtime limits")))
+}
+
 fn validate_runtime_model(
     config: &AppConfig,
     model: &RuntimeModelArtifact,
 ) -> Result<ParsedModelManifest, LivePerceptionError> {
-    let adapters = config
-        .require_production_adapters()
+    config
+        .require_inference_adapter()
         .map_err(LivePerceptionError::Config)?;
     if model.artifact.kind != "engine" {
         return Err(LivePerceptionError::ActiveArtifactKind {
@@ -659,10 +782,6 @@ fn validate_runtime_model(
         &model.artifact_path,
         manifest,
         parsed_manifest.output_class_names_present,
-        adapters.inference.confidence_threshold,
-        adapters.inference.nms_threshold,
-        adapters.inference.model_width,
-        adapters.inference.model_height,
     )?;
     let registry_sha = normalize_registry_checksum(&model.artifact.checksum).ok_or_else(|| {
         LivePerceptionError::RegistryChecksumInvalid {
@@ -685,7 +804,7 @@ fn validate_runtime_model(
 fn resolve_active_rust_tensorrt_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
-) -> Result<CudaTensorRtConfig, LivePerceptionError> {
+) -> Result<(CudaTensorRtConfig, PerceptionModelContract), LivePerceptionError> {
     let model = active_runtime_model(model_catalog)?;
     let parsed = validate_runtime_model(config, &model)?;
     // Preserve the same parser preset and output-shape validation used by the
@@ -698,11 +817,16 @@ fn resolve_active_rust_tensorrt_config(
     resolve_parser_contract(&parsed.document)?;
     let contract = resolve_rust_tensorrt_contract(&parsed.document)
         .map_err(|error| manifest_error(error.to_string()))?;
-    Ok(CudaTensorRtConfig {
-        engine_path: model.artifact_path,
-        input: contract.input,
-        decoder: contract.decoder,
-    })
+    let runtime_contract =
+        resolve_model_rust_contract(config, &model, &parsed.document.postprocess.parser_preset)?;
+    Ok((
+        CudaTensorRtConfig {
+            engine_path: model.artifact_path,
+            input: contract.input,
+            decoder: contract.decoder,
+        },
+        runtime_contract,
+    ))
 }
 
 #[cfg(feature = "tensorrt")]
@@ -736,6 +860,9 @@ fn resolve_model_rust_contract(
             .map(u64::to_string)
             .collect::<Vec<_>>()
             .join("x"),
+        input_width: manifest_input_dimension(manifest, 3, "width")?,
+        input_height: manifest_input_dimension(manifest, 2, "height")?,
+        preserves_roi_coordinates: false,
         classes: manifest.output.class_names.clone(),
         parser: PerceptionParserContract {
             requested_preset,
@@ -831,7 +958,7 @@ fn generate_nvinfer_config(
         parser.cluster_mode,
         manifest.postprocess.confidence_threshold,
         manifest.postprocess.nms_iou_threshold,
-        manifest.postprocess.max_detections.max(1),
+        manifest.postprocess.max_detections,
     );
     let values = parse_ini_values(&source);
     validate_ini_string(&values, "model-engine-file", engine_value)?;
@@ -942,12 +1069,8 @@ fn validate_model_document(
     engine: &Path,
     document: &ModelManifest,
     output_class_names_present: bool,
-    confidence_threshold: f64,
-    nms_threshold: f64,
-    model_width: u32,
-    model_height: u32,
 ) -> Result<String, LivePerceptionError> {
-    validate_manifest_shape(document, model_width, model_height)?;
+    validate_manifest_shape(document)?;
     if !document.validated {
         return Err(manifest_error("model manifest must have validated=true"));
     }
@@ -961,15 +1084,13 @@ fn validate_model_document(
             "model_fingerprint {fingerprint} does not match canonical content {computed_fingerprint}"
         )));
     }
-    validate_manifest_threshold(
+    validate_manifest_probability(
         "postprocess.confidence_threshold",
         document.postprocess.confidence_threshold,
-        confidence_threshold,
     )?;
-    validate_manifest_threshold(
+    validate_manifest_probability(
         "postprocess.nms_iou_threshold",
         document.postprocess.nms_iou_threshold,
-        nms_threshold,
     )?;
     let engine_name = engine
         .file_name()
@@ -1003,14 +1124,13 @@ fn validate_model_document(
     Ok(actual_sha)
 }
 
-fn validate_manifest_threshold(
+fn validate_manifest_probability(
     field: &'static str,
     actual: f64,
-    expected: f64,
 ) -> Result<(), LivePerceptionError> {
-    if !actual.is_finite() || (actual - expected).abs() > 1e-6 {
+    if !actual.is_finite() || !(0.0..=1.0).contains(&actual) {
         return Err(manifest_error(format!(
-            "manifest {field}={actual} does not match YAML {expected}"
+            "manifest {field} must be in [0, 1]"
         )));
     }
     Ok(())
@@ -1022,11 +1142,7 @@ struct ParserContract {
     cluster_mode: i64,
 }
 
-fn validate_manifest_shape(
-    manifest: &ModelManifest,
-    model_width: u32,
-    model_height: u32,
-) -> Result<(), LivePerceptionError> {
+fn validate_manifest_shape(manifest: &ModelManifest) -> Result<(), LivePerceptionError> {
     if manifest.schema_version != 1 {
         return Err(manifest_error(format!(
             "unsupported schema_version {}; expected 1",
@@ -1076,11 +1192,9 @@ fn validate_manifest_shape(
     if !manifest.input.layout.eq_ignore_ascii_case("NCHW")
         || manifest.input.shape.len() != 4
         || manifest.input.shape[0] != 1
-        || manifest.input.shape[2] != u64::from(model_height)
-        || manifest.input.shape[3] != u64::from(model_width)
     {
         return Err(manifest_error(format!(
-            "input {:?} {} does not match configured 1xCx{model_height}x{model_width} NCHW",
+            "input {:?} {} must be batch-one NCHW with positive dimensions",
             manifest.input.shape, manifest.input.layout
         )));
     }
@@ -1327,7 +1441,7 @@ fn validate_nvinfer_manifest_contract(
     validate_ini_integer(
         &values,
         "topk",
-        i64::from(manifest.postprocess.max_detections.max(1)),
+        i64::from(manifest.postprocess.max_detections),
     )?;
     validate_ini_float(&values, "net-scale-factor", manifest.input.scale_factor)?;
     validate_ini_string(&values, "parse-bbox-func-name", parser.function)?;
@@ -1355,11 +1469,12 @@ fn resolve_parser_contract(
     match parser.as_str() {
         "decoded_nms" => {
             if format != "decoded_boxes6"
-                || manifest.output.shape.len() != 3
-                || manifest.output.shape[0] != 1
-                || manifest.output.shape[2] != 6
+                || manifest.output.shape.last().copied() != Some(6)
+                || manifest.output.shape.iter().product::<u64>() % 6 != 0
             {
-                return Err(manifest_error("decoded_nms requires output shape [1,N,6]"));
+                return Err(manifest_error(
+                    "decoded_nms requires a positive output shape whose last dimension is 6",
+                ));
             }
             Ok(ParserContract {
                 function: "NvDsInferParseNovaSightDecodedNms",
@@ -1713,8 +1828,10 @@ pub(super) enum LivePerceptionError {
     },
     #[error("live DeepStream requires inference.enabled=true")]
     InferenceDisabled,
-    #[error("live DeepStream currently requires capture.preference=manual")]
-    AutomaticCaptureUnsupported,
+    #[error("capture capability probe failed: {0}")]
+    CaptureProbe(String),
+    #[error("capture profile cannot be resolved for the selected Jetson adapter: {0}")]
+    CaptureSelection(String),
     #[error("kmNet production adapter failed: {0}")]
     KmNet(KmNetError),
     #[cfg(feature = "experimental-kmnet-native")]

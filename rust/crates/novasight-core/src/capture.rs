@@ -46,6 +46,13 @@ pub struct SelectedCaptureProfile {
 pub enum CaptureSelectionError {
     #[error("no capture capabilities available for {device}")]
     NoCapabilities { device: String },
+    #[error(
+        "capture device {device} has profiles, but the selected adapter supports only {supported_formats}"
+    )]
+    AdapterUnsupportedFormats {
+        device: String,
+        supported_formats: String,
+    },
     #[error("manual capture selection requires pixel_format, width, height, and fps")]
     ManualFieldsRequired,
     #[error("unsupported capture profile for {device}: {pixel_format} {width}x{height}@{fps}")]
@@ -63,9 +70,32 @@ pub fn select_capture_profile(
     preference: CaptureSelectionPreference,
     manual: Option<(&str, u32, u32, u32)>,
 ) -> Result<SelectedCaptureProfile, CaptureSelectionError> {
+    select_capture_profile_for_formats(capabilities, preference, manual, &[])
+}
+
+/// Resolve a concrete profile from the intersection of device capabilities
+/// and the formats implemented by the selected capture adapter. An empty
+/// allow-list preserves the platform-neutral selector behavior.
+pub fn select_capture_profile_for_formats(
+    capabilities: &CaptureCapabilities,
+    preference: CaptureSelectionPreference,
+    manual: Option<(&str, u32, u32, u32)>,
+    supported_formats: &[&str],
+) -> Result<SelectedCaptureProfile, CaptureSelectionError> {
+    let device_has_profiles = capabilities
+        .capabilities
+        .iter()
+        .any(|capability| !capability.fps_list.is_empty());
     let choices = capabilities
         .capabilities
         .iter()
+        .filter(|capability| {
+            supported_formats.is_empty()
+                || supported_formats.iter().any(|supported| {
+                    canonical_pixel_format(supported)
+                        == canonical_pixel_format(&capability.pixel_format)
+                })
+        })
         .flat_map(|capability| {
             capability.fps_list.iter().map(move |fps| {
                 (
@@ -78,6 +108,12 @@ pub fn select_capture_profile(
         })
         .collect::<Vec<_>>();
     if choices.is_empty() {
+        if device_has_profiles && !supported_formats.is_empty() {
+            return Err(CaptureSelectionError::AdapterUnsupportedFormats {
+                device: capabilities.device.clone(),
+                supported_formats: supported_formats.join(", "),
+            });
+        }
         return Err(CaptureSelectionError::NoCapabilities {
             device: capabilities.device.clone(),
         });

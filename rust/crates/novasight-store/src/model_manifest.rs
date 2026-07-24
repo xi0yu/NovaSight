@@ -177,7 +177,7 @@ const fn default_nms() -> f64 {
     0.45
 }
 const fn default_max_detections() -> u32 {
-    300
+    256
 }
 
 #[cfg(test)]

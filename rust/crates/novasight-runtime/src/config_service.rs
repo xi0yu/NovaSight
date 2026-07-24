@@ -38,6 +38,7 @@ pub(crate) struct PersistedOutputGate<'a> {
     _update_guard: MutexGuard<'a, ()>,
     current_guard: RwLockWriteGuard<'a, AppConfig>,
     effective_revision: &'a AtomicU64,
+    effective_config: &'a std::sync::RwLock<AppConfig>,
     output_gate_consistent: &'a std::sync::atomic::AtomicBool,
     config: AppConfig,
 }
@@ -45,6 +46,10 @@ pub(crate) struct PersistedOutputGate<'a> {
 impl PersistedOutputGate<'_> {
     pub(crate) fn commit(mut self) -> ConfigUpdate {
         *self.current_guard = self.config.clone();
+        *self
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.config.clone();
         self.effective_revision
             .store(self.config.revision, Ordering::Release);
         self.output_gate_consistent.store(true, Ordering::Release);
@@ -68,6 +73,7 @@ struct ConfigServiceInner {
     repository: YamlConfigRepository,
     current: RwLock<AppConfig>,
     effective_revision: AtomicU64,
+    effective_config: std::sync::RwLock<AppConfig>,
     output_gate_consistent: std::sync::atomic::AtomicBool,
     update_lock: Mutex<()>,
     #[cfg(test)]
@@ -97,8 +103,9 @@ impl ConfigService {
         Self {
             inner: Arc::new(ConfigServiceInner {
                 repository: YamlConfigRepository::new(path),
-                current: RwLock::new(initial),
+                current: RwLock::new(initial.clone()),
                 effective_revision: AtomicU64::new(effective_revision),
+                effective_config: std::sync::RwLock::new(initial),
                 output_gate_consistent: std::sync::atomic::AtomicBool::new(true),
                 update_lock: Mutex::new(()),
                 #[cfg(test)]
@@ -115,11 +122,21 @@ impl ConfigService {
         self.inner.effective_revision.load(Ordering::Acquire)
     }
 
-    /// Read the daemon's current configuration from a blocking adapter task.
-    /// Runtime preflight and startup use `spawn_blocking`, so they can safely
-    /// consume the same revision that the control plane owns.
+    /// Read the latest desired configuration from a blocking control task.
+    /// Runtime adapters should use [`Self::blocking_effective_snapshot`].
     pub fn blocking_snapshot(&self) -> AppConfig {
         self.inner.current.blocking_read().clone()
+    }
+
+    /// The configuration actually installed in the running process. Model
+    /// publication uses this view so unrelated desired edits cannot block or
+    /// silently alter candidate validation before a restart.
+    pub fn blocking_effective_snapshot(&self) -> AppConfig {
+        self.inner
+            .effective_config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub async fn ensure_effective(&self) -> Result<(), ConfigServiceError> {
@@ -157,6 +174,12 @@ impl ConfigService {
                 desired_revision,
             });
         }
+        let effective = self.inner.current.read().await.clone();
+        *self
+            .inner
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = effective;
         self.inner
             .effective_revision
             .store(applied_revision, Ordering::Release);
@@ -202,6 +225,11 @@ impl ConfigService {
         .await
         .map_err(ConfigServiceError::SaveTask)??;
         *self.inner.current.write().await = config.clone();
+        *self
+            .inner
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.clone();
         self.inner
             .effective_revision
             .store(config.revision, Ordering::Release);
@@ -388,6 +416,7 @@ impl ConfigService {
             _update_guard,
             current_guard,
             effective_revision: &self.inner.effective_revision,
+            effective_config: &self.inner.effective_config,
             output_gate_consistent: &self.inner.output_gate_consistent,
             config,
         })

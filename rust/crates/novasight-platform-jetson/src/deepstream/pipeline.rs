@@ -48,6 +48,7 @@ pub struct CrosshairPipelineConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InferenceStage {
     DeepStreamNvinfer { config: PathBuf },
+    DeepStreamNvinferAspectPreserving { config: PathBuf },
     RustTensorRt,
 }
 
@@ -110,6 +111,20 @@ impl DeepStreamPipelineSpec {
         }
         let right = self.roi.left + self.roi.width;
         let bottom = self.roi.top + self.roi.height;
+        let preserve_roi_aspect = matches!(
+            self.inference,
+            InferenceStage::DeepStreamNvinferAspectPreserving { .. }
+        );
+        let inference_width = if preserve_roi_aspect {
+            self.roi.width
+        } else {
+            self.model_input.width
+        };
+        let inference_height = if preserve_roi_aspect {
+            self.roi.height
+        } else {
+            self.model_input.height
+        };
         elements.extend([
             format!(
                 "nvvidconv left={} right={right} top={} bottom={bottom}",
@@ -117,7 +132,7 @@ impl DeepStreamPipelineSpec {
             ),
             format!(
                 "video/x-raw(memory:NVMM),format=NV12,width={},height={},pixel-aspect-ratio=1/1",
-                self.model_input.width, self.model_input.height
+                inference_width, inference_height
             ),
             LATEST_ONLY_QUEUE.to_owned(),
         ]);
@@ -125,7 +140,8 @@ impl DeepStreamPipelineSpec {
         // syntax deliberately has no `!` between `mux.sink_0` and the named mux
         // declaration that starts the downstream branch.
         let inference = match &self.inference {
-            InferenceStage::DeepStreamNvinfer { config } => format!(
+            InferenceStage::DeepStreamNvinfer { config }
+            | InferenceStage::DeepStreamNvinferAspectPreserving { config } => format!(
                 "nvinfer name={} config-file-path={} batch-size=1",
                 self.inference_element,
                 gst_string(config)
@@ -137,8 +153,8 @@ impl DeepStreamPipelineSpec {
         let main = format!(
             "{} ! mux.sink_0 nvstreammux name=mux batch-size=1 live-source=1 width={} height={} sync-inputs=0 batched-push-timeout={} ! {inference} ! fakesink name=deepstream-sink sync=false async=false qos=false",
             elements.join(" ! "),
-            self.model_input.width,
-            self.model_input.height,
+            inference_width,
+            inference_height,
             self.batched_push_timeout_us,
         );
         let mut branches = Vec::new();
@@ -168,10 +184,14 @@ impl DeepStreamPipelineSpec {
         if path_is_blank(&self.device) {
             return Err(PipelineSpecError::BlankDevice);
         }
-        if let InferenceStage::DeepStreamNvinfer { config } = &self.inference
-            && path_is_blank(config)
-        {
-            return Err(PipelineSpecError::BlankNvinferConfig);
+        match &self.inference {
+            InferenceStage::DeepStreamNvinfer { config }
+            | InferenceStage::DeepStreamNvinferAspectPreserving { config }
+                if path_is_blank(config) =>
+            {
+                return Err(PipelineSpecError::BlankNvinferConfig);
+            }
+            _ => {}
         }
         if self.inference_element.trim().is_empty() {
             return Err(PipelineSpecError::BlankInferenceElement);

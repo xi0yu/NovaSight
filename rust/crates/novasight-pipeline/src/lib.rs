@@ -22,7 +22,8 @@ pub use crosshair::{
 pub use motion_profile::{MotionProfileHub, MotionProfileSource, MotionProfileStatus};
 pub use perception::{
     ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionEvent,
-    PerceptionMetrics, PerceptionModelContract, PerceptionSession, validate_parser_preset,
+    PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
+    validate_parser_preset,
 };
 pub use preview::{PreviewError, PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription};
 

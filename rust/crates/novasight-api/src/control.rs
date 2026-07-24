@@ -19,7 +19,7 @@ use axum::{
 use futures_util::{Sink, Stream, StreamExt};
 use novasight_core::{
     CaptureCapabilities, CaptureCapabilityProbe, CaptureProbeError, CaptureSelectionError,
-    CaptureSelectionPreference, DeviceReceipt, select_capture_profile,
+    CaptureSelectionPreference, DeviceReceipt, select_capture_profile_for_formats,
 };
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
@@ -1058,8 +1058,13 @@ async fn select_capture(
         }
         _ => None,
     };
-    let selected = select_capture_profile(&capabilities, request.preference, manual)
-        .map_err(ControlApiError::CaptureSelection)?;
+    let selected = select_capture_profile_for_formats(
+        &capabilities,
+        request.preference,
+        manual,
+        &["MJPG", "NV12", "YUYV"],
+    )
+    .map_err(ControlApiError::CaptureSelection)?;
     let service = state
         .config
         .as_ref()

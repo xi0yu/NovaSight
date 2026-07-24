@@ -77,4 +77,6 @@ pub struct DeviceMetrics {
 pub struct ModelSnapshot {
     pub active: Option<ActiveModelDeployment>,
     pub catalog_error: Option<String>,
+    pub input_width: Option<u32>,
+    pub input_height: Option<u32>,
 }

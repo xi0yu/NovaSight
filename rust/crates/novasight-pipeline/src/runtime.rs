@@ -73,7 +73,7 @@ pub struct PipelineConfig {
     /// immediately before the device call.
     pub max_command_age_ns: u64,
     /// Independent output scheduler cadence. Production configuration is
-    /// constrained to the Python-compatible 1-10 ms range.
+    /// positive; deployment policy may impose a tighter latency target.
     pub output_interval_ms: u64,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
@@ -176,7 +176,7 @@ pub enum PipelineError {
     NonMonotonicGeneration { previous: u64, actual: u64 },
     #[error("pipeline ingress is busy; realtime producer must drop this batch")]
     IngressBusy,
-    #[error("output scheduler interval must be within 1..=10 ms, got {actual_ms}")]
+    #[error("output scheduler interval must be positive, got {actual_ms}")]
     InvalidOutputInterval { actual_ms: u64 },
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
@@ -666,7 +666,7 @@ impl PipelineRuntime {
         output_gate_open: bool,
         external_stop: Arc<AtomicUsize>,
     ) -> Result<(Self, PipelineIngress), PipelineError> {
-        if !(1..=10).contains(&config.output_interval_ms) {
+        if config.output_interval_ms == 0 {
             return Err(PipelineError::InvalidOutputInterval {
                 actual_ms: config.output_interval_ms,
             });

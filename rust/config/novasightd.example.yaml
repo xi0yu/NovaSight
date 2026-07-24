@@ -96,12 +96,7 @@ control:
     builtin_side_ratio: 0.012
 capture:
   device: /dev/video0
-  backend: deepstream_nvinfer
-  memory: nvmm
   preference: manual
-  latest_only: true
-  appsink_max_buffers: 1
-  queue_leaky: downstream
   width: 1920
   height: 1080
   fps: 120
@@ -114,26 +109,13 @@ inference:
   enabled: true
   # Use rust_tensor_rt only in Jetson builds compiled with --features tensorrt.
   backend: deepstream_nvinfer
-  device: cuda
   require_gpu: true
   allow_cpu_fallback: false
-  confidence_threshold: 0.25
-  nms_threshold: 0.45
   inference_input_deadline_ms: 55.0
   # `auto` selects the parser compiled by Cargo for this exact novasightd build.
   deepstream_parser_library: auto
-  deepstream_io_mode: 2
-  deepstream_batched_push_timeout_us: 0
-  deepstream_component_id: 1
-  deepstream_source_id: 0
-  deepstream_probe_element: primary-infer
-  deepstream_probe_pad: src
-  deepstream_nvinfer_config: runtime/deepstream/active-nvinfer.ini
-  model_width: 640
-  model_height: 640
   deepstream_startup_timeout_ms: 10000
   deepstream_shutdown_timeout_ms: 5000
-  input_source: source.default
 hardware:
   # Provision host and UUID first, then opt in to device connection.
   auto_connect: false

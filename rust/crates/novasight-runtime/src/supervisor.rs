@@ -18,9 +18,10 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, MotionProfileHub,
-    MotionProfileStatus, PerceptionAdapter, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics, PipelineRuntime,
-    PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription,
+    MotionProfileStatus, PerceptionAdapter, PerceptionEvent, PerceptionMetrics,
+    PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
+    PipelineEvent, PipelineIngress, PipelineMetrics, PipelineRuntime, PipelineStatus, PreviewHub,
+    PreviewSnapshot, PreviewSubscription,
 };
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use novasight_store::motion_profile::{
@@ -97,6 +98,7 @@ pub struct RuntimeDependencies {
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
     pipeline: PipelineConfig,
+    model_geometry: std::sync::RwLock<Option<ModelGeometry>>,
     perception: Option<Arc<dyn PerceptionAdapter>>,
     model_catalog: Option<SqliteModelCatalog>,
     model_jobs: Option<OfflineModelJobRunner>,
@@ -106,6 +108,16 @@ pub struct RuntimeDependencies {
     motion_repository: Option<MotionProfileRepository>,
     output_enabled: bool,
     urgent_stop: Arc<UrgentStopSignal>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ModelGeometry {
+    input_width: u32,
+    input_height: u32,
+    preserves_roi_coordinates: bool,
+    source_width: u32,
+    roi_width: u32,
+    roi_height: u32,
 }
 
 impl std::fmt::Debug for RuntimeDependencies {
@@ -128,10 +140,19 @@ impl RuntimeDependencies {
         device: Arc<dyn PointerDevice>,
         pipeline: PipelineConfig,
     ) -> Self {
+        let model_geometry = ModelGeometry {
+            input_width: pipeline.control.observation_width,
+            input_height: pipeline.control.observation_height,
+            preserves_roi_coordinates: false,
+            source_width: pipeline.control.source_width,
+            roi_width: pipeline.control.roi_width,
+            roi_height: pipeline.control.roi_height,
+        };
         Self {
             clock,
             device,
             pipeline,
+            model_geometry: std::sync::RwLock::new(Some(model_geometry)),
             perception: None,
             model_catalog: None,
             model_jobs: None,
@@ -192,10 +213,68 @@ impl RuntimeDependencies {
     }
 
     fn pipeline_config(&self, epoch: RuntimeEpoch) -> PipelineConfig {
-        PipelineConfig {
+        let mut pipeline = PipelineConfig {
             epoch,
             ..self.pipeline.clone()
+        };
+        if let Some(geometry) = self.model_geometry() {
+            pipeline.control.source_width = geometry.source_width;
+            pipeline.control.roi_width = geometry.roi_width;
+            pipeline.control.roi_height = geometry.roi_height;
+            if geometry.preserves_roi_coordinates {
+                pipeline.control.observation_width = geometry.roi_width;
+                pipeline.control.observation_height = geometry.roi_height;
+            } else {
+                pipeline.control.observation_width = geometry.input_width;
+                pipeline.control.observation_height = geometry.input_height;
+            }
         }
+        pipeline
+    }
+
+    fn model_geometry(&self) -> Option<ModelGeometry> {
+        *self
+            .model_geometry
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn replace_model_geometry(&self, geometry: Option<ModelGeometry>) -> Option<ModelGeometry> {
+        std::mem::replace(
+            &mut *self
+                .model_geometry
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            geometry,
+        )
+    }
+
+    fn install_model_contract(&self, contract: &PerceptionModelContract) -> Option<ModelGeometry> {
+        let current = self.model_geometry().unwrap_or(ModelGeometry {
+            input_width: 0,
+            input_height: 0,
+            preserves_roi_coordinates: false,
+            source_width: self.pipeline.control.source_width,
+            roi_width: self.pipeline.control.roi_width,
+            roi_height: self.pipeline.control.roi_height,
+        });
+        self.replace_model_geometry(Some(ModelGeometry {
+            input_width: contract.input_width,
+            input_height: contract.input_height,
+            preserves_roi_coordinates: contract.preserves_roi_coordinates,
+            ..current
+        }))
+    }
+
+    fn install_runtime_contract(&self, contract: &PerceptionRuntimeContract) {
+        self.replace_model_geometry(Some(ModelGeometry {
+            input_width: contract.model.input_width,
+            input_height: contract.model.input_height,
+            preserves_roi_coordinates: contract.model.preserves_roi_coordinates,
+            source_width: contract.source_width,
+            roi_width: contract.roi_width,
+            roi_height: contract.roi_height,
+        }));
     }
 
     /// Explicit recording adapter for tests, diagnostics, and dry-run
@@ -465,10 +544,14 @@ fn initial_model_snapshot(catalog: Option<&SqliteModelCatalog>) -> ModelSnapshot
         Ok(active) => ModelSnapshot {
             active,
             catalog_error: None,
+            input_width: None,
+            input_height: None,
         },
         Err(error) => ModelSnapshot {
             active: None,
             catalog_error: Some(error.to_string()),
+            input_width: None,
+            input_height: None,
         },
     }
 }
@@ -1375,6 +1458,8 @@ async fn activate_model_state(
         state.model = ModelSnapshot {
             active: Some(active.clone()),
             catalog_error: None,
+            input_width: state.model.input_width,
+            input_height: state.model.input_height,
         };
         let runtime = publish(snapshot_tx, state, now_ms());
         return Ok(ModelActivationResult {
@@ -1582,6 +1667,10 @@ async fn activate_model_state(
         .await);
     }
 
+    let previous_model_geometry = contract
+        .as_ref()
+        .map(|contract| dependencies.install_model_contract(contract));
+
     if was_running {
         match start_state(
             snapshot_tx,
@@ -1595,6 +1684,9 @@ async fn activate_model_state(
         {
             Ok(_) => {}
             Err(error) => {
+                if let Some(previous) = previous_model_geometry {
+                    dependencies.replace_model_geometry(previous);
+                }
                 return Err(compensate_model_activation(
                     action,
                     error.to_string(),
@@ -1616,6 +1708,8 @@ async fn activate_model_state(
     state.model = ModelSnapshot {
         active: Some(active_model.clone()),
         catalog_error: None,
+        input_width: contract.as_ref().map(|contract| contract.input_width),
+        input_height: contract.as_ref().map(|contract| contract.input_height),
     };
     let runtime = publish(snapshot_tx, state, now_ms());
 
@@ -1951,6 +2045,21 @@ async fn start_state(
         return Err(RuntimeError::invalid_pipeline_state(
             "runtime start cancelled by a pending stop request",
         ));
+    }
+    if let Some(adapter) = dependencies.perception.clone() {
+        let runtime_contract = tokio::task::spawn_blocking(move || adapter.runtime_contract())
+            .await
+            .map_err(|error| {
+                RuntimeError::pipeline_rejected(format!(
+                    "perception runtime-contract task failed: {error}"
+                ))
+            })?
+            .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))?;
+        if let Some(runtime_contract) = runtime_contract {
+            dependencies.install_runtime_contract(&runtime_contract);
+            state.model.input_width = Some(runtime_contract.model.input_width);
+            state.model.input_height = Some(runtime_contract.model.input_height);
+        }
     }
     let Some(epoch) = state.begin_start()? else {
         return Ok(publish(snapshot_tx, state, now_ms()));

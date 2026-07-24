@@ -603,8 +603,6 @@ impl ConfigSchemaResponse {
                     "Jetson 采集",
                     vec![
                         string("capture.device", "V4L2 设备"),
-                        select("capture.backend", "采集后端", &["deepstream_nvinfer"]),
-                        select("capture.memory", "内存路径", &["nvmm"]),
                         select(
                             "capture.preference",
                             "采集策略",
@@ -626,7 +624,6 @@ impl ConfigSchemaResponse {
                             1.0,
                             "容量一是最新帧语义的一部分",
                         ),
-                        select("capture.queue_leaky", "队列丢弃策略", &["downstream"]),
                         integer(
                             "capture.width",
                             "采集宽度",
@@ -683,7 +680,6 @@ impl ConfigSchemaResponse {
                             "推理后端",
                             &["deepstream_nvinfer", "rust_tensor_rt"],
                         ),
-                        select("inference.device", "计算设备", &["cuda"]),
                         invariant_bool(
                             "inference.require_gpu",
                             "要求 GPU",
@@ -695,14 +691,6 @@ impl ConfigSchemaResponse {
                             "Jetson 生产路径要求为 false",
                         ),
                         float(
-                            "inference.confidence_threshold",
-                            "置信度阈值",
-                            0.0,
-                            1.0,
-                            None,
-                        ),
-                        float("inference.nms_threshold", "NMS 阈值", 0.0, 1.0, None),
-                        float(
                             "inference.inference_input_deadline_ms",
                             "推理输入时限",
                             f64::MIN_POSITIVE,
@@ -710,51 +698,6 @@ impl ConfigSchemaResponse {
                             Some("ms"),
                         ),
                         string("inference.deepstream_parser_library", "DeepStream 解析器库"),
-                        integer(
-                            "inference.deepstream_io_mode",
-                            "DeepStream I/O 模式",
-                            0.0,
-                            i32::MAX as f64,
-                            None,
-                        ),
-                        integer(
-                            "inference.deepstream_batched_push_timeout_us",
-                            "批推送超时",
-                            0.0,
-                            i64::MAX as f64,
-                            Some("us"),
-                        ),
-                        integer(
-                            "inference.deepstream_component_id",
-                            "推理组件 ID",
-                            0.0,
-                            i32::MAX as f64,
-                            None,
-                        ),
-                        integer(
-                            "inference.deepstream_source_id",
-                            "输入源 ID",
-                            0.0,
-                            u32::MAX as f64,
-                            None,
-                        ),
-                        string("inference.deepstream_probe_element", "探针元素"),
-                        string("inference.deepstream_probe_pad", "探针 Pad"),
-                        string("inference.deepstream_nvinfer_config", "nvinfer 配置"),
-                        integer(
-                            "inference.model_width",
-                            "模型宽度",
-                            1.0,
-                            u32::MAX as f64,
-                            Some("px"),
-                        ),
-                        integer(
-                            "inference.model_height",
-                            "模型高度",
-                            1.0,
-                            u32::MAX as f64,
-                            Some("px"),
-                        ),
                         integer(
                             "inference.deepstream_startup_timeout_ms",
                             "启动超时",
@@ -769,7 +712,6 @@ impl ConfigSchemaResponse {
                             u64::MAX as f64,
                             Some("ms"),
                         ),
-                        select("inference.input_source", "推理输入源", &["source.default"]),
                     ],
                 ),
                 section(

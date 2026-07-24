@@ -59,6 +59,17 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Validate only the model-inference seam used by candidate publication.
+    /// Capture, control, server, and pointer-device policy belong to runtime
+    /// composition and must not make an otherwise valid Engine unpublishable.
+    pub fn require_inference_adapter(&self) -> Result<&InferenceConfig, ConfigValidationError> {
+        let inference = self.inference.as_ref().ok_or_else(|| {
+            ConfigValidationError::new("inference", "section is required for model inference")
+        })?;
+        inference.validate()?;
+        Ok(inference)
+    }
+
     pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
         self.pipeline.validate()?;
         self.control.humanized_motion.validate()?;
@@ -96,33 +107,73 @@ impl AppConfig {
     pub fn require_production_adapters(
         &self,
     ) -> Result<ProductionAdapterConfig<'_>, ConfigValidationError> {
-        self.validate_configured_adapters()?;
+        let vision = self.require_vision_adapters()?;
         if !is_loopback_server_host(&self.server.host) {
             return Err(ConfigValidationError::new(
                 "server.host",
                 "must be a loopback address until authenticated TLS transport is configured",
             ));
         }
+        let device = self.device.as_ref().ok_or_else(|| {
+            ConfigValidationError::new(
+                "hardware",
+                "section is required when composing a commissioned output adapter",
+            )
+        })?;
+        Ok(ProductionAdapterConfig {
+            capture: vision.capture,
+            inference: vision.inference,
+            device,
+            pipeline: vision.pipeline,
+            consumers: vision.consumers,
+            limits: vision.limits,
+        })
+    }
+
+    /// Compose the headless capture/inference/control runtime without forcing
+    /// callers to invent a physical pointer-device configuration.
+    pub fn require_vision_adapters(
+        &self,
+    ) -> Result<VisionAdapterConfig<'_>, ConfigValidationError> {
+        self.pipeline.validate()?;
+        self.control.humanized_motion.validate()?;
+        self.control.recoil.validate()?;
+        self.crosshair.validate()?;
+        if self.limits.stream_fps == 0 {
+            return Err(ConfigValidationError::new(
+                "limits.stream_fps",
+                "must be positive",
+            ));
+        }
         let capture = self.capture.as_ref().ok_or_else(|| {
-            ConfigValidationError::new("capture", "section is required in production")
+            ConfigValidationError::new("capture", "section is required for live vision")
         })?;
         let inference = self.inference.as_ref().ok_or_else(|| {
-            ConfigValidationError::new("inference", "section is required in production")
+            ConfigValidationError::new("inference", "section is required for live vision")
         })?;
-        let device = self.device.as_ref().ok_or_else(|| {
-            ConfigValidationError::new("hardware", "section is required in production")
-        })?;
-        self.validate_explicit_adapter_fields()?;
+        capture.validate()?;
+        inference.validate()?;
+        if !capture.production_fields_explicit {
+            return Err(ConfigValidationError::new(
+                "capture",
+                "all capture intent fields must be explicit in YAML",
+            ));
+        }
+        if !inference.production_fields_explicit {
+            return Err(ConfigValidationError::new(
+                "inference",
+                "all inference intent fields must be explicit in YAML",
+            ));
+        }
         if !self.pipeline.production_fields_explicit {
             return Err(ConfigValidationError::new(
                 "pipeline",
                 "all production runtime fields must be explicit in YAML",
             ));
         }
-        Ok(ProductionAdapterConfig {
+        Ok(VisionAdapterConfig {
             capture,
             inference,
-            device,
             pipeline: &self.pipeline,
             consumers: &self.consumers,
             limits: &self.limits,
@@ -584,6 +635,15 @@ pub struct ProductionAdapterConfig<'a> {
     pub limits: &'a LimitsConfig,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VisionAdapterConfig<'a> {
+    pub capture: &'a CaptureConfig,
+    pub inference: &'a InferenceConfig,
+    pub pipeline: &'a PipelineRuntimeConfig,
+    pub consumers: &'a ConsumerConfig,
+    pub limits: &'a LimitsConfig,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ConsumerConfig {
     #[serde(default)]
@@ -1024,10 +1084,10 @@ impl PipelineRuntimeConfig {
                 "must be within 1..=1000 ms",
             ));
         }
-        if !(1..=10).contains(&self.output_interval_ms) {
+        if self.output_interval_ms == 0 {
             return Err(ConfigValidationError::new(
                 "pipeline.output_interval_ms",
-                "must be within 1..=10 ms",
+                "must be positive; latency targets are deployment policy, not pipeline validity",
             ));
         }
         Ok(())
@@ -1075,20 +1135,20 @@ pub fn parse_target_class_filter(
         let class_id = item.trim().parse::<u32>().map_err(|_| {
             ConfigValidationError::new(
                 "pipeline.target_class_filter",
-                "must be all, none, or a comma-separated list of unique class ids within 0..=255",
+                "must be all, none, or a comma-separated list of unique unsigned class ids",
             )
         })?;
-        if class_id > 255 || !classes.insert(class_id) {
+        if !classes.insert(class_id) {
             return Err(ConfigValidationError::new(
                 "pipeline.target_class_filter",
-                "must be all, none, or a comma-separated list of unique class ids within 0..=255",
+                "must be all, none, or a comma-separated list of unique unsigned class ids",
             ));
         }
     }
     if classes.is_empty() {
         return Err(ConfigValidationError::new(
             "pipeline.target_class_filter",
-            "must be all, none, or a comma-separated list of unique class ids within 0..=255",
+            "must be all, none, or a comma-separated list of unique unsigned class ids",
         ));
     }
     Ok(Some(classes))
@@ -1355,17 +1415,17 @@ impl std::error::Error for ConfigValidationError {}
 pub struct CaptureConfig {
     #[serde(default = "default_capture_device")]
     pub device: PathBuf,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub backend: DeepStreamBackend,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub memory: CaptureMemory,
     #[serde(default)]
     pub preference: CapturePreference,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing)]
     pub latest_only: bool,
-    #[serde(default = "default_one_u32")]
+    #[serde(default = "default_one_u32", skip_serializing)]
     pub appsink_max_buffers: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub queue_leaky: QueueLeaky,
     #[serde(default)]
     pub width: u32,
@@ -1414,6 +1474,10 @@ impl Default for CaptureConfig {
 }
 
 impl CaptureConfig {
+    pub fn validate_runtime_plan(&self) -> Result<(), ConfigValidationError> {
+        self.validate()
+    }
+
     fn validate(&self) -> Result<(), ConfigValidationError> {
         if self.device.as_os_str().is_empty() {
             return Err(ConfigValidationError::new(
@@ -1469,44 +1533,44 @@ pub struct InferenceConfig {
     pub enabled: bool,
     #[serde(default)]
     pub backend: InferenceBackend,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub device: ComputeDevice,
     #[serde(default = "default_true")]
     pub require_gpu: bool,
     #[serde(default)]
     pub allow_cpu_fallback: bool,
-    #[serde(default = "default_confidence_threshold")]
+    #[serde(default = "default_confidence_threshold", skip_serializing)]
     pub confidence_threshold: f64,
-    #[serde(default = "default_nms_threshold")]
+    #[serde(default = "default_nms_threshold", skip_serializing)]
     pub nms_threshold: f64,
     #[serde(default = "default_inference_deadline_ms")]
     /// Zero disables this additional deadline; runtime freshness still applies.
     pub inference_input_deadline_ms: f64,
     #[serde(default = "default_parser_library")]
     pub deepstream_parser_library: PathBuf,
-    #[serde(default = "default_deepstream_io_mode")]
+    #[serde(default = "default_deepstream_io_mode", skip_serializing)]
     pub deepstream_io_mode: i32,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub deepstream_batched_push_timeout_us: i64,
-    #[serde(default = "default_inference_component_id")]
+    #[serde(default = "default_inference_component_id", skip_serializing)]
     pub deepstream_component_id: i32,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub deepstream_source_id: u32,
-    #[serde(default = "default_probe_element")]
+    #[serde(default = "default_probe_element", skip_serializing)]
     pub deepstream_probe_element: String,
-    #[serde(default = "default_probe_pad")]
+    #[serde(default = "default_probe_pad", skip_serializing)]
     pub deepstream_probe_pad: String,
-    #[serde(default = "default_nvinfer_config")]
+    #[serde(default = "default_nvinfer_config", skip_serializing)]
     pub deepstream_nvinfer_config: PathBuf,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub model_width: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub model_height: u32,
     #[serde(default = "default_deepstream_startup_timeout_ms")]
     pub deepstream_startup_timeout_ms: u64,
     #[serde(default = "default_deepstream_shutdown_timeout_ms")]
     pub deepstream_shutdown_timeout_ms: u64,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub input_source: InferenceInputSource,
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
@@ -1600,25 +1664,6 @@ impl InferenceConfig {
             return Err(ConfigValidationError::new(
                 "inference.deepstream_probe_element",
                 "probe element and pad must not be empty",
-            ));
-        }
-        if self.production_fields_explicit
-            && self.backend == InferenceBackend::DeepstreamNvinfer
-            && self
-                .deepstream_nvinfer_config
-                .to_string_lossy()
-                .trim()
-                .is_empty()
-        {
-            return Err(ConfigValidationError::new(
-                "inference.deepstream_nvinfer_config",
-                "must not be empty",
-            ));
-        }
-        if self.production_fields_explicit && (self.model_width == 0 || self.model_height == 0) {
-            return Err(ConfigValidationError::new(
-                "inference.model_width",
-                "model width and height must be positive",
             ));
         }
         if self.production_fields_explicit

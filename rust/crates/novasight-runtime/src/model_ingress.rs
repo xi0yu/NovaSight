@@ -52,10 +52,10 @@ impl ModelProfileConfigureRequest {
     pub fn validate(&self) -> Result<(), ModelIngressError> {
         if !matches!(
             self.color_format.trim().to_ascii_uppercase().as_str(),
-            "RGB" | "BGR"
+            "RGB" | "BGR" | "GRAY" | "GREY"
         ) {
             return Err(ModelIngressError::InvalidRequest(
-                "color_format must be RGB or BGR".to_owned(),
+                "color_format must be RGB, BGR, or GRAY".to_owned(),
             ));
         }
         finite_positive(self.scale, "scale")?;
@@ -1124,7 +1124,7 @@ const fn default_nms_threshold() -> f64 {
 }
 
 const fn default_max_detections() -> u32 {
-    300
+    256
 }
 
 #[derive(Debug, Error)]

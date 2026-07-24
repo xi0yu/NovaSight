@@ -421,17 +421,10 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
         ],
     );
     if let Some(capture) = &mut config.capture {
-        capture.production_fields_explicit = section_has_fields(
-            document,
-            "capture",
+        let required_fields: &[&str] = if capture.preference == super::CapturePreference::Manual {
             &[
                 "device",
-                "backend",
-                "memory",
                 "preference",
-                "latest_only",
-                "appsink_max_buffers",
-                "queue_leaky",
                 "width",
                 "height",
                 "fps",
@@ -440,8 +433,12 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
                 "roi_top",
                 "roi_width",
                 "roi_height",
-            ],
-        );
+            ]
+        } else {
+            &["device", "preference"]
+        };
+        capture.production_fields_explicit =
+            section_has_fields(document, "capture", required_fields);
     }
     if let Some(inference) = &mut config.inference {
         inference.production_fields_explicit = section_has_fields(
@@ -450,25 +447,12 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             &[
                 "enabled",
                 "backend",
-                "device",
                 "require_gpu",
                 "allow_cpu_fallback",
-                "confidence_threshold",
-                "nms_threshold",
                 "inference_input_deadline_ms",
                 "deepstream_parser_library",
-                "deepstream_io_mode",
-                "deepstream_batched_push_timeout_us",
-                "deepstream_component_id",
-                "deepstream_source_id",
-                "deepstream_probe_element",
-                "deepstream_probe_pad",
-                "deepstream_nvinfer_config",
-                "model_width",
-                "model_height",
                 "deepstream_startup_timeout_ms",
                 "deepstream_shutdown_timeout_ms",
-                "input_source",
             ],
         );
     }

@@ -23,8 +23,24 @@ pub struct ModelCandidate {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PerceptionModelContract {
     pub input_shape: String,
+    pub input_width: u32,
+    pub input_height: u32,
+    /// DeepStream maps letterboxed detections back into its ROI-sized input;
+    /// direct resize adapters report model-tensor coordinates instead.
+    pub preserves_roi_coordinates: bool,
     pub classes: Vec<String>,
     pub parser: ParserContract,
+}
+
+/// Geometry resolved for one concrete capture + model runtime epoch. Candidate
+/// publication deliberately returns only [`PerceptionModelContract`]; the
+/// camera-dependent values are resolved immediately before startup.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PerceptionRuntimeContract {
+    pub model: PerceptionModelContract,
+    pub source_width: u32,
+    pub roi_width: u32,
+    pub roi_height: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -123,6 +139,13 @@ pub trait PerceptionAdapter: Send + Sync + 'static {
         _candidate: &ModelCandidate,
     ) -> Result<Option<PerceptionModelContract>, PerceptionError> {
         self.preflight()?;
+        Ok(None)
+    }
+
+    /// Resolve the active model together with the current concrete capture
+    /// plan. The supervisor installs this geometry before constructing the
+    /// control pipeline for a new epoch.
+    fn runtime_contract(&self) -> Result<Option<PerceptionRuntimeContract>, PerceptionError> {
         Ok(None)
     }
 

@@ -353,6 +353,17 @@ impl CompatibilityRuntimeState {
     ) -> Self {
         let capture_config = config.and_then(|config| config.capture.as_ref());
         let inference_config = config.and_then(|config| config.inference.as_ref());
+        let model_input = snapshot
+            .model
+            .input_width
+            .zip(snapshot.model.input_height)
+            .or_else(|| {
+                snapshot
+                    .model
+                    .active
+                    .as_ref()
+                    .and_then(|active| parse_nchw_dimensions(&active.version.input_shape))
+            });
         let device_config = config.and_then(|config| config.device.as_ref());
         let dual_phase = snapshot.pipeline_metrics.dual_phase;
         let target_selection = &snapshot.pipeline_metrics.target_selection;
@@ -595,8 +606,8 @@ impl CompatibilityRuntimeState {
                         .detections
                         .generation
                         .map(|generation| generation.0),
-                    model_input_width: inference_config.map(|config| config.model_width),
-                    model_input_height: inference_config.map(|config| config.model_height),
+                    model_input_width: model_input.map(|(width, _)| width),
+                    model_input_height: model_input.map(|(_, height)| height),
                     source_width: capture_config.map(|config| config.width),
                     source_height: capture_config.map(|config| config.height),
                     roi_offset_x: capture_config.map(|config| config.roi_left),
@@ -772,6 +783,19 @@ impl CompatibilityRuntimeState {
             fatal_error,
         }
     }
+}
+
+fn parse_nchw_dimensions(shape: &str) -> Option<(u32, u32)> {
+    let dimensions = shape
+        .split(['x', 'X', ',', ' '])
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if dimensions.len() != 4 || dimensions[0] != 1 {
+        return None;
+    }
+    Some((dimensions[3], dimensions[2]))
 }
 
 fn vision_detection_state(detection: &DetectionTelemetryItem) -> VisionDetectionState {
