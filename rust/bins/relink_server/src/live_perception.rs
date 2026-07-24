@@ -12,10 +12,10 @@ use std::time::Duration;
 use novasight_core::control::dual_phase_v2::DualPhaseConfig;
 use novasight_core::tracking::TargetingConfig;
 use novasight_core::{
-    CaptureCapabilityProbe, CaptureSelectionPreference, Clock, PointerDevice,
-    RecordingPointerDevice, RuntimeEpoch, select_capture_profile_for_formats,
+    CaptureCapabilityProbe, CaptureSelectionPreference, Clock,
+    MAX_DETECTIONS as DEEPSTREAM_MAX_DETECTIONS, PointerDevice, RecordingPointerDevice,
+    RuntimeEpoch, select_capture_profile_for_formats,
 };
-use novasight_deepstream_bridge::MAX_DETECTIONS as DEEPSTREAM_MAX_DETECTIONS;
 use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
     ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
