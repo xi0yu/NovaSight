@@ -610,6 +610,8 @@ export const API_PATHS = {
   crosshairTemplate: "/api/crosshair/template",
   crosshairTemplatePreview: "/api/crosshair/template.png",
   executors: "/api/executors",
+  kmnetConnect: "/api/executors/kmnet/connect",
+  kmnetDisconnect: "/api/executors/kmnet/disconnect",
   kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
   modelProjects: "/api/models/projects",
   modelCatalog: "/api/models/catalog",
@@ -818,6 +820,18 @@ export function diagnosticMoveKmNet(
       interval_ms: 0,
       move_kind: "raw"
     })
+  });
+}
+
+export function connectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetConnect, {
+    method: "POST"
+  });
+}
+
+export function disconnectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDisconnect, {
+    method: "POST"
   });
 }
 

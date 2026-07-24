@@ -130,6 +130,8 @@ pub struct PipelineMetrics {
     #[serde(default)]
     pub device_connected: bool,
     #[serde(default)]
+    pub device_connection_enabled: bool,
+    #[serde(default)]
     pub device_error_count: u64,
     #[serde(default)]
     pub device_recovery_count: u64,
@@ -311,6 +313,7 @@ struct SharedState {
     button_left: AtomicBool,
     button_right: AtomicBool,
     device_connected: AtomicBool,
+    device_connection_enabled: AtomicBool,
     external_stop: Arc<AtomicUsize>,
     last_vision_telemetry_at_ns: AtomicU64,
     device_lane: Mutex<()>,
@@ -349,6 +352,7 @@ impl SharedState {
             button_left: AtomicBool::new(false),
             button_right: AtomicBool::new(false),
             device_connected: AtomicBool::new(device_connected),
+            device_connection_enabled: AtomicBool::new(true),
             external_stop,
             last_vision_telemetry_at_ns: AtomicU64::new(0),
             device_lane: Mutex::new(()),
@@ -518,6 +522,15 @@ impl SharedState {
             .last_device_error
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.into());
+    }
+
+    fn record_manual_device_disconnect(&self) {
+        self.device_connected.store(false, Ordering::Release);
+        self.trigger_active.store(false, Ordering::Release);
+        self.buttons_available.store(false, Ordering::Release);
+        self.button_left.store(false, Ordering::Release);
+        self.button_right.store(false, Ordering::Release);
+        self.clear_control_telemetry();
     }
 }
 
@@ -960,6 +973,37 @@ impl PipelineRuntime {
         let _ = self.command_slot.try_take();
     }
 
+    /// Enable the low-rate device health lane and attempt an immediate
+    /// connection. Recoverable failures remain eligible for background retry.
+    pub fn connect_device(&self) -> Result<(), PipelineError> {
+        self.shared
+            .device_connection_enabled
+            .store(true, Ordering::Release);
+        match self.device.connect() {
+            Ok(()) => {
+                self.shared.record_device_success();
+                Ok(())
+            }
+            Err(error) => {
+                self.shared.record_device_error(&error);
+                Err(PipelineError::DeviceConnect(error.to_string()))
+            }
+        }
+    }
+
+    /// Stop physical output and suppress automatic reconnect without stopping
+    /// capture, inference, targeting, or preview workers.
+    pub fn disconnect_device(&self) -> Result<(), PipelineError> {
+        self.pause_output_gate();
+        self.shared
+            .device_connection_enabled
+            .store(false, Ordering::Release);
+        self.shared.record_manual_device_disconnect();
+        self.device
+            .disconnect()
+            .map_err(|error| PipelineError::DeviceDisconnect(error.to_string()))
+    }
+
     /// Transfer the single lifecycle event stream to the supervisor.
     pub fn take_event_receiver(&mut self) -> Option<Receiver<PipelineEvent>> {
         self.event_rx.take()
@@ -1024,6 +1068,10 @@ fn spawn_trigger_worker(
                     thread::yield_now();
                 }
                 while shared.status() == PipelineStatus::Running {
+                    if !shared.device_connection_enabled.load(Ordering::Acquire) {
+                        thread::sleep(interval);
+                        continue;
+                    }
                     match device.buttons() {
                         Ok(Some(buttons)) => {
                             shared.record_device_success();
@@ -1374,6 +1422,9 @@ fn spawn_device_worker(
                     if !shared.output_gate.load(Ordering::Acquire) {
                         continue;
                     }
+                    if !shared.device_connection_enabled.load(Ordering::Acquire) {
+                        continue;
+                    }
                     if !shared.trigger_active.load(Ordering::Acquire) {
                         continue;
                     }
@@ -1532,6 +1583,7 @@ fn snapshot_metrics(
         device_receipts: last_device_receipt.map_or(0, |(count, _)| count),
         last_device_receipt: last_device_receipt.map(|(_, receipt)| receipt),
         device_connected: shared.device_connected.load(Ordering::Acquire),
+        device_connection_enabled: shared.device_connection_enabled.load(Ordering::Acquire),
         device_error_count: shared.metrics.device_error_count.load(Ordering::Relaxed),
         device_recovery_count: shared.metrics.device_recovery_count.load(Ordering::Relaxed),
         last_device_error: shared

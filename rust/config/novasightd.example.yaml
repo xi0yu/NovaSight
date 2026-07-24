@@ -67,8 +67,7 @@ pipeline:
   max_command_age_ms: 55
   output_interval_ms: 4
 control:
-  # Commissioning is explicit: no pointer movement until an operator opens this gate.
-  output_enabled: false
+  output_enabled: true
   recoil:
     enabled: false
     base_rate_counts_s: 0.0
@@ -117,13 +116,12 @@ inference:
   deepstream_startup_timeout_ms: 10000
   deepstream_shutdown_timeout_ms: 5000
 hardware:
-  # Provision host and UUID first, then opt in to device connection.
-  auto_connect: false
+  auto_connect: true
   # native_udp remains opt-in until verified against the target Jetson and box firmware.
   backend: python_host
-  host: ""
+  host: "192.168.2.188"
   port: 8888
-  uuid: ""
+  uuid: "12345678"
   monitor_port: 5001
   helper_module: novasight.executors.kmnet_host
   connect_timeout_ms: 3000

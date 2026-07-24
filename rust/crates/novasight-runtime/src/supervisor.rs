@@ -405,7 +405,7 @@ impl SupervisorState {
         let previous = self.telemetry;
         self.telemetry.detection_data_age_ms = perception
             .latest_published_capture_at_ns
-            .map(|captured_at_ns| now_ns.saturating_sub(captured_at_ns) / 1_000_000);
+            .map(|captured_at_ns| now_ns.saturating_sub(captured_at_ns) as f64 / 1_000_000.0);
 
         let sample = TelemetrySample {
             sampled_at_ns: now_ns,
@@ -612,6 +612,11 @@ impl SupervisorState {
         }
         if self.pipeline_metrics.device_connected {
             self.subsystems.device.state = SubsystemState::Ready;
+            self.subsystems.device.last_error = None;
+            return;
+        }
+        if !self.pipeline_metrics.device_connection_enabled {
+            self.subsystems.device.state = SubsystemState::Stopped;
             self.subsystems.device.last_error = None;
             return;
         }
@@ -1034,6 +1039,16 @@ impl RuntimeHandle {
         reply_rx
             .await
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub async fn connect_device(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::ConnectDevice { reply })
+            .await
+    }
+
+    pub async fn disconnect_device(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::DisconnectDevice { reply })
+            .await
     }
 
     pub async fn start(&self) -> Result<RuntimeSnapshot, RuntimeError> {
@@ -1469,6 +1484,14 @@ async fn handle_command(
                 delta_y_counts,
             )
             .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ConnectDevice { reply } => {
+            let result = set_device_connection(snapshot_tx, state, active, true).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::DisconnectDevice { reply } => {
+            let result = set_device_connection(snapshot_tx, state, active, false).await;
             let _ = reply.send(result);
         }
         RuntimeCommand::ShutdownDaemon { urgent, reply } => {
@@ -2516,6 +2539,61 @@ async fn set_trigger_state(ingress: PipelineIngress, requested: bool) -> Result<
         .map_err(|error| {
             RuntimeError::pipeline_rejected(format!("trigger transition task failed: {error}"))
         })
+}
+
+async fn set_device_connection(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+    connect: bool,
+) -> Result<RuntimeSnapshot, RuntimeError> {
+    if state.device_mode == PointerDeviceMode::Uncommissioned {
+        return Err(RuntimeError::device_uncommissioned());
+    }
+    let pipeline = active
+        .take()
+        .ok_or_else(RuntimeError::pipeline_unavailable)?;
+    state.subsystems.device.state = if connect {
+        SubsystemState::Starting
+    } else {
+        SubsystemState::Stopping
+    };
+    publish(snapshot_tx, state, now_ms());
+    let operation = tokio::task::spawn_blocking(move || {
+        let result = if connect {
+            pipeline.runtime.connect_device()
+        } else {
+            pipeline.runtime.disconnect_device()
+        };
+        (pipeline, result)
+    })
+    .await;
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(error) => {
+            let error = RuntimeError::device_unavailable(format!("device task failed: {error}"));
+            state.subsystems.device.state = SubsystemState::Failed;
+            state.subsystems.device.last_error = Some(error.summary());
+            publish(snapshot_tx, state, now_ms());
+            return Err(error);
+        }
+    };
+    let (pipeline, result) = operation;
+    *active = Some(pipeline);
+    refresh_pipeline_metrics(state, active);
+    if let Err(error) = result {
+        let error = RuntimeError::device_unavailable(error.to_string());
+        publish(snapshot_tx, state, now_ms());
+        return Err(error);
+    }
+    if connect
+        && state.output_enabled
+        && let Some(active_pipeline) = active.as_ref()
+    {
+        active_pipeline.runtime.open_output_gate();
+        refresh_pipeline_metrics(state, active);
+    }
+    Ok(publish_with_result(snapshot_tx, state, now_ms()))
 }
 
 async fn shutdown_for_exit(

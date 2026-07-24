@@ -191,14 +191,8 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/executors", get(executors))
         .route("/api/executors/kmnet/buttons", get(device_buttons))
         .merge(models::routes())
-        .route(
-            "/api/executors/kmnet/connect",
-            post(device_lifecycle_managed),
-        )
-        .route(
-            "/api/executors/kmnet/disconnect",
-            post(device_lifecycle_managed),
-        )
+        .route("/api/executors/kmnet/connect", post(connect_device))
+        .route("/api/executors/kmnet/disconnect", post(disconnect_device))
         .route(
             "/api/executors/kmnet/diagnostic-move",
             post(diagnostic_device_move),
@@ -833,8 +827,25 @@ async fn executors(State(state): State<ControlState>) -> Json<serde_json::Value>
     )
 }
 
-async fn device_lifecycle_managed() -> ControlApiError {
-    ControlApiError::DeviceLifecycleManaged
+async fn connect_device(
+    State(state): State<ControlState>,
+) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if !state.hardware_output_enabled {
+        return Err(ControlApiError::HardwareOutputDisabled);
+    }
+    ensure_config_effective(&state).await?;
+    Ok(Json(state.runtime.connect_device().await?))
+}
+
+async fn disconnect_device(
+    State(state): State<ControlState>,
+) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if !state.hardware_output_enabled {
+        return Err(ControlApiError::HardwareOutputDisabled);
+    }
+    Ok(Json(state.runtime.disconnect_device().await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1413,7 +1424,6 @@ enum ControlApiError {
     InvalidFieldUpdate(serde_json::Error),
     HardwareOutputDisabled,
     DeviceNotConfigured,
-    DeviceLifecycleManaged,
     UnsupportedDiagnostic(String),
     License(LicenseError),
     LicenseTask(tokio::task::JoinError),
@@ -1525,12 +1535,6 @@ impl IntoResponse for ControlApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "DEVICE_NOT_CONFIGURED",
                 "no production pointer device is configured".to_owned(),
-            ),
-            Self::DeviceLifecycleManaged => (
-                StatusCode::CONFLICT,
-                "DEVICE_LIFECYCLE_MANAGED_BY_RUNTIME",
-                "the Rust daemon owns device connection lifetime; use runtime start/stop"
-                    .to_owned(),
             ),
             Self::UnsupportedDiagnostic(message) => (
                 StatusCode::BAD_REQUEST,

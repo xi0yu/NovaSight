@@ -78,7 +78,7 @@ pub struct RuntimeTelemetrySnapshot {
     pub nvinfer_output_fps: Option<f64>,
     pub detection_batch_fps: Option<f64>,
     pub control_observation_fps: Option<f64>,
-    pub detection_data_age_ms: Option<u64>,
+    pub detection_data_age_ms: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

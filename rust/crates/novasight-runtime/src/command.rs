@@ -67,6 +67,12 @@ pub(crate) enum RuntimeCommand {
         delta_y_counts: i32,
         reply: oneshot::Sender<Result<DeviceReceipt, RuntimeError>>,
     },
+    ConnectDevice {
+        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+    },
+    DisconnectDevice {
+        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+    },
     ShutdownDaemon {
         urgent: UrgentStopToken,
         reply: oneshot::Sender<Result<(), RuntimeError>>,

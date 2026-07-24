@@ -1798,12 +1798,6 @@ impl DeviceConfig {
                 "must not be empty",
             ));
         }
-        if self.auto_connect && matches!(self.uuid.trim(), "12345678" | "00000000") {
-            return Err(ConfigValidationError::new(
-                "hardware.uuid",
-                "must be a commissioned device identity, not a placeholder",
-            ));
-        }
         if self.auto_connect
             && (self.uuid.trim().len() != 8
                 || !self
@@ -2288,27 +2282,15 @@ mod tests {
     }
 
     #[test]
-    fn device_auto_connect_rejects_the_historical_placeholder_uuid() {
-        let config: AppConfig = serde_yaml::from_str(
-            "hardware:\n  auto_connect: true\n  host: 192.168.2.188\n  uuid: '12345678'\n",
-        )
-        .unwrap();
+    fn device_auto_connect_accepts_valid_vendor_uuid_values_without_business_blacklists() {
+        for uuid in ["12345678", "00000000"] {
+            let config: AppConfig = serde_yaml::from_str(&format!(
+                "hardware:\n  auto_connect: true\n  host: 192.168.2.188\n  uuid: '{uuid}'\n"
+            ))
+            .unwrap();
 
-        let error = config.validate_configured_adapters().unwrap_err();
-        assert_eq!(error.field, "hardware.uuid");
-        assert!(error.message.contains("placeholder"));
-    }
-
-    #[test]
-    fn device_auto_connect_rejects_the_zero_placeholder_uuid() {
-        let config: AppConfig = serde_yaml::from_str(
-            "hardware:\n  auto_connect: true\n  host: 192.168.2.188\n  uuid: '00000000'\n",
-        )
-        .unwrap();
-
-        let error = config.validate_configured_adapters().unwrap_err();
-        assert_eq!(error.field, "hardware.uuid");
-        assert!(error.message.contains("placeholder"));
+            config.validate_configured_adapters().unwrap();
+        }
     }
 
     #[test]

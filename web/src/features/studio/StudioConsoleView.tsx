@@ -5,7 +5,9 @@ import {
   CaptureCapability,
   CaptureState,
   CaptureSelectPayload,
+  connectKmNet,
   diagnosticMoveKmNet,
+  disconnectKmNet,
   clearCrosshairTemplate,
   crosshairTemplatePreviewUrl,
   getRuntimeState,
@@ -244,6 +246,8 @@ const CAPTURE_BACKEND_CHOICES: {
   }
 ];
 const KMNET_RECOMMENDED = {
+  auto_connect: true,
+  backend: "python_host",
   host: "192.168.2.188",
   port: 8888,
   uuid: "12345678",
@@ -426,13 +430,14 @@ function clampPercent(value: number): number {
 
 const NO_SAMPLE = "—";
 const UNAVAILABLE = "不可用";
+const STANDARD_DECIMAL_DIGITS = 2;
 
-function formatNumber(value: unknown, digits = 1): string {
+function formatNumber(value: unknown, digits = STANDARD_DECIMAL_DIGITS): string {
   const number = readNumber(value, Number.NaN);
   return Number.isFinite(number) ? number.toFixed(digits) : NO_SAMPLE;
 }
 
-function formatPercent(value: unknown, digits = 1): string {
+function formatPercent(value: unknown, digits = STANDARD_DECIMAL_DIGITS): string {
   const number = readNumber(value, Number.NaN);
   return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : NO_SAMPLE;
 }
@@ -445,7 +450,7 @@ function formatShape(value: unknown): string {
   return text || NO_SAMPLE;
 }
 
-function formatOptionalNumber(value: unknown, digits = 1, unit = ""): string {
+function formatOptionalNumber(value: unknown, digits = STANDARD_DECIMAL_DIGITS, unit = ""): string {
   const number = readNullableNumber(value);
   if (number === null) {
     return NO_SAMPLE;
@@ -474,7 +479,7 @@ function freshnessSummary(ageMs: number | null, resultFps: number | null): strin
   return "明显滞后";
 }
 
-function formatPoint(x: unknown, y: unknown, digits = 1, unit = ""): string {
+function formatPoint(x: unknown, y: unknown, digits = STANDARD_DECIMAL_DIGITS, unit = ""): string {
   const xNumber = readNullableNumber(x);
   const yNumber = readNullableNumber(y);
   if (xNumber === null || yNumber === null) {
@@ -1446,7 +1451,6 @@ export function StudioConsoleView({
   const kmnetRuntimeConnected = kmnetStatus.runtime_connected === true;
   const kmnetConnecting = kmnetStatus.connecting === true;
   const kmnetDriverAvailable = kmnetStatus.available === true;
-  const kmnetManagedByRuntime = kmnetStatus.managed_by_runtime === true;
   const kmnetConnectionState = readString(
     kmnetStatus.connection_state,
     kmnetConnected ? "connected" : kmnetConnecting ? "connecting" : "disconnected"
@@ -3064,7 +3068,12 @@ export function StudioConsoleView({
       ...KMNET_RECOMMENDED
     } as RuntimeConfig[string];
     try {
-      await updateRuntimeConfig(next);
+      const result = await updateRuntimeConfig(next);
+      setKmnetTestMessage(
+        result.restart_required
+          ? "kmNet 参数已保存；请重启 novasightd，使新的物理设备适配器生效。"
+          : "kmNet 推荐参数已应用。"
+      );
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
@@ -3074,6 +3083,53 @@ export function StudioConsoleView({
       setBusy(null);
     }
   }, [onRefresh, runtimeConfig]);
+
+  const setKmNetConnection = useCallback(async (connect: boolean) => {
+    setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
+    setLocalError(null);
+    setKmnetTestMessage("");
+    try {
+      if (connect && !kmnetAutoConnect) {
+        const next = cloneRuntimeConfig(runtimeConfig);
+        if (!next) {
+          throw new Error("尚未读取运行配置。");
+        }
+        next.hardware = {
+          ...asRecord(next.hardware),
+          ...KMNET_RECOMMENDED
+        } as RuntimeConfig[string];
+        const result = await updateRuntimeConfig(next);
+        setKmnetTestMessage(
+          result.restart_required
+            ? "kmNet 已委任并保存；请重启 novasightd，然后启动主链完成连接。"
+            : "kmNet 已委任。"
+        );
+      } else {
+        if (!connect && outputEnabled) {
+          const gateResult = await updateRuntimeConfigField("control", "output_enabled", false);
+          const applied = normalizeRuntimeConfig(gateResult.config);
+          runtimeConfigLatestRef.current = applied;
+          configDraftRef.current = applied;
+          setConfigDraft(applied);
+          onRuntimeConfigChange(applied);
+        }
+        await (connect ? connectKmNet() : disconnectKmNet());
+        setKmnetTestMessage(
+          connect
+            ? "kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。"
+            : "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
+        );
+      }
+      await onRefresh();
+    } catch (err) {
+      const action = connect ? "连接" : "断开";
+      setLocalError(`kmNet ${action}失败：${getErrorMessage(err)}`);
+      reportError(err, { source: "kmnet-lifecycle", title: `kmNet ${action}失败` });
+      await onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled, runtimeConfig]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -3316,8 +3372,8 @@ export function StudioConsoleView({
         ? "后端检查中"
         : "后端异常";
   const latencyStages = [
-    { label: "采集 / 解码 / ROI / 排队", value: readNullableNumber(statistics?.stage_ingress_ms), digits: 1 },
-    { label: "nvinfer（含 parser）", value: readNullableNumber(statistics?.stage_engine_ms), digits: 1 },
+    { label: "采集 / 解码 / ROI / 排队", value: readNullableNumber(statistics?.stage_ingress_ms), digits: STANDARD_DECIMAL_DIGITS },
+    { label: "nvinfer（含 parser）", value: readNullableNumber(statistics?.stage_engine_ms), digits: STANDARD_DECIMAL_DIGITS },
     { label: "Batch 构建", value: readNullableNumber(statistics?.stage_batch_build_ms), digits: 2 },
     { label: "控制等待", value: readNullableNumber(statistics?.stage_control_wait_ms), digits: 2 },
     { label: "控制计算", value: readNullableNumber(statistics?.stage_control_ms), digits: 2 }
@@ -3461,9 +3517,9 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureStatusText} small={captureBackendLabel || NO_SAMPLE} />
-            <Metric title="采集 FPS" value={formatOptionalNumber(nvinferInputFps, 1)} small={`有效输入 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
-            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps, 1)} small="nvinfer 实际输出" />
-            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs, 0)} small={`${detectionFreshness} · ms`} />
+            <Metric title="采集 FPS" value={formatOptionalNumber(nvinferInputFps)} small={`有效输入 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
+            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="nvinfer 实际输出" />
+            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
           </div>
           <div className="console-card power-saving-card">
             <SectionTitle title="目标主机离线省流" />
@@ -3619,7 +3675,7 @@ export function StudioConsoleView({
                 <span>采集后端</span><b>{captureBackendLabel || NO_SAMPLE}</b>
                 <span>输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
                 <span>输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
-                <span>配置输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(1)} FPS` : NO_SAMPLE}</b>
+                <span>配置输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(STANDARD_DECIMAL_DIGITS)} FPS` : NO_SAMPLE}</b>
               </div>
             </div>
             <div className="console-card">
@@ -3649,11 +3705,11 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="采集性能" />
               <div className="console-kv">
-                <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, 1, "FPS")}</b>
-                <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(deepstreamNvinferSelected ? nvinferInputFps : captureSourceFps, 1, "FPS")}</b>
-                <span>nvinfer 输出 FPS</span><b>{formatOptionalNumber(nvinferOutputFps, 1, "FPS")}</b>
-                <span>DetectionBatch 结果 FPS</span><b>{formatOptionalNumber(detectionBatchFps, 1, "FPS")}</b>
-                <span>结果新鲜度</span><b>{`${formatOptionalNumber(detectionDataAgeMs, 0, "ms")} · ${detectionFreshness}`}</b>
+                <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(deepstreamNvinferSelected ? nvinferInputFps : captureSourceFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                <span>nvinfer 输出 FPS</span><b>{formatOptionalNumber(nvinferOutputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                <span>DetectionBatch 结果 FPS</span><b>{formatOptionalNumber(detectionBatchFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                <span>结果新鲜度</span><b>{`${formatOptionalNumber(detectionDataAgeMs, STANDARD_DECIMAL_DIGITS, "ms")} · ${detectionFreshness}`}</b>
                 <span>速率采样窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                 <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
               </div>
@@ -3663,9 +3719,9 @@ export function StudioConsoleView({
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps, 1)} small="nvinfer 实际完成" />
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps, 1)} small="DetectionBatch 有效产出" />
-            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs, 0)} small={`${detectionFreshness} · ms`} />
+            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="nvinfer 实际完成" />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="DetectionBatch 有效产出" />
+            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
             <Metric title="当前检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="post-parser" />
           </div>
           <div className="console-card model-selection-card">
@@ -3740,7 +3796,7 @@ export function StudioConsoleView({
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
                 <span>模型输入</span><b>{modelInputWidth && modelInputHeight ? `${modelInputWidth}x${modelInputHeight}` : "-"}</b>
                 <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
-                <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio, 1) : "-"}</b>
+                <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio) : "-"}</b>
                 <span>输入资源</span><b>{readString(inferenceTrace.input_resource_memory, "") || NO_SAMPLE}</b>
                 <span>坐标空间</span><b>{readString(inferenceTrace.detection_coordinate_space, "") || NO_SAMPLE}</b>
               </div>
@@ -3839,9 +3895,9 @@ export function StudioConsoleView({
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
-            <Metric title="控制更新率" value={formatOptionalNumber(controlObservationFps, 1)} small="每秒有效观测" />
+            <Metric title="控制更新率" value={formatOptionalNumber(controlObservationFps)} small="每秒有效观测" />
             <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={activeRuntimeClassLabel || "target"} />
-            <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx, 1)} small="px" />
+            <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
           </div>
           <div className="console-grid2 diagnostic-grid" data-layer="control">
@@ -3858,10 +3914,10 @@ export function StudioConsoleView({
                 <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                 <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
                 <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
-                <span>选择 FOV 中心</span><b>{formatPoint(selectionCenter.x, selectionCenter.y, 1, "px")}</b>
-                <span>选择 FOV 半径</span><b>{formatOptionalNumber(controlCandidateFilter.selection_radius_px, 1, "px")}</b>
-                <span>被拒绝瞄点</span><b>{formatPoint(firstRejectedControlCandidate.aim_x, firstRejectedControlCandidate.aim_y, 1, "px")}</b>
-                <span>瞄点距中心</span><b>{formatOptionalNumber(firstRejectedControlCandidate.distance_px, 1, "px")}</b>
+                <span>选择 FOV 中心</span><b>{formatPoint(selectionCenter.x, selectionCenter.y, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                <span>选择 FOV 半径</span><b>{formatOptionalNumber(controlCandidateFilter.selection_radius_px, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                <span>被拒绝瞄点</span><b>{formatPoint(firstRejectedControlCandidate.aim_x, firstRejectedControlCandidate.aim_y, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                <span>瞄点距中心</span><b>{formatOptionalNumber(firstRejectedControlCandidate.distance_px, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                 <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
@@ -3870,8 +3926,8 @@ export function StudioConsoleView({
                 <span>Track 身份置信度</span><b>{formatOptionalNumber(target.identity_confidence, 3)}</b>
                 <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
                 <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
-                <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1, 1)} -> ${formatPoint(target.x2, target.y2, 1)}` : NO_SAMPLE}</b>
-                <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, 1, "px")}</b>
+                <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1)} -> ${formatPoint(target.x2, target.y2)}` : NO_SAMPLE}</b>
+                <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 {!rustControlPlane ? (
                   <>
                     <span>Tracker 关联</span><b>{readString(trackerRuntimeDebug.association_algorithm, "") || NO_SAMPLE}</b>
@@ -3906,7 +3962,7 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="瞄准点与预测" />
               <div className="console-kv">
-                <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, 1, "px")}</b>
+                <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>类别配置 / 瞄点类型</span><b>{`${readString(controlPipeline.active_class_profile, activeDetectionProfile)} / ${readString(controlPipeline.effective_aim_role, "other")}`}</b>
                 <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
                 {dualPhaseActive ? (
@@ -3915,16 +3971,16 @@ export function StudioConsoleView({
                     <span>三段速度 px/ms</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)}`}</b>
                     <span>中位 / EMA 速度</span><b>{formatPoint(controlPipeline.median_velocity, controlPipeline.filtered_velocity, 3, "px/ms")}</b>
                     <span>速度离散度</span><b>{formatOptionalNumber(controlPipeline.velocity_spread, 3, "px/ms")}</b>
-                    <span>运动可信度</span><b>{formatPercent(controlPipeline.motion_confidence, 1)}</b>
+                    <span>运动可信度</span><b>{formatPercent(controlPipeline.motion_confidence)}</b>
                     <span>平均帧间隔</span><b>{formatOptionalNumber(controlPipeline.reference_dt_ms, 2, "ms")}</b>
                     <span>前瞻帧数</span><b>{formatOptionalNumber(controlPipeline.prediction_lead_frames, 2, " 帧")}</b>
                     <span>原始 / 安全预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_safe_offset_x, 2, "px")}</b>
                     <span>预测允许上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
-                    <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
+                    <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   </>
                 ) : (
                   <>
-                    <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, 1, "px")}</b>
+                    <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                     <span>位置预测</span><b>不参与当前控制算法</b>
                   </>
                 )}
@@ -3933,7 +3989,7 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="误差与角度" />
               <div className="console-kv">
-                <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, 1, "px")}</b>
+                <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
                 <span>predicted error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
                 <span>observed error rad</span><b>{formatPoint(controlPipeline.observed_error_x_rad, controlPipeline.observed_error_y_rad, 6, "rad")}</b>
@@ -3978,8 +4034,8 @@ export function StudioConsoleView({
                   <>
                     <span>拟人轨迹状态</span><b>{readBoolean(controlPipeline.humanized_motion_enabled, false) ? readString(controlPipeline.humanized_motion_phase, "运行中") : readString(controlPipeline.humanized_motion_reason, "未启用")}</b>
                     <span>速度 / 空间曲线</span><b>{`${humanizedSpeedCurveLabel} / ${humanizedSpatialCurveLabel}`}</b>
-                    <span>轨迹进度 / 侧偏</span><b>{`${formatPercent(controlPipeline.humanized_motion_progress, 1)} / ${formatOptionalNumber(controlPipeline.humanized_motion_side_offset, 4)}`}</b>
-                    <span>计划时长</span><b>{formatOptionalNumber(controlPipeline.humanized_motion_planned_duration_ms, 1, "ms")}</b>
+                    <span>轨迹进度 / 侧偏</span><b>{`${formatPercent(controlPipeline.humanized_motion_progress)} / ${formatOptionalNumber(controlPipeline.humanized_motion_side_offset, 4)}`}</b>
+                    <span>计划时长</span><b>{formatOptionalNumber(controlPipeline.humanized_motion_planned_duration_ms, STANDARD_DECIMAL_DIGITS, "ms")}</b>
                   </>
                 ) : null}
                 <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
@@ -3987,7 +4043,7 @@ export function StudioConsoleView({
                 <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
                 <span>请求 / 实际输出</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 2)} counts`}</b>
                 <span>误差归一化</span><b>{formatOptionalNumber(controlPipeline.recoil_error_y_norm, 3)}</b>
-                <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, 1, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, 1, "ms")}`}</b>
+                <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, STANDARD_DECIMAL_DIGITS, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, STANDARD_DECIMAL_DIGITS, "ms")}`}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>
@@ -4029,7 +4085,7 @@ export function StudioConsoleView({
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
               <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
               <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
-              <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(1)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(1)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+              <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
             <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
               <div className="control-output-gate-identity">
@@ -4044,8 +4100,16 @@ export function StudioConsoleView({
               </div>
               <ModuleSwitch
                 label="发送偏移控制量"
-                detail={outputEnabled ? "关闭后立即清空待发送旧命令" : "开启后只发送新的实时观测"}
-                disabled={busy !== null}
+                detail={outputEnabled
+                  ? "关闭后立即清空待发送旧命令"
+                  : !kmnetAutoConnect
+                    ? "请先在 kmNet 页面点击“委任并连接 kmNet”"
+                    : !kmnetDriverAvailable
+                      ? "dry-run 不允许物理输出；请以生产模式启动 novasightd"
+                      : !kmnetRuntimeConnected
+                        ? "请先连接 kmNet，再打开偏移输出"
+                        : "开启后只发送新的实时观测"}
+                disabled={busy !== null || (!outputEnabled && (!kmnetAutoConnect || !kmnetDriverAvailable || !kmnetRuntimeConnected))}
                 enabled={outputEnabled}
                 optimistic={false}
                 onToggle={(enabled) => updateConfigField(
@@ -4257,20 +4321,20 @@ export function StudioConsoleView({
                 <div className="advanced-settings-summary">
                   {dualPhaseActive ? (
                     <>
-                      <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(1)}°</b></div>
+                      <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                       <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
                       <div><span>预测前瞻</span><b>{dualPhaseLeadFrames.toFixed(2)} 帧</b></div>
                     </>
                   ) : controlMode === "calibrated_angular" ? (
                     <>
-                      <div><span>FOVX</span><b>{calibratedFovX.toFixed(1)}°</b></div>
+                      <div><span>FOVX</span><b>{calibratedFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                       <div><span>Kp X / Y</span><b>{calibratedKpX.toFixed(2)} / {calibratedKpY.toFixed(2)}</b></div>
                       <div><span>Kd X / Y</span><b>{calibratedKdX.toFixed(2)} / {calibratedKdY.toFixed(2)}</b></div>
                     </>
                   ) : (
                     <>
-                      <div><span>响应尺度 X / Y</span><b>{universalResponseScaleX.toFixed(1)} / {universalResponseScaleY.toFixed(1)} px</b></div>
-                      <div><span>最大移动 X / Y</span><b>{universalMaxStepX.toFixed(1)} / {universalMaxStepY.toFixed(1)}</b></div>
+                      <div><span>响应尺度 X / Y</span><b>{universalResponseScaleX.toFixed(STANDARD_DECIMAL_DIGITS)} / {universalResponseScaleY.toFixed(STANDARD_DECIMAL_DIGITS)} px</b></div>
+                      <div><span>最大移动 X / Y</span><b>{universalMaxStepX.toFixed(STANDARD_DECIMAL_DIGITS)} / {universalMaxStepY.toFixed(STANDARD_DECIMAL_DIGITS)}</b></div>
                     </>
                   )}
                 </div>
@@ -4316,8 +4380,8 @@ export function StudioConsoleView({
                     <span>采样支路</span><b>{crosshairBranchActive ? "运行中" : crosshairEnabled ? "不可用" : "关闭"}</b>
                     <span>控制可用</span><b>{crosshairReferenceReady ? "是" : "否，使用几何中心"}</b>
                     <span>模板</span><b>{crosshairTemplateId || "尚未生成"}</b>
-                    <span>中心偏移</span><b>{crosshairReferenceReady ? `${crosshairOffsetX.toFixed(1)}, ${crosshairOffsetY.toFixed(1)} px` : "—"}</b>
-                    <span>匹配置信度</span><b>{crosshairConfidence > 0 ? `${(crosshairConfidence * 100).toFixed(1)}%` : "—"}</b>
+                    <span>中心偏移</span><b>{crosshairReferenceReady ? `${crosshairOffsetX.toFixed(STANDARD_DECIMAL_DIGITS)}, ${crosshairOffsetY.toFixed(STANDARD_DECIMAL_DIGITS)} px` : "—"}</b>
+                    <span>匹配置信度</span><b>{crosshairConfidence > 0 ? `${(crosshairConfidence * 100).toFixed(STANDARD_DECIMAL_DIGITS)}%` : "—"}</b>
                     <span>学习帧</span><b>{crosshairRecentSamples}/{crosshairRequiredSamples}</b>
                   </div>
                 </div>
@@ -4391,7 +4455,7 @@ export function StudioConsoleView({
                   </button>
                 </div>
                 <div className="advanced-settings-summary compact">
-                  <div><span>异常框宽高比</span><b>≤ {candidateRatioMaxAspect.toFixed(1)}</b></div>
+                  <div><span>异常框宽高比</span><b>≤ {candidateRatioMaxAspect.toFixed(STANDARD_DECIMAL_DIGITS)}</b></div>
                   <div><span>切换门槛</span><b>{targetSwitchPreferenceAdvantage.toFixed(2)}</b></div>
                   <div><span>确认延迟</span><b>{targetSwitchDelayMs.toFixed(0)} ms</b></div>
                 </div>
@@ -4502,12 +4566,31 @@ export function StudioConsoleView({
                 <button
                   className="console-button"
                   aria-pressed={kmnetConnected}
-                  disabled
+                  disabled={
+                    busy !== null ||
+                    (!kmnetAutoConnect && runtimeConfig === null) ||
+                    (kmnetAutoConnect && (!runtime?.running || !kmnetDriverAvailable || kmnetRuntimeConnected))
+                  }
+                  onClick={() => void setKmNetConnection(true)}
                   type="button"
                 >
-                  {kmnetManagedByRuntime ? "由 Rust Runtime 托管" : "硬件输出未启用"}
+                  {kmnetRuntimeConnected ? "kmNet 已连接" : kmnetAutoConnect ? "连接 kmNet" : "委任并连接 kmNet"}
                 </button>
-                <span>设备生命周期由 novasightd 所有；启动主链时启用，停止主链后才允许单步诊断。</span>
+                <button
+                  className="console-button danger"
+                  disabled={busy !== null || !runtime?.running || !kmnetRuntimeConnected}
+                  onClick={() => void setKmNetConnection(false)}
+                  type="button"
+                >
+                  断开 kmNet
+                </button>
+                <span>
+                  {!kmnetDriverAvailable
+                    ? "当前是 dry-run 或硬件输出不可用；物理发送必须使用不带 --dry-run 的生产模式启动。"
+                    : runtime?.running
+                      ? "连接操作只影响 kmNet 会话，采集、推理和目标计算保持运行。"
+                      : "请先启动主链；Runtime Epoch 建立后才能控制 kmNet 会话。"}
+                </span>
               </div>
               <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
               <NumberControl label="kmnetport" value={kmnetPort} min={rustControlPlane ? 1 : 0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
@@ -4516,7 +4599,7 @@ export function StudioConsoleView({
               <ModuleSwitch
                 label={rustControlPlane ? "主链启动时连接设备" : "后端服务启动时自动连接"}
                 detail={rustControlPlane
-                  ? "设备会话归属 Runtime Epoch；停止主链会关闭 kmNet，连接失败则该 epoch 启动失败"
+                  ? "设备会话归属 Runtime Epoch；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
                   : "独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"}
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
@@ -4606,9 +4689,9 @@ export function StudioConsoleView({
 
         <section className={activePage === "latency" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="进入 nvinfer" value={formatOptionalNumber(statistics?.stage_ingress_ms, 1)} small="ms" />
+            <Metric title="进入 nvinfer" value={formatOptionalNumber(statistics?.stage_ingress_ms)} small="ms" />
             <Metric title="完整链路" value={formatOptionalNumber(statistics?.stage_total_ms, 2)} small="采集→控制 ms" />
-            <Metric title="Batch 发布龄" value={formatOptionalNumber(statistics?.e2e_latency, 1)} small="ms" />
+            <Metric title="Batch 发布龄" value={formatOptionalNumber(statistics?.e2e_latency)} small="ms" />
             <Metric title="控制计算" value={formatOptionalNumber(statistics?.stage_control_ms, 2)} small="ms" />
           </div>
           <div className="console-grid2 latency-analysis-grid">
