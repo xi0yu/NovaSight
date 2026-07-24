@@ -97,6 +97,7 @@ pub enum SessionEvent {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SessionMetrics {
+    pub input_buffers: u64,
     pub probed_buffers: u64,
     pub published_batches: u64,
     pub busy_dropped_batches: u64,
@@ -106,10 +107,14 @@ pub struct SessionMetrics {
     pub admission_rejections: u64,
     pub truncated_detections: u64,
     pub ingress_rejections: u64,
+    pub timestamp_buffer_pts_matches: u64,
+    pub timestamp_frame_meta_pts_matches: u64,
+    pub timestamp_correlation_misses: u64,
 }
 
 #[derive(Debug, Default)]
 struct AtomicSessionMetrics {
+    input_buffers: AtomicU64,
     probed_buffers: AtomicU64,
     published_batches: AtomicU64,
     busy_dropped_batches: AtomicU64,
@@ -119,11 +124,15 @@ struct AtomicSessionMetrics {
     admission_rejections: AtomicU64,
     truncated_detections: AtomicU64,
     ingress_rejections: AtomicU64,
+    timestamp_buffer_pts_matches: AtomicU64,
+    timestamp_frame_meta_pts_matches: AtomicU64,
+    timestamp_correlation_misses: AtomicU64,
 }
 
 impl AtomicSessionMetrics {
     fn snapshot(&self) -> SessionMetrics {
         SessionMetrics {
+            input_buffers: self.input_buffers.load(Ordering::Relaxed),
             probed_buffers: self.probed_buffers.load(Ordering::Relaxed),
             published_batches: self.published_batches.load(Ordering::Relaxed),
             busy_dropped_batches: self.busy_dropped_batches.load(Ordering::Relaxed),
@@ -133,6 +142,11 @@ impl AtomicSessionMetrics {
             admission_rejections: self.admission_rejections.load(Ordering::Relaxed),
             truncated_detections: self.truncated_detections.load(Ordering::Relaxed),
             ingress_rejections: self.ingress_rejections.load(Ordering::Relaxed),
+            timestamp_buffer_pts_matches: self.timestamp_buffer_pts_matches.load(Ordering::Relaxed),
+            timestamp_frame_meta_pts_matches: self
+                .timestamp_frame_meta_pts_matches
+                .load(Ordering::Relaxed),
+            timestamp_correlation_misses: self.timestamp_correlation_misses.load(Ordering::Relaxed),
         }
     }
 }
@@ -555,6 +569,7 @@ impl PerceptionSession for DeepStreamSession {
     fn metrics(&self) -> PerceptionMetrics {
         let metrics = self.metrics();
         PerceptionMetrics {
+            input_buffers: metrics.input_buffers,
             probed_buffers: metrics.probed_buffers,
             published_batches: metrics.published_batches,
             busy_dropped_batches: metrics.busy_dropped_batches,
@@ -564,6 +579,9 @@ impl PerceptionSession for DeepStreamSession {
             admission_rejections: metrics.admission_rejections,
             truncated_detections: metrics.truncated_detections,
             ingress_rejections: metrics.ingress_rejections,
+            timestamp_buffer_pts_matches: metrics.timestamp_buffer_pts_matches,
+            timestamp_frame_meta_pts_matches: metrics.timestamp_frame_meta_pts_matches,
+            timestamp_correlation_misses: metrics.timestamp_correlation_misses,
         }
     }
 
@@ -748,11 +766,16 @@ fn start_pipeline(
     let inference_input_timeline = Arc::new(InferenceInputTimeline::default());
     let inference_input_probe_timeline = Arc::clone(&inference_input_timeline);
     let inference_input_probe_clock = Arc::clone(&monotonic_clock);
+    let inference_input_probe_state = Arc::clone(&state);
     let inference_input_probe_id = inference_input_pad
         .add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
             let Some(buffer) = info.buffer() else {
                 return gst::PadProbeReturn::Ok;
             };
+            inference_input_probe_state
+                .metrics
+                .input_buffers
+                .fetch_add(1, Ordering::Relaxed);
             if let Some(pts) = buffer.pts() {
                 inference_input_probe_timeline
                     .observe(pts.nseconds(), inference_input_probe_clock.now());
@@ -812,15 +835,32 @@ fn start_pipeline(
                     return gst::PadProbeReturn::Ok;
                 }
             };
-            let inference_input_observed_at = (snapshot_flags & FRAME_BUFFER_PTS_VALID != 0)
+            let buffer_pts_observed_at = (snapshot_flags & FRAME_BUFFER_PTS_VALID != 0)
                 .then(|| probe_inference_input_timeline.take(buffer_pts_ns))
-                .flatten()
-                .or_else(|| {
-                    (snapshot_flags & FRAME_META_PTS_VALID != 0)
-                        .then(|| probe_inference_input_timeline.take(frame_pts_ns))
-                        .flatten()
-                });
+                .flatten();
+            let (inference_input_observed_at, matched_buffer_pts) =
+                if let Some(observed_at) = buffer_pts_observed_at {
+                    (Some(observed_at), true)
+                } else {
+                    (
+                        (snapshot_flags & FRAME_META_PTS_VALID != 0)
+                            .then(|| probe_inference_input_timeline.take(frame_pts_ns))
+                            .flatten(),
+                        false,
+                    )
+                };
             if let Some(input_observed_at) = inference_input_observed_at {
+                if matched_buffer_pts {
+                    probe_state
+                        .metrics
+                        .timestamp_buffer_pts_matches
+                        .fetch_add(1, Ordering::Relaxed);
+                } else {
+                    probe_state
+                        .metrics
+                        .timestamp_frame_meta_pts_matches
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 // Correlate the nvinfer input and output by buffer PTS, matching
                 // the Python DeepStream backend. The configured inference input
                 // deadline measures inference work, not V4L2/decoder clock-domain
@@ -841,6 +881,10 @@ fn start_pipeline(
                 }
                 return gst::PadProbeReturn::Ok;
             }
+            probe_state
+                .metrics
+                .timestamp_correlation_misses
+                .fetch_add(1, Ordering::Relaxed);
             let Some(pipeline) = weak_pipeline.upgrade() else {
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;

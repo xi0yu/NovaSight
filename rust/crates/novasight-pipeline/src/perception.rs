@@ -61,6 +61,7 @@ pub enum PerceptionEvent {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PerceptionMetrics {
+    pub input_buffers: u64,
     pub probed_buffers: u64,
     pub published_batches: u64,
     pub busy_dropped_batches: u64,
@@ -70,6 +71,9 @@ pub struct PerceptionMetrics {
     pub admission_rejections: u64,
     pub truncated_detections: u64,
     pub ingress_rejections: u64,
+    pub timestamp_buffer_pts_matches: u64,
+    pub timestamp_frame_meta_pts_matches: u64,
+    pub timestamp_correlation_misses: u64,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]

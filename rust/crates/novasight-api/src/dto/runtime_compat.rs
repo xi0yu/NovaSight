@@ -111,6 +111,8 @@ pub(crate) struct StatisticsState {
     pub capture_counter: u64,
     pub inference_counter: u64,
     pub detection_batch_counter: u64,
+    pub detection_batch_consumed_counter: u64,
+    pub control_observation_counter: u64,
     pub dropped_counter: u64,
     pub metrics_available: bool,
 }
@@ -119,10 +121,23 @@ pub(crate) struct StatisticsState {
 pub(crate) struct InferenceState {
     pub available: bool,
     pub configured: bool,
+    pub loaded: bool,
     pub running: bool,
+    pub terminal_error: bool,
     pub state: SubsystemState,
     pub selected: Option<String>,
     pub reason: Option<String>,
+    pub detail: Option<String>,
+    pub inference_reason: Option<String>,
+    pub input_frames: u64,
+    pub output_buffers: u64,
+    pub batch_meta_buffers: u64,
+    pub frame_meta_frames: u64,
+    pub published_batches: u64,
+    pub timestamp_buffer_pts_matches: u64,
+    pub timestamp_frame_meta_pts_matches: u64,
+    pub timestamp_correlation_misses: u64,
+    pub last_frame_id: Option<u64>,
     pub preview_enabled: bool,
     pub preview_active: bool,
     pub preview_encoder_active: bool,
@@ -154,6 +169,12 @@ pub(crate) struct PipelineSummary {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DeepStreamState {
+    pub running: bool,
+    pub terminal_error: bool,
+    pub last_error: Option<String>,
+    pub input_frames: u64,
+    pub object_meta_frames: u64,
+    pub published_batches: u64,
     pub crosshair_active: bool,
     pub crosshair_reason: String,
 }
@@ -470,6 +491,19 @@ impl CompatibilityRuntimeState {
             },
         );
         let metrics = snapshot.perception_metrics;
+        let inference_running =
+            running && snapshot.subsystems.inference.state == SubsystemState::Running;
+        let inference_terminal_error =
+            snapshot.subsystems.inference.state == SubsystemState::Failed;
+        let inference_error = snapshot
+            .subsystems
+            .inference
+            .last_error
+            .as_ref()
+            .map(|error| error.message.clone());
+        let metadata_buffers = metrics
+            .probed_buffers
+            .saturating_sub(metrics.extraction_rejections);
         let dropped_counter = metrics
             .busy_dropped_batches
             .saturating_add(metrics.overwritten_snapshots)
@@ -531,24 +565,38 @@ impl CompatibilityRuntimeState {
                     .map(|error| error.message.clone()),
             },
             statistics: StatisticsState {
-                capture_counter: metrics.probed_buffers,
+                capture_counter: metrics.input_buffers,
                 inference_counter: metrics.published_batches,
                 detection_batch_counter: metrics.published_batches,
+                detection_batch_consumed_counter: snapshot.pipeline_metrics.received_batches,
+                control_observation_counter: snapshot.pipeline_metrics.targeting_batches,
                 dropped_counter,
                 metrics_available: running,
             },
             inference: InferenceState {
                 available: inference_available,
                 configured: inference_config.is_some(),
-                running: running && snapshot.subsystems.inference.state == SubsystemState::Running,
+                loaded: inference_running,
+                running: inference_running,
+                terminal_error: inference_terminal_error,
                 state: snapshot.subsystems.inference.state,
                 selected: inference_config.map(|inference| serialized_label(&inference.backend)),
-                reason: snapshot
-                    .subsystems
-                    .inference
-                    .last_error
-                    .as_ref()
-                    .map(|error| error.message.clone()),
+                reason: inference_error.clone(),
+                detail: inference_error.clone(),
+                inference_reason: inference_error.clone(),
+                input_frames: metrics.input_buffers,
+                output_buffers: metrics.probed_buffers,
+                batch_meta_buffers: metadata_buffers,
+                frame_meta_frames: metadata_buffers,
+                published_batches: metrics.published_batches,
+                timestamp_buffer_pts_matches: metrics.timestamp_buffer_pts_matches,
+                timestamp_frame_meta_pts_matches: metrics.timestamp_frame_meta_pts_matches,
+                timestamp_correlation_misses: metrics.timestamp_correlation_misses,
+                last_frame_id: snapshot
+                    .pipeline_metrics
+                    .detections
+                    .generation
+                    .map(|generation| generation.0),
                 preview_enabled: preview.is_some_and(|preview| preview.enabled),
                 preview_active: preview.is_some_and(|preview| preview.active),
                 preview_encoder_active: preview.is_some_and(|preview| preview.encoder_active),
@@ -576,6 +624,12 @@ impl CompatibilityRuntimeState {
                 mode,
                 last_error: snapshot.pipeline.last_error.clone(),
                 deepstream: DeepStreamState {
+                    running: inference_running,
+                    terminal_error: inference_terminal_error,
+                    last_error: inference_error,
+                    input_frames: metrics.input_buffers,
+                    object_meta_frames: metadata_buffers,
+                    published_batches: metrics.published_batches,
                     crosshair_active: crosshair.is_some_and(|state| state.running),
                     crosshair_reason: match crosshair {
                         Some(state) if state.running => String::new(),
