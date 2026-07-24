@@ -2361,6 +2361,7 @@ async fn start_state(
         .map(|active| active.runtime.metrics())
         .unwrap_or_default();
     state.finish_start(now_ms(), has_perception);
+    state.reconcile_device_health();
     Ok(publish_with_result(snapshot_tx, state, now_ms()))
 }
 

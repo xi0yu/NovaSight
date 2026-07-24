@@ -236,6 +236,10 @@ impl PointerDevice for KmNetNativeDevice {
     }
 
     fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
+        // Button polling is the low-rate device health lane. Re-establishing a
+        // missing native session here keeps HID/KMBOX recovery independent of
+        // the capture and inference workers and never sends pointer output.
+        self.connect()?;
         let session = self
             .session
             .lock()

@@ -320,7 +320,11 @@ struct SharedState {
 }
 
 impl SharedState {
-    fn new(event_tx: SyncSender<PipelineEvent>, external_stop: Arc<AtomicUsize>) -> Self {
+    fn new(
+        event_tx: SyncSender<PipelineEvent>,
+        external_stop: Arc<AtomicUsize>,
+        device_connected: bool,
+    ) -> Self {
         let metrics = AtomicMetrics {
             vision: Mutex::new(VisionTelemetry {
                 detections: DetectionTelemetry {
@@ -344,7 +348,7 @@ impl SharedState {
             buttons_available: AtomicBool::new(false),
             button_left: AtomicBool::new(false),
             button_right: AtomicBool::new(false),
-            device_connected: AtomicBool::new(true),
+            device_connected: AtomicBool::new(device_connected),
             external_stop,
             last_vision_telemetry_at_ns: AtomicU64::new(0),
             device_lane: Mutex::new(()),
@@ -788,12 +792,27 @@ impl PipelineRuntime {
             .recoil
             .validate()
             .map_err(|message| PipelineError::InvalidRecoilConfig { message })?;
-        device
-            .connect()
-            .map_err(|error| PipelineError::DeviceConnect(error.to_string()))?;
-        let mut device_guard = DeviceConnectionGuard::new(Arc::clone(&device));
+        let initial_device_error = match device.connect() {
+            Ok(()) => None,
+            Err(error) if is_recoverable_pointer_error(&error) => Some(error),
+            Err(error) => return Err(PipelineError::DeviceConnect(error.to_string())),
+        };
+        let mut device_guard = initial_device_error
+            .is_none()
+            .then(|| DeviceConnectionGuard::new(Arc::clone(&device)));
         let (event_tx, event_rx) = sync_channel(4);
-        let shared = Arc::new(SharedState::new(event_tx, external_stop));
+        let shared = Arc::new(SharedState::new(
+            event_tx,
+            external_stop,
+            initial_device_error.is_none(),
+        ));
+        if let Some(error) = &initial_device_error {
+            // Capture and inference remain useful while a commissioned output
+            // device is temporarily offline. Trigger polling owns reconnect;
+            // the closed output gate and cleared trigger state prevent any
+            // stale command from escaping in the meantime.
+            shared.record_device_error(error);
+        }
         let batch_slot = LatestSlot::new();
         let target_slot = LatestSlot::new();
         let command_slot = LatestSlot::new();
@@ -884,7 +903,9 @@ impl PipelineRuntime {
             },
             ingress,
         );
-        device_guard.disarm();
+        if let Some(device_guard) = &mut device_guard {
+            device_guard.disarm();
+        }
         Ok(started)
     }
 
@@ -1449,10 +1470,16 @@ fn is_recoverable_pointer_error(error: &novasight_core::AppError) -> bool {
             code: "driver_timeout"
                 | "helper_exited"
                 | "helper_spawn_failed"
+                | "helper_protocol_failed"
+                | "driver_rejected"
+                | "driver_unavailable"
                 | "reconnect_cooldown"
                 | "driver_send_failed"
                 | "driver_protocol_failed"
-                | "monitor_stale",
+                | "monitor_stale"
+                | "monitor_failed"
+                | "socket_setup_failed"
+                | "not_connected",
             ..
         }
     )

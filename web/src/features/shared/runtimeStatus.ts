@@ -14,6 +14,17 @@ export type RuntimeMainlineStatus = {
   hasInferenceSignal: boolean;
   hasRuntimeConsumption: boolean;
   progressSummary: string;
+  readinessCode:
+    | "stopped"
+    | "starting"
+    | "ready"
+    | "no_video"
+    | "control_device_disconnected"
+    | "model_load_failed"
+    | "frame_latency_high"
+    | "failed";
+  readinessLabel: string;
+  readinessDetail: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -24,6 +35,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function readErrorMessage(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  return readString(asRecord(value).message);
 }
 
 function readBoolean(value: unknown): boolean {
@@ -60,7 +78,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   const fatal = asRecord(runtime?.fatal_error);
   const terminalError = readBoolean(inference.terminal_error) || readBoolean(deepstream.terminal_error);
   const pipelineLastError =
-    readString(pipeline.last_error) || (terminalError ? readString(deepstream.last_error) : "");
+    readErrorMessage(pipeline.last_error) || (terminalError ? readErrorMessage(deepstream.last_error) : "");
   const fatalMessage = readString(fatal.message);
   const failureMessage =
     pipelineLastError ||
@@ -108,6 +126,75 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
       ? true
       : terminalError ||
         pipelineLastError !== "";
+  const pipelineState = readString(pipeline.state);
+  const normalizedFailure = failureMessage.toLowerCase();
+  const executor = asRecord(runtime?.executor);
+  const executors = asRecord(executor.executors);
+  const selectedExecutor = readString(executor.selected);
+  const selectedDevice = asRecord(executors[selectedExecutor] ?? executors.kmnet);
+  const visionControl = asRecord(asRecord(runtime?.vision).control);
+  const controlDeviceDisconnected =
+    running &&
+    selectedExecutor !== "dry_run" &&
+    readBoolean(visionControl.output_enabled) &&
+    !readBoolean(selectedDevice.runtime_connected);
+
+  let readinessCode: RuntimeMainlineStatus["readinessCode"] = "stopped";
+  let readinessLabel = "未启动";
+  let readinessDetail = "点击启动后，系统会自动检查采集、模型、推理和控制链路。";
+  if (failed) {
+    if (
+      normalizedFailure.includes("no admitted batch") &&
+      !positive(nvinferInputFrames) &&
+      !positive(metadataExtractions)
+    ) {
+      readinessCode = "no_video";
+      readinessLabel = "未检测到画面";
+      readinessDetail = "采集链在启动时没有收到有效画面；请检查采集卡信号、输入格式和分辨率。";
+    } else if (
+      normalizedFailure.includes("model") ||
+      normalizedFailure.includes("engine") ||
+      normalizedFailure.includes("tensorrt") ||
+      normalizedFailure.includes("nvinfer")
+    ) {
+      readinessCode = "model_load_failed";
+      readinessLabel = "模型加载失败";
+      readinessDetail = "请检查当前 Engine 是否由本机 Jetson 生成，并确认模型输入、输出和解析器配置匹配。";
+    } else if (
+      normalizedFailure.includes("freshness") ||
+      normalizedFailure.includes("frame age") ||
+      normalizedFailure.includes("latency") ||
+      normalizedFailure.includes("stale")
+    ) {
+      readinessCode = "frame_latency_high";
+      readinessLabel = "当前画面延迟过高";
+      readinessDetail = "系统已为安全起见拒绝过期结果；请检查采集时间戳、积压和新鲜度阈值。";
+    } else {
+      readinessCode = "failed";
+      readinessLabel = "启动失败";
+      readinessDetail = failureMessage || "后端未能完成主链启动，请查看异常信息中的处理建议。";
+    }
+  } else if (pipelineState === "starting") {
+    readinessCode = "starting";
+    readinessLabel = "正在启动";
+    readinessDetail = "正在加载采集、TensorRT 与 DetectionBatch 数据通路。";
+  } else if (running && !hasInferenceSignal) {
+    readinessCode = "no_video";
+    readinessLabel = "未检测到画面";
+    readinessDetail = "主链已运行，但尚未收到有效采集帧；请检查采集卡信号和输入配置。";
+  } else if (controlDeviceDisconnected) {
+    readinessCode = "control_device_disconnected";
+    readinessLabel = "视觉已就绪 · 控制设备未连接";
+    readinessDetail = "采集与推理继续运行，鼠标输出保持安全禁用；控制设备恢复后会自动重连。";
+  } else if (running && hasRuntimeConsumption) {
+    readinessCode = "ready";
+    readinessLabel = "已就绪";
+    readinessDetail = "采集、推理和运行时消费链路均已产生真实数据。";
+  } else if (running) {
+    readinessCode = "starting";
+    readinessLabel = "等待运行数据";
+    readinessDetail = "推理链已启动，正在等待 DetectionBatch 被目标与控制算法消费。";
+  }
 
   return {
     running,
@@ -122,7 +209,10 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     controlObservations,
     hasInferenceSignal,
     hasRuntimeConsumption,
-    progressSummary
+    progressSummary,
+    readinessCode,
+    readinessLabel,
+    readinessDetail
   };
 }
 

@@ -1123,7 +1123,7 @@ export function StudioConsoleView({
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
   const captureStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
-      ? "主链故障"
+      ? runtimeMainlineStatus.readinessLabel
       : runtimePowerInterrupted
         ? "主链意外停止"
       : hostPresenceStandby
@@ -1131,7 +1131,7 @@ export function StudioConsoleView({
       : hostPresenceGrace
         ? "主机心跳中断 · 宽限运行"
       : runtimeMainlineRunning
-        ? "采集+TensorRT+控制运行中"
+        ? runtimeMainlineStatus.readinessLabel
       : mainlineLaunchPending
         ? "启动确认中"
         : runtimeInferenceConfigured
@@ -1279,7 +1279,7 @@ export function StudioConsoleView({
     ) {
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
-      setLocalError(`主链启动未确认：${runtimeMainlineStatus.failureMessage || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
+      setLocalError(`主链启动未确认：${runtimeMainlineStatus.readinessDetail || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
     }
   }, [
     runtimeMainlineSelected,
@@ -1287,6 +1287,7 @@ export function StudioConsoleView({
     mainlineLaunchAccepted,
     runtimeMainlineStatus.failed,
     runtimeMainlineStatus.failureMessage,
+    runtimeMainlineStatus.readinessDetail,
     runtime?.fatal_error,
     runtimeInferenceDetail,
     runtimeInferenceReason,
@@ -2331,42 +2332,6 @@ export function StudioConsoleView({
     }
   }, [captureLaunchFailureMessage]);
 
-  const waitForRuntimeMainlineReady = useCallback(async (
-    stageTitle: string,
-    timeoutMs = 6000,
-    intervalMs = 600
-  ) => {
-    const deadline = Date.now() + timeoutMs;
-    let lastMessage = "后端运行态未确认。";
-    while (Date.now() <= deadline) {
-      if (launchCancelledRef.current) {
-        throw new Error("launch cancelled");
-      }
-      const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
-      const status = getRuntimeMainlineStatus(state);
-      setLaunchProgressDetail(
-        status.progressSummary ? `当前计数：${status.progressSummary}` : "等待后端运行态确认。"
-      );
-      if (status.failed) {
-        throw new Error(`${stageTitle}失败：${status.failureMessage || lastMessage}`);
-      }
-      if (status.running) {
-        setLaunchProgressDetail(
-          status.progressSummary ? `运行态已确认：${status.progressSummary}` : "运行态已确认。"
-        );
-        return state;
-      }
-      if (status.failureMessage) {
-        lastMessage = status.failureMessage;
-      }
-      await waitForLaunchFeedback(intervalMs);
-      if (launchCancelledRef.current) {
-        throw new Error("launch cancelled");
-      }
-    }
-    throw new Error(`${stageTitle}失败：等待后端运行态超时，${lastMessage}`);
-  }, [waitForLaunchFeedback]);
-
   const waitForRuntimeEvidence = useCallback(async (
     stageTitle: string,
     hasEvidence: (state: RuntimeState) => boolean,
@@ -2387,7 +2352,7 @@ export function StudioConsoleView({
         status.progressSummary ? `当前计数：${status.progressSummary}` : "等待主链输出启动证据。"
       );
       if (status.failed) {
-        throw new Error(`${stageTitle}失败：${status.failureMessage || missingMessage}`);
+        throw new Error(`${stageTitle}失败：${status.readinessDetail || missingMessage}`);
       }
       if (!status.running) {
         await waitForLaunchFeedback(intervalMs);
@@ -2426,18 +2391,21 @@ export function StudioConsoleView({
     const runStage = async (index: number, action?: () => Promise<void>) => {
       ensureNotCancelled();
       setLaunchStageIndex(index);
-      await waitForLaunchFeedback(160);
-      ensureNotCancelled();
       if (action) {
         await action();
       }
       ensureNotCancelled();
       setLaunchCompletedStages(index + 1);
-      await waitForLaunchFeedback(180);
     };
 
     try {
-      await runStage(0);
+      await runStage(0, async () => {
+        const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
+        const status = getRuntimeMainlineStatus(state);
+        if (status.failed) {
+          throw new Error(status.readinessDetail);
+        }
+      });
       await runStage(1, async () => {
         const captureState = await selectCaptureProfile(buildCapturePayload());
         assertCaptureLaunchState(captureState);
@@ -2460,9 +2428,8 @@ export function StudioConsoleView({
           const reason = readString(status.last_error, "后端未确认主链运行。");
           throw new Error(reason);
         }
-        await waitForRuntimeMainlineReady("启动主链运行管线");
         setMainlineLaunchAccepted(true);
-        setMainlineLaunchMessage("主链启动请求已提交，正在等待后端状态确认。");
+        setMainlineLaunchMessage("后端已确认主链运行，正在核对运行时消费数据。");
       });
       if (enteredPowerStandby) {
         setLaunchStatus("success");
@@ -2476,11 +2443,13 @@ export function StudioConsoleView({
         return;
       }
       await runStage(3, async () => {
-        await waitForRuntimeEvidence(
+        const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
           "runtime 尚未消费 DetectionBatch，目标选择、跟踪、预测与鼠标算法没有输入。"
         );
+        const status = getRuntimeMainlineStatus(state);
+        setLaunchProgressDetail(`${status.readinessLabel}：${status.readinessDetail}`);
       });
       setLaunchStatus("success");
       setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT.length);
@@ -2520,8 +2489,7 @@ export function StudioConsoleView({
     onRuntimeStateChange,
     showLaunchToast,
     waitForLaunchFeedback,
-    waitForRuntimeEvidence,
-    waitForRuntimeMainlineReady
+    waitForRuntimeEvidence
   ]);
 
   const cancelMainlineLaunch = useCallback(async () => {
@@ -3483,6 +3451,10 @@ export function StudioConsoleView({
         ) : mainlineLaunchPending ? (
           <div className="console-info">
             {mainlineLaunchMessage || "主链启动请求已提交，正在等待后端状态确认。"}
+          </div>
+        ) : runtimeMainlineSelected && runtimeMainlineRunning && runtimeMainlineStatus.readinessCode !== "ready" ? (
+          <div className="console-info" role="status">
+            {runtimeMainlineStatus.readinessLabel}：{runtimeMainlineStatus.readinessDetail}
           </div>
         ) : null}
 
