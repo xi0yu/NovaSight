@@ -263,11 +263,28 @@ struct ProbeState {
     generation: AtomicU64,
     first_published: AtomicBool,
     metrics: AtomicSessionMetrics,
+    last_rejection: Mutex<Option<String>>,
     events: SyncSender<SessionEvent>,
     perception_events: Option<SyncSender<PerceptionEvent>>,
 }
 
 impl ProbeState {
+    fn record_rejection(&self, stage: &'static str, detail: impl std::fmt::Display) {
+        let mut last = self
+            .last_rejection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *last = Some(format!("{stage}: {detail}"));
+    }
+
+    fn last_rejection(&self) -> String {
+        self.last_rejection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| "none recorded".to_owned())
+    }
+
     fn fault(&self, message: impl Into<String>) {
         self.closed.store(true, Ordering::Release);
         let message = message.into();
@@ -420,6 +437,7 @@ impl DeepStreamSession {
             generation: AtomicU64::new(0),
             first_published: AtomicBool::new(false),
             metrics: AtomicSessionMetrics::default(),
+            last_rejection: Mutex::new(None),
             events: event_tx,
             perception_events,
         });
@@ -711,11 +729,17 @@ fn start_pipeline(
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;
             };
-            if unsafe { extract_frame_into(buffer_ptr, source_id, &mut slot.snapshot) }.is_err() {
+            if let Err(error) =
+                unsafe { extract_frame_into(buffer_ptr, source_id, &mut slot.snapshot) }
+            {
                 probe_state
                     .metrics
                     .extraction_rejections
                     .fetch_add(1, Ordering::Relaxed);
+                probe_state.record_rejection(
+                    "bridge extraction",
+                    format_args!("status={:?}, raw_status={}", error.status, error.raw_status),
+                );
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;
             }
@@ -728,6 +752,7 @@ fn start_pipeline(
                     .metrics
                     .admission_rejections
                     .fetch_add(1, Ordering::Relaxed);
+                probe_state.record_rejection("pipeline clock", "clock unavailable");
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;
             };
@@ -736,6 +761,7 @@ fn start_pipeline(
                     .metrics
                     .admission_rejections
                     .fetch_add(1, Ordering::Relaxed);
+                probe_state.record_rejection("pipeline clock", "base time unavailable");
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;
             };
@@ -748,6 +774,8 @@ fn start_pipeline(
                     .metrics
                     .admission_rejections
                     .fetch_add(1, Ordering::Relaxed);
+                probe_state
+                    .record_rejection("pipeline clock", "clock time precedes pipeline base time");
                 probe_exchange.recycle(slot);
                 return gst::PadProbeReturn::Ok;
             };
@@ -1180,11 +1208,15 @@ fn run_snapshot_worker(
         };
         let admitted = match admitted {
             Ok(admitted) => admitted,
-            Err(_) => {
+            Err(error) => {
                 state
                     .metrics
                     .admission_rejections
                     .fetch_add(1, Ordering::Relaxed);
+                state.record_rejection(
+                    "snapshot admission",
+                    format_args!("{}: {error}", error.code()),
+                );
                 recycle_from_worker(exchange, slot);
                 continue;
             }
@@ -1196,6 +1228,13 @@ fn run_snapshot_worker(
                 .metrics
                 .admission_rejections
                 .fetch_add(1, Ordering::Relaxed);
+            state.record_rejection(
+                "batch freshness",
+                format_args!(
+                    "capture time {} is ahead of monotonic time {}",
+                    stamp.captured_at.0, now.0
+                ),
+            );
             recycle_from_worker(exchange, slot);
             continue;
         };
@@ -1207,6 +1246,13 @@ fn run_snapshot_worker(
                 .metrics
                 .admission_rejections
                 .fetch_add(1, Ordering::Relaxed);
+            state.record_rejection(
+                "batch freshness",
+                format_args!(
+                    "age {batch_age_ns} ns exceeds configured maximum {:?} ns",
+                    context.max_batch_age_ns
+                ),
+            );
             recycle_from_worker(exchange, slot);
             continue;
         }
@@ -1260,6 +1306,7 @@ fn run_snapshot_worker(
                     .metrics
                     .ingress_rejections
                     .fetch_add(1, Ordering::Relaxed);
+                state.record_rejection("pipeline ingress", &error);
                 state.fault(format!("DeepStream ingress rejected a batch: {error}"));
                 recycle_from_worker(exchange, slot);
                 break;
@@ -1299,9 +1346,12 @@ fn wait_until_ready(
             return Err(error);
         }
         if Instant::now() >= deadline {
+            let metrics = state.metrics.snapshot();
             return Err(SessionError::FirstBatchTimeout {
                 timeout_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
                 current: pipeline.current_state(),
+                metrics,
+                last_rejection: state.last_rejection(),
             });
         }
     }
@@ -1483,11 +1533,21 @@ pub enum SessionError {
     #[error("DeepStream pipeline did not reach PLAYING; current state is {current:?}")]
     DidNotReachPlaying { current: gst::State },
     #[error(
-        "DeepStream pipeline produced no admitted batch within {timeout_ms} ms; current state is {current:?}"
+        "DeepStream pipeline produced no admitted batch within {timeout_ms} ms; current state is {current:?}; metrics={{probed_buffers:{}, published_batches:{}, busy_dropped_batches:{}, extraction_rejections:{}, admission_rejections:{}, ingress_rejections:{}, unavailable_snapshot_slots:{}, overwritten_snapshots:{}}}; last rejection: {last_rejection}",
+        metrics.probed_buffers,
+        metrics.published_batches,
+        metrics.busy_dropped_batches,
+        metrics.extraction_rejections,
+        metrics.admission_rejections,
+        metrics.ingress_rejections,
+        metrics.unavailable_snapshot_slots,
+        metrics.overwritten_snapshots
     )]
     FirstBatchTimeout {
         timeout_ms: u64,
         current: gst::State,
+        metrics: SessionMetrics,
+        last_rejection: String,
     },
     #[error("DeepStream pipeline was stopped before its first admitted batch")]
     StoppedBeforeReady,
