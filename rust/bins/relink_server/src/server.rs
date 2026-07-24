@@ -72,7 +72,7 @@ pub(super) async fn run_daemon(
     let mut signals = ShutdownSignals::register()?;
     let application = loaded.start(dependencies);
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
-    let capture_probe = production_capture_probe(mode);
+    let capture_probe = platform_capture_probe();
     let runtime = application.runtime();
     let router = build_control_router_with_platform_queries(
         runtime.clone(),
@@ -171,15 +171,15 @@ pub(super) async fn run_daemon(
 }
 
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
-fn production_capture_probe(mode: DaemonMode) -> Option<Arc<dyn CaptureCapabilityProbe>> {
-    mode.hardware_output_enabled().then(|| {
+fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
+    Some(
         Arc::new(novasight_platform_jetson::v4l2::V4l2CapabilityProbe)
-            as Arc<dyn CaptureCapabilityProbe>
-    })
+            as Arc<dyn CaptureCapabilityProbe>,
+    )
 }
 
 #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
-fn production_capture_probe(_mode: DaemonMode) -> Option<Arc<dyn CaptureCapabilityProbe>> {
+fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
     None
 }
 

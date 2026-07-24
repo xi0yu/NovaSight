@@ -231,25 +231,11 @@ async fn log_http_request(request: Request<Body>, next: Next) -> Response {
         let response = next.run(request).await;
         let status = response.status();
         let latency_ms = started.elapsed().as_millis() as u64;
-        if status.is_server_error() {
-            tracing::error!(
-                http_status = status.as_u16(),
-                latency_ms,
-                "api request completed"
-            );
-        } else if status.is_client_error() {
-            tracing::warn!(
-                http_status = status.as_u16(),
-                latency_ms,
-                "api request completed"
-            );
-        } else {
-            tracing::info!(
-                http_status = status.as_u16(),
-                latency_ms,
-                "api request completed"
-            );
-        }
+        tracing::info!(
+            http_status = status.as_u16(),
+            latency_ms,
+            "api request completed"
+        );
         response
     }
     .instrument(span)
